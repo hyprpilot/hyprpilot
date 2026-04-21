@@ -22,11 +22,11 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub ui: Ui,
-    /// `[[agents]]` entries + `active_agent` live at the TOML root;
-    /// flattened onto `Config` so the user doesn't have to type
-    /// `[agents.agents]`-style nested paths. The nested struct keeps
-    /// the Rust-side code cohesive — `AgentsConfig` is what the ACP
-    /// module reads off Tauri managed state.
+    /// `[[agents]]` entries + the `[agent]` global section live at
+    /// the TOML root; flattened onto `Config` so the user doesn't
+    /// have to type `[agents.agents]`-style nested paths. The nested
+    /// struct keeps the Rust-side code cohesive — `AgentsConfig` is
+    /// what the ACP module reads off Tauri managed state.
     #[garde(dive)]
     #[serde(flatten)]
     pub agents: AgentsConfig,
@@ -392,26 +392,42 @@ pub struct ThemeState {
 /// User-facing agent registry.
 ///
 /// `agents` is an array of per-agent config blocks, each identified by
-/// its `id` (`claude-code`, `codex`, `opencode`, …). `active_agent`
-/// picks the default the daemon uses when neither `ctl submit` nor the
-/// webview specifies one.
+/// its `id` (`claude-code`, `codex`, `opencode`, …). The singleton
+/// `[agent]` section holds global agent-scope config; today that's
+/// only `agent.default`, but future generic settings (timeout, cwd
+/// defaults, shared env overlay, …) slot in alongside without
+/// another top-level key.
 ///
 /// Merge semantics: user TOML entries with an existing `id` override
 /// the compiled default fields for that id; entries with a new `id`
-/// extend the registry. `active_agent` is a top-level `Option<String>`
-/// that last-writer-wins.
+/// extend the registry. `[agent]` fields last-writer-win through the
+/// generic `Merge` blanket on `Option`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
     /// Every configured agent. Validation dives into each entry and
-    /// additionally asserts ids are unique + `active_agent` (if set)
+    /// additionally asserts ids are unique + `agent.default` (if set)
     /// names a real agent.
     #[garde(dive)]
     #[garde(custom(validate_agents_ids))]
     pub agents: Vec<AgentConfig>,
+    /// Global agent-scope config (`[agent]` in TOML). Kept singular
+    /// (`agent`) to parallel the plural `[[agents]]` registry.
+    #[garde(dive)]
+    pub agent: AgentDefaults,
+}
+
+/// Global agent-scope config. Today only `default` (the agent id to
+/// use when neither `ctl submit` nor the webview specifies one);
+/// future additions (timeout, cwd defaults, global env) land here.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentDefaults {
     /// Id of the agent to use when none is addressed explicitly.
+    /// Validated cross-field (`validate_active_agent_reference`)
+    /// against `agents[].id`.
     #[garde(skip)]
-    pub active_agent: Option<String>,
+    pub default: Option<String>,
 }
 
 /// A single configured agent. `id` is the user-facing handle;
@@ -703,13 +719,14 @@ impl Merge for ThemeState {
     }
 }
 
-/// Keyed-list merge. `active_agent` is last-writer-wins. For each
-/// `id` in `self.agents`, the first matching entry in `other.agents`
-/// wins if present (whole-entry replace — no field-level merge,
-/// since "override provider keeps old command" would be surprising).
-/// Entries in `other.agents` with new ids append in order. Duplicate
-/// ids inside a single layer survive (appended twice) so
-/// `validate_agents_ids` can flag them.
+/// Keyed-list merge. For each `id` in `self.agents`, the first
+/// matching entry in `other.agents` wins if present (whole-entry
+/// replace — no field-level merge, since "override provider keeps
+/// old command" would be surprising). Entries in `other.agents`
+/// with new ids append in order. Duplicate ids inside a single
+/// layer survive (appended twice) so `validate_agents_ids` can
+/// flag them. `[agent]` recurses field-by-field through its own
+/// `Merge` impl (generic `Option<T>` blanket).
 ///
 /// Per-field merging inside `AgentConfig` would be overkill:
 /// `AgentConfig` has <10 leaves and is read as a whole unit by the
@@ -734,7 +751,15 @@ impl Merge for AgentsConfig {
 
         Self {
             agents: out,
-            active_agent: self.active_agent.merge(other.active_agent),
+            agent: self.agent.merge(other.agent),
+        }
+    }
+}
+
+impl Merge for AgentDefaults {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
         }
     }
 }
@@ -1084,9 +1109,9 @@ mod tests {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
         assert_eq!(
-            cfg.agents.active_agent.as_deref(),
+            cfg.agents.agent.default.as_deref(),
             Some("claude-code"),
-            "agents.active_agent must be seeded to a concrete id"
+            "agent.default must be seeded to a concrete id"
         );
 
         let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
@@ -1155,21 +1180,21 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_unknown_active_agent() {
-        let p = write_tmp("bad-active.toml", "active_agent = \"does-not-exist\"\n");
+    fn validate_rejects_unknown_agent_default() {
+        let p = write_tmp("bad-default.toml", "[agent]\ndefault = \"does-not-exist\"\n");
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
-        assert!(msg.contains("agents.active_agent = 'does-not-exist'"), "{msg}");
+        assert!(msg.contains("agent.default = 'does-not-exist'"), "{msg}");
         assert!(msg.contains("Configured ids:"), "{msg}");
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn user_override_of_active_agent_wins() {
-        let p = write_tmp("active.toml", "active_agent = \"codex\"\n");
+    fn user_override_of_agent_default_wins() {
+        let p = write_tmp("agent-default.toml", "[agent]\ndefault = \"codex\"\n");
         let cfg = load(Some(&p), None).expect("load");
-        assert_eq!(cfg.agents.active_agent.as_deref(), Some("codex"));
+        assert_eq!(cfg.agents.agent.default.as_deref(), Some("codex"));
         cfg.validate().expect("codex exists in defaults, so valid");
         fs::remove_file(&p).ok();
     }

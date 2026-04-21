@@ -9,10 +9,10 @@
 //!   or `#[garde(custom(fn))]`. They run during
 //!   `<Config as garde::Validate>::validate`'s tree walk.
 //! - **Cross-field** — `validate_active_agent_reference` takes the
-//!   assembled `Config` because it needs both `agents.active_agent`
+//!   assembled `Config` because it needs both `agents.agent.default`
 //!   and `agents.agents[]` in one place. Called from
 //!   `Config::validate()` after the derive pass so a report names
-//!   the precise offender (`active_agent = 'x' but no matching
+//!   the precise offender (`agent.default = 'x' but no matching
 //!   [[agents]] entry exists`).
 //!
 //! Everything here is crate-private; callers outside `config`
@@ -41,20 +41,20 @@ pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::R
     Ok(())
 }
 
-/// `agents.active_agent`, when set, must match a real `agents[].id`.
+/// `agent.default`, when set, must match a real `agents[].id`.
 /// Reported outside the derive pass because garde has no
 /// first-class "this field references that field" hook — the
 /// assembled `Config` is the first place both sides of the
 /// reference are in scope.
 pub(super) fn validate_active_agent_reference(config: &Config) -> Result<()> {
-    let Some(active) = config.agents.active_agent.as_deref() else {
+    let Some(active) = config.agents.agent.default.as_deref() else {
         return Ok(());
     };
 
     let known = config.agents.agents.iter().any(|a| a.id == active);
     if !known {
         bail!(
-            "agents.active_agent = '{active}' but no matching [[agents]] entry exists. \
+            "agent.default = '{active}' but no matching [[agents]] entry exists. \
              Configured ids: [{}]",
             config
                 .agents

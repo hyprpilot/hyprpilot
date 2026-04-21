@@ -1,6 +1,3 @@
-# Default agent used when `ctl submit` / the webview doesn't specify one.
-active_agent = "claude-code"
-
 [daemon]
 
 [daemon.window]
@@ -55,6 +52,9 @@ idle = "#98c379"
 stream = "#e5c07b"
 pending = "#e06c75"
 awaiting = "#d19a66"
+
+[agent]
+default = "claude-code"
 
 [[agents]]
 id = "claude-code"
