@@ -98,4 +98,27 @@ impl AcpSessions {
     pub async fn info(&self) -> Result<Value, RpcError> {
         Ok(json!({ "sessions": [] }))
     }
+
+    /// Gracefully shut down every live session before the daemon exits.
+    ///
+    /// Today: no-op + a log line — the registry is empty (live session
+    /// plumbing lands in the K-239 follow-up). The live version walks
+    /// the registry, `conn.cancel(CancelNotification { .. })` each
+    /// session, waits briefly for child drain, then drops the handles
+    /// (the `tokio::process::Child` inside each session handle has
+    /// `kill_on_drop(true)` to catch anything that didn't exit
+    /// cleanly).
+    ///
+    /// Called from `rpc::server::shutdown_daemon` after the
+    /// `{"killed": true}` response has flushed to the peer. Explicit
+    /// orchestration, not drop-order implicit: when the live path
+    /// lands we want a single well-known entry point to thread
+    /// graceful-timeout logic through, not scattered `Drop` impls.
+    pub async fn shutdown(&self) {
+        // Live-session follow-up replaces this with a real walk. The
+        // hook exists now so `shutdown_daemon` has a stable call
+        // surface that doesn't grow branches when sessions actually
+        // exist.
+        tracing::debug!("acp::shutdown: registry is empty (scaffold)");
+    }
 }
