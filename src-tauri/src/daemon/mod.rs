@@ -3,6 +3,7 @@ pub use renderer::WindowRenderer;
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -12,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
+use crate::rpc::{RpcDispatcher, StatusBroadcast};
 
 #[derive(Args, Debug, Default, Clone)]
 pub struct DaemonArgs {
@@ -101,6 +103,11 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         },
     };
 
+    // The window starts visible (`true`) because each mode's setup code calls
+    // `show()` / `show_all()` before the RPC loop accepts connections.
+    let status = Arc::new(StatusBroadcast::new(true));
+    let dispatcher = Arc::new(RpcDispatcher::with_defaults());
+
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
     // active monitor on every show transition.
@@ -132,6 +139,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
             let rpc_state = crate::rpc::RpcState {
                 app: app.handle().clone(),
+                status: status.clone(),
+                dispatcher: dispatcher.clone(),
             };
 
             tauri::async_runtime::spawn(async move {

@@ -2,11 +2,13 @@ mod client;
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use serde_json::{json, Value};
 use tracing::{debug, error};
 
 use crate::config::Config;
+use crate::ctl::client::CtlConnection;
 use crate::paths;
-use crate::rpc::protocol::{Call, Outcome};
+use crate::rpc::protocol::Outcome;
 
 #[derive(Args, Debug)]
 pub struct CtlArgs {
@@ -34,16 +36,36 @@ pub enum CtlCommand {
 
     /// Print the active session id + profile info.
     SessionInfo,
+
+    /// Print the daemon / session status as JSON.
+    ///
+    /// Always emits a waybar-shaped JSON object (`{text, class, tooltip,
+    /// alt}`) per line — waybar's `return-type: "json"` contract. One-shot
+    /// by default: connects, fetches a snapshot, exits 0. When the daemon
+    /// is not running, prints an offline payload and exits 0 — safe for
+    /// waybar's `exec` field.
+    ///
+    /// With `--watch`, long-running: calls `status/subscribe` and streams
+    /// one JSON object per state change. Reconnects with back-off on
+    /// socket loss.
+    Status {
+        /// Stream status changes continuously (waybar mode).
+        #[arg(long, default_value_t = false)]
+        watch: bool,
+    },
 }
 
 impl CtlCommand {
-    fn into_call(self) -> Call {
+    /// Map a CLI subcommand to its wire `(method, params)` pair. `status`
+    /// is handled separately in `run` — it never reaches this path.
+    fn wire(self) -> (&'static str, Value) {
         match self {
-            CtlCommand::Submit { text } => Call::Submit { text: text.join(" ") },
-            CtlCommand::Cancel => Call::Cancel,
-            CtlCommand::Toggle => Call::Toggle,
-            CtlCommand::Kill => Call::Kill,
-            CtlCommand::SessionInfo => Call::SessionInfo,
+            CtlCommand::Submit { text } => ("submit", json!({ "text": text.join(" ") })),
+            CtlCommand::Cancel => ("cancel", Value::Null),
+            CtlCommand::Toggle => ("toggle", Value::Null),
+            CtlCommand::Kill => ("kill", Value::Null),
+            CtlCommand::SessionInfo => ("session-info", Value::Null),
+            CtlCommand::Status { .. } => unreachable!("status is dispatched before wire()"),
         }
     }
 }
@@ -55,8 +77,15 @@ impl CtlCommand {
 pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
     let socket = cfg.daemon.socket.clone().unwrap_or_else(paths::socket_path);
 
+    // `status` is handled separately: it may be long-running (`--watch`) and
+    // has its own offline-fallback + formatting logic.
+    if let CtlCommand::Status { watch } = args.command {
+        return client::run_status(&socket, watch);
+    }
+
     debug!(socket = %socket.display(), "ctl: connecting");
-    let outcome = match client::call(&socket, args.command.into_call()) {
+    let (method, params) = args.command.wire();
+    let outcome = match CtlConnection::connect(&socket).and_then(|mut c| c.call_outcome(method, params)) {
         Ok(o) => o,
         Err(err) => {
             eprintln!("{err}");
