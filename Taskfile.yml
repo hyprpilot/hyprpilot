@@ -22,8 +22,8 @@ tasks:
   test:
     desc: Run Rust and frontend test suites.
     cmds:
-      - cargo test --manifest-path src-tauri/Cargo.toml --all-targets
-      - pnpm --dir ui test
+      - cargo test --manifest-path src-tauri/Cargo.toml --all-targets -v
+      - pnpm --dir ui test -v
       - pnpm --dir ui test:e2e
 
   format:
