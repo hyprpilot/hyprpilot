@@ -152,19 +152,9 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
                 sessions: sessions.clone(),
             };
 
-            // POSIX signal handler: SIGINT (Ctrl-C) + SIGTERM (systemd,
-            // pkill) run through the same `shutdown` orchestrator as
-            // `daemon/kill` so every termination path — RPC, signal, or
-            // future timeout-triggered — gets identical cleanup ordering
-            // (ACP sessions drained → Tauri teardown → process exit). The
-            // alternative (let the default handler terminate us) bypasses
-            // every `Drop` we wired through `app.manage(...)` and leaves
-            // child agents orphaned.
-            //
-            // First signal triggers clean shutdown; a second signal while
-            // shutdown is in progress falls through to the default
-            // handler, i.e. force-kills the process — standard Unix
-            // "SIGINT-twice to escape a stuck shutdown" pattern.
+            // SIGINT / SIGTERM → same shutdown path as daemon/kill.
+            // Second signal falls through to the default handler
+            // (force-kill), so SIGINT-twice escapes a stuck shutdown.
             let signal_app = app.handle().clone();
             let signal_sessions = sessions.clone();
             tauri::async_runtime::spawn(async move {
@@ -223,44 +213,14 @@ struct SingleInstancePayload {
     cwd: String,
 }
 
-/// Orchestrate a clean process shutdown.
-///
-/// Daemon owns the process lifecycle (built the Tauri app, spawned the
-/// RPC listener, constructed `AcpSessions`), so shutdown orchestration
-/// lives here rather than leaking into a subsystem. Callers pass only
-/// the handles the cleanup actually needs — `AppHandle` for Tauri's
-/// teardown and `AcpSessions` for the graceful ACP drain — so neither
-/// `rpc::RpcState` nor anything else couples shutdown to a specific
-/// subsystem's state bundle.
-///
-/// Explicit cleanup order before Tauri's native teardown kicks in:
-///
-/// 1. **ACP sessions** — `AcpSessions::shutdown` cancels any live
-///    prompts, disconnects from agent subprocesses, and drops the
-///    handles (each embedded `tokio::process::Child` has
-///    `kill_on_drop(true)` as a safety net for anything that doesn't
-///    exit cleanly on its own).
-/// 2. **Tauri `app.exit(0)`** — closes every webview, fires
-///    `RunEvent::ExitRequested` → `RunEvent::Exit`, drops every
-///    `app.manage(...)` value (flushes the tracing `WorkerGuard`,
-///    unbinds the socket by cancelling the listener task, drops
-///    `StatusBroadcast`), exits the process with code `0`.
-///
-/// Callers today:
-///
-/// - `rpc::server::handle_connection` — after the `{"killed": true}`
-///   response flushes to the peer on `daemon/kill`.
-/// - The SIGINT / SIGTERM signal task spawned in `run()`.
-///
-/// The socket file is *not* explicitly removed — the next daemon
-/// start probes with `connect()` and cleans a stale socket via
-/// `ECONNREFUSED`, which is robust against crashes too.
+/// Drain ACP sessions, then kick Tauri's teardown. Called by
+/// `rpc::server` on `daemon/kill` and by the signal task in `run()`.
+/// Socket file is not removed — next-start probes stale sockets via
+/// `ECONNREFUSED`, which handles crash cases too.
 pub(crate) async fn shutdown(app: &tauri::AppHandle, sessions: &AcpSessions) {
     info!("shutdown: initiating clean shutdown");
-
     sessions.shutdown().await;
     info!("shutdown: acp sessions drained");
-
     app.exit(0);
     info!("shutdown: tauri exit dispatched");
 }

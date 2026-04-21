@@ -113,6 +113,51 @@ unset in defaults is `[daemon.window.anchor] height`, where `None` is the
 on invalid values (e.g. unknown `logging.level`). `deny_unknown_fields` on
 every section catches typos in user TOML at load time.
 
+### Merge trait
+
+Layer application goes through a `pub(crate) trait Merge { fn merge(self,
+other: Self) -> Self; }` in `config/mod.rs`. `other` wins; `load()`'s fold
+reads `acc.merge(layer)`. A blanket `impl<T> Merge for Option<T>` handles
+every scalar leaf; each struct in the config tree carries a trivial
+field-by-field impl; `AgentsConfig` is the one exception with a
+keyed-list merge (override by `id`, append new ids, duplicates survive
+for `validate_agents_ids` to flag).
+
+### Validation strategy (garde)
+
+Per-type invariants live on the type itself — not as free `validate_*`
+functions — whenever the orphan rule allows:
+
+- **Types we own**: `impl garde::Validate for T` + `#[garde(dive)]` at the
+  field site. `Dimension` and `HexColor` follow this shape.
+- **String-backed closed sets**: convert to a `#[derive(Deserialize)]`
+  enum with `#[serde(rename_all = "lowercase")]`. `logging::LogLevel` is
+  the example — unknown values reject at TOML parse time instead of at
+  `validate()`, which is stricter.
+- **Cross-field references**: higher-order `custom(fn(&self.sibling))`
+  hooks. `agent.default` → `agents[].id` uses this pattern; see
+  `validate_agent_default_id` in `config/validations.rs`. Documented in
+  garde's README as "self access in rules".
+- **Collection-level checks**: free fn + `#[garde(custom(fn))]` on the
+  field. `validate_agents_ids` (uniqueness over `Vec<AgentConfig>`) stays
+  here because the orphan rule blocks `impl Validate for Vec<T>` and a
+  newtype would force consumers through `.0`.
+
+Two free fns (`validate_agents_ids`, `validate_agent_default_id`) live in
+`config/validations.rs` as `pub(super)` helpers. `Config::validate()` is
+a one-liner that wraps the garde report in `anyhow!` — every rule is
+inside the derive walk, no manual post-pass.
+
+### `HexColor` newtype
+
+Theme colour fields are `Option<HexColor>`, not `Option<String>`.
+`#[serde(transparent)]` keeps the wire shape a bare string (the webview
+sees no change through `get_theme`); `impl Validate` enforces
+`#[0-9a-fA-F]{6,8}` under `#[garde(dive)]`. `impl Deref<Target = str>` +
+`AsRef<str>` + `From<&str>` / `From<String>` keep consumer and test
+ergonomics unchanged. `ThemeFont.family` stays `Option<String>` — it's
+not a colour.
+
 ## Theming
 
 **The palette lives in Rust, not CSS.** Flow:
@@ -379,6 +424,18 @@ Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
   folded into that caller. Prefer `fn main() -> Result<()>` over a `try_main`
   wrapper; prefer unfolding a small setup step into the body (with a short
   comment) over extracting a one-call helper.
+- **Comment discipline — terse WHY, never WHAT.** Default to no comments.
+  Code + well-named identifiers already describe behavior; comments earn
+  their keep only when they encode a non-obvious reason (a protocol quirk, a
+  data-source disagreement, a deliberate future-proofing choice). Docstrings
+  stay one or two short sentences in the common case; the "grow it into a
+  mini-essay so future me remembers why" temptation is wrong — that context
+  goes in commit messages and CLAUDE.md. Trim aggressively on every diff.
+  Examples of fair comments: "gdk 0.18 has no `connector()`, match by
+  geometry instead"; "second SIGINT falls through to default handler";
+  "Unknown levels reject at TOML parse (serde closed enum)". Examples of
+  comments to delete: restating the function name, listing every caller,
+  explaining what a `match` does.
 - **NVIDIA + Wayland workaround.** `main.rs` sets
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` before any thread spawns on Wayland
   sessions. Overridable by exporting the env var. Keep that block first in
@@ -667,10 +724,10 @@ children and fans the resulting `SessionUpdate`s out to the webview
 ### Agents config (flattened at TOML root)
 
 ```toml
-# Default agent when ctl / webview don't specify one.
-active_agent = "claude-code"
+[agent]                          # singleton: global agent-scope config
+default = "claude-code"          # id used when ctl / webview don't pick one
 
-[[agents]]
+[[agents]]                       # registry: per-agent entries
 id = "claude-code"
 provider = "acp-claude-code"     # closed enum; see AgentProvider
 command = "bunx"                 # optional; defaults to the vendor's own
@@ -679,13 +736,46 @@ args = ["--bun", "@zed-industries/claude-code-acp"]
 [agents.env]                     # optional per-agent env overlay
 ```
 
-Merge semantics: user entries with an existing `id` override the
-whole default entry; new `id`s append. `active_agent` (when set)
-must name a real configured id — `Config::validate` fails startup
-otherwise. `AgentProvider` is a **closed enum** keyed by wire name
-(`acp-claude-code` / `acp-codex` / `acp-opencode`); adding a
-provider means a new enum variant + a new `AcpAgent` impl + a new
-match arm in `match_provider_agent`.
+Singular `[agent]` parallels plural `[[agents]]` — TOML's single-table
+vs array-of-tables distinction carries the "global config vs registry"
+split. Future global knobs (shared env overlay, timeout, cwd defaults)
+slot under `[agent]` without another top-level rename.
+
+Merge semantics: user entries with an existing `id` override the whole
+default entry; new `id`s append. `agent.default` (when set) must name a
+real configured id — enforced inside the garde derive via
+`custom(validate_agent_default_id(&self.agents))`. `AgentProvider` is a
+**closed enum** keyed by wire name (`acp-claude-code` / `acp-codex` /
+`acp-opencode`); adding a provider means a new enum variant + a new
+`AcpAgent` impl + a new match arm in `match_provider_agent`.
+
+### Shutdown orchestration
+
+Process lifecycle lives in `daemon`, not `rpc`. `daemon::shutdown(app,
+sessions)` is the one orchestrator; it drains ACP sessions via
+`AcpSessions::shutdown`, then calls `app.exit(0)` (which closes
+webviews, drops every `app.manage(...)` value — flushing the tracing
+`WorkerGuard`, the `StatusBroadcast`, and the socket listener — and
+exits with code 0).
+
+Three call sites funnel through this one fn:
+
+1. **`daemon/kill` RPC** — `DaemonHandler` returns
+   `{"killed": true}` in the result; `rpc::server::handle_connection`
+   inspects the payload after the flush and calls
+   `daemon::shutdown`. No side-channel flag threaded through the
+   dispatcher tuple — the marker is the response itself, so any
+   future respond-then-shut-down handler just emits the same
+   `{"killed": true}` shape.
+2. **SIGINT (Ctrl-C)** — tokio signal task spawned in `daemon::run`.
+3. **SIGTERM** — same task; systemd / `pkill` both use this.
+
+First signal triggers the orchestrator; a second signal during
+shutdown falls through to the default handler (force-kill) — standard
+Unix "SIGINT-twice" escape.
+
+Socket file is not explicitly removed — next-start probes stale
+sockets via `ECONNREFUSED`, which also covers the crash case.
 
 ### Permissions are the vendor's concern
 

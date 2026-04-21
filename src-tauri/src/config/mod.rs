@@ -22,11 +22,8 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub ui: Ui,
-    /// `[[agents]]` entries + the `[agent]` global section live at
-    /// the TOML root; flattened onto `Config` so the user doesn't
-    /// have to type `[agents.agents]`-style nested paths. The nested
-    /// struct keeps the Rust-side code cohesive — `AgentsConfig` is
-    /// what the ACP module reads off Tauri managed state.
+    /// `[[agents]]` + `[agent]` at TOML root, flattened here so
+    /// `AgentsConfig` stays the single Rust-side unit.
     #[garde(dive)]
     #[serde(flatten)]
     pub agents: AgentsConfig,
@@ -41,13 +38,8 @@ pub struct Daemon {
     pub window: Window,
 }
 
-/// Surface behavior of the daemon's main window.
-///
-/// `mode = "anchor"` wraps the GTK window in a `zwlr_layer_shell_v1` surface
-/// pinned to one edge; `mode = "center"` falls back to a regular top-level
-/// sized as a fraction of the target monitor. The `layer = overlay` /
-/// `keyboard_interactivity = on_demand` choices are intentionally not
-/// configurable — see `CLAUDE.md` for why.
+/// `[daemon.window]`. See CLAUDE.md "Window surface" for why `layer`
+/// and `keyboard_interactivity` aren't config knobs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Window {
@@ -79,12 +71,7 @@ pub enum Edge {
     Left,
 }
 
-/// Per-edge anchor geometry. `width` and `height` accept either a pixel
-/// integer or an `"N%"` string (resolved against the active monitor at
-/// map-time). When `height` is unset the daemon pins the surface to
-/// top + bottom + configured `edge` so it fills the monitor vertically —
-/// the default overlay shape. Re-mapping on monitor swaps is handled by
-/// the compositor restaging the layer surface.
+/// Anchor-mode geometry. Unset `height` → full-height (top+bottom+edge pin).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnchorWindow {
@@ -107,13 +94,8 @@ pub struct CenterWindow {
     pub height: Option<Dimension>,
 }
 
-/// Pixel literal or a "N%" string. `#[serde(untagged)]` lets TOML use either
-/// an integer (`width = 480`) or a string (`width = "50%"`) at the same key.
-/// A custom `Deserialize` on the `Percent` variant parses the `%` suffix.
-///
-/// Hand-implements `garde::Validate` so `#[garde(dive)]` on any
-/// `Option<Dimension>` field picks it up automatically — no per-field
-/// `#[garde(inner(custom(fn)))]` plumbing needed.
+/// Pixel literal or a `"N%"` string. TOML accepts either at the same
+/// key; custom `Deserialize` handles the `%` suffix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Dimension {
@@ -183,17 +165,8 @@ impl<'de> Deserialize<'de> for Dimension {
     }
 }
 
-/// Hex colour string — `#RRGGBB` or `#RRGGBBAA`. `#[serde(transparent)]`
-/// keeps the wire format identical to a bare string, so TOML writes
-/// `default = "#1e2127"` and the `get_theme` Tauri command round-trips
-/// a flat JSON string to the webview. Consumers that need the raw
-/// string use `as_ref()` (`AsRef<str>` impl below) or `&color.0`.
-///
-/// The hex invariant is enforced by `impl Validate` — garde runs the
-/// check whenever a theme field tagged `#[garde(dive)]` carries one.
-/// `From<&str>` / `From<String>` exist for test ergonomics; they
-/// accept any string, so tests can still construct invalid values
-/// to prove `validate()` rejects them.
+/// `#RRGGBB` or `#RRGGBBAA`. `#[serde(transparent)]` keeps the wire
+/// shape a bare string; `impl Validate` runs under `#[garde(dive)]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct HexColor(pub String);
@@ -241,10 +214,7 @@ impl From<String> for HexColor {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Logging {
-    /// Unknown levels fail at TOML parse time (serde rejects
-    /// unrecognised enum variants), not at validate time. That's
-    /// stricter than the old `Option<String>` + custom validator
-    /// pair and encodes the closed set in the type.
+    /// Unknown levels reject at TOML parse (serde closed enum).
     #[garde(skip)]
     pub level: Option<crate::logging::LogLevel>,
 }
@@ -287,9 +257,7 @@ pub struct ThemeFont {
     pub family: Option<String>,
 }
 
-/// The outer container — everything intrinsic to the window frame. `default`
-/// is the window's background fill; `edge` is the accent stripe on the
-/// left edge.
+/// Window frame tokens. `default` = background fill; `edge` = accent stripe.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeWindow {
@@ -310,9 +278,7 @@ pub struct ThemeSurface {
     pub text: Option<HexColor>,
 }
 
-/// Cards carry messages — the palette splits them by speaker so user and
-/// assistant cards can diverge in bg (and future accent, border, fg…)
-/// without needing two disjoint config trees.
+/// Message cards, keyed by speaker.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct SurfaceCard {
@@ -322,9 +288,7 @@ pub struct SurfaceCard {
     pub assistant: Card,
 }
 
-/// A single card's painted tokens. `bg` is the base paint; future fields
-/// (accent stripe, border, text-on-card) slot in alongside without a
-/// schema rewrite.
+/// One card's tokens. `bg` today; future accent/border/fg slot in alongside.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Card {
@@ -378,62 +342,32 @@ pub struct ThemeState {
     pub awaiting: Option<HexColor>,
 }
 
-/// User-facing agent registry.
-///
-/// `agents` is an array of per-agent config blocks, each identified by
-/// its `id` (`claude-code`, `codex`, `opencode`, …). The singleton
-/// `[agent]` section holds global agent-scope config; today that's
-/// only `agent.default`, but future generic settings (timeout, cwd
-/// defaults, shared env overlay, …) slot in alongside without
-/// another top-level key.
-///
-/// Merge semantics: user TOML entries with an existing `id` override
-/// the compiled default fields for that id; entries with a new `id`
-/// extend the registry. `[agent]` fields last-writer-win through the
-/// generic `Merge` blanket on `Option`.
+/// `[[agents]]` registry + `[agent]` global scope. Entries override
+/// by `id`; new ids append. Cross-field check on `agent.default`
+/// closes over `&self.agents` via the garde custom hook.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
-    /// Every configured agent. Validation dives into each entry and
-    /// additionally asserts ids are unique.
     #[garde(dive)]
     #[garde(custom(validate_agents_ids))]
     pub agents: Vec<AgentConfig>,
-    /// Global agent-scope config (`[agent]` in TOML). Kept singular
-    /// (`agent`) to parallel the plural `[[agents]]` registry. The
-    /// cross-field custom validator closes over `&self.agents` to
-    /// assert `default` (when set) names a real entry.
     #[garde(dive)]
     #[garde(custom(validate_agent_default_id(&self.agents)))]
     pub agent: AgentDefaults,
 }
 
-/// Global agent-scope config. Today only `default` (the agent id to
-/// use when neither `ctl submit` nor the webview specifies one);
-/// future additions (timeout, cwd defaults, global env) land here.
+/// `[agent]` — global agent-scope config. Future timeout / cwd /
+/// env knobs slot in here.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentDefaults {
-    /// Id of the agent to use when none is addressed explicitly.
-    /// Cross-field check against `agents[].id` runs on the parent
-    /// `AgentsConfig.agent` field via
-    /// `agent_default_references_id(&self.agents)`; this leaf
-    /// itself has no per-value rules.
     #[garde(skip)]
     pub default: Option<String>,
 }
 
-/// A single configured agent. `id` is the user-facing handle;
-/// `provider` selects the Rust vendor struct that encodes that
-/// backend's quirks. `command` + `args` + `env` determine how the
-/// daemon spawns the ACP server subprocess.
-///
-/// Note: there is intentionally no `permission_policy` field.
-/// Vendors now ship their own plan / build / approval modes, and
-/// client-side auto-accept / auto-reject rules will live on the
-/// separate `PermissionController` (future issue) with per-tool
-/// allow / reject lists rather than a three-way enum that
-/// duplicates vendor behavior.
+/// One `[[agents]]` entry. No `permission_policy` — vendors own
+/// that; client-side auto-accept/reject is a future
+/// `PermissionController` issue (see CLAUDE.md).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
@@ -441,38 +375,22 @@ pub struct AgentConfig {
     pub id: String,
     #[garde(skip)]
     pub provider: AgentProvider,
-    /// Missing → fall back to the provider's default command (each
-    /// vendor struct supplies one).
+    /// Missing → vendor's default command.
     #[garde(inner(length(min = 1)))]
     pub command: Option<String>,
     #[garde(skip)]
     #[serde(default)]
     pub args: Vec<String>,
-    /// Working directory for the agent subprocess. Missing →
-    /// `std::env::current_dir()` at `new_session` time.
+    /// Missing → `std::env::current_dir()` at `new_session` time.
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
-    /// Additional environment variables forwarded to the child. Keys
-    /// are inherited as-is; blank values are allowed.
     #[garde(skip)]
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
 
-/// Closed enum — each variant maps to a Rust struct that encodes that
-/// vendor's quirks (launch command, permission kinds, tool-content
-/// shape). Adding a provider means one new struct + one new enum
-/// variant + one new match arm in `acp::agents::match_provider_agent`.
-///
-/// Wire names are explicit because `rename_all = "kebab-case"` would
-/// turn `AcpOpenCode` into `acp-open-code` — opencode's product name
-/// is one word, and spending configuration on the hyphen placement
-/// would be a papercut.
-///
-/// The shared `Acp` prefix is load-bearing (the additive naming rule
-/// groups ACP providers apart from future `HttpAgent*` or
-/// `LocalAgent*` siblings), so clippy's `enum_variant_names` lint is
-/// silenced at the type level.
+/// Closed enum — each variant maps to an `AcpAgent` impl. Wire
+/// names are explicit to avoid `acp-open-code` for `AcpOpenCode`.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AgentProvider {
@@ -521,21 +439,10 @@ fn read_layer(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))
 }
 
-/// Layer one config value on top of another.
-///
-/// Semantics: `self.merge(other)` returns a value where `other` wins
-/// on every scalar leaf it populates (`Option::Some` beats `None` or
-/// a prior `Some`), structs recurse field-by-field, and key-aware
-/// collections like [`AgentsConfig`] override by key and append new
-/// keys. The signature matches the fold direction in `load()`:
-/// `acc.merge(layer)` — each successive config layer overrides the
-/// accumulated one.
-///
-/// Every scalar leaf on the config tree is an `Option<T>`, so the
-/// blanket impl below covers them all generically. Every struct in
-/// the tree gets a trivial field-by-field impl; [`AgentsConfig`] is
-/// the one exception and carries the keyed-list merge logic
-/// directly.
+/// Layer two config values — `other` wins. Drives the fold in
+/// `load()`: `acc.merge(layer)`. Scalar `Option<T>` leaves are
+/// handled by the blanket impl; structs recurse via trivial
+/// field-by-field impls; `AgentsConfig` has keyed-list semantics.
 pub(crate) trait Merge: Sized {
     fn merge(self, other: Self) -> Self;
 }
@@ -712,18 +619,11 @@ impl Merge for ThemeState {
     }
 }
 
-/// Keyed-list merge. For each `id` in `self.agents`, the first
-/// matching entry in `other.agents` wins if present (whole-entry
-/// replace — no field-level merge, since "override provider keeps
-/// old command" would be surprising). Entries in `other.agents`
-/// with new ids append in order. Duplicate ids inside a single
-/// layer survive (appended twice) so `validate_agents_ids` can
-/// flag them. `[agent]` recurses field-by-field through its own
-/// `Merge` impl (generic `Option<T>` blanket).
-///
-/// Per-field merging inside `AgentConfig` would be overkill:
-/// `AgentConfig` has <10 leaves and is read as a whole unit by the
-/// spawn flow, so override-in-place-by-id is the useful grain.
+/// Keyed-list merge: override by `id`, append new ids in order.
+/// Whole-entry replace (no field-level merge inside `AgentConfig`)
+/// — "override provider, keep old command" would be surprising.
+/// Duplicate ids inside a single layer survive so
+/// `validate_agents_ids` can flag them.
 impl Merge for AgentsConfig {
     fn merge(self, other: Self) -> Self {
         let mut out: Vec<AgentConfig> = Vec::with_capacity(self.agents.len() + other.agents.len());
@@ -758,13 +658,8 @@ impl Merge for AgentDefaults {
 }
 
 impl Config {
-    /// Run the full validation chain: garde's derive-driven tree
-    /// walk. Every predicate (field-scoped + cross-field) is wired
-    /// into the derive — cross-field rules via higher-order custom
-    /// validators that close over sibling references (see
-    /// `agent_default_references_id` in `config::validations`). On
-    /// failure wraps the garde report with an `anyhow!` so callers
-    /// see a single readable error chain.
+    /// Run garde's tree walk (every predicate including cross-field
+    /// rules wired via higher-order `custom(fn(&self.x))` hooks).
     pub fn validate(&self) -> Result<()> {
         <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))
     }

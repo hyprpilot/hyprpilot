@@ -22,23 +22,15 @@ pub struct RpcState {
     pub sessions: Arc<AcpSessions>,
 }
 
-/// Drives a single accepted unix-socket connection. Reads NDJSON lines,
-/// delegates each to `RpcDispatcher`, writes a single-line response,
-/// loops. Connection closes cleanly on EOF or an empty line.
-///
-/// After a `status/subscribe` request the loop also multiplexes incoming
-/// `status/changed` notifications from the broadcast channel via
-/// `tokio::select!`, pushing them to the peer without a client round-trip.
-/// A second `status/subscribe` on the same connection is rejected by the
-/// handler with `-32600`; `handle_connection` tracks the flag here so
-/// the handler can read it off `HandlerCtx`.
+/// One accepted connection. Reads NDJSON, dispatches, writes the
+/// response, loops. After `status/subscribe` the same loop
+/// multiplexes `status/changed` notifications via `tokio::select!`.
 pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
-    // Populated when the client sends `status/subscribe`. Its presence
-    // is also passed through to `HandlerCtx::already_subscribed` so the
-    // handler rejects a second subscribe on the same socket with -32600.
+    // Set by `status/subscribe`; its presence also gates the second-
+    // subscribe rejection via `HandlerCtx::already_subscribed`.
     let mut status_rx: Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>> = None;
 
     loop {
@@ -68,10 +60,9 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     status_rx = Some(rx);
                 }
 
-                // Shutdown signal travels in the response itself:
-                // `{"killed": true}` in the result payload. Captured
-                // here (before `response` is moved into `to_vec`) so
-                // we can act on it after the write is flushed.
+                // Kill signal rides in the response payload as
+                // `{"killed": true}`; captured before `response` moves
+                // so we can act after the flush.
                 let kill_signalled = matches!(
                     &response.outcome,
                     Outcome::Success { result } if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
@@ -93,9 +84,6 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 let _ = writer.flush().await;
 
                 if kill_signalled {
-                    // Shutdown orchestration lives in `daemon` (it
-                    // owns the process lifecycle). This handler's
-                    // job ended with the flushed response.
                     crate::daemon::shutdown(&state.app, &state.sessions).await;
                     return;
                 }
@@ -157,21 +145,10 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     }
 }
 
-/// Parse one NDJSON line, delegate to `RpcDispatcher`, wrap the handler
-/// outcome in a JSON-RPC `Response`. Returns the response plus an
-/// optional new broadcast receiver (populated only by
-/// `status/subscribe`). The shutdown signal isn't in the tuple — it
-/// lives in the response payload as `{"killed": true}` and
-/// `handle_connection` inspects it after the response is flushed.
-///
-/// Splitting the state into its pieces (`app`, `status`, `dispatcher`)
-/// keeps unit tests cheap: they can pass `None` for `app`, build a
-/// stand-alone `StatusBroadcast`, and construct a dispatcher directly
-/// without needing a live Tauri runtime.
-///
-/// `connection_already_subscribed` is passed through to
-/// `HandlerCtx::already_subscribed` so `StatusHandler` can reject a
-/// second subscribe on the same socket with `-32600`.
+/// Parse one NDJSON line → `RpcDispatcher` → JSON-RPC `Response`.
+/// Second return slot is populated only by `status/subscribe`.
+/// State is passed as pieces (not `RpcState`) so tests can pass
+/// `None` for `app` + stand-alone fixtures without a Tauri runtime.
 async fn dispatch(
     line: &str,
     app: Option<&tauri::AppHandle>,
