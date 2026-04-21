@@ -55,7 +55,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     }
                 };
 
-                let (response, is_kill_success, new_rx) = dispatch_line(
+                let (response, is_kill_success, new_rx) = dispatch(
                     &line,
                     Some(&state.app),
                     &state.status,
@@ -159,7 +159,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 /// `connection_already_subscribed` is passed through to
 /// `HandlerCtx::already_subscribed` so `StatusHandler` can reject a
 /// second subscribe on the same socket with `-32600`.
-async fn dispatch_line(
+async fn dispatch(
     line: &str,
     app: Option<&tauri::AppHandle>,
     status: &StatusBroadcast,
@@ -289,7 +289,7 @@ mod tests {
             AgentsConfig::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
-        let (resp, _, _) = dispatch_line(line, None, &status, &dispatcher, Some(sessions), false).await;
+        let (resp, _, _) = dispatch(line, None, &status, &dispatcher, Some(sessions), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
@@ -463,7 +463,7 @@ mod tests {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _, _) = dispatch_line(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
+                let (resp, _, _) = dispatch(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
                 let mut bytes = serde_json::to_vec(&resp).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
@@ -504,7 +504,7 @@ mod tests {
         // First subscribe — emulated: we don't actually route, we just
         // mark the connection state as "already_subscribed = true" and
         // drive the second subscribe through `dispatch_line`.
-        let (resp, _kill, rx) = dispatch_line(
+        let (resp, _kill, rx) = dispatch(
             r#"{"jsonrpc":"2.0","id":1,"method":"status/subscribe"}"#,
             None,
             &broadcast,
@@ -518,7 +518,7 @@ mod tests {
         assert!(rx.is_some(), "first subscribe returns a receiver");
 
         // Second subscribe on the same connection — already_subscribed = true.
-        let (resp, _kill, rx) = dispatch_line(
+        let (resp, _kill, rx) = dispatch(
             r#"{"jsonrpc":"2.0","id":2,"method":"status/subscribe"}"#,
             None,
             &broadcast,
@@ -627,7 +627,7 @@ mod tests {
                         match line_result {
                             Ok(Some(l)) if l.trim().is_empty() => continue,
                             Ok(Some(l)) => {
-                                let (resp, _, new_rx) = dispatch_line(
+                                let (resp, _, new_rx) = dispatch(
                                     &l,
                                     None,
                                     &broadcast_clone,

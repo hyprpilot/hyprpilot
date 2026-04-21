@@ -1,3 +1,5 @@
+mod validations;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,6 +9,9 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
+use validations::{
+    validate_active_agent_reference, validate_agents_ids, validate_dimension, validate_hex_color, validate_log_level,
+};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -640,81 +645,17 @@ impl Merge for AgentsConfig {
 }
 
 impl Config {
+    /// Run the full validation chain: garde's derive-driven tree
+    /// walk first (every field-scoped predicate in
+    /// `config::validations`), then the cross-field rules that
+    /// need the assembled `Config` in scope. On failure wraps the
+    /// garde report with an `anyhow!` so callers see a single
+    /// readable error chain.
     pub fn validate(&self) -> Result<()> {
         <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))?;
-
-        // Cross-field: `agents.active_agent`, when set, must match a
-        // real `agents[].id`. Reported outside the derive pass because
-        // `garde` has no first-class "this field references that
-        // field" hook.
-        if let Some(active) = self.agents.active_agent.as_deref() {
-            let known = self.agents.agents.iter().any(|a| a.id == active);
-            if !known {
-                bail!(
-                    "agents.active_agent = '{active}' but no matching [[agents]] entry exists. \
-                     Configured ids: [{}]",
-                    self.agents
-                        .agents
-                        .iter()
-                        .map(|a| a.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
-        }
-
+        validate_active_agent_reference(self)?;
         Ok(())
     }
-}
-
-fn validate_log_level(value: &String, _ctx: &()) -> garde::Result {
-    const ALLOWED: &[&str] = &["trace", "debug", "info", "warn", "error"];
-
-    if !ALLOWED.contains(&value.to_lowercase().as_str()) {
-        return Err(garde::Error::new(format!("must be one of {ALLOWED:?}, got '{value}'")));
-    }
-
-    Ok(())
-}
-
-fn validate_dimension(value: &Dimension, _ctx: &()) -> garde::Result {
-    match *value {
-        Dimension::Pixels(0) => Err(garde::Error::new("pixel dimension must be >= 1")),
-        Dimension::Pixels(px) if px > 10_000 => Err(garde::Error::new(format!(
-            "pixel dimension {px} exceeds 10000 — refusing absurd size"
-        ))),
-        Dimension::Pixels(_) => Ok(()),
-        Dimension::Percent(p) if (1..=100).contains(&p) => Ok(()),
-        Dimension::Percent(p) => Err(garde::Error::new(format!("percent must be 1..=100, got {p}"))),
-    }
-}
-
-fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-
-    for a in agents {
-        if !seen.insert(a.id.as_str()) {
-            return Err(garde::Error::new(format!(
-                "duplicate agent id '{}' — each [[agents]] entry must have a unique id",
-                a.id
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_hex_color(value: &String, _ctx: &()) -> garde::Result {
-    let is_valid =
-        value.starts_with('#') && matches!(value.len(), 7 | 9) && value[1..].chars().all(|c| c.is_ascii_hexdigit());
-
-    if !is_valid {
-        return Err(garde::Error::new(format!(
-            "must be a hex color (#RRGGBB or #RRGGBBAA), got '{value}'"
-        )));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
