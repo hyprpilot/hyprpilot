@@ -12,6 +12,7 @@ use tauri::{Emitter, Manager, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
+use crate::acp::AcpSessions;
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
@@ -85,6 +86,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
     let theme = cfg.ui.theme.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
+    let agents_cfg = cfg.agents.clone();
 
     // Snapshot the resolved window state up-front so the webview can fetch
     // it without re-reading the config at request time. `anchor_edge` is
@@ -108,6 +110,9 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // `show()` / `show_all()` before the RPC loop accepts connections.
     let status = Arc::new(StatusBroadcast::new(true));
     let dispatcher = Arc::new(RpcDispatcher::with_defaults());
+    // Session registry — Tauri managed state. `SessionHandler` +
+    // future `acp_*` Tauri commands both reach into this.
+    let sessions = Arc::new(AcpSessions::new(agents_cfg, status.clone()));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -138,10 +143,13 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             // mode-specific surface and maps the window once ready.
             renderer.apply_initial(&main)?;
 
+            app.manage(sessions.clone());
+
             let rpc_state = crate::rpc::RpcState {
                 app: app.handle().clone(),
                 status: status.clone(),
                 dispatcher: dispatcher.clone(),
+                sessions: sessions.clone(),
             };
 
             tauri::async_runtime::spawn(async move {

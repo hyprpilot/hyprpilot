@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::protocol::RpcError;
@@ -14,21 +14,25 @@ use crate::rpc::protocol::RpcError;
 struct SubmitParams {
     text: String,
     /// Optional — when omitted, the daemon uses `agents.active_agent`.
-    /// K-239 wires this through `AcpSessions`; the current scaffold
-    /// echoes the value back unchanged.
     #[serde(default)]
-    #[allow(dead_code)]
+    agent_id: Option<String>,
+}
+
+/// Optional `{ agent_id }` wrapper shared by `session/cancel`. Defaulted
+/// to `{}` so `{"method":"session/cancel"}` (no `params` key) parses
+/// cleanly.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct AgentAddress {
     agent_id: Option<String>,
 }
 
 /// `session/*` namespace — `session/submit`, `session/cancel`,
 /// `session/info`.
 ///
-/// Today these are stubs that mirror the pre-K-239 behaviour of the
-/// removed `CoreHandler` (echo-back submit, empty session list, no-op
-/// cancel). K-239's ACP bridge replaces each `match` arm with a call
-/// into `AcpSessions`; the method names, params, and result shapes stay
-/// stable across that upgrade.
+/// Delegates every method into `AcpSessions` (Tauri managed state).
+/// Today `AcpSessions` returns the pre-K-239 stubbed shapes; the live
+/// ACP plumbing swaps those bodies in without touching this handler.
 pub struct SessionHandler;
 
 #[async_trait]
@@ -37,19 +41,41 @@ impl RpcHandler for SessionHandler {
         "session"
     }
 
-    async fn handle(&self, method: &str, params: Value, _ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+    async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+        let sessions = ctx
+            .sessions
+            .as_ref()
+            .ok_or_else(|| RpcError::internal_error("AcpSessions not in managed state"))?;
+
         match method {
             "session/submit" => {
-                let SubmitParams { text, .. } = serde_json::from_value(params)
+                let SubmitParams { text, agent_id } = serde_json::from_value(params)
                     .map_err(|e| RpcError::invalid_params(format!("session/submit params: {e}")))?;
-                Ok(HandlerOutcome::Reply(json!({ "accepted": true, "text": text })))
+                let v = sessions.submit(&text, agent_id.as_deref()).await?;
+                Ok(HandlerOutcome::Reply(v))
             }
-            "session/cancel" => Ok(HandlerOutcome::Reply(json!({
-                "cancelled": false,
-                "reason": "no active session",
-            }))),
-            "session/info" => Ok(HandlerOutcome::Reply(json!({ "sessions": [] }))),
+            "session/cancel" => {
+                let AgentAddress { agent_id } = params_or_default::<AgentAddress>(params, method)?;
+                let v = sessions.cancel(agent_id.as_deref()).await?;
+                Ok(HandlerOutcome::Reply(v))
+            }
+            "session/info" => {
+                let v = sessions.info().await?;
+                Ok(HandlerOutcome::Reply(v))
+            }
             other => Err(RpcError::method_not_found(other)),
         }
     }
+}
+
+/// Treat `Value::Null` as an empty `{}` for types that derive
+/// `#[serde(default)]`. The `session/cancel` / `session/info` method
+/// surface intentionally accepts no `params` key at all — which the
+/// server hands us as `Null` — and users shouldn't have to type
+/// `"params": {}` just to get past the deserializer.
+fn params_or_default<T: serde::de::DeserializeOwned + Default>(params: Value, method: &str) -> Result<T, RpcError> {
+    if params.is_null() {
+        return Ok(T::default());
+    }
+    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
 }

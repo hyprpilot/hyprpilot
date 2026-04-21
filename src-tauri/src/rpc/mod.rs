@@ -75,7 +75,11 @@ impl Default for RpcDispatcher {
 
 #[cfg(test)]
 mod dispatcher_tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::acp::AcpSessions;
+    use crate::config::AgentsConfig;
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
     use serde_json::json;
@@ -86,9 +90,14 @@ mod dispatcher_tests {
     /// completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
+        let sessions = Arc::new(AcpSessions::new(
+            AgentsConfig::default(),
+            Arc::new(StatusBroadcast::new(true)),
+        ));
         let ctx = HandlerCtx {
             app: None,
             status: broadcast,
+            sessions: Some(sessions),
             id: &id,
             already_subscribed: false,
         };
@@ -199,9 +208,14 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let id = RequestId::Number(2);
+        let sessions = Arc::new(AcpSessions::new(
+            AgentsConfig::default(),
+            Arc::new(StatusBroadcast::new(true)),
+        ));
         let ctx = HandlerCtx {
             app: None,
             status: &broadcast,
+            sessions: Some(sessions),
             id: &id,
             already_subscribed: true,
         };

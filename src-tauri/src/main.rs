@@ -1,3 +1,4 @@
+mod acp;
 mod config;
 mod ctl;
 mod daemon;

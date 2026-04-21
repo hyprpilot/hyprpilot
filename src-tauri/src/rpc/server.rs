@@ -4,20 +4,22 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info, warn};
 
+use crate::acp::AcpSessions;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
 use crate::rpc::protocol::{JsonRpcVersion, RequestId, Response, RpcError, StatusChangedNotification};
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
 
 /// Shared state handed to each connection task. `AppHandle` is cheap to
-/// clone, so we pass by value today; `StatusBroadcast` and
-/// `RpcDispatcher` are wrapped in `Arc` for cheap fan-out across every
-/// accepted connection.
+/// clone, so we pass by value today; `StatusBroadcast`, `RpcDispatcher`
+/// and `AcpSessions` are wrapped in `Arc` for cheap fan-out across
+/// every accepted connection.
 #[derive(Clone)]
 pub struct RpcState {
     pub app: tauri::AppHandle,
     pub status: Arc<StatusBroadcast>,
     pub dispatcher: Arc<RpcDispatcher>,
+    pub sessions: Arc<AcpSessions>,
 }
 
 /// Drives a single accepted unix-socket connection. Reads NDJSON lines,
@@ -58,6 +60,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Some(&state.app),
                     &state.status,
                     &state.dispatcher,
+                    Some(state.sessions.clone()),
                     status_rx.is_some(),
                 ).await;
 
@@ -161,6 +164,7 @@ async fn dispatch_line(
     app: Option<&tauri::AppHandle>,
     status: &StatusBroadcast,
     dispatcher: &RpcDispatcher,
+    sessions: Option<Arc<AcpSessions>>,
     connection_already_subscribed: bool,
 ) -> (
     Response,
@@ -232,6 +236,7 @@ async fn dispatch_line(
     let ctx = HandlerCtx {
         app,
         status,
+        sessions,
         id: &id,
         already_subscribed: connection_already_subscribed,
     };
@@ -269,16 +274,22 @@ fn parse_id(v: &serde_json::Value) -> Option<RequestId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentsConfig;
     use serde_json::json;
 
     /// Driver for envelope / framing tests: no `AppHandle`, a fresh
-    /// `StatusBroadcast`, and a throwaway dispatcher per call. Handlers
-    /// that need the app (only `toggle`) surface `-32603`; everything
-    /// else runs through to the handler's real logic.
+    /// `StatusBroadcast`, a throwaway dispatcher + `AcpSessions` per
+    /// call. Handlers that need the app (only `window/toggle`)
+    /// surface `-32603`; everything else runs through to the
+    /// handler's real logic.
     async fn run(line: &str) -> serde_json::Value {
         let status = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let (resp, _, _) = dispatch_line(line, None, &status, &dispatcher, false).await;
+        let sessions = Arc::new(AcpSessions::new(
+            AgentsConfig::default(),
+            Arc::new(StatusBroadcast::new(true)),
+        ));
+        let (resp, _, _) = dispatch_line(line, None, &status, &dispatcher, Some(sessions), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
@@ -444,11 +455,15 @@ mod tests {
             let mut lines = BufReader::new(reader).lines();
             let status = StatusBroadcast::new(true);
             let dispatcher = RpcDispatcher::with_defaults();
+            let sessions = Arc::new(AcpSessions::new(
+                AgentsConfig::default(),
+                Arc::new(StatusBroadcast::new(true)),
+            ));
             while let Some(l) = lines.next_line().await.unwrap() {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _, _) = dispatch_line(&l, None, &status, &dispatcher, false).await;
+                let (resp, _, _) = dispatch_line(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
                 let mut bytes = serde_json::to_vec(&resp).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
@@ -481,6 +496,10 @@ mod tests {
     async fn double_subscribe_on_same_connection_is_rejected() {
         let broadcast = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
+        let sessions = Arc::new(AcpSessions::new(
+            AgentsConfig::default(),
+            Arc::new(StatusBroadcast::new(true)),
+        ));
 
         // First subscribe — emulated: we don't actually route, we just
         // mark the connection state as "already_subscribed = true" and
@@ -490,6 +509,7 @@ mod tests {
             None,
             &broadcast,
             &dispatcher,
+            Some(sessions.clone()),
             false,
         )
         .await;
@@ -503,6 +523,7 @@ mod tests {
             None,
             &broadcast,
             &dispatcher,
+            Some(sessions),
             true,
         )
         .await;
@@ -594,6 +615,10 @@ mod tests {
             let (reader, mut writer) = server.into_split();
             let mut lines = BufReader::new(reader).lines();
             let dispatcher = RpcDispatcher::with_defaults();
+            let sessions = Arc::new(AcpSessions::new(
+                AgentsConfig::default(),
+                Arc::new(StatusBroadcast::new(true)),
+            ));
             let mut status_rx: Option<tokio::sync::broadcast::Receiver<StatusResult>> = None;
 
             loop {
@@ -607,6 +632,7 @@ mod tests {
                                     None,
                                     &broadcast_clone,
                                     &dispatcher,
+                                    Some(sessions.clone()),
                                     status_rx.is_some(),
                                 ).await;
                                 if let Some(rx) = new_rx {
