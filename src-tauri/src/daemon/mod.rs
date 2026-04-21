@@ -3,11 +3,13 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use tauri::{Emitter, Manager, RunEvent, State};
+#[cfg(target_os = "linux")]
+use gtk_layer_shell::LayerShell;
+use tauri::{Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
-use crate::config::{Config, Theme};
+use crate::config::{AnchorWindow, CenterWindow, Config, Dimension, Edge, Theme, Window, WindowMode};
 use crate::paths;
 
 #[derive(Args, Debug, Default, Clone)]
@@ -20,6 +22,194 @@ pub struct DaemonArgs {
 #[tauri::command]
 fn get_theme(theme: State<'_, Theme>) -> Theme {
     theme.inner().clone()
+}
+
+/// Apply the resolved `[daemon.window]` config to the main Tauri window.
+///
+/// `anchor` mode takes the window's underlying `gtk::ApplicationWindow` and
+/// turns it into a `zwlr_layer_shell_v1` surface pinned to one edge. `center`
+/// mode leaves the window as a normal top-level, sized as a fraction of the
+/// target monitor and centered. Both `layer = overlay` and
+/// `keyboard_interactivity = on_demand` are hardcoded — see CLAUDE.md for why.
+fn apply_window_config(window: &tauri::WebviewWindow, cfg: &Window) -> Result<()> {
+    let mode = cfg.mode.unwrap_or(WindowMode::Anchor);
+
+    match mode {
+        WindowMode::Anchor => apply_anchor_mode(window, &cfg.anchor, cfg.output.as_deref()),
+        WindowMode::Center => apply_center_mode(window, &cfg.center, cfg.output.as_deref()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_anchor_mode(window: &tauri::WebviewWindow, anchor: &AnchorWindow, output: Option<&str>) -> Result<()> {
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
+    use gtk_layer_shell::{Edge as GtkEdge, KeyboardMode, Layer};
+
+    let edge = anchor.edge.unwrap_or(Edge::Right);
+    let margin = anchor.margin.unwrap_or(0);
+    let width = anchor.width.unwrap_or(480);
+    let height = anchor.height.unwrap_or(900);
+
+    let gtk_window = window
+        .gtk_window()
+        .context("failed to obtain gtk::ApplicationWindow for main")?;
+
+    // Layer-shell init must precede map. Tauri creates the window before the
+    // setup closure fires, so if `visible = true` we'd already be mapped
+    // here — `tauri.conf.json` sets `visible = false` to keep the window
+    // unrealized until this code maps it via `show_all` below.
+    gtk_window.hide();
+    gtk_window.init_layer_shell();
+    gtk_window.set_layer(Layer::Overlay);
+    gtk_window.set_keyboard_mode(KeyboardMode::OnDemand);
+    gtk_window.set_namespace("hyprpilot");
+
+    // Anchor only to the requested edge — leaving the other three false lets
+    // the fixed width/height below control the surface's extent.
+    for &e in &[GtkEdge::Top, GtkEdge::Right, GtkEdge::Bottom, GtkEdge::Left] {
+        gtk_window.set_anchor(e, false);
+    }
+    gtk_window.set_anchor(gtk_edge(edge), true);
+    gtk_window.set_layer_shell_margin(gtk_edge(edge), margin);
+
+    if let Some(name) = output {
+        if let Some(monitor) = gdk_monitor_by_name(name) {
+            gtk_window.set_monitor(&monitor);
+        } else {
+            warn!(%name, "configured output not found — compositor will pick a monitor");
+        }
+    }
+
+    // gtk-layer-shell ignores GTK resize flags on layer surfaces — fixed size
+    // is how we enforce the surface's extent.
+    gtk_window.set_size_request(width as i32, height as i32);
+
+    // `visible = false` in tauri.conf.json combined with the `hide()` above
+    // keeps the GTK window unmapped until `init_layer_shell` has configured
+    // the layer-shell role. `show_all` then maps it via the layer-shell
+    // protocol instead of xdg_shell.
+    gtk_window.show_all();
+    gtk_window.present();
+
+    // `init_layer_shell()` flips the GTK flag unconditionally; the compositor
+    // only honors the role after `present()` commits the surface. Read the
+    // flag here — pre-present it always reports true, including on
+    // compositors without `wlr_layer_shell_v1` (GNOME, KDE), hiding a silent
+    // degradation to a regular xdg_shell top-level.
+    if gtk_window.is_layer_window() {
+        info!(
+            ?edge,
+            margin,
+            width,
+            height,
+            output = ?output,
+            "anchored layer-shell surface configured"
+        );
+    } else {
+        warn!(
+            "compositor did not accept the layer-shell role — falling back to a regular xdg_shell surface. \
+             Set `[daemon.window] mode = \"center\"` in your config if your compositor (e.g. GNOME, KDE) does not implement zwlr_layer_shell_v1."
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_anchor_mode(_window: &tauri::WebviewWindow, _anchor: &AnchorWindow, _output: Option<&str>) -> Result<()> {
+    anyhow::bail!("anchor mode requires Linux + zwlr_layer_shell_v1; set [daemon.window] mode = \"center\"")
+}
+
+fn apply_center_mode(window: &tauri::WebviewWindow, center: &CenterWindow, output: Option<&str>) -> Result<()> {
+    let monitor = resolve_monitor(window, output)?;
+    let (w_px, h_px) = center_pixel_size(&monitor, center);
+
+    let scale = monitor.scale_factor();
+    window
+        .set_size(LogicalSize::new(w_px as f64 / scale, h_px as f64 / scale))
+        .context("failed to set window size")?;
+
+    // Compute center within the target monitor — Tauri's `.center()` uses the
+    // monitor the window currently sits on, which may not be `output` yet.
+    let mon_size = monitor.size();
+    let mon_pos = monitor.position();
+    let x = mon_pos.x + ((mon_size.width as i32 - w_px as i32) / 2).max(0);
+    let y = mon_pos.y + ((mon_size.height as i32 - h_px as i32) / 2).max(0);
+    window
+        .set_position(PhysicalPosition::new(x, y))
+        .context("failed to position window")?;
+
+    window
+        .show()
+        .context("failed to show main window after center-mode layout")?;
+
+    info!(
+        width_px = w_px,
+        height_px = h_px,
+        monitor = ?monitor.name(),
+        "centered window configured"
+    );
+
+    Ok(())
+}
+
+fn resolve_monitor(window: &tauri::WebviewWindow, output: Option<&str>) -> Result<Monitor> {
+    if let Some(target) = output {
+        for m in window.available_monitors().context("list monitors")? {
+            if m.name().map(String::as_str) == Some(target) {
+                return Ok(m);
+            }
+        }
+        warn!(%target, "configured output not found — falling back to primary monitor");
+    }
+
+    window
+        .primary_monitor()
+        .context("query primary monitor")?
+        .or_else(|| window.available_monitors().ok().and_then(|mut v| v.pop()))
+        .context("no monitors available")
+}
+
+fn center_pixel_size(monitor: &Monitor, center: &CenterWindow) -> (u32, u32) {
+    let PhysicalSize { width, height } = *monitor.size();
+
+    let w = resolve_dimension(center.width.unwrap_or(Dimension::Percent(50)), width);
+    let h = resolve_dimension(center.height.unwrap_or(Dimension::Percent(60)), height);
+
+    (w, h)
+}
+
+fn resolve_dimension(dim: Dimension, monitor_extent: u32) -> u32 {
+    match dim {
+        Dimension::Pixels(px) => px,
+        Dimension::Percent(pct) => monitor_extent * pct as u32 / 100,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn gtk_edge(edge: Edge) -> gtk_layer_shell::Edge {
+    use gtk_layer_shell::Edge as G;
+    match edge {
+        Edge::Top => G::Top,
+        Edge::Right => G::Right,
+        Edge::Bottom => G::Bottom,
+        Edge::Left => G::Left,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn gdk_monitor_by_name(target: &str) -> Option<gdk::Monitor> {
+    use gdk::prelude::*;
+
+    let display = gdk::Display::default()?;
+    for i in 0..display.n_monitors() {
+        if let Some(m) = display.monitor(i) {
+            if m.model().as_deref() == Some(target) {
+                return Some(m);
+            }
+        }
+    }
+    None
 }
 
 pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
@@ -59,6 +249,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     info!(socket = %socket_path.display(), "socket bound");
 
     let theme = cfg.ui.theme.clone();
+    let window_cfg = cfg.daemon.window.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
@@ -70,6 +261,17 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         .invoke_handler(tauri::generate_handler![get_theme])
         .setup(move |app| {
             app.manage(theme.clone());
+
+            let main = app
+                .get_webview_window("main")
+                .context("main webview window missing from tauri.conf.json")?;
+
+            // The main window is created invisible in tauri.conf.json so that
+            // `init_layer_shell()` can run before the surface is mapped — the
+            // Wayland compositor rejects layer-shell init on an already-mapped
+            // window with a critical assertion. Each mode's setup shows the
+            // window itself once the mode-specific configuration is in place.
+            apply_window_config(&main, &window_cfg)?;
 
             let rpc_state = crate::rpc::RpcState {
                 app: app.handle().clone(),

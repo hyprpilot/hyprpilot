@@ -31,6 +31,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tauri = { version = "2.10", features = [] }
 tauri-plugin-single-instance = "2.4"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gdk = "0.18"
+gtk = "0.18"
+gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
+
 [features]
 default = []
 # Enabled by `tauri build` to ship the bundled frontend.
