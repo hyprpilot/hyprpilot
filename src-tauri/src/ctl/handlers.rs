@@ -5,12 +5,12 @@
 //!
 //! Contract: every handler consumes a connected `CtlConnection` and is
 //! responsible for its own output + exit semantics. Simple RPC handlers
-//! (`submit` / `cancel` / `toggle` / `kill` / `session-info`) share one
-//! helper that pretty-prints the JSON result and calls `exit(1)` on any
-//! RPC or transport error. `StatusHandler` is the odd one — it never
-//! exits non-zero (waybar's `exec` needs a valid payload even when the
-//! daemon is down) and owns a reconnect-with-back-off loop for
-//! `--watch`.
+//! (`session/submit`, `session/cancel`, `session/info`, `window/toggle`,
+//! `daemon/kill`) share one helper that pretty-prints the JSON result
+//! and calls `exit(1)` on any RPC or transport error. `StatusHandler`
+//! is the odd one — it never exits non-zero (waybar's `exec` needs a
+//! valid payload even when the daemon is down) and owns a
+//! reconnect-with-back-off loop for `--watch`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -67,19 +67,16 @@ pub struct SubmitHandler {
 }
 
 impl CtlHandler for SubmitHandler {
-    fn run(self, _client: &CtlClient) -> Result<()> {
-        // Server-side handler is a stub that echoes the prompt; calling
-        // it prints a fake-success JSON that hides the fact no agent is
-        // wired. Panic loudly until K-239 lands the ACP bridge.
-        unimplemented!("ctl submit {:?}: ACP bridge not yet implemented (K-239)", self.text)
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "session/submit", json!({ "text": self.text }))
     }
 }
 
 pub struct CancelHandler;
 
 impl CtlHandler for CancelHandler {
-    fn run(self, _client: &CtlClient) -> Result<()> {
-        unimplemented!("ctl cancel: ACP bridge not yet implemented (K-239)")
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "session/cancel", Value::Null)
     }
 }
 
@@ -87,7 +84,7 @@ pub struct ToggleHandler;
 
 impl CtlHandler for ToggleHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        emit(client, "toggle", Value::Null)
+        emit(client, "window/toggle", Value::Null)
     }
 }
 
@@ -95,15 +92,15 @@ pub struct KillHandler;
 
 impl CtlHandler for KillHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        emit(client, "kill", Value::Null)
+        emit(client, "daemon/kill", Value::Null)
     }
 }
 
 pub struct SessionInfoHandler;
 
 impl CtlHandler for SessionInfoHandler {
-    fn run(self, _client: &CtlClient) -> Result<()> {
-        unimplemented!("ctl session-info: ACP bridge not yet implemented (K-239)")
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "session/info", Value::Null)
     }
 }
 

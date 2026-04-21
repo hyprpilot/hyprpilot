@@ -1,3 +1,6 @@
+mod validations;
+
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,6 +9,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
+use validations::{validate_agent_default_id, validate_agents_ids};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -18,6 +22,11 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub ui: Ui,
+    /// `[[agents]]` + `[agent]` at TOML root, flattened here so
+    /// `AgentsConfig` stays the single Rust-side unit.
+    #[garde(dive)]
+    #[serde(flatten)]
+    pub agents: AgentsConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -29,13 +38,8 @@ pub struct Daemon {
     pub window: Window,
 }
 
-/// Surface behavior of the daemon's main window.
-///
-/// `mode = "anchor"` wraps the GTK window in a `zwlr_layer_shell_v1` surface
-/// pinned to one edge; `mode = "center"` falls back to a regular top-level
-/// sized as a fraction of the target monitor. The `layer = overlay` /
-/// `keyboard_interactivity = on_demand` choices are intentionally not
-/// configurable — see `CLAUDE.md` for why.
+/// `[daemon.window]`. See CLAUDE.md "Window surface" for why `layer`
+/// and `keyboard_interactivity` aren't config knobs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Window {
@@ -67,12 +71,7 @@ pub enum Edge {
     Left,
 }
 
-/// Per-edge anchor geometry. `width` and `height` accept either a pixel
-/// integer or an `"N%"` string (resolved against the active monitor at
-/// map-time). When `height` is unset the daemon pins the surface to
-/// top + bottom + configured `edge` so it fills the monitor vertically —
-/// the default overlay shape. Re-mapping on monitor swaps is handled by
-/// the compositor restaging the layer surface.
+/// Anchor-mode geometry. Unset `height` → full-height (top+bottom+edge pin).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnchorWindow {
@@ -80,29 +79,51 @@ pub struct AnchorWindow {
     pub edge: Option<Edge>,
     #[garde(inner(range(min = 0, max = 10_000)))]
     pub margin: Option<i32>,
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub width: Option<Dimension>,
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub height: Option<Dimension>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct CenterWindow {
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub width: Option<Dimension>,
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub height: Option<Dimension>,
 }
 
-/// Pixel literal or a "N%" string. `#[serde(untagged)]` lets TOML use either
-/// an integer (`width = 480`) or a string (`width = "50%"`) at the same key.
-/// A custom `Deserialize` on the `Percent` variant parses the `%` suffix.
+/// Pixel literal or a `"N%"` string. TOML accepts either at the same
+/// key; custom `Deserialize` handles the `%` suffix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Dimension {
     Pixels(u32),
     Percent(u8),
+}
+
+impl Validate for Dimension {
+    type Context = ();
+
+    fn validate_into(&self, _ctx: &Self::Context, parent: &mut dyn FnMut() -> garde::Path, report: &mut garde::Report) {
+        match *self {
+            Dimension::Pixels(0) => {
+                report.append(parent(), garde::Error::new("pixel dimension must be >= 1"));
+            }
+            Dimension::Pixels(px) if px > 10_000 => {
+                report.append(
+                    parent(),
+                    garde::Error::new(format!("pixel dimension {px} exceeds 10000 — refusing absurd size")),
+                );
+            }
+            Dimension::Pixels(_) => {}
+            Dimension::Percent(p) if (1..=100).contains(&p) => {}
+            Dimension::Percent(p) => {
+                report.append(parent(), garde::Error::new(format!("percent must be 1..=100, got {p}")));
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Dimension {
@@ -144,11 +165,58 @@ impl<'de> Deserialize<'de> for Dimension {
     }
 }
 
+/// `#RRGGBB` or `#RRGGBBAA`. `#[serde(transparent)]` keeps the wire
+/// shape a bare string; `impl Validate` runs under `#[garde(dive)]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HexColor(pub String);
+
+impl Validate for HexColor {
+    type Context = ();
+
+    fn validate_into(&self, _ctx: &Self::Context, parent: &mut dyn FnMut() -> garde::Path, report: &mut garde::Report) {
+        let v = &self.0;
+        let ok = v.starts_with('#') && matches!(v.len(), 7 | 9) && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+        if !ok {
+            report.append(
+                parent(),
+                garde::Error::new(format!("must be a hex color (#RRGGBB or #RRGGBBAA), got '{v}'")),
+            );
+        }
+    }
+}
+
+impl AsRef<str> for HexColor {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for HexColor {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for HexColor {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl From<String> for HexColor {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Logging {
-    #[garde(inner(custom(validate_log_level)))]
-    pub level: Option<String>,
+    /// Unknown levels reject at TOML parse (serde closed enum).
+    #[garde(skip)]
+    pub level: Option<crate::logging::LogLevel>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -189,16 +257,14 @@ pub struct ThemeFont {
     pub family: Option<String>,
 }
 
-/// The outer container — everything intrinsic to the window frame. `default`
-/// is the window's background fill; `edge` is the accent stripe on the
-/// left edge.
+/// Window frame tokens. `default` = background fill; `edge` = accent stripe.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeWindow {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub edge: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub edge: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -206,15 +272,13 @@ pub struct ThemeWindow {
 pub struct ThemeSurface {
     #[garde(dive)]
     pub card: SurfaceCard,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub compose: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub text: Option<String>,
+    #[garde(dive)]
+    pub compose: Option<HexColor>,
+    #[garde(dive)]
+    pub text: Option<HexColor>,
 }
 
-/// Cards carry messages — the palette splits them by speaker so user and
-/// assistant cards can diverge in bg (and future accent, border, fg…)
-/// without needing two disjoint config trees.
+/// Message cards, keyed by speaker.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct SurfaceCard {
@@ -224,60 +288,119 @@ pub struct SurfaceCard {
     pub assistant: Card,
 }
 
-/// A single card's painted tokens. `bg` is the base paint; future fields
-/// (accent stripe, border, text-on-card) slot in alongside without a
-/// schema rewrite.
+/// One card's tokens. `bg` today; future accent/border/fg slot in alongside.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Card {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub bg: Option<String>,
+    #[garde(dive)]
+    pub bg: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeFg {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub dim: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub muted: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub dim: Option<HexColor>,
+    #[garde(dive)]
+    pub muted: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeBorder {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub soft: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub focus: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub soft: Option<HexColor>,
+    #[garde(dive)]
+    pub focus: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeAccent {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub user: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub assistant: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub user: Option<HexColor>,
+    #[garde(dive)]
+    pub assistant: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeState {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub idle: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub stream: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub pending: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub awaiting: Option<String>,
+    #[garde(dive)]
+    pub idle: Option<HexColor>,
+    #[garde(dive)]
+    pub stream: Option<HexColor>,
+    #[garde(dive)]
+    pub pending: Option<HexColor>,
+    #[garde(dive)]
+    pub awaiting: Option<HexColor>,
+}
+
+/// `[[agents]]` registry + `[agent]` global scope. Entries override
+/// by `id`; new ids append. Cross-field check on `agent.default`
+/// closes over `&self.agents` via the garde custom hook.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentsConfig {
+    #[garde(dive)]
+    #[garde(custom(validate_agents_ids))]
+    pub agents: Vec<AgentConfig>,
+    #[garde(dive)]
+    #[garde(custom(validate_agent_default_id(&self.agents)))]
+    pub agent: AgentDefaults,
+}
+
+/// `[agent]` — global agent-scope config. Future timeout / cwd /
+/// env knobs slot in here.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentDefaults {
+    #[garde(skip)]
+    pub default: Option<String>,
+}
+
+/// One `[[agents]]` entry. No `permission_policy` — vendors own
+/// that; client-side auto-accept/reject is a future
+/// `PermissionController` issue (see CLAUDE.md).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    #[garde(length(min = 1))]
+    pub id: String,
+    #[garde(skip)]
+    pub provider: AgentProvider,
+    /// Missing → vendor's default command.
+    #[garde(inner(length(min = 1)))]
+    pub command: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Missing → `std::env::current_dir()` at `new_session` time.
+    #[garde(skip)]
+    pub cwd: Option<PathBuf>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Closed enum — each variant maps to an `AcpAgent` impl. Wire
+/// names are explicit to avoid `acp-open-code` for `AcpOpenCode`.
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum AgentProvider {
+    #[default]
+    #[serde(rename = "acp-claude-code")]
+    AcpClaudeCode,
+    #[serde(rename = "acp-codex")]
+    AcpCodex,
+    #[serde(rename = "acp-opencode")]
+    AcpOpenCode,
 }
 
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
@@ -308,127 +431,238 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
 
     layers.iter().try_fold(Config::default(), |acc, body| {
         let layer: Config = toml::from_str(body).context("failed to parse TOML layer")?;
-
-        Ok(Config {
-            daemon: Daemon {
-                socket: layer.daemon.socket.or(acc.daemon.socket),
-                window: merge_window(acc.daemon.window, layer.daemon.window),
-            },
-            logging: Logging {
-                level: layer.logging.level.or(acc.logging.level),
-            },
-            ui: Ui {
-                theme: merge_theme(acc.ui.theme, layer.ui.theme),
-            },
-        })
+        Ok(acc.merge(layer))
     })
-}
-
-fn merge_window(base: Window, layer: Window) -> Window {
-    Window {
-        mode: layer.mode.or(base.mode),
-        output: layer.output.or(base.output),
-        anchor: AnchorWindow {
-            edge: layer.anchor.edge.or(base.anchor.edge),
-            margin: layer.anchor.margin.or(base.anchor.margin),
-            width: layer.anchor.width.or(base.anchor.width),
-            height: layer.anchor.height.or(base.anchor.height),
-        },
-        center: CenterWindow {
-            width: layer.center.width.or(base.center.width),
-            height: layer.center.height.or(base.center.height),
-        },
-    }
 }
 
 fn read_layer(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))
 }
 
-fn merge_theme(base: Theme, layer: Theme) -> Theme {
-    Theme {
-        font: ThemeFont {
-            family: layer.font.family.or(base.font.family),
-        },
-        window: ThemeWindow {
-            default: layer.window.default.or(base.window.default),
-            edge: layer.window.edge.or(base.window.edge),
-        },
-        surface: ThemeSurface {
-            card: SurfaceCard {
-                user: Card {
-                    bg: layer.surface.card.user.bg.or(base.surface.card.user.bg),
-                },
-                assistant: Card {
-                    bg: layer.surface.card.assistant.bg.or(base.surface.card.assistant.bg),
-                },
-            },
-            compose: layer.surface.compose.or(base.surface.compose),
-            text: layer.surface.text.or(base.surface.text),
-        },
-        fg: ThemeFg {
-            default: layer.fg.default.or(base.fg.default),
-            dim: layer.fg.dim.or(base.fg.dim),
-            muted: layer.fg.muted.or(base.fg.muted),
-        },
-        border: ThemeBorder {
-            default: layer.border.default.or(base.border.default),
-            soft: layer.border.soft.or(base.border.soft),
-            focus: layer.border.focus.or(base.border.focus),
-        },
-        accent: ThemeAccent {
-            default: layer.accent.default.or(base.accent.default),
-            user: layer.accent.user.or(base.accent.user),
-            assistant: layer.accent.assistant.or(base.accent.assistant),
-        },
-        state: ThemeState {
-            idle: layer.state.idle.or(base.state.idle),
-            stream: layer.state.stream.or(base.state.stream),
-            pending: layer.state.pending.or(base.state.pending),
-            awaiting: layer.state.awaiting.or(base.state.awaiting),
-        },
+/// Layer two config values — `other` wins. Drives the fold in
+/// `load()`: `acc.merge(layer)`. Scalar `Option<T>` leaves are
+/// handled by the blanket impl; structs recurse via trivial
+/// field-by-field impls; `AgentsConfig` has keyed-list semantics.
+pub(crate) trait Merge: Sized {
+    fn merge(self, other: Self) -> Self;
+}
+
+impl<T> Merge for Option<T> {
+    fn merge(self, other: Self) -> Self {
+        other.or(self)
+    }
+}
+
+impl Merge for Config {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            daemon: self.daemon.merge(other.daemon),
+            logging: self.logging.merge(other.logging),
+            ui: self.ui.merge(other.ui),
+            agents: self.agents.merge(other.agents),
+        }
+    }
+}
+
+impl Merge for Daemon {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            socket: self.socket.merge(other.socket),
+            window: self.window.merge(other.window),
+        }
+    }
+}
+
+impl Merge for Logging {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            level: self.level.merge(other.level),
+        }
+    }
+}
+
+impl Merge for Ui {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            theme: self.theme.merge(other.theme),
+        }
+    }
+}
+
+impl Merge for Window {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            mode: self.mode.merge(other.mode),
+            output: self.output.merge(other.output),
+            anchor: self.anchor.merge(other.anchor),
+            center: self.center.merge(other.center),
+        }
+    }
+}
+
+impl Merge for AnchorWindow {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            edge: self.edge.merge(other.edge),
+            margin: self.margin.merge(other.margin),
+            width: self.width.merge(other.width),
+            height: self.height.merge(other.height),
+        }
+    }
+}
+
+impl Merge for CenterWindow {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            width: self.width.merge(other.width),
+            height: self.height.merge(other.height),
+        }
+    }
+}
+
+impl Merge for Theme {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            font: self.font.merge(other.font),
+            window: self.window.merge(other.window),
+            surface: self.surface.merge(other.surface),
+            fg: self.fg.merge(other.fg),
+            border: self.border.merge(other.border),
+            accent: self.accent.merge(other.accent),
+            state: self.state.merge(other.state),
+        }
+    }
+}
+
+impl Merge for ThemeFont {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            family: self.family.merge(other.family),
+        }
+    }
+}
+
+impl Merge for ThemeWindow {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            edge: self.edge.merge(other.edge),
+        }
+    }
+}
+
+impl Merge for ThemeSurface {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            card: self.card.merge(other.card),
+            compose: self.compose.merge(other.compose),
+            text: self.text.merge(other.text),
+        }
+    }
+}
+
+impl Merge for SurfaceCard {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            user: self.user.merge(other.user),
+            assistant: self.assistant.merge(other.assistant),
+        }
+    }
+}
+
+impl Merge for Card {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            bg: self.bg.merge(other.bg),
+        }
+    }
+}
+
+impl Merge for ThemeFg {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            dim: self.dim.merge(other.dim),
+            muted: self.muted.merge(other.muted),
+        }
+    }
+}
+
+impl Merge for ThemeBorder {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            soft: self.soft.merge(other.soft),
+            focus: self.focus.merge(other.focus),
+        }
+    }
+}
+
+impl Merge for ThemeAccent {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            user: self.user.merge(other.user),
+            assistant: self.assistant.merge(other.assistant),
+        }
+    }
+}
+
+impl Merge for ThemeState {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            idle: self.idle.merge(other.idle),
+            stream: self.stream.merge(other.stream),
+            pending: self.pending.merge(other.pending),
+            awaiting: self.awaiting.merge(other.awaiting),
+        }
+    }
+}
+
+/// Keyed-list merge: override by `id`, append new ids in order.
+/// Whole-entry replace (no field-level merge inside `AgentConfig`)
+/// — "override provider, keep old command" would be surprising.
+/// Duplicate ids inside a single layer survive so
+/// `validate_agents_ids` can flag them.
+impl Merge for AgentsConfig {
+    fn merge(self, other: Self) -> Self {
+        let mut out: Vec<AgentConfig> = Vec::with_capacity(self.agents.len() + other.agents.len());
+        let base_ids: std::collections::HashSet<String> = self.agents.iter().map(|a| a.id.clone()).collect();
+
+        for b in self.agents {
+            match other.agents.iter().find(|l| l.id == b.id) {
+                Some(override_entry) => out.push(override_entry.clone()),
+                None => out.push(b),
+            }
+        }
+
+        for l in other.agents {
+            if !base_ids.contains(&l.id) {
+                out.push(l);
+            }
+        }
+
+        Self {
+            agents: out,
+            agent: self.agent.merge(other.agent),
+        }
+    }
+}
+
+impl Merge for AgentDefaults {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+        }
     }
 }
 
 impl Config {
+    /// Run garde's tree walk (every predicate including cross-field
+    /// rules wired via higher-order `custom(fn(&self.x))` hooks).
     pub fn validate(&self) -> Result<()> {
         <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))
     }
-}
-
-fn validate_log_level(value: &String, _ctx: &()) -> garde::Result {
-    const ALLOWED: &[&str] = &["trace", "debug", "info", "warn", "error"];
-
-    if !ALLOWED.contains(&value.to_lowercase().as_str()) {
-        return Err(garde::Error::new(format!("must be one of {ALLOWED:?}, got '{value}'")));
-    }
-
-    Ok(())
-}
-
-fn validate_dimension(value: &Dimension, _ctx: &()) -> garde::Result {
-    match *value {
-        Dimension::Pixels(0) => Err(garde::Error::new("pixel dimension must be >= 1")),
-        Dimension::Pixels(px) if px > 10_000 => Err(garde::Error::new(format!(
-            "pixel dimension {px} exceeds 10000 — refusing absurd size"
-        ))),
-        Dimension::Pixels(_) => Ok(()),
-        Dimension::Percent(p) if (1..=100).contains(&p) => Ok(()),
-        Dimension::Percent(p) => Err(garde::Error::new(format!("percent must be 1..=100, got {p}"))),
-    }
-}
-
-fn validate_hex_color(value: &String, _ctx: &()) -> garde::Result {
-    let is_valid =
-        value.starts_with('#') && matches!(value.len(), 7 | 9) && value[1..].chars().all(|c| c.is_ascii_hexdigit());
-
-    if !is_valid {
-        return Err(garde::Error::new(format!(
-            "must be a hex color (#RRGGBB or #RRGGBBAA), got '{value}'"
-        )));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -530,7 +764,7 @@ mod tests {
     fn load_merges_cli_path_over_defaults() {
         let p = write_tmp("merge.toml", "[logging]\nlevel = \"debug\"\n");
         let cfg = load(Some(&p), None).expect("load");
-        assert_eq!(cfg.logging.level.as_deref(), Some("debug"));
+        assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
 
@@ -577,27 +811,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_bad_log_level() {
-        let cfg = Config {
-            logging: Logging {
-                level: Some("verbose".into()),
-            },
-            ..Config::default()
-        };
-        let err = cfg.validate().expect_err("should error");
-        assert!(err.to_string().contains("logging.level"));
+    fn toml_rejects_bad_log_level() {
+        // With `LogLevel` as a closed enum, unknown levels fail at
+        // TOML parse time rather than at validate time. anyhow's
+        // top-level message is "failed to parse TOML layer"; the
+        // serde detail lives in the underlying source.
+        let p = write_tmp("bad-level.toml", "[logging]\nlevel = \"verbose\"\n");
+        let err = load(Some(&p), None).expect_err("should error on parse");
+        let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(chain.contains("verbose") || chain.contains("level"), "{chain}");
+        fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn validate_accepts_known_levels() {
+    fn toml_accepts_known_levels() {
         for lvl in ["trace", "debug", "info", "warn", "error"] {
-            let cfg = Config {
-                logging: Logging {
-                    level: Some(lvl.into()),
-                },
-                ..Config::default()
-            };
-            cfg.validate().unwrap_or_else(|e| panic!("{lvl}: {e}"));
+            let p = write_tmp(&format!("level-{lvl}.toml"), &format!("[logging]\nlevel = \"{lvl}\"\n"));
+            let cfg = load(Some(&p), None).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
+            cfg.validate().unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
+            fs::remove_file(&p).ok();
         }
     }
 
@@ -753,6 +985,125 @@ mod tests {
         };
         let err = cfg.validate().expect_err("should error");
         assert!(err.to_string().contains(">= 1"), "{err}");
+    }
+
+    /// Mirrors `defaults_populate_every_daemon_window_field` for the
+    /// agents registry. If the seeded entries drift — wrong provider
+    /// name, missing id, policy variant removed — this fires before
+    /// the daemon starts panicking at runtime against a bad schema.
+    #[test]
+    fn defaults_populate_every_agent_field() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+
+        assert_eq!(
+            cfg.agents.agent.default.as_deref(),
+            Some("claude-code"),
+            "agent.default must be seeded to a concrete id"
+        );
+
+        let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["claude-code", "codex", "opencode"],
+            "defaults must seed the three built-in vendors"
+        );
+
+        for a in &cfg.agents.agents {
+            assert!(a.command.is_some(), "agents[{}].command", a.id);
+            assert!(!a.args.is_empty(), "agents[{}].args", a.id);
+        }
+
+        // Provider mapping per id.
+        let by_id: std::collections::HashMap<&str, AgentProvider> =
+            cfg.agents.agents.iter().map(|a| (a.id.as_str(), a.provider)).collect();
+        assert_eq!(by_id["claude-code"], AgentProvider::AcpClaudeCode);
+        assert_eq!(by_id["codex"], AgentProvider::AcpCodex);
+        assert_eq!(by_id["opencode"], AgentProvider::AcpOpenCode);
+    }
+
+    #[test]
+    fn user_agent_entry_overrides_default_by_id() {
+        // Override claude-code's command; leave codex + opencode
+        // untouched; add a new entry with a fresh id.
+        let p = write_tmp(
+            "agents.toml",
+            "[[agents]]\nid = \"claude-code\"\nprovider = \"acp-claude-code\"\ncommand = \"my-claude\"\nargs = [\"--custom\"]\n\n[[agents]]\nid = \"my-local\"\nprovider = \"acp-codex\"\ncommand = \"local-codex\"\nargs = []\n",
+        );
+        let cfg = load(Some(&p), None).expect("load");
+
+        let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["claude-code", "codex", "opencode", "my-local"],
+            "overrides keep position, new ids append"
+        );
+
+        let cc = cfg.agents.agents.iter().find(|a| a.id == "claude-code").unwrap();
+        assert_eq!(cc.command.as_deref(), Some("my-claude"));
+        assert_eq!(cc.args, vec!["--custom".to_string()]);
+
+        // Untouched defaults keep everything.
+        let codex = cfg.agents.agents.iter().find(|a| a.id == "codex").unwrap();
+        assert_eq!(codex.command.as_deref(), Some("bunx"));
+
+        // Appended entry survived.
+        let ml = cfg.agents.agents.iter().find(|a| a.id == "my-local").unwrap();
+        assert_eq!(ml.provider, AgentProvider::AcpCodex);
+
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_agent_ids() {
+        let p = write_tmp(
+            "dup.toml",
+            "[[agents]]\nid = \"dupe\"\nprovider = \"acp-claude-code\"\ncommand = \"a\"\n\n[[agents]]\nid = \"dupe\"\nprovider = \"acp-codex\"\ncommand = \"b\"\n",
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate agent id 'dupe'"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn validate_rejects_unknown_agent_default() {
+        let p = write_tmp("bad-default.toml", "[agent]\ndefault = \"does-not-exist\"\n");
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        // garde's report prefixes the field path: the cross-field
+        // custom is attached to `AgentsConfig.agent`, which flattens
+        // to `agents.agent` on `Config`.
+        assert!(msg.contains("agents.agent"), "missing path: {msg}");
+        assert!(msg.contains("default = 'does-not-exist'"), "missing detail: {msg}");
+        assert!(msg.contains("Configured ids:"), "missing id list: {msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn user_override_of_agent_default_wins() {
+        let p = write_tmp("agent-default.toml", "[agent]\ndefault = \"codex\"\n");
+        let cfg = load(Some(&p), None).expect("load");
+        assert_eq!(cfg.agents.agent.default.as_deref(), Some("codex"));
+        cfg.validate().expect("codex exists in defaults, so valid");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn agent_provider_round_trips_kebab_case() {
+        // Spot-check each variant. Names match the TOML literals in
+        // defaults.toml — a rename would require updating defaults
+        // AND every user config out there.
+        for (v, literal) in [
+            (AgentProvider::AcpClaudeCode, "\"acp-claude-code\""),
+            (AgentProvider::AcpCodex, "\"acp-codex\""),
+            (AgentProvider::AcpOpenCode, "\"acp-opencode\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), literal);
+            let back: AgentProvider = serde_json::from_str(literal).unwrap();
+            assert_eq!(back, v);
+        }
     }
 
     #[test]

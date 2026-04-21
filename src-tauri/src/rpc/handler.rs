@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
+use crate::acp::AcpSessions;
 use crate::rpc::protocol::{RequestId, RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
 
@@ -14,12 +17,16 @@ use crate::rpc::status::StatusBroadcast;
 /// on `ctx.app` and `ctx.status` without needing to juggle `Arc` clones.
 ///
 /// `app` is `Option` so unit tests can drive routing and the pure-data
-/// handlers (`status/*`, `submit`, `cancel`, `session-info`, `kill`)
-/// without a live Tauri runtime. Handlers that need the window
-/// (`toggle`) surface `RpcError::internal_error` when `app` is `None`.
+/// handlers (`status/*`, `session/*`, `daemon/kill`) without a live
+/// Tauri runtime. Handlers that need the window (`window/toggle`)
+/// surface `RpcError::internal_error` when `app` is `None`.
 pub struct HandlerCtx<'a> {
     pub app: Option<&'a tauri::AppHandle>,
     pub status: &'a StatusBroadcast,
+    /// Shared ACP session registry. `Option` so the unit-test harness
+    /// can run without building a full `AcpSessions`; production calls
+    /// always pass `Some` (the daemon constructs it in `setup`).
+    pub sessions: Option<Arc<AcpSessions>>,
     /// Request id of the in-flight call. Handlers read it for logging /
     /// tracing spans; unused by routing.
     #[allow(dead_code)]
@@ -46,18 +53,24 @@ pub enum HandlerOutcome {
 /// A unit of RPC work, keyed by the namespace prefix of its method names.
 ///
 /// Handlers match by the namespace before the `/` in a method name:
-/// `status/get` + `status/subscribe` live under the `"status"` namespace;
-/// un-namespaced methods (`submit`, `toggle`, `kill`, ...) belong to
-/// `CoreHandler` whose `namespace()` returns `""`.
+/// `status/get` + `status/subscribe` live under `"status"`;
+/// `session/submit` + `session/cancel` + `session/info` under
+/// `"session"`; `window/toggle` under `"window"`; `daemon/kill` under
+/// `"daemon"`. Every K-239-era method uses the `namespace/name` form;
+/// bare method names (e.g. `submit`, `toggle`) route to the empty
+/// namespace, which has no registered handler and therefore returns
+/// `-32601 method not found`.
 ///
 /// Adding a namespace is a one-liner on the dispatcher (see
-/// `RpcDispatcher::with_defaults`) — implement `RpcHandler`, register it
-/// on the vector, done. Future namespaces: `session/*`, `window/*`,
-/// `daemon/*`, `agent/*`.
+/// `RpcDispatcher::with_defaults`) — implement `RpcHandler`, register
+/// it on the vector, done. Future namespaces: `agents/*`,
+/// `permissions/*`.
 #[async_trait]
 pub trait RpcHandler: Send + Sync {
-    /// Namespace before the `/`. `""` (empty) means un-namespaced (e.g.
-    /// `toggle`, `submit`, legacy shortnames from the scaffold).
+    /// Namespace before the `/` in every method this handler owns
+    /// (`"session"`, `"window"`, `"daemon"`, `"status"`, ...). Dispatch
+    /// matches this against the method prefix; no handler ships for the
+    /// empty namespace, so bare method names are always `-32601`.
     fn namespace(&self) -> &'static str;
 
     /// Handle a single method call. Params are already JSON-typed; each

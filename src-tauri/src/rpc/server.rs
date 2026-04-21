@@ -4,39 +4,33 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info, warn};
 
+use crate::acp::AcpSessions;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
-use crate::rpc::protocol::{JsonRpcVersion, RequestId, Response, RpcError, StatusChangedNotification};
+use crate::rpc::protocol::{JsonRpcVersion, Outcome, RequestId, Response, RpcError, StatusChangedNotification};
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
 
 /// Shared state handed to each connection task. `AppHandle` is cheap to
-/// clone, so we pass by value today; `StatusBroadcast` and
-/// `RpcDispatcher` are wrapped in `Arc` for cheap fan-out across every
-/// accepted connection.
+/// clone, so we pass by value today; `StatusBroadcast`, `RpcDispatcher`
+/// and `AcpSessions` are wrapped in `Arc` for cheap fan-out across
+/// every accepted connection.
 #[derive(Clone)]
 pub struct RpcState {
     pub app: tauri::AppHandle,
     pub status: Arc<StatusBroadcast>,
     pub dispatcher: Arc<RpcDispatcher>,
+    pub sessions: Arc<AcpSessions>,
 }
 
-/// Drives a single accepted unix-socket connection. Reads NDJSON lines,
-/// delegates each to `RpcDispatcher`, writes a single-line response,
-/// loops. Connection closes cleanly on EOF or an empty line.
-///
-/// After a `status/subscribe` request the loop also multiplexes incoming
-/// `status/changed` notifications from the broadcast channel via
-/// `tokio::select!`, pushing them to the peer without a client round-trip.
-/// A second `status/subscribe` on the same connection is rejected by the
-/// handler with `-32600`; `handle_connection` tracks the flag here so
-/// the handler can read it off `HandlerCtx`.
+/// One accepted connection. Reads NDJSON, dispatches, writes the
+/// response, loops. After `status/subscribe` the same loop
+/// multiplexes `status/changed` notifications via `tokio::select!`.
 pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
-    // Populated when the client sends `status/subscribe`. Its presence
-    // is also passed through to `HandlerCtx::already_subscribed` so the
-    // handler rejects a second subscribe on the same socket with -32600.
+    // Set by `status/subscribe`; its presence also gates the second-
+    // subscribe rejection via `HandlerCtx::already_subscribed`.
     let mut status_rx: Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>> = None;
 
     loop {
@@ -53,17 +47,26 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     }
                 };
 
-                let (response, is_kill_success, new_rx) = dispatch_line(
+                let (response, new_rx) = dispatch(
                     &line,
                     Some(&state.app),
                     &state.status,
                     &state.dispatcher,
+                    Some(state.sessions.clone()),
                     status_rx.is_some(),
                 ).await;
 
                 if let Some(rx) = new_rx {
                     status_rx = Some(rx);
                 }
+
+                // Kill signal rides in the response payload as
+                // `{"killed": true}`; captured before `response` moves
+                // so we can act after the flush.
+                let kill_signalled = matches!(
+                    &response.outcome,
+                    Outcome::Success { result } if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
+                );
 
                 let mut bytes = match serde_json::to_vec(&response) {
                     Ok(b) => b,
@@ -80,9 +83,8 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 }
                 let _ = writer.flush().await;
 
-                if is_kill_success {
-                    info!("rpc: kill dispatched — exiting daemon");
-                    state.app.exit(0);
+                if kill_signalled {
+                    crate::daemon::shutdown(&state.app, &state.sessions).await;
                     return;
                 }
             }
@@ -143,34 +145,25 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     }
 }
 
-/// Parse one NDJSON line, delegate to `RpcDispatcher`, wrap the handler
-/// outcome in a JSON-RPC `Response`. Returns the response, a kill flag
-/// (set only when `method == "kill"` succeeded), and an optional new
-/// broadcast receiver for `status/subscribe`.
-///
-/// Splitting the state into its pieces (`app`, `status`, `dispatcher`)
-/// keeps unit tests cheap: they can pass `None` for `app`, build a
-/// stand-alone `StatusBroadcast`, and construct a dispatcher directly
-/// without needing a live Tauri runtime.
-///
-/// `connection_already_subscribed` is passed through to
-/// `HandlerCtx::already_subscribed` so `StatusHandler` can reject a
-/// second subscribe on the same socket with `-32600`.
-async fn dispatch_line(
+/// Parse one NDJSON line → `RpcDispatcher` → JSON-RPC `Response`.
+/// Second return slot is populated only by `status/subscribe`.
+/// State is passed as pieces (not `RpcState`) so tests can pass
+/// `None` for `app` + stand-alone fixtures without a Tauri runtime.
+async fn dispatch(
     line: &str,
     app: Option<&tauri::AppHandle>,
     status: &StatusBroadcast,
     dispatcher: &RpcDispatcher,
+    sessions: Option<Arc<AcpSessions>>,
     connection_already_subscribed: bool,
 ) -> (
     Response,
-    bool,
     Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>,
 ) {
     // Stage 1: JSON syntax. Failure here is -32700 parse error.
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(_) => return (Response::error(None, RpcError::parse_error()), false, None),
+        Err(_) => return (Response::error(None, RpcError::parse_error()), None),
     };
 
     let id = value.get("id").and_then(parse_id);
@@ -179,7 +172,6 @@ async fn dispatch_line(
     if !value.is_object() {
         return (
             Response::error(None, RpcError::invalid_request("request must be a JSON object")),
-            false,
             None,
         );
     }
@@ -188,7 +180,6 @@ async fn dispatch_line(
             if serde_json::from_value::<JsonRpcVersion>(v.clone()).is_err() {
                 return (
                     Response::error(id, RpcError::invalid_request("jsonrpc must be \"2.0\"")),
-                    false,
                     None,
                 );
             }
@@ -196,7 +187,6 @@ async fn dispatch_line(
         None => {
             return (
                 Response::error(id, RpcError::invalid_request("missing jsonrpc field")),
-                false,
                 None,
             );
         }
@@ -206,7 +196,6 @@ async fn dispatch_line(
         None => {
             return (
                 Response::error(None, RpcError::invalid_request("missing or invalid id")),
-                false,
                 None,
             );
         }
@@ -218,7 +207,6 @@ async fn dispatch_line(
         None => {
             return (
                 Response::error(Some(id), RpcError::invalid_request("missing method field")),
-                false,
                 None,
             );
         }
@@ -227,11 +215,10 @@ async fn dispatch_line(
 
     info!(id = ?id, method = %method, "rpc: dispatch");
 
-    let is_kill = method == "kill";
-
     let ctx = HandlerCtx {
         app,
         status,
+        sessions,
         id: &id,
         already_subscribed: connection_already_subscribed,
     };
@@ -239,16 +226,9 @@ async fn dispatch_line(
     let outcome = dispatcher.dispatch(&method, params, ctx).await;
 
     match outcome {
-        Ok(HandlerOutcome::Reply(value)) => {
-            let response = Response::success(Some(id), value);
-            let kill_success = is_kill;
-            (response, kill_success, None)
-        }
-        Ok(HandlerOutcome::Subscribed(snapshot, rx)) => {
-            let response = Response::success(Some(id), snapshot);
-            (response, false, Some(rx))
-        }
-        Err(err) => (Response::error(Some(id), err), false, None),
+        Ok(HandlerOutcome::Reply(value)) => (Response::success(Some(id), value), None),
+        Ok(HandlerOutcome::Subscribed(snapshot, rx)) => (Response::success(Some(id), snapshot), Some(rx)),
+        Err(err) => (Response::error(Some(id), err), None),
     }
 }
 
@@ -269,22 +249,28 @@ fn parse_id(v: &serde_json::Value) -> Option<RequestId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AgentsConfig;
     use serde_json::json;
 
     /// Driver for envelope / framing tests: no `AppHandle`, a fresh
-    /// `StatusBroadcast`, and a throwaway dispatcher per call. Handlers
-    /// that need the app (only `toggle`) surface `-32603`; everything
-    /// else runs through to the handler's real logic.
+    /// `StatusBroadcast`, a throwaway dispatcher + `AcpSessions` per
+    /// call. Handlers that need the app (only `window/toggle`)
+    /// surface `-32603`; everything else runs through to the
+    /// handler's real logic.
     async fn run(line: &str) -> serde_json::Value {
         let status = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let (resp, _, _) = dispatch_line(line, None, &status, &dispatcher, false).await;
+        let sessions = Arc::new(AcpSessions::new(
+            AgentsConfig::default(),
+            Arc::new(StatusBroadcast::new(true)),
+        ));
+        let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(sessions), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
     #[tokio::test]
-    async fn submit_success_round_trip() {
-        let out = run(r#"{"jsonrpc":"2.0","id":1,"method":"submit","params":{"text":"hello"}}"#).await;
+    async fn session_submit_success_round_trip() {
+        let out = run(r#"{"jsonrpc":"2.0","id":1,"method":"session/submit","params":{"text":"hello"}}"#).await;
         assert_eq!(out["jsonrpc"], "2.0");
         assert_eq!(out["id"], 1);
         assert_eq!(out["result"]["accepted"], true);
@@ -293,16 +279,25 @@ mod tests {
 
     #[tokio::test]
     async fn session_info_returns_empty_list() {
-        let out = run(r#"{"jsonrpc":"2.0","id":"sid","method":"session-info"}"#).await;
+        let out = run(r#"{"jsonrpc":"2.0","id":"sid","method":"session/info"}"#).await;
         assert_eq!(out["id"], "sid");
         assert_eq!(out["result"]["sessions"], json!([]));
     }
 
     #[tokio::test]
-    async fn cancel_stub_returns_no_active_session() {
-        let out = run(r#"{"jsonrpc":"2.0","id":2,"method":"cancel"}"#).await;
+    async fn session_cancel_stub_returns_no_active_session() {
+        let out = run(r#"{"jsonrpc":"2.0","id":2,"method":"session/cancel"}"#).await;
         assert_eq!(out["result"]["cancelled"], false);
         assert_eq!(out["result"]["reason"], "no active session");
+    }
+
+    #[tokio::test]
+    async fn daemon_kill_returns_killed_true() {
+        // The `killed: true` marker in the result is what
+        // `handle_connection` inspects to trigger `app.exit(0)`
+        // after the response flushes. No separate side-channel flag.
+        let out = run(r#"{"jsonrpc":"2.0","id":3,"method":"daemon/kill"}"#).await;
+        assert_eq!(out["result"]["killed"], true);
     }
 
     #[tokio::test]
@@ -314,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_request_missing_jsonrpc() {
-        let out = run(r#"{"id":1,"method":"toggle"}"#).await;
+        let out = run(r#"{"id":1,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32600);
         assert_eq!(out["id"], 1);
     }
@@ -344,42 +339,43 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_request_wrong_jsonrpc_version() {
-        let out = run(r#"{"jsonrpc":"1.0","id":11,"method":"toggle"}"#).await;
+        let out = run(r#"{"jsonrpc":"1.0","id":11,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32600);
         assert_eq!(out["id"], 11);
     }
 
-    /// Regression: `toggle` with no `params` key at all deserializes
-    /// cleanly — the `CoreHandler` ignores params for unit methods.
-    /// The `Call` enum (removed) used `#[serde(tag, content)]` which
-    /// made this an explicit test; keep the invariant by hitting the
-    /// full wire path.
+    /// Regression: `window/toggle` with no `params` key at all
+    /// deserializes cleanly — the `WindowHandler` ignores params for
+    /// unit methods. Keep the invariant by hitting the full wire path.
     #[tokio::test]
-    async fn toggle_without_params_is_handled() {
+    async fn window_toggle_without_params_is_handled() {
         // No params key. Handler surfaces -32603 because `app` is None
         // in the test harness, but the absence of -32600 / -32602
         // proves the line parsed + routed correctly.
-        let out = run(r#"{"jsonrpc":"2.0","id":12,"method":"toggle"}"#).await;
+        let out = run(r#"{"jsonrpc":"2.0","id":12,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32603);
     }
 
-    /// Regression: `submit` with a string id round-trips and the
-    /// handler parses `{"text": "..."}` into its typed params.
+    /// Regression: `session/submit` with a string id round-trips and
+    /// the handler parses `{"text": "..."}` into its typed params.
     #[tokio::test]
-    async fn submit_with_string_id_round_trips() {
-        let out = run(r#"{"jsonrpc":"2.0","id":"abc-123","method":"submit","params":{"text":"hi"}}"#).await;
+    async fn session_submit_with_string_id_round_trips() {
+        let out = run(r#"{"jsonrpc":"2.0","id":"abc-123","method":"session/submit","params":{"text":"hi"}}"#).await;
         assert_eq!(out["id"], "abc-123");
         assert_eq!(out["result"]["accepted"], true);
         assert_eq!(out["result"]["text"], "hi");
     }
 
-    /// Regression: `session-info` is kebab-case; hitting the wire name
-    /// through `dispatch_line` verifies the method string is passed
-    /// verbatim to `CoreHandler::handle`.
+    /// Every bare legacy method name must surface `-32601` after
+    /// K-239's rename. No backwards-compat alias — downstream peers
+    /// are expected to move to `namespace/name`.
     #[tokio::test]
-    async fn session_info_kebab_case_routes_to_core() {
-        let out = run(r#"{"jsonrpc":"2.0","id":13,"method":"session-info"}"#).await;
-        assert_eq!(out["result"]["sessions"], json!([]));
+    async fn bare_legacy_method_names_are_method_not_found() {
+        for method in ["submit", "cancel", "toggle", "kill", "session-info"] {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":99,"method":"{method}"}}"#);
+            let out = run(&body).await;
+            assert_eq!(out["error"]["code"], -32601, "bare {method} must be -32601: {out}");
+        }
     }
 
     /// Regression: an unknown method in the `status` namespace returns
@@ -401,14 +397,14 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_params_for_missing_required_field() {
-        let out = run(r#"{"jsonrpc":"2.0","id":6,"method":"submit","params":{}}"#).await;
+        let out = run(r#"{"jsonrpc":"2.0","id":6,"method":"session/submit","params":{}}"#).await;
         assert_eq!(out["error"]["code"], -32602);
         assert_eq!(out["id"], 6);
     }
 
     #[tokio::test]
-    async fn toggle_without_app_is_internal_error() {
-        let out = run(r#"{"jsonrpc":"2.0","id":5,"method":"toggle"}"#).await;
+    async fn window_toggle_without_app_is_internal_error() {
+        let out = run(r#"{"jsonrpc":"2.0","id":5,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32603);
         assert_eq!(out["id"], 5);
     }
@@ -437,11 +433,15 @@ mod tests {
             let mut lines = BufReader::new(reader).lines();
             let status = StatusBroadcast::new(true);
             let dispatcher = RpcDispatcher::with_defaults();
+            let sessions = Arc::new(AcpSessions::new(
+                AgentsConfig::default(),
+                Arc::new(StatusBroadcast::new(true)),
+            ));
             while let Some(l) = lines.next_line().await.unwrap() {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _, _) = dispatch_line(&l, None, &status, &dispatcher, false).await;
+                let (resp, _) = dispatch(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
                 let mut bytes = serde_json::to_vec(&resp).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
@@ -450,7 +450,7 @@ mod tests {
         });
 
         client
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session-info\"}\n")
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/info\"}\n")
             .await
             .unwrap();
 
@@ -474,15 +474,20 @@ mod tests {
     async fn double_subscribe_on_same_connection_is_rejected() {
         let broadcast = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
+        let sessions = Arc::new(AcpSessions::new(
+            AgentsConfig::default(),
+            Arc::new(StatusBroadcast::new(true)),
+        ));
 
         // First subscribe — emulated: we don't actually route, we just
         // mark the connection state as "already_subscribed = true" and
         // drive the second subscribe through `dispatch_line`.
-        let (resp, _kill, rx) = dispatch_line(
+        let (resp, rx) = dispatch(
             r#"{"jsonrpc":"2.0","id":1,"method":"status/subscribe"}"#,
             None,
             &broadcast,
             &dispatcher,
+            Some(sessions.clone()),
             false,
         )
         .await;
@@ -491,11 +496,12 @@ mod tests {
         assert!(rx.is_some(), "first subscribe returns a receiver");
 
         // Second subscribe on the same connection — already_subscribed = true.
-        let (resp, _kill, rx) = dispatch_line(
+        let (resp, rx) = dispatch(
             r#"{"jsonrpc":"2.0","id":2,"method":"status/subscribe"}"#,
             None,
             &broadcast,
             &dispatcher,
+            Some(sessions),
             true,
         )
         .await;
@@ -587,6 +593,10 @@ mod tests {
             let (reader, mut writer) = server.into_split();
             let mut lines = BufReader::new(reader).lines();
             let dispatcher = RpcDispatcher::with_defaults();
+            let sessions = Arc::new(AcpSessions::new(
+                AgentsConfig::default(),
+                Arc::new(StatusBroadcast::new(true)),
+            ));
             let mut status_rx: Option<tokio::sync::broadcast::Receiver<StatusResult>> = None;
 
             loop {
@@ -595,11 +605,12 @@ mod tests {
                         match line_result {
                             Ok(Some(l)) if l.trim().is_empty() => continue,
                             Ok(Some(l)) => {
-                                let (resp, _, new_rx) = dispatch_line(
+                                let (resp, new_rx) = dispatch(
                                     &l,
                                     None,
                                     &broadcast_clone,
                                     &dispatcher,
+                                    Some(sessions.clone()),
                                     status_rx.is_some(),
                                 ).await;
                                 if let Some(rx) = new_rx {

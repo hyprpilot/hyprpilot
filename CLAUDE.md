@@ -113,6 +113,51 @@ unset in defaults is `[daemon.window.anchor] height`, where `None` is the
 on invalid values (e.g. unknown `logging.level`). `deny_unknown_fields` on
 every section catches typos in user TOML at load time.
 
+### Merge trait
+
+Layer application goes through a `pub(crate) trait Merge { fn merge(self,
+other: Self) -> Self; }` in `config/mod.rs`. `other` wins; `load()`'s fold
+reads `acc.merge(layer)`. A blanket `impl<T> Merge for Option<T>` handles
+every scalar leaf; each struct in the config tree carries a trivial
+field-by-field impl; `AgentsConfig` is the one exception with a
+keyed-list merge (override by `id`, append new ids, duplicates survive
+for `validate_agents_ids` to flag).
+
+### Validation strategy (garde)
+
+Per-type invariants live on the type itself — not as free `validate_*`
+functions — whenever the orphan rule allows:
+
+- **Types we own**: `impl garde::Validate for T` + `#[garde(dive)]` at the
+  field site. `Dimension` and `HexColor` follow this shape.
+- **String-backed closed sets**: convert to a `#[derive(Deserialize)]`
+  enum with `#[serde(rename_all = "lowercase")]`. `logging::LogLevel` is
+  the example — unknown values reject at TOML parse time instead of at
+  `validate()`, which is stricter.
+- **Cross-field references**: higher-order `custom(fn(&self.sibling))`
+  hooks. `agent.default` → `agents[].id` uses this pattern; see
+  `validate_agent_default_id` in `config/validations.rs`. Documented in
+  garde's README as "self access in rules".
+- **Collection-level checks**: free fn + `#[garde(custom(fn))]` on the
+  field. `validate_agents_ids` (uniqueness over `Vec<AgentConfig>`) stays
+  here because the orphan rule blocks `impl Validate for Vec<T>` and a
+  newtype would force consumers through `.0`.
+
+Two free fns (`validate_agents_ids`, `validate_agent_default_id`) live in
+`config/validations.rs` as `pub(super)` helpers. `Config::validate()` is
+a one-liner that wraps the garde report in `anyhow!` — every rule is
+inside the derive walk, no manual post-pass.
+
+### `HexColor` newtype
+
+Theme colour fields are `Option<HexColor>`, not `Option<String>`.
+`#[serde(transparent)]` keeps the wire shape a bare string (the webview
+sees no change through `get_theme`); `impl Validate` enforces
+`#[0-9a-fA-F]{6,8}` under `#[garde(dive)]`. `impl Deref<Target = str>` +
+`AsRef<str>` + `From<&str>` / `From<String>` keep consumer and test
+ergonomics unchanged. `ThemeFont.family` stays `Option<String>` — it's
+not a colour.
+
 ## Theming
 
 **The palette lives in Rust, not CSS.** Flow:
@@ -379,6 +424,18 @@ Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
   folded into that caller. Prefer `fn main() -> Result<()>` over a `try_main`
   wrapper; prefer unfolding a small setup step into the body (with a short
   comment) over extracting a one-call helper.
+- **Comment discipline — terse WHY, never WHAT.** Default to no comments.
+  Code + well-named identifiers already describe behavior; comments earn
+  their keep only when they encode a non-obvious reason (a protocol quirk, a
+  data-source disagreement, a deliberate future-proofing choice). Docstrings
+  stay one or two short sentences in the common case; the "grow it into a
+  mini-essay so future me remembers why" temptation is wrong — that context
+  goes in commit messages and CLAUDE.md. Trim aggressively on every diff.
+  Examples of fair comments: "gdk 0.18 has no `connector()`, match by
+  geometry instead"; "second SIGINT falls through to default handler";
+  "Unknown levels reject at TOML parse (serde closed enum)". Examples of
+  comments to delete: restating the function name, listing every caller,
+  explaining what a `match` does.
 - **NVIDIA + Wayland workaround.** `main.rs` sets
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` before any thread spawns on Wayland
   sessions. Overridable by exporting the env var. Keep that block first in
@@ -488,23 +545,39 @@ can't block others.
 
 | Method | Params | Result | Notes |
 | ------ | ------ | ------ | ----- |
-| `submit` | `{ "text": "..." }` | `{ "accepted": true, "text": "..." }` | Stub. No ACP session yet. |
-| `cancel` | *(none)* | `{ "cancelled": false, "reason": "no active session" }` | Stub. |
-| `toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
-| `kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
-| `session-info` | *(none)* | `{ "sessions": [] }` | Stub. |
+| `session/submit` | `{ "text": "...", "agent_id"?: "..." }` | `{ "accepted": true, "text": "..." }` | K-239 replaces the stub with a `conn.prompt(...)` call against the addressed agent. `agent_id` omitted → `agents.active_agent`. |
+| `session/cancel` | *(none)* or `{ "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | Stub today; K-239 sends `CancelNotification` to the addressed session. |
+| `session/info` | *(none)* | `{ "sessions": [...] }` | Stub today; K-239 returns the live session list across every active agent. |
+| `window/toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
+| `daemon/kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
 | `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
 
 `StatusResult` shape: `{ "state": "idle" | "streaming" | "awaiting" | "error", "visible": bool, "active_session": string | null }`.
 
-Method names are kebab-case on the wire (`session-info`). Status methods use
-`namespace/name` notation (`status/get`, `status/subscribe`). Methods without
-params (`cancel` / `toggle` / `kill` / `session-info`) omit the `params`
-key entirely — the server accepts `{"method":"toggle"}` with no `params`
-and responds normally. `status/changed` is a server-push notification — it
-carries no `id` and is not a response to a request.
+**Namespace convention.** Every method name on the wire uses the
+`namespace/name` form, matching ACP's own methods (`session/prompt`,
+`session/new`):
+
+- `session/*` — anything scoped to an agent session (prompts, cancel, info).
+- `window/*` — overlay window state (`window/toggle`; future
+  `window/show`, `window/hide`, `window/focus`).
+- `daemon/*` — daemon lifecycle (`daemon/kill`; future `daemon/status`,
+  `daemon/reload`).
+- `status/*` — agent state broadcasts (drives waybar).
+- Reserved: `agents/*` (listing / switching), `permissions/*` (trust
+  store — UI-only today, no `ctl` surface yet).
+
+Bare method names — the pre-K-239 `submit` / `cancel` / `toggle` / `kill`
+/ `session-info` scaffold — are intentionally dead. Clients hitting them
+receive `-32601 method not found`; there is no backwards-compat layer.
+
+Methods without params (`session/cancel`, `session/info`, `window/toggle`,
+`daemon/kill`) omit the `params` key entirely — the server accepts
+`{"method":"window/toggle"}` with no `params` and responds normally.
+`status/changed` is a server-push notification — it carries no `id` and
+is not a response to a request.
 
 Request ids on the client side are per-call UUID v4 strings
 (`uuid::Uuid::new_v4().to_string()`). The server treats ids as opaque and
@@ -519,8 +592,8 @@ The server surfaces JSON-RPC 2.0 standard error codes:
 - `-32600` invalid request (valid JSON, wrong shape — missing `jsonrpc`,
   bad version, malformed params).
 - `-32601` method not found.
-- `-32603` internal error (handler failed — `toggle` against a missing
-  window, serializer failures, etc.).
+- `-32603` internal error (handler failed — `window/toggle` against a
+  missing window, serializer failures, etc.).
 
 `-32000 ..= -32099` is reserved for hyprpilot-specific errors; none are
 defined yet.
@@ -619,18 +692,141 @@ params (`submit` stub, `cancel` stub, `toggle`, `kill`, `session-info`
 stub). RPC error or serialization failure → `error!(...)` + stderr
 message + `exit(1)`.
 
-**Stub handlers `unimplemented!()` instead of calling the server**
-(see "Stubs panic, they don't pretend" in Rust conventions). Today
-`SubmitHandler` / `CancelHandler` / `SessionInfoHandler` all panic
-with `"ctl <verb>: ACP bridge not yet implemented (K-239)"`.
+The `Submit` / `Cancel` / `SessionInfo` handlers hit the live
+`session/submit` / `session/cancel` / `session/info` wire methods
+today — those go through `AcpSessions` on the server side, which
+returns pre-live-session stubbed shapes (`{ accepted: true, text }`
+/ `{ cancelled: false, reason }` / `{ sessions: [] }`) until the
+runtime plumbing lands.
+
+## ACP bridge (K-239)
+
+The daemon fronts one or more ACP-speaking agent subprocesses. Each
+session is a child process whose stdio carries JSON-RPC framed by
+the `agent-client-protocol` crate; the daemon drives
+`initialize` / `new_session` / `prompt` / `cancel` against those
+children and fans the resulting `SessionUpdate`s out to the webview
+(`acp:transcript` Tauri events) and the `ctl status` broadcast
+(`AgentState::Streaming` / `Idle` / `Awaiting`).
+
+### Module layout (`src-tauri/src/acp/`)
+
+- `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
+  three vendor unit structs. Each carries no runtime state; vendor
+  quirks (launch command, tool-content shape) live in trait-method
+  bodies. `match_provider_agent(provider)` resolves a
+  `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
+- `session.rs` — `AcpSessions` (Tauri managed state) + `AcpSessionState`
+  + `AgentId`. Today exposes `submit` / `cancel` / `info` as stubs;
+  the live-session follow-up replaces those bodies with
+  `conn.prompt(...)` / `conn.cancel(...)` against real children.
+
+### Agents config (flattened at TOML root)
+
+```toml
+[agent]                          # singleton: global agent-scope config
+default = "claude-code"          # id used when ctl / webview don't pick one
+
+[[agents]]                       # registry: per-agent entries
+id = "claude-code"
+provider = "acp-claude-code"     # closed enum; see AgentProvider
+command = "bunx"                 # optional; defaults to the vendor's own
+args = ["--bun", "@zed-industries/claude-code-acp"]
+
+[agents.env]                     # optional per-agent env overlay
+```
+
+Singular `[agent]` parallels plural `[[agents]]` — TOML's single-table
+vs array-of-tables distinction carries the "global config vs registry"
+split. Future global knobs (shared env overlay, timeout, cwd defaults)
+slot under `[agent]` without another top-level rename.
+
+Merge semantics: user entries with an existing `id` override the whole
+default entry; new `id`s append. `agent.default` (when set) must name a
+real configured id — enforced inside the garde derive via
+`custom(validate_agent_default_id(&self.agents))`. `AgentProvider` is a
+**closed enum** keyed by wire name (`acp-claude-code` / `acp-codex` /
+`acp-opencode`); adding a provider means a new enum variant + a new
+`AcpAgent` impl + a new match arm in `match_provider_agent`.
+
+### Shutdown orchestration
+
+Process lifecycle lives in `daemon`, not `rpc`. `daemon::shutdown(app,
+sessions)` is the one orchestrator; it drains ACP sessions via
+`AcpSessions::shutdown`, then calls `app.exit(0)` (which closes
+webviews, drops every `app.manage(...)` value — flushing the tracing
+`WorkerGuard`, the `StatusBroadcast`, and the socket listener — and
+exits with code 0).
+
+Three call sites funnel through this one fn:
+
+1. **`daemon/kill` RPC** — `DaemonHandler` returns
+   `{"killed": true}` in the result; `rpc::server::handle_connection`
+   inspects the payload after the flush and calls
+   `daemon::shutdown`. No side-channel flag threaded through the
+   dispatcher tuple — the marker is the response itself, so any
+   future respond-then-shut-down handler just emits the same
+   `{"killed": true}` shape.
+2. **SIGINT (Ctrl-C)** — tokio signal task spawned in `daemon::run`.
+3. **SIGTERM** — same task; systemd / `pkill` both use this.
+
+First signal triggers the orchestrator; a second signal during
+shutdown falls through to the default handler (force-kill) — standard
+Unix "SIGINT-twice" escape.
+
+Socket file is not explicitly removed — next-start probes stale
+sockets via `ECONNREFUSED`, which also covers the crash case.
+
+### Permissions are the vendor's concern
+
+ACP itself just delivers a `PermissionOption[]` array per
+`session/request_permission` and expects the client to pick one
+option id. Hyprpilot does **not** ship a policy layer on top of
+that: claude-code-acp's plan mode, codex-acp's approval modes,
+and opencode's tool filters already give users granular permission
+control — re-implementing a three-way `ask` / `accept-edits` /
+`bypass` knob here would just duplicate vendor behavior poorly.
+
+The daemon forwards every permission request straight to the
+webview as an `acp:permission-request` Tauri event; the user picks
+an option via the dialog and replies with `permission_reply`.
+
+Client-side auto-accept / auto-reject rules (per-tool allowlists,
+persistent trust store) are the scope of a separate future
+`PermissionController` issue, modeled on the original Python pilot's
+`auto_accept_tools` / `auto_reject_tools` configuration rather than
+a coarse policy enum. Until that lands every prompt is live-UI.
+
+### Tauri commands + events (pending live-session follow-up)
+
+Still to land on top of the scaffold (tracked in the live-session
+follow-up; none ship yet):
+
+| Command | Purpose |
+| ------- | ------- |
+| `acp_submit { text, agent_id? }` | Webview compose-box submit. |
+| `acp_cancel { agent_id? }` | Mid-turn cancel. |
+| `permission_reply { request_id, option_id }` | Fulfils a parked `resolve_permission` oneshot. |
+| `agents_list` | Populates the agent-switcher dropdown. |
+
+| Event | Payload | When |
+| ----- | ------- | ---- |
+| `acp:transcript` | `TranscriptEvent` | Every session update post vendor `render_update`. |
+| `acp:permission-request` | `{ request_id, tool_name, options, raw_input }` | When `resolve_permission` decides to ask. |
+| `acp:session-state` | `{ agent_id, state }` | Every `AcpSessionState` transition. |
 
 ## What is not in the scaffold
 
 The following deliberately land in their own issues — do not bolt them onto
 scaffold work:
 
-- ACP adapter, MCP server(s), skills loader, permissions store, markdown
-  rendering, waybar, profile switcher UI.
+- MCP server(s), skills loader, permissions store, markdown
+  rendering, profile switcher UI.
+- Live ACP session plumbing (spawn → `ClientSideConnection` → drive
+  prompts → stream notifications). Scaffold + permission resolver
+  landed under K-239; the live session follow-up wires the real
+  wire-level calls against `agent-client-protocol = "0.11"`'s
+  `Client.builder()` / `ConnectionTo<Agent>` API.
 - Playwright e2e wiring (`tauri-driver` + WebKitGTK WebDriver shim) — the
   current e2e is `test.skip` only.
 - Real branding icon — `src-tauri/icons/icon.png` is a generated 32×32

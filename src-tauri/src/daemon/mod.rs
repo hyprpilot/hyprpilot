@@ -12,6 +12,7 @@ use tauri::{Emitter, Manager, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
+use crate::acp::AcpSessions;
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
@@ -85,6 +86,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
     let theme = cfg.ui.theme.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
+    let agents_cfg = cfg.agents.clone();
 
     // Snapshot the resolved window state up-front so the webview can fetch
     // it without re-reading the config at request time. `anchor_edge` is
@@ -108,6 +110,9 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // `show()` / `show_all()` before the RPC loop accepts connections.
     let status = Arc::new(StatusBroadcast::new(true));
     let dispatcher = Arc::new(RpcDispatcher::with_defaults());
+    // Session registry — Tauri managed state. `SessionHandler` +
+    // future `acp_*` Tauri commands both reach into this.
+    let sessions = Arc::new(AcpSessions::new(agents_cfg, status.clone()));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -138,11 +143,42 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             // mode-specific surface and maps the window once ready.
             renderer.apply_initial(&main)?;
 
+            app.manage(sessions.clone());
+
             let rpc_state = crate::rpc::RpcState {
                 app: app.handle().clone(),
                 status: status.clone(),
                 dispatcher: dispatcher.clone(),
+                sessions: sessions.clone(),
             };
+
+            // SIGINT / SIGTERM → same shutdown path as daemon/kill.
+            // Second signal falls through to the default handler
+            // (force-kill), so SIGINT-twice escapes a stuck shutdown.
+            let signal_app = app.handle().clone();
+            let signal_sessions = sessions.clone();
+            tauri::async_runtime::spawn(async move {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigint = match signal(SignalKind::interrupt()) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        warn!(%err, "failed to install SIGINT handler — default behaviour takes over");
+                        return;
+                    }
+                };
+                let mut sigterm = match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        warn!(%err, "failed to install SIGTERM handler — default behaviour takes over");
+                        return;
+                    }
+                };
+                tokio::select! {
+                    _ = sigint.recv()  => info!("received SIGINT, initiating clean shutdown"),
+                    _ = sigterm.recv() => info!("received SIGTERM, initiating clean shutdown"),
+                }
+                shutdown(&signal_app, &signal_sessions).await;
+            });
 
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -175,4 +211,16 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 struct SingleInstancePayload {
     argv: Vec<String>,
     cwd: String,
+}
+
+/// Drain ACP sessions, then kick Tauri's teardown. Called by
+/// `rpc::server` on `daemon/kill` and by the signal task in `run()`.
+/// Socket file is not removed — next-start probes stale sockets via
+/// `ECONNREFUSED`, which handles crash cases too.
+pub(crate) async fn shutdown(app: &tauri::AppHandle, sessions: &AcpSessions) {
+    info!("shutdown: initiating clean shutdown");
+    sessions.shutdown().await;
+    info!("shutdown: acp sessions drained");
+    app.exit(0);
+    info!("shutdown: tauri exit dispatched");
 }

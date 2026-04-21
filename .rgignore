@@ -1,0 +1,14 @@
+/docs/
+pnpm-lock.yaml
+Cargo.lock
+CLAUDE.md
+clippy.toml
+mise.toml
+rust-toolchain.toml
+rustfmt.toml
+vitest.config.ts
+vite.config.ts
+playwright.config.ts
+eslint.config.mjs
+.prettierrc.mjs
+components.json
