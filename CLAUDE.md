@@ -635,18 +635,104 @@ params (`submit` stub, `cancel` stub, `toggle`, `kill`, `session-info`
 stub). RPC error or serialization failure → `error!(...)` + stderr
 message + `exit(1)`.
 
-**Stub handlers `unimplemented!()` instead of calling the server**
-(see "Stubs panic, they don't pretend" in Rust conventions). Today
-`SubmitHandler` / `CancelHandler` / `SessionInfoHandler` all panic
-with `"ctl <verb>: ACP bridge not yet implemented (K-239)"`.
+The `Submit` / `Cancel` / `SessionInfo` handlers hit the live
+`session/submit` / `session/cancel` / `session/info` wire methods
+today — those go through `AcpSessions` on the server side, which
+returns pre-live-session stubbed shapes (`{ accepted: true, text }`
+/ `{ cancelled: false, reason }` / `{ sessions: [] }`) until the
+runtime plumbing lands.
+
+## ACP bridge (K-239)
+
+The daemon fronts one or more ACP-speaking agent subprocesses. Each
+session is a child process whose stdio carries JSON-RPC framed by
+the `agent-client-protocol` crate; the daemon drives
+`initialize` / `new_session` / `prompt` / `cancel` against those
+children and fans the resulting `SessionUpdate`s out to the webview
+(`acp:transcript` Tauri events) and the `ctl status` broadcast
+(`AgentState::Streaming` / `Idle` / `Awaiting`).
+
+### Module layout (`src-tauri/src/acp/`)
+
+- `permissions.rs` — `AcpPermissionOptionKind` +
+  `select_option_id(options, desired)` fallback-chain resolver +
+  `resolve_policy(policy, edit?, options) -> PolicyDecision`. Fully
+  tested against the three vendor option sets.
+- `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
+  three vendor unit structs. Each carries no runtime state; vendor
+  quirks (launch command, permission subset, tool-content shape)
+  live in trait-method bodies. `vendor_for(provider)` resolves a
+  `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
+- `session.rs` — `AcpSessions` (Tauri managed state) + `AcpSessionState`
+  + `AgentId`. Today exposes `submit` / `cancel` / `info` as stubs;
+  the live-session follow-up replaces those bodies with
+  `conn.prompt(...)` / `conn.cancel(...)` against real children.
+
+### Agents config (flattened at TOML root)
+
+```toml
+# Default agent when ctl / webview don't specify one.
+active_agent = "claude-code"
+
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"     # closed enum; see AgentProvider
+command = "bunx"                 # optional; defaults to the vendor's own
+args = ["--bun", "@zed-industries/claude-code-acp"]
+permission_policy = "ask"        # "ask" | "accept-edits" | "bypass"
+
+[agents.env]                     # optional per-agent env overlay
+```
+
+Merge semantics: user entries with an existing `id` override the
+whole default entry; new `id`s append. `active_agent` (when set)
+must name a real configured id — `Config::validate` fails startup
+otherwise. `AgentProvider` is a **closed enum** keyed by wire name
+(`acp-claude-code` / `acp-codex` / `acp-opencode`); adding a
+provider means a new enum variant + a new `AcpAgent` impl + a new
+match arm in `vendor_for`.
+
+### Permission policy is not a protocol concept
+
+`AcpPermissionPolicy` is a hyprpilot-level default (`ask` /
+`accept-edits` / `bypass`). ACP itself just delivers a
+`PermissionOption[]` array per `session/request_permission` and
+expects the client to pick one option id. `permissions.rs` maps the
+policy onto an `AcpPermissionOptionKind` intent, then resolves that
+intent via a per-vendor fallback chain over the options actually
+offered. No vendor we target today ships `reject_always`; the chain
+handles that transparently.
+
+### Tauri commands + events (pending live-session follow-up)
+
+Still to land on top of the scaffold (tracked in the live-session
+follow-up; none ship yet):
+
+| Command | Purpose |
+| ------- | ------- |
+| `acp_submit { text, agent_id? }` | Webview compose-box submit. |
+| `acp_cancel { agent_id? }` | Mid-turn cancel. |
+| `permission_reply { request_id, option_id }` | Fulfils a parked `resolve_permission` oneshot. |
+| `agents_list` | Populates the agent-switcher dropdown. |
+
+| Event | Payload | When |
+| ----- | ------- | ---- |
+| `acp:transcript` | `TranscriptEvent` | Every session update post vendor `render_update`. |
+| `acp:permission-request` | `{ request_id, tool_name, options, raw_input }` | When `resolve_permission` decides to ask. |
+| `acp:session-state` | `{ agent_id, state }` | Every `AcpSessionState` transition. |
 
 ## What is not in the scaffold
 
 The following deliberately land in their own issues — do not bolt them onto
 scaffold work:
 
-- ACP adapter, MCP server(s), skills loader, permissions store, markdown
-  rendering, waybar, profile switcher UI.
+- MCP server(s), skills loader, permissions store, markdown
+  rendering, profile switcher UI.
+- Live ACP session plumbing (spawn → `ClientSideConnection` → drive
+  prompts → stream notifications). Scaffold + permission resolver
+  landed under K-239; the live session follow-up wires the real
+  wire-level calls against `agent-client-protocol = "0.11"`'s
+  `Client.builder()` / `ConnectionTo<Agent>` API.
 - Playwright e2e wiring (`tauri-driver` + WebKitGTK WebDriver shim) — the
   current e2e is `test.skip` only.
 - Real branding icon — `src-tauri/icons/icon.png` is a generated 32×32
