@@ -1,0 +1,42 @@
+[daemon]
+
+[logging]
+level = "info"
+
+[ui.theme.font]
+family = "ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace"
+
+[ui.theme.window]
+default = "#1e2127"
+edge = "#d3b051"
+
+[ui.theme.surface]
+compose = "#2c333d"
+text = "#1e2127"
+
+[ui.theme.surface.card.user]
+bg = "#2c333d"
+
+[ui.theme.surface.card.assistant]
+bg = "#22282f"
+
+[ui.theme.fg]
+default = "#abb2bf"
+dim = "#7c8a9d"
+muted = "#5c6370"
+
+[ui.theme.border]
+default = "#4b5263"
+soft = "#2c333d"
+focus = "#6c778d"
+
+[ui.theme.accent]
+default = "#abb2bf"
+user = "#e5c07b"
+assistant = "#98c379"
+
+[ui.theme.state]
+idle = "#98c379"
+stream = "#e5c07b"
+pending = "#e06c75"
+awaiting = "#d19a66"

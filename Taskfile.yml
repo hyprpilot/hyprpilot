@@ -1,0 +1,49 @@
+---
+# https://taskfile.dev
+
+version: "3"
+
+vars:
+  TAURI: ./ui/node_modules/.bin/tauri
+
+tasks:
+  install:
+    desc: Install Rust and frontend dependencies.
+    cmds:
+      - cargo fetch --manifest-path src-tauri/Cargo.toml
+      - pnpm --dir ui install
+
+  dev:
+    desc: Run the Tauri app with live-reload.
+    cmds:
+      - "{{ .TAURI }} dev"
+
+  test:
+    desc: Run Rust and frontend test suites.
+    cmds:
+      - cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+      - pnpm --dir ui test
+      - pnpm --dir ui test:e2e
+
+  format:
+    desc: Format Rust and frontend sources.
+    cmds:
+      - cargo fmt --manifest-path src-tauri/Cargo.toml --all
+      - pnpm --dir ui format
+
+  lint:
+    desc: Lint Rust and frontend sources.
+    cmds:
+      - cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - pnpm --dir ui lint
+
+  build:
+    desc: Build a debug Tauri bundle.
+    cmds:
+      - "{{ .TAURI }} build --debug"
+
+  "build:release":
+    desc: Build a release Tauri bundle.
+    cmds:
+      - "{{ .TAURI }} build"

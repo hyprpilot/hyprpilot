@@ -1,0 +1,6 @@
+[tools]
+rust = "stable"
+node = "24"
+pnpm = "10"
+task = "3"
+usage = "3"
