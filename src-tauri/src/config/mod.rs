@@ -404,130 +404,238 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
 
     layers.iter().try_fold(Config::default(), |acc, body| {
         let layer: Config = toml::from_str(body).context("failed to parse TOML layer")?;
-
-        Ok(Config {
-            daemon: Daemon {
-                socket: layer.daemon.socket.or(acc.daemon.socket),
-                window: merge_window(acc.daemon.window, layer.daemon.window),
-            },
-            logging: Logging {
-                level: layer.logging.level.or(acc.logging.level),
-            },
-            ui: Ui {
-                theme: merge_theme(acc.ui.theme, layer.ui.theme),
-            },
-            agents: merge_agents(acc.agents, layer.agents),
-        })
+        Ok(acc.merge(layer))
     })
-}
-
-/// Merge two `AgentsConfig` layers. Semantics:
-///
-/// - `active_agent` is last-writer-wins (`layer.or(base)`).
-/// - For each `id` in `base.agents`, look up the **first** matching
-///   entry in `layer.agents`; if present, the layer's full
-///   `AgentConfig` replaces the base entry (no field-level merge —
-///   `AgentConfig` is small and "override provider keeps old command"
-///   would be surprising).
-/// - Entries in `layer.agents` whose id is not in `base` are appended
-///   in order. Duplicate ids inside a single user layer survive the
-///   merge (appended twice) so `validate_agents_ids` can flag them.
-///
-/// This is intentionally simpler than the theme's tree walk:
-/// `AgentConfig` has <10 leaves and is read as a whole unit by the
-/// spawn flow, so per-field merging would be overkill.
-fn merge_agents(base: AgentsConfig, layer: AgentsConfig) -> AgentsConfig {
-    let mut out: Vec<AgentConfig> = Vec::with_capacity(base.agents.len() + layer.agents.len());
-    let base_ids: std::collections::HashSet<String> = base.agents.iter().map(|a| a.id.clone()).collect();
-
-    // Carry over base entries, overriding by id when the layer has a
-    // matching id (first match wins — subsequent layer entries with
-    // the same id survive as appended duplicates that `validate`
-    // catches).
-    for b in base.agents {
-        match layer.agents.iter().find(|l| l.id == b.id) {
-            Some(override_entry) => out.push(override_entry.clone()),
-            None => out.push(b),
-        }
-    }
-
-    // Append every layer entry whose id is not in the base (keeps
-    // duplicates intact so validation can flag them).
-    for l in layer.agents {
-        if !base_ids.contains(&l.id) {
-            out.push(l);
-        }
-    }
-
-    AgentsConfig {
-        agents: out,
-        active_agent: layer.active_agent.or(base.active_agent),
-    }
-}
-
-fn merge_window(base: Window, layer: Window) -> Window {
-    Window {
-        mode: layer.mode.or(base.mode),
-        output: layer.output.or(base.output),
-        anchor: AnchorWindow {
-            edge: layer.anchor.edge.or(base.anchor.edge),
-            margin: layer.anchor.margin.or(base.anchor.margin),
-            width: layer.anchor.width.or(base.anchor.width),
-            height: layer.anchor.height.or(base.anchor.height),
-        },
-        center: CenterWindow {
-            width: layer.center.width.or(base.center.width),
-            height: layer.center.height.or(base.center.height),
-        },
-    }
 }
 
 fn read_layer(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))
 }
 
-fn merge_theme(base: Theme, layer: Theme) -> Theme {
-    Theme {
-        font: ThemeFont {
-            family: layer.font.family.or(base.font.family),
-        },
-        window: ThemeWindow {
-            default: layer.window.default.or(base.window.default),
-            edge: layer.window.edge.or(base.window.edge),
-        },
-        surface: ThemeSurface {
-            card: SurfaceCard {
-                user: Card {
-                    bg: layer.surface.card.user.bg.or(base.surface.card.user.bg),
-                },
-                assistant: Card {
-                    bg: layer.surface.card.assistant.bg.or(base.surface.card.assistant.bg),
-                },
-            },
-            compose: layer.surface.compose.or(base.surface.compose),
-            text: layer.surface.text.or(base.surface.text),
-        },
-        fg: ThemeFg {
-            default: layer.fg.default.or(base.fg.default),
-            dim: layer.fg.dim.or(base.fg.dim),
-            muted: layer.fg.muted.or(base.fg.muted),
-        },
-        border: ThemeBorder {
-            default: layer.border.default.or(base.border.default),
-            soft: layer.border.soft.or(base.border.soft),
-            focus: layer.border.focus.or(base.border.focus),
-        },
-        accent: ThemeAccent {
-            default: layer.accent.default.or(base.accent.default),
-            user: layer.accent.user.or(base.accent.user),
-            assistant: layer.accent.assistant.or(base.accent.assistant),
-        },
-        state: ThemeState {
-            idle: layer.state.idle.or(base.state.idle),
-            stream: layer.state.stream.or(base.state.stream),
-            pending: layer.state.pending.or(base.state.pending),
-            awaiting: layer.state.awaiting.or(base.state.awaiting),
-        },
+/// Layer one config value on top of another.
+///
+/// Semantics: `self.merge(other)` returns a value where `other` wins
+/// on every scalar leaf it populates (`Option::Some` beats `None` or
+/// a prior `Some`), structs recurse field-by-field, and key-aware
+/// collections like [`AgentsConfig`] override by key and append new
+/// keys. The signature matches the fold direction in `load()`:
+/// `acc.merge(layer)` — each successive config layer overrides the
+/// accumulated one.
+///
+/// Every scalar leaf on the config tree is an `Option<T>`, so the
+/// blanket impl below covers them all generically. Every struct in
+/// the tree gets a trivial field-by-field impl; [`AgentsConfig`] is
+/// the one exception and carries the keyed-list merge logic
+/// directly.
+pub(crate) trait Merge: Sized {
+    fn merge(self, other: Self) -> Self;
+}
+
+impl<T> Merge for Option<T> {
+    fn merge(self, other: Self) -> Self {
+        other.or(self)
+    }
+}
+
+impl Merge for Config {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            daemon: self.daemon.merge(other.daemon),
+            logging: self.logging.merge(other.logging),
+            ui: self.ui.merge(other.ui),
+            agents: self.agents.merge(other.agents),
+        }
+    }
+}
+
+impl Merge for Daemon {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            socket: self.socket.merge(other.socket),
+            window: self.window.merge(other.window),
+        }
+    }
+}
+
+impl Merge for Logging {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            level: self.level.merge(other.level),
+        }
+    }
+}
+
+impl Merge for Ui {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            theme: self.theme.merge(other.theme),
+        }
+    }
+}
+
+impl Merge for Window {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            mode: self.mode.merge(other.mode),
+            output: self.output.merge(other.output),
+            anchor: self.anchor.merge(other.anchor),
+            center: self.center.merge(other.center),
+        }
+    }
+}
+
+impl Merge for AnchorWindow {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            edge: self.edge.merge(other.edge),
+            margin: self.margin.merge(other.margin),
+            width: self.width.merge(other.width),
+            height: self.height.merge(other.height),
+        }
+    }
+}
+
+impl Merge for CenterWindow {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            width: self.width.merge(other.width),
+            height: self.height.merge(other.height),
+        }
+    }
+}
+
+impl Merge for Theme {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            font: self.font.merge(other.font),
+            window: self.window.merge(other.window),
+            surface: self.surface.merge(other.surface),
+            fg: self.fg.merge(other.fg),
+            border: self.border.merge(other.border),
+            accent: self.accent.merge(other.accent),
+            state: self.state.merge(other.state),
+        }
+    }
+}
+
+impl Merge for ThemeFont {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            family: self.family.merge(other.family),
+        }
+    }
+}
+
+impl Merge for ThemeWindow {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            edge: self.edge.merge(other.edge),
+        }
+    }
+}
+
+impl Merge for ThemeSurface {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            card: self.card.merge(other.card),
+            compose: self.compose.merge(other.compose),
+            text: self.text.merge(other.text),
+        }
+    }
+}
+
+impl Merge for SurfaceCard {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            user: self.user.merge(other.user),
+            assistant: self.assistant.merge(other.assistant),
+        }
+    }
+}
+
+impl Merge for Card {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            bg: self.bg.merge(other.bg),
+        }
+    }
+}
+
+impl Merge for ThemeFg {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            dim: self.dim.merge(other.dim),
+            muted: self.muted.merge(other.muted),
+        }
+    }
+}
+
+impl Merge for ThemeBorder {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            soft: self.soft.merge(other.soft),
+            focus: self.focus.merge(other.focus),
+        }
+    }
+}
+
+impl Merge for ThemeAccent {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            default: self.default.merge(other.default),
+            user: self.user.merge(other.user),
+            assistant: self.assistant.merge(other.assistant),
+        }
+    }
+}
+
+impl Merge for ThemeState {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            idle: self.idle.merge(other.idle),
+            stream: self.stream.merge(other.stream),
+            pending: self.pending.merge(other.pending),
+            awaiting: self.awaiting.merge(other.awaiting),
+        }
+    }
+}
+
+/// Keyed-list merge. `active_agent` is last-writer-wins. For each
+/// `id` in `self.agents`, the first matching entry in `other.agents`
+/// wins if present (whole-entry replace — no field-level merge,
+/// since "override provider keeps old command" would be surprising).
+/// Entries in `other.agents` with new ids append in order. Duplicate
+/// ids inside a single layer survive (appended twice) so
+/// `validate_agents_ids` can flag them.
+///
+/// Per-field merging inside `AgentConfig` would be overkill:
+/// `AgentConfig` has <10 leaves and is read as a whole unit by the
+/// spawn flow, so override-in-place-by-id is the useful grain.
+impl Merge for AgentsConfig {
+    fn merge(self, other: Self) -> Self {
+        let mut out: Vec<AgentConfig> = Vec::with_capacity(self.agents.len() + other.agents.len());
+        let base_ids: std::collections::HashSet<String> = self.agents.iter().map(|a| a.id.clone()).collect();
+
+        for b in self.agents {
+            match other.agents.iter().find(|l| l.id == b.id) {
+                Some(override_entry) => out.push(override_entry.clone()),
+                None => out.push(b),
+            }
+        }
+
+        for l in other.agents {
+            if !base_ids.contains(&l.id) {
+                out.push(l);
+            }
+        }
+
+        Self {
+            agents: out,
+            active_agent: self.active_agent.merge(other.active_agent),
+        }
     }
 }
 
