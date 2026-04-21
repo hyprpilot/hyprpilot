@@ -187,7 +187,7 @@ fn center_pixel_size(monitor: &Monitor, center: &CenterWindow) -> (u32, u32) {
     let PhysicalSize { width, height } = *monitor.size();
 
     let w = resolve_dimension(center.width.unwrap_or(Dimension::Percent(50)), width);
-    let h = resolve_dimension(center.height.unwrap_or(Dimension::Percent(60)), height);
+    let h = resolve_dimension(center.height.unwrap_or(Dimension::Percent(50)), height);
 
     (w, h)
 }
