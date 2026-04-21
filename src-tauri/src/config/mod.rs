@@ -317,9 +317,14 @@ pub struct AgentsConfig {
 /// A single configured agent. `id` is the user-facing handle;
 /// `provider` selects the Rust vendor struct that encodes that
 /// backend's quirks. `command` + `args` + `env` determine how the
-/// daemon spawns the ACP server subprocess; `permission_policy` is
-/// hyprpilot's ask / accept-edits / bypass default, resolved through
-/// each vendor's `PermissionOption` fallback chain.
+/// daemon spawns the ACP server subprocess.
+///
+/// Note: there is intentionally no `permission_policy` field.
+/// Vendors now ship their own plan / build / approval modes, and
+/// client-side auto-accept / auto-reject rules will live on the
+/// separate `PermissionController` (future issue) with per-tool
+/// allow / reject lists rather than a three-way enum that
+/// duplicates vendor behavior.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
@@ -338,9 +343,6 @@ pub struct AgentConfig {
     /// `std::env::current_dir()` at `new_session` time.
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub permission_policy: AcpPermissionPolicy,
     /// Additional environment variables forwarded to the child. Keys
     /// are inherited as-is; blank values are allowed.
     #[garde(skip)]
@@ -372,23 +374,6 @@ pub enum AgentProvider {
     AcpCodex,
     #[serde(rename = "acp-opencode")]
     AcpOpenCode,
-}
-
-/// Hyprpilot-level permission default. The ACP wire protocol has no
-/// `permission_mode`; each vendor ships its own subset of
-/// `PermissionOptionKind`s. `AcpPermissionPolicy` maps to a desired
-/// kind, which the vendor resolves via a fallback chain (see
-/// `acp::permissions::select_option_id`).
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum AcpPermissionPolicy {
-    /// Every permission request parks on a webview reply.
-    #[default]
-    Ask,
-    /// Auto-allow `ToolKind::Edit` calls; ask for everything else.
-    AcceptEdits,
-    /// Auto-allow everything (picks an `allow_*` option every time).
-    Bypass,
 }
 
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
@@ -972,7 +957,6 @@ mod tests {
         for a in &cfg.agents.agents {
             assert!(a.command.is_some(), "agents[{}].command", a.id);
             assert!(!a.args.is_empty(), "agents[{}].args", a.id);
-            assert_eq!(a.permission_policy, AcpPermissionPolicy::Ask, "agents[{}].policy", a.id);
         }
 
         // Provider mapping per id.
@@ -985,11 +969,11 @@ mod tests {
 
     #[test]
     fn user_agent_entry_overrides_default_by_id() {
-        // Override claude-code's command + policy; leave codex +
-        // opencode untouched; add a new entry with a fresh id.
+        // Override claude-code's command; leave codex + opencode
+        // untouched; add a new entry with a fresh id.
         let p = write_tmp(
             "agents.toml",
-            "[[agents]]\nid = \"claude-code\"\nprovider = \"acp-claude-code\"\ncommand = \"my-claude\"\nargs = [\"--custom\"]\npermission_policy = \"bypass\"\n\n[[agents]]\nid = \"my-local\"\nprovider = \"acp-codex\"\ncommand = \"local-codex\"\nargs = []\npermission_policy = \"accept-edits\"\n",
+            "[[agents]]\nid = \"claude-code\"\nprovider = \"acp-claude-code\"\ncommand = \"my-claude\"\nargs = [\"--custom\"]\n\n[[agents]]\nid = \"my-local\"\nprovider = \"acp-codex\"\ncommand = \"local-codex\"\nargs = []\n",
         );
         let cfg = load(Some(&p), None).expect("load");
 
@@ -1002,18 +986,15 @@ mod tests {
 
         let cc = cfg.agents.agents.iter().find(|a| a.id == "claude-code").unwrap();
         assert_eq!(cc.command.as_deref(), Some("my-claude"));
-        assert_eq!(cc.permission_policy, AcpPermissionPolicy::Bypass);
         assert_eq!(cc.args, vec!["--custom".to_string()]);
 
         // Untouched defaults keep everything.
         let codex = cfg.agents.agents.iter().find(|a| a.id == "codex").unwrap();
         assert_eq!(codex.command.as_deref(), Some("bunx"));
-        assert_eq!(codex.permission_policy, AcpPermissionPolicy::Ask);
 
         // Appended entry survived.
         let ml = cfg.agents.agents.iter().find(|a| a.id == "my-local").unwrap();
         assert_eq!(ml.provider, AgentProvider::AcpCodex);
-        assert_eq!(ml.permission_policy, AcpPermissionPolicy::AcceptEdits);
 
         fs::remove_file(&p).ok();
     }
@@ -1063,19 +1044,6 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_string(&v).unwrap(), literal);
             let back: AgentProvider = serde_json::from_str(literal).unwrap();
-            assert_eq!(back, v);
-        }
-    }
-
-    #[test]
-    fn permission_policy_round_trips_kebab_case() {
-        for (v, literal) in [
-            (AcpPermissionPolicy::Ask, "\"ask\""),
-            (AcpPermissionPolicy::AcceptEdits, "\"accept-edits\""),
-            (AcpPermissionPolicy::Bypass, "\"bypass\""),
-        ] {
-            assert_eq!(serde_json::to_string(&v).unwrap(), literal);
-            let back: AcpPermissionPolicy = serde_json::from_str(literal).unwrap();
             assert_eq!(back, v);
         }
     }

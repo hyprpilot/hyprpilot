@@ -654,14 +654,10 @@ children and fans the resulting `SessionUpdate`s out to the webview
 
 ### Module layout (`src-tauri/src/acp/`)
 
-- `permissions.rs` — `AcpPermissionOptionKind` +
-  `select_option_id(options, desired)` fallback-chain resolver +
-  `resolve_policy(policy, edit?, options) -> PolicyDecision`. Fully
-  tested against the three vendor option sets.
 - `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
   three vendor unit structs. Each carries no runtime state; vendor
-  quirks (launch command, permission subset, tool-content shape)
-  live in trait-method bodies. `vendor_for(provider)` resolves a
+  quirks (launch command, tool-content shape) live in trait-method
+  bodies. `match_provider_agent(provider)` resolves a
   `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
 - `session.rs` — `AcpSessions` (Tauri managed state) + `AcpSessionState`
   + `AgentId`. Today exposes `submit` / `cancel` / `info` as stubs;
@@ -679,7 +675,6 @@ id = "claude-code"
 provider = "acp-claude-code"     # closed enum; see AgentProvider
 command = "bunx"                 # optional; defaults to the vendor's own
 args = ["--bun", "@zed-industries/claude-code-acp"]
-permission_policy = "ask"        # "ask" | "accept-edits" | "bypass"
 
 [agents.env]                     # optional per-agent env overlay
 ```
@@ -690,18 +685,27 @@ must name a real configured id — `Config::validate` fails startup
 otherwise. `AgentProvider` is a **closed enum** keyed by wire name
 (`acp-claude-code` / `acp-codex` / `acp-opencode`); adding a
 provider means a new enum variant + a new `AcpAgent` impl + a new
-match arm in `vendor_for`.
+match arm in `match_provider_agent`.
 
-### Permission policy is not a protocol concept
+### Permissions are the vendor's concern
 
-`AcpPermissionPolicy` is a hyprpilot-level default (`ask` /
-`accept-edits` / `bypass`). ACP itself just delivers a
-`PermissionOption[]` array per `session/request_permission` and
-expects the client to pick one option id. `permissions.rs` maps the
-policy onto an `AcpPermissionOptionKind` intent, then resolves that
-intent via a per-vendor fallback chain over the options actually
-offered. No vendor we target today ships `reject_always`; the chain
-handles that transparently.
+ACP itself just delivers a `PermissionOption[]` array per
+`session/request_permission` and expects the client to pick one
+option id. Hyprpilot does **not** ship a policy layer on top of
+that: claude-code-acp's plan mode, codex-acp's approval modes,
+and opencode's tool filters already give users granular permission
+control — re-implementing a three-way `ask` / `accept-edits` /
+`bypass` knob here would just duplicate vendor behavior poorly.
+
+The daemon forwards every permission request straight to the
+webview as an `acp:permission-request` Tauri event; the user picks
+an option via the dialog and replies with `permission_reply`.
+
+Client-side auto-accept / auto-reject rules (per-tool allowlists,
+persistent trust store) are the scope of a separate future
+`PermissionController` issue, modeled on the original Python pilot's
+`auto_accept_tools` / `auto_reject_tools` configuration rather than
+a coarse policy enum. Until that lands every prompt is live-UI.
 
 ### Tauri commands + events (pending live-session follow-up)
 

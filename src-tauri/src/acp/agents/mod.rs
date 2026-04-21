@@ -101,7 +101,6 @@ pub fn match_provider_agent(provider: AgentProvider) -> Box<dyn AcpAgent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AcpPermissionPolicy;
 
     fn stub_entry(id: &str) -> AgentConfig {
         AgentConfig {
@@ -110,7 +109,6 @@ mod tests {
             command: None,
             args: Vec::new(),
             cwd: None,
-            permission_policy: AcpPermissionPolicy::Ask,
             env: Default::default(),
         }
     }
