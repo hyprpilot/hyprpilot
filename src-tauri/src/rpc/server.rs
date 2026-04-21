@@ -93,7 +93,10 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 let _ = writer.flush().await;
 
                 if kill_signalled {
-                    shutdown(&state).await;
+                    // Shutdown orchestration lives in `daemon` (it
+                    // owns the process lifecycle). This handler's
+                    // job ended with the flushed response.
+                    crate::daemon::shutdown(&state.app, &state.sessions).await;
                     return;
                 }
             }
@@ -152,46 +155,6 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
             }
         }
     }
-}
-
-/// Orchestrate a clean daemon shutdown after a `daemon/kill` response
-/// has flushed to the peer.
-///
-/// Runs cleanup in the explicit order that makes sense for this
-/// subsystem before Tauri's own teardown kicks in:
-///
-/// 1. **ACP sessions** — `AcpSessions::shutdown` cancels any live
-///    prompts, disconnects from agent subprocesses, and drops the
-///    handles (the embedded `tokio::process::Child` has
-///    `kill_on_drop(true)` to catch anything that doesn't exit
-///    cleanly on its own).
-/// 2. **Tauri `app.exit(0)`** — dispatches the native shutdown:
-///    closes every webview, fires `RunEvent::ExitRequested` and
-///    `RunEvent::Exit`, drops every `app.manage(...)` value (which
-///    flushes the tracing file writer's `WorkerGuard` and the
-///    `StatusBroadcast` snapshot lock), unbinds the socket by
-///    dropping the listener task, and exits the process with code
-///    `0`.
-///
-/// Ordering matters: ACP cleanup first so any "session is
-/// terminating" events can reach the webview before the webview
-/// itself is torn down. The socket file is *not* explicitly removed
-/// — the next daemon start probes with `connect()` and cleans a
-/// stale socket via `ECONNREFUSED`, which is robust against crashes
-/// too.
-///
-/// Called from `handle_connection` after a `{"killed": true}`
-/// response has been flushed to the peer. The peer is guaranteed
-/// to see the success envelope; the daemon exits "shortly after"
-/// (best-effort per the JSON-RPC design notes).
-async fn shutdown(state: &RpcState) {
-    info!("daemon/kill: initiating clean shutdown");
-
-    state.sessions.shutdown().await;
-    info!("daemon/kill: acp sessions drained");
-
-    state.app.exit(0);
-    info!("daemon/kill: tauri exit dispatched");
 }
 
 /// Parse one NDJSON line, delegate to `RpcDispatcher`, wrap the handler
