@@ -22,18 +22,6 @@ use anyhow::{bail, Result};
 
 use super::{AgentConfig, Config};
 
-/// `logging.level` must name a canonical tracing level. Case-insensitive
-/// so user configs can write `Info` or `DEBUG` without friction.
-pub(super) fn validate_log_level(value: &String, _ctx: &()) -> garde::Result {
-    const ALLOWED: &[&str] = &["trace", "debug", "info", "warn", "error"];
-
-    if !ALLOWED.contains(&value.to_lowercase().as_str()) {
-        return Err(garde::Error::new(format!("must be one of {ALLOWED:?}, got '{value}'")));
-    }
-
-    Ok(())
-}
-
 /// Per-layer uniqueness check for `[[agents]]`. Duplicate ids inside
 /// a single layer are a user error; cross-layer duplicates are the
 /// override mechanism (handled by `AgentsConfig::merge`) and not

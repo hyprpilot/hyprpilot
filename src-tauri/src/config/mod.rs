@@ -9,7 +9,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use validations::{validate_active_agent_reference, validate_agents_ids, validate_hex_color, validate_log_level};
+use validations::{validate_active_agent_reference, validate_agents_ids, validate_hex_color};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -191,8 +191,12 @@ impl<'de> Deserialize<'de> for Dimension {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Logging {
-    #[garde(inner(custom(validate_log_level)))]
-    pub level: Option<String>,
+    /// Unknown levels fail at TOML parse time (serde rejects
+    /// unrecognised enum variants), not at validate time. That's
+    /// stricter than the old `Option<String>` + custom validator
+    /// pair and encodes the closed set in the type.
+    #[garde(skip)]
+    pub level: Option<crate::logging::LogLevel>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -787,7 +791,7 @@ mod tests {
     fn load_merges_cli_path_over_defaults() {
         let p = write_tmp("merge.toml", "[logging]\nlevel = \"debug\"\n");
         let cfg = load(Some(&p), None).expect("load");
-        assert_eq!(cfg.logging.level.as_deref(), Some("debug"));
+        assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
 
@@ -834,27 +838,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_bad_log_level() {
-        let cfg = Config {
-            logging: Logging {
-                level: Some("verbose".into()),
-            },
-            ..Config::default()
-        };
-        let err = cfg.validate().expect_err("should error");
-        assert!(err.to_string().contains("logging.level"));
+    fn toml_rejects_bad_log_level() {
+        // With `LogLevel` as a closed enum, unknown levels fail at
+        // TOML parse time rather than at validate time. anyhow's
+        // top-level message is "failed to parse TOML layer"; the
+        // serde detail lives in the underlying source.
+        let p = write_tmp("bad-level.toml", "[logging]\nlevel = \"verbose\"\n");
+        let err = load(Some(&p), None).expect_err("should error on parse");
+        let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(chain.contains("verbose") || chain.contains("level"), "{chain}");
+        fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn validate_accepts_known_levels() {
+    fn toml_accepts_known_levels() {
         for lvl in ["trace", "debug", "info", "warn", "error"] {
-            let cfg = Config {
-                logging: Logging {
-                    level: Some(lvl.into()),
-                },
-                ..Config::default()
-            };
-            cfg.validate().unwrap_or_else(|e| panic!("{lvl}: {e}"));
+            let p = write_tmp(&format!("level-{lvl}.toml"), &format!("[logging]\nlevel = \"{lvl}\"\n"));
+            let cfg = load(Some(&p), None).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
+            cfg.validate().unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
+            fs::remove_file(&p).ok();
         }
     }
 

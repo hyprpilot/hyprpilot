@@ -2,16 +2,23 @@ use std::fs;
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 
 use crate::paths;
 
-#[derive(ValueEnum, Copy, Clone, Debug)]
+/// Tracing level, shared between the `--log-level` CLI flag (via
+/// `clap::ValueEnum`) and the `[logging] level` config field (via
+/// `serde`). Lowercase on the wire so TOML can write
+/// `level = "info"`.
+#[derive(ValueEnum, Copy, Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
     Debug,
+    #[default]
     Info,
     Warn,
     Error,
