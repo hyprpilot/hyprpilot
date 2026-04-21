@@ -9,9 +9,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use validations::{
-    validate_active_agent_reference, validate_agents_ids, validate_dimension, validate_hex_color, validate_log_level,
-};
+use validations::{validate_active_agent_reference, validate_agents_ids, validate_hex_color, validate_log_level};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -94,29 +92,61 @@ pub struct AnchorWindow {
     pub edge: Option<Edge>,
     #[garde(inner(range(min = 0, max = 10_000)))]
     pub margin: Option<i32>,
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub width: Option<Dimension>,
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub height: Option<Dimension>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct CenterWindow {
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub width: Option<Dimension>,
-    #[garde(inner(custom(validate_dimension)))]
+    #[garde(dive)]
     pub height: Option<Dimension>,
 }
 
 /// Pixel literal or a "N%" string. `#[serde(untagged)]` lets TOML use either
 /// an integer (`width = 480`) or a string (`width = "50%"`) at the same key.
 /// A custom `Deserialize` on the `Percent` variant parses the `%` suffix.
+///
+/// Hand-implements `garde::Validate` so `#[garde(dive)]` on any
+/// `Option<Dimension>` field picks it up automatically — no per-field
+/// `#[garde(inner(custom(fn)))]` plumbing needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Dimension {
     Pixels(u32),
     Percent(u8),
+}
+
+impl Validate for Dimension {
+    type Context = ();
+
+    fn validate_into(
+        &self,
+        _ctx: &Self::Context,
+        parent: &mut dyn FnMut() -> garde::Path,
+        report: &mut garde::Report,
+    ) {
+        match *self {
+            Dimension::Pixels(0) => {
+                report.append(parent(), garde::Error::new("pixel dimension must be >= 1"));
+            }
+            Dimension::Pixels(px) if px > 10_000 => {
+                report.append(
+                    parent(),
+                    garde::Error::new(format!("pixel dimension {px} exceeds 10000 — refusing absurd size")),
+                );
+            }
+            Dimension::Pixels(_) => {}
+            Dimension::Percent(p) if (1..=100).contains(&p) => {}
+            Dimension::Percent(p) => {
+                report.append(parent(), garde::Error::new(format!("percent must be 1..=100, got {p}")));
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Dimension {

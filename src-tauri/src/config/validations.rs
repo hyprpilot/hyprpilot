@@ -20,7 +20,7 @@
 
 use anyhow::{bail, Result};
 
-use super::{AgentConfig, Config, Dimension};
+use super::{AgentConfig, Config};
 
 /// `logging.level` must name a canonical tracing level. Case-insensitive
 /// so user configs can write `Info` or `DEBUG` without friction.
@@ -32,22 +32,6 @@ pub(super) fn validate_log_level(value: &String, _ctx: &()) -> garde::Result {
     }
 
     Ok(())
-}
-
-/// Pixel dimensions must be in `1..=10_000`; percent dimensions must
-/// be in `1..=100`. The upper cap on pixel values is a sanity guard
-/// against TOML typos (`width = 1000000`) — 10 000 is beyond the
-/// widest single-monitor setups we plausibly target.
-pub(super) fn validate_dimension(value: &Dimension, _ctx: &()) -> garde::Result {
-    match *value {
-        Dimension::Pixels(0) => Err(garde::Error::new("pixel dimension must be >= 1")),
-        Dimension::Pixels(px) if px > 10_000 => Err(garde::Error::new(format!(
-            "pixel dimension {px} exceeds 10000 — refusing absurd size"
-        ))),
-        Dimension::Pixels(_) => Ok(()),
-        Dimension::Percent(p) if (1..=100).contains(&p) => Ok(()),
-        Dimension::Percent(p) => Err(garde::Error::new(format!("percent must be 1..=100, got {p}"))),
-    }
 }
 
 /// Per-layer uniqueness check for `[[agents]]`. Duplicate ids inside
