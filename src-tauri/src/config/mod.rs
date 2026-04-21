@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(cfg.daemon.window.anchor.width, Some(Dimension::Percent(40)));
         // Height is intentionally unset in defaults — signals full-height fill.
         assert_eq!(cfg.daemon.window.anchor.height, None);
-        assert_eq!(cfg.daemon.window.center.height, Some(Dimension::Percent(60)));
+        assert_eq!(cfg.daemon.window.center.height, Some(Dimension::Percent(50)));
 
         fs::remove_file(&p).ok();
     }
