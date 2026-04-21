@@ -3,6 +3,7 @@ mod ctl;
 mod daemon;
 mod logging;
 mod paths;
+mod rpc;
 
 use std::path::PathBuf;
 
