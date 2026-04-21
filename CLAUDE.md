@@ -256,14 +256,132 @@ scaffold work:
 - Release bundling (`bundle.active = false` in `tauri.conf.json`).
 - CI / `.gitlab-ci.yml`.
 
-## Verification checklist (used by the scaffold issue)
+## Upstream migration runway
 
-- `task install && task build` succeeds on a clean clone.
+Pending upstream moves that will drive a hyprpilot bump. Keep this list
+accurate — whenever an upstream ships a tracked migration, follow the
+linked checklist in the same commit that bumps the dep, and **delete the
+row from this section when the work lands** so the runway always
+reflects debt we still carry.
+
+### wry / Tauri → GTK4 + webkit2gtk-6.0
+
+| | Reference | Status |
+| --- | --- | --- |
+| Tracking issue | [`tauri-apps/wry#1474`](https://github.com/tauri-apps/wry/issues/1474) | open, prioritized, assigned to core maintainer |
+| Active port PR | [`tauri-apps/wry#1530`](https://github.com/tauri-apps/wry/pull/1530) | open; unmerged |
+| Current binding here | GTK3 via `gtk = "0.18"` / `gdk = "0.18"` / `gtk-layer-shell = "0.8" (v0_6)`, webview via `webkit2gtk` 4.1 |
+
+Why it matters: the gtk-rs GTK3 crates are archived
+(RUSTSEC-2024-0411..0420) and `glib < 0.2` carries a known unsoundness.
+We inherit that exposure for as long as Tauri pins `wry 0.54.x`.
+
+When wry#1530 merges and Tauri publishes a release consuming it,
+migrate in one PR:
+
+1. Bump `tauri` in `src-tauri/Cargo.toml`, enabling whatever feature the
+   new wry exposes (likely `linux-webkit2gtk-6` or becomes the default).
+2. Swap Linux-target deps: `gtk` → `gtk4`, `gdk` → `gdk4`,
+   `gtk-layer-shell` → `gtk4-layer-shell`. Drop the `v0_6` feature
+   (GTK4 binding exposes `KeyboardMode::OnDemand` natively).
+3. Update `src-tauri/src/daemon/mod.rs::apply_anchor_mode`:
+   - `use gtk::prelude::...` → `use gtk4::prelude::...`.
+   - `use gtk_layer_shell::...` → `use gtk4_layer_shell::{..., LayerShell}`
+     (the GTK4 crate exposes layer-shell methods via an extension trait,
+     not inherent methods).
+   - `gtk_window.show_all()` → `gtk_window.set_visible(true)` (GTK4
+     dropped `show_all`; children auto-show).
+   - `gtk_window.hide()` → `gtk_window.set_visible(false)`.
+   - `gtk_window.present()` stays — it is the load-bearing commit that
+     makes the compositor actually map the layer surface, verified
+     against Hyprland 0.54.3 during K-235.
+4. Revisit the Wayland env workaround in `src-tauri/src/main.rs`:
+   `WEBKIT_DISABLE_DMABUF_RENDERER=1` is set unconditionally on Wayland
+   to work around `Gdk-Message: Error 71` on NVIDIA + webkit2gtk 4.1.
+   webkit2gtk 6.0 has had multiple DMABUF-path fixes; test with + without
+   on the NVIDIA box and drop the workaround if 6.0 handles it cleanly.
+5. Swap the system-library note in this file from `gtk-layer-shell` to
+   `gtk4-layer-shell`. Both are packaged on Arch; no other OS-level
+   friction expected.
+6. Run the full verification path (see next section) and paste the
+   `hyprctl layers` output pre- and post-bump into the PR description so
+   the surface behavior is provably equivalent.
+
+**Do not preempt upstream.** Vendoring wry's fork or cherry-picking
+wry#1530 trades compile-time pain + merge conflicts for a feature that
+is already prioritized. Wait for the release, follow the checklist.
+
+### Other open debt worth tracking
+
+- **Playwright e2e wiring.** `ui/e2e/placeholder.spec.ts` is `test.skip`
+  only; lands when we wire `tauri-driver` + WebKitGTK's WebDriver shim.
+  After the GTK4 migration above, the shim likely becomes `webkit6gtk`
+  equivalent — the two deltas are adjacent and may fall out of one PR.
+- **Release bundling.** `tauri.conf.json` has `bundle.active = false`.
+  Lifting it needs real icons and the pipelines issue (see below).
+- **CI / `.gitlab-ci.yml`.** Not yet created; scaffold verifies locally.
+  When it lands, every check listed in "Manual verification patterns"
+  below should have a matching CI job.
+- **Real branding icon.** `src-tauri/icons/icon.png` is a programmatic
+  32×32 solid-fill placeholder.
+
+## Manual verification patterns
+
+`task test`, `task lint`, `task format` are the automated bar. Beyond
+that, **every feature that changes runtime behavior lands with a manual
+smoke-test block in its PR description** — concrete commands + literal
+observed output so a reviewer can re-run against the branch and
+compare. "Should pass" is not evidence; paste the actual response.
+
+### Baseline smokes (extend per feature)
+
+These cover the scaffold's surface and should stay green on every PR:
+
+- `task install && task build` — produces `target/debug/hyprpilot`.
+- `./target/debug/hyprpilot --help`, `... daemon --help`, `... ctl --help`
+  render via clap.
 - `./target/debug/hyprpilot daemon` opens a window and
   `ls $XDG_RUNTIME_DIR/hyprpilot.sock` confirms the socket is bound.
-- Second `hyprpilot daemon` invocation exits `0` without spawning a window.
-- `./target/debug/hyprpilot ctl submit hello` logs and exits `0`.
-- `task test`, `task lint`, `task format` all pass.
-- A deliberately broken `config.toml` aborts startup with a readable error.
-- A partial `[ui.theme.surface.card.user] bg = "#..."` override merges cleanly
-  over defaults; untouched tokens still fall through.
+- Second `hyprpilot daemon` invocation exits `0` via
+  `tauri-plugin-single-instance` without spawning a second window.
+- `./target/debug/hyprpilot ctl <cmd>` round-trips through the JSON-RPC
+  endpoint; daemon-not-running → exit 1, stderr
+  `"hyprpilot daemon is not running"`.
+- A deliberately broken `config.toml` (e.g. `logging.level = "verbose"`,
+  `[ui.theme.window] default = "not-a-color"`,
+  `[daemon.window.center] width = "200%"`, `[daemon.window.anchor]
+  margin = -5`) aborts startup with a readable garde error naming the
+  field path.
+- Partial config overrides compose: e.g. setting only
+  `[ui.theme.surface.card.user] bg = "#..."` keeps every sibling token
+  falling through to `defaults.toml`.
+
+### Layer-shell / anchor mode (K-235)
+
+- `hyprctl layers` (or `swaymsg -t get_tree` on Sway) lists a layer with
+  `namespace: hyprpilot` and the configured `xywh`.
+- Flipping `[daemon.window.anchor] edge = "left"` via `--config` moves
+  the surface without a rebuild.
+- `[daemon.window] mode = "center"` yields a regular top-level — **no**
+  entry under `hyprctl layers`, a client with `class: hyprpilot` shows
+  up at the computed pixel size.
+- Overriding `[daemon.window.anchor] margin = 20` shifts the surface by
+  20 px from the anchored edge.
+
+### JSON-RPC / ctl (K-236)
+
+- `ctl toggle`, `ctl submit`, `ctl cancel`, `ctl session-info`,
+  `ctl kill` all round-trip; stdout is the pretty-printed JSON `result`,
+  exit 0 on success.
+- Raw socket probes (via `socat`, `ncat`, or a short python
+  `UnixStream`): a valid request returns a `result` envelope; `not json`
+  returns `-32700` with `id: null`; missing `jsonrpc` field returns
+  `-32600`; unknown method returns `-32601`.
+
+### When a check needs a Wayland session
+
+Most layer-shell / window checks require running on Hyprland or Sway.
+Call that out in the PR's verification block so a non-Wayland reviewer
+knows why it isn't reproducible from CI — and once the pipelines issue
+lands, wire a Wayland-capable runner to re-assert the checks in
+automation.
