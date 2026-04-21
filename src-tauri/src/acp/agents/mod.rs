@@ -56,13 +56,10 @@ pub trait AcpAgent: Send + Sync + 'static {
     fn spawn_command(&self, entry: &AgentConfig) -> Command {
         use std::process::Stdio;
 
-        let program = entry
-            .command
-            .clone()
-            .unwrap_or_else(|| self.default_command().to_string());
+        let program = entry.command.clone().unwrap_or_else(|| self.command().to_string());
 
         let args = if entry.args.is_empty() {
-            self.default_args().iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
+            self.args().iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
         } else {
             entry.args.clone()
         };
@@ -82,10 +79,10 @@ pub trait AcpAgent: Send + Sync + 'static {
     /// Vendor's default executable when `AgentConfig::command` is
     /// unset. Typically `bunx` (to run a Node-side ACP shim) or a
     /// native binary name.
-    fn default_command(&self) -> &'static str;
+    fn command(&self) -> &'static str;
 
     /// Vendor's default arguments when `AgentConfig::args` is empty.
-    fn default_args(&self) -> &'static [&'static str];
+    fn args(&self) -> &'static [&'static str];
 }
 
 /// Resolve the concrete vendor adapter for a given provider enum.

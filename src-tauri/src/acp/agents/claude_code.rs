@@ -12,11 +12,11 @@ use super::AcpAgent;
 pub struct AcpAgentClaudeCode;
 
 impl AcpAgent for AcpAgentClaudeCode {
-    fn default_command(&self) -> &'static str {
+    fn command(&self) -> &'static str {
         "bunx"
     }
 
-    fn default_args(&self) -> &'static [&'static str] {
+    fn args(&self) -> &'static [&'static str] {
         &["--bun", "@zed-industries/claude-code-acp"]
     }
 }

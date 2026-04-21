@@ -9,11 +9,11 @@ use super::AcpAgent;
 pub struct AcpAgentCodex;
 
 impl AcpAgent for AcpAgentCodex {
-    fn default_command(&self) -> &'static str {
+    fn command(&self) -> &'static str {
         "bunx"
     }
 
-    fn default_args(&self) -> &'static [&'static str] {
+    fn args(&self) -> &'static [&'static str] {
         &["--bun", "@zed-industries/codex-acp"]
     }
 }

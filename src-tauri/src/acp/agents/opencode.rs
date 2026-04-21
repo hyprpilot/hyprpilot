@@ -9,11 +9,11 @@ use super::AcpAgent;
 pub struct AcpAgentOpenCode;
 
 impl AcpAgent for AcpAgentOpenCode {
-    fn default_command(&self) -> &'static str {
+    fn command(&self) -> &'static str {
         "opencode"
     }
 
-    fn default_args(&self) -> &'static [&'static str] {
+    fn args(&self) -> &'static [&'static str] {
         &["acp"]
     }
 }
