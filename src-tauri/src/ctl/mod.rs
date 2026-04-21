@@ -1,14 +1,16 @@
 mod client;
+mod handlers;
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use serde_json::{json, Value};
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::config::Config;
-use crate::ctl::client::CtlConnection;
+use crate::ctl::client::CtlClient;
+use crate::ctl::handlers::{
+    CancelHandler, CtlHandler, KillHandler, SessionInfoHandler, StatusHandler, SubmitHandler, ToggleHandler,
+};
 use crate::paths;
-use crate::rpc::protocol::Outcome;
 
 #[derive(Args, Debug)]
 pub struct CtlArgs {
@@ -55,53 +57,23 @@ pub enum CtlCommand {
     },
 }
 
-impl CtlCommand {
-    /// Map a CLI subcommand to its wire `(method, params)` pair. `status`
-    /// is handled separately in `run` — it never reaches this path.
-    fn wire(self) -> (&'static str, Value) {
-        match self {
-            CtlCommand::Submit { text } => ("submit", json!({ "text": text.join(" ") })),
-            CtlCommand::Cancel => ("cancel", Value::Null),
-            CtlCommand::Toggle => ("toggle", Value::Null),
-            CtlCommand::Kill => ("kill", Value::Null),
-            CtlCommand::SessionInfo => ("session-info", Value::Null),
-            CtlCommand::Status { .. } => unreachable!("status is dispatched before wire()"),
-        }
-    }
-}
-
-/// Drive one `ctl` subcommand. Success prints the `result` payload as
-/// pretty JSON on stdout; an RPC error writes the message to stderr and
-/// calls `std::process::exit(1)` so the caller sees a non-zero exit —
-/// keeping `main()`'s `Result<()>` signature untouched.
+/// Dispatch one `ctl` subcommand. Each arm builds the matching
+/// `CtlHandler` (from `ctl/handlers.rs`) and hands it a `CtlClient`
+/// (from `ctl/client.rs`) — a connection factory pointed at the
+/// resolved socket. The handler decides how many connections to open
+/// and how transport failure should affect its exit semantics; `run`
+/// just wires clap to the handler registry.
 pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
     let socket = cfg.daemon.socket.clone().unwrap_or_else(paths::socket_path);
+    debug!(socket = %socket.display(), "ctl: dispatching");
+    let client = CtlClient::new(socket);
 
-    // `status` is handled separately: it may be long-running (`--watch`) and
-    // has its own offline-fallback + formatting logic.
-    if let CtlCommand::Status { watch } = args.command {
-        return client::run_status(&socket, watch);
-    }
-
-    debug!(socket = %socket.display(), "ctl: connecting");
-    let (method, params) = args.command.wire();
-    let outcome = match CtlConnection::connect(&socket).and_then(|mut c| c.call_outcome(method, params)) {
-        Ok(o) => o,
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    };
-
-    match outcome {
-        Outcome::Success { result } => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            Ok(())
-        }
-        Outcome::Error { error } => {
-            error!(code = error.code, message = %error.message, "ctl: rpc error");
-            eprintln!("rpc error {}: {}", error.code, error.message);
-            std::process::exit(1);
-        }
+    match args.command {
+        CtlCommand::Submit { text } => SubmitHandler { text: text.join(" ") }.run(&client),
+        CtlCommand::Cancel => CancelHandler.run(&client),
+        CtlCommand::Toggle => ToggleHandler.run(&client),
+        CtlCommand::Kill => KillHandler.run(&client),
+        CtlCommand::SessionInfo => SessionInfoHandler.run(&client),
+        CtlCommand::Status { watch } => StatusHandler { watch }.run(&client),
     }
 }

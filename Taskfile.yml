@@ -5,6 +5,7 @@ version: "3"
 
 vars:
   TAURI: ./ui/node_modules/.bin/tauri
+  RUST_LOG: debug
 
 tasks:
   install:
@@ -13,7 +14,7 @@ tasks:
       - cargo fetch --manifest-path src-tauri/Cargo.toml
       - pnpm --dir ui install
 
-  dev:
+  run:
     desc: Run the Tauri app with live-reload.
     cmds:
       - "{{ .TAURI }} dev"
@@ -43,7 +44,7 @@ tasks:
     cmds:
       - "{{ .TAURI }} build --debug"
 
-  "build:release":
+  release:
     desc: Build a release Tauri bundle.
     cmds:
       - "{{ .TAURI }} build"

@@ -277,6 +277,20 @@ Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
   landed — each handler now parses its own `params: Value` and
   `dispatch_line` routes on the raw method string. Apply the same rule to
   every future refactor: one shape, one code path, no aliases.
+- **Stubs panic, they don't pretend.** When a feature isn't wired end-to-end
+  yet (typically because its real implementation is gated behind a later
+  Linear issue), the client-side entry point must `unimplemented!("<verb>:
+  <why> (K-xxx)")` rather than round-trip to the server and pretty-print a
+  placeholder response. Printing a fake-success JSON from a server-side stub
+  looks exactly like success and hides the gap. Example: today
+  `src-tauri/src/ctl/handlers.rs::SubmitHandler` / `CancelHandler` /
+  `SessionInfoHandler` all `unimplemented!("… ACP bridge not yet
+  implemented (K-239)")` — the server still carries echo-style stub
+  responses for those methods, but the CLI never reaches them. Same rule
+  applies the other direction: if a server-side `RpcHandler` returns a
+  hand-rolled placeholder, nothing on the CLI side should dress it up as a
+  real result. When K-239 lands, flip the `unimplemented!()` in one edit;
+  never in two.
 - **Inline single-use helpers.** A function with exactly one caller should be
   folded into that caller. Prefer `fn main() -> Result<()>` over a `try_main`
   wrapper; prefer unfolding a small setup step into the body (with a short
