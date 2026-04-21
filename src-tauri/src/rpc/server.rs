@@ -4,6 +4,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info, warn};
 
+use crate::daemon::WindowRenderer;
 use crate::rpc::protocol::{Call, JsonRpcVersion, Outcome, RequestId, Response, RpcError};
 
 /// Shared state handed to each connection task. `AppHandle` is cheap to
@@ -182,18 +183,26 @@ fn handle_call(call: Call, state: Option<&RpcState>) -> Result<serde_json::Value
                 .get_webview_window("main")
                 .ok_or_else(|| RpcError::internal_error("main window not available"))?;
 
+            let renderer = state
+                .app
+                .try_state::<WindowRenderer>()
+                .ok_or_else(|| RpcError::internal_error("WindowRenderer not in managed state"))?;
+
             let visible = window
                 .is_visible()
                 .map_err(|e| RpcError::internal_error(format!("is_visible failed: {e}")))?;
 
             if visible {
-                window
-                    .hide()
+                renderer
+                    .hide(&window)
                     .map_err(|e| RpcError::internal_error(format!("hide failed: {e}")))?;
                 Ok(json!({ "visible": false }))
             } else {
-                window
-                    .show()
+                // Re-resolve dimensions against the current monitor on every
+                // show transition so the surface is correct after monitor
+                // changes (dock swap, lid close/open, hotplug).
+                renderer
+                    .show(&window)
                     .map_err(|e| RpcError::internal_error(format!("show failed: {e}")))?;
                 Ok(json!({ "visible": true }))
             }

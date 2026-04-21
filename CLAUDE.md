@@ -187,7 +187,11 @@ height = "60%"
 the enum is `Dimension::{Pixels(u32), Percent(u8)}`. A custom `Deserialize`
 impl handles the `%` suffix; anything else (`"50px"`, bare floats) is
 rejected at load time. Percentages resolve against the active monitor's
-physical size at map-time.
+physical size **on every show transition**, not just at boot — so moving the
+overlay between monitors and toggling back on produces the correct size for
+the new output. The full `[daemon.window]` config is owned by the
+`WindowRenderer` struct (`daemon/renderer.rs`), registered in Tauri managed
+state; its `show()` method is the single code path for both setup and toggle.
 
 `[daemon.window.anchor] height` is intentionally unset by default. With
 height unset the daemon pins top + bottom + `edge`, so the compositor
