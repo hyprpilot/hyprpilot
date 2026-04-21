@@ -37,7 +37,7 @@ pub trait CtlHandler {
 /// `result` payload. Shared body for the plain subcommands that
 /// differ only in method + params. Any transport failure, RPC error,
 /// or serialization failure logs + writes to stderr + `exit(1)`.
-fn call_and_print(client: &CtlClient, method: &str, params: Value) -> Result<()> {
+fn emit(client: &CtlClient, method: &str, params: Value) -> Result<()> {
     let mut conn = match client.connect() {
         Ok(c) => c,
         Err(err) => {
@@ -87,7 +87,7 @@ pub struct ToggleHandler;
 
 impl CtlHandler for ToggleHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        call_and_print(client, "toggle", Value::Null)
+        emit(client, "toggle", Value::Null)
     }
 }
 
@@ -95,7 +95,7 @@ pub struct KillHandler;
 
 impl CtlHandler for KillHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        call_and_print(client, "kill", Value::Null)
+        emit(client, "kill", Value::Null)
     }
 }
 

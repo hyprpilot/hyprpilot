@@ -225,16 +225,30 @@ height unset the daemon pins top + bottom + `edge`, so the compositor
 stretches the surface full-height — the Python-pilot overlay shape.
 Setting an explicit `height` pins only `edge` and uses that fixed extent.
 
-### Edge accent (inward border)
+### Edge accent
 
 The daemon exposes `get_window_state` → `{ mode, anchorEdge }`. At boot,
 `ui/src/composables/useWindow.ts::applyWindowState` writes
-`data-window-anchor="<edge>"` on `<html>`; `ui/src/assets/styles.css`
-selects on that attribute and paints a 2px `border-<opposite>` in
-`var(--theme-window-edge)` on `body`, so the accent always lands on the
-inward (visible) side of the overlay. Center mode leaves the attribute
-unset → no accent. Extending to new edges is additive (Rust enum variant
-+ one CSS selector).
+`data-window-anchor="<edge>"` on `<html>` in anchor mode (and leaves it
+unset in center mode). `ui/src/assets/styles.css` then paints
+`var(--theme-window-edge)` differently per mode:
+
+- **Anchor mode**: a single 2px stripe on the side *opposite* the
+  anchored edge (the inward side where the overlay meets the desktop).
+  One `html[data-window-anchor='<edge>'] body` selector per edge
+  variant. The anchored edge itself stays borderless — it sits flush
+  against the screen bezel, so a stripe there would be clipped.
+- **Center mode**: full 2px perimeter via
+  `html:not([data-window-anchor]) body`. Every edge is inward in center
+  mode, so framing the whole instance reads cleanly.
+
+A single `body { box-sizing: border-box; }` rule keeps whichever border
+gets painted inside the `100vh` viewport instead of pushing content
+past the anchored edge.
+
+Extending to a new anchor edge is additive: Rust enum variant +
+serialize name + one CSS selector pairing the attribute value with
+the opposite-side border.
 
 ### Crate: `gtk-layer-shell` 0.8 (GTK3)
 

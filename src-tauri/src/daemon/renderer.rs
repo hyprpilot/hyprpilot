@@ -1,23 +1,32 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 use tracing::{debug, info, warn};
 
 use crate::config::{Dimension, Edge, Window, WindowMode};
+use crate::daemon::wm::WindowManager;
 
-/// Owns the resolved `[daemon.window]` config and performs every per-show
-/// operation against it: monitor selection, dimension resolution, initial
-/// map (anchor/center), and every subsequent re-map when `show` is called.
+/// Owns the resolved `[daemon.window]` config + the active
+/// `WindowManager` adapter, and performs every per-show operation
+/// against them: monitor selection, dimension resolution, initial
+/// map (anchor/center), and every subsequent re-map when `show` is
+/// called.
 ///
-/// Registered in Tauri managed state so the RPC toggle handler can reach it
-/// via `state.app.try_state::<WindowRenderer>()`.
-#[derive(Debug, Clone)]
+/// Registered in Tauri managed state so the RPC toggle handler can
+/// reach it via `state.app.try_state::<WindowRenderer>()`. The WM is
+/// behind `Arc<dyn ...>` so cloning the renderer (managed-state
+/// requirement) is cheap and the same adapter instance serves every
+/// show transition — no per-show re-detection.
+#[derive(Clone)]
 pub struct WindowRenderer {
     config: Window,
+    wm: Arc<dyn WindowManager>,
 }
 
 impl WindowRenderer {
-    pub fn new(config: Window) -> Self {
-        Self { config }
+    pub fn new(config: Window, wm: Arc<dyn WindowManager>) -> Self {
+        Self { config, wm }
     }
 
     #[cfg(test)]
@@ -49,8 +58,7 @@ impl WindowRenderer {
     /// reflects the monitor the user is currently on.
     pub fn resolve_anchor_size(&self, window: &WebviewWindow) -> Result<((u32, Option<u32>), Monitor)> {
         let anchor = &self.config.anchor;
-        let output = self.config.output.as_deref();
-        let monitor = resolve_monitor(window, output)?;
+        let monitor = self.resolve_monitor(window)?;
         let PhysicalSize {
             width: mon_w,
             height: mon_h,
@@ -91,8 +99,7 @@ impl WindowRenderer {
     /// Called at setup and again on every show transition.
     pub fn resolve_center_size(&self, window: &WebviewWindow) -> Result<((u32, u32), Monitor)> {
         let center = &self.config.center;
-        let output = self.config.output.as_deref();
-        let monitor = resolve_monitor(window, output)?;
+        let monitor = self.resolve_monitor(window)?;
         let PhysicalSize {
             width: mon_w,
             height: mon_h,
@@ -208,27 +215,35 @@ impl WindowRenderer {
         gtk_window.set_layer_shell_margin(gtk_edge(edge), margin);
 
         // Pin the layer-shell surface to the same monitor the size was
-        // computed against. We look up the gdk::Monitor by geometry rather
-        // than name because gdk 0.18 (GTK3) only exposes model/manufacturer
-        // strings on `gdk::Monitor`, not the connector name that `output`
-        // uses and that Tauri's `Monitor::name()` returns. Connector names
-        // are the authoritative identifier (stable across reboots; models
-        // can collide across identical displays); matching by geometry
-        // lets both paths agree on which monitor without reinterpreting
+        // computed against. Always call this — not just when `output` is
+        // explicitly set in config — because without a `set_monitor` call
+        // the compositor picks an output, and on multi-monitor setups it
+        // can land on one wider than `primary_monitor()`. The surface then
+        // paints at 40%-of-primary against a wider backdrop, reading as
+        // ~15-20% visually. `resolve_anchor_size` already picked the
+        // monitor (primary when `output` is None, the named one
+        // otherwise); pinning to it keeps the sizing math and placement
+        // in lockstep.
+        //
+        // We look up the gdk::Monitor by geometry rather than name because
+        // gdk 0.18 (GTK3) only exposes model/manufacturer strings on
+        // `gdk::Monitor`, not the connector name that `output` uses and
+        // that Tauri's `Monitor::name()` returns. Connector names are the
+        // authoritative identifier (stable across reboots; models can
+        // collide across identical displays); matching by geometry lets
+        // both paths agree on which monitor without reinterpreting
         // `output` against two different string namespaces.
         //
         // The GTK4 binding (`gtk4-layer-shell`) exposes
         // `gdk::Monitor::connector()` directly; swap to it when the Tauri
         // upstream lands its GTK4 migration (see CLAUDE.md runway).
-        if self.config.output.is_some() {
-            if let Some(gdk_monitor) = gdk_monitor_for(&monitor) {
-                gtk_window.set_monitor(&gdk_monitor);
-            } else {
-                warn!(
-                    name = ?monitor.name(),
-                    "could not map resolved monitor to a gdk::Monitor — compositor will pick a monitor"
-                );
-            }
+        if let Some(gdk_monitor) = gdk_monitor_for(&monitor) {
+            gtk_window.set_monitor(&gdk_monitor);
+        } else {
+            warn!(
+                name = ?monitor.name(),
+                "could not map resolved monitor to a gdk::Monitor — compositor will pick a monitor and the surface may render at the wrong fractional width"
+            );
         }
 
         // gtk-layer-shell ignores GTK resize flags on layer surfaces — fixed
@@ -318,21 +333,76 @@ impl WindowRenderer {
 // Shared monitor helpers — used by both anchor and center paths.
 // ---------------------------------------------------------------------------
 
-pub(super) fn resolve_monitor(window: &WebviewWindow, output: Option<&str>) -> Result<Monitor> {
-    if let Some(target) = output {
-        for m in window.available_monitors().context("list monitors")? {
-            if m.name().map(String::as_str) == Some(target) {
-                return Ok(m);
-            }
-        }
-        warn!(%target, "configured output not found — falling back to primary monitor");
-    }
+impl WindowRenderer {
+    /// Pick the monitor to anchor / center the overlay against.
+    ///
+    /// Resolution order:
+    /// 1. If `[daemon.window] output` is set, match by connector name
+    ///    (`DP-1`, `eDP-1`, …). Explicit user override — always wins.
+    /// 2. The compositor-focused monitor via the `WindowManager`
+    ///    adapter. On Hyprland this is `hyprctl -j monitors`; on Sway
+    ///    `swaymsg -t get_outputs`; otherwise GDK cursor position
+    ///    (works on X11 and on some Wayland compositors).
+    /// 3. `primary_monitor()`. Compositor-defined, rarely matches
+    ///    user intent on multi-monitor setups, but it's better than
+    ///    failing outright.
+    /// 4. Any monitor — safety net so `apply_*` never hits `unwrap`
+    ///    on an empty list.
+    pub(super) fn resolve_monitor(&self, window: &WebviewWindow) -> Result<Monitor> {
+        let monitors = window.available_monitors().context("list monitors")?;
 
-    window
-        .primary_monitor()
-        .context("query primary monitor")?
-        .or_else(|| window.available_monitors().ok().and_then(|mut v| v.pop()))
-        .context("no monitors available")
+        // Dump every monitor's bounds at debug level so `RUST_LOG=debug`
+        // surfaces what we compared against if the pick ever looks wrong
+        // — one log per show is cheap, and "right monitor / wrong bounds"
+        // is otherwise indistinguishable from "wrong monitor" in the
+        // aftermath.
+        for m in &monitors {
+            debug!(
+                name = ?m.name(),
+                pos_x = m.position().x,
+                pos_y = m.position().y,
+                width = m.size().width,
+                height = m.size().height,
+                scale = m.scale_factor(),
+                "available monitor"
+            );
+        }
+
+        if let Some(target) = self.config.output.as_deref() {
+            if let Some(m) = monitors.iter().find(|m| m.name().map(String::as_str) == Some(target)) {
+                return Ok(m.clone());
+            }
+            warn!(%target, "configured output not found — falling back to focused monitor");
+        }
+
+        if let Some(info) = self.wm.focused_monitor(&monitors) {
+            if let Some(m) = monitors
+                .iter()
+                .find(|m| m.name().map(String::as_str) == Some(info.name.as_str()))
+            {
+                debug!(
+                    wm = self.wm.name(),
+                    name = %info.name,
+                    make = ?info.make,
+                    model = ?info.model,
+                    serial = ?info.serial,
+                    "resolved monitor via WindowManager",
+                );
+                return Ok(m.clone());
+            }
+            debug!(
+                wm = self.wm.name(),
+                name = %info.name,
+                "focused monitor not in tauri monitor list — falling through",
+            );
+        }
+
+        window
+            .primary_monitor()
+            .context("query primary monitor")?
+            .or_else(|| monitors.into_iter().next())
+            .context("no monitors available")
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -371,6 +441,16 @@ pub(super) fn gdk_monitor_for(target: &Monitor) -> Option<gdk::Monitor> {
     let display = gdk::Display::default()?;
     let target_pos = target.position();
     let target_size = target.size();
+    debug!(
+        tauri_name = ?target.name(),
+        tauri_pos_x = target_pos.x,
+        tauri_pos_y = target_pos.y,
+        tauri_w = target_size.width,
+        tauri_h = target_size.height,
+        tauri_scale = target.scale_factor(),
+        "gdk_monitor_for: searching for target"
+    );
+
     for i in 0..display.n_monitors() {
         let Some(m) = display.monitor(i) else { continue };
         let geom = m.geometry();
@@ -379,11 +459,26 @@ pub(super) fn gdk_monitor_for(target: &Monitor) -> Option<gdk::Monitor> {
         let gdk_y = geom.y() * scale;
         let gdk_w = geom.width() as i64 * scale as i64;
         let gdk_h = geom.height() as i64 * scale as i64;
-        if gdk_x == target_pos.x
+        let matched = gdk_x == target_pos.x
             && gdk_y == target_pos.y
             && gdk_w == target_size.width as i64
-            && gdk_h == target_size.height as i64
-        {
+            && gdk_h == target_size.height as i64;
+        debug!(
+            idx = i,
+            gdk_model = ?m.model(),
+            gdk_geom_x = geom.x(),
+            gdk_geom_y = geom.y(),
+            gdk_geom_w = geom.width(),
+            gdk_geom_h = geom.height(),
+            gdk_scale = scale,
+            scaled_x = gdk_x,
+            scaled_y = gdk_y,
+            scaled_w = gdk_w,
+            scaled_h = gdk_h,
+            matched,
+            "gdk_monitor_for: candidate"
+        );
+        if matched {
             return Some(m);
         }
     }
@@ -398,6 +493,26 @@ pub(super) fn gdk_monitor_for(target: &Monitor) -> Option<gdk::Monitor> {
 mod tests {
     use super::*;
     use crate::config::{AnchorWindow, CenterWindow, Dimension, Edge, Window, WindowMode};
+
+    /// Test-only WM stub. `focused_monitor` is never reached by the
+    /// `resolve_dim` tests (pure arithmetic that doesn't touch the
+    /// monitor list), so the impl panics to surface any future test
+    /// that accidentally drives a monitor-selection path through the
+    /// stub.
+    struct WindowManagerStub;
+
+    impl crate::daemon::wm::WindowManager for WindowManagerStub {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+        fn focused_monitor(&self, _: &[Monitor]) -> Option<crate::daemon::wm::MonitorInfo> {
+            None
+        }
+    }
+
+    fn test_wm() -> Arc<dyn crate::daemon::wm::WindowManager> {
+        Arc::new(WindowManagerStub)
+    }
 
     fn make_anchor_config() -> Window {
         Window {
@@ -419,7 +534,7 @@ mod tests {
     #[test]
     fn renderer_config_roundtrip() {
         let cfg = make_anchor_config();
-        let renderer = WindowRenderer::new(cfg.clone());
+        let renderer = WindowRenderer::new(cfg.clone(), test_wm());
         assert_eq!(renderer.config(), &cfg);
     }
 
@@ -431,7 +546,7 @@ mod tests {
     #[test]
     fn resolve_dim_percent_40_of_1920() {
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Percent(40), 1920),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Percent(40), 1920),
             768
         );
     }
@@ -439,7 +554,7 @@ mod tests {
     #[test]
     fn resolve_dim_percent_100_of_1920() {
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Percent(100), 1920),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Percent(100), 1920),
             1920
         );
     }
@@ -449,7 +564,7 @@ mod tests {
         // Percent(0) is rejected by validate_dimension (must be 1..=100), but
         // the arithmetic itself must be defined and return 0 — no panic.
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Percent(0), 1920),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Percent(0), 1920),
             0
         );
     }
@@ -457,11 +572,11 @@ mod tests {
     #[test]
     fn resolve_dim_pixels_passthrough() {
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Pixels(480), 1920),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Pixels(480), 1920),
             480
         );
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Pixels(1), 9999),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Pixels(1), 9999),
             1
         );
     }
@@ -470,12 +585,12 @@ mod tests {
     fn resolve_dim_percent_against_different_extents() {
         // 40% of a 2560-wide monitor
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Percent(40), 2560),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Percent(40), 2560),
             1024
         );
         // 50% of a 1080-tall monitor
         assert_eq!(
-            WindowRenderer::new(make_anchor_config()).resolve_dim(Dimension::Percent(50), 1080),
+            WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Percent(50), 1080),
             540
         );
     }

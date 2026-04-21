@@ -1,4 +1,5 @@
 mod renderer;
+mod wm;
 pub use renderer::WindowRenderer;
 
 use std::io::ErrorKind;
@@ -111,7 +112,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
     // active monitor on every show transition.
-    let renderer = WindowRenderer::new(window_cfg.clone());
+    let renderer = WindowRenderer::new(window_cfg.clone(), wm::detect());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {

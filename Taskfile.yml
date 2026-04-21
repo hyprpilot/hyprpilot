@@ -4,8 +4,10 @@
 version: "3"
 
 vars:
-  TAURI: ./ui/node_modules/.bin/tauri
-  RUST_LOG: debug
+  tauri: ./ui/node_modules/.bin/tauri
+
+env:
+  RUST_LOG: hyprpilot=debug
 
 tasks:
   install:
@@ -17,7 +19,7 @@ tasks:
   run:
     desc: Run the Tauri app with live-reload.
     cmds:
-      - "{{ .TAURI }} dev"
+      - "{{ .tauri }} dev"
 
   test:
     desc: Run Rust and frontend test suites.
@@ -42,9 +44,9 @@ tasks:
   build:
     desc: Build a debug Tauri bundle.
     cmds:
-      - "{{ .TAURI }} build --debug"
+      - "{{ .tauri }} build --debug"
 
   release:
     desc: Build a release Tauri bundle.
     cmds:
-      - "{{ .TAURI }} build"
+      - "{{ .tauri }} build"

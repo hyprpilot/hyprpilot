@@ -56,11 +56,18 @@ body {
   min-height: 100vh;
 }
 
-/* Window-edge accent: a single-pixel stripe in `--theme-window-edge` painted
- * on the inward (visible) side of the overlay. `data-window-anchor` is set
- * by `applyWindowState()` to the compositor-side anchor — so `right` means
- * the window is pinned to the right screen edge and the stripe goes on the
- * left of the window. Center mode leaves the attribute unset → no stripe. */
+/* Window-edge accent in `--theme-window-edge`, differentiated by window mode:
+ *
+ * - Anchor mode (`data-window-anchor="<edge>"` present): single 2px stripe on
+ *   the side *opposite* the anchor — i.e. the inward edge where the overlay
+ *   meets the desktop. The anchored edge itself sits flush against the screen
+ *   bezel, so a border there would get clipped by the compositor.
+ * - Center mode (attribute unset): full 2px perimeter on all four sides —
+ *   the window floats, every edge is inward, so framing the whole instance
+ *   reads cleanly.
+ *
+ * `box-sizing: border-box` keeps whatever border we paint inside the `100vh`
+ * viewport instead of pushing content past the edge. */
 html[data-window-anchor='right'] body {
   border-left: 2px solid var(--theme-window-edge);
 }
@@ -75,4 +82,12 @@ html[data-window-anchor='top'] body {
 
 html[data-window-anchor='bottom'] body {
   border-top: 2px solid var(--theme-window-edge);
+}
+
+html:not([data-window-anchor]) body {
+  border: 2px solid var(--theme-window-edge);
+}
+
+body {
+  box-sizing: border-box;
 }
