@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,14 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub ui: Ui,
+    /// `[[agents]]` entries + `active_agent` live at the TOML root;
+    /// flattened onto `Config` so the user doesn't have to type
+    /// `[agents.agents]`-style nested paths. The nested struct keeps
+    /// the Rust-side code cohesive — `AgentsConfig` is what the ACP
+    /// module reads off Tauri managed state.
+    #[garde(dive)]
+    #[serde(flatten)]
+    pub agents: AgentsConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -280,6 +289,108 @@ pub struct ThemeState {
     pub awaiting: Option<String>,
 }
 
+/// User-facing agent registry.
+///
+/// `agents` is an array of per-agent config blocks, each identified by
+/// its `id` (`claude-code`, `codex`, `opencode`, …). `active_agent`
+/// picks the default the daemon uses when neither `ctl submit` nor the
+/// webview specifies one.
+///
+/// Merge semantics: user TOML entries with an existing `id` override
+/// the compiled default fields for that id; entries with a new `id`
+/// extend the registry. `active_agent` is a top-level `Option<String>`
+/// that last-writer-wins.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// Every configured agent. Validation dives into each entry and
+    /// additionally asserts ids are unique + `active_agent` (if set)
+    /// names a real agent.
+    #[garde(dive)]
+    #[garde(custom(validate_agents_ids))]
+    pub agents: Vec<AgentConfig>,
+    /// Id of the agent to use when none is addressed explicitly.
+    #[garde(skip)]
+    pub active_agent: Option<String>,
+}
+
+/// A single configured agent. `id` is the user-facing handle;
+/// `provider` selects the Rust vendor struct that encodes that
+/// backend's quirks. `command` + `args` + `env` determine how the
+/// daemon spawns the ACP server subprocess; `permission_policy` is
+/// hyprpilot's ask / accept-edits / bypass default, resolved through
+/// each vendor's `PermissionOption` fallback chain.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    #[garde(length(min = 1))]
+    pub id: String,
+    #[garde(skip)]
+    pub provider: AgentProvider,
+    /// Missing → fall back to the provider's default command (each
+    /// vendor struct supplies one).
+    #[garde(inner(length(min = 1)))]
+    pub command: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Working directory for the agent subprocess. Missing →
+    /// `std::env::current_dir()` at `new_session` time.
+    #[garde(skip)]
+    pub cwd: Option<PathBuf>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub permission_policy: AcpPermissionPolicy,
+    /// Additional environment variables forwarded to the child. Keys
+    /// are inherited as-is; blank values are allowed.
+    #[garde(skip)]
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Closed enum — each variant maps to a Rust struct that encodes that
+/// vendor's quirks (launch command, permission kinds, tool-content
+/// shape). Adding a provider means one new struct + one new enum
+/// variant + one new match arm in `acp::agents::vendor_for`.
+///
+/// Wire names are explicit because `rename_all = "kebab-case"` would
+/// turn `AcpOpenCode` into `acp-open-code` — opencode's product name
+/// is one word, and spending configuration on the hyphen placement
+/// would be a papercut.
+///
+/// The shared `Acp` prefix is load-bearing (the additive naming rule
+/// groups ACP providers apart from future `HttpAgent*` or
+/// `LocalAgent*` siblings), so clippy's `enum_variant_names` lint is
+/// silenced at the type level.
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum AgentProvider {
+    #[default]
+    #[serde(rename = "acp-claude-code")]
+    AcpClaudeCode,
+    #[serde(rename = "acp-codex")]
+    AcpCodex,
+    #[serde(rename = "acp-opencode")]
+    AcpOpenCode,
+}
+
+/// Hyprpilot-level permission default. The ACP wire protocol has no
+/// `permission_mode`; each vendor ships its own subset of
+/// `PermissionOptionKind`s. `AcpPermissionPolicy` maps to a desired
+/// kind, which the vendor resolves via a fallback chain (see
+/// `acp::permissions::select_option_id`).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AcpPermissionPolicy {
+    /// Every permission request parks on a webview reply.
+    #[default]
+    Ask,
+    /// Auto-allow `ToolKind::Edit` calls; ask for everything else.
+    AcceptEdits,
+    /// Auto-allow everything (picks an `allow_*` option every time).
+    Bypass,
+}
+
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
     let mut layers: Vec<String> = vec![DEFAULTS.to_string()];
 
@@ -320,8 +431,53 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
             ui: Ui {
                 theme: merge_theme(acc.ui.theme, layer.ui.theme),
             },
+            agents: merge_agents(acc.agents, layer.agents),
         })
     })
+}
+
+/// Merge two `AgentsConfig` layers. Semantics:
+///
+/// - `active_agent` is last-writer-wins (`layer.or(base)`).
+/// - For each `id` in `base.agents`, look up the **first** matching
+///   entry in `layer.agents`; if present, the layer's full
+///   `AgentConfig` replaces the base entry (no field-level merge —
+///   `AgentConfig` is small and "override provider keeps old command"
+///   would be surprising).
+/// - Entries in `layer.agents` whose id is not in `base` are appended
+///   in order. Duplicate ids inside a single user layer survive the
+///   merge (appended twice) so `validate_agents_ids` can flag them.
+///
+/// This is intentionally simpler than the theme's tree walk:
+/// `AgentConfig` has <10 leaves and is read as a whole unit by the
+/// spawn flow, so per-field merging would be overkill.
+fn merge_agents(base: AgentsConfig, layer: AgentsConfig) -> AgentsConfig {
+    let mut out: Vec<AgentConfig> = Vec::with_capacity(base.agents.len() + layer.agents.len());
+    let base_ids: std::collections::HashSet<String> = base.agents.iter().map(|a| a.id.clone()).collect();
+
+    // Carry over base entries, overriding by id when the layer has a
+    // matching id (first match wins — subsequent layer entries with
+    // the same id survive as appended duplicates that `validate`
+    // catches).
+    for b in base.agents {
+        match layer.agents.iter().find(|l| l.id == b.id) {
+            Some(override_entry) => out.push(override_entry.clone()),
+            None => out.push(b),
+        }
+    }
+
+    // Append every layer entry whose id is not in the base (keeps
+    // duplicates intact so validation can flag them).
+    for l in layer.agents {
+        if !base_ids.contains(&l.id) {
+            out.push(l);
+        }
+    }
+
+    AgentsConfig {
+        agents: out,
+        active_agent: layer.active_agent.or(base.active_agent),
+    }
 }
 
 fn merge_window(base: Window, layer: Window) -> Window {
@@ -392,7 +548,29 @@ fn merge_theme(base: Theme, layer: Theme) -> Theme {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))
+        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))?;
+
+        // Cross-field: `agents.active_agent`, when set, must match a
+        // real `agents[].id`. Reported outside the derive pass because
+        // `garde` has no first-class "this field references that
+        // field" hook.
+        if let Some(active) = self.agents.active_agent.as_deref() {
+            let known = self.agents.agents.iter().any(|a| a.id == active);
+            if !known {
+                bail!(
+                    "agents.active_agent = '{active}' but no matching [[agents]] entry exists. \
+                     Configured ids: [{}]",
+                    self.agents
+                        .agents
+                        .iter()
+                        .map(|a| a.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -416,6 +594,21 @@ fn validate_dimension(value: &Dimension, _ctx: &()) -> garde::Result {
         Dimension::Percent(p) if (1..=100).contains(&p) => Ok(()),
         Dimension::Percent(p) => Err(garde::Error::new(format!("percent must be 1..=100, got {p}"))),
     }
+}
+
+fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for a in agents {
+        if !seen.insert(a.id.as_str()) {
+            return Err(garde::Error::new(format!(
+                "duplicate agent id '{}' — each [[agents]] entry must have a unique id",
+                a.id
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_hex_color(value: &String, _ctx: &()) -> garde::Result {
@@ -753,6 +946,138 @@ mod tests {
         };
         let err = cfg.validate().expect_err("should error");
         assert!(err.to_string().contains(">= 1"), "{err}");
+    }
+
+    /// Mirrors `defaults_populate_every_daemon_window_field` for the
+    /// agents registry. If the seeded entries drift — wrong provider
+    /// name, missing id, policy variant removed — this fires before
+    /// the daemon starts panicking at runtime against a bad schema.
+    #[test]
+    fn defaults_populate_every_agent_field() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+
+        assert_eq!(
+            cfg.agents.active_agent.as_deref(),
+            Some("claude-code"),
+            "agents.active_agent must be seeded to a concrete id"
+        );
+
+        let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["claude-code", "codex", "opencode"],
+            "defaults must seed the three built-in vendors"
+        );
+
+        for a in &cfg.agents.agents {
+            assert!(a.command.is_some(), "agents[{}].command", a.id);
+            assert!(!a.args.is_empty(), "agents[{}].args", a.id);
+            assert_eq!(a.permission_policy, AcpPermissionPolicy::Ask, "agents[{}].policy", a.id);
+        }
+
+        // Provider mapping per id.
+        let by_id: std::collections::HashMap<&str, AgentProvider> =
+            cfg.agents.agents.iter().map(|a| (a.id.as_str(), a.provider)).collect();
+        assert_eq!(by_id["claude-code"], AgentProvider::AcpClaudeCode);
+        assert_eq!(by_id["codex"], AgentProvider::AcpCodex);
+        assert_eq!(by_id["opencode"], AgentProvider::AcpOpenCode);
+    }
+
+    #[test]
+    fn user_agent_entry_overrides_default_by_id() {
+        // Override claude-code's command + policy; leave codex +
+        // opencode untouched; add a new entry with a fresh id.
+        let p = write_tmp(
+            "agents.toml",
+            "[[agents]]\nid = \"claude-code\"\nprovider = \"acp-claude-code\"\ncommand = \"my-claude\"\nargs = [\"--custom\"]\npermission_policy = \"bypass\"\n\n[[agents]]\nid = \"my-local\"\nprovider = \"acp-codex\"\ncommand = \"local-codex\"\nargs = []\npermission_policy = \"accept-edits\"\n",
+        );
+        let cfg = load(Some(&p), None).expect("load");
+
+        let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["claude-code", "codex", "opencode", "my-local"],
+            "overrides keep position, new ids append"
+        );
+
+        let cc = cfg.agents.agents.iter().find(|a| a.id == "claude-code").unwrap();
+        assert_eq!(cc.command.as_deref(), Some("my-claude"));
+        assert_eq!(cc.permission_policy, AcpPermissionPolicy::Bypass);
+        assert_eq!(cc.args, vec!["--custom".to_string()]);
+
+        // Untouched defaults keep everything.
+        let codex = cfg.agents.agents.iter().find(|a| a.id == "codex").unwrap();
+        assert_eq!(codex.command.as_deref(), Some("bunx"));
+        assert_eq!(codex.permission_policy, AcpPermissionPolicy::Ask);
+
+        // Appended entry survived.
+        let ml = cfg.agents.agents.iter().find(|a| a.id == "my-local").unwrap();
+        assert_eq!(ml.provider, AgentProvider::AcpCodex);
+        assert_eq!(ml.permission_policy, AcpPermissionPolicy::AcceptEdits);
+
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_agent_ids() {
+        let p = write_tmp(
+            "dup.toml",
+            "[[agents]]\nid = \"dupe\"\nprovider = \"acp-claude-code\"\ncommand = \"a\"\n\n[[agents]]\nid = \"dupe\"\nprovider = \"acp-codex\"\ncommand = \"b\"\n",
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate agent id 'dupe'"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn validate_rejects_unknown_active_agent() {
+        let p = write_tmp("bad-active.toml", "active_agent = \"does-not-exist\"\n");
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("agents.active_agent = 'does-not-exist'"), "{msg}");
+        assert!(msg.contains("Configured ids:"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn user_override_of_active_agent_wins() {
+        let p = write_tmp("active.toml", "active_agent = \"codex\"\n");
+        let cfg = load(Some(&p), None).expect("load");
+        assert_eq!(cfg.agents.active_agent.as_deref(), Some("codex"));
+        cfg.validate().expect("codex exists in defaults, so valid");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn agent_provider_round_trips_kebab_case() {
+        // Spot-check each variant. Names match the TOML literals in
+        // defaults.toml — a rename would require updating defaults
+        // AND every user config out there.
+        for (v, literal) in [
+            (AgentProvider::AcpClaudeCode, "\"acp-claude-code\""),
+            (AgentProvider::AcpCodex, "\"acp-codex\""),
+            (AgentProvider::AcpOpenCode, "\"acp-opencode\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), literal);
+            let back: AgentProvider = serde_json::from_str(literal).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn permission_policy_round_trips_kebab_case() {
+        for (v, literal) in [
+            (AcpPermissionPolicy::Ask, "\"ask\""),
+            (AcpPermissionPolicy::AcceptEdits, "\"accept-edits\""),
+            (AcpPermissionPolicy::Bypass, "\"bypass\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), literal);
+            let back: AcpPermissionPolicy = serde_json::from_str(literal).unwrap();
+            assert_eq!(back, v);
+        }
     }
 
     #[test]

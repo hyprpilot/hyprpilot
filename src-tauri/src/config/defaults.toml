@@ -1,3 +1,6 @@
+# Default agent used when `ctl submit` / the webview doesn't specify one.
+active_agent = "claude-code"
+
 [daemon]
 
 [daemon.window]
@@ -52,3 +55,24 @@ idle = "#98c379"
 stream = "#e5c07b"
 pending = "#e06c75"
 awaiting = "#d19a66"
+
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"
+command = "bunx"
+args = ["--bun", "@zed-industries/claude-code-acp"]
+permission_policy = "ask"
+
+[[agents]]
+id = "codex"
+provider = "acp-codex"
+command = "bunx"
+args = ["--bun", "@zed-industries/codex-acp"]
+permission_policy = "ask"
+
+[[agents]]
+id = "opencode"
+provider = "acp-opencode"
+command = "opencode"
+args = ["acp"]
+permission_policy = "ask"
