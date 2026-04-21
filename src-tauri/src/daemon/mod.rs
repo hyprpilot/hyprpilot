@@ -71,11 +71,18 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         .setup(move |app| {
             app.manage(theme.clone());
 
+            let rpc_state = crate::rpc::RpcState {
+                app: app.handle().clone(),
+            };
+
             tauri::async_runtime::spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((_stream, _addr)) => {
-                            info!("accepted socket connection (dropping — protocol not wired)");
+                        Ok((stream, _addr)) => {
+                            let state = rpc_state.clone();
+                            tauri::async_runtime::spawn(async move {
+                                crate::rpc::handle_connection(stream, state).await;
+                            });
                         }
                         Err(err) => warn!(%err, "accept failed"),
                     }

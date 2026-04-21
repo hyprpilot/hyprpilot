@@ -240,13 +240,65 @@ Do not add ad-hoc rules to either config file without updating this manual.
 - Prefer MCP tools over CLIs for git, GitLab, Linear, Obsidian, Tmux, etc.
   Fall back to CLI only when the MCP server lacks the operation.
 
+## JSON-RPC over the daemon socket
+
+The `ctl` subcommands and the daemon talk over
+`$XDG_RUNTIME_DIR/hyprpilot.sock` using newline-delimited JSON (NDJSON) —
+one JSON-RPC 2.0 object per line, both directions. Implementation lives
+in `src-tauri/src/rpc/`; the client is `src-tauri/src/ctl/client.rs`.
+Every accept spawns a per-connection task so a slow / misbehaving peer
+can't block others.
+
+### Methods
+
+| Method | Params | Result | Notes |
+| ------ | ------ | ------ | ----- |
+| `submit` | `{ "text": "..." }` | `{ "accepted": true, "text": "..." }` | Stub. No ACP session yet. |
+| `cancel` | *(none)* | `{ "cancelled": false, "reason": "no active session" }` | Stub. |
+| `toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility. |
+| `kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
+| `session-info` | *(none)* | `{ "sessions": [] }` | Stub. |
+
+Method names are kebab-case on the wire (`session-info`). Unit-variant
+methods (`cancel` / `toggle` / `kill` / `session-info`) omit the `params`
+key entirely — the server accepts `{"method":"toggle"}` with no `params`
+and responds normally.
+
+### Error codes
+
+The server surfaces JSON-RPC 2.0 standard error codes:
+
+- `-32700` parse error (invalid JSON on the wire). `id` echoes as `null`.
+- `-32600` invalid request (valid JSON, wrong shape — missing `jsonrpc`,
+  bad version, malformed params).
+- `-32601` method not found.
+- `-32603` internal error (handler failed — `toggle` against a missing
+  window, serializer failures, etc.).
+
+`-32000 ..= -32099` is reserved for hyprpilot-specific errors; none are
+defined yet.
+
+### Design notes
+
+- **Framing**: NDJSON on top of `tokio::io::BufReader::lines`. Matches
+  what ACP uses on its own pipe, so future ACP work reuses the same
+  framing primitives.
+- **Dispatcher**: hand-rolled on `serde_json`, ~100 lines for five
+  methods. `jsonrpsee` / `jsonrpc-v2` would be heavier than warranted
+  here; revisit if method count crosses ~20 or streaming / subscription
+  semantics arrive.
+- **No auth**: single-user assumption. We don't check `SO_PEERCRED` or
+  similar. Revisit when a multi-user deployment is a real concern.
+- **`ctl` is one-shot**: no retry / reconnect. A connection failure
+  (`ENOENT` / `ECONNREFUSED`) prints `"hyprpilot daemon is not running"`
+  to stderr and exits `1`.
+
 ## What is not in the scaffold
 
 The following deliberately land in their own issues — do not bolt them onto
 scaffold work:
 
 - Layer-shell / right-edge compositor anchoring.
-- JSON-RPC method set and server/client dispatch tables.
 - ACP adapter, MCP server(s), skills loader, permissions store, markdown
   rendering, waybar, profile switcher UI.
 - Playwright e2e wiring (`tauri-driver` + WebKitGTK WebDriver shim) — the
