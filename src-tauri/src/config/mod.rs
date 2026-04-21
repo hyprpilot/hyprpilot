@@ -25,6 +25,121 @@ pub struct Config {
 pub struct Daemon {
     #[garde(skip)]
     pub socket: Option<PathBuf>,
+    #[garde(dive)]
+    pub window: Window,
+}
+
+/// Surface behavior of the daemon's main window.
+///
+/// `mode = "anchor"` wraps the GTK window in a `zwlr_layer_shell_v1` surface
+/// pinned to one edge; `mode = "center"` falls back to a regular top-level
+/// sized as a fraction of the target monitor. The `layer = overlay` /
+/// `keyboard_interactivity = on_demand` choices are intentionally not
+/// configurable — see `CLAUDE.md` for why.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct Window {
+    #[garde(skip)]
+    pub mode: Option<WindowMode>,
+    #[garde(inner(length(min = 1)))]
+    pub output: Option<String>,
+    #[garde(dive)]
+    pub anchor: AnchorWindow,
+    #[garde(dive)]
+    pub center: CenterWindow,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowMode {
+    #[default]
+    Anchor,
+    Center,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Edge {
+    Top,
+    #[default]
+    Right,
+    Bottom,
+    Left,
+}
+
+/// Per-edge anchor geometry. Width/height are fixed pixel values — the
+/// compositor sizes the surface exactly, so a percentage here would be a
+/// footgun (layer-shell surfaces don't resize on monitor changes unless we
+/// remap them).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnchorWindow {
+    #[garde(skip)]
+    pub edge: Option<Edge>,
+    #[garde(inner(range(min = 0, max = 10_000)))]
+    pub margin: Option<i32>,
+    #[garde(inner(range(min = 1, max = 10_000)))]
+    pub width: Option<u32>,
+    #[garde(inner(range(min = 1, max = 10_000)))]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct CenterWindow {
+    #[garde(inner(custom(validate_dimension)))]
+    pub width: Option<Dimension>,
+    #[garde(inner(custom(validate_dimension)))]
+    pub height: Option<Dimension>,
+}
+
+/// Pixel literal or a "N%" string. `#[serde(untagged)]` lets TOML use either
+/// an integer (`width = 480`) or a string (`width = "50%"`) at the same key.
+/// A custom `Deserialize` on the `Percent` variant parses the `%` suffix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Dimension {
+    Pixels(u32),
+    Percent(u8),
+}
+
+impl<'de> Deserialize<'de> for Dimension {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(i64),
+            Str(String),
+        }
+
+        match Raw::deserialize(deserializer)? {
+            Raw::Int(n) => {
+                let px: u32 = n.try_into().map_err(|_| {
+                    D::Error::custom(format!("pixel dimension must be a non-negative integer, got {n}"))
+                })?;
+
+                Ok(Dimension::Pixels(px))
+            }
+            Raw::Str(s) => {
+                let trimmed = s.trim();
+
+                let digits = trimmed
+                    .strip_suffix('%')
+                    .ok_or_else(|| D::Error::custom(format!("dimension string must end with '%', got {s:?}")))?;
+
+                let n: u8 = digits
+                    .parse()
+                    .map_err(|e| D::Error::custom(format!("invalid percent value {digits:?}: {e}")))?;
+
+                Ok(Dimension::Percent(n))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -195,6 +310,7 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
         Ok(Config {
             daemon: Daemon {
                 socket: layer.daemon.socket.or(acc.daemon.socket),
+                window: merge_window(acc.daemon.window, layer.daemon.window),
             },
             logging: Logging {
                 level: layer.logging.level.or(acc.logging.level),
@@ -204,6 +320,23 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
             },
         })
     })
+}
+
+fn merge_window(base: Window, layer: Window) -> Window {
+    Window {
+        mode: layer.mode.or(base.mode),
+        output: layer.output.or(base.output),
+        anchor: AnchorWindow {
+            edge: layer.anchor.edge.or(base.anchor.edge),
+            margin: layer.anchor.margin.or(base.anchor.margin),
+            width: layer.anchor.width.or(base.anchor.width),
+            height: layer.anchor.height.or(base.anchor.height),
+        },
+        center: CenterWindow {
+            width: layer.center.width.or(base.center.width),
+            height: layer.center.height.or(base.center.height),
+        },
+    }
 }
 
 fn read_layer(path: &Path) -> Result<String> {
@@ -269,6 +402,18 @@ fn validate_log_level(value: &String, _ctx: &()) -> garde::Result {
     }
 
     Ok(())
+}
+
+fn validate_dimension(value: &Dimension, _ctx: &()) -> garde::Result {
+    match *value {
+        Dimension::Pixels(0) => Err(garde::Error::new("pixel dimension must be >= 1")),
+        Dimension::Pixels(px) if px > 10_000 => Err(garde::Error::new(format!(
+            "pixel dimension {px} exceeds 10000 — refusing absurd size"
+        ))),
+        Dimension::Pixels(_) => Ok(()),
+        Dimension::Percent(p) if (1..=100).contains(&p) => Ok(()),
+        Dimension::Percent(p) => Err(garde::Error::new(format!("percent must be 1..=100, got {p}"))),
+    }
 }
 
 fn validate_hex_color(value: &String, _ctx: &()) -> garde::Result {
@@ -499,6 +644,93 @@ mod tests {
                 "error for {name} missing 'hex color': {err}"
             );
         }
+    }
+
+    #[test]
+    fn daemon_window_override_preserves_untouched_tokens() {
+        let p = write_tmp(
+            "window.toml",
+            "[daemon.window]\nmode = \"center\"\n\n[daemon.window.anchor]\nedge = \"left\"\n\n[daemon.window.center]\nwidth = \"70%\"\n",
+        );
+        let cfg = load(Some(&p), None).expect("load");
+
+        // Overridden fields.
+        assert_eq!(cfg.daemon.window.mode, Some(WindowMode::Center));
+        assert_eq!(cfg.daemon.window.anchor.edge, Some(Edge::Left));
+        assert_eq!(cfg.daemon.window.center.width, Some(Dimension::Percent(70)));
+
+        // Untouched within the same subtree — fall through to defaults.
+        assert_eq!(cfg.daemon.window.anchor.margin, Some(0));
+        assert_eq!(cfg.daemon.window.anchor.width, Some(480));
+        assert_eq!(cfg.daemon.window.anchor.height, Some(900));
+        assert_eq!(cfg.daemon.window.center.height, Some(Dimension::Percent(60)));
+
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn dimension_parses_pixels_and_percent() {
+        #[derive(Debug, Deserialize)]
+        struct Holder {
+            d: Dimension,
+        }
+
+        let pixels: Holder = toml::from_str("d = 480").unwrap();
+        assert_eq!(pixels.d, Dimension::Pixels(480));
+
+        let percent: Holder = toml::from_str("d = \"50%\"").unwrap();
+        assert_eq!(percent.d, Dimension::Percent(50));
+
+        // Non-percent string shape — rejected at parse time.
+        let err = toml::from_str::<Holder>("d = \"50px\"").expect_err("should reject");
+        assert!(err.to_string().contains("must end with '%'"), "{err}");
+
+        // Interior whitespace between digits and '%' must reject — the `.trim()`
+        // between `strip_suffix('%')` and `parse()` used to silently accept
+        // `"50 %"`. Outer whitespace is still fine (serde/the surrounding
+        // `trim()` handles it).
+        let err2 = toml::from_str::<Holder>("d = \"50 %\"").expect_err("should reject interior whitespace");
+        assert!(err2.to_string().contains("invalid percent"), "{err2}");
+    }
+
+    #[test]
+    fn validate_rejects_oversized_percent_dimension() {
+        let p = write_tmp("bad-pct.toml", "[daemon.window.center]\nwidth = \"200%\"\n");
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("daemon.window.center.width"), "{msg}");
+        assert!(msg.contains("1..=100"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn validate_rejects_negative_anchor_margin() {
+        let p = write_tmp("bad-margin.toml", "[daemon.window.anchor]\nmargin = -5\n");
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("daemon.window.anchor.margin"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn validate_rejects_zero_pixel_dimension() {
+        let cfg = Config {
+            daemon: Daemon {
+                window: Window {
+                    center: CenterWindow {
+                        width: Some(Dimension::Pixels(0)),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = cfg.validate().expect_err("should error");
+        assert!(err.to_string().contains(">= 1"), "{err}");
     }
 
     #[test]

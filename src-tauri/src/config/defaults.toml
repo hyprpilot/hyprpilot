@@ -1,5 +1,18 @@
 [daemon]
 
+[daemon.window]
+mode = "anchor"
+
+[daemon.window.anchor]
+edge = "right"
+margin = 0
+width = 480
+height = 900
+
+[daemon.window.center]
+width = "50%"
+height = "60%"
+
 [logging]
 level = "info"
 

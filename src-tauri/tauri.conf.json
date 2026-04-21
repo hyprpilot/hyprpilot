@@ -14,10 +14,7 @@
       {
         "label": "main",
         "title": "hyprpilot",
-        "width": 480,
-        "height": 900,
-        "resizable": true,
-        "visible": true,
+        "visible": false,
         "backgroundColor": "#1e2127"
       }
     ],

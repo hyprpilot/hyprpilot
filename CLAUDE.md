@@ -126,6 +126,78 @@ every section catches typos in user TOML at load time.
   Each is an object (`bg` today; `accent` / `border` / `fg` later). Do not
   name surfaces by elevation (`card_hi`, `card_alt`); name them by role.
 
+## Window surface (`[daemon.window]`)
+
+The daemon's main window runs in one of two modes, selected by
+`[daemon.window] mode`:
+
+- `anchor` (default) — a `zwlr_layer_shell_v1` surface pinned to a configurable
+  edge, painted above normal windows. Matches the Python pilot's behavior on
+  Hyprland / Sway / wlroots-based compositors. Requires the compositor to
+  implement `zwlr_layer_shell_v1` — **does not work on GNOME Shell or KDE
+  Plasma**, which don't expose that protocol.
+- `center` — a regular Tauri top-level sized as a percentage of the active
+  monitor and centered by the compositor. Works on any compositor (Wayland or
+  X11); the escape hatch for non-wlroots desktops and the natural home for
+  future "launcher"-style UX.
+
+Two knobs are intentionally **not exposed in config**:
+
+- `layer = overlay` — always paints above normal and fullscreen windows. Other
+  layers (`background` / `bottom` / `top`) are footguns for a chat overlay;
+  there's no reasonable value other than `overlay`.
+- `keyboard_interactivity = on_demand` — compose input needs to accept focus,
+  and the overlay must not grab keys while idle (which would break every
+  editor hotkey). `exclusive` only grabs the keyboard (mouse passes through),
+  but `on_demand` is the simpler default and easier to explain.
+
+Both are hardcoded in `src-tauri/src/daemon/mod.rs`. Do not add config knobs
+for either without a new issue.
+
+### Config shape
+
+```toml
+[daemon.window]
+mode = "anchor"        # "anchor" | "center"
+output = "DP-1"        # optional; defaults to primary monitor
+
+[daemon.window.anchor]
+edge = "right"         # "top" | "right" | "bottom" | "left"
+margin = 0             # px from the anchored edge
+width = 480            # fixed pixel width of the surface
+height = 900           # fixed pixel height
+
+[daemon.window.center]
+width = "50%"          # "N%" (of monitor) or pixel int
+height = "60%"
+```
+
+`width` and `height` under `[daemon.window.center]` accept either a pixel
+integer or an `"N%"` string; the enum is `Dimension::{Pixels(u32),
+Percent(u8)}`. A custom `Deserialize` impl handles the `%` suffix; anything
+else (`"50px"`, bare floats) is rejected at load time.
+
+Only the `center` sub-tree accepts percentages. `[daemon.window.anchor]`
+width/height are fixed pixels because layer-shell surfaces don't resize on
+monitor changes unless we remap them.
+
+### Crate: `gtk-layer-shell` 0.8 (GTK3)
+
+Tauri 2.10 on this repo still links `webkit2gtk` 4.1 (the GTK3 binding), so
+we use the `gtk-layer-shell` crate (with the `v0_6` feature for
+`set_keyboard_mode`). If Tauri ever switches to `webkit2gtk-6.0` / GTK4, swap
+to `gtk4-layer-shell`. System package (Arch): `gtk-layer-shell`.
+
+Layer-shell init runs inside the Tauri `.setup(...)` closure — Tauri's
+`WebviewWindow::gtk_window()` returns a `gtk::ApplicationWindow`, and
+`init_layer_shell` must be called before the window is realized. To
+satisfy that invariant the main window is declared `visible = false` in
+`tauri.conf.json`; `apply_anchor_mode` then configures the layer surface
+and maps the GTK window directly via `gtk_window.show_all()`. Do not
+switch to `WebviewWindow::show()` for the anchor path — on some wlroots
+builds it re-maps through xdg-shell and silently drops the layer-shell
+role.
+
 ## Logging
 
 `tracing` is bootstrapped once via `logging::init`. Both the dev stderr layer
@@ -298,7 +370,6 @@ defined yet.
 The following deliberately land in their own issues — do not bolt them onto
 scaffold work:
 
-- Layer-shell / right-edge compositor anchoring.
 - ACP adapter, MCP server(s), skills loader, permissions store, markdown
   rendering, waybar, profile switcher UI.
 - Playwright e2e wiring (`tauri-driver` + WebKitGTK WebDriver shim) — the
