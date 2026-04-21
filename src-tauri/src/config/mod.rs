@@ -762,7 +762,13 @@ mod tests {
 
     #[test]
     fn load_merges_cli_path_over_defaults() {
-        let p = write_tmp("merge.toml", "[logging]\nlevel = \"debug\"\n");
+        let p = write_tmp(
+            "merge.toml",
+            r#"
+[logging]
+level = "debug"
+"#,
+        );
         let cfg = load(Some(&p), None).expect("load");
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
@@ -772,7 +778,17 @@ mod tests {
     fn theme_override_preserves_untouched_tokens() {
         let p = write_tmp(
             "theme.toml",
-            "[ui.theme.window]\ndefault = \"#101418\"\nedge = \"#ff00aa\"\n\n[ui.theme.border]\nfocus = \"#00ff00\"\n\n[ui.theme.surface.card.user]\nbg = \"#ff8800\"\n",
+            r##"
+[ui.theme.window]
+default = "#101418"
+edge = "#ff00aa"
+
+[ui.theme.border]
+focus = "#00ff00"
+
+[ui.theme.surface.card.user]
+bg = "#ff8800"
+"##,
         );
         let cfg = load(Some(&p), None).expect("load");
 
@@ -816,7 +832,13 @@ mod tests {
         // TOML parse time rather than at validate time. anyhow's
         // top-level message is "failed to parse TOML layer"; the
         // serde detail lives in the underlying source.
-        let p = write_tmp("bad-level.toml", "[logging]\nlevel = \"verbose\"\n");
+        let p = write_tmp(
+            "bad-level.toml",
+            r#"
+[logging]
+level = "verbose"
+"#,
+        );
         let err = load(Some(&p), None).expect_err("should error on parse");
         let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
         assert!(chain.contains("verbose") || chain.contains("level"), "{chain}");
@@ -826,7 +848,13 @@ mod tests {
     #[test]
     fn toml_accepts_known_levels() {
         for lvl in ["trace", "debug", "info", "warn", "error"] {
-            let p = write_tmp(&format!("level-{lvl}.toml"), &format!("[logging]\nlevel = \"{lvl}\"\n"));
+            let body = format!(
+                r#"
+[logging]
+level = "{lvl}"
+"#
+            );
+            let p = write_tmp(&format!("level-{lvl}.toml"), &body);
             let cfg = load(Some(&p), None).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
             cfg.validate().unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
             fs::remove_file(&p).ok();
@@ -903,7 +931,16 @@ mod tests {
     fn daemon_window_override_preserves_untouched_tokens() {
         let p = write_tmp(
             "window.toml",
-            "[daemon.window]\nmode = \"center\"\n\n[daemon.window.anchor]\nedge = \"left\"\n\n[daemon.window.center]\nwidth = \"70%\"\n",
+            r#"
+[daemon.window]
+mode = "center"
+
+[daemon.window.anchor]
+edge = "left"
+
+[daemon.window.center]
+width = "70%"
+"#,
         );
         let cfg = load(Some(&p), None).expect("load");
 
@@ -949,7 +986,13 @@ mod tests {
 
     #[test]
     fn validate_rejects_oversized_percent_dimension() {
-        let p = write_tmp("bad-pct.toml", "[daemon.window.center]\nwidth = \"200%\"\n");
+        let p = write_tmp(
+            "bad-pct.toml",
+            r#"
+[daemon.window.center]
+width = "200%"
+"#,
+        );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
@@ -960,7 +1003,13 @@ mod tests {
 
     #[test]
     fn validate_rejects_negative_anchor_margin() {
-        let p = write_tmp("bad-margin.toml", "[daemon.window.anchor]\nmargin = -5\n");
+        let p = write_tmp(
+            "bad-margin.toml",
+            r#"
+[daemon.window.anchor]
+margin = -5
+"#,
+        );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
@@ -1027,7 +1076,19 @@ mod tests {
         // untouched; add a new entry with a fresh id.
         let p = write_tmp(
             "agents.toml",
-            "[[agents]]\nid = \"claude-code\"\nprovider = \"acp-claude-code\"\ncommand = \"my-claude\"\nargs = [\"--custom\"]\n\n[[agents]]\nid = \"my-local\"\nprovider = \"acp-codex\"\ncommand = \"local-codex\"\nargs = []\n",
+            r#"
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"
+command = "my-claude"
+args = ["--custom"]
+
+[[agents]]
+id = "my-local"
+provider = "acp-codex"
+command = "local-codex"
+args = []
+"#,
         );
         let cfg = load(Some(&p), None).expect("load");
 
@@ -1057,7 +1118,17 @@ mod tests {
     fn validate_rejects_duplicate_agent_ids() {
         let p = write_tmp(
             "dup.toml",
-            "[[agents]]\nid = \"dupe\"\nprovider = \"acp-claude-code\"\ncommand = \"a\"\n\n[[agents]]\nid = \"dupe\"\nprovider = \"acp-codex\"\ncommand = \"b\"\n",
+            r#"
+[[agents]]
+id = "dupe"
+provider = "acp-claude-code"
+command = "a"
+
+[[agents]]
+id = "dupe"
+provider = "acp-codex"
+command = "b"
+"#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
@@ -1068,7 +1139,13 @@ mod tests {
 
     #[test]
     fn validate_rejects_unknown_agent_default() {
-        let p = write_tmp("bad-default.toml", "[agent]\ndefault = \"does-not-exist\"\n");
+        let p = write_tmp(
+            "bad-default.toml",
+            r#"
+[agent]
+default = "does-not-exist"
+"#,
+        );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
@@ -1083,7 +1160,13 @@ mod tests {
 
     #[test]
     fn user_override_of_agent_default_wins() {
-        let p = write_tmp("agent-default.toml", "[agent]\ndefault = \"codex\"\n");
+        let p = write_tmp(
+            "agent-default.toml",
+            r#"
+[agent]
+default = "codex"
+"#,
+        );
         let cfg = load(Some(&p), None).expect("load");
         assert_eq!(cfg.agents.agent.default.as_deref(), Some("codex"));
         cfg.validate().expect("codex exists in defaults, so valid");

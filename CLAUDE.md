@@ -24,6 +24,9 @@ description is the authoritative design snapshot and is referenced throughout.
 - `node` 24, `pnpm` 10
 - `task` 3 (go-task)
 - `usage` 3 (for mise shell completions)
+- `cargo-nextest` (via the `cargo:` backend — `task test` drives the Rust
+  suite through nextest; plain `cargo test` still works locally for
+  doc-tests or ad-hoc runs, but isn't the canonical path)
 
 `rust-toolchain.toml` covers toolchain pinning for `cargo` invocations outside
 mise.
@@ -38,7 +41,7 @@ updating this file.
 | ---- | ------- |
 | `task install` | `cargo fetch` + `pnpm --dir ui install`. |
 | `task dev` | `./ui/node_modules/.bin/tauri dev` — full dev cycle with Vite + Tauri (CLI is a Node devDep of `ui/`). |
-| `task test` | `cargo test --all-targets` + `pnpm --dir ui test` + `pnpm --dir ui test:e2e`. |
+| `task test` | `cargo nextest run --all-targets` + `pnpm --dir ui test` + `pnpm --dir ui test:e2e`. |
 | `task format` | `cargo fmt --all` + `pnpm --dir ui format` (Prettier + eslint --fix). |
 | `task lint` | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + eslint + `vue-tsc --noEmit`. |
 | `task build` | Debug build via `./ui/node_modules/.bin/tauri build --debug`. |
@@ -436,6 +439,13 @@ Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
   "Unknown levels reject at TOML parse (serde closed enum)". Examples of
   comments to delete: restating the function name, listing every caller,
   explaining what a `match` does.
+- **Multiline fixtures use raw strings.** Any string literal containing
+  more than one `\n` — TOML test fixtures, JSON-RPC request bodies, CSS
+  snippets — uses a Rust raw string (`r#"..."#` / `r##"..."##` when the
+  content includes `"#`, e.g. `"#ff00aa"` hex colours). Escaped
+  `"[section]\nkey = \"val\"\n"` is unreadable at a glance and
+  diff-noisy; raw strings render the actual content. Single-line
+  literals with one trailing `\n` can stay as-is.
 - **NVIDIA + Wayland workaround.** `main.rs` sets
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` before any thread spawns on Wayland
   sessions. Overridable by exporting the env var. Keep that block first in

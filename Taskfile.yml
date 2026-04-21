@@ -22,9 +22,9 @@ tasks:
       - "{{ .tauri }} dev"
 
   test:
-    desc: Run Rust and frontend test suites.
+    desc: Run Rust (cargo-nextest) and frontend test suites.
     cmds:
-      - cargo test --manifest-path src-tauri/Cargo.toml --all-targets -v
+      - cargo nextest run --manifest-path src-tauri/Cargo.toml --all-targets
       - pnpm --dir ui test -v
       - pnpm --dir ui test:e2e
 
