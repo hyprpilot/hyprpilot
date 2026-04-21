@@ -1769,6 +1769,7 @@ name = "hyprpilot"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "directories",
  "garde",
@@ -1787,6 +1788,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

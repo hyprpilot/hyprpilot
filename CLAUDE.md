@@ -51,14 +51,41 @@ updating this file.
 ./target/release/hyprpilot                   # shorthand for `hyprpilot daemon`
 ./target/release/hyprpilot daemon
 
-# CLI client (socket wire protocol not wired yet; logs + exits 0)
+# CLI client
 ./target/release/hyprpilot ctl submit "hello there"
 ./target/release/hyprpilot ctl toggle
 ./target/release/hyprpilot ctl --help
+
+# Status (one-shot snapshot; exits 0 even if daemon is down)
+./target/release/hyprpilot ctl status
+# → {"text":"","class":"idle","tooltip":"hyprpilot: idle","alt":"idle"}
+# → {"text":"","class":"offline","tooltip":"hyprpilot: offline","alt":"offline"}  (daemon down)
+
+# Status (long-running stream for waybar; reconnects with back-off on socket loss)
+./target/release/hyprpilot ctl status --watch
+# Emits one JSON line per state change; each line is waybar-compatible.
 ```
 
 Second `hyprpilot daemon` forwards argv through `tauri-plugin-single-instance`
 and exits `0` without opening a second window.
+
+### Waybar integration
+
+Add a `custom/hyprpilot` module to your waybar config (see `docs/waybar.md`
+for the full drop-in snippet):
+
+```jsonc
+"custom/hyprpilot": {
+    "exec": "hyprpilot ctl status --watch",
+    "return-type": "json",
+    "on-click": "hyprpilot ctl toggle",
+    "restart-interval": 5
+}
+```
+
+`ctl status --watch` calls `status/subscribe` and streams one JSON object per
+state change. `ctl status` (one-shot) is also safe for `exec` when
+`restart-interval` handles polling.
 
 ## Config layering
 
@@ -240,6 +267,16 @@ Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
 
 ## Rust conventions
 
+- **No backwards-compatibility layers — ever.** This repo has no stability
+  contract with the outside world: the CLI, the unix-socket wire protocol,
+  the config file, and the theme tree all evolve in lockstep with the daemon
+  binary. When a design stops making sense, **delete it and rewire the call
+  sites**; do not leave typed-shim enums, deprecated method aliases, or
+  "legacy" wrappers behind a trait. The `Call` enum in `rpc/protocol.rs`
+  was removed for exactly this reason once `RpcDispatcher` + `RpcHandler`
+  landed — each handler now parses its own `params: Value` and
+  `dispatch_line` routes on the raw method string. Apply the same rule to
+  every future refactor: one shape, one code path, no aliases.
 - **Inline single-use helpers.** A function with exactly one caller should be
   folded into that caller. Prefer `fn main() -> Result<()>` over a `try_main`
   wrapper; prefer unfolding a small setup step into the body (with a short
@@ -355,14 +392,26 @@ can't block others.
 | ------ | ------ | ------ | ----- |
 | `submit` | `{ "text": "..." }` | `{ "accepted": true, "text": "..." }` | Stub. No ACP session yet. |
 | `cancel` | *(none)* | `{ "cancelled": false, "reason": "no active session" }` | Stub. |
-| `toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility. |
+| `toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
 | `kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
 | `session-info` | *(none)* | `{ "sessions": [] }` | Stub. |
+| `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
+| `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
+| `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
 
-Method names are kebab-case on the wire (`session-info`). Unit-variant
-methods (`cancel` / `toggle` / `kill` / `session-info`) omit the `params`
+`StatusResult` shape: `{ "state": "idle" | "streaming" | "awaiting" | "error", "visible": bool, "active_session": string | null }`.
+
+Method names are kebab-case on the wire (`session-info`). Status methods use
+`namespace/name` notation (`status/get`, `status/subscribe`). Methods without
+params (`cancel` / `toggle` / `kill` / `session-info`) omit the `params`
 key entirely — the server accepts `{"method":"toggle"}` with no `params`
-and responds normally.
+and responds normally. `status/changed` is a server-push notification — it
+carries no `id` and is not a response to a request.
+
+Request ids on the client side are per-call UUID v4 strings
+(`uuid::Uuid::new_v4().to_string()`). The server treats ids as opaque and
+echoes them verbatim; any `RequestId` variant (`Number` or `String`) is
+accepted on the wire.
 
 ### Error codes
 
@@ -383,15 +432,31 @@ defined yet.
 - **Framing**: NDJSON on top of `tokio::io::BufReader::lines`. Matches
   what ACP uses on its own pipe, so future ACP work reuses the same
   framing primitives.
-- **Dispatcher**: hand-rolled on `serde_json`, ~100 lines for five
-  methods. `jsonrpsee` / `jsonrpc-v2` would be heavier than warranted
-  here; revisit if method count crosses ~20 or streaming / subscription
-  semantics arrive.
+- **Dispatcher**: hand-rolled on `serde_json`. `rpc::server::dispatch_line`
+  parses the envelope (`jsonrpc`, `id`, `method`, `params`) directly off
+  a `serde_json::Value` — there is no typed `Call` / `Request` enum
+  between the wire and the handlers (removed in round 3; see
+  "no backwards-compatibility layers" in Rust conventions). Each
+  handler implements `RpcHandler` and parses its own `params: Value`
+  into a typed struct with `serde_json::from_value`, surfacing
+  `-32602 invalid_params` on deserialization failure. Extending the
+  RPC surface = one new `RpcHandler` impl + one line in
+  `RpcDispatcher::with_defaults`. `jsonrpsee` / `jsonrpc-v2` would be
+  heavier than warranted here; revisit if method count crosses ~20.
 - **No auth**: single-user assumption. We don't check `SO_PEERCRED` or
   similar. Revisit when a multi-user deployment is a real concern.
-- **`ctl` is one-shot**: no retry / reconnect. A connection failure
+- **`ctl` is one-shot** for most commands: no retry / reconnect. A connection failure
   (`ENOENT` / `ECONNREFUSED`) prints `"hyprpilot daemon is not running"`
   to stderr and exits `1`.
+- **`ctl status --watch` is persistent**: after `status/subscribe` the
+  connection stays open and the server pushes `status/changed` notifications.
+  The client reconnects with back-off (1s → 2s → 5s) on socket loss, emitting
+  an offline payload between attempts so waybar always has valid output.
+- **`StatusBroadcast`** (`src-tauri/src/rpc/status.rs`): wraps a `tokio::sync::broadcast`
+  channel (capacity 32) + a `Mutex<StatusResult>` snapshot. `set_visible()` is
+  called from the `toggle` handler; K-239's ACP bridge will call `set()` for
+  agent-state transitions. Slow consumers drop messages — waybar re-renders from
+  the next tick.
 
 ## What is not in the scaffold
 
