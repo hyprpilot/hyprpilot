@@ -9,7 +9,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use validations::{validate_active_agent_reference, validate_agents_ids, validate_hex_color};
+use validations::{validate_active_agent_reference, validate_agents_ids};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -188,6 +188,67 @@ impl<'de> Deserialize<'de> for Dimension {
     }
 }
 
+/// Hex colour string — `#RRGGBB` or `#RRGGBBAA`. `#[serde(transparent)]`
+/// keeps the wire format identical to a bare string, so TOML writes
+/// `default = "#1e2127"` and the `get_theme` Tauri command round-trips
+/// a flat JSON string to the webview. Consumers that need the raw
+/// string use `as_ref()` (`AsRef<str>` impl below) or `&color.0`.
+///
+/// The hex invariant is enforced by `impl Validate` — garde runs the
+/// check whenever a theme field tagged `#[garde(dive)]` carries one.
+/// `From<&str>` / `From<String>` exist for test ergonomics; they
+/// accept any string, so tests can still construct invalid values
+/// to prove `validate()` rejects them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HexColor(pub String);
+
+impl Validate for HexColor {
+    type Context = ();
+
+    fn validate_into(
+        &self,
+        _ctx: &Self::Context,
+        parent: &mut dyn FnMut() -> garde::Path,
+        report: &mut garde::Report,
+    ) {
+        let v = &self.0;
+        let ok =
+            v.starts_with('#') && matches!(v.len(), 7 | 9) && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+        if !ok {
+            report.append(
+                parent(),
+                garde::Error::new(format!("must be a hex color (#RRGGBB or #RRGGBBAA), got '{v}'")),
+            );
+        }
+    }
+}
+
+impl AsRef<str> for HexColor {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for HexColor {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for HexColor {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl From<String> for HexColor {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Logging {
@@ -243,10 +304,10 @@ pub struct ThemeFont {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeWindow {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub edge: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub edge: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -254,10 +315,10 @@ pub struct ThemeWindow {
 pub struct ThemeSurface {
     #[garde(dive)]
     pub card: SurfaceCard,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub compose: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub text: Option<String>,
+    #[garde(dive)]
+    pub compose: Option<HexColor>,
+    #[garde(dive)]
+    pub text: Option<HexColor>,
 }
 
 /// Cards carry messages — the palette splits them by speaker so user and
@@ -278,54 +339,54 @@ pub struct SurfaceCard {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct Card {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub bg: Option<String>,
+    #[garde(dive)]
+    pub bg: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeFg {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub dim: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub muted: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub dim: Option<HexColor>,
+    #[garde(dive)]
+    pub muted: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeBorder {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub soft: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub focus: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub soft: Option<HexColor>,
+    #[garde(dive)]
+    pub focus: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeAccent {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub default: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub user: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub assistant: Option<String>,
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub user: Option<HexColor>,
+    #[garde(dive)]
+    pub assistant: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeState {
-    #[garde(inner(custom(validate_hex_color)))]
-    pub idle: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub stream: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub pending: Option<String>,
-    #[garde(inner(custom(validate_hex_color)))]
-    pub awaiting: Option<String>,
+    #[garde(dive)]
+    pub idle: Option<HexColor>,
+    #[garde(dive)]
+    pub stream: Option<HexColor>,
+    #[garde(dive)]
+    pub pending: Option<HexColor>,
+    #[garde(dive)]
+    pub awaiting: Option<HexColor>,
 }
 
 /// User-facing agent registry.

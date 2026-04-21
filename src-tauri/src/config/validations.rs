@@ -41,23 +41,6 @@ pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::R
     Ok(())
 }
 
-/// Hex colour string: `#RRGGBB` or `#RRGGBBAA`. Used on every
-/// `ThemeXxx` colour leaf. Rejects short form (`#RGB`) — the theme
-/// emitter doesn't normalise, and readers downstream (CSS custom
-/// properties) would accept it but cascade differently.
-pub(super) fn validate_hex_color(value: &String, _ctx: &()) -> garde::Result {
-    let is_valid =
-        value.starts_with('#') && matches!(value.len(), 7 | 9) && value[1..].chars().all(|c| c.is_ascii_hexdigit());
-
-    if !is_valid {
-        return Err(garde::Error::new(format!(
-            "must be a hex color (#RRGGBB or #RRGGBBAA), got '{value}'"
-        )));
-    }
-
-    Ok(())
-}
-
 /// `agents.active_agent`, when set, must match a real `agents[].id`.
 /// Reported outside the derive pass because garde has no
 /// first-class "this field references that field" hook — the
