@@ -67,10 +67,12 @@ pub enum Edge {
     Left,
 }
 
-/// Per-edge anchor geometry. Width/height are fixed pixel values — the
-/// compositor sizes the surface exactly, so a percentage here would be a
-/// footgun (layer-shell surfaces don't resize on monitor changes unless we
-/// remap them).
+/// Per-edge anchor geometry. `width` and `height` accept either a pixel
+/// integer or an `"N%"` string (resolved against the active monitor at
+/// map-time). When `height` is unset the daemon pins the surface to
+/// top + bottom + configured `edge` so it fills the monitor vertically —
+/// the default overlay shape. Re-mapping on monitor swaps is handled by
+/// the compositor restaging the layer surface.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnchorWindow {
@@ -78,10 +80,10 @@ pub struct AnchorWindow {
     pub edge: Option<Edge>,
     #[garde(inner(range(min = 0, max = 10_000)))]
     pub margin: Option<i32>,
-    #[garde(inner(range(min = 1, max = 10_000)))]
-    pub width: Option<u32>,
-    #[garde(inner(range(min = 1, max = 10_000)))]
-    pub height: Option<u32>,
+    #[garde(inner(custom(validate_dimension)))]
+    pub width: Option<Dimension>,
+    #[garde(inner(custom(validate_dimension)))]
+    pub height: Option<Dimension>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -661,8 +663,9 @@ mod tests {
 
         // Untouched within the same subtree — fall through to defaults.
         assert_eq!(cfg.daemon.window.anchor.margin, Some(0));
-        assert_eq!(cfg.daemon.window.anchor.width, Some(480));
-        assert_eq!(cfg.daemon.window.anchor.height, Some(900));
+        assert_eq!(cfg.daemon.window.anchor.width, Some(Dimension::Percent(40)));
+        // Height is intentionally unset in defaults — signals full-height fill.
+        assert_eq!(cfg.daemon.window.anchor.height, None);
         assert_eq!(cfg.daemon.window.center.height, Some(Dimension::Percent(60)));
 
         fs::remove_file(&p).ok();
