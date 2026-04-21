@@ -250,6 +250,76 @@ Extending to a new anchor edge is additive: Rust enum variant +
 serialize name + one CSS selector pairing the attribute value with
 the opposite-side border.
 
+### Monitor selection — `WindowManager` adapter
+
+Picking which monitor the overlay lands on is compositor-specific and
+lives behind a trait in `src-tauri/src/daemon/wm.rs`:
+
+```rust
+pub struct MonitorInfo {
+    pub name: String,           // connector ("DP-1") — identity key
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+}
+
+pub trait WindowManager: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn focused_monitor(&self, monitors: &[Monitor]) -> Option<MonitorInfo>;
+}
+```
+
+**Identity rule:** `MonitorInfo.name` is the connector name and the
+only identifier that gets matched against `Monitor::name()` or
+`[daemon.window] output`. `make` / `model` / `serial` come from EDID
+and are metadata — useful for log lines and future stricter matching
+(two identical monitors on swapped ports), never load-bearing today.
+All three metadata fields are `Option` because not every source
+populates them.
+
+**Three concrete adapters**, detected at boot via env markers (see
+`wm::detect()`):
+
+| Adapter | Selected when | Source |
+| -- | -- | -- |
+| `WindowManagerHyprland` | `HYPRLAND_INSTANCE_SIGNATURE` is set | `hyprctl -j monitors` → the entry with `focused: true` |
+| `WindowManagerSway` | `SWAYSOCK` is set (and Hyprland isn't) | `swaymsg -t get_outputs -r` → same shape |
+| `WindowManagerGtk` | everything else (X11 + non-wlroots Wayland) | `gdk::Seat::pointer().position()` bounds-check |
+
+Both compositor IPC formats emit
+`[{ focused, name, make, model, serial, ... }]` with matching key
+names, so `focused_monitor_info(json, "focused")` is a shared helper.
+The GTK fallback only populates `name` — GDK 0.18 doesn't expose
+connector strings on `gdk::Monitor`, and pulling `make` / `model`
+requires the geometry hop documented below.
+
+**Why compositor IPC over cursor query:** Wayland has no standard
+client-side cursor API (privacy), and `window.cursor_position()` /
+`gdk::Device::position()` frequently return stale `(0, 0)` on
+multi-monitor wlroots sessions. Hyprland / Sway both expose "which
+output is focused" over their IPC socket — that's the authoritative
+signal for overlay placement.
+
+**Resolution order in `WindowRenderer::resolve_monitor`:**
+1. Explicit `[daemon.window] output` from config — always wins.
+2. `self.wm.focused_monitor(&monitors)` → match `info.name` against
+   Tauri's monitor list.
+3. `window.primary_monitor()` — compositor-defined fallback.
+4. Any monitor — safety net so `apply_*` never hits `unwrap`.
+
+Extending to a new compositor is one struct + one `detect()` branch;
+the trait stays stable.
+
+**`gdk::Monitor` pinning:** the layer-shell surface is always pinned
+to the resolved monitor via `gtk_window.set_monitor(&gdk_monitor)`
+(not conditionally on `output` being set). Without the pin the
+compositor picks an output, which can land the surface on a monitor
+different from the one we sized against — reads as "40% of the wrong
+monitor". `gdk_monitor_for(&Monitor)` in `renderer.rs` matches by
+geometry because gdk 0.18 has no `connector()` accessor (GTK4-only);
+collapses to a direct connector compare when the GTK4 migration
+lands.
+
 ### Crate: `gtk-layer-shell` 0.8 (GTK3)
 
 Tauri 2.10 on this repo still links `webkit2gtk` 4.1 (the GTK3 binding), so
@@ -485,6 +555,74 @@ defined yet.
   called from the `toggle` handler; K-239's ACP bridge will call `set()` for
   agent-state transitions. Slow consumers drop messages — waybar re-renders from
   the next tick.
+
+### Client-side handler pattern (`ctl`)
+
+The `ctl` CLI mirrors the server's `RpcHandler` split. One struct per
+subcommand, one trait, a shared connection factory — clap dispatches
+subcommand → handler instance → `handler.run(&client)`:
+
+```rust
+// src-tauri/src/ctl/client.rs
+pub struct CtlClient { socket: PathBuf }
+impl CtlClient {
+    pub fn connect(&self) -> Result<CtlConnection> { /* ... */ }
+}
+
+pub struct CtlConnection { /* unix socket + BufReader */ }
+impl CtlConnection {
+    pub fn fire<Req, Resp>(&mut self, method: &str, params: Req) -> Result<Resp>
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Outcome>
+    pub fn into_reader(self) -> BufReader<UnixStream>   // for subscription streams
+}
+
+// src-tauri/src/ctl/handlers.rs
+pub trait CtlHandler {
+    fn run(self, client: &CtlClient) -> Result<()>;
+}
+
+pub struct SubmitHandler  { pub text: String }
+pub struct CancelHandler;
+pub struct ToggleHandler;
+pub struct KillHandler;
+pub struct SessionInfoHandler;
+pub struct StatusHandler { pub watch: bool }
+```
+
+**Why `&CtlClient` (factory) and not `CtlConnection`:** `StatusHandler
+--watch` reconnects in a loop with back-off when the socket drops;
+that needs the path, not a live connection. One-shot handlers call
+`client.connect()?` once and exit. Passing the factory satisfies both
+without branching in the trait or leaking "is this a streaming
+handler?" into the dispatcher.
+
+**Why the trait with zero-sized structs and not a free fn per
+subcommand:** uniformity with the server's `RpcHandler`, and a single
+place (`ctl::run`'s match) where clap maps subcommands to wire
+behavior. Adding a subcommand is one new struct + one new `impl
+CtlHandler` + one new match arm — no changes to existing handlers.
+
+**Status is the only non-plain handler.** Everything status-specific
+lives on `StatusHandler` as associated functions:
+`one_shot(client)` / `watch_loop(client)` / `stream_once(client)` /
+`subscribe(conn)` / `offline()` / `format(status)`. The
+`StatusChangedNotification` stream and the `StatusStream` iterator
+type both live in `handlers.rs` next to `StatusHandler`, not on
+`CtlConnection` — the transport layer stays generic. `StatusHandler`
+also never exits non-zero; waybar's `exec` expects a valid JSON
+payload even when the daemon is down, so transport / RPC errors fall
+through to the `offline()` sentinel and exit 0.
+
+**Shared helper:** `connect_and_print(client, method, params)` is the
+body for the five plain subcommands that differ only in method +
+params (`submit` stub, `cancel` stub, `toggle`, `kill`, `session-info`
+stub). RPC error or serialization failure → `error!(...)` + stderr
+message + `exit(1)`.
+
+**Stub handlers `unimplemented!()` instead of calling the server**
+(see "Stubs panic, they don't pretend" in Rust conventions). Today
+`SubmitHandler` / `CancelHandler` / `SessionInfoHandler` all panic
+with `"ctl <verb>: ACP bridge not yet implemented (K-239)"`.
 
 ## What is not in the scaffold
 
