@@ -1,0 +1,51 @@
+use std::path::PathBuf;
+
+use directories::BaseDirs;
+
+const APP_NAME: &str = "hyprpilot";
+
+fn base() -> BaseDirs {
+    BaseDirs::new().expect("unable to resolve user base directories")
+}
+
+pub fn runtime_dir() -> PathBuf {
+    if let Some(dir) = base().runtime_dir() {
+        return dir.to_path_buf();
+    }
+
+    // XDG_RUNTIME_DIR is unset — happens in minimal containers, cron sessions,
+    // some `sudo -i` contexts. Namespace the `/tmp` fallback by uid so
+    // sockets/state from different users on the same box can't collide.
+    // SAFETY: `getuid` is always safe to call on any Unix.
+    let uid = unsafe { libc::getuid() };
+
+    std::env::temp_dir().join(format!("{APP_NAME}-{uid}"))
+}
+
+pub fn config_dir() -> PathBuf {
+    base().config_dir().join(APP_NAME)
+}
+
+pub fn state_dir() -> PathBuf {
+    base()
+        .state_dir()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base().data_local_dir().to_path_buf())
+        .join(APP_NAME)
+}
+
+pub fn config_file() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+pub fn profile_config_file(name: &str) -> PathBuf {
+    config_dir().join("profiles").join(format!("{name}.toml"))
+}
+
+pub fn socket_path() -> PathBuf {
+    runtime_dir().join(format!("{APP_NAME}.sock"))
+}
+
+pub fn log_dir() -> PathBuf {
+    state_dir().join("logs")
+}

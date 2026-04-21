@@ -1,0 +1,16 @@
+[workspace]
+members = ["src-tauri"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["Cenk Kılıç <cenk1cenk2cenk3@gmail.com>"]
+repository = "https://gitlab.kilic.dev/utils/hyprpilot"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

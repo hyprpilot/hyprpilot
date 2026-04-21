@@ -1,0 +1,57 @@
+@import 'tailwindcss';
+
+/* Palette tokens are not declared here — `useTheme.applyTheme()` pushes
+ * every `--theme-*` custom property onto `:root` at boot using the values
+ * resolved by the Rust config layer (compiled defaults → global → profile).
+ * Keeping the CSS free of literal color values means the Rust `defaults.toml`
+ * stays the single source of truth, and a failed/ignored invoke surfaces
+ * visibly as an unstyled UI instead of silently masquerading as "defaults".
+ *
+ * The `@theme inline` block below only declares Tailwind utility aliases
+ * that reference `var(--theme-*)` — Tailwind build resolves the references
+ * at compile time; the values resolve at runtime once the injection runs. */
+@theme inline {
+  --font-mono: var(--theme-font-family);
+
+  --color-theme-window: var(--theme-window);
+  --color-theme-edge: var(--theme-window-edge);
+
+  --color-theme-card-user: var(--theme-surface-card-user);
+  --color-theme-card-assistant: var(--theme-surface-card-assistant);
+  --color-theme-compose: var(--theme-surface-compose);
+
+  --color-theme-fg: var(--theme-fg);
+  --color-theme-fg-dim: var(--theme-fg-dim);
+  --color-theme-fg-muted: var(--theme-fg-muted);
+
+  --color-theme-border: var(--theme-border);
+  --color-theme-border-soft: var(--theme-border-soft);
+  --color-theme-border-focus: var(--theme-border-focus);
+
+  --color-theme-accent: var(--theme-accent);
+  --color-theme-user: var(--theme-accent-user);
+  --color-theme-assistant: var(--theme-accent-assistant);
+
+  --color-theme-idle: var(--theme-state-idle);
+  --color-theme-stream: var(--theme-state-stream);
+  --color-theme-pending: var(--theme-state-pending);
+  --color-theme-awaiting: var(--theme-state-awaiting);
+}
+
+/* Fallback literals on first-paint rules only: the native Tauri window is
+ * painted with `windows[0].backgroundColor` before the webview loads, and
+ * this block keeps the body/app-root visually consistent during the brief
+ * gap between HTML parse and `applyTheme()` completing. Values mirror
+ * `defaults.toml`; user overrides at runtime still win via JS injection. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  font-size: 14px;
+}
+
+#app,
+.overlay-root {
+  min-height: 100vh;
+}

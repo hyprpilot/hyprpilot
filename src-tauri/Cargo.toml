@@ -1,0 +1,36 @@
+[package]
+name = "hyprpilot"
+description = "Rust Tauri overlay + unix-socket daemon for agent-driven workflows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hyprpilot"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive", "env"] }
+directories = "6"
+garde = { version = "0.22", features = ["derive"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1.52", features = ["full"] }
+toml = "1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tauri = { version = "2.10", features = [] }
+tauri-plugin-single-instance = "2.4"
+
+[features]
+default = []
+# Enabled by `tauri build` to ship the bundled frontend.
+custom-protocol = ["tauri/custom-protocol"]

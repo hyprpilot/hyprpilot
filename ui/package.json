@@ -1,0 +1,51 @@
+{
+  "name": "hyprpilot-ui",
+  "version": "0.1.0",
+  "description": "Vue 3 + Tailwind + shadcn-vue frontend for the hyprpilot Tauri overlay.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "format": "prettier --write src/ tests/ e2e/ --log-level warn && eslint --fix",
+    "lint": "eslint && vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "reka-ui": "^2.9.6",
+    "tailwind-merge": "^3.5.0",
+    "vue": "^3.5.32"
+  },
+  "devDependencies": {
+    "@cenk1cenk2/eslint-config": "^3.2.3",
+    "@playwright/test": "^1.59.1",
+    "@tailwindcss/vite": "^4.2.3",
+    "@tauri-apps/cli": "^2.10.1",
+    "@types/node": "^24.12.2",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "@typescript-eslint/parser": "^8.57.0",
+    "@vue/eslint-config-typescript": "^14.7.0",
+    "vue-eslint-parser": "^10.4.0",
+    "@vue/test-utils": "^2.4.6",
+    "eslint": "^9.39.4",
+    "eslint-plugin-vue": "^10.8.0",
+    "jsdom": "^29.0.2",
+    "prettier": "^3.8.3",
+    "tailwindcss": "^4.2.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.9",
+    "vitest": "^4.1.4",
+    "vue-tsc": "^3.2.7"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
