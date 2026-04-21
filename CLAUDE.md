@@ -488,23 +488,39 @@ can't block others.
 
 | Method | Params | Result | Notes |
 | ------ | ------ | ------ | ----- |
-| `submit` | `{ "text": "..." }` | `{ "accepted": true, "text": "..." }` | Stub. No ACP session yet. |
-| `cancel` | *(none)* | `{ "cancelled": false, "reason": "no active session" }` | Stub. |
-| `toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
-| `kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
-| `session-info` | *(none)* | `{ "sessions": [] }` | Stub. |
+| `session/submit` | `{ "text": "...", "agent_id"?: "..." }` | `{ "accepted": true, "text": "..." }` | K-239 replaces the stub with a `conn.prompt(...)` call against the addressed agent. `agent_id` omitted → `agents.active_agent`. |
+| `session/cancel` | *(none)* or `{ "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | Stub today; K-239 sends `CancelNotification` to the addressed session. |
+| `session/info` | *(none)* | `{ "sessions": [...] }` | Stub today; K-239 returns the live session list across every active agent. |
+| `window/toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
+| `daemon/kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
 | `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
 
 `StatusResult` shape: `{ "state": "idle" | "streaming" | "awaiting" | "error", "visible": bool, "active_session": string | null }`.
 
-Method names are kebab-case on the wire (`session-info`). Status methods use
-`namespace/name` notation (`status/get`, `status/subscribe`). Methods without
-params (`cancel` / `toggle` / `kill` / `session-info`) omit the `params`
-key entirely — the server accepts `{"method":"toggle"}` with no `params`
-and responds normally. `status/changed` is a server-push notification — it
-carries no `id` and is not a response to a request.
+**Namespace convention.** Every method name on the wire uses the
+`namespace/name` form, matching ACP's own methods (`session/prompt`,
+`session/new`):
+
+- `session/*` — anything scoped to an agent session (prompts, cancel, info).
+- `window/*` — overlay window state (`window/toggle`; future
+  `window/show`, `window/hide`, `window/focus`).
+- `daemon/*` — daemon lifecycle (`daemon/kill`; future `daemon/status`,
+  `daemon/reload`).
+- `status/*` — agent state broadcasts (drives waybar).
+- Reserved: `agents/*` (listing / switching), `permissions/*` (trust
+  store — UI-only today, no `ctl` surface yet).
+
+Bare method names — the pre-K-239 `submit` / `cancel` / `toggle` / `kill`
+/ `session-info` scaffold — are intentionally dead. Clients hitting them
+receive `-32601 method not found`; there is no backwards-compat layer.
+
+Methods without params (`session/cancel`, `session/info`, `window/toggle`,
+`daemon/kill`) omit the `params` key entirely — the server accepts
+`{"method":"window/toggle"}` with no `params` and responds normally.
+`status/changed` is a server-push notification — it carries no `id` and
+is not a response to a request.
 
 Request ids on the client side are per-call UUID v4 strings
 (`uuid::Uuid::new_v4().to_string()`). The server treats ids as opaque and
@@ -519,8 +535,8 @@ The server surfaces JSON-RPC 2.0 standard error codes:
 - `-32600` invalid request (valid JSON, wrong shape — missing `jsonrpc`,
   bad version, malformed params).
 - `-32601` method not found.
-- `-32603` internal error (handler failed — `toggle` against a missing
-  window, serializer failures, etc.).
+- `-32603` internal error (handler failed — `window/toggle` against a
+  missing window, serializer failures, etc.).
 
 `-32000 ..= -32099` is reserved for hyprpilot-specific errors; none are
 defined yet.

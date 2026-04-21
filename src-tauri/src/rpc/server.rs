@@ -81,7 +81,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 let _ = writer.flush().await;
 
                 if is_kill_success {
-                    info!("rpc: kill dispatched — exiting daemon");
+                    info!("rpc: daemon/kill dispatched — exiting daemon");
                     state.app.exit(0);
                     return;
                 }
@@ -145,8 +145,8 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 
 /// Parse one NDJSON line, delegate to `RpcDispatcher`, wrap the handler
 /// outcome in a JSON-RPC `Response`. Returns the response, a kill flag
-/// (set only when `method == "kill"` succeeded), and an optional new
-/// broadcast receiver for `status/subscribe`.
+/// (set only when `method == "daemon/kill"` succeeded), and an optional
+/// new broadcast receiver for `status/subscribe`.
 ///
 /// Splitting the state into its pieces (`app`, `status`, `dispatcher`)
 /// keeps unit tests cheap: they can pass `None` for `app`, build a
@@ -227,7 +227,7 @@ async fn dispatch_line(
 
     info!(id = ?id, method = %method, "rpc: dispatch");
 
-    let is_kill = method == "kill";
+    let is_kill = method == "daemon/kill";
 
     let ctx = HandlerCtx {
         app,
@@ -283,8 +283,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_success_round_trip() {
-        let out = run(r#"{"jsonrpc":"2.0","id":1,"method":"submit","params":{"text":"hello"}}"#).await;
+    async fn session_submit_success_round_trip() {
+        let out = run(r#"{"jsonrpc":"2.0","id":1,"method":"session/submit","params":{"text":"hello"}}"#).await;
         assert_eq!(out["jsonrpc"], "2.0");
         assert_eq!(out["id"], 1);
         assert_eq!(out["result"]["accepted"], true);
@@ -293,16 +293,22 @@ mod tests {
 
     #[tokio::test]
     async fn session_info_returns_empty_list() {
-        let out = run(r#"{"jsonrpc":"2.0","id":"sid","method":"session-info"}"#).await;
+        let out = run(r#"{"jsonrpc":"2.0","id":"sid","method":"session/info"}"#).await;
         assert_eq!(out["id"], "sid");
         assert_eq!(out["result"]["sessions"], json!([]));
     }
 
     #[tokio::test]
-    async fn cancel_stub_returns_no_active_session() {
-        let out = run(r#"{"jsonrpc":"2.0","id":2,"method":"cancel"}"#).await;
+    async fn session_cancel_stub_returns_no_active_session() {
+        let out = run(r#"{"jsonrpc":"2.0","id":2,"method":"session/cancel"}"#).await;
         assert_eq!(out["result"]["cancelled"], false);
         assert_eq!(out["result"]["reason"], "no active session");
+    }
+
+    #[tokio::test]
+    async fn daemon_kill_returns_exiting_true() {
+        let out = run(r#"{"jsonrpc":"2.0","id":3,"method":"daemon/kill"}"#).await;
+        assert_eq!(out["result"]["exiting"], true);
     }
 
     #[tokio::test]
@@ -314,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_request_missing_jsonrpc() {
-        let out = run(r#"{"id":1,"method":"toggle"}"#).await;
+        let out = run(r#"{"id":1,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32600);
         assert_eq!(out["id"], 1);
     }
@@ -344,42 +350,43 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_request_wrong_jsonrpc_version() {
-        let out = run(r#"{"jsonrpc":"1.0","id":11,"method":"toggle"}"#).await;
+        let out = run(r#"{"jsonrpc":"1.0","id":11,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32600);
         assert_eq!(out["id"], 11);
     }
 
-    /// Regression: `toggle` with no `params` key at all deserializes
-    /// cleanly — the `CoreHandler` ignores params for unit methods.
-    /// The `Call` enum (removed) used `#[serde(tag, content)]` which
-    /// made this an explicit test; keep the invariant by hitting the
-    /// full wire path.
+    /// Regression: `window/toggle` with no `params` key at all
+    /// deserializes cleanly — the `WindowHandler` ignores params for
+    /// unit methods. Keep the invariant by hitting the full wire path.
     #[tokio::test]
-    async fn toggle_without_params_is_handled() {
+    async fn window_toggle_without_params_is_handled() {
         // No params key. Handler surfaces -32603 because `app` is None
         // in the test harness, but the absence of -32600 / -32602
         // proves the line parsed + routed correctly.
-        let out = run(r#"{"jsonrpc":"2.0","id":12,"method":"toggle"}"#).await;
+        let out = run(r#"{"jsonrpc":"2.0","id":12,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32603);
     }
 
-    /// Regression: `submit` with a string id round-trips and the
-    /// handler parses `{"text": "..."}` into its typed params.
+    /// Regression: `session/submit` with a string id round-trips and
+    /// the handler parses `{"text": "..."}` into its typed params.
     #[tokio::test]
-    async fn submit_with_string_id_round_trips() {
-        let out = run(r#"{"jsonrpc":"2.0","id":"abc-123","method":"submit","params":{"text":"hi"}}"#).await;
+    async fn session_submit_with_string_id_round_trips() {
+        let out = run(r#"{"jsonrpc":"2.0","id":"abc-123","method":"session/submit","params":{"text":"hi"}}"#).await;
         assert_eq!(out["id"], "abc-123");
         assert_eq!(out["result"]["accepted"], true);
         assert_eq!(out["result"]["text"], "hi");
     }
 
-    /// Regression: `session-info` is kebab-case; hitting the wire name
-    /// through `dispatch_line` verifies the method string is passed
-    /// verbatim to `CoreHandler::handle`.
+    /// Every bare legacy method name must surface `-32601` after
+    /// K-239's rename. No backwards-compat alias — downstream peers
+    /// are expected to move to `namespace/name`.
     #[tokio::test]
-    async fn session_info_kebab_case_routes_to_core() {
-        let out = run(r#"{"jsonrpc":"2.0","id":13,"method":"session-info"}"#).await;
-        assert_eq!(out["result"]["sessions"], json!([]));
+    async fn bare_legacy_method_names_are_method_not_found() {
+        for method in ["submit", "cancel", "toggle", "kill", "session-info"] {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":99,"method":"{method}"}}"#);
+            let out = run(&body).await;
+            assert_eq!(out["error"]["code"], -32601, "bare {method} must be -32601: {out}");
+        }
     }
 
     /// Regression: an unknown method in the `status` namespace returns
@@ -401,14 +408,14 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_params_for_missing_required_field() {
-        let out = run(r#"{"jsonrpc":"2.0","id":6,"method":"submit","params":{}}"#).await;
+        let out = run(r#"{"jsonrpc":"2.0","id":6,"method":"session/submit","params":{}}"#).await;
         assert_eq!(out["error"]["code"], -32602);
         assert_eq!(out["id"], 6);
     }
 
     #[tokio::test]
-    async fn toggle_without_app_is_internal_error() {
-        let out = run(r#"{"jsonrpc":"2.0","id":5,"method":"toggle"}"#).await;
+    async fn window_toggle_without_app_is_internal_error() {
+        let out = run(r#"{"jsonrpc":"2.0","id":5,"method":"window/toggle"}"#).await;
         assert_eq!(out["error"]["code"], -32603);
         assert_eq!(out["id"], 5);
     }
@@ -450,7 +457,7 @@ mod tests {
         });
 
         client
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session-info\"}\n")
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/info\"}\n")
             .await
             .unwrap();
 
