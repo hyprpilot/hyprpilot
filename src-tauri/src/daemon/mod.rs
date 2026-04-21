@@ -24,6 +24,22 @@ fn get_theme(theme: State<'_, Theme>) -> Theme {
     theme.inner().clone()
 }
 
+/// Surface state the frontend needs to position chrome relative to the
+/// anchored screen edge (e.g. draw the `[ui.theme.window] edge` accent on the
+/// visible/inward side of the overlay). `anchor_edge` is `None` in center
+/// mode — the frontend should render no screen-edge-relative chrome then.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowState {
+    mode: WindowMode,
+    anchor_edge: Option<Edge>,
+}
+
+#[tauri::command]
+fn get_window_state(state: State<'_, WindowState>) -> WindowState {
+    state.inner().clone()
+}
+
 /// Apply the resolved `[daemon.window]` config to the main Tauri window.
 ///
 /// `anchor` mode takes the window's underlying `gtk::ApplicationWindow` and
@@ -289,6 +305,24 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let theme = cfg.ui.theme.clone();
     let window_cfg = cfg.daemon.window.clone();
 
+    // Snapshot the resolved window state up-front so the webview can fetch
+    // it without re-reading the config at request time. `anchor_edge` is
+    // `Some` in anchor mode so the frontend can paint the edge accent on
+    // the inward side; `None` in center mode signals "no screen-edge chrome".
+    let mode = window_cfg.mode.expect("[daemon.window] mode seeded by defaults.toml");
+    let window_state = WindowState {
+        mode,
+        anchor_edge: match mode {
+            WindowMode::Anchor => Some(
+                window_cfg
+                    .anchor
+                    .edge
+                    .expect("[daemon.window.anchor] edge seeded by defaults.toml"),
+            ),
+            WindowMode::Center => None,
+        },
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
@@ -296,9 +330,10 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
                 warn!(%err, "failed to emit single-instance event");
             }
         }))
-        .invoke_handler(tauri::generate_handler![get_theme])
+        .invoke_handler(tauri::generate_handler![get_theme, get_window_state])
         .setup(move |app| {
             app.manage(theme.clone());
+            app.manage(window_state.clone());
 
             let main = app
                 .get_webview_window("main")

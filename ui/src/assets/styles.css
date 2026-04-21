@@ -55,3 +55,24 @@ body {
 .overlay-root {
   min-height: 100vh;
 }
+
+/* Window-edge accent: a single-pixel stripe in `--theme-window-edge` painted
+ * on the inward (visible) side of the overlay. `data-window-anchor` is set
+ * by `applyWindowState()` to the compositor-side anchor — so `right` means
+ * the window is pinned to the right screen edge and the stripe goes on the
+ * left of the window. Center mode leaves the attribute unset → no stripe. */
+html[data-window-anchor='right'] body {
+  border-left: 2px solid var(--theme-window-edge);
+}
+
+html[data-window-anchor='left'] body {
+  border-right: 2px solid var(--theme-window-edge);
+}
+
+html[data-window-anchor='top'] body {
+  border-bottom: 2px solid var(--theme-window-edge);
+}
+
+html[data-window-anchor='bottom'] body {
+  border-top: 2px solid var(--theme-window-edge);
+}
