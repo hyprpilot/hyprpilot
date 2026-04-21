@@ -47,7 +47,7 @@ pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::R
 /// report rather than a separate post-pass.
 ///
 /// Wired as `#[garde(custom(agent_default_references_id(&self.agents)))]`.
-pub(super) fn agent_default_references_id<'a>(
+pub(super) fn validate_agent_default_id<'a>(
     agents: &'a [AgentConfig],
 ) -> impl FnOnce(&AgentDefaults, &()) -> garde::Result + 'a {
     move |defaults, _ctx| {

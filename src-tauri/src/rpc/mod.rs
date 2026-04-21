@@ -163,7 +163,7 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "daemon/kill", Value::Null).await;
-        assert_eq!(v["exiting"], true);
+        assert_eq!(v["killed"], true);
     }
 
     #[tokio::test]

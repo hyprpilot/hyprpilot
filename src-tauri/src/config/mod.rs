@@ -9,7 +9,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use validations::{agent_default_references_id, validate_agents_ids};
+use validations::{validate_agent_default_id, validate_agents_ids};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -404,7 +404,7 @@ pub struct AgentsConfig {
     /// cross-field custom validator closes over `&self.agents` to
     /// assert `default` (when set) names a real entry.
     #[garde(dive)]
-    #[garde(custom(agent_default_references_id(&self.agents)))]
+    #[garde(custom(validate_agent_default_id(&self.agents)))]
     pub agent: AgentDefaults,
 }
 

@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 
 use crate::acp::AcpSessions;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
-use crate::rpc::protocol::{JsonRpcVersion, RequestId, Response, RpcError, StatusChangedNotification};
+use crate::rpc::protocol::{JsonRpcVersion, Outcome, RequestId, Response, RpcError, StatusChangedNotification};
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
 
@@ -55,7 +55,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     }
                 };
 
-                let (response, is_kill_success, new_rx) = dispatch(
+                let (response, new_rx) = dispatch(
                     &line,
                     Some(&state.app),
                     &state.status,
@@ -67,6 +67,15 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 if let Some(rx) = new_rx {
                     status_rx = Some(rx);
                 }
+
+                // Shutdown signal travels in the response itself:
+                // `{"killed": true}` in the result payload. Captured
+                // here (before `response` is moved into `to_vec`) so
+                // we can act on it after the write is flushed.
+                let kill_signalled = matches!(
+                    &response.outcome,
+                    Outcome::Success { result } if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
+                );
 
                 let mut bytes = match serde_json::to_vec(&response) {
                     Ok(b) => b,
@@ -83,7 +92,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 }
                 let _ = writer.flush().await;
 
-                if is_kill_success {
+                if kill_signalled {
                     info!("rpc: daemon/kill dispatched — exiting daemon");
                     state.app.exit(0);
                     return;
@@ -147,9 +156,11 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 }
 
 /// Parse one NDJSON line, delegate to `RpcDispatcher`, wrap the handler
-/// outcome in a JSON-RPC `Response`. Returns the response, a kill flag
-/// (set only when `method == "daemon/kill"` succeeded), and an optional
-/// new broadcast receiver for `status/subscribe`.
+/// outcome in a JSON-RPC `Response`. Returns the response plus an
+/// optional new broadcast receiver (populated only by
+/// `status/subscribe`). The shutdown signal isn't in the tuple — it
+/// lives in the response payload as `{"killed": true}` and
+/// `handle_connection` inspects it after the response is flushed.
 ///
 /// Splitting the state into its pieces (`app`, `status`, `dispatcher`)
 /// keeps unit tests cheap: they can pass `None` for `app`, build a
@@ -168,13 +179,12 @@ async fn dispatch(
     connection_already_subscribed: bool,
 ) -> (
     Response,
-    bool,
     Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>,
 ) {
     // Stage 1: JSON syntax. Failure here is -32700 parse error.
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(_) => return (Response::error(None, RpcError::parse_error()), false, None),
+        Err(_) => return (Response::error(None, RpcError::parse_error()), None),
     };
 
     let id = value.get("id").and_then(parse_id);
@@ -183,7 +193,6 @@ async fn dispatch(
     if !value.is_object() {
         return (
             Response::error(None, RpcError::invalid_request("request must be a JSON object")),
-            false,
             None,
         );
     }
@@ -192,7 +201,6 @@ async fn dispatch(
             if serde_json::from_value::<JsonRpcVersion>(v.clone()).is_err() {
                 return (
                     Response::error(id, RpcError::invalid_request("jsonrpc must be \"2.0\"")),
-                    false,
                     None,
                 );
             }
@@ -200,7 +208,6 @@ async fn dispatch(
         None => {
             return (
                 Response::error(id, RpcError::invalid_request("missing jsonrpc field")),
-                false,
                 None,
             );
         }
@@ -210,7 +217,6 @@ async fn dispatch(
         None => {
             return (
                 Response::error(None, RpcError::invalid_request("missing or invalid id")),
-                false,
                 None,
             );
         }
@@ -222,7 +228,6 @@ async fn dispatch(
         None => {
             return (
                 Response::error(Some(id), RpcError::invalid_request("missing method field")),
-                false,
                 None,
             );
         }
@@ -230,8 +235,6 @@ async fn dispatch(
     let params = value.get("params").cloned().unwrap_or(serde_json::Value::Null);
 
     info!(id = ?id, method = %method, "rpc: dispatch");
-
-    let is_kill = method == "daemon/kill";
 
     let ctx = HandlerCtx {
         app,
@@ -244,16 +247,9 @@ async fn dispatch(
     let outcome = dispatcher.dispatch(&method, params, ctx).await;
 
     match outcome {
-        Ok(HandlerOutcome::Reply(value)) => {
-            let response = Response::success(Some(id), value);
-            let kill_success = is_kill;
-            (response, kill_success, None)
-        }
-        Ok(HandlerOutcome::Subscribed(snapshot, rx)) => {
-            let response = Response::success(Some(id), snapshot);
-            (response, false, Some(rx))
-        }
-        Err(err) => (Response::error(Some(id), err), false, None),
+        Ok(HandlerOutcome::Reply(value)) => (Response::success(Some(id), value), None),
+        Ok(HandlerOutcome::Subscribed(snapshot, rx)) => (Response::success(Some(id), snapshot), Some(rx)),
+        Err(err) => (Response::error(Some(id), err), None),
     }
 }
 
@@ -289,7 +285,7 @@ mod tests {
             AgentsConfig::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
-        let (resp, _, _) = dispatch(line, None, &status, &dispatcher, Some(sessions), false).await;
+        let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(sessions), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
@@ -317,9 +313,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_kill_returns_exiting_true() {
+    async fn daemon_kill_returns_killed_true() {
+        // The `killed: true` marker in the result is what
+        // `handle_connection` inspects to trigger `app.exit(0)`
+        // after the response flushes. No separate side-channel flag.
         let out = run(r#"{"jsonrpc":"2.0","id":3,"method":"daemon/kill"}"#).await;
-        assert_eq!(out["result"]["exiting"], true);
+        assert_eq!(out["result"]["killed"], true);
     }
 
     #[tokio::test]
@@ -463,7 +462,7 @@ mod tests {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _, _) = dispatch(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
+                let (resp, _) = dispatch(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
                 let mut bytes = serde_json::to_vec(&resp).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
@@ -504,7 +503,7 @@ mod tests {
         // First subscribe — emulated: we don't actually route, we just
         // mark the connection state as "already_subscribed = true" and
         // drive the second subscribe through `dispatch_line`.
-        let (resp, _kill, rx) = dispatch(
+        let (resp, rx) = dispatch(
             r#"{"jsonrpc":"2.0","id":1,"method":"status/subscribe"}"#,
             None,
             &broadcast,
@@ -518,7 +517,7 @@ mod tests {
         assert!(rx.is_some(), "first subscribe returns a receiver");
 
         // Second subscribe on the same connection — already_subscribed = true.
-        let (resp, _kill, rx) = dispatch(
+        let (resp, rx) = dispatch(
             r#"{"jsonrpc":"2.0","id":2,"method":"status/subscribe"}"#,
             None,
             &broadcast,
@@ -627,7 +626,7 @@ mod tests {
                         match line_result {
                             Ok(Some(l)) if l.trim().is_empty() => continue,
                             Ok(Some(l)) => {
-                                let (resp, _, new_rx) = dispatch(
+                                let (resp, new_rx) = dispatch(
                                     &l,
                                     None,
                                     &broadcast_clone,
