@@ -9,7 +9,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use validations::{validate_active_agent_reference, validate_agents_ids};
+use validations::{agent_default_references_id, validate_agents_ids};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -124,12 +124,7 @@ pub enum Dimension {
 impl Validate for Dimension {
     type Context = ();
 
-    fn validate_into(
-        &self,
-        _ctx: &Self::Context,
-        parent: &mut dyn FnMut() -> garde::Path,
-        report: &mut garde::Report,
-    ) {
+    fn validate_into(&self, _ctx: &Self::Context, parent: &mut dyn FnMut() -> garde::Path, report: &mut garde::Report) {
         match *self {
             Dimension::Pixels(0) => {
                 report.append(parent(), garde::Error::new("pixel dimension must be >= 1"));
@@ -206,15 +201,9 @@ pub struct HexColor(pub String);
 impl Validate for HexColor {
     type Context = ();
 
-    fn validate_into(
-        &self,
-        _ctx: &Self::Context,
-        parent: &mut dyn FnMut() -> garde::Path,
-        report: &mut garde::Report,
-    ) {
+    fn validate_into(&self, _ctx: &Self::Context, parent: &mut dyn FnMut() -> garde::Path, report: &mut garde::Report) {
         let v = &self.0;
-        let ok =
-            v.starts_with('#') && matches!(v.len(), 7 | 9) && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+        let ok = v.starts_with('#') && matches!(v.len(), 7 | 9) && v[1..].chars().all(|c| c.is_ascii_hexdigit());
         if !ok {
             report.append(
                 parent(),
@@ -406,14 +395,16 @@ pub struct ThemeState {
 #[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
     /// Every configured agent. Validation dives into each entry and
-    /// additionally asserts ids are unique + `agent.default` (if set)
-    /// names a real agent.
+    /// additionally asserts ids are unique.
     #[garde(dive)]
     #[garde(custom(validate_agents_ids))]
     pub agents: Vec<AgentConfig>,
     /// Global agent-scope config (`[agent]` in TOML). Kept singular
-    /// (`agent`) to parallel the plural `[[agents]]` registry.
+    /// (`agent`) to parallel the plural `[[agents]]` registry. The
+    /// cross-field custom validator closes over `&self.agents` to
+    /// assert `default` (when set) names a real entry.
     #[garde(dive)]
+    #[garde(custom(agent_default_references_id(&self.agents)))]
     pub agent: AgentDefaults,
 }
 
@@ -424,8 +415,10 @@ pub struct AgentsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AgentDefaults {
     /// Id of the agent to use when none is addressed explicitly.
-    /// Validated cross-field (`validate_active_agent_reference`)
-    /// against `agents[].id`.
+    /// Cross-field check against `agents[].id` runs on the parent
+    /// `AgentsConfig.agent` field via
+    /// `agent_default_references_id(&self.agents)`; this leaf
+    /// itself has no per-value rules.
     #[garde(skip)]
     pub default: Option<String>,
 }
@@ -766,15 +759,14 @@ impl Merge for AgentDefaults {
 
 impl Config {
     /// Run the full validation chain: garde's derive-driven tree
-    /// walk first (every field-scoped predicate in
-    /// `config::validations`), then the cross-field rules that
-    /// need the assembled `Config` in scope. On failure wraps the
-    /// garde report with an `anyhow!` so callers see a single
-    /// readable error chain.
+    /// walk. Every predicate (field-scoped + cross-field) is wired
+    /// into the derive — cross-field rules via higher-order custom
+    /// validators that close over sibling references (see
+    /// `agent_default_references_id` in `config::validations`). On
+    /// failure wraps the garde report with an `anyhow!` so callers
+    /// see a single readable error chain.
     pub fn validate(&self) -> Result<()> {
-        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))?;
-        validate_active_agent_reference(self)?;
-        Ok(())
+        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))
     }
 }
 
@@ -1185,8 +1177,12 @@ mod tests {
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
-        assert!(msg.contains("agent.default = 'does-not-exist'"), "{msg}");
-        assert!(msg.contains("Configured ids:"), "{msg}");
+        // garde's report prefixes the field path: the cross-field
+        // custom is attached to `AgentsConfig.agent`, which flattens
+        // to `agents.agent` on `Config`.
+        assert!(msg.contains("agents.agent"), "missing path: {msg}");
+        assert!(msg.contains("default = 'does-not-exist'"), "missing detail: {msg}");
+        assert!(msg.contains("Configured ids:"), "missing id list: {msg}");
         fs::remove_file(&p).ok();
     }
 

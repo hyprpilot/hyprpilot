@@ -1,26 +1,25 @@
 //! Validation predicates used by the `#[derive(Validate)]` surface
-//! on `config::*` structs, plus cross-field rules that garde can't
-//! express through its derive macros.
+//! on `config::*` structs.
 //!
-//! garde's hooks fall into two buckets:
+//! All predicates wire in through garde — no manual post-derive
+//! pass remains on `Config::validate()`. Two shapes:
 //!
-//! - **Field-scoped** — the four `validate_*` functions take
-//!   `(&value, &ctx)` and wire in via `#[garde(inner(custom(fn)))]`
-//!   or `#[garde(custom(fn))]`. They run during
-//!   `<Config as garde::Validate>::validate`'s tree walk.
-//! - **Cross-field** — `validate_active_agent_reference` takes the
-//!   assembled `Config` because it needs both `agents.agent.default`
-//!   and `agents.agents[]` in one place. Called from
-//!   `Config::validate()` after the derive pass so a report names
-//!   the precise offender (`agent.default = 'x' but no matching
-//!   [[agents]] entry exists`).
+//! - **Field-scoped** — `validate_agents_ids` takes the whole `&[AgentConfig]`
+//!   (collection-level cross-element uniqueness check) and wires in
+//!   via `#[garde(custom(validate_agents_ids))]` on the `agents` field.
+//! - **Cross-field** — `agent_default_references_id` is a higher-order
+//!   function: it closes over a sibling field (`&self.agents`) and
+//!   returns the actual `FnOnce(&AgentDefaults, &()) -> garde::Result`
+//!   garde calls. Wired as
+//!   `#[garde(custom(agent_default_references_id(&self.agents)))]` on
+//!   the `agent` field of `AgentsConfig`. This is the idiomatic
+//!   garde pattern for a reference-across-siblings check, documented
+//!   in the crate README as the "self access in rules" example.
 //!
 //! Everything here is crate-private; callers outside `config`
 //! consume validation only through `Config::validate()`.
 
-use anyhow::{bail, Result};
-
-use super::{AgentConfig, Config};
+use super::{AgentConfig, AgentDefaults};
 
 /// Per-layer uniqueness check for `[[agents]]`. Duplicate ids inside
 /// a single layer are a user error; cross-layer duplicates are the
@@ -41,30 +40,27 @@ pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::R
     Ok(())
 }
 
-/// `agent.default`, when set, must match a real `agents[].id`.
-/// Reported outside the derive pass because garde has no
-/// first-class "this field references that field" hook — the
-/// assembled `Config` is the first place both sides of the
-/// reference are in scope.
-pub(super) fn validate_active_agent_reference(config: &Config) -> Result<()> {
-    let Some(active) = config.agents.agent.default.as_deref() else {
-        return Ok(());
-    };
-
-    let known = config.agents.agents.iter().any(|a| a.id == active);
-    if !known {
-        bail!(
-            "agent.default = '{active}' but no matching [[agents]] entry exists. \
+/// Higher-order custom validator: closes over `&self.agents` (a
+/// sibling field on `AgentsConfig`) and returns the `FnOnce` garde
+/// calls against the `agent: AgentDefaults` field. Runs during the
+/// derive's tree walk, so its error lands in the unified garde
+/// report rather than a separate post-pass.
+///
+/// Wired as `#[garde(custom(agent_default_references_id(&self.agents)))]`.
+pub(super) fn agent_default_references_id<'a>(
+    agents: &'a [AgentConfig],
+) -> impl FnOnce(&AgentDefaults, &()) -> garde::Result + 'a {
+    move |defaults, _ctx| {
+        let Some(active) = defaults.default.as_deref() else {
+            return Ok(());
+        };
+        if agents.iter().any(|a| a.id == active) {
+            return Ok(());
+        }
+        Err(garde::Error::new(format!(
+            "default = '{active}' but no matching [[agents]] entry exists. \
              Configured ids: [{}]",
-            config
-                .agents
-                .agents
-                .iter()
-                .map(|a| a.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+            agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+        )))
     }
-
-    Ok(())
 }
