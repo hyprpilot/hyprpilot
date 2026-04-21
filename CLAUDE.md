@@ -164,22 +164,25 @@ output = "DP-1"        # optional; defaults to primary monitor
 [daemon.window.anchor]
 edge = "right"         # "top" | "right" | "bottom" | "left"
 margin = 0             # px from the anchored edge
-width = 480            # fixed pixel width of the surface
-height = 900           # fixed pixel height
+width = "40%"          # "N%" (of monitor) or pixel int; default 40%
+# height unset         # unset → full-height fill via top+bottom anchor
 
 [daemon.window.center]
 width = "50%"          # "N%" (of monitor) or pixel int
 height = "60%"
 ```
 
-`width` and `height` under `[daemon.window.center]` accept either a pixel
-integer or an `"N%"` string; the enum is `Dimension::{Pixels(u32),
-Percent(u8)}`. A custom `Deserialize` impl handles the `%` suffix; anything
-else (`"50px"`, bare floats) is rejected at load time.
+`width` / `height` under both `[daemon.window.anchor]` and
+`[daemon.window.center]` accept either a pixel integer or an `"N%"` string;
+the enum is `Dimension::{Pixels(u32), Percent(u8)}`. A custom `Deserialize`
+impl handles the `%` suffix; anything else (`"50px"`, bare floats) is
+rejected at load time. Percentages resolve against the active monitor's
+physical size at map-time.
 
-Only the `center` sub-tree accepts percentages. `[daemon.window.anchor]`
-width/height are fixed pixels because layer-shell surfaces don't resize on
-monitor changes unless we remap them.
+`[daemon.window.anchor] height` is intentionally unset by default. With
+height unset the daemon pins top + bottom + `edge`, so the compositor
+stretches the surface full-height — the Python-pilot overlay shape.
+Setting an explicit `height` pins only `edge` and uses that fixed extent.
 
 ### Crate: `gtk-layer-shell` 0.8 (GTK3)
 

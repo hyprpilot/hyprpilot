@@ -47,8 +47,14 @@ fn apply_anchor_mode(window: &tauri::WebviewWindow, anchor: &AnchorWindow, outpu
 
     let edge = anchor.edge.unwrap_or(Edge::Right);
     let margin = anchor.margin.unwrap_or(0);
-    let width = anchor.width.unwrap_or(480);
-    let height = anchor.height.unwrap_or(900);
+
+    // Percentage dimensions need the active monitor's extent. Resolving the
+    // monitor here also lets gdk_monitor_by_name below pick the right output
+    // in lockstep.
+    let monitor = resolve_monitor(window, output)?;
+    let mon_size = monitor.size();
+    let width_px = resolve_dimension(anchor.width.unwrap_or(Dimension::Percent(40)), mon_size.width);
+    let height_px = anchor.height.map(|h| resolve_dimension(h, mon_size.height));
 
     let gtk_window = window
         .gtk_window()
@@ -64,12 +70,17 @@ fn apply_anchor_mode(window: &tauri::WebviewWindow, anchor: &AnchorWindow, outpu
     gtk_window.set_keyboard_mode(KeyboardMode::OnDemand);
     gtk_window.set_namespace("hyprpilot");
 
-    // Anchor only to the requested edge — leaving the other three false lets
-    // the fixed width/height below control the surface's extent.
+    // Reset all anchors, then pin the configured edge. When height is unset
+    // the surface also pins top + bottom so the compositor stretches it
+    // full-height — the default overlay shape.
     for &e in &[GtkEdge::Top, GtkEdge::Right, GtkEdge::Bottom, GtkEdge::Left] {
         gtk_window.set_anchor(e, false);
     }
     gtk_window.set_anchor(gtk_edge(edge), true);
+    if height_px.is_none() {
+        gtk_window.set_anchor(GtkEdge::Top, true);
+        gtk_window.set_anchor(GtkEdge::Bottom, true);
+    }
     gtk_window.set_layer_shell_margin(gtk_edge(edge), margin);
 
     if let Some(name) = output {
@@ -81,8 +92,10 @@ fn apply_anchor_mode(window: &tauri::WebviewWindow, anchor: &AnchorWindow, outpu
     }
 
     // gtk-layer-shell ignores GTK resize flags on layer surfaces — fixed size
-    // is how we enforce the surface's extent.
-    gtk_window.set_size_request(width as i32, height as i32);
+    // is how we enforce the surface's extent. Passing -1 for height lets the
+    // top+bottom anchors drive full-height fill.
+    let request_height = height_px.map(|h| h as i32).unwrap_or(-1);
+    gtk_window.set_size_request(width_px as i32, request_height);
 
     // `visible = false` in tauri.conf.json combined with the `hide()` above
     // keeps the GTK window unmapped until `init_layer_shell` has configured
@@ -100,8 +113,8 @@ fn apply_anchor_mode(window: &tauri::WebviewWindow, anchor: &AnchorWindow, outpu
         info!(
             ?edge,
             margin,
-            width,
-            height,
+            width = width_px,
+            height = ?height_px,
             output = ?output,
             "anchored layer-shell surface configured"
         );
