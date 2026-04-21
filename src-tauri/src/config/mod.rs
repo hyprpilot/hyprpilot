@@ -351,7 +351,7 @@ pub struct AgentConfig {
 /// Closed enum — each variant maps to a Rust struct that encodes that
 /// vendor's quirks (launch command, permission kinds, tool-content
 /// shape). Adding a provider means one new struct + one new enum
-/// variant + one new match arm in `acp::agents::vendor_for`.
+/// variant + one new match arm in `acp::agents::match_provider_agent`.
 ///
 /// Wire names are explicit because `rename_all = "kebab-case"` would
 /// turn `AcpOpenCode` into `acp-open-code` — opencode's product name

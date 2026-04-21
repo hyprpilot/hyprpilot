@@ -53,7 +53,7 @@ pub trait AcpAgent: Send + Sync + 'static {
     /// vendor's `default_command` + `default_args` when the user
     /// config omits them, overlays `env`, and sets
     /// `stdin=piped`/`stdout=piped`/`kill_on_drop`.
-    fn spawn_command(&self, entry: &AgentConfig) -> Command {
+    fn spawn(&self, entry: &AgentConfig) -> Command {
         use std::process::Stdio;
 
         let program = entry.command.clone().unwrap_or_else(|| self.command().to_string());
@@ -90,7 +90,7 @@ pub trait AcpAgent: Send + Sync + 'static {
 /// spawn flow + commands surface don't each grow their own
 /// translation.
 #[must_use]
-pub fn vendor_for(provider: AgentProvider) -> Box<dyn AcpAgent> {
+pub fn match_provider_agent(provider: AgentProvider) -> Box<dyn AcpAgent> {
     match provider {
         AgentProvider::AcpClaudeCode => Box::new(AcpAgentClaudeCode),
         AgentProvider::AcpCodex => Box::new(AcpAgentCodex),
@@ -116,19 +116,19 @@ mod tests {
     }
 
     #[test]
-    fn vendor_for_picks_concrete_adapter_per_provider() {
+    fn match_provider_agent_picks_concrete_adapter_per_provider() {
         // Each variant builds a spawnable command with the vendor's
         // defaults. Asserting on the program path is enough to
         // distinguish the three — the spawn flow wraps it further.
         let entry = stub_entry("anon");
 
-        let claude_cmd = vendor_for(AgentProvider::AcpClaudeCode).spawn_command(&entry);
+        let claude_cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
         assert_eq!(claude_cmd.as_std().get_program(), "bunx");
 
-        let codex_cmd = vendor_for(AgentProvider::AcpCodex).spawn_command(&entry);
+        let codex_cmd = match_provider_agent(AgentProvider::AcpCodex).spawn(&entry);
         assert_eq!(codex_cmd.as_std().get_program(), "bunx");
 
-        let opencode_cmd = vendor_for(AgentProvider::AcpOpenCode).spawn_command(&entry);
+        let opencode_cmd = match_provider_agent(AgentProvider::AcpOpenCode).spawn(&entry);
         assert_eq!(opencode_cmd.as_std().get_program(), "opencode");
     }
 
@@ -138,7 +138,7 @@ mod tests {
         entry.command = Some("my-agent".into());
         entry.args = vec!["--yolo".into()];
 
-        let cmd = vendor_for(AgentProvider::AcpClaudeCode).spawn_command(&entry);
+        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
         assert_eq!(cmd.as_std().get_program(), "my-agent");
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args, vec!["--yolo"]);
@@ -148,7 +148,7 @@ mod tests {
     fn spawn_command_uses_default_args_when_user_args_empty() {
         let entry = stub_entry("default-args");
         // claude-code-acp defaults to `--bun @zed-industries/claude-code-acp`.
-        let cmd = vendor_for(AgentProvider::AcpClaudeCode).spawn_command(&entry);
+        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args, vec!["--bun", "@zed-industries/claude-code-acp"]);
     }
