@@ -72,6 +72,16 @@ fields they set.
    `--profile <name>` / `HYPRPILOT_PROFILE` is supplied.
 4. `clap` flags — override-per-invocation, never persisted.
 
+`defaults.toml` is the **single source of truth** for default values. Rust
+code consuming config leaves uses `.expect("... seeded by defaults.toml")`
+rather than duplicating defaults as `unwrap_or(...)` fallbacks — the
+`defaults_populate_every_daemon_window_field` test pins every
+`.expect()`-ed leaf to a seeded TOML field. Removing a field from
+`defaults.toml` without also removing the `.expect()` fails that test
+before it ships a runtime panic. The only intentional `Option` leaf left
+unset in defaults is `[daemon.window.anchor] height`, where `None` is the
+"full-height fill" signal rather than a missing default.
+
 `Config::validate()` runs after merge and fails startup with a readable error
 on invalid values (e.g. unknown `logging.level`). `deny_unknown_fields` on
 every section catches typos in user TOML at load time.

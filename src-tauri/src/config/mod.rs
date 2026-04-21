@@ -453,6 +453,25 @@ mod tests {
         cfg.validate().expect("defaults must validate");
     }
 
+    /// The daemon consumes several `Option<T>` window fields via `.expect()`
+    /// rather than carrying a second-layer Rust default — defaults.toml is
+    /// the single source of truth. If a field is removed from the TOML
+    /// without removing the `.expect()` call, the daemon panics at startup;
+    /// this test fails before we ship that.
+    #[test]
+    fn defaults_populate_every_daemon_window_field() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        let w = &cfg.daemon.window;
+
+        assert!(w.mode.is_some(), "daemon.window.mode");
+        assert!(w.anchor.edge.is_some(), "daemon.window.anchor.edge");
+        assert!(w.anchor.margin.is_some(), "daemon.window.anchor.margin");
+        assert!(w.anchor.width.is_some(), "daemon.window.anchor.width");
+        // anchor.height intentionally optional — None means full-height fill.
+        assert!(w.center.width.is_some(), "daemon.window.center.width");
+        assert!(w.center.height.is_some(), "daemon.window.center.height");
+    }
+
     #[test]
     fn defaults_populate_every_theme_token() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");

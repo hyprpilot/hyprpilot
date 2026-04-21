@@ -32,7 +32,10 @@ fn get_theme(theme: State<'_, Theme>) -> Theme {
 /// target monitor and centered. Both `layer = overlay` and
 /// `keyboard_interactivity = on_demand` are hardcoded — see CLAUDE.md for why.
 fn apply_window_config(window: &tauri::WebviewWindow, cfg: &Window) -> Result<()> {
-    let mode = cfg.mode.unwrap_or(WindowMode::Anchor);
+    // Every required leaf below is guaranteed to be `Some` by the embedded
+    // `defaults.toml` layer — `defaults_populate_every_daemon_window_field`
+    // pins this invariant. The `.expect()` calls double as documentation.
+    let mode = cfg.mode.expect("[daemon.window] mode seeded by defaults.toml");
 
     match mode {
         WindowMode::Anchor => apply_anchor_mode(window, &cfg.anchor, cfg.output.as_deref()),
@@ -45,15 +48,27 @@ fn apply_anchor_mode(window: &tauri::WebviewWindow, anchor: &AnchorWindow, outpu
     use gtk::prelude::{GtkWindowExt, WidgetExt};
     use gtk_layer_shell::{Edge as GtkEdge, KeyboardMode, Layer};
 
-    let edge = anchor.edge.unwrap_or(Edge::Right);
-    let margin = anchor.margin.unwrap_or(0);
+    let edge = anchor
+        .edge
+        .expect("[daemon.window.anchor] edge seeded by defaults.toml");
+    let margin = anchor
+        .margin
+        .expect("[daemon.window.anchor] margin seeded by defaults.toml");
 
     // Percentage dimensions need the active monitor's extent. Resolving the
     // monitor here also lets gdk_monitor_by_name below pick the right output
     // in lockstep.
     let monitor = resolve_monitor(window, output)?;
     let mon_size = monitor.size();
-    let width_px = resolve_dimension(anchor.width.unwrap_or(Dimension::Percent(40)), mon_size.width);
+    let width_px = resolve_dimension(
+        anchor
+            .width
+            .expect("[daemon.window.anchor] width seeded by defaults.toml"),
+        mon_size.width,
+    );
+    // `anchor.height` is intentionally optional — None = full-height fill via
+    // top+bottom anchor. The only Option in the window config that is not
+    // mandated by defaults.toml.
     let height_px = anchor.height.map(|h| resolve_dimension(h, mon_size.height));
 
     let gtk_window = window
@@ -186,8 +201,18 @@ fn resolve_monitor(window: &tauri::WebviewWindow, output: Option<&str>) -> Resul
 fn center_pixel_size(monitor: &Monitor, center: &CenterWindow) -> (u32, u32) {
     let PhysicalSize { width, height } = *monitor.size();
 
-    let w = resolve_dimension(center.width.unwrap_or(Dimension::Percent(50)), width);
-    let h = resolve_dimension(center.height.unwrap_or(Dimension::Percent(50)), height);
+    let w = resolve_dimension(
+        center
+            .width
+            .expect("[daemon.window.center] width seeded by defaults.toml"),
+        width,
+    );
+    let h = resolve_dimension(
+        center
+            .height
+            .expect("[daemon.window.center] height seeded by defaults.toml"),
+        height,
+    );
 
     (w, h)
 }
