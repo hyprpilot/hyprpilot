@@ -7,9 +7,6 @@ mode = "anchor"
 edge = "right"
 margin = 0
 width = "40%"
-# `height` intentionally unset — the surface pins top + bottom + edge so it
-# fills the monitor vertically. Set an explicit pixel or percent value to
-# use a fixed-height anchored surface instead.
 
 [daemon.window.center]
 width = "50%"

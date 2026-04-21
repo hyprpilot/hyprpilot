@@ -194,6 +194,17 @@ height unset the daemon pins top + bottom + `edge`, so the compositor
 stretches the surface full-height — the Python-pilot overlay shape.
 Setting an explicit `height` pins only `edge` and uses that fixed extent.
 
+### Edge accent (inward border)
+
+The daemon exposes `get_window_state` → `{ mode, anchorEdge }`. At boot,
+`ui/src/composables/useWindow.ts::applyWindowState` writes
+`data-window-anchor="<edge>"` on `<html>`; `ui/src/assets/styles.css`
+selects on that attribute and paints a 2px `border-<opposite>` in
+`var(--theme-window-edge)` on `body`, so the accent always lands on the
+inward (visible) side of the overlay. Center mode leaves the attribute
+unset → no accent. Extending to new edges is additive (Rust enum variant
++ one CSS selector).
+
 ### Crate: `gtk-layer-shell` 0.8 (GTK3)
 
 Tauri 2.10 on this repo still links `webkit2gtk` 4.1 (the GTK3 binding), so
