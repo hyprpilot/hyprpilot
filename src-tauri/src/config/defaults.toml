@@ -59,17 +59,20 @@ default = "claude-code"
 [[agents]]
 id = "claude-code"
 provider = "acp-claude-code"
+model = "claude-sonnet-4-5"
 command = "bunx"
 args = ["--bun", "@zed-industries/claude-code-acp"]
 
 [[agents]]
 id = "codex"
 provider = "acp-codex"
+model = "codex-mini-latest"
 command = "bunx"
 args = ["--bun", "@zed-industries/codex-acp"]
 
 [[agents]]
 id = "opencode"
 provider = "acp-opencode"
+model = "claude-sonnet-4-5"
 command = "opencode"
 args = ["acp"]

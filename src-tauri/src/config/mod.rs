@@ -375,6 +375,9 @@ pub struct AgentConfig {
     pub id: String,
     #[garde(skip)]
     pub provider: AgentProvider,
+    /// Vendor-translated at spawn time: env var or CLI flag per vendor.
+    #[garde(skip)]
+    pub model: Option<String>,
     /// Missing → vendor's default command.
     #[garde(inner(length(min = 1)))]
     pub command: Option<String>,
@@ -1058,6 +1061,7 @@ margin = -5
         );
 
         for a in &cfg.agents.agents {
+            assert!(a.model.is_some(), "agents[{}].model", a.id);
             assert!(a.command.is_some(), "agents[{}].command", a.id);
             assert!(!a.args.is_empty(), "agents[{}].args", a.id);
         }
@@ -1187,6 +1191,25 @@ default = "codex"
             let back: AgentProvider = serde_json::from_str(literal).unwrap();
             assert_eq!(back, v);
         }
+    }
+
+    #[test]
+    fn agent_without_model_parses() {
+        let p = write_tmp(
+            "no-model.toml",
+            r##"
+[[agents]]
+id = "bare"
+provider = "acp-claude-code"
+command = "my-agent"
+args = ["--flag"]
+"##,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        let bare = cfg.agents.agents.iter().find(|a| a.id == "bare").expect("bare entry");
+        assert_eq!(bare.model, None, "model must be absent when not set in TOML");
+        cfg.validate().expect("valid");
+        fs::remove_file(&p).ok();
     }
 
     #[test]
