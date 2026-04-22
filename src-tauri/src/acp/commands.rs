@@ -1,10 +1,12 @@
 //! Tauri `#[command]`s the webview invokes: `acp_submit`, `acp_cancel`,
-//! `permission_reply`, `agents_list`, `profiles_list`. Each delegates
-//! into the shared `AcpSessions` registry; the RPC surface uses the
-//! same entry points.
+//! `permission_reply`, `agents_list`, `profiles_list`, `session_list`,
+//! `session_load`. Each delegates into the shared `AcpSessions`
+//! registry; the RPC surface uses the same entry points.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent_client_protocol::schema::ListSessionsResponse;
 use serde_json::Value;
 use tauri::State;
 
@@ -36,6 +38,32 @@ pub async fn agents_list(sessions: State<'_, Arc<AcpSessions>>) -> Result<Value,
 #[tauri::command]
 pub async fn profiles_list(sessions: State<'_, Arc<AcpSessions>>) -> Result<Value, String> {
     Ok(serde_json::json!({ "profiles": sessions.list_profiles() }))
+}
+
+#[tauri::command]
+pub async fn session_list(
+    sessions: State<'_, Arc<AcpSessions>>,
+    agent_id: Option<String>,
+    profile_id: Option<String>,
+    cwd: Option<PathBuf>,
+) -> Result<ListSessionsResponse, String> {
+    sessions
+        .list(agent_id.as_deref(), profile_id.as_deref(), cwd)
+        .await
+        .map_err(|e| e.message)
+}
+
+#[tauri::command]
+pub async fn session_load(
+    sessions: State<'_, Arc<AcpSessions>>,
+    agent_id: Option<String>,
+    profile_id: Option<String>,
+    session_id: String,
+) -> Result<(), String> {
+    sessions
+        .load(agent_id.as_deref(), profile_id.as_deref(), session_id)
+        .await
+        .map_err(|e| e.message)
 }
 
 /// Stub — permission replies route through a future

@@ -141,6 +141,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             acp_commands::acp_cancel,
             acp_commands::agents_list,
             acp_commands::profiles_list,
+            acp_commands::session_list,
+            acp_commands::session_load,
             acp_commands::permission_reply,
         ])
         .setup(move |app| {
