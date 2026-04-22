@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import Placeholder from '@views/Placeholder.vue'
+import Chat from '@views/Chat.vue'
 </script>
 
 <template>
   <main class="overlay-root">
-    <Placeholder />
+    <Chat />
   </main>
 </template>

@@ -8,22 +8,45 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent_client_protocol::JsonRpcNotification;
 use agent_client_protocol::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, TerminalOutputRequest,
-    TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
-    WriteTextFileResponse,
+    RequestPermissionRequest, RequestPermissionResponse, TerminalOutputRequest, TerminalOutputResponse,
+    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::tools::{FsTools, Sandbox, SandboxError, Terminals};
 
 use self::error::{fs_error, terminal_error};
 
+/// Tolerant mirror of `schema::SessionNotification`. Carries `update` as
+/// raw JSON so we never fail `parse_message` on variants the
+/// `agent-client-protocol-schema` crate version we pin doesn't know
+/// about yet. The typed path fails closed — `send_error_notification`
+/// then emits a `{jsonrpc, error}` envelope with no `id` that the
+/// agent SDK logs as "Invalid message" (see `typed.rs:889`). Keeping
+/// the payload untyped at receive time avoids the whole cascade; the
+/// UI discriminates on `sessionUpdate` variants and drops unknowns.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
+#[notification(method = "session/update")]
+#[serde(rename_all = "camelCase")]
+pub struct TolerantSessionNotification {
+    pub session_id: String,
+    pub update: serde_json::Value,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
+/// Payload pushed onto the per-session forwarding channel.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
-    Notification(Box<SessionNotification>),
+    Notification {
+        session_id: String,
+        update: serde_json::Value,
+    },
     PermissionRequested {
         session_id: String,
         options: Vec<PermissionOptionView>,
@@ -49,11 +72,7 @@ impl From<&agent_client_protocol::schema::PermissionOption> for PermissionOption
 
 /// Serialise `PermissionOptionKind` via the crate's own serde derive so the
 /// wire name always matches the SDK, even across `#[non_exhaustive]`
-/// additions. A hardcoded match would silently diverge when the crate
-/// adds a variant; stable Rust can't statically reject the omission
-/// (only nightly's `non_exhaustive_omitted_patterns` lint can). If
-/// serialisation ever fails we log loud and emit `"unknown"` — noisier
-/// than fabricating a `Debug` string.
+/// additions.
 fn permission_option_kind_wire(kind: &agent_client_protocol::schema::PermissionOptionKind) -> String {
     match serde_json::to_value(kind) {
         Ok(serde_json::Value::String(s)) => s,
@@ -88,13 +107,16 @@ impl AcpClient {
         })
     }
 
-    /// Forward a `SessionNotification` onto the per-session events
-    /// channel. Closed receiver degrades to a trace line rather than
-    /// an error — the actor has already finished its select loop.
-    pub fn forward_notification(&self, notification: SessionNotification) {
+    /// Forward a raw session/update notification to the actor. Closed
+    /// receiver degrades to a trace line — the actor has already
+    /// finished its select loop.
+    pub fn forward_notification(&self, notification: TolerantSessionNotification) {
+        let TolerantSessionNotification {
+            session_id, update, ..
+        } = notification;
         if self
             .events
-            .send(ClientEvent::Notification(Box::new(notification)))
+            .send(ClientEvent::Notification { session_id, update })
             .is_err()
         {
             tracing::trace!("acp::client: events channel closed, dropping notification");
@@ -280,6 +302,24 @@ mod tests {
             let view: PermissionOptionView = (&opt).into();
             assert_eq!(view.kind, wire);
         }
+    }
+
+    /// Any JSON payload — including unknown `sessionUpdate` variants —
+    /// must round-trip through the tolerant notification without
+    /// triggering `send_error_notification`. Pins the fix for the
+    /// "Invalid message" cascade.
+    #[test]
+    fn tolerant_notification_accepts_unknown_variant() {
+        let raw = serde_json::json!({
+            "sessionId": "sess-1",
+            "update": {
+                "sessionUpdate": "some_future_variant_the_crate_does_not_know",
+                "anything": { "nested": true }
+            }
+        });
+        let n: TolerantSessionNotification = serde_json::from_value(raw.clone()).expect("tolerant parse");
+        assert_eq!(n.session_id, "sess-1");
+        assert_eq!(n.update, raw["update"]);
     }
 
     #[tokio::test]

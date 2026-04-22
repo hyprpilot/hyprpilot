@@ -1,3 +1,6 @@
 export * from './useAcpAgent'
+export * from './useAcpProfiles'
+export * from './useAcpSessionHistory'
+export * from './useAcpTranscript'
 export * from './useTheme'
 export * from './useWindow'

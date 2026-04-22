@@ -91,7 +91,9 @@ export async function applyTheme(): Promise<void> {
  * catch for the "Rust sends a stray null" regression case.
  */
 function walk(prefix: string[], node: unknown, emit: (path: string[], value: string) => void): void {
-  if (node === null || node === undefined) return
+  if (node === null || node === undefined) {
+    return
+  }
 
   if (typeof node === 'string') {
     emit(prefix, node)
