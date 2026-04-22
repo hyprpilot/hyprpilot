@@ -8,8 +8,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --reporter=verbose",
+    "test:watch": "vitest --reporter=verbose",
     "type-check": "vue-tsc --noEmit",
     "format": "prettier --write src/ --log-level warn && eslint --fix",
     "lint": "eslint && vue-tsc --noEmit"

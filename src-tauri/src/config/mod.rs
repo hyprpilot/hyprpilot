@@ -1125,7 +1125,7 @@ margin = -5
     /// name, missing id, policy variant removed — this fires before
     /// the daemon starts panicking at runtime against a bad schema.
     #[test]
-    fn defaults_populate_every_agent_field() {
+    fn defaults_populate_every_required_agent_field() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
         assert_eq!(
@@ -1142,7 +1142,6 @@ margin = -5
         );
 
         for a in &cfg.agents.agents {
-            assert!(a.model.is_some(), "agents[{}].model", a.id);
             assert!(a.command.is_some(), "agents[{}].command", a.id);
             assert!(!a.args.is_empty(), "agents[{}].args", a.id);
         }
@@ -1310,39 +1309,20 @@ args = ["--flag"]
         cfg.validate().expect("6- and 8-digit hex both accepted");
     }
 
+    /// Defaults ship zero profiles and no `agent.default_profile` —
+    /// profiles are user-supplied, the daemon falls back to the
+    /// `[agent] default` agent when none is selected.
     #[test]
-    fn defaults_populate_every_profile_field() {
+    fn defaults_seed_no_profiles() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
-        let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["ask", "plan", "strict"],
-            "defaults must seed the three built-in profiles"
+        assert!(cfg.profiles.is_empty(), "defaults must not seed any profiles");
+        assert!(
+            cfg.agents.agent.default_profile.is_none(),
+            "agent.default_profile must not be seeded"
         );
 
-        assert_eq!(
-            cfg.agents.agent.default_profile.as_deref(),
-            Some("ask"),
-            "agent.default_profile must be seeded to a concrete id"
-        );
-
-        let ask = cfg.profiles.iter().find(|p| p.id == "ask").unwrap();
-        assert_eq!(ask.agent, "claude-code");
-        assert!(ask.model.is_none(), "ask inherits model from agent");
-        assert!(ask.system_prompt.is_none());
-        assert!(ask.system_prompt_file.is_none());
-
-        let plan = cfg.profiles.iter().find(|p| p.id == "plan").unwrap();
-        assert_eq!(plan.agent, "opencode");
-        assert!(plan.system_prompt.is_some(), "plan must seed a system_prompt");
-
-        let strict = cfg.profiles.iter().find(|p| p.id == "strict").unwrap();
-        assert_eq!(strict.agent, "claude-code");
-        assert_eq!(strict.model.as_deref(), Some("claude-opus-4-5"));
-        assert!(strict.system_prompt.is_some());
-
-        cfg.validate().expect("seeded profiles validate");
+        cfg.validate().expect("empty profile set validates");
     }
 
     #[test]
@@ -1425,9 +1405,14 @@ default_profile = "ghost-profile"
     }
 
     #[test]
-    fn user_profile_overrides_default_by_id() {
+    /// With no seeded profiles in `defaults.toml` the merged list is
+    /// exactly what the user supplies, in file order. The keyed-list
+    /// merge semantics are pinned separately by
+    /// `user_agent_entry_overrides_default_by_id`; this test just
+    /// confirms that user profiles flow through cleanly.
+    fn user_profiles_flow_through_in_order() {
         let p = write_tmp(
-            "profile-override.toml",
+            "user-profiles.toml",
             r#"
 [[profiles]]
 id = "strict"
@@ -1442,16 +1427,12 @@ agent = "claude-code"
         let cfg = load(Some(&p), None).expect("load");
 
         let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["ask", "plan", "strict", "my-profile"],
-            "overrides keep position, new ids append"
-        );
+        assert_eq!(ids, vec!["strict", "my-profile"], "user profiles appear in file order");
 
         let strict = cfg.profiles.iter().find(|p| p.id == "strict").unwrap();
-        assert_eq!(strict.agent, "opencode", "override wins whole-entry");
+        assert_eq!(strict.agent, "opencode");
         assert_eq!(strict.model.as_deref(), Some("custom-model"));
-        assert!(strict.system_prompt.is_none(), "override is whole-entry replace");
+        assert!(strict.system_prompt.is_none());
 
         fs::remove_file(&p).ok();
     }

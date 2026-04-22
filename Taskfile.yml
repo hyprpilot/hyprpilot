@@ -17,10 +17,13 @@ tasks:
       - pnpm install
 
   test:
-    desc: Run Rust (cargo-nextest) and frontend test suites.
-    deps: [test:ui]
+    desc: Run Rust (cargo-nextest) and frontend test suites; both finish before task fails.
+    deps: [test:rust, test:ui]
+
+  test:rust:
+    desc: Run the Rust nextest suite, surfacing every failure (no fail-fast).
     cmds:
-      - cargo nextest run --manifest-path src-tauri/Cargo.toml --all-targets
+      - cargo nextest run --manifest-path src-tauri/Cargo.toml --all-targets --no-fail-fast
 
   test:ui:
     desc: Run the Vitest component suite (colocated *.test.ts).

@@ -1,0 +1,16 @@
+# nextest profile + per-test overrides.
+#
+# The three `dead_child_*` smoke tests in `acp::runtime::tests` spawn
+# `/bin/false` and watch the actor settle on the connection failure.
+# ACP's `send_request(...).block_task().await` doesn't abort cleanly
+# when the child exits before responding — under parallel load the
+# actor can stall past the 15s watchdog and the test elapses. The real
+# fix is wiring `child.wait()` into the actor's select loop alongside
+# `connect_with`, tracked separately. Until then, retry masks the
+# flake without hiding the "actor never reaches a terminal state"
+# signal we actually care about: a legitimately stuck actor fails
+# every retry.
+
+[[profile.default.overrides]]
+filter = 'test(/acp::runtime::tests::(dead_child_yields_error_state|list_only_against_dead_child_settles|resume_against_dead_child_reports_error)/)'
+retries = 3

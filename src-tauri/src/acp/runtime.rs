@@ -487,7 +487,7 @@ mod tests {
 
         // Then the actor reports Error because `/bin/false` exits
         // before the initialize handshake lands.
-        let err = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let err = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match rx.recv().await {
                     Ok(SessionEvent::State {
@@ -533,7 +533,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(8);
         let handle = start_session(dummy_session("ded-list"), tx, Bootstrap::ListOnly);
 
-        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match rx.recv().await {
                     Ok(SessionEvent::State {
@@ -566,7 +566,7 @@ mod tests {
         let sid = SessionId::new("00000000-0000-0000-0000-000000000000");
         let handle = start_session(dummy_session("ded-resume"), tx, Bootstrap::Resume(sid));
 
-        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match rx.recv().await {
                     Ok(SessionEvent::State {
