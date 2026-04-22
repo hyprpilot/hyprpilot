@@ -482,6 +482,61 @@ off the default lane.
   `auto_cancel_permission` + `emit_acp_event` into methods on
   `AcpClient` / `AcpSessions`; keeps the ownership graph legible and
   avoids passing owned state by parameter.
+- **Small composable primitives live in `src-tauri/src/tools/`; domain
+  modules host thin adapters over them.** A type that could exist
+  without the domain it first appears in (a sandbox, a terminal
+  registry, an fs-with-containment wrapper) belongs in `tools/`,
+  returns a domain-specific error enum (`SandboxError`, `FsError`,
+  `TerminalError`), and knows nothing about the protocol that called
+  it. The domain module (`acp/client.rs`) becomes a translation layer
+  — parse the wire envelope, delegate to the tool, map the tool's
+  error into the protocol's error. Precedent: K-244 MR 21 review
+  refactored `AcpClient` from owning `sandbox_root` / `terminals`
+  directly into `{ events, fs: Arc<FsTools>, terminals: Arc<Terminals> }`;
+  `FsTools` / `Terminals` / `Sandbox` moved under `tools/`, only the
+  ACP error-mapping stayed inside `acp/`. Every non-ACP entry point
+  (a Tauri command, a future gRPC shim, unit tests) then reuses the
+  primitive without inheriting the ACP envelope types.
+- **Structs carry their invariants; don't re-pass context on every call.**
+  When a helper needs the same configuration value ("the sandbox
+  root", "the registry handle") on every invocation, wrap it in a
+  struct and make the helper a method. `Sandbox { root: PathBuf }::new(root)`
+  canonicalises once at construction, then `sandbox.resolve(path)`
+  uses the already-validated root — not `canonicalize_within(base, path)`
+  which re-runs the check every call. Runtime errors that were only
+  possible because the first arg was untrusted (`MissingBase`,
+  `RootNotADirectory`) collapse into construction-time errors,
+  tightening the type. Same shape for `FsTools { sandbox }`,
+  `Terminals { registry }`, `WindowRenderer { wm, config }`.
+- **Prefer enum + match dispatch for similar handlers; reach for
+  macros only when monomorphisation forces per-handler registration.**
+  The first choice for a family of related operations is a closed
+  enum variant + a match in the dispatcher — `SessionCommand::{Prompt,
+  Cancel, Shutdown}` in `acp/runtime.rs`, `ClientEvent::{Notification,
+  PermissionRequested}` in `acp/client.rs`, `RpcHandler` impls routed
+  from `RpcDispatcher::dispatch_line`. One enum = one exhaustive
+  match, compiler enforces coverage, adding a variant surfaces every
+  call site. Use a `macro_rules!` only when the external API forces
+  type-parameterised monomorphisation per handler (ACP's
+  `Client.builder().on_receive_request::<Req, Resp, _>(...)` emits a
+  distinct type per (Req, Resp) pair, so one `on_receive_request`
+  call per method is mandatory at compile time). Then a declarative
+  macro — `register_client_handler!(builder, client, $method)` in
+  `acp/runtime.rs` — collapses the identical closure bodies to one
+  line per method. Do NOT invent a `CapabilityHandler` wrapper trait
+  with `Box<dyn ...>` just to "feel polymorphic" — it adds ceremony
+  without real dispatch.
+- **Traits for open extension points; closed enums for closed sets.**
+  Traits pay their way when new implementers arrive from outside the
+  decision you're making today — `WindowManager` for compositors
+  (Hyprland / Sway / Gtk fallback), `AcpAgent` for vendors
+  (claude-code / codex / opencode). The trait stays stable; adding
+  one means a new struct and a new `detect()` branch. Closed enums
+  for the known-at-compile-time alternatives — `AgentProvider`,
+  `Dimension::{Pixels, Percent}`, `logging::LogLevel`. Mix is fine:
+  `AgentProvider` is the closed enum, `AcpAgent` is the trait whose
+  impls match 1:1 onto its variants; `match_provider_agent(provider)`
+  is the bridge.
 - **Comment discipline — terse WHY, never WHAT.** Default to no comments.
   Code + well-named identifiers already describe behavior; comments earn
   their keep only when they encode a non-obvious reason (a protocol quirk, a
