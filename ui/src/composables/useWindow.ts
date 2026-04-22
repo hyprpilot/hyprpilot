@@ -6,12 +6,12 @@ export type Edge = 'top' | 'right' | 'bottom' | 'left'
 /**
  * Snapshot of the daemon's resolved `[daemon.window]` state. Mirrors
  * `src-tauri/src/daemon/mod.rs::WindowState`. `anchorEdge` is the edge the
- * layer-shell surface is pinned to in anchor mode; it is `null` in center
- * mode (no screen-edge-relative chrome should render).
+ * layer-shell surface is pinned to in anchor mode; absent in center mode
+ * (no screen-edge-relative chrome should render).
  */
 export interface WindowState {
   mode: WindowMode
-  anchorEdge: Edge | null
+  anchorEdge?: Edge
 }
 
 /**

@@ -268,13 +268,16 @@ mod tests {
         serde_json::to_value(resp).unwrap()
     }
 
+    /// With an empty `AgentsConfig` (no `[agent] default`, no
+    /// `[[agents]]`), `session/submit` rejects with `-32602` — no
+    /// agent to spawn. End-to-end happy path is covered by the
+    /// runtime integration test.
     #[tokio::test]
-    async fn session_submit_success_round_trip() {
+    async fn session_submit_without_default_is_invalid_params() {
         let out = run(r#"{"jsonrpc":"2.0","id":1,"method":"session/submit","params":{"text":"hello"}}"#).await;
         assert_eq!(out["jsonrpc"], "2.0");
         assert_eq!(out["id"], 1);
-        assert_eq!(out["result"]["accepted"], true);
-        assert_eq!(out["result"]["text"], "hello");
+        assert_eq!(out["error"]["code"], -32602);
     }
 
     #[tokio::test]
@@ -285,10 +288,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_cancel_stub_returns_no_active_session() {
+    async fn session_cancel_without_default_is_invalid_params() {
         let out = run(r#"{"jsonrpc":"2.0","id":2,"method":"session/cancel"}"#).await;
-        assert_eq!(out["result"]["cancelled"], false);
-        assert_eq!(out["result"]["reason"], "no active session");
+        assert_eq!(out["error"]["code"], -32602);
     }
 
     #[tokio::test]
@@ -356,14 +358,16 @@ mod tests {
         assert_eq!(out["error"]["code"], -32603);
     }
 
-    /// Regression: `session/submit` with a string id round-trips and
-    /// the handler parses `{"text": "..."}` into its typed params.
+    /// Regression: a string id round-trips through `session/submit`,
+    /// even when the deeper handler rejects with `-32602` because the
+    /// test harness has no agent config. The envelope handling is what
+    /// this test pins — happy-path submit is exercised at the
+    /// `AcpSessions` layer.
     #[tokio::test]
     async fn session_submit_with_string_id_round_trips() {
         let out = run(r#"{"jsonrpc":"2.0","id":"abc-123","method":"session/submit","params":{"text":"hi"}}"#).await;
         assert_eq!(out["id"], "abc-123");
-        assert_eq!(out["result"]["accepted"], true);
-        assert_eq!(out["result"]["text"], "hi");
+        assert_eq!(out["error"]["code"], -32602);
     }
 
     /// Every bare legacy method name must surface `-32601` after
