@@ -123,13 +123,17 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // active monitor on every show transition.
     let renderer = WindowRenderer::new(window_cfg.clone(), wm::detect());
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
-            if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
-                warn!(%err, "failed to emit single-instance event");
-            }
-        }))
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
+        if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
+            warn!(%err, "failed to emit single-instance event");
+        }
+    }));
+
+    #[cfg(feature = "e2e-testing")]
+    let builder = builder.plugin(tauri_plugin_playwright::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             get_theme,
             get_window_state,

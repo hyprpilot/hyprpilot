@@ -10,6 +10,7 @@ export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
+      '@ipc': path.resolve(__dirname, './src/ipc'),
       '@lib': path.resolve(__dirname, './src/lib'),
       '@ui': path.resolve(__dirname, './src/components/ui'),
       '@components': path.resolve(__dirname, './src/components'),

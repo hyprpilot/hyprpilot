@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '@ipc'
 
 /**
  * Palette tokens surfaced by the Rust config layer. Mirrors

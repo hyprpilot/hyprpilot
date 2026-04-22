@@ -8,12 +8,10 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
     "type-check": "vue-tsc --noEmit",
-    "format": "prettier --write src/ tests/ e2e/ --log-level warn && eslint --fix",
+    "format": "prettier --write src/ --log-level warn && eslint --fix",
     "lint": "eslint && vue-tsc --noEmit"
   },
   "dependencies": {
@@ -26,12 +24,13 @@
   },
   "devDependencies": {
     "@cenk1cenk2/eslint-config": "^3.2.3",
-    "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.4",
-    "@tauri-apps/cli": "^2.10.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@testing-library/vue": "^8.1.0",
     "@types/node": "^24.12.2",
     "@vitejs/plugin-vue": "^6.0.6",
     "@typescript-eslint/parser": "^8.59.0",
+    "@vitest/ui": "^4.1.4",
     "@vue/eslint-config-typescript": "^14.7.0",
     "vue-eslint-parser": "^10.4.0",
     "@vue/test-utils": "^2.4.6",
@@ -44,9 +43,5 @@
     "vite": "^8.0.9",
     "vitest": "^4.1.5",
     "vue-tsc": "^3.2.7"
-  },
-  "packageManager": "pnpm@10.33.1",
-  "engines": {
-    "node": ">=24.0.0"
   }
 }

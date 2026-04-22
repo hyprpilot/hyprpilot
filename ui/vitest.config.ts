@@ -9,8 +9,9 @@ export default mergeConfig(
   defineConfig({
     test: {
       environment: 'jsdom',
-      globals: true,
-      include: ['tests/**/*.{test,spec}.ts'],
+      globals: false,
+      include: ['src/**/*.test.ts'],
+      setupFiles: ['./vitest.setup.ts'],
       root: fileURLToPath(new URL('./', import.meta.url))
     }
   })

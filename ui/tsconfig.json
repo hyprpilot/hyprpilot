@@ -18,6 +18,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client", "node"],
     "paths": {
+      "@ipc": ["./src/ipc"],
       "@lib": ["./src/lib"],
       "@lib/*": ["./src/lib/*"],
       "@ui": ["./src/components/ui"],
@@ -27,7 +28,6 @@
       "@composables": ["./src/composables"],
       "@composables/*": ["./src/composables/*"],
       "@views": ["./src/views"],
-      "@views/*": ["./src/views/*"],
       "@assets/*": ["./src/assets/*"]
     }
   },
@@ -36,10 +36,8 @@
     "src/**/*.d.ts",
     "src/**/*.tsx",
     "src/**/*.vue",
-    "tests/**/*.ts",
-    "e2e/**/*.ts",
     "vite.config.ts",
     "vitest.config.ts",
-    "playwright.config.ts"
+    "vitest.setup.ts"
   ]
 }

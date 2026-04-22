@@ -14,7 +14,8 @@
     "ui": "@ui",
     "composables": "@composables",
     "utils": "@lib",
-    "lib": "@lib"
+    "lib": "@lib",
+    "ipc": "@ipc"
   },
   "iconLibrary": "lucide"
 }

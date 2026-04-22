@@ -33,6 +33,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tauri = { version = "2.10", features = [] }
+tauri-plugin-playwright = { version = "0.2", optional = true }
 tauri-plugin-single-instance = "2.4"
 uuid = { version = "1", features = ["v4"] }
 
@@ -48,3 +49,6 @@ gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
 default = []
 # Enabled by `tauri build` to ship the bundled frontend.
 custom-protocol = ["tauri/custom-protocol"]
+# `task build:e2e` flips this to expose the Playwright bridge socket;
+# never enabled in production builds.
+e2e-testing = ["dep:tauri-plugin-playwright"]

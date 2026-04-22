@@ -39,13 +39,15 @@ updating this file.
 
 | Task | Purpose |
 | ---- | ------- |
-| `task install` | `cargo fetch` + `pnpm --dir ui install`. |
-| `task dev` | `./ui/node_modules/.bin/tauri dev` — full dev cycle with Vite + Tauri (CLI is a Node devDep of `ui/`). |
-| `task test` | `cargo nextest run --all-targets` + `pnpm --dir ui test` + `pnpm --dir ui test:e2e`. |
-| `task format` | `cargo fmt --all` + `pnpm --dir ui format` (Prettier + eslint --fix). |
+| `task install` | `cargo fetch` + `pnpm install` at the workspace root (installs `ui`, `tests/e2e`, `tests/e2e/support/mock-agent` in one pass). |
+| `task dev` | `./node_modules/.bin/tauri dev` — full dev cycle with Vite + Tauri. `@tauri-apps/cli` is a root-level devDep, so the binary lands in the workspace root's `node_modules/.bin`. |
+| `task test` | `task test:ui` + `cargo nextest run --all-targets`. E2E stays out of the inner loop; run `task test:e2e` explicitly. |
+| `task test:ui` | `pnpm --filter hyprpilot-ui test` — Vitest over every colocated `src/**/*.test.ts`. |
+| `task test:e2e` | `TAURI_CONFIG=...` overlay-build → `pnpm --filter hyprpilot-ui build` → `pnpm --filter hyprpilot-e2e test`. The overlay (`src-tauri/tauri.conf.e2e.json`) inlines the Playwright-bridge capability at tauri-build time so production builds link zero plugin symbols. Browser mode today; `HYPRPILOT_E2E_MODE=tauri` for the bridge path. |
+| `task format` | `cargo fmt --all` + `pnpm --filter hyprpilot-ui format` (Prettier + eslint --fix). |
 | `task lint` | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + eslint + `vue-tsc --noEmit`. |
-| `task build` | Debug build via `./ui/node_modules/.bin/tauri build --debug`. |
-| `task "build:release"` | Release build via `./ui/node_modules/.bin/tauri build`. |
+| `task build` | Debug build via `./node_modules/.bin/tauri build --debug`. |
+| `task "build:release"` | Release build via `./node_modules/.bin/tauri build`. |
 
 ## Running the binary locally
 
@@ -401,7 +403,46 @@ module target. Helpers:
 
 Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
 
-## Rust conventions
+## Frontend testing
+
+Two tiers, two locations — one convention per tier, no forks. Add tests
+alongside the code they cover; never under `__tests__/` or `.spec.ts`
+beside `.vue` files (e2e specs are the sole `.spec.ts` carriers and
+live under `tests/e2e/specs/`).
+
+| Tier | Runner | Location | File suffix |
+| -- | -- | -- | -- |
+| Component / composable / lib | Vitest + `@vue/test-utils` + jsdom | beside the source | `<PascalOrCamel>.test.ts` |
+| End-to-end | Playwright via `@srsholmes/tauri-playwright` | `tests/e2e/specs/` | kebab-case `.spec.ts` |
+
+```
+ui/src/
+├── components/PermissionPrompt.vue
+├── components/PermissionPrompt.test.ts     # colocated
+├── composables/useAcpAgent.ts
+├── composables/useAcpAgent.test.ts
+├── ipc/                                    # @ipc — invoke/listen wrappers
+└── views/Placeholder.vue
+└── views/Placeholder.test.ts
+
+tests/e2e/
+├── playwright.config.ts                    # browser mode default
+├── fixtures/{tauri.ts, e2e-config.toml, global-{setup,teardown}.ts}
+├── specs/{smoke, submit, permission}.spec.ts
+└── support/mock-agent/                     # scripted ACP Node process
+```
+
+Component tests mock Tauri IPC by replacing the `@ipc` barrel with
+`vi.mock('@ipc', ...)` — never monkey-patch `window.__TAURI__`. E2E
+specs today run in `browser` mode against a Vite dev server with IPC
+mocks (`fixtures/tauri.ts::ipcMocks`); the daemon-spawning
+`tauri` mode is fully wired (Cargo `e2e-testing` feature +
+`tauri.conf.e2e.json` overlay merged via `TAURI_CONFIG` env var +
+mock-agent subprocess) and gates behind `HYPRPILOT_E2E_MODE=tauri` — see
+`tests/e2e/README.md` for the WebKitGTK-4.1 eval-stall that keeps it
+off the default lane.
+
+
 
 - **No backwards-compatibility layers — ever.** This repo has no stability
   contract with the outside world: the CLI, the unix-socket wire protocol,
@@ -483,6 +524,7 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 
 | Alias | Resolves to | Used for |
 | ----- | ----------- | -------- |
+| `@ipc` | `./src/ipc` | Tauri `invoke` / `listen` wrappers — tests `vi.mock('@ipc', ...)` to stub. |
 | `@lib` | `./src/lib` | TS helpers; `cn` lives here. |
 | `@ui` | `./src/components/ui` | shadcn-vue components. |
 | `@components` | `./src/components` | Non-shadcn components (future). |
@@ -536,15 +578,21 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 - **No `__` in class names.** Use `-` as the separator — `.placeholder-header`,
   not `.placeholder__header`.
 - **No `--pilot-*` CSS variables.** All theme tokens are `--theme-*`.
-- **`<style>` blocks are `lang="postcss"`** in every Vue SFC. The
-  PostCSS pipeline gives us `@apply` for Tailwind utilities plus
-  native CSS nesting (`&:focus`) — Vite processes it through the same
-  Tailwind v4 plugin pipeline as the global stylesheet. Prefer
-  `@apply` for layout / spacing / typography utilities; reserve
-  property-level CSS for theme-variable reads
-  (`background-color: var(--theme-...)`) and the rare custom that has
-  no Tailwind alias. Plain `<style scoped>` is a lint-trippable
-  shortcut only for the one-rule case; new SFCs default to postcss.
+- **`<style scoped>` in every Vue SFC, no `lang="postcss"`.** Tailwind
+  v4's vite plugin only transforms virtual modules whose query ends in
+  `.css`; `lang="postcss"` emits `lang.postcss` and silently bypasses
+  the plugin, leaving `@apply` unresolved until lightningcss minify
+  trips on it. Tailwind v4 handles `@apply` + variants + nesting
+  (`&:focus`) natively inside a plain `<style>` block, so the
+  `lang="postcss"` tag buys nothing and actively breaks the pipeline.
+  Each scoped block that uses `@apply` starts with
+  `@reference "../assets/styles.css";` — Tailwind v4 compiles isolated
+  CSS chunks independently, so scoped SFC blocks need the reference
+  directive to see the design tokens and utility aliases declared in
+  the global stylesheet. Prefer `@apply` for layout / spacing /
+  typography utilities; reserve property-level CSS for theme-variable
+  reads (`background-color: var(--theme-...)`) and the rare custom
+  that has no Tailwind alias.
 - Tailwind utility classes use the short aliases declared in
   `ui/src/assets/styles.css::@theme inline` (e.g. `bg-theme-accent`,
   `text-theme-pending`, `border-theme-border-soft`). Add new aliases as new
@@ -967,8 +1015,6 @@ scaffold work:
 
 - MCP server(s), skills loader, permissions store, markdown
   rendering, profile switcher UI.
-- Playwright e2e wiring (`tauri-driver` + WebKitGTK WebDriver shim) — the
-  current e2e is `test.skip` only.
 - Real branding icon — `src-tauri/icons/icon.png` is a generated 32×32
   placeholder.
 - Release bundling (`bundle.active = false` in `tauri.conf.json`).
@@ -1031,10 +1077,15 @@ is already prioritized. Wait for the release, follow the checklist.
 
 ### Other open debt worth tracking
 
-- **Playwright e2e wiring.** `ui/e2e/placeholder.spec.ts` is `test.skip`
-  only; lands when we wire `tauri-driver` + WebKitGTK's WebDriver shim.
-  After the GTK4 migration above, the shim likely becomes `webkit6gtk`
-  equivalent — the two deltas are adjacent and may fall out of one PR.
+- **Playwright `tauri` mode against WebKitGTK.** Scaffold lands with
+  `@srsholmes/tauri-playwright 0.2` + `tauri-plugin-playwright 0.2`
+  wired behind the `e2e-testing` Cargo feature, but the bridge's
+  `webview.eval` callback stalls on `webkit2gtk-4.1` — every `eval` /
+  `title` / `content` command hits the plugin's 30s timeout. E2E runs
+  in `browser` mode (Vite + Chromium + IPC mocks) by default;
+  `HYPRPILOT_E2E_MODE=tauri` flips over once the stall clears (likely
+  resolves with the GTK4 + webkit2gtk-6.0 migration above, or with a
+  WebdriverIO fallback — see `tests/e2e/README.md`).
 - **Release bundling.** `tauri.conf.json` has `bundle.active = false`.
   Lifting it needs real icons and the pipelines issue (see below).
 - **CI / `.gitlab-ci.yml`.** Not yet created; scaffold verifies locally.

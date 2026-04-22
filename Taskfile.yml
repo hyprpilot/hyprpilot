@@ -4,7 +4,7 @@
 version: "3"
 
 vars:
-  tauri: ./ui/node_modules/.bin/tauri
+  tauri: ./node_modules/.bin/tauri
 
 env:
   RUST_LOG: hyprpilot=debug
@@ -14,32 +14,43 @@ tasks:
     desc: Install Rust and frontend dependencies.
     cmds:
       - cargo fetch --manifest-path src-tauri/Cargo.toml
-      - pnpm --dir ui install
-
-  run:
-    desc: Run the Tauri app with live-reload.
-    cmds:
-      - "{{ .tauri }} dev"
+      - pnpm install
 
   test:
     desc: Run Rust (cargo-nextest) and frontend test suites.
+    deps: [test:ui]
     cmds:
       - cargo nextest run --manifest-path src-tauri/Cargo.toml --all-targets
-      - pnpm --dir ui test -v
-      - pnpm --dir ui test:e2e
+
+  test:ui:
+    desc: Run the Vitest component suite (colocated *.test.ts).
+    cmds:
+      - pnpm --filter hyprpilot-ui test
+
+  test:e2e:
+    desc: Run Playwright e2e against the bridged debug binary.
+    cmds:
+      - TAURI_CONFIG="$(cat src-tauri/tauri.conf.e2e.json)" cargo build --manifest-path src-tauri/Cargo.toml --features e2e-testing
+      - pnpm --filter hyprpilot-ui build
+      - pnpm --filter hyprpilot-e2e test
 
   format:
     desc: Format Rust and frontend sources.
     cmds:
       - cargo fmt --manifest-path src-tauri/Cargo.toml --all
-      - pnpm --dir ui format
+      - pnpm --filter hyprpilot-ui format
 
   lint:
     desc: Lint Rust and frontend sources.
     cmds:
       - cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      - pnpm --dir ui lint
+      - pnpm --filter hyprpilot-ui lint
+
+  run:
+    desc: Run the Tauri app with live-reload.
+    cmds:
+      - "{{ .tauri }} dev"
 
   build:
     desc: Build a debug Tauri bundle.
