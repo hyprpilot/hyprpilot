@@ -5,6 +5,7 @@ mod daemon;
 mod logging;
 mod paths;
 mod rpc;
+mod tools;
 
 use std::path::PathBuf;
 
