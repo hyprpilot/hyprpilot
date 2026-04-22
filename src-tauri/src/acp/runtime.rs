@@ -374,18 +374,12 @@ async fn run_session(
                 evt = client_events_rx.recv() => {
                     let Some(evt) = evt else { break };
                     match evt {
-                        ClientEvent::Notification(boxed) => {
-                            let notif = *boxed;
-                            match serde_json::to_value(&notif.update) {
-                                Ok(update) => {
-                                    let _ = events_tx_notif.send(SessionEvent::Transcript {
-                                        agent_id: agent_id_notif.clone(),
-                                        session_id: notif.session_id.0.to_string(),
-                                        update,
-                                    });
-                                }
-                                Err(err) => warn!(%err, "acp::runtime: failed to serialize session update"),
-                            }
+                        ClientEvent::Notification { session_id: sid, update } => {
+                            let _ = events_tx_notif.send(SessionEvent::Transcript {
+                                agent_id: agent_id_notif.clone(),
+                                session_id: sid,
+                                update,
+                            });
                         }
                         ClientEvent::PermissionRequested { session_id: sid, options } => {
                             let _ = events_tx_notif.send(SessionEvent::PermissionRequest {
@@ -404,7 +398,7 @@ async fn run_session(
     let builder = Client.builder().on_receive_notification(
         {
             let client = client.clone();
-            move |notification: agent_client_protocol::schema::SessionNotification, _cx| {
+            move |notification: super::client::TolerantSessionNotification, _cx| {
                 let client = client.clone();
                 async move {
                     client.forward_notification(notification);

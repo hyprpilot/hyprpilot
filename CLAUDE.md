@@ -630,6 +630,26 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 
 ### Style conventions
 
+- **Always brace single-statement control-flow bodies in TypeScript.** Never
+  write `if (cond) return x`, `if (cond) continue`, `for (…) do(x)` on one
+  line — always open a scope:
+
+  ```ts
+  // wrong
+  if (!agent) return []
+
+  // right
+  if (!agent) {
+    return []
+  }
+  ```
+
+  Applies to `if` / `else` / `for` / `while` / `do` in `.ts` and `<script
+  setup lang="ts">` blocks. Reason: the one-liner hides new siblings when
+  the branch grows — a second statement silently escapes the conditional
+  and the bug is visible only at runtime. Braces make the scope explicit
+  so the next edit can't slip outside it. Rust's `if` / `match` as
+  expressions stay as-is — that's a different language contract.
 - **No `__` in class names.** Use `-` as the separator — `.placeholder-header`,
   not `.placeholder__header`.
 - **No `--pilot-*` CSS variables.** All theme tokens are `--theme-*`.
