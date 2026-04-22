@@ -106,6 +106,7 @@ mod tests {
         AgentConfig {
             id: id.into(),
             provider: AgentProvider::AcpClaudeCode,
+            model: None,
             command: None,
             args: Vec::new(),
             cwd: None,

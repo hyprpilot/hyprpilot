@@ -740,6 +740,7 @@ default = "claude-code"          # id used when ctl / webview don't pick one
 [[agents]]                       # registry: per-agent entries
 id = "claude-code"
 provider = "acp-claude-code"     # closed enum; see AgentProvider
+model = "claude-sonnet-4-5"      # optional; translated per vendor at spawn time
 command = "bunx"                 # optional; defaults to the vendor's own
 args = ["--bun", "@zed-industries/claude-code-acp"]
 
