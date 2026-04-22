@@ -45,6 +45,7 @@ export interface SessionStateEvent {
 export interface SubmitResult {
   accepted: boolean
   agent_id: string
+  profile_id?: string
   session_id?: string
 }
 
@@ -57,6 +58,20 @@ export interface AgentSummary {
   id: string
   provider: string
   is_default: boolean
+}
+
+export interface ProfileSummary {
+  id: string
+  agent: string
+  model?: string
+  has_prompt: boolean
+  is_default: boolean
+}
+
+export interface SubmitOptions {
+  text: string
+  agentId?: string
+  profileId?: string
 }
 
 export function useAcpAgent() {
@@ -87,8 +102,12 @@ export function useAcpAgent() {
 
   onBeforeUnmount(unbind)
 
-  async function submit(text: string, agentId?: string): Promise<SubmitResult> {
-    return invoke<SubmitResult>('acp_submit', { text, agentId })
+  async function submit(options: SubmitOptions): Promise<SubmitResult> {
+    return invoke<SubmitResult>('acp_submit', {
+      text: options.text,
+      agentId: options.agentId,
+      profileId: options.profileId
+    })
   }
 
   async function cancel(agentId?: string): Promise<CancelResult> {
@@ -101,6 +120,12 @@ export function useAcpAgent() {
     return r.agents
   }
 
+  async function profilesList(): Promise<ProfileSummary[]> {
+    const r = await invoke<{ profiles: ProfileSummary[] }>('profiles_list')
+
+    return r.profiles
+  }
+
   return {
     transcript,
     state,
@@ -109,6 +134,7 @@ export function useAcpAgent() {
     unbind,
     submit,
     cancel,
-    agentsList
+    agentsList,
+    profilesList
   }
 }

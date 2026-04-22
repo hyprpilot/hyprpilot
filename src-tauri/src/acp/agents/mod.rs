@@ -83,6 +83,31 @@ pub trait AcpAgent: Send + Sync + 'static {
 
     /// Vendor's default arguments when `AgentConfig::args` is empty.
     fn args(&self) -> &'static [&'static str];
+
+    /// Route the resolved `system_prompt` through the vendor's
+    /// injection path. Either mutates `cmd` pre-spawn (launch flag,
+    /// `-c` override, env var) or returns `FirstMessage(...)` for the
+    /// runtime to prepend onto the first `session/prompt`. Default
+    /// drops the prompt — vendors without a hook degrade gracefully.
+    fn inject_system_prompt(&self, _cmd: &mut Command, _prompt: &str) -> SystemPromptInjection {
+        SystemPromptInjection::Handled
+    }
+}
+
+/// Outcome of pre-spawn system-prompt injection. Returned by
+/// `AcpAgent::inject_system_prompt` so the runtime knows whether it
+/// needs to prepend anything to the first `session/prompt`.
+#[derive(Debug, Clone, Default)]
+pub enum SystemPromptInjection {
+    /// Vendor handled the prompt pre-spawn (CLI flag, env, …) or has
+    /// no hook at all — the prompt was consumed or silently dropped.
+    /// Either way, runtime does nothing more.
+    #[default]
+    Handled,
+    /// Runtime must prepend this text to the first `session/prompt`
+    /// text block. For vendors whose only reachable hook is the
+    /// prompt body itself.
+    FirstMessage(String),
 }
 
 /// Resolve the concrete vendor adapter for a given provider enum.

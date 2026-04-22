@@ -23,9 +23,13 @@ struct Cli {
     #[arg(long, global = true, env = "HYPRPILOT_CONFIG")]
     config: Option<PathBuf>,
 
-    /// Active profile name (resolved to `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml`).
-    #[arg(long, global = true, env = "HYPRPILOT_PROFILE")]
-    profile: Option<String>,
+    /// Name of a config-layer profile (resolved to
+    /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml`). Distinct
+    /// from the session `[[profiles]]` registry driving agent +
+    /// system-prompt overlays — session profiles are addressed per
+    /// call, this one is a config-layering alias.
+    #[arg(long = "config-profile", global = true, env = "HYPRPILOT_CONFIG_PROFILE")]
+    config_profile: Option<String>,
 
     /// Override the tracing filter (otherwise `RUST_LOG` + defaults apply).
     #[arg(long, global = true, value_enum, env = "HYPRPILOT_LOG_LEVEL")]
@@ -61,7 +65,7 @@ fn main() -> Result<()> {
 
     let _log_guard = logging::init(cli.log_level)?;
 
-    let cfg = config::load(cli.config.as_deref(), cli.profile.as_deref())?;
+    let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;
     cfg.validate()?;
 
     match cli.command {

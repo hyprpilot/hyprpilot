@@ -249,7 +249,7 @@ fn parse_id(v: &serde_json::Value) -> Option<RequestId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AgentsConfig;
+    use crate::config::Config;
     use serde_json::json;
 
     /// Driver for envelope / framing tests: no `AppHandle`, a fresh
@@ -261,14 +261,14 @@ mod tests {
         let status = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
         let sessions = Arc::new(AcpSessions::new(
-            AgentsConfig::default(),
+            Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
         let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(sessions), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
-    /// With an empty `AgentsConfig` (no `[agent] default`, no
+    /// With an empty `Config` (no `[agent] default`, no
     /// `[[agents]]`), `session/submit` rejects with `-32602` — no
     /// agent to spawn. End-to-end happy path is covered by the
     /// runtime integration test.
@@ -438,7 +438,7 @@ mod tests {
             let status = StatusBroadcast::new(true);
             let dispatcher = RpcDispatcher::with_defaults();
             let sessions = Arc::new(AcpSessions::new(
-                AgentsConfig::default(),
+                Config::default(),
                 Arc::new(StatusBroadcast::new(true)),
             ));
             while let Some(l) = lines.next_line().await.unwrap() {
@@ -479,7 +479,7 @@ mod tests {
         let broadcast = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
         let sessions = Arc::new(AcpSessions::new(
-            AgentsConfig::default(),
+            Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
 
@@ -598,7 +598,7 @@ mod tests {
             let mut lines = BufReader::new(reader).lines();
             let dispatcher = RpcDispatcher::with_defaults();
             let sessions = Arc::new(AcpSessions::new(
-                AgentsConfig::default(),
+                Config::default(),
                 Arc::new(StatusBroadcast::new(true)),
             ));
             let mut status_rx: Option<tokio::sync::broadcast::Receiver<StatusResult>> = None;

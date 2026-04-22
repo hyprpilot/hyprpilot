@@ -64,11 +64,21 @@ fn emit(client: &CtlClient, method: &str, params: Value) -> Result<()> {
 
 pub struct SubmitHandler {
     pub text: String,
+    pub agent_id: Option<String>,
+    pub profile_id: Option<String>,
 }
 
 impl CtlHandler for SubmitHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        emit(client, "session/submit", json!({ "text": self.text }))
+        let mut params = json!({ "text": self.text });
+        let obj = params.as_object_mut().expect("json! produces a map");
+        if let Some(id) = self.agent_id {
+            obj.insert("agent_id".into(), Value::String(id));
+        }
+        if let Some(id) = self.profile_id {
+            obj.insert("profile_id".into(), Value::String(id));
+        }
+        emit(client, "session/submit", params)
     }
 }
 

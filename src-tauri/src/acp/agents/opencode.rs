@@ -8,7 +8,7 @@ use tokio::process::Command;
 
 use crate::config::AgentConfig;
 
-use super::AcpAgent;
+use super::{AcpAgent, SystemPromptInjection};
 
 pub struct AcpAgentOpenCode;
 
@@ -51,6 +51,12 @@ impl AcpAgent for AcpAgentOpenCode {
         cmd.stdout(Stdio::piped());
         cmd.kill_on_drop(true);
         cmd
+    }
+
+    /// opencode has no launch-time hook; the runtime prepends the
+    /// returned string to the first `session/prompt` text block.
+    fn inject_system_prompt(&self, _cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
+        SystemPromptInjection::FirstMessage(prompt.to_string())
     }
 }
 
@@ -104,5 +110,27 @@ mod tests {
         let cmd = AcpAgentOpenCode.spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
         assert!(!args.contains(&"--model"), "unexpected --model in {args:?}");
+    }
+
+    #[test]
+    fn inject_returns_first_message_and_leaves_cmd_untouched() {
+        let entry = entry_with_model(None);
+        let mut cmd = AcpAgentOpenCode.spawn(&entry);
+        let before: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        let out = AcpAgentOpenCode.inject_system_prompt(&mut cmd, "be terse");
+        let after: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(before, after, "opencode must not mutate args from inject");
+        match out {
+            crate::acp::agents::SystemPromptInjection::FirstMessage(s) => assert_eq!(s, "be terse"),
+            other => panic!("expected FirstMessage, got {other:?}"),
+        }
     }
 }

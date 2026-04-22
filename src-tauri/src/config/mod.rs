@@ -9,7 +9,10 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use validations::{validate_agent_default_id, validate_agents_ids};
+use validations::{
+    validate_agent_default_id, validate_agents_ids, validate_default_profile_id, validate_profile_agent_references,
+    validate_profiles_ids,
+};
 
 const DEFAULTS: &str = include_str!("defaults.toml");
 
@@ -25,8 +28,17 @@ pub struct Config {
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
     /// `AgentsConfig` stays the single Rust-side unit.
     #[garde(dive)]
+    #[garde(custom(validate_default_profile_id(&self.profiles)))]
     #[serde(flatten)]
     pub agents: AgentsConfig,
+    /// `[[profiles]]` at TOML root. Each profile binds an agent id to an
+    /// optional model override + optional system prompt; resolved into a
+    /// flat `ResolvedSession` at `session/submit` time.
+    #[garde(dive)]
+    #[garde(custom(validate_profiles_ids))]
+    #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
+    #[serde(default)]
+    pub profiles: Vec<ProfileConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -363,6 +375,8 @@ pub struct AgentsConfig {
 pub struct AgentDefaults {
     #[garde(skip)]
     pub default: Option<String>,
+    #[garde(skip)]
+    pub default_profile: Option<String>,
 }
 
 /// One `[[agents]]` entry. No `permission_policy` — vendors own
@@ -404,6 +418,41 @@ pub enum AgentProvider {
     AcpCodex,
     #[serde(rename = "acp-opencode")]
     AcpOpenCode,
+}
+
+/// One `[[profiles]]` entry. Binds an agent id to an optional model
+/// override + optional system prompt. Exactly one of `system_prompt`
+/// / `system_prompt_file` may be set; the file path is read at
+/// resolve time, not at spawn time, so a missing file fails loudly.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileConfig {
+    #[garde(length(min = 1))]
+    pub id: String,
+    #[garde(length(min = 1))]
+    pub agent: String,
+    #[garde(inner(length(min = 1)))]
+    pub model: Option<String>,
+    #[garde(inner(length(min = 1)))]
+    pub system_prompt: Option<String>,
+    #[garde(skip)]
+    pub system_prompt_file: Option<PathBuf>,
+}
+
+impl ProfileConfig {
+    /// Reject entries setting both `system_prompt` and
+    /// `system_prompt_file` — they're wire-exclusive. Separate from
+    /// the derive walk because it's a single-field pair check we
+    /// want reported at `Config::validate()` time.
+    pub(crate) fn validate_prompt_source(&self) -> garde::Result {
+        if self.system_prompt.is_some() && self.system_prompt_file.is_some() {
+            return Err(garde::Error::new(format!(
+                "profile '{}' sets both system_prompt and system_prompt_file — pick one",
+                self.id
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
@@ -463,8 +512,34 @@ impl Merge for Config {
             logging: self.logging.merge(other.logging),
             ui: self.ui.merge(other.ui),
             agents: self.agents.merge(other.agents),
+            profiles: merge_profiles(self.profiles, other.profiles),
         }
     }
+}
+
+/// Keyed-list merge for `[[profiles]]`. Mirrors `AgentsConfig`'s
+/// agent-entry semantics: override by `id`, append new ids in order.
+/// Whole-entry replace — partial field merge inside a profile would
+/// read as "override system_prompt, keep old model", which is
+/// surprising.
+fn merge_profiles(base: Vec<ProfileConfig>, over: Vec<ProfileConfig>) -> Vec<ProfileConfig> {
+    let mut out: Vec<ProfileConfig> = Vec::with_capacity(base.len() + over.len());
+    let base_ids: std::collections::HashSet<String> = base.iter().map(|p| p.id.clone()).collect();
+
+    for b in base {
+        match over.iter().find(|o| o.id == b.id) {
+            Some(override_entry) => out.push(override_entry.clone()),
+            None => out.push(b),
+        }
+    }
+
+    for o in over {
+        if !base_ids.contains(&o.id) {
+            out.push(o);
+        }
+    }
+
+    out
 }
 
 impl Merge for Daemon {
@@ -656,6 +731,7 @@ impl Merge for AgentDefaults {
     fn merge(self, other: Self) -> Self {
         Self {
             default: self.default.merge(other.default),
+            default_profile: self.default_profile.merge(other.default_profile),
         }
     }
 }
@@ -664,7 +740,12 @@ impl Config {
     /// Run garde's tree walk (every predicate including cross-field
     /// rules wired via higher-order `custom(fn(&self.x))` hooks).
     pub fn validate(&self) -> Result<()> {
-        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))
+        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))?;
+        for p in &self.profiles {
+            p.validate_prompt_source()
+                .map_err(|e| anyhow!("config is invalid: profiles[{}]: {e}", p.id))?;
+        }
+        Ok(())
     }
 }
 
@@ -1227,5 +1308,151 @@ args = ["--flag"]
             ..Default::default()
         };
         cfg.validate().expect("6- and 8-digit hex both accepted");
+    }
+
+    #[test]
+    fn defaults_populate_every_profile_field() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+
+        let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["ask", "plan", "strict"],
+            "defaults must seed the three built-in profiles"
+        );
+
+        assert_eq!(
+            cfg.agents.agent.default_profile.as_deref(),
+            Some("ask"),
+            "agent.default_profile must be seeded to a concrete id"
+        );
+
+        let ask = cfg.profiles.iter().find(|p| p.id == "ask").unwrap();
+        assert_eq!(ask.agent, "claude-code");
+        assert!(ask.model.is_none(), "ask inherits model from agent");
+        assert!(ask.system_prompt.is_none());
+        assert!(ask.system_prompt_file.is_none());
+
+        let plan = cfg.profiles.iter().find(|p| p.id == "plan").unwrap();
+        assert_eq!(plan.agent, "opencode");
+        assert!(plan.system_prompt.is_some(), "plan must seed a system_prompt");
+
+        let strict = cfg.profiles.iter().find(|p| p.id == "strict").unwrap();
+        assert_eq!(strict.agent, "claude-code");
+        assert_eq!(strict.model.as_deref(), Some("claude-opus-4-5"));
+        assert!(strict.system_prompt.is_some());
+
+        cfg.validate().expect("seeded profiles validate");
+    }
+
+    #[test]
+    fn profile_references_missing_agent_fails() {
+        let p = write_tmp(
+            "missing-agent.toml",
+            r#"
+[[profiles]]
+id = "ghost"
+agent = "does-not-exist"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("profile 'ghost'"), "{msg}");
+        assert!(msg.contains("'does-not-exist'"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_both_system_prompt_fields() {
+        let p = write_tmp(
+            "both-prompts.toml",
+            r#"
+[[profiles]]
+id = "clash"
+agent = "claude-code"
+system_prompt = "inline"
+system_prompt_file = "/tmp/whatever.md"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("system_prompt") && msg.contains("system_prompt_file"),
+            "{msg}"
+        );
+        assert!(msg.contains("pick one"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_ids_unique() {
+        let p = write_tmp(
+            "dup-profiles.toml",
+            r#"
+[[profiles]]
+id = "dupe"
+agent = "claude-code"
+
+[[profiles]]
+id = "dupe"
+agent = "codex"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate profile id 'dupe'"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn default_profile_references_missing_profile_fails() {
+        let p = write_tmp(
+            "bad-default-profile.toml",
+            r#"
+[agent]
+default_profile = "ghost-profile"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("default_profile = 'ghost-profile'"), "{msg}");
+        assert!(msg.contains("Configured ids:"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn user_profile_overrides_default_by_id() {
+        let p = write_tmp(
+            "profile-override.toml",
+            r#"
+[[profiles]]
+id = "strict"
+agent = "opencode"
+model = "custom-model"
+
+[[profiles]]
+id = "my-profile"
+agent = "claude-code"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+
+        let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["ask", "plan", "strict", "my-profile"],
+            "overrides keep position, new ids append"
+        );
+
+        let strict = cfg.profiles.iter().find(|p| p.id == "strict").unwrap();
+        assert_eq!(strict.agent, "opencode", "override wins whole-entry");
+        assert_eq!(strict.model.as_deref(), Some("custom-model"));
+        assert!(strict.system_prompt.is_none(), "override is whole-entry replace");
+
+        fs::remove_file(&p).ok();
     }
 }

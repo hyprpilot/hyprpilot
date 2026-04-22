@@ -22,6 +22,16 @@ pub struct CtlArgs {
 pub enum CtlCommand {
     /// Submit a prompt to the primary session.
     Submit {
+        /// Agent id override (defaults to `[agent] default` / the
+        /// profile's agent).
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Profile id — applies the configured model + system prompt
+        /// overlay. Defaults to `[agent] default_profile`.
+        #[arg(long)]
+        profile: Option<String>,
+
         /// Prompt text to submit. Joined with spaces if supplied as multiple args.
         #[arg(trailing_var_arg = true)]
         text: Vec<String>,
@@ -69,7 +79,12 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
     let client = CtlClient::new(socket);
 
     match args.command {
-        CtlCommand::Submit { text } => SubmitHandler { text: text.join(" ") }.run(&client),
+        CtlCommand::Submit { agent, profile, text } => SubmitHandler {
+            text: text.join(" "),
+            agent_id: agent,
+            profile_id: profile,
+        }
+        .run(&client),
         CtlCommand::Cancel => CancelHandler.run(&client),
         CtlCommand::Toggle => ToggleHandler.run(&client),
         CtlCommand::Kill => KillHandler.run(&client),

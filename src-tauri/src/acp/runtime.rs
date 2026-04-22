@@ -17,8 +17,8 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{error, info, warn};
 
 use super::client::{AcpClient, ClientEvent, PermissionOptionView};
+use super::resolve::ResolvedSession;
 use super::spawn::spawn_agent;
-use crate::config::AgentConfig;
 
 /// Commands the per-session actor accepts. The actor keeps state
 /// internal; this enum is the only public surface the dispatcher
@@ -102,37 +102,44 @@ impl SessionHandle {
 ///
 /// Sends `SessionEvent`s onto `events_tx` for every lifecycle
 /// transition + every `SessionUpdate` the agent streams.
-pub fn start_session(cfg: AgentConfig, events_tx: broadcast::Sender<SessionEvent>) -> SessionHandle {
+pub fn start_session(session: ResolvedSession, events_tx: broadcast::Sender<SessionEvent>) -> SessionHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
     let session_id = Arc::new(tokio::sync::RwLock::new(None::<String>));
 
     let handle = SessionHandle {
-        agent_id: cfg.id.clone(),
+        agent_id: session.agent.id.clone(),
         cmd_tx,
         session_id: session_id.clone(),
     };
 
-    tokio::spawn(run_session(cfg, cmd_rx, events_tx, session_id));
+    tokio::spawn(run_session(session, cmd_rx, events_tx, session_id));
 
     handle
 }
 
 /// The long-lived actor body.
 async fn run_session(
-    cfg: AgentConfig,
+    session: ResolvedSession,
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
     events_tx: broadcast::Sender<SessionEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<String>>>,
 ) {
-    let agent_id = cfg.id.clone();
+    let agent_id = session.agent.id.clone();
     let _ = events_tx.send(SessionEvent::State {
         agent_id: agent_id.clone(),
         session_id: None,
         state: SessionState::Starting,
     });
 
-    let (mut child, stdio) = match spawn_agent(&cfg) {
-        Ok(pair) => pair,
+    let cfg = {
+        let mut cfg = session.agent.clone();
+        cfg.model = session.model.clone();
+        cfg
+    };
+    let system_prompt = session.system_prompt.clone();
+
+    let (mut child, stdio, mut first_message_prefix) = match spawn_agent(&cfg, system_prompt.as_deref()) {
+        Ok(spawned) => (spawned.child, spawned.stdio, spawned.first_message_prefix),
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::runtime: spawn failed");
             let _ = events_tx.send(SessionEvent::State {
@@ -188,6 +195,10 @@ async fn run_session(
                     };
                     match cmd {
                         SessionCommand::Prompt { text, reply } => {
+                            let text = match first_message_prefix.take() {
+                                Some(prefix) => format!("{prefix}\n\n{text}"),
+                                None => text,
+                            };
                             let res = connection
                                 .send_request(PromptRequest::new(
                                     session_id.clone(),
@@ -298,17 +309,22 @@ async fn run_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AgentProvider;
+    use crate::config::{AgentConfig, AgentProvider};
 
-    fn dummy_cfg(id: &str) -> AgentConfig {
-        AgentConfig {
-            id: id.into(),
-            provider: AgentProvider::AcpClaudeCode,
-            command: Some("/bin/false".into()),
-            args: Vec::new(),
-            cwd: None,
-            env: Default::default(),
+    fn dummy_session(id: &str) -> ResolvedSession {
+        ResolvedSession {
+            agent: AgentConfig {
+                id: id.into(),
+                provider: AgentProvider::AcpClaudeCode,
+                command: Some("/bin/false".into()),
+                args: Vec::new(),
+                cwd: None,
+                env: Default::default(),
+                model: None,
+            },
+            profile_id: None,
             model: None,
+            system_prompt: None,
         }
     }
 
@@ -318,7 +334,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn dead_child_yields_error_state() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = start_session(dummy_cfg("ded"), tx);
+        let handle = start_session(dummy_session("ded"), tx);
 
         // Starting event fires immediately.
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -361,7 +377,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn cancel_against_dead_session_does_not_panic() {
         let (tx, _rx) = broadcast::channel(8);
-        let handle = start_session(dummy_cfg("ded-cancel"), tx);
+        let handle = start_session(dummy_session("ded-cancel"), tx);
 
         // Give the actor a moment to fail.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

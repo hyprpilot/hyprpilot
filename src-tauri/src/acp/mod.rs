@@ -18,6 +18,7 @@
 pub mod agents;
 pub mod client;
 pub mod commands;
+pub mod resolve;
 pub mod runtime;
 pub mod session;
 pub mod spawn;

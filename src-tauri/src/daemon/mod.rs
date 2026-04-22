@@ -50,7 +50,10 @@ fn get_window_state(state: State<'_, WindowState>) -> WindowState {
 }
 
 pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
-    let socket_path = args.socket.or(cfg.daemon.socket).unwrap_or_else(paths::socket_path);
+    let socket_path = args
+        .socket
+        .or_else(|| cfg.daemon.socket.clone())
+        .unwrap_or_else(paths::socket_path);
 
     info!(socket = %socket_path.display(), "starting hyprpilot daemon");
 
@@ -87,7 +90,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
     let theme = cfg.ui.theme.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
-    let agents_cfg = cfg.agents.clone();
+    let sessions_cfg = cfg.clone();
 
     // Snapshot the resolved window state up-front so the webview can fetch
     // it without re-reading the config at request time. `anchor_edge` is
@@ -113,7 +116,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let dispatcher = Arc::new(RpcDispatcher::with_defaults());
     // Session registry — Tauri managed state. `SessionHandler` +
     // future `acp_*` Tauri commands both reach into this.
-    let sessions = Arc::new(AcpSessions::new(agents_cfg, status.clone()));
+    let sessions = Arc::new(AcpSessions::new(sessions_cfg, status.clone()));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -133,6 +136,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             acp_commands::acp_submit,
             acp_commands::acp_cancel,
             acp_commands::agents_list,
+            acp_commands::profiles_list,
             acp_commands::permission_reply,
         ])
         .setup(move |app| {

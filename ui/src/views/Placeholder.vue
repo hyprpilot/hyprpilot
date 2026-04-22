@@ -22,7 +22,7 @@ async function onSubmit() {
   sending.value = true
   lastErr.value = undefined
   try {
-    await submit(draft.value)
+    await submit({ text: draft.value })
     draft.value = ''
   } catch (err) {
     lastErr.value = String(err)

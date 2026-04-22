@@ -55,6 +55,7 @@ awaiting = "#d19a66"
 
 [agent]
 default = "claude-code"
+default_profile = "ask"
 
 [[agents]]
 id = "claude-code"
@@ -76,3 +77,18 @@ provider = "acp-opencode"
 model = "claude-sonnet-4-5"
 command = "opencode"
 args = ["acp"]
+
+[[profiles]]
+id = "ask"
+agent = "claude-code"
+
+[[profiles]]
+id = "plan"
+agent = "opencode"
+system_prompt = "You are in planning mode. Think carefully before answering, propose a step-by-step plan, and do not make changes without explicit approval."
+
+[[profiles]]
+id = "strict"
+agent = "claude-code"
+model = "claude-opus-4-5"
+system_prompt = "You are a terse senior engineer. Answer directly, avoid filler, and prefer code to prose."
