@@ -57,7 +57,7 @@ importers:
         specifier: ^4.2.4
         version: 4.2.4(vite@8.0.9(@types/node@24.12.2)(jiti@2.6.1))
       '@testing-library/user-event':
-        specifier: ^14.5.2
+        specifier: ^14.6.1
         version: 14.6.1(@testing-library/dom@9.3.4)
       '@testing-library/vue':
         specifier: ^8.1.0
@@ -72,7 +72,7 @@ importers:
         specifier: ^6.0.6
         version: 6.0.6(vite@8.0.9(@types/node@24.12.2)(jiti@2.6.1))(vue@3.5.33(typescript@6.0.3))
       '@vitest/ui':
-        specifier: ^4.1.4
+        specifier: ^4.1.5
         version: 4.1.5(vitest@4.1.5)
       '@vue/eslint-config-typescript':
         specifier: ^14.7.0
