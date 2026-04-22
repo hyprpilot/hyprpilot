@@ -1,7 +1,6 @@
+import { defineConfig } from '@playwright/test'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-import { defineConfig } from '@playwright/test'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..', '..')
@@ -25,18 +24,18 @@ export default defineConfig({
   outputDir: path.join(here, 'test-results'),
   ...(mode === 'tauri'
     ? {
-        globalSetup: path.join(here, 'fixtures', 'global-setup.ts'),
-        globalTeardown: path.join(here, 'fixtures', 'global-teardown.ts')
-      }
+      globalSetup: path.join(here, 'fixtures', 'global-setup.ts'),
+      globalTeardown: path.join(here, 'fixtures', 'global-teardown.ts')
+    }
     : {
-        webServer: {
-          command: 'pnpm --filter hyprpilot-ui dev --host 127.0.0.1 --port 1420',
-          url: 'http://127.0.0.1:1420',
-          timeout: 60_000,
-          reuseExistingServer: !process.env.CI,
-          cwd: here
-        }
-      }),
+      webServer: {
+        command: 'pnpm --filter hyprpilot-ui dev --host 127.0.0.1 --port 1420',
+        url: 'http://127.0.0.1:1420',
+        timeout: 60_000,
+        reuseExistingServer: !process.env.CI,
+        cwd: here
+      }
+    }),
   use: {
     mode,
     trace: 'on-first-retry',

@@ -47,9 +47,7 @@ const md = new MarkdownIt({
 // linkify-emitted <a> tags default to same-tab navigation; pin every link
 // to a new tab with `noopener noreferrer` so markdown URLs cannot steal the
 // overlay window or leak Referer headers.
-const defaultLinkOpen =
-  md.renderer.rules.link_open ??
-  ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts))
+const defaultLinkOpen = md.renderer.rules.link_open ?? ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts))
 md.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
   const token = tokens[idx]
   token.attrSet('target', '_blank')

@@ -8,9 +8,36 @@ importers:
 
   .:
     devDependencies:
+      '@cenk1cenk2/eslint-config':
+        specifier: ^3.2.3
+        version: 3.2.3(@vue/eslint-config-typescript@14.7.0(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
       '@tauri-apps/cli':
         specifier: ^2.10.1
         version: 2.10.1
+      '@types/node':
+        specifier: ^24.12.2
+        version: 24.12.2
+      '@typescript-eslint/parser':
+        specifier: ^8.59.0
+        version: 8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
+      '@vue/eslint-config-typescript':
+        specifier: ^14.7.0
+        version: 14.7.0(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
+      eslint:
+        specifier: ^9.39.4
+        version: 9.39.4(jiti@2.6.1)
+      eslint-plugin-vue:
+        specifier: ^10.9.0
+        version: 10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1)))
+      prettier:
+        specifier: ^3.8.3
+        version: 3.8.3
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vue-eslint-parser:
+        specifier: ^10.4.0
+        version: 10.4.0(eslint@9.39.4(jiti@2.6.1))
 
   tests/e2e:
     devDependencies:
@@ -20,12 +47,6 @@ importers:
       '@srsholmes/tauri-playwright':
         specifier: ^0.2.2
         version: 0.2.2(@playwright/test@1.59.1)
-      '@types/node':
-        specifier: ^24.12.2
-        version: 24.12.2
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
 
   tests/e2e/support/mock-agent: {}
 
@@ -62,9 +83,6 @@ importers:
         specifier: ^3.5.32
         version: 3.5.33(typescript@6.0.3)
     devDependencies:
-      '@cenk1cenk2/eslint-config':
-        specifier: ^3.2.3
-        version: 3.2.3(@vue/eslint-config-typescript@14.7.0(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
       '@tailwindcss/vite':
         specifier: ^4.2.4
         version: 4.2.4(vite@8.0.9(@types/node@24.12.2)(jiti@2.6.1))
@@ -77,51 +95,27 @@ importers:
       '@types/markdown-it':
         specifier: ^14.1.2
         version: 14.1.2
-      '@types/node':
-        specifier: ^24.12.2
-        version: 24.12.2
-      '@typescript-eslint/parser':
-        specifier: ^8.59.0
-        version: 8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
       '@vitejs/plugin-vue':
         specifier: ^6.0.6
         version: 6.0.6(vite@8.0.9(@types/node@24.12.2)(jiti@2.6.1))(vue@3.5.33(typescript@6.0.3))
       '@vitest/ui':
         specifier: ^4.1.5
         version: 4.1.5(vitest@4.1.5)
-      '@vue/eslint-config-typescript':
-        specifier: ^14.7.0
-        version: 14.7.0(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
       '@vue/test-utils':
         specifier: ^2.4.6
         version: 2.4.6
-      eslint:
-        specifier: ^9.39.4
-        version: 9.39.4(jiti@2.6.1)
-      eslint-plugin-vue:
-        specifier: ^10.9.0
-        version: 10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1)))
       jsdom:
         specifier: ^29.0.2
         version: 29.0.2
-      prettier:
-        specifier: ^3.8.3
-        version: 3.8.3
       tailwindcss:
         specifier: ^4.2.4
         version: 4.2.4
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
       vite:
         specifier: ^8.0.9
         version: 8.0.9(@types/node@24.12.2)(jiti@2.6.1)
       vitest:
         specifier: ^4.1.5
         version: 4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.0.2)(vite@8.0.9(@types/node@24.12.2)(jiti@2.6.1))
-      vue-eslint-parser:
-        specifier: ^10.4.0
-        version: 10.4.0(eslint@9.39.4(jiti@2.6.1))
       vue-tsc:
         specifier: ^3.2.7
         version: 3.2.7(typescript@6.0.3)

@@ -8,13 +8,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_client_protocol::JsonRpcNotification;
 use agent_client_protocol::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, TerminalOutputRequest, TerminalOutputResponse,
     WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
+use agent_client_protocol::JsonRpcNotification;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -111,9 +111,7 @@ impl AcpClient {
     /// receiver degrades to a trace line — the actor has already
     /// finished its select loop.
     pub fn forward_notification(&self, notification: TolerantSessionNotification) {
-        let TolerantSessionNotification {
-            session_id, update, ..
-        } = notification;
+        let TolerantSessionNotification { session_id, update, .. } = notification;
         if self
             .events
             .send(ClientEvent::Notification { session_id, update })

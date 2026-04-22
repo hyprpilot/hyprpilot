@@ -1,12 +1,10 @@
+import type { FullConfig } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { access, constants, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import type { FullConfig } from '@playwright/test'
-
 declare global {
-  // eslint-disable-next-line no-var
   var __HYPRPILOT_E2E__: { child: ChildProcess; socket: string; runtimeDir: string } | undefined
 }
 
@@ -16,6 +14,7 @@ function sleep(ms: number): Promise<void> {
 
 async function waitForSocket(socketPath: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
+
   while (Date.now() < deadline) {
     try {
       await access(socketPath, constants.F_OK)
@@ -35,6 +34,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     (created) => created ?? path.join(tmpdir(), `hyprpilot-e2e-${process.pid}`)
   )
   const stateDir = path.join(runtimeDir, 'state')
+
   await mkdir(stateDir, { recursive: true })
 
   const env: NodeJS.ProcessEnv = {
@@ -55,6 +55,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
 
   const logPath = path.join(runtimeDir, 'daemon.log')
   const logLines: string[] = []
+
   child.stdout?.on('data', (b) => logLines.push(b.toString()))
   child.stderr?.on('data', (b) => logLines.push(b.toString()))
   child.on('exit', (code, signal) => {
@@ -64,11 +65,15 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
 
   try {
     await waitForSocket(meta.socket, 15_000)
-  } catch (err) {
+  } catch(err) {
     child.kill('SIGKILL')
     await writeFile(logPath, logLines.join(''))
-    throw new Error(`daemon failed to expose ${meta.socket}; see ${logPath}\n---\n${logLines.join('')}`)
+    throw new Error(`daemon failed to expose ${meta.socket}; see ${logPath}\n---\n${logLines.join('')}`, { cause: err })
   }
 
-  globalThis.__HYPRPILOT_E2E__ = { child, socket: meta.socket, runtimeDir }
+  globalThis.__HYPRPILOT_E2E__ = {
+    child,
+    socket: meta.socket,
+    runtimeDir
+  }
 }

@@ -4,8 +4,8 @@ default = "mock"
 [[agents]]
 id = "mock"
 provider = "acp-claude-code"
-command = "node"
-args = ["tests/e2e/support/mock-agent/index.mjs"]
+command = "bun"
+args = ["tests/e2e/support/mock-agent/index.ts"]
 
 [daemon.window]
 mode = "center"

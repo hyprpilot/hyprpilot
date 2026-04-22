@@ -5,12 +5,12 @@
   "description": "Playwright e2e suite driving the hyprpilot Tauri webview via @srsholmes/tauri-playwright.",
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "format": "prettier --write . --log-level warn && eslint --fix",
+    "lint": "eslint"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "@srsholmes/tauri-playwright": "^0.2.2",
-    "@types/node": "^24.12.2",
-    "typescript": "^6.0.3"
+    "@srsholmes/tauri-playwright": "^0.2.2"
   }
 }

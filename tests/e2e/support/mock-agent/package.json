@@ -2,10 +2,10 @@
   "name": "hyprpilot-e2e-mock-agent",
   "version": "0.0.0",
   "private": true,
-  "description": "Scripted ACP-speaking agent used by tests/e2e/ in place of real vendor runtimes.",
+  "description": "Scripted ACP-speaking agent used by tests/e2e/ in place of real vendor runtimes. Run via `bun index.ts`.",
   "type": "module",
-  "main": "index.mjs",
+  "main": "index.ts",
   "bin": {
-    "hyprpilot-mock-agent": "./index.mjs"
+    "hyprpilot-mock-agent": "./index.ts"
   }
 }

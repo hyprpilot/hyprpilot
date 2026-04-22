@@ -1,19 +1,11 @@
 # End-to-end tests (`tests/e2e/`)
 
-Playwright-driven end-to-end suite for the hyprpilot webview, running in two
-modes behind a shared fixture:
+Playwright-driven end-to-end suite for the hyprpilot webview, running in two modes behind a shared fixture:
 
-1. **`browser` (default)** — Vite dev server + Chromium + mocked Tauri IPC via
-   [`@srsholmes/tauri-playwright`](https://github.com/srsholmes/tauri-playwright).
-   Covers the UI-layer contract (render, IPC call-shape, event fan-out)
-   without touching the real daemon. Fast, reproducible, runs in CI.
-2. **`tauri`** — same bridge library, but the bridge's unix-socket plugin
-   proxies every command to the real WebKitGTK webview via `webview.eval()`.
-   Currently **not run by default** — see "Known limits" below.
+1. **`browser` (default)** — Vite dev server + Chromium + mocked Tauri IPC via [`@srsholmes/tauri-playwright`](https://github.com/srsholmes/tauri-playwright). Covers the UI-layer contract (render, IPC call-shape, event fan-out) without touching the real daemon. Fast, reproducible, runs in CI.
+2. **`tauri`** — same bridge library, but the bridge's unix-socket plugin proxies every command to the real WebKitGTK webview via `webview.eval()`. Currently **not run by default** — see "Known limits" below.
 
-The Rust bridge plugin, `playwright:default` capability, mock agent, and
-layered TOML override are all wired in either mode: flipping between them is
-`HYPRPILOT_E2E_MODE=tauri` once the WebKitGTK stall (documented below) clears.
+The Rust bridge plugin, `playwright:default` capability, mock agent, and layered TOML override are all wired in either mode: flipping between them is `HYPRPILOT_E2E_MODE=tauri` once the WebKitGTK stall (documented below) clears.
 
 ## Install
 
@@ -28,8 +20,7 @@ pnpm --filter hyprpilot-ui exec playwright install chromium
 task test:e2e
 ```
 
-Launches Vite on `http://127.0.0.1:1420`, runs every spec under `specs/`
-against the page with Tauri IPC mocks from `fixtures/tauri.ts`.
+Launches Vite on `http://127.0.0.1:1420`, runs every spec under `specs/` against the page with Tauri IPC mocks from `fixtures/tauri.ts`.
 
 ## Run (tauri-bridge mode)
 
@@ -39,10 +30,7 @@ HYPRPILOT_E2E_MODE=tauri \
   pnpm --filter hyprpilot-e2e test
 ```
 
-`mode: tauri` replaces the `webServer` lifecycle with `globalSetup` /
-`globalTeardown` hooks that spawn the daemon with `HYPRPILOT_CONFIG` pointing
-at `fixtures/e2e-config.toml` and tear it down on exit. Override the binary
-/ socket / config path with env vars:
+`mode: tauri` replaces the `webServer` lifecycle with `globalSetup` / `globalTeardown` hooks that spawn the daemon with `HYPRPILOT_CONFIG` pointing at `fixtures/e2e-config.toml` and tear it down on exit. Override the binary / socket / config path with env vars:
 
 - `HYPRPILOT_E2E_BINARY` — defaults to `target/debug/hyprpilot`.
 - `HYPRPILOT_E2E_SOCKET` — defaults to `/tmp/tauri-playwright.sock`.
@@ -50,44 +38,21 @@ at `fixtures/e2e-config.toml` and tear it down on exit. Override the binary
 
 ## Mock agent
 
-`support/mock-agent/` ships a scripted ACP-speaking Node process so the Tauri
-mode never depends on `bunx @zed-industries/claude-code-acp` (or any
-network-bound vendor runtime). `e2e-config.toml` points the daemon at this
-binary via `command = "node"` + `args = ["tests/e2e/support/mock-agent/index.mjs"]`
-so once the live ACP bridge (K-240 follow-up) wires real sessions every spec
-sees deterministic replies.
+`support/mock-agent/` ships a scripted ACP-speaking Node process so the Tauri mode never depends on `bunx @zed-industries/claude-code-acp` (or any network-bound vendor runtime). `e2e-config.toml` points the daemon at this binary via `command = "node"` + `args = ["tests/e2e/support/mock-agent/index.mjs"]` so once the live ACP bridge (K-240 follow-up) wires real sessions every spec sees deterministic replies.
 
-`HYPRPILOT_MOCK_SCRIPT=<file.json>` swaps the scripted transcript per spec;
-the default bundled script emits a single assistant message and ignores
-`session/cancel`.
+`HYPRPILOT_MOCK_SCRIPT=<file.json>` swaps the scripted transcript per spec; the default bundled script emits a single assistant message and ignores `session/cancel`.
 
 ## Known limits
 
-- **WebKitGTK eval stall.** `tauri-plugin-playwright 0.2.2` against
-  `webkit2gtk-4.1` (the GTK3 binding Tauri 2.10 still links on Linux) never
-  resolves the `webview.eval()` oneshot — `title` / `content` / any `eval`
-  command hits the 30s timeout regardless of window visibility. The bridge
-  itself is alive (`ping` round-trips), the webview maps, the page renders;
-  only the eval result channel is inert. Root cause has not been isolated
-  upstream. The Rust plugin, capability, feature flag, and daemon spawner
-  are all in place for when the stall clears — flip
-  `HYPRPILOT_E2E_MODE=tauri`.
-- **Browser mode** uses `page.evaluate` which talks to the actual Chromium
-  CDP — no native network interception limits apply, but screenshots come
-  from Chromium, not from the OS compositor, so layer-shell geometry isn't
-  captured here either. Tauri-mode screenshots (when it works) go through
-  the webview, not the compositor.
+- **WebKitGTK eval stall.** `tauri-plugin-playwright 0.2.2` against `webkit2gtk-4.1` (the GTK3 binding Tauri 2.10 still links on Linux) never resolves the `webview.eval()` oneshot — `title` / `content` / any `eval` command hits the 30s timeout regardless of window visibility. The bridge itself is alive (`ping` round-trips), the webview maps, the page renders; only the eval result channel is inert. Root cause has not been isolated upstream. The Rust plugin, capability, feature flag, and daemon spawner are all in place for when the stall clears — flip `HYPRPILOT_E2E_MODE=tauri`.
+- **Browser mode** uses `page.evaluate` which talks to the actual Chromium CDP — no native network interception limits apply, but screenshots come from Chromium, not from the OS compositor, so layer-shell geometry isn't captured here either. Tauri-mode screenshots (when it works) go through the webview, not the compositor.
 - **macOS / Windows** are out of scope; hyprpilot is Linux-first.
 
 ## Fallback
 
-If the WebKitGTK eval stall never resolves upstream, the official Tauri
-testing path is [`tauri-driver`](https://v2.tauri.app/develop/tests/webdriver/)
-+ WebdriverIO over the WebKitGTK WebDriver shim. Specs would migrate
-from Playwright syntax to WDIO — lift-and-shift level work, not a rewrite
-— and every fixture in `fixtures/` stays (mock agent, config override,
-daemon spawner). Browser mode would keep running regardless as the fast
-pre-CI lane.
+If the WebKitGTK eval stall never resolves upstream, the official Tauri testing path is [`tauri-driver`](https://v2.tauri.app/develop/tests/webdriver/)
+
+- WebdriverIO over the WebKitGTK WebDriver shim. Specs would migrate from Playwright syntax to WDIO — lift-and-shift level work, not a rewrite — and every fixture in `fixtures/` stays (mock agent, config override, daemon spawner). Browser mode would keep running regardless as the fast pre-CI lane.
 
 ## Layout
 

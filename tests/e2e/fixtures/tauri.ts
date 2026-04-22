@@ -19,10 +19,27 @@ export const { test, expect } = createTauriTest({
         compose: '#2c333d',
         text: '#1e2127'
       },
-      fg: { default: '#abb2bf', dim: '#7c8a9d', muted: '#5c6370' },
-      border: { default: '#4b5263', soft: '#2c333d', focus: '#6c778d' },
-      accent: { default: '#abb2bf', user: '#e5c07b', assistant: '#98c379' },
-      state: { idle: '#98c379', stream: '#e5c07b', pending: '#e06c75', awaiting: '#d19a66' }
+      fg: {
+        default: '#abb2bf',
+        dim: '#7c8a9d',
+        muted: '#5c6370'
+      },
+      border: {
+        default: '#4b5263',
+        soft: '#2c333d',
+        focus: '#6c778d'
+      },
+      accent: {
+        default: '#abb2bf',
+        user: '#e5c07b',
+        assistant: '#98c379'
+      },
+      state: {
+        idle: '#98c379',
+        stream: '#e5c07b',
+        pending: '#e06c75',
+        awaiting: '#d19a66'
+      }
     }),
     get_window_state: () => ({ mode: 'center', anchorEdge: null })
   }

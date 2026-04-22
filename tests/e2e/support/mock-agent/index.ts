@@ -1,7 +1,7 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Scripted ACP-speaking child process for tests/e2e/.
 //
-// Why a Node script over a real vendor runtime: `bunx
+// Why a scripted stub over a real vendor runtime: `bunx
 // @zed-industries/claude-code-acp` (etc.) hits the network, needs
 // credentials, and isn't reproducible. This stub replays a fixed
 // transcript over stdio JSON-RPC so the daemon's live-session bridge
@@ -14,44 +14,94 @@
 import { readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
-const log = (msg, extra = {}) => {
-  process.stderr.write(`${JSON.stringify({ ts: Date.now(), msg, ...extra })}\n`)
+interface ScriptStep {
+  updates?: Record<string, unknown>[]
+  stop_reason?: string
+  request_permission?: {
+    request_id: string
+    tool_name: string
+    options: Record<string, unknown>[]
+  }
 }
 
-const script = process.env.HYPRPILOT_MOCK_SCRIPT
-  ? JSON.parse(readFileSync(process.env.HYPRPILOT_MOCK_SCRIPT, 'utf8'))
+interface Script {
+  prompts: ScriptStep[]
+}
+
+interface RpcMessage {
+  jsonrpc?: '2.0'
+  id?: number | string | null
+  method?: string
+  params?: Record<string, unknown>
+}
+
+const log = (msg: string, extra: Record<string, unknown> = {}): void => {
+  process.stderr.write(
+    `${JSON.stringify({
+      ts: Date.now(),
+      msg,
+      ...extra
+    })}\n`
+  )
+}
+
+const scriptPath = process.env.HYPRPILOT_MOCK_SCRIPT
+const script: Script = scriptPath
+  ? (JSON.parse(readFileSync(scriptPath, 'utf8')) as Script)
   : {
-      prompts: [
-        {
-          updates: [{ kind: 'message.assistant', text: 'mock-agent: scripted reply' }],
-          stop_reason: 'end_turn'
-        }
-      ]
-    }
+    prompts: [
+      {
+        updates: [{ kind: 'message.assistant', text: 'mock-agent: scripted reply' }],
+        stop_reason: 'end_turn'
+      }
+    ]
+  }
 
 let promptCursor = 0
-const sessions = new Set()
+const sessions = new Set<string>()
 
-function reply(id, result) {
-  process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
+function reply(id: number | string | null | undefined, result: unknown): void {
+  process.stdout.write(
+    `${JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      result
+    })}\n`
+  )
 }
 
-function notify(method, params) {
-  process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`)
+function notify(method: string, params: Record<string, unknown>): void {
+  process.stdout.write(
+    `${JSON.stringify({
+      jsonrpc: '2.0',
+      method,
+      params
+    })}\n`
+  )
 }
 
-function errorReply(id, code, message) {
-  process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`)
+function errorReply(id: number | string | null, code: number, message: string): void {
+  process.stdout.write(
+    `${JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      error: { code, message }
+    })}\n`
+  )
 }
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
-rl.on('line', (line) => {
-  if (!line.trim()) return
 
-  let msg
+rl.on('line', (line: string) => {
+  if (!line.trim()) {
+    return
+  }
+
+  let msg: RpcMessage
+
   try {
-    msg = JSON.parse(line)
-  } catch (err) {
+    msg = JSON.parse(line) as RpcMessage
+  } catch(err) {
     log('parse_error', { line, err: String(err) })
 
     return
@@ -66,22 +116,28 @@ rl.on('line', (line) => {
         server_info: { name: 'hyprpilot-mock-agent', version: '0.0.0' },
         capabilities: { permissions: true, terminal: false }
       })
+
       break
 
     case 'session/new': {
       const sessionId = `mock-session-${sessions.size + 1}`
+
       sessions.add(sessionId)
       reply(msg.id, { session_id: sessionId })
+
       break
     }
 
     case 'session/prompt': {
       const step = script.prompts[Math.min(promptCursor, script.prompts.length - 1)]
+
       promptCursor += 1
       const sid = msg.params?.session_id
+
       for (const update of step.updates ?? []) {
         notify('session/update', { session_id: sid, update })
       }
+
       if (step.request_permission) {
         notify('session/request_permission', {
           session_id: sid,
@@ -91,11 +147,13 @@ rl.on('line', (line) => {
         })
       }
       reply(msg.id, { stop_reason: step.stop_reason ?? 'end_turn' })
+
       break
     }
 
     case 'session/cancel':
       reply(msg.id, { cancelled: true })
+
       break
 
     default:

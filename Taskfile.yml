@@ -35,17 +35,33 @@ tasks:
       - pnpm --filter hyprpilot-e2e test
 
   format:
-    desc: Format Rust and frontend sources.
+    desc: Format Rust and every pnpm package.
+    deps: [format:rust, format:node]
+
+  format:rust:
+    desc: Run `cargo fmt` across the Rust workspace.
     cmds:
       - cargo fmt --manifest-path src-tauri/Cargo.toml --all
-      - pnpm --filter hyprpilot-ui format
+
+  format:node:
+    desc: Run the `format` script in every pnpm package that defines one.
+    cmds:
+      - pnpm -r --parallel --if-present run format
 
   lint:
-    desc: Lint Rust and frontend sources.
+    desc: Lint Rust and every pnpm package.
+    deps: [lint:rust, lint:node]
+
+  lint:rust:
+    desc: "`cargo fmt --check` + `cargo clippy` on the Rust workspace."
     cmds:
       - cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      - pnpm --filter hyprpilot-ui lint
+
+  lint:node:
+    desc: Run the `lint` script in every pnpm package that defines one.
+    cmds:
+      - pnpm -r --parallel --if-present run lint
 
   run:
     desc: Run the Tauri app with live-reload.
