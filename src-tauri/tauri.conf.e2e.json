@@ -1,0 +1,14 @@
+{
+  "app": {
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "e2e",
+          "description": "Playwright bridge capability — only active with the `e2e-testing` Cargo feature; never shipped in production. Base `core:default` comes from `capabilities/default.json`.",
+          "windows": ["main"],
+          "permissions": ["playwright:default"]
+        }
+      ]
+    }
+  }
+}

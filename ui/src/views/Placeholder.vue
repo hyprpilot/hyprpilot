@@ -85,7 +85,9 @@ async function onCancel() {
   </section>
 </template>
 
-<style scoped lang="postcss">
+<style scoped>
+@reference "../assets/styles.css";
+
 .placeholder {
   @apply mx-auto my-12 flex max-w-[34rem] flex-col gap-3 border px-6 py-5;
   background-color: var(--theme-surface-card-user);

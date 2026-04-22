@@ -1,0 +1,18 @@
+[agent]
+default = "mock"
+
+[[agents]]
+id = "mock"
+provider = "acp-claude-code"
+command = "node"
+args = ["tests/e2e/support/mock-agent/index.mjs"]
+
+[daemon.window]
+mode = "center"
+
+[daemon.window.center]
+width = "50%"
+height = "50%"
+
+[logging]
+level = "debug"

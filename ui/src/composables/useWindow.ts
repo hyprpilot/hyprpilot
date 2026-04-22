@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '@ipc'
 
 export type WindowMode = 'anchor' | 'center'
 export type Edge = 'top' | 'right' | 'bottom' | 'left'

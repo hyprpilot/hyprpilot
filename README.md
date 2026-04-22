@@ -22,10 +22,13 @@ config layering, logging, framework quirks).
 
 ```
 hyprpilot/
-├── Cargo.toml            # workspace manifest
+├── Cargo.toml            # Rust workspace manifest
+├── package.json          # pnpm workspace root (devDep: @tauri-apps/cli)
+├── pnpm-workspace.yaml   # workspace packages: ui, tests/e2e, tests/e2e/support/mock-agent
 ├── src-tauri/            # Rust crate (clap + Tauri 2 + tokio unix socket)
 ├── ui/                   # Vue 3 + Vite + Tailwind + shadcn-vue frontend
+├── tests/e2e/            # Playwright e2e suite + scripted mock-agent
 ├── mise.toml             # toolchain pins
-├── Taskfile.yml          # install / dev / test / format / lint / build / build:release
+├── Taskfile.yml          # install / dev / test / format / lint / build / release
 └── .mcp.json             # repo-scoped MCP server registry (empty by default)
 ```

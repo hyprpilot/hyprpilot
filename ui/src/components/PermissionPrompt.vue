@@ -25,7 +25,9 @@ defineProps<{
   </aside>
 </template>
 
-<style scoped lang="postcss">
+<style scoped>
+@reference "../assets/styles.css";
+
 .permission-prompt {
   @apply mt-4 flex flex-col gap-2 border px-4 py-3 text-[0.85rem];
   background-color: var(--theme-surface-compose);

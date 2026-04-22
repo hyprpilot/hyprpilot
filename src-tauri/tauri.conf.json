@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.kilic.hyprpilot",
   "build": {
-    "beforeDevCommand": "pnpm --dir ../ui dev",
-    "beforeBuildCommand": "pnpm --dir ../ui build",
+    "beforeDevCommand": "pnpm --filter hyprpilot-ui dev",
+    "beforeBuildCommand": "pnpm --filter hyprpilot-ui build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../ui/dist"
   },
@@ -20,7 +20,8 @@
     ],
     "security": {
       "csp": null
-    }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": false,

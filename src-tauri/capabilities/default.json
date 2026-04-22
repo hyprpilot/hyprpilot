@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Baseline capability for the main webview — core invoke + event surface required for useAcpAgent / useTheme / useWindow bindings.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

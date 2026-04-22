@@ -16,6 +16,14 @@ dist/
 /ui/test-results/
 /ui/playwright-report/
 /ui/playwright/.cache/
+/tests/e2e/test-results/
+/tests/e2e/playwright-report/
+/tests/e2e/playwright/.cache/
+/tests/e2e/support/mock-agent/node_modules/
+/tests/e2e/support/mock-agent/*.log
+
+# Vitest coverage
+/ui/coverage/
 
 # vue-tsc / tsc build artifacts (never check these in — source files live alongside and are confusing to diff)
 /ui/*.tsbuildinfo

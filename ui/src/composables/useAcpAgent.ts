@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core'
-import { type UnlistenFn, listen } from '@tauri-apps/api/event'
 import { onBeforeUnmount, reactive, ref } from 'vue'
+
+import { invoke, listen, type UnlistenFn } from '@ipc'
 
 export enum EventKind {
   Transcript = 'transcript',
