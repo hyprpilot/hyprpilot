@@ -912,8 +912,8 @@ actor so system-prompt + model overlays stay deterministic.
   profiles against the same agent get distinct actors. The RPC
   surface + Tauri commands both route through it.
 - `commands.rs` — Tauri `#[command]`s: `acp_submit`, `acp_cancel`,
-  `agents_list`, `profiles_list`, `permission_reply` (unimplemented
-  stub until K-6).
+  `agents_list`, `profiles_list`, `session_list`, `session_load`,
+  `permission_reply` (unimplemented stub until K-6).
 
 ### Per-vendor system-prompt injection
 
@@ -1053,6 +1053,8 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
 | `profiles_list` | Populates the profile picker from `[[profiles]]`; parallels the `config/profiles` wire method. |
+| `session_list { agent_id, profile_id?, cwd? }` | Calls ACP `session/list` through the live `(agent_id, profile_id)` adapter; spawns an ephemeral `Bootstrap::ListOnly` actor when none is live (initialize → list → shutdown, never registered). Returns the raw ACP `ListSessionsResponse` — agent owns storage, hyprpilot just passes through. |
+| `session_load { agent_id, profile_id?, session_id }` | Tears down any live handle for `(agent_id, profile_id)`, then starts a fresh actor with `Bootstrap::Resume(session_id)`. Gated on `InitializeResponse.agent_capabilities.load_session` — vendors that don't advertise resume get a `-32601`-shaped error. Replay streams through the normal `acp:transcript` fanout. |
 
 | Event | Payload | When |
 | ----- | ------- | ---- |
