@@ -427,6 +427,16 @@ Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
   folded into that caller. Prefer `fn main() -> Result<()>` over a `try_main`
   wrapper; prefer unfolding a small setup step into the body (with a short
   comment) over extracting a one-call helper.
+- **Compose behavior onto the owning type, not as free fns.** When a
+  module defines a primary type (`AcpClient`, `AcpSessions`,
+  `StatusBroadcast`), helpers that operate on that type's state — or
+  need to touch the channels / handles / registries it owns — go as
+  methods on it, not module-level fns. Free fns are for pure
+  transformations that don't read or mutate the type's invariants.
+  Drove the K-240 refactor from free `forward_notification` /
+  `auto_cancel_permission` + `emit_acp_event` into methods on
+  `AcpClient` / `AcpSessions`; keeps the ownership graph legible and
+  avoids passing owned state by parameter.
 - **Comment discipline — terse WHY, never WHAT.** Default to no comments.
   Code + well-named identifiers already describe behavior; comments earn
   their keep only when they encode a non-obvious reason (a protocol quirk, a
@@ -487,11 +497,50 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 - Rename files in one commit that also updates the barrel and every import
   site.
 
+### Type conventions
+
+- **Optional fields use `?` syntax.** `session_id?: string`, not
+  `session_id: string | null` / `string | undefined`. Component props +
+  refs follow the same rule: `defineProps<{ request?: Event }>()`,
+  `ref<T>()` (undefined initial) over `ref<T | null>(null)`. Rust-side
+  `Option<T>` serializes to `null` on the wire today; treat that as a
+  type-lie that `?` papers over cleanly at the consumer edge. If a field
+  needs to disappear entirely on `None`, add
+  `#[serde(skip_serializing_if = "Option::is_none")]` on the Rust
+  struct.
+- **Closed sets use `enum`, not union string literals.** Define
+  `export enum SessionState { Starting = 'starting', … }` and type
+  fields as `state: SessionState`. Union string literals
+  (`state: 'starting' | 'running' | …`) are banned — the enum is the
+  single source of names the TS compiler can refactor. Same rule for
+  discriminator tags (`kind: EventKind.Transcript`).
+- **Named types with `T[]` suffix for arrays.** Extract every inline
+  object-array type (`Array<{ option_id: string, … }>`) to a named
+  interface, then use `PermissionOptionView[]` — not `Array<T>`, not
+  inline. One named type per wire shape.
+
+### Naming conventions
+
+- **Error variable names are `err`, not `error`.** Applies to both Rust
+  (`Err(err) => …`) and TypeScript (`.catch((err) => …)`, `try { … }
+  catch (err) { … }`). Local refs / state that carry the last error use
+  `lastErr`, `bindErr`, etc. — same short form. Mirrors the Rust
+  convention already in the codebase.
+
 ### Style conventions
 
 - **No `__` in class names.** Use `-` as the separator — `.placeholder-header`,
   not `.placeholder__header`.
 - **No `--pilot-*` CSS variables.** All theme tokens are `--theme-*`.
+- **`<style>` blocks are `lang="postcss"`** in every Vue SFC. The
+  PostCSS pipeline gives us `@apply` for Tailwind utilities plus
+  native CSS nesting (`&:focus`) — Vite processes it through the same
+  Tailwind v4 plugin pipeline as the global stylesheet. Prefer
+  `@apply` for layout / spacing / typography utilities; reserve
+  property-level CSS for theme-variable reads
+  (`background-color: var(--theme-...)`) and the rare custom that has
+  no Tailwind alias. Plain `<style scoped>` is a lint-trippable
+  shortcut only for the one-rule case; new SFCs default to postcss.
 - Tailwind utility classes use the short aliases declared in
   `ui/src/assets/styles.css::@theme inline` (e.g. `bg-theme-accent`,
   `text-theme-pending`, `border-theme-border-soft`). Add new aliases as new
@@ -709,15 +758,14 @@ returns pre-live-session stubbed shapes (`{ accepted: true, text }`
 / `{ cancelled: false, reason }` / `{ sessions: [] }`) until the
 runtime plumbing lands.
 
-## ACP bridge (K-239)
+## ACP bridge (K-239 scaffold + K-240 live runtime)
 
-The daemon fronts one or more ACP-speaking agent subprocesses. Each
-session is a child process whose stdio carries JSON-RPC framed by
-the `agent-client-protocol` crate; the daemon drives
-`initialize` / `new_session` / `prompt` / `cancel` against those
-children and fans the resulting `SessionUpdate`s out to the webview
-(`acp:transcript` Tauri events) and the `ctl status` broadcast
-(`AgentState::Streaming` / `Idle` / `Awaiting`).
+The daemon fronts one or more ACP-speaking agent subprocesses.
+`session/submit` spawns the configured vendor on first hit, wires a
+`Client.builder().connect_with(transport, …)` pipeline against its
+stdio, and streams `SessionUpdate`s through to the webview
+(`acp:transcript` Tauri events) + the `ctl status` broadcast. Follow-up
+prompts against the same agent id reuse the live session.
 
 ### Module layout (`src-tauri/src/acp/`)
 
@@ -726,10 +774,33 @@ children and fans the resulting `SessionUpdate`s out to the webview
   quirks (launch command, tool-content shape) live in trait-method
   bodies. `match_provider_agent(provider)` resolves a
   `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
-- `session.rs` — `AcpSessions` (Tauri managed state) + `AcpSessionState`
-  + `AgentId`. Today exposes `submit` / `cancel` / `info` as stubs;
-  the live-session follow-up replaces those bodies with
-  `conn.prompt(...)` / `conn.cancel(...)` against real children.
+- `spawn.rs` — `spawn_agent(&AgentConfig) -> (Child, ChildStdio)`.
+  Wraps `AcpAgent::spawn` + captures stdin/stdout for the ACP
+  connection.
+- `client.rs` — `on_receive_*` shims the ACP `Client.builder()` takes.
+  `SessionNotification`s fan out onto a per-session mpsc; every
+  `RequestPermissionRequest` auto-`Cancelled` until
+  `PermissionController` lands (the webview still sees an
+  `acp:permission-request` event for observability).
+- `runtime.rs` — one `tokio::spawn`ed actor per session. Drives
+  `initialize` → `session/new` → `session/prompt` for the first
+  prompt, then loops on an mpsc of `SessionCommand::{Prompt, Cancel,
+  Shutdown}`. Broadcasts `SessionEvent` upstream.
+- `session.rs` — `AcpSessions` (Tauri managed state). Keyed
+  `HashMap<agent_id, SessionHandle>` over live actors. The RPC
+  surface + Tauri commands both route through it.
+- `commands.rs` — Tauri `#[command]`s: `acp_submit`, `acp_cancel`,
+  `agents_list`, `permission_reply` (unimplemented stub until K-6).
+
+### `agent-client-protocol` 0.11 runtime notes
+
+The 0.11 crate exposes a builder API — `Client.builder()
+.on_receive_notification(…) .on_receive_request(…)
+.connect_with(transport, main_fn)` — whose futures are all `Send`. No
+`LocalSet` or `current_thread` runtime is required; the daemon stays on
+the default Tauri-managed multi-thread runtime. Transport is
+`ByteStreams::new(stdin.compat_write(), stdout.compat())` over the
+agent subprocess's stdio.
 
 ### Agents config (flattened at TOML root)
 
@@ -808,23 +879,23 @@ persistent trust store) are the scope of a separate future
 `auto_accept_tools` / `auto_reject_tools` configuration rather than
 a coarse policy enum. Until that lands every prompt is live-UI.
 
-### Tauri commands + events (pending live-session follow-up)
-
-Still to land on top of the scaffold (tracked in the live-session
-follow-up; none ship yet):
+### Tauri commands + events (live)
 
 | Command | Purpose |
 | ------- | ------- |
-| `acp_submit { text, agent_id? }` | Webview compose-box submit. |
-| `acp_cancel { agent_id? }` | Mid-turn cancel. |
-| `permission_reply { request_id, option_id }` | Fulfils a parked `resolve_permission` oneshot. |
-| `agents_list` | Populates the agent-switcher dropdown. |
+| `acp_submit { text, agent_id? }` | Webview compose-box submit. Delegates to `AcpSessions::submit`. |
+| `acp_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
+| `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
+| `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
 
 | Event | Payload | When |
 | ----- | ------- | ---- |
-| `acp:transcript` | `TranscriptEvent` | Every session update post vendor `render_update`. |
-| `acp:permission-request` | `{ request_id, tool_name, options, raw_input }` | When `resolve_permission` decides to ask. |
-| `acp:session-state` | `{ agent_id, state }` | Every `AcpSessionState` transition. |
+| `acp:transcript` | `{ agent_id, session_id, update }` | Every `SessionNotification` the agent streams; `update` is the raw `SessionUpdate` JSON. |
+| `acp:permission-request` | `{ agent_id, session_id, options }` | Every `session/request_permission` — auto-denied but surfaced for observability. |
+| `acp:session-state` | `{ agent_id, session_id, state }` | On every lifecycle transition (`starting` / `running` / `ended` / `error`). |
+
+Event names use `:` (Tauri-side convention); the JSON-RPC wire keeps
+`/` (`session/submit` etc.); config uses `.`; CSS uses `-`.
 
 ## What is not in the scaffold
 
@@ -833,11 +904,6 @@ scaffold work:
 
 - MCP server(s), skills loader, permissions store, markdown
   rendering, profile switcher UI.
-- Live ACP session plumbing (spawn → `ClientSideConnection` → drive
-  prompts → stream notifications). Scaffold + permission resolver
-  landed under K-239; the live session follow-up wires the real
-  wire-level calls against `agent-client-protocol = "0.11"`'s
-  `Client.builder()` / `ConnectionTo<Agent>` API.
 - Playwright e2e wiring (`tauri-driver` + WebKitGTK WebDriver shim) — the
   current e2e is `test.skip` only.
 - Real branding icon — `src-tauri/icons/icon.png` is a generated 32×32

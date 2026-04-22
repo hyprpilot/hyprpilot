@@ -125,13 +125,15 @@ mod dispatcher_tests {
         assert_eq!(v["state"], "idle");
     }
 
+    /// Empty `AgentsConfig` — no `[agent] default`, no registry
+    /// entries. `session/submit` must return `-32602 invalid_params`
+    /// because there's no way to resolve an agent to spawn.
     #[tokio::test]
     async fn dispatch_routes_session_submit_to_session_handler() {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "session/submit", json!({ "text": "hi" })).await;
-        assert_eq!(v["accepted"], true);
-        assert_eq!(v["text"], "hi");
+        assert_eq!(v["code"], -32602, "empty config must reject with invalid_params: {v}");
     }
 
     #[tokio::test]
@@ -139,7 +141,7 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "session/cancel", Value::Null).await;
-        assert_eq!(v["cancelled"], false);
+        assert_eq!(v["code"], -32602, "empty config rejects cancel: {v}");
     }
 
     #[tokio::test]

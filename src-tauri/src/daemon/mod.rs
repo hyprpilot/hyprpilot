@@ -12,6 +12,7 @@ use tauri::{Emitter, Manager, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
+use crate::acp::commands as acp_commands;
 use crate::acp::AcpSessions;
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
@@ -126,7 +127,14 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
                 warn!(%err, "failed to emit single-instance event");
             }
         }))
-        .invoke_handler(tauri::generate_handler![get_theme, get_window_state])
+        .invoke_handler(tauri::generate_handler![
+            get_theme,
+            get_window_state,
+            acp_commands::acp_submit,
+            acp_commands::acp_cancel,
+            acp_commands::agents_list,
+            acp_commands::permission_reply,
+        ])
         .setup(move |app| {
             app.manage(theme.clone());
             app.manage(window_state.clone());
@@ -144,6 +152,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             renderer.apply_initial(&main)?;
 
             app.manage(sessions.clone());
+            sessions.spawn_tauri_event_bridge(app.handle().clone());
 
             let rpc_state = crate::rpc::RpcState {
                 app: app.handle().clone(),
