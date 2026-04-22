@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "type-check": "vue-tsc --noEmit",
     "format": "prettier --write src/ tests/ e2e/ --log-level warn && eslint --fix",
     "lint": "eslint && vue-tsc --noEmit"
   },
