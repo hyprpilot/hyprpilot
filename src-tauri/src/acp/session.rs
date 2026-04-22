@@ -8,14 +8,16 @@
 //! spawns its own).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
 use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
 use super::resolve::ResolvedSession;
-use super::runtime::{start_session, SessionCommand, SessionEvent, SessionHandle};
+use super::runtime::{start_session, Bootstrap, SessionCommand, SessionEvent, SessionHandle};
 use crate::config::Config;
 use crate::rpc::protocol::RpcError;
 use crate::rpc::StatusBroadcast;
@@ -145,7 +147,7 @@ impl AcpSessions {
             if let Some(handle) = active.get(&key) {
                 handle.cmd_tx.clone()
             } else {
-                let handle = start_session(resolved.clone(), self.events_tx.clone());
+                let handle = start_session(resolved.clone(), self.events_tx.clone(), Bootstrap::Fresh);
                 let tx = handle.cmd_tx.clone();
                 active.insert(key.clone(), handle);
                 tx
@@ -223,6 +225,89 @@ impl AcpSessions {
             }));
         }
         Ok(json!({ "sessions": sessions }))
+    }
+
+    /// Ask the agent for its persisted session index. Reuses the live
+    /// actor when `(agent_id, profile_id)` is already bootstrapped;
+    /// otherwise spawns an ephemeral `ListOnly` actor, issues the
+    /// query, and tears it down. Ephemeral actors are never inserted
+    /// into the registry — they exist for exactly one roundtrip.
+    pub async fn list(
+        &self,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+        cwd: Option<PathBuf>,
+    ) -> Result<ListSessionsResponse, RpcError> {
+        let resolved = self.resolve_session(agent_id, profile_id)?;
+        let key = SessionKey {
+            agent_id: resolved.agent.id.clone(),
+            profile_id: resolved.profile_id.clone(),
+        };
+
+        let (cmd_tx, ephemeral) = {
+            let active = self.active.lock().await;
+            if let Some(handle) = active.get(&key) {
+                (handle.cmd_tx.clone(), None)
+            } else {
+                let handle = start_session(resolved, self.events_tx.clone(), Bootstrap::ListOnly);
+                let tx = handle.cmd_tx.clone();
+                (tx, Some(handle))
+            }
+        };
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(SessionCommand::ListSessions { cwd, reply: reply_tx })
+            .map_err(|_| RpcError::internal_error("session actor closed before accepting list request"))?;
+
+        let response = reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("session actor dropped list reply"))?
+            .map_err(|err| RpcError::internal_error(format!("session/list failed: {err}")));
+
+        if let Some(handle) = ephemeral {
+            let (tx, rx) = oneshot::channel();
+            let _ = handle.cmd_tx.send(SessionCommand::Shutdown { reply: tx });
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+        }
+
+        response
+    }
+
+    /// Resume a persisted session. Tears down the live actor for
+    /// `(agent_id, profile_id)` if present, then spawns a fresh actor
+    /// with `Bootstrap::Resume(session_id)`. Replay updates stream
+    /// through the standard `acp:transcript` event path.
+    pub async fn load(
+        &self,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+        session_id: String,
+    ) -> Result<(), RpcError> {
+        let resolved = self.resolve_session(agent_id, profile_id)?;
+        let key = SessionKey {
+            agent_id: resolved.agent.id.clone(),
+            profile_id: resolved.profile_id.clone(),
+        };
+
+        let existing = {
+            let mut active = self.active.lock().await;
+            active.remove(&key)
+        };
+        if let Some(handle) = existing {
+            let (tx, rx) = oneshot::channel();
+            let _ = handle.cmd_tx.send(SessionCommand::Shutdown { reply: tx });
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+        }
+
+        let handle = start_session(
+            resolved,
+            self.events_tx.clone(),
+            Bootstrap::Resume(SessionId::new(session_id)),
+        );
+        let mut active = self.active.lock().await;
+        active.insert(key, handle);
+        Ok(())
     }
 
     /// Cleanup hook called from `daemon::shutdown` before `app.exit(0)`.
