@@ -8,11 +8,8 @@ use tokio::process::Command;
 
 use crate::config::AgentConfig;
 
-use super::AcpAgent;
+use super::{AcpAgent, SystemPromptInjection};
 
-/// Unit struct — carries no runtime state. Everything returned by its
-/// methods is static per-vendor knowledge; `AgentConfig` on the spawn
-/// flow provides the rest.
 pub struct AcpAgentClaudeCode;
 
 impl AcpAgent for AcpAgentClaudeCode {
@@ -51,6 +48,17 @@ impl AcpAgent for AcpAgentClaudeCode {
         cmd.stdout(Stdio::piped());
         cmd.kill_on_drop(true);
         cmd
+    }
+
+    /// `@zed-industries/claude-code-acp` never reads `process.argv`;
+    /// CLI flags like `--append-system-prompt` are silently dropped.
+    /// The shim's only system-prompt hook is `_meta.systemPrompt` on
+    /// the `session/new` request, which `agent-client-protocol` 0.11
+    /// doesn't expose as a typed field. Prepending to the first
+    /// `session/prompt` is the transport-agnostic path that reaches
+    /// the model today.
+    fn inject_system_prompt(&self, _cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
+        SystemPromptInjection::FirstMessage(prompt.to_string())
     }
 }
 
@@ -108,5 +116,27 @@ mod tests {
         let cmd = AcpAgentClaudeCode.spawn(&entry);
         let has_key = cmd.as_std().get_envs().any(|(k, _)| k == "ANTHROPIC_MODEL");
         assert!(!has_key);
+    }
+
+    #[test]
+    fn inject_returns_first_message_and_leaves_cmd_untouched() {
+        let entry = entry_with_model(None);
+        let mut cmd = AcpAgentClaudeCode.spawn(&entry);
+        let before: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        let out = AcpAgentClaudeCode.inject_system_prompt(&mut cmd, "be terse");
+        let after: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(before, after, "claude-code must not mutate args from inject");
+        match out {
+            crate::acp::agents::SystemPromptInjection::FirstMessage(s) => assert_eq!(s, "be terse"),
+            other => panic!("expected FirstMessage, got {other:?}"),
+        }
     }
 }

@@ -8,7 +8,7 @@ use tokio::process::Command;
 
 use crate::config::AgentConfig;
 
-use super::AcpAgent;
+use super::{AcpAgent, SystemPromptInjection};
 
 pub struct AcpAgentCodex;
 
@@ -52,6 +52,28 @@ impl AcpAgent for AcpAgentCodex {
         cmd.kill_on_drop(true);
         cmd
     }
+
+    /// codex-acp only exposes `-c key=value` config overrides (no
+    /// `--system-prompt` flag). The codex config accepts a TOML
+    /// `instructions = "..."` key; we pass it through `-c` with a
+    /// TOML-quoted value. Assumption: codex config key is
+    /// `instructions`; document in PR body for fact-check.
+    fn inject_system_prompt(&self, cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
+        cmd.arg("-c");
+        cmd.arg(format!("instructions={}", toml_string(prompt)));
+        SystemPromptInjection::Handled
+    }
+}
+
+/// Serialize a prompt as a TOML basic string literal (single-line,
+/// double-quoted, `\n` / `\"` escapes). `toml::Value::String` would
+/// emit a multi-line literal (`"""..."""`) when the content contains
+/// newlines, which can't survive shell-quoting for a `-c` CLI flag;
+/// JSON strings are a subset of TOML basic strings (no `\/` emitted
+/// by default), so `serde_json` gives us spec-delegated escaping
+/// without hand-rolling.
+fn toml_string(s: &str) -> String {
+    serde_json::to_string(s).expect("str always serializes")
 }
 
 #[cfg(test)]
@@ -110,5 +132,29 @@ mod tests {
         let cmd = AcpAgentCodex.spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
         assert!(!args.contains(&"--model"), "unexpected --model in {args:?}");
+    }
+
+    #[test]
+    fn inject_system_prompt_appends_c_instructions_override() {
+        let entry = entry_with_model(None);
+        let mut cmd = AcpAgentCodex.spawn(&entry);
+        let out = AcpAgentCodex.inject_system_prompt(&mut cmd, "be terse");
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == r#"instructions="be terse""#),
+            "expected -c instructions=\"be terse\" in {args:?}"
+        );
+        assert!(matches!(out, crate::acp::agents::SystemPromptInjection::Handled));
+    }
+
+    #[test]
+    fn inject_system_prompt_escapes_quotes_and_newlines() {
+        let entry = entry_with_model(None);
+        let mut cmd = AcpAgentCodex.spawn(&entry);
+        AcpAgentCodex.inject_system_prompt(&mut cmd, "say \"hi\"\nline2");
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+        let want = r#"instructions="say \"hi\"\nline2""#;
+        assert!(args.contains(&want), "expected {want:?} among args; got {args:?}");
     }
 }

@@ -98,8 +98,12 @@ fields they set.
 1. Compiled defaults — `src-tauri/src/config/defaults.toml` embedded via
    `include_str!`.
 2. Global config — `$XDG_CONFIG_HOME/hyprpilot/config.toml` or `--config <path>`.
-3. Per-profile config — `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml` when
-   `--profile <name>` / `HYPRPILOT_PROFILE` is supplied.
+3. Per-profile config — `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml`
+   when `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` is
+   supplied. This is the config-layering alias, not the session
+   `[[profiles]]` registry — the two `profile` concepts live in
+   parallel; the latter is addressed per-call via `ctl submit
+   --profile <id>` / `session/submit { profile_id }`.
 4. `clap` flags — override-per-invocation, never persisted.
 
 `defaults.toml` is the **single source of truth** for default values. Rust
@@ -604,14 +608,15 @@ can't block others.
 
 | Method | Params | Result | Notes |
 | ------ | ------ | ------ | ----- |
-| `session/submit` | `{ "text": "...", "agent_id"?: "..." }` | `{ "accepted": true, "text": "..." }` | K-239 replaces the stub with a `conn.prompt(...)` call against the addressed agent. `agent_id` omitted → `agents.active_agent`. |
-| `session/cancel` | *(none)* or `{ "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | Stub today; K-239 sends `CancelNotification` to the addressed session. |
-| `session/info` | *(none)* | `{ "sessions": [...] }` | Stub today; K-239 returns the live session list across every active agent. |
+| `session/submit` | `{ "text": "...", "agent_id"?: "...", "profile_id"?: "..." }` | `{ "accepted": true, "agent_id": "...", "profile_id": "..." \| null, "session_id": "..." \| null }` | Resolves `(agent_id, profile_id)` via `acp::resolve`; distinct profiles spawn distinct actors even against the same agent. |
+| `session/cancel` | *(none)* or `{ "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | Sends `CancelNotification` to the addressed session. |
+| `session/info` | *(none)* | `{ "sessions": [...] }` | Live session list across every active agent + profile. |
 | `window/toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
 | `daemon/kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
 | `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
+| `config/profiles` | *(none)* | `{ "profiles": [{ id, agent, model, has_prompt, is_default }] }` | Read-only profile list for the chat-shell picker (K-246). |
 
 `StatusResult` shape: `{ "state": "idle" | "streaming" | "awaiting" | "error", "visible": bool, "active_session": string | null }`.
 
@@ -625,6 +630,8 @@ can't block others.
 - `daemon/*` — daemon lifecycle (`daemon/kill`; future `daemon/status`,
   `daemon/reload`).
 - `status/*` — agent state broadcasts (drives waybar).
+- `config/*` — read-only config slices consumed by UI pickers
+  (`config/profiles` today; future `config/agents`).
 - Reserved: `agents/*` (listing / switching), `permissions/*` (trust
   store — UI-only today, no `ctl` surface yet).
 
@@ -758,39 +765,74 @@ returns pre-live-session stubbed shapes (`{ accepted: true, text }`
 / `{ cancelled: false, reason }` / `{ sessions: [] }`) until the
 runtime plumbing lands.
 
-## ACP bridge (K-239 scaffold + K-240 live runtime)
+## ACP bridge (K-239 scaffold + K-240 live runtime + K-242 profiles)
 
 The daemon fronts one or more ACP-speaking agent subprocesses.
-`session/submit` spawns the configured vendor on first hit, wires a
+`session/submit` resolves the addressed profile (or falls back
+through `[agent] default_profile` → first `[[agents]]` entry),
+spawns the configured vendor on first hit, wires a
 `Client.builder().connect_with(transport, …)` pipeline against its
 stdio, and streams `SessionUpdate`s through to the webview
 (`acp:transcript` Tauri events) + the `ctl status` broadcast. Follow-up
-prompts against the same agent id reuse the live session.
+prompts against the same `(agent_id, profile_id)` pair reuse the live
+session; a different profile against the same agent spawns its own
+actor so system-prompt + model overlays stay deterministic.
 
 ### Module layout (`src-tauri/src/acp/`)
 
 - `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
   three vendor unit structs. Each carries no runtime state; vendor
-  quirks (launch command, tool-content shape) live in trait-method
-  bodies. `match_provider_agent(provider)` resolves a
-  `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
-- `spawn.rs` — `spawn_agent(&AgentConfig) -> (Child, ChildStdio)`.
-  Wraps `AcpAgent::spawn` + captures stdin/stdout for the ACP
-  connection.
+  quirks (launch command, model flag, system-prompt injection site)
+  live in trait-method bodies. `match_provider_agent(provider)`
+  resolves a `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
+- `resolve.rs` — `resolve(&Config, profile_id?) -> ResolvedSession`.
+  Flattens the layered config into `{ agent, profile_id, model,
+  system_prompt }`. Model precedence is profile > agent > vendor
+  default; `system_prompt_file` contents are read from disk here so
+  a missing file fails on submit, not inside the actor.
+- `spawn.rs` — `spawn_agent(&AgentConfig, system_prompt: Option<&str>)
+  -> (Child, ChildStdio)`. Wraps `AcpAgent::spawn` +
+  `AcpAgent::inject_system_prompt` and captures stdin/stdout for the
+  ACP connection.
 - `client.rs` — `on_receive_*` shims the ACP `Client.builder()` takes.
   `SessionNotification`s fan out onto a per-session mpsc; every
   `RequestPermissionRequest` auto-`Cancelled` until
   `PermissionController` lands (the webview still sees an
   `acp:permission-request` event for observability).
-- `runtime.rs` — one `tokio::spawn`ed actor per session. Drives
-  `initialize` → `session/new` → `session/prompt` for the first
-  prompt, then loops on an mpsc of `SessionCommand::{Prompt, Cancel,
-  Shutdown}`. Broadcasts `SessionEvent` upstream.
+- `runtime.rs` — one `tokio::spawn`ed actor per session. Takes a
+  `ResolvedSession` and drives `initialize` → `session/new` →
+  `session/prompt` for the first prompt, then loops on an mpsc of
+  `SessionCommand::{Prompt, Cancel, Shutdown}`. Broadcasts
+  `SessionEvent` upstream.
 - `session.rs` — `AcpSessions` (Tauri managed state). Keyed
-  `HashMap<agent_id, SessionHandle>` over live actors. The RPC
+  `HashMap<(agent_id, profile_id?), SessionHandle>` so distinct
+  profiles against the same agent get distinct actors. The RPC
   surface + Tauri commands both route through it.
 - `commands.rs` — Tauri `#[command]`s: `acp_submit`, `acp_cancel`,
-  `agents_list`, `permission_reply` (unimplemented stub until K-6).
+  `agents_list`, `profiles_list`, `permission_reply` (unimplemented
+  stub until K-6).
+
+### Per-vendor system-prompt injection
+
+One hook, one return value. `AcpAgent::inject_system_prompt(cmd,
+prompt) -> SystemPromptInjection` runs at spawn time and either:
+
+- mutates `cmd` directly (CLI flag, `-c` override, env var) and
+  returns `SystemPromptInjection::Handled`; or
+- leaves `cmd` alone and returns
+  `SystemPromptInjection::FirstMessage(text)`, in which case the
+  runtime prepends `text` onto the first `session/prompt` text block
+  (with `\n\n` separation) and clears the slot — follow-up prompts
+  pass through untouched.
+
+Default returns `Handled` (silent drop). Vendors pick exactly one
+strategy.
+
+| Vendor | Strategy | Reason |
+| ------ | -------- | ------ |
+| `acp-claude-code` | `FirstMessage` | `@zed-industries/claude-code-acp` never reads `process.argv`; its only hook is `_meta.systemPrompt` on `session/new`, which `agent-client-protocol` 0.11 doesn't expose as a typed field yet |
+| `acp-codex` | `Handled` (mutates `cmd` with `-c instructions="<json-escaped>"`) | codex-acp forwards argv to the native `codex-acp` binary, which merges `-c` overrides into the TOML config. JSON escapes (via `serde_json::to_string`) are a valid subset of TOML basic string escapes |
+| `acp-opencode` | `FirstMessage` | No launch-time hook exists today |
 
 ### `agent-client-protocol` 0.11 runtime notes
 
@@ -802,11 +844,12 @@ the default Tauri-managed multi-thread runtime. Transport is
 `ByteStreams::new(stdin.compat_write(), stdout.compat())` over the
 agent subprocess's stdio.
 
-### Agents config (flattened at TOML root)
+### Agents + profiles config (flattened at TOML root)
 
 ```toml
 [agent]                          # singleton: global agent-scope config
-default = "claude-code"          # id used when ctl / webview don't pick one
+default = "claude-code"          # agent id when nothing else picks one
+default_profile = "ask"          # profile id used when submit gets no profile_id
 
 [[agents]]                       # registry: per-agent entries
 id = "claude-code"
@@ -816,20 +859,39 @@ command = "bunx"                 # optional; defaults to the vendor's own
 args = ["--bun", "@zed-industries/claude-code-acp"]
 
 [agents.env]                     # optional per-agent env overlay
+
+[[profiles]]                     # registry: per-profile presets
+id = "strict"
+agent = "claude-code"            # must reference a real [[agents]] id
+model = "claude-opus-4-5"        # optional override — profile > agent > vendor
+system_prompt = "..."            # inline (mutually exclusive with system_prompt_file)
+# system_prompt_file = "~/.config/hyprpilot/prompts/strict.md"
 ```
 
-Singular `[agent]` parallels plural `[[agents]]` — TOML's single-table
-vs array-of-tables distinction carries the "global config vs registry"
-split. Future global knobs (shared env overlay, timeout, cwd defaults)
-slot under `[agent]` without another top-level rename.
+Singular `[agent]` parallels plural `[[agents]]` / `[[profiles]]` —
+TOML's single-table vs array-of-tables distinction carries the
+"global config vs registry" split. Future global knobs (shared env
+overlay, timeout, cwd defaults) slot under `[agent]` without another
+top-level rename.
 
-Merge semantics: user entries with an existing `id` override the whole
-default entry; new `id`s append. `agent.default` (when set) must name a
-real configured id — enforced inside the garde derive via
-`custom(validate_agent_default_id(&self.agents))`. `AgentProvider` is a
-**closed enum** keyed by wire name (`acp-claude-code` / `acp-codex` /
-`acp-opencode`); adding a provider means a new enum variant + a new
-`AcpAgent` impl + a new match arm in `match_provider_agent`.
+Merge semantics (shared by `[[agents]]` and `[[profiles]]`): user
+entries with an existing `id` override the whole default entry; new
+`id`s append. Whole-entry replace, no field-level merge inside an
+entry — "override `system_prompt`, keep old `model`" would read
+surprising.
+
+Cross-field rules inside the garde derive:
+
+- `agent.default` → `[[agents]].id` (must match).
+- `agent.default_profile` → `[[profiles]].id` (must match).
+- `profile.agent` → `[[agents]].id` (must match).
+- `profile.system_prompt` XOR `profile.system_prompt_file` — pair
+  exclusion checked post-walk in `Config::validate`.
+
+`AgentProvider` is a **closed enum** keyed by wire name
+(`acp-claude-code` / `acp-codex` / `acp-opencode`); adding a provider
+means a new enum variant + a new `AcpAgent` impl + a new match arm
+in `match_provider_agent`.
 
 ### Shutdown orchestration
 
@@ -883,10 +945,11 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Command | Purpose |
 | ------- | ------- |
-| `acp_submit { text, agent_id? }` | Webview compose-box submit. Delegates to `AcpSessions::submit`. |
+| `acp_submit { text, agent_id?, profile_id? }` | Webview compose-box submit. Delegates to `AcpSessions::submit`. |
 | `acp_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
+| `profiles_list` | Populates the profile picker from `[[profiles]]`; parallels the `config/profiles` wire method. |
 
 | Event | Payload | When |
 | ----- | ------- | ---- |

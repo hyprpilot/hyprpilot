@@ -13,9 +13,14 @@ use crate::rpc::protocol::RpcError;
 #[serde(deny_unknown_fields)]
 struct SubmitParams {
     text: String,
-    /// Optional — when omitted, the daemon uses `agents.active_agent`.
+    /// Optional — when omitted, the daemon resolves the agent via the
+    /// addressed profile (or `[agent] default` when no profile is set).
     #[serde(default)]
     agent_id: Option<String>,
+    /// Optional — names a `[[profiles]]` entry whose model +
+    /// system-prompt overlay applies to this submission.
+    #[serde(default)]
+    profile_id: Option<String>,
 }
 
 /// Optional `{ agent_id }` wrapper shared by `session/cancel`. Defaulted
@@ -49,9 +54,15 @@ impl RpcHandler for SessionHandler {
 
         match method {
             "session/submit" => {
-                let SubmitParams { text, agent_id } = serde_json::from_value(params)
+                let SubmitParams {
+                    text,
+                    agent_id,
+                    profile_id,
+                } = serde_json::from_value(params)
                     .map_err(|e| RpcError::invalid_params(format!("session/submit params: {e}")))?;
-                let v = sessions.submit(&text, agent_id.as_deref()).await?;
+                let v = sessions
+                    .submit(&text, agent_id.as_deref(), profile_id.as_deref())
+                    .await?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/cancel" => {

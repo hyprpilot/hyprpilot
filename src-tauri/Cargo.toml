@@ -24,6 +24,7 @@ garde = { version = "0.22", features = ["derive"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shellexpand = "3"
 thiserror = "2"
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }

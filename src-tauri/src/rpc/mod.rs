@@ -7,7 +7,7 @@ pub mod status;
 use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
-pub use handlers::{DaemonHandler, SessionHandler, StatusHandler, WindowHandler};
+pub use handlers::{ConfigHandler, DaemonHandler, SessionHandler, StatusHandler, WindowHandler};
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
 
@@ -41,6 +41,7 @@ impl RpcDispatcher {
     /// - `DaemonHandler` (namespace `"daemon"`): `daemon/kill`.
     /// - `StatusHandler` (namespace `"status"`): `status/get`,
     ///   `status/subscribe`.
+    /// - `ConfigHandler` (namespace `"config"`): `config/profiles`.
     pub fn with_defaults() -> Self {
         Self {
             handlers: vec![
@@ -48,6 +49,7 @@ impl RpcDispatcher {
                 Box::new(WindowHandler),
                 Box::new(DaemonHandler),
                 Box::new(StatusHandler),
+                Box::new(ConfigHandler),
             ],
         }
     }
@@ -79,7 +81,7 @@ mod dispatcher_tests {
 
     use super::*;
     use crate::acp::AcpSessions;
-    use crate::config::AgentsConfig;
+    use crate::config::Config;
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
     use serde_json::json;
@@ -91,7 +93,7 @@ mod dispatcher_tests {
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
         let sessions = Arc::new(AcpSessions::new(
-            AgentsConfig::default(),
+            Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
         let ctx = HandlerCtx {
@@ -125,9 +127,9 @@ mod dispatcher_tests {
         assert_eq!(v["state"], "idle");
     }
 
-    /// Empty `AgentsConfig` — no `[agent] default`, no registry
-    /// entries. `session/submit` must return `-32602 invalid_params`
-    /// because there's no way to resolve an agent to spawn.
+    /// Empty `Config` — no `[agent] default`, no registry entries.
+    /// `session/submit` must return `-32602 invalid_params` because
+    /// there's no way to resolve an agent to spawn.
     #[tokio::test]
     async fn dispatch_routes_session_submit_to_session_handler() {
         let dispatcher = RpcDispatcher::with_defaults();
@@ -150,6 +152,15 @@ mod dispatcher_tests {
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "session/info", Value::Null).await;
         assert_eq!(v["sessions"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_config_profiles_to_config_handler() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(&dispatcher, &broadcast, "config/profiles", Value::Null).await;
+        // Empty `Config::default()` has no profiles.
+        assert_eq!(v["profiles"], json!([]));
     }
 
     #[tokio::test]
@@ -192,6 +203,20 @@ mod dispatcher_tests {
         assert_eq!(v["code"], -32602);
     }
 
+    #[tokio::test]
+    async fn dispatch_session_submit_unknown_profile_id_is_invalid_params() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(
+            &dispatcher,
+            &broadcast,
+            "session/submit",
+            json!({ "text": "hi", "profile_id": "ghost" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "unknown profile_id must be invalid_params: {v}");
+    }
+
     /// Every bare method name from the pre-K-239 scaffold must return
     /// `-32601 method_not_found` after the rename. No backwards-compat
     /// layer — the contract is broken intentionally.
@@ -211,7 +236,7 @@ mod dispatcher_tests {
         let broadcast = StatusBroadcast::new(true);
         let id = RequestId::Number(2);
         let sessions = Arc::new(AcpSessions::new(
-            AgentsConfig::default(),
+            Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
         let ctx = HandlerCtx {

@@ -1,7 +1,7 @@
 //! Garde predicates for the `config::*` derive surface. Everything
 //! here is `pub(super)`; the outside API is `Config::validate()`.
 
-use super::{AgentConfig, AgentDefaults};
+use super::{AgentConfig, AgentDefaults, AgentsConfig, ProfileConfig};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -35,6 +35,60 @@ pub(super) fn validate_agent_default_id<'a>(
             "default = '{active}' but no matching [[agents]] entry exists. \
              Configured ids: [{}]",
             agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+        )))
+    }
+}
+
+pub(super) fn validate_profiles_ids(profiles: &[ProfileConfig], _ctx: &()) -> garde::Result {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for p in profiles {
+        if !seen.insert(p.id.as_str()) {
+            return Err(garde::Error::new(format!(
+                "duplicate profile id '{}' — each [[profiles]] entry must have a unique id",
+                p.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every profile's `agent` must name a real `[[agents]]` entry. Mirror
+/// of `validate_agent_default_id` but scoped across the profile list.
+pub(super) fn validate_profile_agent_references<'a>(
+    agents: &'a [AgentConfig],
+) -> impl FnOnce(&Vec<ProfileConfig>, &()) -> garde::Result + 'a {
+    move |profiles, _ctx| {
+        for p in profiles {
+            if !agents.iter().any(|a| a.id == p.agent) {
+                return Err(garde::Error::new(format!(
+                    "profile '{}' references agent '{}' but no matching [[agents]] entry exists. \
+                     Configured ids: [{}]",
+                    p.id,
+                    p.agent,
+                    agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `[agent] default_profile` (when set) must name a real
+/// `[[profiles]]` entry.
+pub(super) fn validate_default_profile_id<'a>(
+    profiles: &'a [ProfileConfig],
+) -> impl FnOnce(&AgentsConfig, &()) -> garde::Result + 'a {
+    move |agents, _ctx| {
+        let Some(wanted) = agents.agent.default_profile.as_deref() else {
+            return Ok(());
+        };
+        if profiles.iter().any(|p| p.id == wanted) {
+            return Ok(());
+        }
+        Err(garde::Error::new(format!(
+            "default_profile = '{wanted}' but no matching [[profiles]] entry exists. \
+             Configured ids: [{}]",
+            profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
         )))
     }
 }
