@@ -1,18 +1,26 @@
-//! ACP `Client`-side handler. `AcpClient` is the composition root for
-//! the per-session adapter: it owns the event channel and carries the
-//! tools the runtime actor plugs into `Client.builder().on_receive_*`.
+//! ACP `Client`-side adapter. `AcpClient` forwards every incoming
+//! `fs/*` and `terminal/*` request to the typed tool layer (`tools::`)
+//! and maps domain errors into `agent_client_protocol::Error`.
 //! Future `PermissionController` (K-6) lands as a field here so the
 //! auto-`Cancelled` policy flips to a real trust-store without
 //! rippling through runtime + session call sites.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use agent_client_protocol::schema::{
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, SessionNotification,
+    CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, ReadTextFileRequest,
+    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, TerminalOutputRequest,
+    TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
+    WriteTextFileResponse,
 };
 use tokio::sync::mpsc;
 
-/// Payload pushed onto the per-session forwarding channel.
-/// `Notification` boxed because `SessionNotification` is large
-/// (`#[non_exhaustive]` with nested content blocks).
+use crate::tools::{FsTools, Sandbox, SandboxError, Terminals};
+
+use self::error::{fs_error, terminal_error};
+
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
     Notification(Box<SessionNotification>),
@@ -60,16 +68,24 @@ fn permission_option_kind_wire(kind: &agent_client_protocol::schema::PermissionO
     }
 }
 
-/// Per-session adapter: bundles the event sender + the tools the ACP
-/// runtime closures invoke. Cloned into each `on_receive_*` closure.
+/// Per-session adapter: bundles the event sender, the fs tools, and
+/// the terminal registry the ACP runtime closures invoke. Cloned into
+/// each `on_receive_*` closure.
 #[derive(Debug, Clone)]
 pub struct AcpClient {
     events: mpsc::UnboundedSender<ClientEvent>,
+    fs: Arc<FsTools>,
+    terminals: Arc<Terminals>,
 }
 
 impl AcpClient {
-    pub fn new(events: mpsc::UnboundedSender<ClientEvent>) -> Self {
-        Self { events }
+    pub fn new(events: mpsc::UnboundedSender<ClientEvent>, sandbox_root: PathBuf) -> Result<Self, SandboxError> {
+        let sandbox = Sandbox::new(sandbox_root)?;
+        Ok(Self {
+            events,
+            fs: Arc::new(FsTools::new(sandbox.clone())),
+            terminals: Arc::new(Terminals::new(sandbox)),
+        })
     }
 
     /// Forward a `SessionNotification` onto the per-session events
@@ -85,11 +101,15 @@ impl AcpClient {
         }
     }
 
-    /// Handle a `session/request_permission` request. Emits an
-    /// observability event for the webview, then auto-`Cancelled`.
+    /// Handle `session/request_permission`. Emits an observability
+    /// event for the webview, then auto-`Cancelled`.
     /// `PermissionController` (K-6) replaces the auto-cancel with a
-    /// trust-store consult.
-    pub fn request_permission(&self, req: &RequestPermissionRequest) -> RequestPermissionResponse {
+    /// trust-store consult. `async` signature aligns with every other
+    /// handler so `register_client_handler!` takes one shape.
+    pub async fn request_permission(
+        &self,
+        req: &RequestPermissionRequest,
+    ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
         let options = req.options.iter().map(PermissionOptionView::from).collect::<Vec<_>>();
         let _ = self.events.send(ClientEvent::PermissionRequested {
             session_id: req.session_id.0.to_string(),
@@ -100,7 +120,118 @@ impl AcpClient {
             options = req.options.len(),
             "acp::client: auto-cancelling permission request (pre-PermissionController)"
         );
-        RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
+        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
+    }
+
+    pub async fn read_text_file(
+        &self,
+        req: &ReadTextFileRequest,
+    ) -> Result<ReadTextFileResponse, agent_client_protocol::Error> {
+        tracing::info!(
+            session = %req.session_id,
+            path = %req.path.display(),
+            line = ?req.line,
+            limit = ?req.limit,
+            "acp::client: fs/read_text_file"
+        );
+        let content = self.fs.read(&req.path, req.line, req.limit).await.map_err(fs_error)?;
+        Ok(ReadTextFileResponse::new(content))
+    }
+
+    pub async fn write_text_file(
+        &self,
+        req: &WriteTextFileRequest,
+    ) -> Result<WriteTextFileResponse, agent_client_protocol::Error> {
+        tracing::info!(
+            session = %req.session_id,
+            path = %req.path.display(),
+            bytes = req.content.len(),
+            "acp::client: fs/write_text_file"
+        );
+        self.fs.write(&req.path, &req.content).await.map_err(fs_error)?;
+        Ok(WriteTextFileResponse::new())
+    }
+
+    pub async fn create_terminal(
+        &self,
+        req: &CreateTerminalRequest,
+    ) -> Result<CreateTerminalResponse, agent_client_protocol::Error> {
+        self.terminals
+            .create(req.session_id.0.as_ref(), req.clone())
+            .await
+            .map_err(terminal_error)
+    }
+
+    pub async fn terminal_output(
+        &self,
+        req: &TerminalOutputRequest,
+    ) -> Result<TerminalOutputResponse, agent_client_protocol::Error> {
+        self.terminals
+            .output(req.session_id.0.as_ref(), req.clone())
+            .await
+            .map_err(terminal_error)
+    }
+
+    pub async fn wait_for_terminal_exit(
+        &self,
+        req: &WaitForTerminalExitRequest,
+    ) -> Result<WaitForTerminalExitResponse, agent_client_protocol::Error> {
+        self.terminals
+            .wait(req.session_id.0.as_ref(), req.clone())
+            .await
+            .map_err(terminal_error)
+    }
+
+    pub async fn kill_terminal(
+        &self,
+        req: &KillTerminalRequest,
+    ) -> Result<KillTerminalResponse, agent_client_protocol::Error> {
+        self.terminals
+            .kill(req.session_id.0.as_ref(), req.clone())
+            .await
+            .map_err(terminal_error)
+    }
+
+    pub async fn release_terminal(
+        &self,
+        req: &ReleaseTerminalRequest,
+    ) -> Result<ReleaseTerminalResponse, agent_client_protocol::Error> {
+        self.terminals
+            .release(req.session_id.0.as_ref(), req.clone())
+            .await
+            .map_err(terminal_error)
+    }
+
+    /// Drain every terminal registered under `session_id`. Called from
+    /// the runtime actor's tail cleanup so per-session child processes
+    /// never outlive the agent connection.
+    pub async fn drain_terminals_for_session(&self, session_id: &agent_client_protocol::schema::SessionId) {
+        self.terminals.drain_for(session_id.0.as_ref()).await;
+    }
+}
+
+mod error {
+    use crate::tools::{FsError, SandboxError, TerminalError};
+
+    pub(super) fn fs_error(err: FsError) -> agent_client_protocol::Error {
+        match err {
+            FsError::Sandbox(inner) => sandbox_error(inner),
+            FsError::Io { .. } => agent_client_protocol::Error::internal_error().data(err.to_string()),
+        }
+    }
+
+    pub(super) fn terminal_error(err: TerminalError) -> agent_client_protocol::Error {
+        match err {
+            TerminalError::Sandbox(inner) => sandbox_error(inner),
+            TerminalError::UnknownTerminal(_) => agent_client_protocol::Error::invalid_params().data(err.to_string()),
+            TerminalError::ExitStatusUnavailable | TerminalError::Io(_) => {
+                agent_client_protocol::Error::internal_error().data(err.to_string())
+            }
+        }
+    }
+
+    fn sandbox_error(err: SandboxError) -> agent_client_protocol::Error {
+        agent_client_protocol::Error::invalid_params().data(err.to_string())
     }
 }
 
@@ -111,11 +242,17 @@ mod tests {
         PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionRequest, SessionId, ToolCallId,
         ToolCallUpdate,
     };
+    use std::path::PathBuf;
 
-    #[test]
-    fn permission_request_auto_denies() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let client = AcpClient::new(tx);
+    fn mk_client(dir: &std::path::Path) -> (AcpClient, mpsc::UnboundedReceiver<ClientEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (AcpClient::new(tx, dir.to_path_buf()).expect("sandbox constructs"), rx)
+    }
+
+    #[tokio::test]
+    async fn permission_request_auto_denies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, mut rx) = mk_client(dir.path());
         let req = RequestPermissionRequest::new(
             SessionId::new("sess-1"),
             ToolCallUpdate::new(ToolCallId::new("tc-1"), Default::default()),
@@ -125,7 +262,7 @@ mod tests {
                 PermissionOptionKind::AllowOnce,
             )],
         );
-        let resp = client.request_permission(&req);
+        let resp = client.request_permission(&req).await.expect("permission reply ok");
         assert!(matches!(resp.outcome, RequestPermissionOutcome::Cancelled));
         let evt = rx.try_recv().expect("observability event emitted");
         assert!(matches!(evt, ClientEvent::PermissionRequested { .. }));
@@ -143,5 +280,46 @@ mod tests {
             let view: PermissionOptionView = (&opt).into();
             assert_eq!(view.kind, wire);
         }
+    }
+
+    #[tokio::test]
+    async fn read_text_file_happy_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.txt"), "one\n").unwrap();
+
+        let (client, _rx) = mk_client(dir.path());
+        let req = ReadTextFileRequest::new(SessionId::new("s"), PathBuf::from("hello.txt"));
+        let resp = client.read_text_file(&req).await.expect("read ok");
+        assert!(resp.content.contains("one"));
+    }
+
+    #[tokio::test]
+    async fn read_text_file_outside_sandbox_maps_to_invalid_params() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _rx) = mk_client(dir.path());
+        let req = ReadTextFileRequest::new(SessionId::new("s"), PathBuf::from("/etc/passwd"));
+        let err = client.read_text_file(&req).await.expect_err("must reject");
+        assert_eq!(err.code, agent_client_protocol::schema::ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn write_text_file_outside_sandbox_maps_to_invalid_params() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _rx) = mk_client(dir.path());
+        let req = WriteTextFileRequest::new(SessionId::new("s"), PathBuf::from("/tmp/escape.txt"), "x".to_string());
+        let err = client.write_text_file(&req).await.expect_err("must reject");
+        assert_eq!(err.code, agent_client_protocol::schema::ErrorCode::InvalidParams);
+    }
+
+    #[tokio::test]
+    async fn terminal_unknown_id_maps_to_invalid_params() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _rx) = mk_client(dir.path());
+        let req = TerminalOutputRequest::new(
+            SessionId::new("s"),
+            agent_client_protocol::schema::TerminalId::new("nope"),
+        );
+        let err = client.terminal_output(&req).await.expect_err("must fail");
+        assert_eq!(err.code, agent_client_protocol::schema::ErrorCode::InvalidParams);
     }
 }

@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use agent_client_protocol::schema::{
-    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
-    TextContent,
+    CancelNotification, ClientCapabilities, ContentBlock, FileSystemCapabilities, InitializeRequest, NewSessionRequest,
+    PromptRequest, ProtocolVersion, SessionId, TextContent,
 };
 use agent_client_protocol::{ByteStreams, Client};
 use serde::Serialize;
@@ -19,6 +19,23 @@ use tracing::{error, info, warn};
 use super::client::{AcpClient, ClientEvent, PermissionOptionView};
 use super::resolve::ResolvedSession;
 use super::spawn::spawn_agent;
+
+/// Register a typed `on_receive_request` handler that delegates to an
+/// async `AcpClient` method returning `Result<Response,
+/// agent_client_protocol::Error>`. One registration line per method
+/// keeps the handler chain legible.
+macro_rules! register_client_handler {
+    ($builder:expr, $client:expr, $method:ident) => {{
+        let client = $client.clone();
+        $builder.on_receive_request(
+            move |req, responder: agent_client_protocol::Responder<_>, _cx| {
+                let client = client.clone();
+                async move { responder.respond_with_result(client.$method(&req).await) }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+    }};
+}
 
 /// Commands the per-session actor accepts. The actor keeps state
 /// internal; this enum is the only public surface the dispatcher
@@ -87,12 +104,12 @@ pub struct SessionHandle {
     pub cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     /// Populated after the first prompt's `session/new` resolves.
     /// `None` while the session is still bootstrapping.
-    pub session_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    pub session_id: Arc<tokio::sync::RwLock<Option<SessionId>>>,
 }
 
 impl SessionHandle {
     pub async fn current_session_id(&self) -> Option<String> {
-        self.session_id.read().await.clone()
+        self.session_id.read().await.as_ref().map(|id| id.0.to_string())
     }
 }
 
@@ -104,7 +121,7 @@ impl SessionHandle {
 /// transition + every `SessionUpdate` the agent streams.
 pub fn start_session(session: ResolvedSession, events_tx: broadcast::Sender<SessionEvent>) -> SessionHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
-    let session_id = Arc::new(tokio::sync::RwLock::new(None::<String>));
+    let session_id = Arc::new(tokio::sync::RwLock::new(None::<SessionId>));
 
     let handle = SessionHandle {
         agent_id: session.agent.id.clone(),
@@ -122,7 +139,7 @@ async fn run_session(
     session: ResolvedSession,
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
     events_tx: broadcast::Sender<SessionEvent>,
-    session_id_slot: Arc<tokio::sync::RwLock<Option<String>>>,
+    session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
 ) {
     let agent_id = session.agent.id.clone();
     let _ = events_tx.send(SessionEvent::State {
@@ -152,7 +169,22 @@ async fn run_session(
     };
 
     let (client_events_tx, mut client_events_rx) = mpsc::unbounded_channel::<ClientEvent>();
-    let client = AcpClient::new(client_events_tx);
+    let sandbox_root = cfg
+        .cwd
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+    let client = match AcpClient::new(client_events_tx, sandbox_root) {
+        Ok(c) => c,
+        Err(err) => {
+            error!(agent = %agent_id, %err, "acp::runtime: sandbox init failed");
+            let _ = events_tx.send(SessionEvent::State {
+                agent_id,
+                session_id: None,
+                state: SessionState::Error,
+            });
+            return;
+        }
+    };
 
     let transport = ByteStreams::new(stdio.stdin.compat_write(), stdio.stdout.compat());
 
@@ -162,7 +194,13 @@ async fn run_session(
 
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
         let init = connection
-            .send_request(InitializeRequest::new(ProtocolVersion::V1))
+            .send_request(
+                InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+                    ClientCapabilities::new()
+                        .fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true))
+                        .terminal(true),
+                ),
+            )
             .block_task()
             .await?;
         info!(agent = %agent_id_notif, protocol = ?init.protocol_version, "acp::runtime: initialized");
@@ -178,7 +216,7 @@ async fn run_session(
         let session_id: SessionId = new_session.session_id.clone();
         {
             let mut slot = session_id_forward.write().await;
-            *slot = Some(session_id.0.to_string());
+            *slot = Some(session_id.clone());
         }
         let _ = events_tx_notif.send(SessionEvent::State {
             agent_id: agent_id_notif.clone(),
@@ -254,37 +292,29 @@ async fn run_session(
         Ok::<(), agent_client_protocol::Error>(())
     };
 
-    let run = Client
-        .builder()
-        .on_receive_notification(
-            {
+    let builder = Client.builder().on_receive_notification(
+        {
+            let client = client.clone();
+            move |notification: agent_client_protocol::schema::SessionNotification, _cx| {
                 let client = client.clone();
-                move |notification: agent_client_protocol::schema::SessionNotification, _cx| {
-                    let client = client.clone();
-                    async move {
-                        client.forward_notification(notification);
-                        Ok(())
-                    }
+                async move {
+                    client.forward_notification(notification);
+                    Ok(())
                 }
-            },
-            agent_client_protocol::on_receive_notification!(),
-        )
-        .on_receive_request(
-            {
-                let client = client.clone();
-                move |req: agent_client_protocol::schema::RequestPermissionRequest,
-                      responder: agent_client_protocol::Responder<
-                    agent_client_protocol::schema::RequestPermissionResponse,
-                >,
-                      _cx| {
-                    let client = client.clone();
-                    async move { responder.respond(client.request_permission(&req)) }
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .connect_with(transport, dispatch)
-        .await;
+            }
+        },
+        agent_client_protocol::on_receive_notification!(),
+    );
+    let builder = register_client_handler!(builder, client, request_permission);
+    let builder = register_client_handler!(builder, client, read_text_file);
+    let builder = register_client_handler!(builder, client, write_text_file);
+    let builder = register_client_handler!(builder, client, create_terminal);
+    let builder = register_client_handler!(builder, client, terminal_output);
+    let builder = register_client_handler!(builder, client, wait_for_terminal_exit);
+    let builder = register_client_handler!(builder, client, kill_terminal);
+    let builder = register_client_handler!(builder, client, release_terminal);
+
+    let run = builder.connect_with(transport, dispatch).await;
 
     let final_state = match &run {
         Ok(_) => {
@@ -299,9 +329,12 @@ async fn run_session(
 
     drop(child.kill().await);
     let sid = session_id_slot.read().await.clone();
+    if let Some(ref id) = sid {
+        client.drain_terminals_for_session(id).await;
+    }
     let _ = events_tx.send(SessionEvent::State {
         agent_id,
-        session_id: sid,
+        session_id: sid.as_ref().map(|id| id.0.to_string()),
         state: final_state,
     });
 }
