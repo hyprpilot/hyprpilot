@@ -12,6 +12,7 @@ use tauri::{Emitter, Manager, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
+use crate::adapters::permission::{DefaultPermissionController, PermissionController};
 use crate::adapters::{acp_commands, AcpInstances};
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
@@ -190,9 +191,19 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // `show()` / `show_all()` before the RPC loop accepts connections.
     let status = Arc::new(StatusBroadcast::new(true));
     let dispatcher = Arc::new(RpcDispatcher::with_defaults());
+    // Single PermissionController shared between AcpClient (one per
+    // live instance, accessed through AcpInstances::start_instance)
+    // and the permission_reply Tauri command — both resolve against
+    // the same waiter map so UI replies reach the awaiting ACP
+    // handler regardless of which instance issued the prompt.
+    let permissions: Arc<dyn PermissionController> = Arc::new(DefaultPermissionController::new());
     // Instance registry — Tauri managed state. `SessionHandler` +
     // future `acp_*` Tauri commands both reach into this.
-    let instances = Arc::new(AcpInstances::new(instances_cfg, status.clone()));
+    let instances = Arc::new(AcpInstances::with_permissions(
+        instances_cfg,
+        status.clone(),
+        permissions.clone(),
+    ));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -264,6 +275,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             }
 
             app.manage(instances.clone());
+            app.manage(permissions.clone());
             instances.spawn_tauri_event_bridge(app.handle().clone());
 
             let rpc_state = crate::rpc::RpcState {

@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use garde::Validate;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
 use validations::{
     validate_agent_default_id, validate_agents_ids, validate_default_profile_id, validate_profile_agent_references,
-    validate_profiles_ids,
+    validate_profile_tool_globs, validate_profiles_ids,
 };
 
 const DEFAULTS: &str = include_str!("defaults.toml");
@@ -491,6 +492,20 @@ pub enum AgentProvider {
 /// override + optional system prompt. Exactly one of `system_prompt`
 /// / `system_prompt_file` may be set; the file path is read at
 /// resolve time, not at spawn time, so a missing file fails loudly.
+///
+/// `auto_accept_tools` / `auto_reject_tools` are glob patterns matched
+/// against the ACP `ToolKind` wire name (falling back to the tool's
+/// title when kind is absent) at permission-request time. Reject
+/// beats accept; misses fall through to a user prompt. Patterns are
+/// validated at load time — empty strings and invalid globs reject
+/// with the profile id + offending pattern in the error.
+///
+/// Allowlists only apply to sessions that resolve through a profile.
+/// Bare-agent sessions (no profile id on submit) always prompt the
+/// user — the fallback to `[agent] default_profile` happens at
+/// `ResolvedInstance` time in `adapters::profile`, so setting a
+/// `default_profile` ensures allowlists are honored on unlabelled
+/// submits.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
@@ -504,6 +519,34 @@ pub struct ProfileConfig {
     pub system_prompt: Option<String>,
     #[garde(skip)]
     pub system_prompt_file: Option<PathBuf>,
+    #[serde(default)]
+    #[garde(custom(validate_profile_tool_globs(&self.id)))]
+    pub auto_accept_tools: Vec<String>,
+    #[serde(default)]
+    #[garde(custom(validate_profile_tool_globs(&self.id)))]
+    pub auto_reject_tools: Vec<String>,
+}
+
+impl ProfileConfig {
+    /// Compile the accept/reject glob sets. Call once per resolved
+    /// instance; `GlobSet` is immutable after build. Patterns are
+    /// validated at TOML load time, so `unwrap()` on the build steps
+    /// would also be fine — we return `Result` for robustness against
+    /// hand-constructed `ProfileConfig` values in tests.
+    pub fn compile_tool_globs(&self) -> anyhow::Result<(GlobSet, GlobSet)> {
+        Ok((
+            build_globset(&self.auto_accept_tools)?,
+            build_globset(&self.auto_reject_tools)?,
+        ))
+    }
+}
+
+fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for p in patterns {
+        builder.add(Glob::new(p).with_context(|| format!("invalid glob pattern '{p}'"))?);
+    }
+    builder.build().context("failed to compile glob set")
 }
 
 impl ProfileConfig {
@@ -1556,6 +1599,87 @@ default_profile = "ghost-profile"
         let msg = err.to_string();
         assert!(msg.contains("default_profile = 'ghost-profile'"), "{msg}");
         assert!(msg.contains("Configured ids:"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_without_allowlists_defaults_to_empty_vecs() {
+        let p = write_tmp(
+            "allowlists-default.toml",
+            r#"
+[[profiles]]
+id = "plain"
+agent = "claude-code"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let plain = cfg.profiles.iter().find(|p| p.id == "plain").expect("plain entry");
+        assert!(plain.auto_accept_tools.is_empty());
+        assert!(plain.auto_reject_tools.is_empty());
+        cfg.validate().expect("empty allowlists validate");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_parses_glob_allowlists() {
+        let p = write_tmp(
+            "allowlists.toml",
+            r#"
+[[profiles]]
+id = "lax"
+agent = "claude-code"
+auto_accept_tools = ["Read", "Edit*"]
+auto_reject_tools = ["Bash"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let lax = cfg.profiles.iter().find(|p| p.id == "lax").expect("lax entry");
+        assert_eq!(lax.auto_accept_tools, vec!["Read".to_string(), "Edit*".to_string()]);
+        assert_eq!(lax.auto_reject_tools, vec!["Bash".to_string()]);
+        cfg.validate().expect("valid glob set");
+        let (accept, reject) = lax.compile_tool_globs().expect("compiles");
+        assert!(accept.is_match("Read"));
+        assert!(accept.is_match("EditFile"));
+        assert!(!accept.is_match("Bash"));
+        assert!(reject.is_match("Bash"));
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_empty_glob_pattern() {
+        let p = write_tmp(
+            "empty-glob.toml",
+            r#"
+[[profiles]]
+id = "bad"
+agent = "claude-code"
+auto_accept_tools = [""]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("profile 'bad'"), "{msg}");
+        assert!(msg.contains("empty string"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_invalid_glob_pattern() {
+        let p = write_tmp(
+            "bad-glob.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+auto_reject_tools = ["["]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("profile 'busted'"), "{msg}");
+        assert!(msg.contains("invalid tool glob"), "{msg}");
         fs::remove_file(&p).ok();
     }
 

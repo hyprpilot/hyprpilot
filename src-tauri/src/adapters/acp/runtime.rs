@@ -20,7 +20,9 @@ use tracing::{error, info, warn};
 use super::client::{AcpClient, ClientEvent, PermissionOptionView};
 use super::instance::AcpInstance;
 use super::spawn::spawn_agent;
+use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
+use crate::config::ProfileConfig;
 
 /// Register a typed `on_receive_request` handler that delegates to an
 /// async `AcpClient` method returning `Result<Response,
@@ -87,7 +89,7 @@ pub enum Bootstrap {
 /// `broadcast::Sender` and the daemon's Tauri `setup` closure
 /// subscribes to it to emit `acp:*` events.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub enum InstanceEvent {
     /// Instance transitioned to a new lifecycle state.
     State {
@@ -106,13 +108,18 @@ pub enum InstanceEvent {
         session_id: String,
         update: serde_json::Value,
     },
-    /// Agent asked permission. Auto-denied server-side until
-    /// PermissionController lands; emitted so the webview can log /
-    /// show it anyway.
+    /// Agent asked permission and the controller bounced to the UI.
+    /// Profile auto-accept / auto-reject decisions do NOT emit this —
+    /// they resolve inside `AcpClient::request_permission` without
+    /// surfacing to the webview.
     PermissionRequest {
         agent_id: String,
         instance_id: String,
         session_id: String,
+        request_id: String,
+        tool: String,
+        kind: String,
+        args: String,
         options: Vec<PermissionOptionView>,
     },
 }
@@ -136,6 +143,8 @@ pub fn start_instance(
     instance_id: String,
     events_tx: broadcast::Sender<InstanceEvent>,
     bootstrap: Bootstrap,
+    permissions: Arc<dyn PermissionController>,
+    profile: Option<ProfileConfig>,
 ) -> AcpInstance {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
     let initial = match &bootstrap {
@@ -157,12 +166,15 @@ pub fn start_instance(
         events_tx,
         session_id,
         bootstrap,
+        permissions,
+        profile,
     ));
 
     instance
 }
 
 /// The long-lived actor body.
+#[allow(clippy::too_many_arguments)]
 async fn run_instance(
     resolved: ResolvedInstance,
     instance_id: String,
@@ -170,6 +182,8 @@ async fn run_instance(
     events_tx: broadcast::Sender<InstanceEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
     bootstrap: Bootstrap,
+    permissions: Arc<dyn PermissionController>,
+    profile: Option<ProfileConfig>,
 ) {
     let agent_id = resolved.agent.id.clone();
     let _ = events_tx.send(InstanceEvent::State {
@@ -205,7 +219,7 @@ async fn run_instance(
         .cwd
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-    let client = match AcpClient::new(client_events_tx, sandbox_root) {
+    let client = match AcpClient::new(client_events_tx, sandbox_root, permissions.clone(), profile.clone()) {
         Ok(c) => c,
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::runtime: sandbox init failed");
@@ -324,6 +338,13 @@ async fn run_instance(
                         break;
                     };
                     match cmd {
+                        // Detached: awaiting `send_request(...).block_task()` inline here
+                        // blocks the select! from pumping `client_events_rx`, which means
+                        // every `SessionNotification` (and every `PermissionRequest`!) queues
+                        // on the mpsc until the prompt resolves. With K-245 the permission
+                        // path blocks for up to 10min waiting on a UI reply — but the UI
+                        // never sees the prompt because the event is stuck in that same
+                        // mpsc. Spawn the request so the loop keeps draining.
                         InstanceCommand::Prompt { text, reply } => {
                             let Some(sid) = session_id.clone() else {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
@@ -333,17 +354,21 @@ async fn run_instance(
                                 Some(prefix) => format!("{prefix}\n\n{text}"),
                                 None => text,
                             };
-                            let res = connection
-                                .send_request(PromptRequest::new(
-                                    sid,
-                                    vec![ContentBlock::Text(TextContent::new(text))],
-                                ))
-                                .block_task()
-                                .await;
-                            let mapped = res.map(|resp| {
-                                info!(agent = %agent_id_notif, stop = ?resp.stop_reason, "acp::runtime: prompt resolved");
-                            }).map_err(|e| e.to_string());
-                            let _ = reply.send(mapped);
+                            let conn = connection.clone();
+                            let agent_log = agent_id_notif.clone();
+                            tokio::spawn(async move {
+                                let res = conn
+                                    .send_request(PromptRequest::new(
+                                        sid,
+                                        vec![ContentBlock::Text(TextContent::new(text))],
+                                    ))
+                                    .block_task()
+                                    .await;
+                                let mapped = res.map(|resp| {
+                                    info!(agent = %agent_log, stop = ?resp.stop_reason, "acp::runtime: prompt resolved");
+                                }).map_err(|e| e.to_string());
+                                let _ = reply.send(mapped);
+                            });
                         }
                         InstanceCommand::Cancel { reply } => {
                             let Some(sid) = session_id.clone() else {
@@ -355,17 +380,23 @@ async fn run_instance(
                                 .map_err(|e| e.to_string());
                             let _ = reply.send(res);
                         }
+                        // Detached for the same reason as Prompt: list_sessions can take
+                        // seconds against a remote index, and blocking the select! starves
+                        // event pumping.
                         InstanceCommand::ListSessions { cwd: filter_cwd, reply } => {
-                            let mut req = ListSessionsRequest::new();
-                            if let Some(c) = filter_cwd {
-                                req = req.cwd(c);
-                            }
-                            let res = connection
-                                .send_request(req)
-                                .block_task()
-                                .await
-                                .map_err(|e| e.to_string());
-                            let _ = reply.send(res);
+                            let conn = connection.clone();
+                            tokio::spawn(async move {
+                                let mut req = ListSessionsRequest::new();
+                                if let Some(c) = filter_cwd {
+                                    req = req.cwd(c);
+                                }
+                                let res = conn
+                                    .send_request(req)
+                                    .block_task()
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                let _ = reply.send(res);
+                            });
                         }
                         InstanceCommand::Shutdown { reply } => {
                             if let Some(sid) = session_id.clone() {
@@ -387,11 +418,22 @@ async fn run_instance(
                                 update,
                             });
                         }
-                        ClientEvent::PermissionRequested { session_id: sid, options } => {
+                        ClientEvent::PermissionRequested {
+                            session_id: sid,
+                            request_id,
+                            tool,
+                            kind,
+                            args,
+                            options,
+                        } => {
                             let _ = events_tx_notif.send(InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: sid,
+                                request_id,
+                                tool,
+                                kind,
+                                args,
                                 options,
                             });
                         }
@@ -453,6 +495,7 @@ async fn run_instance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::permission::DefaultPermissionController;
     use crate::config::{AgentConfig, AgentProvider};
 
     fn dummy_resolved(id: &str) -> ResolvedInstance {
@@ -472,13 +515,24 @@ mod tests {
         }
     }
 
+    fn dummy_permissions() -> Arc<dyn PermissionController> {
+        Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>
+    }
+
     /// Regression: starting against a child that exits immediately
     /// pushes an `Error` lifecycle event rather than hanging forever.
     /// Smoke-tests the actor shell without depending on a real agent.
     #[tokio::test(flavor = "multi_thread")]
     async fn dead_child_yields_error_state() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = start_instance(dummy_resolved("ded"), "ded".into(), tx, Bootstrap::Fresh);
+        let handle = start_instance(
+            dummy_resolved("ded"),
+            "ded".into(),
+            tx,
+            Bootstrap::Fresh,
+            dummy_permissions(),
+            None,
+        );
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
@@ -518,7 +572,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn cancel_against_dead_session_does_not_panic() {
         let (tx, _rx) = broadcast::channel(8);
-        let handle = start_instance(dummy_resolved("ded-cancel"), "ded-cancel".into(), tx, Bootstrap::Fresh);
+        let handle = start_instance(
+            dummy_resolved("ded-cancel"),
+            "ded-cancel".into(),
+            tx,
+            Bootstrap::Fresh,
+            dummy_permissions(),
+            None,
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -534,7 +595,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn list_only_against_dead_child_settles() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = start_instance(dummy_resolved("ded-list"), "ded-list".into(), tx, Bootstrap::ListOnly);
+        let handle = start_instance(
+            dummy_resolved("ded-list"),
+            "ded-list".into(),
+            tx,
+            Bootstrap::ListOnly,
+            dummy_permissions(),
+            None,
+        );
 
         let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
@@ -559,6 +627,76 @@ mod tests {
         drop(handle);
     }
 
+    /// Regression for the "LLM responses don't show" bug: awaiting a
+    /// long-running request inline inside the select! arm blocks the
+    /// event-forwarding arm on the same loop, starving transcript +
+    /// permission-request fanout. The fix detaches the request into
+    /// its own `tokio::spawn` so the loop keeps polling
+    /// `client_events_rx`. This test models the select!'s contract on
+    /// pure channels (no real ACP connection needed) — an inline
+    /// `.await` against a 10s-blocking "request" must not delay an
+    /// event pushed on the sibling channel mid-flight.
+    #[tokio::test(start_paused = true)]
+    async fn select_loop_pumps_events_while_request_outstanding() {
+        use tokio::sync::{mpsc, oneshot};
+
+        enum Cmd {
+            Request { reply: oneshot::Sender<()> },
+        }
+
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Cmd>();
+        let (evt_tx, mut evt_rx) = mpsc::unbounded_channel::<&'static str>();
+        let (observed_tx, mut observed_rx) = mpsc::unbounded_channel::<&'static str>();
+
+        let loop_handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    cmd = cmd_rx.recv() => {
+                        let Some(cmd) = cmd else { break };
+                        match cmd {
+                            // Same shape as the fixed `Prompt` arm: spawn, do not await.
+                            Cmd::Request { reply } => {
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                    let _ = reply.send(());
+                                });
+                            }
+                        }
+                    }
+                    evt = evt_rx.recv() => {
+                        let Some(evt) = evt else { break };
+                        let _ = observed_tx.send(evt);
+                    }
+                }
+            }
+        });
+
+        // 1. Submit a long-running "request".
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx.send(Cmd::Request { reply: reply_tx }).unwrap();
+
+        // 2. Push an event. The loop MUST forward it before the
+        //    request completes (which takes 10s of paused time).
+        evt_tx.send("mid-flight").unwrap();
+
+        // 3. The event should arrive immediately — tokio::time is paused,
+        //    so "real" time can't even elapse. `recv` yielding a value
+        //    proves the select! pumped events while the request is
+        //    outstanding.
+        let observed = tokio::time::timeout(std::time::Duration::from_millis(50), observed_rx.recv())
+            .await
+            .expect("event forwarded while request outstanding")
+            .expect("channel open");
+        assert_eq!(observed, "mid-flight");
+
+        // Let the spawned request complete to keep the runtime clean.
+        tokio::time::advance(std::time::Duration::from_secs(11)).await;
+        let _ = reply_rx.await;
+        drop(cmd_tx);
+        drop(evt_tx);
+        let _ = loop_handle.await;
+    }
+
     /// `Bootstrap::Resume` against a child that dies before responding
     /// never leaks a partial session — the actor funnels through
     /// `InstanceState::Error`. The capability gate is a pre-connection
@@ -572,6 +710,8 @@ mod tests {
             "ded-resume".into(),
             tx,
             Bootstrap::Resume(sid),
+            dummy_permissions(),
+            None,
         );
 
         let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {

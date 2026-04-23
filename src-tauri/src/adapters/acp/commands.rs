@@ -11,6 +11,9 @@ use serde_json::Value;
 use tauri::State;
 
 use super::AcpInstances;
+use crate::adapters::permission::{
+    pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome,
+};
 
 #[tauri::command]
 pub async fn acp_submit(
@@ -66,11 +69,57 @@ pub async fn session_load(
         .map_err(|e| e.message)
 }
 
-/// Stub — permission replies route through a future
-/// `PermissionController` issue (K-6 per the CLAUDE.md split).
-/// Server auto-`Cancelled` is the current policy, so the webview
-/// should not call this today; panic if it does.
+/// Resolve a pending permission prompt. The UI sends one of:
+///
+/// - `"allow"` — the controller picks the best allow-kind option id
+///   from the original options[] stashed at register_pending time.
+/// - `"deny"` — mapped to Cancelled (falls through to a vendor
+///   reject option when one is present; otherwise the ACP wire sees
+///   `Cancelled` directly — see pick_reject_option_id).
+/// - any other string — treated as a raw ACP option id. The
+///   PermissionController routes it verbatim; the ACP client wraps
+///   it into Selected(option_id).
+///
+/// No-op when no waiter matches `request_id` (already resolved, timed
+/// out, or never registered). The command never errors on that path —
+/// the UI sees `Ok(())` regardless so a stale reply doesn't surface
+/// as a user-visible failure.
+// TODO: the bare `allow` / `deny` tokens shadow any vendor option_id
+// that happens to use those literals. Namespace as `hyp:allow` /
+// `hyp:deny` or promote to an explicit enum on the Tauri command — a
+// real fix cross-cuts !36 (UI-side senders) so this lands in a
+// follow-up.
 #[tauri::command]
-pub fn permission_reply(_session_id: String, _request_id: String, _option_id: String) -> Result<(), String> {
-    unimplemented!("permission_reply: PermissionController not yet implemented (K-6 follow-up)");
+pub async fn permission_reply(
+    controller: State<'_, Arc<dyn PermissionController>>,
+    _session_id: String,
+    request_id: String,
+    option_id: String,
+) -> Result<(), String> {
+    let controller = controller.inner().clone();
+    let outcome = match option_id.as_str() {
+        "allow" => {
+            let Some(options) = controller.options_for(&request_id).await else {
+                tracing::debug!(request_id, "permission_reply: no waiter (allow) — no-op");
+                return Ok(());
+            };
+            match pick_allow_option_id(&options) {
+                Some(id) => PermissionOutcome::Selected(id),
+                None => PermissionOutcome::Cancelled,
+            }
+        }
+        "deny" => {
+            let Some(options) = controller.options_for(&request_id).await else {
+                tracing::debug!(request_id, "permission_reply: no waiter (deny) — no-op");
+                return Ok(());
+            };
+            match pick_reject_option_id(&options) {
+                Some(id) => PermissionOutcome::Selected(id),
+                None => PermissionOutcome::Cancelled,
+            }
+        }
+        raw => PermissionOutcome::Selected(raw.to_string()),
+    };
+    controller.resolve(&request_id, outcome).await;
+    Ok(())
 }

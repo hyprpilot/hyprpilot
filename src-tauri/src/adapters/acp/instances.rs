@@ -19,7 +19,8 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use super::instance::AcpInstance;
 use super::resolve::ResolvedInstance;
 use super::runtime::{start_instance, Bootstrap, InstanceCommand, InstanceEvent};
-use crate::config::Config;
+use crate::adapters::permission::{DefaultPermissionController, PermissionController};
+use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
 use crate::rpc::StatusBroadcast;
 
@@ -51,25 +52,57 @@ impl InstanceKey {
     }
 }
 
-#[derive(Debug)]
 pub struct AcpInstances {
     pub(crate) config: Config,
     #[allow(dead_code)]
     pub(crate) status: Arc<StatusBroadcast>,
     active: Mutex<HashMap<InstanceKey, AcpInstance>>,
     events_tx: broadcast::Sender<InstanceEvent>,
+    permissions: Arc<dyn PermissionController>,
+}
+
+impl std::fmt::Debug for AcpInstances {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpInstances")
+            .field("config", &self.config)
+            .field("status", &self.status)
+            .field("active", &self.active)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AcpInstances {
     #[must_use]
     pub fn new(config: Config, status: Arc<StatusBroadcast>) -> Self {
+        Self::with_permissions(
+            config,
+            status,
+            Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>,
+        )
+    }
+
+    #[must_use]
+    pub fn with_permissions(
+        config: Config,
+        status: Arc<StatusBroadcast>,
+        permissions: Arc<dyn PermissionController>,
+    ) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         Self {
             config,
             status,
             active: Mutex::new(HashMap::new()),
             events_tx,
+            permissions,
         }
+    }
+
+    /// Profile config lookup by id — used when spawning an actor so
+    /// the runtime carries the full allowlist definition, not just a
+    /// profile id.
+    fn profile_by_id(&self, profile_id: Option<&str>) -> Option<ProfileConfig> {
+        let id = profile_id?;
+        self.config.profiles.iter().find(|p| p.id == id).cloned()
     }
 
     /// Broadcast receiver for every lifecycle + transcript event the
@@ -141,11 +174,7 @@ impl AcpInstances {
     /// construct them inline in `list` with a manual Shutdown). Takes
     /// a `ResolvedInstance` so call sites that already resolved
     /// (`submit`, `load`) don't re-walk the config.
-    pub async fn ensure(
-        &self,
-        resolved: ResolvedInstance,
-        bootstrap: Bootstrap,
-    ) -> Result<InstanceKey, RpcError> {
+    pub async fn ensure(&self, resolved: ResolvedInstance, bootstrap: Bootstrap) -> Result<InstanceKey, RpcError> {
         let key = InstanceKey {
             agent_id: resolved.agent.id.clone(),
             profile_id: resolved.profile_id.clone(),
@@ -166,7 +195,15 @@ impl AcpInstances {
             return Ok(key);
         }
 
-        let instance = start_instance(resolved, key.as_string(), self.events_tx.clone(), bootstrap);
+        let profile = self.profile_by_id(resolved.profile_id.as_deref());
+        let instance = start_instance(
+            resolved,
+            key.as_string(),
+            self.events_tx.clone(),
+            bootstrap,
+            self.permissions.clone(),
+            profile,
+        );
         active.insert(key.clone(), instance);
         Ok(key)
     }
@@ -298,7 +335,15 @@ impl AcpInstances {
             if let Some(handle) = active.get(&key) {
                 (handle.cmd_tx.clone(), None)
             } else {
-                let instance = start_instance(resolved, key.as_string(), self.events_tx.clone(), Bootstrap::ListOnly);
+                let profile = self.profile_by_id(resolved.profile_id.as_deref());
+                let instance = start_instance(
+                    resolved,
+                    key.as_string(),
+                    self.events_tx.clone(),
+                    Bootstrap::ListOnly,
+                    self.permissions.clone(),
+                    profile,
+                );
                 let tx = instance.cmd_tx.clone();
                 (tx, Some(instance))
             }
@@ -334,7 +379,8 @@ impl AcpInstances {
         session_id: String,
     ) -> Result<(), RpcError> {
         let resolved = self.resolve(agent_id, profile_id)?;
-        self.ensure(resolved, Bootstrap::Resume(SessionId::new(session_id))).await?;
+        self.ensure(resolved, Bootstrap::Resume(SessionId::new(session_id)))
+            .await?;
         Ok(())
     }
 

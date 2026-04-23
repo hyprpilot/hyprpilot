@@ -41,32 +41,21 @@ export interface PermissionRequestEventPayload {
   agent_id: string
   session_id: string
   instance_id: InstanceId
-  // TODO(K-245): request_id / tool / kind / args become required when
-  // the Rust PermissionController lands — until then the emit only
-  // carries options, and routePermission synthesizes fallbacks.
-  request_id?: string
-  tool?: string
-  kind?: string
-  args?: string
+  request_id: string
+  tool: string
+  kind: string
+  args: string
   options: PermissionOptionView[]
 }
 
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 
-// TODO(K-245): when the Rust emit carries request_id, the synth
-// counter goes away and routePermission destructures directly.
-let permissionSynthCounter = 0
-
 function routePermission(payload: PermissionRequestEventPayload): void {
-  const requestId = payload.request_id ?? `${payload.session_id}-pending-${++permissionSynthCounter}`
-  const tool = payload.tool ?? 'permission'
-  const kind = payload.kind ?? 'acp'
-  const args = payload.args ?? payload.options.map((o) => o.option_id).join(' · ')
   pushPermissionRequest(payload.instance_id, payload.session_id, {
-    request_id: requestId,
-    tool,
-    kind,
-    args,
+    request_id: payload.request_id,
+    tool: payload.tool,
+    kind: payload.kind,
+    args: payload.args,
     options: payload.options
   })
 }
@@ -114,7 +103,10 @@ function routeTerminal(instanceId: InstanceId, sessionId: string, raw: SessionUp
   // chunks carry stdout without it. Fall back to the tool store's
   // recorded kind so stdout deltas keep flowing.
   const updateKind = typeof raw['kind'] === 'string' ? (raw['kind'] as string).toLowerCase() : ''
-  const recorded = useTools(instanceId).calls.value.find((c) => c.toolCallId === toolCallId)?.kind?.toLowerCase() ?? ''
+  const recorded =
+    useTools(instanceId)
+      .calls.value.find((c) => c.toolCallId === toolCallId)
+      ?.kind?.toLowerCase() ?? ''
   const kind = updateKind || recorded
   if (kind !== 'bash' && kind !== 'terminal') {
     return

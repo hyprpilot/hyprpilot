@@ -1,6 +1,8 @@
 //! Garde predicates for the `config::*` derive surface. Everything
 //! here is `pub(super)`; the outside API is `Config::validate()`.
 
+use globset::Glob;
+
 use super::{AgentConfig, AgentDefaults, AgentsConfig, ProfileConfig};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
@@ -66,6 +68,29 @@ pub(super) fn validate_profile_agent_references<'a>(
                     p.id,
                     p.agent,
                     agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Glob-pattern validator for `auto_accept_tools` / `auto_reject_tools`.
+/// Empty strings + invalid globs reject with the profile id + offending
+/// pattern. Closes over the profile id so the error names the entry.
+pub(super) fn validate_profile_tool_globs<'a>(
+    profile_id: &'a str,
+) -> impl FnOnce(&Vec<String>, &()) -> garde::Result + 'a {
+    move |patterns, _ctx| {
+        for p in patterns {
+            if p.is_empty() {
+                return Err(garde::Error::new(format!(
+                    "profile '{profile_id}': empty string is not a valid tool glob pattern"
+                )));
+            }
+            if let Err(err) = Glob::new(p) {
+                return Err(garde::Error::new(format!(
+                    "profile '{profile_id}': invalid tool glob pattern '{p}': {err}"
                 )));
             }
         }

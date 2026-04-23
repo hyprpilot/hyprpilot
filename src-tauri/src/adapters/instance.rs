@@ -31,8 +31,12 @@ pub enum InstanceState {
 /// Upstream events an adapter's instances emit. Registry bridges
 /// these onto Tauri `acp:*` events today; future HTTP adapters would
 /// bridge onto their own namespace.
+///
+/// `event` tags the variant. Renamed from `kind` in K-245 because the
+/// `PermissionRequest` variant carries a `kind` field of its own
+/// (the tool-category wire string the UI colours by).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub enum InstanceEvent {
     State {
         agent_id: String,
@@ -51,6 +55,10 @@ pub enum InstanceEvent {
         agent_id: String,
         instance_id: String,
         session_id: String,
+        request_id: String,
+        tool: String,
+        kind: String,
+        args: String,
         options: Vec<PermissionOptionView>,
     },
 }
