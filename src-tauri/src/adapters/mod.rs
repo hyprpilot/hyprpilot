@@ -36,7 +36,10 @@ use async_trait::async_trait;
 #[allow(unused_imports)]
 pub use instance::{InstanceEvent, InstanceEventStream, InstanceHandle, InstanceState};
 #[allow(unused_imports)]
-pub use permission::{PermissionOptionView, PermissionPrompt, PermissionReply};
+pub use permission::{
+    pick_allow_option_id, pick_reject_option_id, Decision, DefaultPermissionController, PermissionController,
+    PermissionOptionView, PermissionOutcome, PermissionPrompt, PermissionReply, PermissionRequest, ToolCallRef,
+};
 #[allow(unused_imports)]
 pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};
 #[allow(unused_imports)]

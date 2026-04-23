@@ -1,9 +1,12 @@
 //! ACP `Client`-side adapter. `AcpClient` forwards every incoming
 //! `fs/*` and `terminal/*` request to the typed tool layer (`tools::`)
 //! and maps domain errors into `agent_client_protocol::Error`.
-//! Future `PermissionController` (K-6) lands as a field here so the
-//! auto-`Cancelled` policy flips to a real trust-store without
-//! rippling through runtime + session call sites.
+//! `request_permission` routes through the generic
+//! `PermissionController` (K-245) — profile allowlists decide
+//! `Allow` / `Deny` without UI traffic; `AskUser` emits the
+//! `acp:permission-request` event and blocks on a controller-managed
+//! oneshot until the webview replies (or the 10-minute waiter
+//! timeout fires).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,13 +14,19 @@ use std::sync::Arc;
 use agent_client_protocol::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, TerminalOutputRequest, TerminalOutputResponse,
-    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, TerminalOutputRequest,
+    TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
+    WriteTextFileResponse,
 };
 use agent_client_protocol::JsonRpcNotification;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::adapters::permission::{
+    pick_allow_option_id, pick_reject_option_id, Decision, PermissionController, PermissionOutcome, PermissionRequest,
+    ToolCallRef, WAITER_TIMEOUT,
+};
+use crate::config::ProfileConfig;
 use crate::tools::{FsTools, Sandbox, SandboxError, Terminals};
 
 use self::error::{fs_error, terminal_error};
@@ -47,8 +56,17 @@ pub enum ClientEvent {
         session_id: String,
         update: serde_json::Value,
     },
+    /// A permission request the controller bounced to the UI. The
+    /// runtime actor re-broadcasts this as `InstanceEvent::PermissionRequest`.
+    /// Fields mirror the final Tauri `acp:permission-request` payload
+    /// so the runtime can splice in `agent_id` + `instance_id` without
+    /// reshaping the rest.
     PermissionRequested {
         session_id: String,
+        request_id: String,
+        tool: String,
+        kind: String,
+        args: String,
         options: Vec<PermissionOptionView>,
     },
 }
@@ -62,48 +80,147 @@ pub struct PermissionOptionView {
 
 impl From<&agent_client_protocol::schema::PermissionOption> for PermissionOptionView {
     fn from(v: &agent_client_protocol::schema::PermissionOption) -> Self {
+        let kind = wire_name(&v.kind).unwrap_or_else(|| {
+            tracing::error!(
+                kind = ?v.kind,
+                "acp::client: PermissionOptionKind serialised to non-string — upstream crate shape changed"
+            );
+            "unknown".to_string()
+        });
         Self {
             option_id: v.option_id.0.to_string(),
             name: v.name.clone(),
-            kind: permission_option_kind_wire(&v.kind),
+            kind,
         }
     }
 }
 
-/// Serialise `PermissionOptionKind` via the crate's own serde derive so the
-/// wire name always matches the SDK, even across `#[non_exhaustive]`
-/// additions.
-fn permission_option_kind_wire(kind: &agent_client_protocol::schema::PermissionOptionKind) -> String {
-    match serde_json::to_value(kind) {
-        Ok(serde_json::Value::String(s)) => s,
-        other => {
-            tracing::error!(
-                ?other,
-                ?kind,
-                "acp::client: PermissionOptionKind serialised to non-string — upstream crate shape changed"
-            );
-            "unknown".to_string()
+/// Resolved tool identity for the **permission path only** — globs-
+/// match name + minimal fields for the two-button prompt. The
+/// transcript-side tool chips / rows get a proper vendor-aware
+/// formatter in K-256 (port of `lib/tools.py::ToolFormatters`,
+/// TypeScript, `ui/src/lib/toolFormatters.ts`); nothing here should
+/// grow to cover that scope.
+///
+/// `name` is the canonical key globs match against; `title` is ACP's
+/// opaque human-readable summary; `kind_wire` is `Some` only when
+/// `name` came from the closed-set `ToolKind`, so the UI can key its
+/// theme off a known-short string.
+struct ToolIdentity {
+    name: String,
+    title: Option<String>,
+    kind_wire: Option<String>,
+}
+
+/// ACP `title` is a human-readable summary ("Read package.json"),
+/// while `kind` is the closed-set category ("read" / "edit" /
+/// "execute"). For a `[[profiles]].auto_accept_tools = ["Read", "Edit*"]`
+/// style allowlist the *canonical* name is the `kind` wire string —
+/// ACP doesn't currently surface a third "programmatic name" field.
+/// Vendor-specific programmatic names ride in `_meta.*.toolName` but
+/// that extractor is a separate issue; we match on `kind` first,
+/// then the title, then a neutral `"tool"` sentinel.
+fn extract_tool_identity(update: &agent_client_protocol::schema::ToolCallUpdate) -> ToolIdentity {
+    let title = update.fields.title.clone();
+    if let Some(k) = &update.fields.kind {
+        if let Some(wire) = wire_name(k) {
+            return ToolIdentity {
+                name: wire.clone(),
+                title,
+                kind_wire: Some(wire),
+            };
         }
+    }
+    if let Some(t) = &title {
+        return ToolIdentity {
+            name: t.clone(),
+            title,
+            kind_wire: None,
+        };
+    }
+    ToolIdentity {
+        name: "tool".to_string(),
+        title,
+        kind_wire: None,
+    }
+}
+
+/// Short UI string summarising the tool args. Pulls `command` from
+/// `raw_input` for Bash-family tools, `path` for fs tools, else
+/// serialises a single-line JSON of `raw_input` when present.
+fn extract_raw_args(update: &agent_client_protocol::schema::ToolCallUpdate) -> Option<String> {
+    let raw = update.fields.raw_input.as_ref()?;
+    if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
+        return Some(cmd.to_string());
+    }
+    if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
+        return Some(path.to_string());
+    }
+    serde_json::to_string(raw).ok()
+}
+
+/// The `kind` string the UI uses to colour the permission prompt.
+/// Only emits the wire name when `extract_tool_identity` resolved it
+/// from ACP's closed ToolKind enum; anything else (title fallback,
+/// neutral sentinel) maps to `"acp"` so free-form English never
+/// bleeds into the UI's closed-set theme map.
+fn permission_kind_wire(kind_wire: Option<&str>) -> String {
+    kind_wire
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "acp".to_string())
+}
+
+/// Map an SDK enum to its canonical wire string via its own serde
+/// derive. Returns `None` when the upstream shape departs from a bare
+/// JSON string (e.g. a future additive variant carrying payload) —
+/// callers choose whether to log and fall back to a sentinel.
+fn wire_name<T: Serialize>(value: &T) -> Option<String> {
+    match serde_json::to_value(value).ok()? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
     }
 }
 
 /// Per-session adapter: bundles the event sender, the fs tools, and
 /// the terminal registry the ACP runtime closures invoke. Cloned into
 /// each `on_receive_*` closure.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AcpClient {
     events: mpsc::UnboundedSender<ClientEvent>,
     fs: Arc<FsTools>,
     terminals: Arc<Terminals>,
+    permissions: Arc<dyn PermissionController>,
+    /// Profile bound to this instance at spawn time. `None` when the
+    /// actor was started without a profile overlay (bare-agent
+    /// resolution); the decision chain treats that as "ask user"
+    /// unconditionally.
+    profile: Option<ProfileConfig>,
+}
+
+impl std::fmt::Debug for AcpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpClient")
+            .field("fs", &self.fs)
+            .field("terminals", &self.terminals)
+            .field("profile", &self.profile)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AcpClient {
-    pub fn new(events: mpsc::UnboundedSender<ClientEvent>, sandbox_root: PathBuf) -> Result<Self, SandboxError> {
+    pub fn new(
+        events: mpsc::UnboundedSender<ClientEvent>,
+        sandbox_root: PathBuf,
+        permissions: Arc<dyn PermissionController>,
+        profile: Option<ProfileConfig>,
+    ) -> Result<Self, SandboxError> {
         let sandbox = Sandbox::new(sandbox_root)?;
         Ok(Self {
             events,
             fs: Arc::new(FsTools::new(sandbox.clone())),
             terminals: Arc::new(Terminals::new(sandbox)),
+            permissions,
+            profile,
         })
     }
 
@@ -121,26 +238,99 @@ impl AcpClient {
         }
     }
 
-    /// Handle `session/request_permission`. Emits an observability
-    /// event for the webview, then auto-`Cancelled`.
-    /// `PermissionController` (K-6) replaces the auto-cancel with a
-    /// trust-store consult. `async` signature aligns with every other
-    /// handler so `register_client_handler!` takes one shape.
+    /// Handle `session/request_permission`. Runs the
+    /// `PermissionController` decision chain: profile reject globs
+    /// deny, profile accept globs allow, otherwise emit
+    /// `acp:permission-request` and block on the controller oneshot
+    /// until the UI replies or the 10-minute timeout fires.
     pub async fn request_permission(
         &self,
         req: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
         let options = req.options.iter().map(PermissionOptionView::from).collect::<Vec<_>>();
-        let _ = self.events.send(ClientEvent::PermissionRequested {
+        let ToolIdentity {
+            name: tool_name,
+            title,
+            kind_wire,
+        } = extract_tool_identity(&req.tool_call);
+        let raw_args = extract_raw_args(&req.tool_call);
+        let request_id = uuid::Uuid::new_v4().to_string();
+
+        let decision_req = PermissionRequest {
             session_id: req.session_id.0.to_string(),
-            options,
-        });
-        tracing::debug!(
-            session = %req.session_id,
-            options = req.options.len(),
-            "acp::client: auto-cancelling permission request (pre-PermissionController)"
-        );
-        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
+            request_id: request_id.clone(),
+            tool_call: ToolCallRef {
+                name: tool_name.clone(),
+                title: title.clone(),
+                raw_args: raw_args.clone(),
+            },
+            options: options.iter().cloned().map(Into::into).collect(),
+        };
+
+        match self.permissions.decide(&decision_req, self.profile.as_ref()) {
+            Decision::Allow => {
+                tracing::debug!(session = %req.session_id, tool = %tool_name, "acp::client: profile auto-accept");
+                let opt_id = pick_allow_option_id(&decision_req.options).ok_or_else(|| {
+                    agent_client_protocol::Error::internal_error()
+                        .data("profile auto-accept but agent offered no options")
+                })?;
+                Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+                    SelectedPermissionOutcome::new(agent_client_protocol::schema::PermissionOptionId::new(opt_id)),
+                )))
+            }
+            Decision::Deny => {
+                tracing::debug!(session = %req.session_id, tool = %tool_name, "acp::client: profile auto-reject");
+                match pick_reject_option_id(&decision_req.options) {
+                    Some(opt_id) => Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+                        SelectedPermissionOutcome::new(agent_client_protocol::schema::PermissionOptionId::new(opt_id)),
+                    ))),
+                    None => Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)),
+                }
+            }
+            Decision::AskUser => {
+                let tool = tool_name.clone();
+                let kind = permission_kind_wire(kind_wire.as_deref());
+                let args = raw_args.clone().unwrap_or_else(|| tool.clone());
+
+                let rx = self.permissions.register_pending(decision_req.clone()).await;
+
+                let _ = self.events.send(ClientEvent::PermissionRequested {
+                    session_id: req.session_id.0.to_string(),
+                    request_id: request_id.clone(),
+                    tool,
+                    kind,
+                    args,
+                    options,
+                });
+                tracing::debug!(
+                    session = %req.session_id,
+                    request_id = %request_id,
+                    tool = %tool_name,
+                    "acp::client: awaiting user permission reply"
+                );
+
+                match tokio::time::timeout(WAITER_TIMEOUT, rx).await {
+                    Ok(Ok(PermissionOutcome::Selected(opt_id))) => Ok(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            agent_client_protocol::schema::PermissionOptionId::new(opt_id),
+                        )),
+                    )),
+                    Ok(Ok(PermissionOutcome::Cancelled)) | Ok(Err(_)) => {
+                        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
+                    }
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            session = %req.session_id,
+                            request_id = %request_id,
+                            tool = %tool_name,
+                            "acp::client: permission waiter timed out, resolving as Cancelled"
+                        );
+                        self.permissions.forget(&request_id).await;
+                        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
+                    }
+                }
+            }
+        }
     }
 
     pub async fn read_text_file(
@@ -258,34 +448,141 @@ mod error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::permission::DefaultPermissionController;
     use agent_client_protocol::schema::{
         PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionRequest, SessionId, ToolCallId,
-        ToolCallUpdate,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     };
     use std::path::PathBuf;
 
     fn mk_client(dir: &std::path::Path) -> (AcpClient, mpsc::UnboundedReceiver<ClientEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (AcpClient::new(tx, dir.to_path_buf()).expect("sandbox constructs"), rx)
+        let controller = Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>;
+        (
+            AcpClient::new(tx, dir.to_path_buf(), controller, None).expect("sandbox constructs"),
+            rx,
+        )
+    }
+
+    fn mk_client_with_profile(
+        dir: &std::path::Path,
+        profile: ProfileConfig,
+    ) -> (AcpClient, mpsc::UnboundedReceiver<ClientEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let controller = Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>;
+        (
+            AcpClient::new(tx, dir.to_path_buf(), controller, Some(profile)).expect("sandbox constructs"),
+            rx,
+        )
+    }
+
+    fn profile_with_globs(id: &str, accept: Vec<String>, reject: Vec<String>) -> ProfileConfig {
+        ProfileConfig {
+            id: id.into(),
+            agent: "claude-code".into(),
+            model: None,
+            system_prompt: None,
+            system_prompt_file: None,
+            auto_accept_tools: accept,
+            auto_reject_tools: reject,
+        }
+    }
+
+    fn sample_permission_request(kind: ToolKind) -> RequestPermissionRequest {
+        let fields = ToolCallUpdateFields::new().kind(kind).title("sample tool call");
+        RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(ToolCallId::new("tc-1"), fields),
+            vec![
+                PermissionOption::new(
+                    PermissionOptionId::new("allow-once"),
+                    "Allow",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                PermissionOption::new(
+                    PermissionOptionId::new("reject-once"),
+                    "Reject",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ],
+        )
     }
 
     #[tokio::test]
-    async fn permission_request_auto_denies() {
+    async fn permission_request_without_profile_awaits_ui() {
         let dir = tempfile::tempdir().unwrap();
         let (client, mut rx) = mk_client(dir.path());
-        let req = RequestPermissionRequest::new(
-            SessionId::new("sess-1"),
-            ToolCallUpdate::new(ToolCallId::new("tc-1"), Default::default()),
-            vec![PermissionOption::new(
-                PermissionOptionId::new("allow"),
-                "Allow",
-                PermissionOptionKind::AllowOnce,
-            )],
-        );
-        let resp = client.request_permission(&req).await.expect("permission reply ok");
+        let req = sample_permission_request(ToolKind::Execute);
+
+        // Kick off request_permission concurrently, then resolve via
+        // the event the client emits + a manual controller resolve.
+        // Without a profile, decide() returns AskUser → event fires.
+        let client_clone = client.clone();
+        let handle = tokio::spawn(async move { client_clone.request_permission(&req).await });
+
+        // Drain the event and short-circuit the controller by
+        // resolving directly — since the test uses the default
+        // controller we grab it via the Arc clone.
+        let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("event emitted")
+            .expect("channel open");
+        let (request_id, tool, kind, args) = match evt {
+            ClientEvent::PermissionRequested {
+                request_id,
+                tool,
+                kind,
+                args,
+                ..
+            } => (request_id, tool, kind, args),
+            other => panic!("expected PermissionRequested, got {other:?}"),
+        };
+        assert!(!request_id.is_empty());
+        assert_eq!(tool, "execute");
+        assert_eq!(kind, "execute");
+        assert_eq!(args, "execute");
+
+        // Drop the handle; rx close resolves request_permission to Cancelled.
+        client
+            .permissions
+            .resolve(&request_id, PermissionOutcome::Cancelled)
+            .await;
+        let resp = handle.await.expect("join").expect("ok");
         assert!(matches!(resp.outcome, RequestPermissionOutcome::Cancelled));
-        let evt = rx.try_recv().expect("observability event emitted");
-        assert!(matches!(evt, ClientEvent::PermissionRequested { .. }));
+    }
+
+    #[tokio::test]
+    async fn permission_request_profile_auto_accept_skips_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = profile_with_globs("p", vec!["execute".into()], vec![]);
+        let (client, mut rx) = mk_client_with_profile(dir.path(), profile);
+        let req = sample_permission_request(ToolKind::Execute);
+
+        let resp = client.request_permission(&req).await.expect("accepted");
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(&*sel.option_id.0, "allow-once");
+            }
+            other => panic!("expected Selected, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no UI event for profile-accept decisions");
+    }
+
+    #[tokio::test]
+    async fn permission_request_profile_auto_reject_maps_to_reject_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = profile_with_globs("p", vec![], vec!["execute".into()]);
+        let (client, mut rx) = mk_client_with_profile(dir.path(), profile);
+        let req = sample_permission_request(ToolKind::Execute);
+
+        let resp = client.request_permission(&req).await.expect("rejected");
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(&*sel.option_id.0, "reject-once");
+            }
+            other => panic!("expected Selected(reject-once), got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no UI event for profile-reject decisions");
     }
 
     #[test]

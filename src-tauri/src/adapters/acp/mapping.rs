@@ -12,9 +12,7 @@
 //! projection on the Rust side (today the webview does the variant
 //! dispatch).
 
-use crate::adapters::instance::{
-    InstanceEvent as GenericInstanceEvent, InstanceState as GenericInstanceState,
-};
+use crate::adapters::instance::{InstanceEvent as GenericInstanceEvent, InstanceState as GenericInstanceState};
 use crate::adapters::permission::PermissionOptionView;
 use crate::adapters::Bootstrap as GenericBootstrap;
 
@@ -71,11 +69,19 @@ impl From<AcpInstanceEvent> for GenericInstanceEvent {
                 agent_id,
                 instance_id,
                 session_id,
+                request_id,
+                tool,
+                kind,
+                args,
                 options,
             } => GenericInstanceEvent::PermissionRequest {
                 agent_id,
                 instance_id,
                 session_id,
+                request_id,
+                tool,
+                kind,
+                args,
                 options: options.into_iter().map(Into::into).collect(),
             },
         }

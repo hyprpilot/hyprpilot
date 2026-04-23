@@ -1,15 +1,36 @@
-//! Generic permission-prompt vocabulary. The adapter emits a
-//! `PermissionPrompt` via `InstanceEvent::PermissionRequest`; the UI
-//! replies with a `PermissionReply { option_id }`. Today the ACP
-//! runtime auto-`Cancelled`s every request (see CLAUDE.md §Permissions
-//! are the vendor's concern); the K-245 `PermissionController` lands
-//! a real trust-store behind this trait.
+//! Generic permission-prompt vocabulary + `PermissionController` trait.
+//!
+//! The adapter emits a `PermissionPrompt` via
+//! `InstanceEvent::PermissionRequest` when the decision chain bounces
+//! to the UI; the webview replies with a `PermissionReply {
+//! option_id }`. K-245 replaces the auto-`Cancelled` stub with a real
+//! chain: profile reject-globs → profile accept-globs → ask the user
+//! and block the ACP response until the reply lands (or the 10-minute
+//! waiter timeout fires, whichever first).
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{oneshot, Mutex};
+
+use crate::config::ProfileConfig;
+
+/// How long an `AskUser` waiter stays live before the caller
+/// abandons it and treats the outcome as `Cancelled`. Matches the
+/// issue's 10-min target; a prompt left unanswered across a
+/// compositor lock or a user's lunch break should not wedge the
+/// ACP session forever. Enforced by `tokio::time::timeout` at the
+/// `AcpClient::request_permission` call site; the controller itself
+/// does not spawn a timer — that let a detached `sleep(WAITER_TIMEOUT)`
+/// accumulate one future per resolved prompt.
+pub const WAITER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// UI-facing projection of a permission option. Wire-normalised so
 /// the webview doesn't need to speak any specific vendor's shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PermissionOptionView {
     pub option_id: String,
     pub name: String,
@@ -18,6 +39,55 @@ pub struct PermissionOptionView {
     /// crate's upstream enum stabilises; `String` keeps the UI
     /// tolerant to new-variant drift today.
     pub kind: String,
+}
+
+/// Identity projection of the tool behind a permission request. The
+/// glob chain matches on `name` only; `title` / `raw_args` are
+/// carried for the UI and (future) argument-scoped rules — they are
+/// opaque to the allowlist decision today.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCallRef {
+    /// Canonical tool name for glob matching. Adapters populate with
+    /// the most stable identifier their wire exposes (for ACP: the
+    /// ToolKind wire name, falling back to the tool's `title`).
+    pub name: String,
+    pub title: Option<String>,
+    /// Short human-readable summary of args the UI displays below
+    /// the tool name (e.g. the `command` for a Bash call). Opaque to
+    /// the allowlist matcher.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_args: Option<String>,
+}
+
+/// Everything the controller needs to make a decision and route a
+/// later reply. `request_id` is the correlation key the reply
+/// command sends back.
+#[derive(Debug, Clone)]
+pub struct PermissionRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub tool_call: ToolCallRef,
+    pub options: Vec<PermissionOptionView>,
+}
+
+/// Decision chain outcome. `Allow` / `Deny` map directly to ACP at
+/// the call site; `AskUser` means the caller must emit a
+/// `acp:permission-request` event + await the controller-managed
+/// oneshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    Deny,
+    AskUser,
+}
+
+/// What the UI (or the timeout) eventually decides. Mirrors the
+/// ACP `RequestPermissionOutcome` wire shape one-for-one:
+/// `Selected(option_id)` or `Cancelled`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionOutcome {
+    Selected(String),
+    Cancelled,
 }
 
 /// A request the adapter fans out to the webview via
@@ -30,11 +100,372 @@ pub struct PermissionPrompt {
     pub options: Vec<PermissionOptionView>,
 }
 
-/// The UI's answer back. `PermissionController` (K-245) threads these
+/// The UI's answer back. `PermissionController` threads these
 /// through the adapter so the awaiting actor resumes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionReply {
     pub session_id: String,
     pub request_id: String,
     pub option_id: String,
+}
+
+/// The decision + waiter surface. `decide` is synchronous (pure
+/// glob lookup against a profile); `register_pending` + `resolve`
+/// own the oneshot map that bridges the Tauri `permission_reply`
+/// command back to the awaiting ACP handler.
+#[async_trait]
+pub trait PermissionController: Send + Sync + 'static {
+    /// Apply the profile allowlist chain. Reject beats accept; a
+    /// miss on both lists returns `AskUser`.
+    fn decide(&self, req: &PermissionRequest, profile: Option<&ProfileConfig>) -> Decision;
+
+    /// Register a pending prompt. Returns the receiver the caller
+    /// awaits; wrap the receive in `tokio::time::timeout(WAITER_TIMEOUT,
+    /// rx)` and call `forget` on elapsed so stale waiters don't pin
+    /// the map.
+    async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome>;
+
+    /// Resolve a pending request by id. No-op when no waiter
+    /// exists for `request_id` — the command handler never needs
+    /// to know whether the waiter already timed out.
+    async fn resolve(&self, request_id: &str, outcome: PermissionOutcome);
+
+    /// Drop a pending request from the waiter map without signalling.
+    /// Used by the call-site timeout path: once the caller has decided
+    /// to abandon an `rx.await`, the map entry needs to go so a late
+    /// `permission_reply` doesn't land on a zombie waiter.
+    async fn forget(&self, request_id: &str);
+
+    /// Lookup the preserved options vector for a pending request.
+    /// The Tauri `permission_reply` command uses this to translate
+    /// the UI's simple `allow` / `deny` strings into real ACP option
+    /// ids. Returns `None` when the waiter has already been resolved
+    /// or never existed.
+    async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>>;
+}
+
+/// Default impl: an in-memory waiter map, profile globs compiled on
+/// every `decide` call (the glob set is tiny — a handful of patterns
+/// per profile — so caching is premature).
+#[derive(Debug, Default)]
+pub struct DefaultPermissionController {
+    waiters: Arc<Mutex<HashMap<String, PendingWaiter>>>,
+}
+
+#[derive(Debug)]
+struct PendingWaiter {
+    tx: oneshot::Sender<PermissionOutcome>,
+    /// Original options list — preserved so the Tauri
+    /// `permission_reply` command can resolve synthetic `"allow"` /
+    /// `"deny"` shortcuts against real ACP option ids.
+    options: Vec<PermissionOptionView>,
+}
+
+impl DefaultPermissionController {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl PermissionController for DefaultPermissionController {
+    fn decide(&self, req: &PermissionRequest, profile: Option<&ProfileConfig>) -> Decision {
+        let Some(profile) = profile else {
+            return Decision::AskUser;
+        };
+        // Glob compile failures never reach here — TOML validation
+        // rejects bad patterns at load time. If a hand-constructed
+        // profile slips past validation, we fall through to AskUser
+        // rather than panic.
+        let Ok((accept, reject)) = profile.compile_tool_globs() else {
+            return Decision::AskUser;
+        };
+        let name = req.tool_call.name.as_str();
+        if reject.is_match(name) {
+            return Decision::Deny;
+        }
+        if accept.is_match(name) {
+            return Decision::Allow;
+        }
+        Decision::AskUser
+    }
+
+    async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome> {
+        let (tx, rx) = oneshot::channel();
+        let mut waiters = self.waiters.lock().await;
+        waiters.insert(
+            req.request_id.clone(),
+            PendingWaiter {
+                tx,
+                options: req.options.clone(),
+            },
+        );
+        rx
+    }
+
+    async fn resolve(&self, request_id: &str, outcome: PermissionOutcome) {
+        let removed = {
+            let mut waiters = self.waiters.lock().await;
+            waiters.remove(request_id)
+        };
+        if let Some(w) = removed {
+            let _ = w.tx.send(outcome);
+        }
+    }
+
+    async fn forget(&self, request_id: &str) {
+        let mut waiters = self.waiters.lock().await;
+        waiters.remove(request_id);
+    }
+
+    async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>> {
+        let waiters = self.waiters.lock().await;
+        waiters.get(request_id).map(|w| w.options.clone())
+    }
+}
+
+/// Pick an `allow`-shaped option id. Used on `Decision::Allow` when
+/// the controller has to translate back to ACP's
+/// `Selected(option_id)` wire. Strategy: first an exact `kind`
+/// match on `allow_once` / `allow_always`, else anything whose
+/// `option_id` or `name` contains "allow" case-insensitively, else
+/// the first option overall.
+#[must_use]
+pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
+    options
+        .iter()
+        .find(|o| o.kind == "allow_once")
+        .or_else(|| options.iter().find(|o| o.kind == "allow_always"))
+        .or_else(|| {
+            options.iter().find(|o| {
+                o.option_id.to_ascii_lowercase().contains("allow") || o.name.to_ascii_lowercase().contains("allow")
+            })
+        })
+        .or_else(|| options.first())
+        .map(|o| o.option_id.clone())
+}
+
+/// Pick a `reject`-shaped option id. Same strategy as allow but for
+/// the reject half. Returns `None` when no reject-coloured option
+/// exists — the caller falls back to `Cancelled`.
+#[must_use]
+pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String> {
+    options
+        .iter()
+        .find(|o| o.kind == "reject_once")
+        .or_else(|| options.iter().find(|o| o.kind == "reject_always"))
+        .or_else(|| {
+            options.iter().find(|o| {
+                o.option_id.to_ascii_lowercase().contains("reject")
+                    || o.option_id.to_ascii_lowercase().contains("deny")
+                    || o.name.to_ascii_lowercase().contains("reject")
+                    || o.name.to_ascii_lowercase().contains("deny")
+            })
+        })
+        .map(|o| o.option_id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile_with_globs(id: &str, accept: &[&str], reject: &[&str]) -> ProfileConfig {
+        ProfileConfig {
+            id: id.into(),
+            agent: "claude-code".into(),
+            model: None,
+            system_prompt: None,
+            system_prompt_file: None,
+            auto_accept_tools: accept.iter().map(|s| s.to_string()).collect(),
+            auto_reject_tools: reject.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn request(id: &str, tool: &str) -> PermissionRequest {
+        PermissionRequest {
+            session_id: "sess-1".into(),
+            request_id: id.into(),
+            tool_call: ToolCallRef {
+                name: tool.into(),
+                title: Some(tool.into()),
+                raw_args: None,
+            },
+            options: vec![
+                PermissionOptionView {
+                    option_id: "allow-once".into(),
+                    name: "Allow".into(),
+                    kind: "allow_once".into(),
+                },
+                PermissionOptionView {
+                    option_id: "reject-once".into(),
+                    name: "Reject".into(),
+                    kind: "reject_once".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn decide_profile_reject_beats_accept() {
+        let controller = DefaultPermissionController::new();
+        let profile = profile_with_globs("p", &["Bash"], &["Bash"]);
+        let d = controller.decide(&request("r1", "Bash"), Some(&profile));
+        assert_eq!(d, Decision::Deny);
+    }
+
+    #[test]
+    fn decide_profile_accept_skips_user() {
+        let controller = DefaultPermissionController::new();
+        let profile = profile_with_globs("p", &["Read*"], &[]);
+        let d = controller.decide(&request("r1", "ReadFile"), Some(&profile));
+        assert_eq!(d, Decision::Allow);
+    }
+
+    #[test]
+    fn decide_no_match_asks_user() {
+        let controller = DefaultPermissionController::new();
+        let profile = profile_with_globs("p", &["Read"], &["Delete"]);
+        let d = controller.decide(&request("r1", "Edit"), Some(&profile));
+        assert_eq!(d, Decision::AskUser);
+    }
+
+    #[test]
+    fn decide_without_profile_asks_user() {
+        let controller = DefaultPermissionController::new();
+        let d = controller.decide(&request("r1", "Read"), None);
+        assert_eq!(d, Decision::AskUser);
+    }
+
+    #[tokio::test]
+    async fn resolve_routes_reply_to_right_waiter() {
+        let controller = DefaultPermissionController::new();
+        let mut rx1 = controller.register_pending(request("one", "A")).await;
+        let mut rx2 = controller.register_pending(request("two", "B")).await;
+
+        controller
+            .resolve("one", PermissionOutcome::Selected("allow".into()))
+            .await;
+
+        let first = tokio::time::timeout(Duration::from_millis(50), &mut rx1)
+            .await
+            .expect("rx1 resolves")
+            .expect("receiver ok");
+        assert_eq!(first, PermissionOutcome::Selected("allow".into()));
+
+        // The second waiter must still be pending.
+        match tokio::time::timeout(Duration::from_millis(50), &mut rx2).await {
+            Err(_) => {}
+            Ok(Err(_)) => panic!("rx2 closed unexpectedly"),
+            Ok(Ok(v)) => panic!("rx2 resolved to {v:?} — it should still be pending"),
+        }
+
+        controller.resolve("two", PermissionOutcome::Cancelled).await;
+        let second = tokio::time::timeout(Duration::from_millis(50), rx2)
+            .await
+            .expect("rx2 resolves")
+            .expect("receiver ok");
+        assert_eq!(second, PermissionOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn resolve_unknown_id_is_noop() {
+        let controller = DefaultPermissionController::new();
+        // No registration — resolve with a random id.
+        controller
+            .resolve("never-registered", PermissionOutcome::Selected("x".into()))
+            .await;
+        // No panic = pass. Re-resolving a real id after it fired also stays quiet.
+        let _rx = controller.register_pending(request("once", "A")).await;
+        controller.resolve("once", PermissionOutcome::Cancelled).await;
+        controller.resolve("once", PermissionOutcome::Cancelled).await;
+    }
+
+    /// Timeout enforcement moved out of the controller in the K-245
+    /// review pass — `AcpClient::request_permission` wraps `rx.await`
+    /// in `tokio::time::timeout(WAITER_TIMEOUT, rx)` and calls
+    /// `forget(request_id)` on elapsed. This test pins the `forget`
+    /// half: after the caller gives up, the waiter is gone from the
+    /// map and a late `resolve` is a no-op.
+    #[tokio::test]
+    async fn forget_drops_waiter_without_firing_sender() {
+        let controller = DefaultPermissionController::new();
+        let _rx = controller.register_pending(request("slow", "Bash")).await;
+        controller.forget("slow").await;
+        assert!(controller.options_for("slow").await.is_none());
+        // Second forget on the same id is a no-op (same invariant as resolve).
+        controller.forget("slow").await;
+    }
+
+    #[tokio::test]
+    async fn two_identical_asks_back_to_back_both_prompt() {
+        let controller = DefaultPermissionController::new();
+        let profile = profile_with_globs("p", &[], &[]);
+
+        let d1 = controller.decide(&request("r1", "Bash"), Some(&profile));
+        let d2 = controller.decide(&request("r2", "Bash"), Some(&profile));
+        assert_eq!(d1, Decision::AskUser);
+        assert_eq!(d2, Decision::AskUser);
+    }
+
+    #[test]
+    fn pick_allow_option_prefers_allow_once() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "o1".into(),
+                name: "Allow Always".into(),
+                kind: "allow_always".into(),
+            },
+            PermissionOptionView {
+                option_id: "o2".into(),
+                name: "Allow Once".into(),
+                kind: "allow_once".into(),
+            },
+        ];
+        assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("o2"));
+    }
+
+    #[test]
+    fn pick_allow_option_falls_back_to_name_match() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "yes".into(),
+                name: "Allow This".into(),
+                kind: "unknown".into(),
+            },
+            PermissionOptionView {
+                option_id: "other".into(),
+                name: "Skip".into(),
+                kind: "unknown".into(),
+            },
+        ];
+        assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn pick_reject_option_prefers_reject_once() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "r1".into(),
+                name: "Reject Always".into(),
+                kind: "reject_always".into(),
+            },
+            PermissionOptionView {
+                option_id: "r2".into(),
+                name: "Reject Once".into(),
+                kind: "reject_once".into(),
+            },
+        ];
+        assert_eq!(pick_reject_option_id(&opts).as_deref(), Some("r2"));
+    }
+
+    #[test]
+    fn pick_reject_option_returns_none_when_no_reject_shape() {
+        let opts = vec![PermissionOptionView {
+            option_id: "allow-once".into(),
+            name: "Allow".into(),
+            kind: "allow_once".into(),
+        }];
+        assert!(pick_reject_option_id(&opts).is_none());
+    }
 }

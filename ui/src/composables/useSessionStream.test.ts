@@ -72,26 +72,34 @@ describe('useSessionStream', () => {
     expect(pending[0]?.tool).toBe('bash')
   })
 
-  it('synthesizes distinct keys when the Rust emit omits request_id so concurrent prompts do not collide', async () => {
+  it('keeps concurrent permission prompts distinct when Rust emits unique request_ids', async () => {
     await startSessionStream()
 
     emit('acp:permission-request', {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
+      request_id: 'req-1',
+      tool: 'bash',
+      kind: 'execute',
+      args: 'ls',
       options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
     })
     emit('acp:permission-request', {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
+      request_id: 'req-2',
+      tool: 'bash',
+      kind: 'execute',
+      args: 'pwd',
       options: [{ option_id: 'deny', name: 'Deny', kind: 'n' }]
     })
 
     const pending = usePermissions('A').pending.value
     expect(pending).toHaveLength(2)
     expect(new Set(pending.map((p) => p.requestId)).size).toBe(2)
-    expect(pending.every((p) => p.tool === 'permission')).toBe(true)
+    expect(pending.map((p) => p.args).sort()).toEqual(['ls', 'pwd'])
   })
 
   it('routes acp:transcript events to the per-instance transcript store', async () => {

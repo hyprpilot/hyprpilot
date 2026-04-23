@@ -142,6 +142,8 @@ mod tests {
             model: model.map(|s| s.to_string()),
             system_prompt: prompt.map(|s| s.to_string()),
             system_prompt_file: None,
+            auto_accept_tools: Vec::new(),
+            auto_reject_tools: Vec::new(),
         }
     }
 
