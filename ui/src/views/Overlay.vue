@@ -48,6 +48,7 @@ import {
   useActiveInstance,
   useAdapter,
   usePermissions,
+  usePhase,
   useProfiles,
   useSessionHistory,
   useStream,
@@ -58,6 +59,7 @@ import {
 } from '@composables'
 
 const { submit } = useAdapter()
+const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
 // Session history is wired but the overlay shell doesn't surface a
@@ -258,7 +260,7 @@ function onSubmit(text: string): void {
 </script>
 
 <template>
-  <Frame :profile="selectedProfile ?? 'none'" :provider="activeProfile?.agent" :model="activeProfile?.model">
+  <Frame :profile="selectedProfile ?? 'none'" :phase="phase" :provider="activeProfile?.agent" :model="activeProfile?.model">
     <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
       <ChatTurn v-for="block in timelineBlocks" :key="`${block.role}-${block.startedAt}`" :role="block.role">
         <template v-for="entry in block.entries" :key="`${entry.kind}-${entry.createdAt}`">
