@@ -13,21 +13,21 @@ export const { test, expect } = createTauriTest({
     // only cover the leaves referenced during render.
     get_theme: () => ({
       font: { family: 'ui-monospace, monospace' },
-      window: { default: '#16181d', edge: '#c99bf0' },
+      window: { default: '#0b0d12', edge: '#c99bf0' },
       surface: {
-        card: { user: { bg: '#1c1f26' }, assistant: { bg: '#1c1f26' } },
-        compose: '#21252d',
-        text: '#16181d'
+        card: { user: { bg: '#12141a' }, assistant: { bg: '#12141a' } },
+        compose: '#181b22',
+        text: '#0b0d12'
       },
       fg: {
         default: '#d8dde5',
         dim: '#6b7280',
-        muted: '#4a5060'
+        muted: '#3e4454'
       },
       border: {
-        default: '#2a2e38',
-        soft: '#353a46',
-        focus: '#4a5060'
+        default: '#20242e',
+        soft: '#2b2f3b',
+        focus: '#3e4454'
       },
       accent: {
         default: '#c99bf0',

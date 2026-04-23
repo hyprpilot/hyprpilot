@@ -15,7 +15,7 @@
         "label": "main",
         "title": "hyprpilot",
         "visible": false,
-        "backgroundColor": "#16181d"
+        "backgroundColor": "#0b0d12"
       }
     ],
     "security": {
