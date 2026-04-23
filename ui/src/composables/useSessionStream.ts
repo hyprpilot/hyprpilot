@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { listen, type UnlistenFn } from '@ipc'
 
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
+import { pushPermissionRequest } from './usePermissions'
 import { pushPlan, pushThoughtChunk } from './useStream'
 import { pushTerminalChunk } from './useTerminals'
 import { pushToolCall, useTools } from './useTools'
@@ -35,7 +36,39 @@ export interface InstanceStateEventPayload {
   state: InstanceState
 }
 
+export interface PermissionRequestEventPayload {
+  agent_id: string
+  session_id: string
+  instance_id: InstanceId
+  // TODO(K-245): request_id / tool / kind / args become required when
+  // the Rust PermissionController lands — until then the emit only
+  // carries options, and routePermission synthesizes fallbacks.
+  request_id?: string
+  tool?: string
+  kind?: string
+  args?: string
+  options: PermissionOptionView[]
+}
+
 export const lastInstanceState = ref<InstanceStateEventPayload>()
+
+// TODO(K-245): when the Rust emit carries request_id, the synth
+// counter goes away and routePermission destructures directly.
+let permissionSynthCounter = 0
+
+function routePermission(payload: PermissionRequestEventPayload): void {
+  const requestId = payload.request_id ?? `${payload.session_id}-pending-${++permissionSynthCounter}`
+  const tool = payload.tool ?? 'permission'
+  const kind = payload.kind ?? 'acp'
+  const args = payload.args ?? payload.options.map((o) => o.option_id).join(' · ')
+  pushPermissionRequest(payload.instance_id, payload.session_id, {
+    request_id: requestId,
+    tool,
+    kind,
+    args,
+    options: payload.options
+  })
+}
 
 interface SessionUpdateEnvelope {
   sessionUpdate?: string
@@ -123,6 +156,9 @@ export async function startSessionStream(): Promise<() => void> {
       if (e.payload.state === InstanceState.Running) {
         setIfUnset(e.payload.instance_id)
       }
+    }),
+    await listen<PermissionRequestEventPayload>('acp:permission-request', (e) => {
+      routePermission(e.payload)
     })
   )
 

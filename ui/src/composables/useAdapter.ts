@@ -1,16 +1,6 @@
-import { onBeforeUnmount, ref } from 'vue'
-
-import { invoke, listen, type UnlistenFn } from '@ipc'
+import { invoke } from '@ipc'
 
 import { type InstanceId } from './useActiveInstance'
-import { type PermissionOptionView } from './useSessionStream'
-
-export interface PermissionRequestEvent {
-  agent_id: string
-  session_id: string
-  instance_id?: InstanceId
-  options: PermissionOptionView[]
-}
 
 export interface SubmitResult {
   accepted: boolean
@@ -46,33 +36,11 @@ export interface SubmitOptions {
 }
 
 /**
- * Thin submit/cancel/list surface + a bound `lastPermission` ref.
- * Event demuxing (`acp:transcript` / `acp:instance-state`) lives in
- * `useSessionStream`; permission events stay here because the chat
- * shell consumes them directly for the permission stack.
+ * Thin submit/cancel/list surface. Permission events stream via
+ * `useSessionStream` into `usePermissions`; transcript + state via
+ * `useTranscript` / `useSessionStream`.
  */
 export function useAdapter() {
-  const lastPermission = ref<PermissionRequestEvent>()
-
-  const unlisteners: UnlistenFn[] = []
-
-  async function bind() {
-    unlisteners.push(
-      await listen<PermissionRequestEvent>('acp:permission-request', (e) => {
-        lastPermission.value = e.payload
-      })
-    )
-  }
-
-  function unbind() {
-    for (const u of unlisteners) {
-      u()
-    }
-    unlisteners.length = 0
-  }
-
-  onBeforeUnmount(unbind)
-
   async function submit(options: SubmitOptions): Promise<SubmitResult> {
     return invoke<SubmitResult>('acp_submit', {
       text: options.text,
@@ -98,9 +66,6 @@ export function useAdapter() {
   }
 
   return {
-    lastPermission,
-    bind,
-    unbind,
     submit,
     cancel,
     agentsList,

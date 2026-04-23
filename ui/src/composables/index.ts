@@ -1,5 +1,6 @@
 export * from './useActiveInstance'
 export * from './useAdapter'
+export * from './usePermissions'
 export * from './useProfiles'
 export * from './useSessionHistory'
 export * from './useSessionStream'

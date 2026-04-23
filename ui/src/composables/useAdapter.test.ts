@@ -1,75 +1,56 @@
-import { mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useAdapter } from '@composables/useAdapter'
 
-const unlisten = vi.fn()
-const listen = vi.fn()
 const invoke = vi.fn()
 
 vi.mock('@ipc', () => ({
   invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-  listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
-    listen(event, cb)
-
-    return Promise.resolve(unlisten)
-  }
+  listen: vi.fn()
 }))
 
 beforeEach(() => {
-  unlisten.mockReset()
-  listen.mockReset()
   invoke.mockReset()
 })
 
-function host() {
-  return defineComponent({
-    setup() {
-      const agent = useAdapter()
-      agent.bind()
-
-      return () =>
-        h('div', [h('span', { 'data-testid': 'permission' }, agent.lastPermission.value?.session_id ?? 'none')])
-    }
-  })
-}
-
-async function flushAsyncMounted(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
-}
-
 describe('useAdapter', () => {
-  it('subscribes to acp:permission-request on bind', async () => {
-    const wrapper = mount(host())
-    await flushAsyncMounted()
+  it('submit() invokes acp_submit with camel-cased args', async () => {
+    invoke.mockResolvedValue({ accepted: true, agent_id: 'a' })
+    const { submit } = useAdapter()
 
-    const events = listen.mock.calls.map((c) => c[0])
-    expect(events).toEqual(['acp:permission-request'])
-    wrapper.unmount()
+    await submit({ text: 'hi', profileId: 'strict' })
+
+    expect(invoke).toHaveBeenCalledWith('acp_submit', {
+      text: 'hi',
+      agentId: undefined,
+      profileId: 'strict'
+    })
   })
 
-  it('exposes the last permission payload seen on the listener', async () => {
-    const wrapper = mount(host())
-    await flushAsyncMounted()
+  it('cancel() invokes acp_cancel with agentId', async () => {
+    invoke.mockResolvedValue({ cancelled: true })
+    const { cancel } = useAdapter()
 
-    const entry = listen.mock.calls.find((c) => c[0] === 'acp:permission-request')
-    const cb = entry![1] as (payload: { payload: unknown }) => void
-    cb({ payload: { agent_id: 'a', session_id: 's-1', options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }] } })
-    await wrapper.vm.$nextTick()
+    await cancel('a')
 
-    expect(wrapper.get('[data-testid="permission"]').text()).toBe('s-1')
-    wrapper.unmount()
+    expect(invoke).toHaveBeenCalledWith('acp_cancel', { agentId: 'a' })
   })
 
-  it('unsubscribes on unmount', async () => {
-    const wrapper = mount(host())
-    await flushAsyncMounted()
+  it('agentsList() unwraps { agents } into an array', async () => {
+    invoke.mockResolvedValue({ agents: [{ id: 'a', provider: 'acp-claude-code', is_default: true }] })
+    const { agentsList } = useAdapter()
 
-    wrapper.unmount()
+    const agents = await agentsList()
+    expect(agents).toHaveLength(1)
+    expect(agents[0]?.id).toBe('a')
+  })
 
-    expect(unlisten).toHaveBeenCalledTimes(1)
+  it('profilesList() unwraps { profiles } into an array', async () => {
+    invoke.mockResolvedValue({ profiles: [{ id: 'p', agent: 'a', has_prompt: false, is_default: true }] })
+    const { profilesList } = useAdapter()
+
+    const profiles = await profilesList()
+    expect(profiles).toHaveLength(1)
+    expect(profiles[0]?.id).toBe('p')
   })
 })
