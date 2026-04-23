@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ToastTone } from '@components/types'
+
 import { useActiveInstance } from '@composables/useActiveInstance'
 import { resetPermissions, usePermissions } from '@composables/usePermissions'
 import { InstanceState, startSessionStream } from '@composables/useSessionStream'
 import { resetStream, useStream } from '@composables/useStream'
 import { resetTerminals, useTerminals } from '@composables/useTerminals'
+import { clearToasts, useToasts } from '@composables/useToasts'
 import { resetTools, useTools } from '@composables/useTools'
 import { resetTranscript, useTranscript } from '@composables/useTranscript'
 
@@ -34,6 +37,7 @@ beforeEach(() => {
   handlers.clear()
   unlisten.mockReset()
   useActiveInstance().id.value = undefined
+  clearToasts()
   resetTranscript('A')
   resetTranscript('B')
   resetStream('A')
@@ -215,5 +219,48 @@ describe('useSessionStream', () => {
     const stop = await startSessionStream()
     stop()
     expect(unlisten).toHaveBeenCalledTimes(3)
+  })
+
+  it('pushes an ok toast when acp:instance-state transitions to running', async () => {
+    await startSessionStream()
+
+    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+
+    const { entries } = useToasts()
+    expect(entries.value).toHaveLength(1)
+    expect(entries.value[0]?.tone).toBe(ToastTone.Ok)
+    expect(entries.value[0]?.message).toBe('session started')
+  })
+
+  it('pushes a warn toast when acp:instance-state ends after running — not after starting', async () => {
+    await startSessionStream()
+
+    // Ended after running → toast
+    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
+
+    const { entries } = useToasts()
+    const messages = entries.value.map((t) => t.message)
+    expect(messages).toContain('session ended')
+
+    // Clear and try: ended without ever running → no "session ended" toast
+    clearToasts()
+    emit('acp:instance-state', { agent_id: 'b', instance_id: 'B', state: InstanceState.Ended })
+
+    expect(entries.value.find((t) => t.message === 'session ended')).toBeUndefined()
+  })
+
+  it('clears priorState map on stop so a new startSessionStream begins fresh', async () => {
+    const stop = await startSessionStream()
+    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    stop()
+    clearToasts()
+
+    // New stream should not carry prior state from previous stream
+    await startSessionStream()
+    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
+
+    const { entries } = useToasts()
+    expect(entries.value.find((t) => t.message === 'session ended')).toBeUndefined()
   })
 })

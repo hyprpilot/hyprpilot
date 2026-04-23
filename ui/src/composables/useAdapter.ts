@@ -1,6 +1,9 @@
 import { invoke } from '@ipc'
 
+import { ToastTone } from '@components/types'
+
 import { type InstanceId } from './useActiveInstance'
+import { pushToast } from './useToasts'
 
 export interface SubmitResult {
   accepted: boolean
@@ -50,7 +53,11 @@ export function useAdapter() {
   }
 
   async function cancel(agentId?: string): Promise<CancelResult> {
-    return invoke<CancelResult>('acp_cancel', { agentId })
+    const result = await invoke<CancelResult>('acp_cancel', { agentId })
+    if (result.cancelled) {
+      pushToast(ToastTone.Warn, 'turn cancelled')
+    }
+    return result
   }
 
   async function agentsList(): Promise<AgentSummary[]> {

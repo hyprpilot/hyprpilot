@@ -2,11 +2,14 @@ import { ref } from 'vue'
 
 import { listen, type UnlistenFn } from '@ipc'
 
+import { ToastTone } from '@components/types'
+
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
 import { pushInstanceState, resetPhaseSignals } from './usePhase'
 import { pushPermissionRequest } from './usePermissions'
 import { pushPlan, pushThoughtChunk } from './useStream'
 import { pushTerminalChunk } from './useTerminals'
+import { pushToast } from './useToasts'
 import { pushToolCall, useTools } from './useTools'
 import { pushTranscriptChunk } from './useTranscript'
 
@@ -139,20 +142,35 @@ function routeTerminal(instanceId: InstanceId, sessionId: string, raw: SessionUp
  */
 export async function startSessionStream(): Promise<() => void> {
   const { setIfUnset } = useActiveInstance()
+
+  // Prior state per instance — used to suppress spurious "session ended"
+  // toasts when the instance never reached running (e.g. init failure).
+  const priorState = new Map<InstanceId, InstanceState>()
+
   const unlisteners: UnlistenFn[] = []
   unlisteners.push(
     await listen<TranscriptEventPayload>('acp:transcript', (e) => {
       routeTranscript(e.payload)
+      // TODO(K-254): current_mode_update subscriber goes here once the
+      // Rust side emits a dedicated sessionUpdate kind for mode switches.
     }),
     await listen<InstanceStateEventPayload>('acp:instance-state', (e) => {
+      const { instance_id: instanceId, state } = e.payload
       lastInstanceState.value = e.payload
-      pushInstanceState(e.payload.instance_id, e.payload.state)
-      if (e.payload.state === InstanceState.Running) {
-        setIfUnset(e.payload.instance_id)
+      pushInstanceState(instanceId, state)
+
+      if (state === InstanceState.Running) {
+        setIfUnset(instanceId)
+        pushToast(ToastTone.Ok, 'session started')
+      } else if (state === InstanceState.Ended && priorState.get(instanceId) === InstanceState.Running) {
+        pushToast(ToastTone.Warn, 'session ended')
       }
-      if (e.payload.state === InstanceState.Ended || e.payload.state === InstanceState.Error) {
-        resetPhaseSignals(e.payload.instance_id)
+
+      if (state === InstanceState.Ended || state === InstanceState.Error) {
+        resetPhaseSignals(instanceId)
       }
+
+      priorState.set(instanceId, state)
     }),
     await listen<PermissionRequestEventPayload>('acp:permission-request', (e) => {
       routePermission(e.payload)
@@ -164,5 +182,6 @@ export async function startSessionStream(): Promise<() => void> {
       u()
     }
     unlisteners.length = 0
+    priorState.clear()
   }
 }
