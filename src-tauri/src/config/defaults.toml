@@ -15,43 +15,75 @@ height = "50%"
 [logging]
 level = "info"
 
+# D5 design tokens (K-250). The Rust config layer is the single source
+# of truth — `ui/src/assets/styles.css` declares no literal theme values
+# on :root. `applyTheme()` runs synchronously in main.ts before the app
+# mounts, so there's no FOUC window.
+
 [ui.theme.font]
-family = "ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace"
+mono = "ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace"
+sans = "'Inter', ui-sans-serif, system-ui, sans-serif"
 
 [ui.theme.window]
-default = "#1e2127"
-edge = "#d3b051"
+default = "#16181d"
+edge = "#c99bf0"
 
 [ui.theme.surface]
-compose = "#2c333d"
-text = "#1e2127"
+default = "#1c1f26"
+bg = "#16181d"
+alt = "#21252d"
+compose = "#21252d"
+text = "#16181d"
 
 [ui.theme.surface.card.user]
-bg = "#2c333d"
+bg = "#1c1f26"
 
 [ui.theme.surface.card.assistant]
-bg = "#22282f"
+bg = "#1c1f26"
 
 [ui.theme.fg]
-default = "#abb2bf"
-dim = "#7c8a9d"
-muted = "#5c6370"
+default = "#d8dde5"
+ink_2 = "#b4b9c3"
+dim = "#6b7280"
+faint = "#4a5060"
 
 [ui.theme.border]
-default = "#4b5263"
-soft = "#2c333d"
-focus = "#6c778d"
+default = "#2a2e38"
+soft = "#353a46"
+focus = "#4a5060"
 
 [ui.theme.accent]
-default = "#abb2bf"
-user = "#e5c07b"
-assistant = "#98c379"
+default = "#c99bf0"
+user = "#e8c86c"
+user_soft = "#2d2818"
+assistant = "#8ac9a0"
+assistant_soft = "#1d2822"
 
 [ui.theme.state]
-idle = "#98c379"
-stream = "#e5c07b"
-pending = "#e06c75"
-awaiting = "#d19a66"
+idle = "#7fcf8a"
+stream = "#e8c86c"
+pending = "#e06f6f"
+awaiting = "#e0a060"
+working = "#7fb8ff"
+
+[ui.theme.kind]
+read = "#7fb8ff"
+write = "#e480d4"
+bash = "#e8b26c"
+search = "#5fcfd8"
+agent = "#c99bf0"
+think = "#7a8192"
+terminal = "#8ac9a0"
+acp = "#b8d4ff"
+
+[ui.theme.status]
+ok = "#7fcf8a"
+warn = "#e0a060"
+err = "#e06f6f"
+
+[ui.theme.permission]
+bg = "#1f1a12"
+bg_active = "#2a1f12"
 
 [agent]
 default = "claude-code"

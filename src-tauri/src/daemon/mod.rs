@@ -49,6 +49,83 @@ fn get_window_state(state: State<'_, WindowState>) -> WindowState {
     state.inner().clone()
 }
 
+/// User-desktop GTK font setting, parsed from `gtk-font-name` on the default
+/// `gtk::Settings`. Stored in managed state at boot so the webview can read
+/// the base font size synchronously. `None` when the GTK query fails (no
+/// settings singleton or unparseable font string) — the CSS fallback (browser
+/// default) is the correct behaviour then.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GtkFont {
+    pub family: String,
+    pub size_pt: f32,
+}
+
+#[tauri::command]
+fn get_gtk_font(font: State<'_, Option<GtkFont>>) -> Option<GtkFont> {
+    font.inner().clone()
+}
+
+/// Parse a GTK font string ("Inter 10", "JetBrains Mono Bold 11", "Sans 10")
+/// into `{ family, size_pt }`. The last whitespace-separated token is the
+/// point size; every preceding token is family (joined back with spaces).
+/// Returns `None` when the trailing token isn't a valid positive float or
+/// the input is missing a size.
+fn parse_gtk_font(raw: &str) -> Option<GtkFont> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (family, size) = trimmed.rsplit_once(char::is_whitespace)?;
+    let size_pt: f32 = size.parse().ok()?;
+    if !(size_pt.is_finite() && size_pt > 0.0) {
+        return None;
+    }
+    let family = family.trim();
+    if family.is_empty() {
+        return None;
+    }
+    Some(GtkFont {
+        family: family.to_string(),
+        size_pt,
+    })
+}
+
+/// Query the active GTK `gtk-font-name` setting. Must run on the GTK main
+/// thread (the setup closure is, since Tauri has already called
+/// `gtk::init` by then).
+#[cfg(target_os = "linux")]
+fn query_gtk_font() -> Option<GtkFont> {
+    use gtk::prelude::GtkSettingsExt;
+    let Some(settings) = gtk::Settings::default() else {
+        tracing::warn!("gtk::Settings::default() returned None; base font will fall back to browser default");
+        return None;
+    };
+    let Some(name) = settings.gtk_font_name() else {
+        tracing::warn!("gtk-font-name is unset; base font will fall back to browser default");
+        return None;
+    };
+    let raw = name.as_str();
+    match parse_gtk_font(raw) {
+        Some(font) => {
+            tracing::info!(raw = raw, family = %font.family, size_pt = font.size_pt, "parsed GTK font");
+            Some(font)
+        }
+        None => {
+            tracing::warn!(
+                raw = raw,
+                "failed to parse GTK font name; expected form `<family> <size_pt>`"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn query_gtk_font() -> Option<GtkFont> {
+    None
+}
+
 pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let socket_path = args
         .socket
@@ -137,6 +214,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_theme,
             get_window_state,
+            get_gtk_font,
             acp_commands::acp_submit,
             acp_commands::acp_cancel,
             acp_commands::agents_list,
@@ -149,6 +227,15 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             app.manage(theme.clone());
             app.manage(window_state.clone());
             app.manage(renderer.clone());
+            // GTK is initialized by Tauri before the setup closure fires, so
+            // gtk::Settings::default() is safe to call here. Queried once at
+            // boot rather than on every `get_gtk_font` tick — the user would
+            // need to relaunch the overlay to pick up a desktop font change.
+            let gtk_font = query_gtk_font();
+            if let Some(f) = &gtk_font {
+                info!(family = %f.family, size_pt = f.size_pt, "resolved GTK font");
+            }
+            app.manage(gtk_font.clone());
 
             let main = app
                 .get_webview_window("main")
@@ -160,6 +247,22 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             // window with a critical assertion. `apply_initial` configures the
             // mode-specific surface and maps the window once ready.
             renderer.apply_initial(&main)?;
+
+            // Page zoom per the user's desktop font size. Linear ramp with
+            // 10pt as the 1.0 baseline: 11pt → 1.1×, 12pt → 1.2×. Unlike
+            // `html { font-size }`, `set_zoom` scales text + layout together
+            // (Chromium-style page zoom via WebKit's `set_zoom_level`) — no
+            // fonts-bigger-but-margins-fixed breakage that plain font-scale
+            // causes on WebKitGTK.
+            if let Some(f) = &gtk_font {
+                let zoom = 1.0_f64 + (f64::from(f.size_pt) - 10.0) * 0.1;
+                let zoom = zoom.clamp(0.5, 2.0);
+                if let Err(err) = main.set_zoom(zoom) {
+                    warn!(?err, zoom, "failed to apply GTK-font page zoom");
+                } else {
+                    info!(zoom, size_pt = f.size_pt, "applied GTK-font page zoom");
+                }
+            }
 
             app.manage(sessions.clone());
             sessions.spawn_tauri_event_bridge(app.handle().clone());
@@ -242,4 +345,52 @@ pub(crate) async fn shutdown(app: &tauri::AppHandle, sessions: &AcpSessions) {
     info!("shutdown: acp sessions drained");
     app.exit(0);
     info!("shutdown: tauri exit dispatched");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_gtk_font;
+
+    #[test]
+    fn parses_simple_family_and_size() {
+        let f = parse_gtk_font("Inter 10").unwrap();
+        assert_eq!(f.family, "Inter");
+        assert_eq!(f.size_pt, 10.0);
+    }
+
+    #[test]
+    fn parses_multi_word_family() {
+        let f = parse_gtk_font("JetBrains Mono Bold 11").unwrap();
+        assert_eq!(f.family, "JetBrains Mono Bold");
+        assert_eq!(f.size_pt, 11.0);
+    }
+
+    #[test]
+    fn parses_fractional_size() {
+        let f = parse_gtk_font("Sans 10.5").unwrap();
+        assert_eq!(f.family, "Sans");
+        assert_eq!(f.size_pt, 10.5);
+    }
+
+    #[test]
+    fn rejects_empty_input() {
+        assert!(parse_gtk_font("").is_none());
+        assert!(parse_gtk_font("   ").is_none());
+    }
+
+    #[test]
+    fn rejects_missing_size() {
+        assert!(parse_gtk_font("Inter").is_none());
+    }
+
+    #[test]
+    fn rejects_non_numeric_trailing_token() {
+        assert!(parse_gtk_font("Inter regular").is_none());
+    }
+
+    #[test]
+    fn rejects_non_positive_size() {
+        assert!(parse_gtk_font("Inter 0").is_none());
+        assert!(parse_gtk_font("Inter -5").is_none());
+    }
 }

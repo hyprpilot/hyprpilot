@@ -10,12 +10,15 @@ import { invoke } from '@ipc'
  * `surface.card.user.bg`).
  */
 export interface Theme {
-  font: { family: string }
+  font: { mono: string; sans: string }
   window: {
     default: string
     edge: string
   }
   surface: {
+    default: string
+    bg: string
+    alt: string
     card: {
       user: Card
       assistant: Card
@@ -25,8 +28,9 @@ export interface Theme {
   }
   fg: {
     default: string
+    ink_2: string
     dim: string
-    muted: string
+    faint: string
   }
   border: {
     default: string
@@ -36,13 +40,35 @@ export interface Theme {
   accent: {
     default: string
     user: string
+    user_soft: string
     assistant: string
+    assistant_soft: string
   }
   state: {
     idle: string
     stream: string
     pending: string
     awaiting: string
+    working: string
+  }
+  kind: {
+    read: string
+    write: string
+    bash: string
+    search: string
+    agent: string
+    think: string
+    terminal: string
+    acp: string
+  }
+  status: {
+    ok: string
+    warn: string
+    err: string
+  }
+  permission: {
+    bg: string
+    bg_active: string
   }
 }
 
@@ -65,6 +91,18 @@ function cssVarName(parts: string[]): string {
 }
 
 /**
+ * User-desktop GTK font, as parsed from `gtk-font-name` on the default
+ * `gtk::Settings`. Mirrors `src-tauri/src/daemon/mod.rs::GtkFont`.
+ * `null` when the GTK query failed at boot — the CSS fallback takes
+ * over in that case (browser default 16px `html { font-size }`).
+ */
+export interface GtkFont {
+  family: string
+  sizePt: number
+}
+
+
+/**
  * Fetches the resolved theme from the daemon and writes each token onto
  * `:root` as a CSS custom property. A missing `@tauri-apps/api/core` host
  * (plain `vite dev` in a browser, vitest jsdom) is a soft-fail — the UI
@@ -83,6 +121,39 @@ export async function applyTheme(): Promise<void> {
   walk([], theme, (path, value) => {
     root.style.setProperty(cssVarName(path), value)
   })
+}
+
+/**
+ * Reads the GTK font size from the daemon and sets it as the base
+ * `html { font-size }`. Every in-app `rem` unit inherits through this —
+ * the user's desktop font-size preference propagates automatically.
+ * Soft-fails when the command isn't available (plain browser / vitest)
+ * or when the daemon couldn't query GTK — the CSS fallback (browser
+ * default) takes over.
+ */
+export async function applyGtkFont(): Promise<void> {
+  let font: GtkFont | null
+  try {
+    font = await invoke<GtkFont | null>('get_gtk_font')
+  } catch (err) {
+    console.warn('[hyprpilot] get_gtk_font invoke failed; using browser default font', err)
+
+    return
+  }
+  if (!font) {
+    console.warn('[hyprpilot] GTK font unavailable; using browser default font')
+
+    return
+  }
+  // Page zoom (text + layout) is applied Rust-side via WebviewWindow::set_zoom
+  // at boot, so nothing to do here for sizing. Override only the sans stack
+  // so prose picks up the user's desktop font; mono stays on the theme stack
+  // (code deserves a monospace regardless of what GTK is set to).
+  document.documentElement.style.setProperty(
+    '--theme-font-sans',
+    `'${font.family}', ui-sans-serif, system-ui, sans-serif`
+  )
+  console.info(`[hyprpilot] GTK font ${font.family} ${font.sizePt}pt (zoom applied by daemon)`)
 }
 
 /**
