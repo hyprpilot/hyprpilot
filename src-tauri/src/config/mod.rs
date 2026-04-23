@@ -1035,17 +1035,17 @@ read = "#123456"
         assert_eq!(cfg.ui.theme.kind.read.as_deref(), Some("#123456"));
 
         // Untouched in the same groups still fall back to defaults.
-        assert_eq!(cfg.ui.theme.border.default.as_deref(), Some("#2a2e38"));
-        assert_eq!(cfg.ui.theme.border.soft.as_deref(), Some("#353a46"));
-        assert_eq!(cfg.ui.theme.surface.card.assistant.bg.as_deref(), Some("#1c1f26"));
-        assert_eq!(cfg.ui.theme.surface.compose.as_deref(), Some("#21252d"));
+        assert_eq!(cfg.ui.theme.border.default.as_deref(), Some("#20242e"));
+        assert_eq!(cfg.ui.theme.border.soft.as_deref(), Some("#2b2f3b"));
+        assert_eq!(cfg.ui.theme.surface.card.assistant.bg.as_deref(), Some("#12141a"));
+        assert_eq!(cfg.ui.theme.surface.compose.as_deref(), Some("#181b22"));
         assert_eq!(cfg.ui.theme.kind.write.as_deref(), Some("#e480d4"));
 
         // Groups not mentioned at all still come from defaults.
         assert_eq!(cfg.ui.theme.fg.default.as_deref(), Some("#d8dde5"));
         assert_eq!(cfg.ui.theme.accent.default.as_deref(), Some("#c99bf0"));
         assert_eq!(cfg.ui.theme.status.ok.as_deref(), Some("#7fcf8a"));
-        assert_eq!(cfg.ui.theme.permission.bg.as_deref(), Some("#1f1a12"));
+        assert_eq!(cfg.ui.theme.permission.bg.as_deref(), Some("#18130a"));
 
         fs::remove_file(&p).ok();
     }

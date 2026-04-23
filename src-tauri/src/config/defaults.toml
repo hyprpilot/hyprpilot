@@ -25,32 +25,32 @@ mono = "ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace"
 sans = "'Inter', ui-sans-serif, system-ui, sans-serif"
 
 [ui.theme.window]
-default = "#16181d"
+default = "#0b0d12"
 edge = "#c99bf0"
 
 [ui.theme.surface]
-default = "#1c1f26"
-bg = "#16181d"
-alt = "#21252d"
-compose = "#21252d"
-text = "#16181d"
+default = "#12141a"
+bg = "#0b0d12"
+alt = "#181b22"
+compose = "#181b22"
+text = "#0b0d12"
 
 [ui.theme.surface.card.user]
-bg = "#1c1f26"
+bg = "#12141a"
 
 [ui.theme.surface.card.assistant]
-bg = "#1c1f26"
+bg = "#12141a"
 
 [ui.theme.fg]
 default = "#d8dde5"
-ink_2 = "#b4b9c3"
+ink_2 = "#a8adb7"
 dim = "#6b7280"
-faint = "#4a5060"
+faint = "#3e4454"
 
 [ui.theme.border]
-default = "#2a2e38"
-soft = "#353a46"
-focus = "#4a5060"
+default = "#20242e"
+soft = "#2b2f3b"
+focus = "#3e4454"
 
 [ui.theme.accent]
 default = "#c99bf0"
@@ -82,8 +82,8 @@ warn = "#e0a060"
 err = "#e06f6f"
 
 [ui.theme.permission]
-bg = "#1f1a12"
-bg_active = "#2a1f12"
+bg = "#18130a"
+bg_active = "#22180d"
 
 [agent]
 default = "claude-code"
