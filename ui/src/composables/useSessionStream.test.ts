@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useActiveInstance } from '@composables/useActiveInstance'
+import { resetPermissions, usePermissions } from '@composables/usePermissions'
 import { InstanceState, startSessionStream } from '@composables/useSessionStream'
 import { resetStream, useStream } from '@composables/useStream'
 import { resetTerminals, useTerminals } from '@composables/useTerminals'
@@ -41,12 +42,56 @@ beforeEach(() => {
   resetTools('B')
   resetTerminals('A')
   resetTerminals('B')
+  resetPermissions('A')
+  resetPermissions('B')
 })
 
 describe('useSessionStream', () => {
-  it('subscribes to acp:transcript + acp:instance-state (permission stays on useAdapter)', async () => {
+  it('subscribes to acp:transcript + acp:instance-state + acp:permission-request', async () => {
     await startSessionStream()
-    expect([...handlers.keys()].sort()).toEqual(['acp:instance-state', 'acp:transcript'])
+    expect([...handlers.keys()].sort()).toEqual(['acp:instance-state', 'acp:permission-request', 'acp:transcript'])
+  })
+
+  it('routes acp:permission-request events into the per-instance usePermissions store', async () => {
+    await startSessionStream()
+
+    emit('acp:permission-request', {
+      agent_id: 'a',
+      session_id: 's-a',
+      instance_id: 'A',
+      request_id: 'req-1',
+      tool: 'bash',
+      kind: 'bash',
+      args: 'echo hi',
+      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+    })
+
+    const pending = usePermissions('A').pending.value
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.requestId).toBe('req-1')
+    expect(pending[0]?.tool).toBe('bash')
+  })
+
+  it('synthesizes distinct keys when the Rust emit omits request_id so concurrent prompts do not collide', async () => {
+    await startSessionStream()
+
+    emit('acp:permission-request', {
+      agent_id: 'a',
+      session_id: 's-a',
+      instance_id: 'A',
+      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+    })
+    emit('acp:permission-request', {
+      agent_id: 'a',
+      session_id: 's-a',
+      instance_id: 'A',
+      options: [{ option_id: 'deny', name: 'Deny', kind: 'n' }]
+    })
+
+    const pending = usePermissions('A').pending.value
+    expect(pending).toHaveLength(2)
+    expect(new Set(pending.map((p) => p.requestId)).size).toBe(2)
+    expect(pending.every((p) => p.tool === 'permission')).toBe(true)
   })
 
   it('routes acp:transcript events to the per-instance transcript store', async () => {
@@ -161,6 +206,6 @@ describe('useSessionStream', () => {
   it('unsubscribes every channel when the returned stop fn runs', async () => {
     const stop = await startSessionStream()
     stop()
-    expect(unlisten).toHaveBeenCalledTimes(2)
+    expect(unlisten).toHaveBeenCalledTimes(3)
   })
 })

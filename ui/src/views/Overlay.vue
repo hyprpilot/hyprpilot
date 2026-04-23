@@ -38,7 +38,6 @@ import {
   PlanStatus,
   Role,
   StreamKind,
-  type PermissionPrompt,
   type PlanItem
 } from '@components'
 import {
@@ -48,17 +47,17 @@ import {
   TurnRole,
   useActiveInstance,
   useAdapter,
+  usePermissions,
   useProfiles,
   useSessionHistory,
   useStream,
   useTools,
   useTranscript,
   startSessionStream,
-  type PermissionRequestEvent,
   type PlanEntry
 } from '@composables'
 
-const { lastPermission, bind, submit } = useAdapter()
+const { submit } = useAdapter()
 const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
 // Session history is wired but the overlay shell doesn't surface a
@@ -70,13 +69,13 @@ const { id: activeInstanceId } = useActiveInstance()
 const { turns } = useTranscript()
 const { items: streamItems } = useStream()
 const { calls: toolCalls } = useTools()
+const { pending: permissionPrompts, allow, deny } = usePermissions()
 
 const sending = ref(false)
 const lastErr = ref<string>()
 const composerRef = ref<InstanceType<typeof ChatComposer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
-const permissionPrompts = computed(() => permissionPromptsFrom(lastPermission.value))
 
 // One interleaved timeline so thoughts / plans / tool calls render
 // between the text turns they originally arrived between — not in
@@ -143,20 +142,58 @@ const timelineBlocks = computed<TimelineBlock[]>(() => {
 
 let stopStream: (() => void) | undefined
 
+function isEditableTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) {
+    return false
+  }
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    return true
+  }
+
+  return el.isContentEditable
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  // TODO(K-281 follow-up): Tab = next row cycling. Today keyboard
+  // a/d always addresses the oldest-active (first non-queued) prompt.
+  // Multi-row focus navigation lands with the ChatPermissionStack
+  // focus-index contract (requires the primitive to expose a
+  // :focused-index prop + :focus event).
+  if (event.repeat || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+    return
+  }
+  if (event.key !== 'a' && event.key !== 'd') {
+    return
+  }
+  if (isEditableTarget(event.target)) {
+    return
+  }
+  const active = permissionPrompts.value.find((p) => !p.queued) ?? permissionPrompts.value[0]
+  if (!active) {
+    return
+  }
+  event.preventDefault()
+  if (event.key === 'a') {
+    onAllow(active.requestId)
+  } else {
+    onDeny(active.requestId)
+  }
+}
+
 onMounted(async () => {
   try {
     stopStream = await startSessionStream()
   } catch (err) {
     lastErr.value = `stream bind failed: ${String(err)}`
   }
-  bind().catch((err) => {
-    lastErr.value = `bind failed: ${String(err)}`
-  })
+  document.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   stopStream?.()
   stopStream = undefined
+  document.removeEventListener('keydown', onKeydown)
 })
 
 function mapPlanStatus(raw?: string): PlanStatus {
@@ -174,17 +211,22 @@ function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
   return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
 }
 
-function permissionPromptsFrom(ev?: PermissionRequestEvent): PermissionPrompt[] {
-  if (!ev) {
-    return []
+async function onAllow(requestId: string): Promise<void> {
+  try {
+    await allow(requestId)
+  } catch (err) {
+    // TODO(K-254): warn toast instead of the inline chat-err band
+    lastErr.value = `allow failed: ${String(err)}`
   }
-  // ACP delivers N option ids per request; ChatPermissionStack renders
-  // allow/deny for the oldest active. Until the PermissionController
-  // (K-6) surfaces richer metadata, reuse the session id as the row
-  // identity and print the option summary as the args body.
-  const args = ev.options.map((o) => o.option_id).join(' · ')
+}
 
-  return [{ id: ev.session_id, tool: 'permission', kind: 'acp', args }]
+async function onDeny(requestId: string): Promise<void> {
+  try {
+    await deny(requestId)
+  } catch (err) {
+    // TODO(K-254): warn toast
+    lastErr.value = `deny failed: ${String(err)}`
+  }
 }
 
 function onSubmit(text: string): void {
@@ -243,7 +285,7 @@ function onSubmit(text: string): void {
       </ChatTurn>
     </div>
 
-    <ChatPermissionStack :prompts="permissionPrompts" />
+    <ChatPermissionStack :prompts="permissionPrompts" @allow="onAllow" @deny="onDeny" />
 
     <p v-if="lastErr" class="chat-err" data-testid="chat-err">{{ lastErr }}</p>
 
