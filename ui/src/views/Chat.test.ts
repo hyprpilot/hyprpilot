@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useActiveInstance } from '@composables/useActiveInstance'
 import { pushPermissionRequest, resetPermissions } from '@composables/usePermissions'
 
-import Chat from './Chat.vue'
+import Chat from './Overlay.vue'
 
 const invoke = vi.fn()
 const listeners = new Map<string, (payload: { payload: unknown }) => void>()
@@ -139,7 +139,7 @@ describe('Chat.vue — permission wiring', () => {
     wrapper.unmount()
   })
 
-  it('surfaces reply failure through lastErr (TODO K-254 warn toast)', async () => {
+  it('surfaces reply failure as an error toast', async () => {
     pushPermissionRequest('A', 's-a', {
       request_id: 'req-1',
       tool: 'bash',
@@ -156,9 +156,10 @@ describe('Chat.vue — permission wiring', () => {
     await allowButton.trigger('click')
     await flushMicrotasks()
 
-    const err = wrapper.get('[data-testid="chat-err"]')
-    expect(err.text()).toContain('allow failed')
-    expect(err.text()).toContain('K-245')
+    // K-254: errors route through the toast stack, not the inline chat-err band.
+    const toastStack = wrapper.find('.toast-stack')
+    expect(toastStack.exists()).toBe(true)
+    expect(toastStack.text()).toContain('allow failed')
     wrapper.unmount()
   })
 

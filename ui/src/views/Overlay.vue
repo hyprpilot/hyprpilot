@@ -38,9 +38,12 @@ import {
   PlanStatus,
   Role,
   StreamKind,
+  Toast,
+  ToastTone,
   type PlanItem
 } from '@components'
 import {
+  pushToast,
   pushTranscriptChunk,
   StreamItemKind,
   toView,
@@ -52,6 +55,7 @@ import {
   useProfiles,
   useSessionHistory,
   useStream,
+  useToasts,
   useTools,
   useTranscript,
   startSessionStream,
@@ -59,6 +63,7 @@ import {
 } from '@composables'
 
 const { submit } = useAdapter()
+const { entries: toasts, dismiss } = useToasts()
 const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
@@ -74,7 +79,6 @@ const { calls: toolCalls } = useTools()
 const { pending: permissionPrompts, allow, deny } = usePermissions()
 
 const sending = ref(false)
-const lastErr = ref<string>()
 const composerRef = ref<InstanceType<typeof ChatComposer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
@@ -187,7 +191,7 @@ onMounted(async () => {
   try {
     stopStream = await startSessionStream()
   } catch (err) {
-    lastErr.value = `stream bind failed: ${String(err)}`
+    pushToast(ToastTone.Err, `stream bind failed: ${String(err)}`)
   }
   document.addEventListener('keydown', onKeydown)
 })
@@ -217,8 +221,7 @@ async function onAllow(requestId: string): Promise<void> {
   try {
     await allow(requestId)
   } catch (err) {
-    // TODO(K-254): warn toast instead of the inline chat-err band
-    lastErr.value = `allow failed: ${String(err)}`
+    pushToast(ToastTone.Err, `allow failed: ${String(err)}`)
   }
 }
 
@@ -226,14 +229,12 @@ async function onDeny(requestId: string): Promise<void> {
   try {
     await deny(requestId)
   } catch (err) {
-    // TODO(K-254): warn toast
-    lastErr.value = `deny failed: ${String(err)}`
+    pushToast(ToastTone.Err, `deny failed: ${String(err)}`)
   }
 }
 
 function onSubmit(text: string): void {
   sending.value = true
-  lastErr.value = undefined
   submit({ text, profileId: selectedProfile.value })
     .then((result) => {
       // Agents don't echo user prompts on session/prompt (only on
@@ -251,7 +252,7 @@ function onSubmit(text: string): void {
       composerRef.value?.clear()
     })
     .catch((err) => {
-      lastErr.value = String(err)
+      pushToast(ToastTone.Err, String(err))
     })
     .finally(() => {
       sending.value = false
@@ -275,7 +276,7 @@ function onSubmit(text: string): void {
             >{{ entry.item.text }}</ChatStreamCard
           >
           <ChatStreamCard
-            v-else-if="entry.kind === 'stream'"
+            v-else-if="entry.kind === 'stream' && entry.item.kind === StreamItemKind.Plan"
             :kind="StreamKind.Planning"
             :active="true"
             label="plan"
@@ -289,7 +290,11 @@ function onSubmit(text: string): void {
 
     <ChatPermissionStack :prompts="permissionPrompts" @allow="onAllow" @deny="onDeny" />
 
-    <p v-if="lastErr" class="chat-err" data-testid="chat-err">{{ lastErr }}</p>
+    <template #toast>
+      <div v-if="toasts.length > 0" class="toast-stack">
+        <Toast v-for="t in toasts" :key="t.id" :tone="t.tone" :message="t.message" @dismiss="dismiss(t.id)" />
+      </div>
+    </template>
 
     <template #composer>
       <ChatComposer ref="composerRef" :sending="sending" @submit="onSubmit" />
@@ -304,9 +309,7 @@ function onSubmit(text: string): void {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
 }
 
-.chat-err {
-  @apply px-3 py-1 text-[0.8rem];
-  color: var(--theme-status-err);
-  background-color: var(--theme-surface);
+.toast-stack {
+  @apply flex flex-col gap-1;
 }
 </style>

@@ -22,7 +22,8 @@ export enum ToolState {
 export enum ToastTone {
   Ok = 'ok',
   Warn = 'warn',
-  Err = 'err'
+  Err = 'err',
+  Info = 'info'
 }
 
 export enum ButtonTone {
