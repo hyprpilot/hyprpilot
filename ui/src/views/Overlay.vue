@@ -1,4 +1,29 @@
 <script setup lang="ts">
+/**
+ * Overlay shell — the single page-level view the Tauri webview mounts
+ * (see `App.vue`). Composes the K-250 chat primitives into the running app.
+ *
+ * Frame slots (see `components/Frame.vue`):
+ *   default slot  — transcript body. `<ChatTurn>` blocks built from
+ *                   `useTranscript` + `useStream` + `useTools`, followed
+ *                   by `<ChatPermissionStack>` fed from
+ *                   `useAdapter().lastPermission`.
+ *   #composer     — `<ChatComposer>` wired to `useAdapter().submit`.
+ *   #toast        — unused today; reserved for a future toast surface.
+ *
+ * Header rows 1 + 2 are driven by Frame props (profile, modeTag, provider,
+ * model, title, cwd, gitStatus, counts) — no named slots for the header.
+ *
+ * State sources (all from `@composables`):
+ *   useAdapter          → bind / submit / lastPermission
+ *   useProfiles         → profile registry + selected profile
+ *   useSessionHistory   → warms the session store for the palette (K-249)
+ *   useTranscript       → user/assistant turns
+ *   useStream           → thought / plan stream items
+ *   useTools            → tool-call records for the inline chip row
+ *   useActiveInstance   → current instance id for the transcript data-attr
+ *   startSessionStream  → starts the demuxed Tauri event pump
+ */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import {
@@ -36,9 +61,9 @@ import {
 const { lastPermission, bind, submit } = useAdapter()
 const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
-// Session history is wired but the new Frame/Chat primitives don't
-// surface a session picker yet — keeping the binding live so the
-// backend stays warm; the palette view (K-249) takes over this role.
+// Session history is wired but the overlay shell doesn't surface a
+// session picker yet — keeping the binding live so the backend stays
+// warm; the palette view (K-249) takes over this role.
 useSessionHistory(activeAgentId, selectedProfile)
 
 const { id: activeInstanceId } = useActiveInstance()

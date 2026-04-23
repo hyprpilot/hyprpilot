@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import Chat from '@views/Chat.vue'
+import Overlay from '@views/Overlay.vue'
 </script>
 
 <template>
   <main class="overlay-root">
-    <Chat />
+    <Overlay />
   </main>
 </template>
