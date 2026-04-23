@@ -33,7 +33,7 @@ pub struct Config {
     pub agents: AgentsConfig,
     /// `[[profiles]]` at TOML root. Each profile binds an agent id to an
     /// optional model override + optional system prompt; resolved into a
-    /// flat `ResolvedSession` at `session/submit` time.
+    /// flat `ResolvedInstance` at `session/submit` time.
     #[garde(dive)]
     #[garde(custom(validate_profiles_ids))]
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]

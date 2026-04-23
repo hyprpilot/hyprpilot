@@ -51,7 +51,7 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
 
   onMounted(async () => {
     unlisteners.push(
-      await listen<SessionStateEvent>('acp:session-state', (e) => {
+      await listen<SessionStateEvent>('acp:instance-state', (e) => {
         if (e.payload.state === SessionState.Ended) {
           void refresh()
         }

@@ -559,14 +559,14 @@ needs to check computed styles against a real layout engine:
   wrapper; prefer unfolding a small setup step into the body (with a short
   comment) over extracting a one-call helper.
 - **Compose behavior onto the owning type, not as free fns.** When a
-  module defines a primary type (`AcpClient`, `AcpSessions`,
+  module defines a primary type (`AcpClient`, `AcpInstances`,
   `StatusBroadcast`), helpers that operate on that type's state — or
   need to touch the channels / handles / registries it owns — go as
   methods on it, not module-level fns. Free fns are for pure
   transformations that don't read or mutate the type's invariants.
   Drove the K-240 refactor from free `forward_notification` /
   `auto_cancel_permission` + `emit_acp_event` into methods on
-  `AcpClient` / `AcpSessions`; keeps the ownership graph legible and
+  `AcpClient` / `AcpInstances`; keeps the ownership graph legible and
   avoids passing owned state by parameter.
 - **Small composable primitives live in `src-tauri/src/tools/`; domain
   modules host thin adapters over them.** A type that could exist
@@ -574,13 +574,13 @@ needs to check computed styles against a real layout engine:
   registry, an fs-with-containment wrapper) belongs in `tools/`,
   returns a domain-specific error enum (`SandboxError`, `FsError`,
   `TerminalError`), and knows nothing about the protocol that called
-  it. The domain module (`acp/client.rs`) becomes a translation layer
+  it. The domain module (`adapters/acp/client.rs`) becomes a translation layer
   — parse the wire envelope, delegate to the tool, map the tool's
   error into the protocol's error. Precedent: K-244 MR 21 review
   refactored `AcpClient` from owning `sandbox_root` / `terminals`
   directly into `{ events, fs: Arc<FsTools>, terminals: Arc<Terminals> }`;
   `FsTools` / `Terminals` / `Sandbox` moved under `tools/`, only the
-  ACP error-mapping stayed inside `acp/`. Every non-ACP entry point
+  ACP error-mapping stayed inside `adapters/acp/`. Every non-ACP entry point
   (a Tauri command, a future gRPC shim, unit tests) then reuses the
   primitive without inheriting the ACP envelope types.
 - **Structs carry their invariants; don't re-pass context on every call.**
@@ -721,12 +721,12 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
   the import site.
   - **Rust protocol types** are one instance of the rule, not the
     rule itself: `Agent` → `AcpAgent` → `AcpAgentClaudeCode`;
-    `AcpAgent` sits next to `AcpSession`, `AcpSessions`,
-    `AcpSessionHandle` because they share the ACP wire protocol.
-    That's a grouping, not a universal prefix mandate — `Acp*` only
-    makes sense for things that actually speak ACP. Same pattern
-    would apply to a future direct-HTTP sibling: `HttpAgent` +
-    `HttpSession` + `HttpSessionHandle`.
+    `AcpAgent` sits next to `AcpAdapter`, `AcpInstances`,
+    `AcpInstance` because they share the ACP wire protocol. That's
+    a grouping, not a universal prefix mandate — `Acp*` only makes
+    sense for things that actually speak ACP. Same pattern would
+    apply to a future direct-HTTP sibling: `HttpAgent` +
+    `HttpAdapter` + `HttpInstances` + `HttpInstance`.
   - **Drop the scope when the whole tree already carries it.** The
     overlay IS the app — `ui/src/components/` is the overlay's
     component tree, not nested under an extra `overlay/` folder.
@@ -1026,7 +1026,7 @@ message + `exit(1)`.
 
 The `Submit` / `Cancel` / `SessionInfo` handlers hit the live
 `session/submit` / `session/cancel` / `session/info` wire methods
-today — those go through `AcpSessions` on the server side, which
+today — those go through `AcpInstances` on the server side, which
 returns pre-live-session stubbed shapes (`{ accepted: true, text }`
 / `{ cancelled: false, reason }` / `{ sessions: [] }`) until the
 runtime plumbing lands.
@@ -1044,39 +1044,58 @@ prompts against the same `(agent_id, profile_id)` pair reuse the live
 session; a different profile against the same agent spawns its own
 actor so system-prompt + model overlays stay deterministic.
 
-### Module layout (`src-tauri/src/acp/`)
+### Module layout (`src-tauri/src/adapters/`)
 
-- `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
-  three vendor unit structs. Each carries no runtime state; vendor
-  quirks (launch command, model flag, system-prompt injection site)
-  live in trait-method bodies. `match_provider_agent(provider)`
-  resolves a `Box<dyn AcpAgent>` off the closed `AgentProvider` enum.
-- `resolve.rs` — `resolve(&Config, profile_id?) -> ResolvedSession`.
-  Flattens the layered config into `{ agent, profile_id, model,
-  system_prompt }`. Model precedence is profile > agent > vendor
-  default; `system_prompt_file` contents are read from disk here so
-  a missing file fails on submit, not inside the actor.
-- `spawn.rs` — `spawn_agent(&AgentConfig, system_prompt: Option<&str>)
-  -> (Child, ChildStdio)`. Wraps `AcpAgent::spawn` +
-  `AcpAgent::inject_system_prompt` and captures stdin/stdout for the
-  ACP connection.
-- `client.rs` — `on_receive_*` shims the ACP `Client.builder()` takes.
-  `SessionNotification`s fan out onto a per-session mpsc; every
-  `RequestPermissionRequest` auto-`Cancelled` until
-  `PermissionController` lands (the webview still sees an
-  `acp:permission-request` event for observability).
-- `runtime.rs` — one `tokio::spawn`ed actor per session. Takes a
-  `ResolvedSession` and drives `initialize` → `session/new` →
-  `session/prompt` for the first prompt, then loops on an mpsc of
-  `SessionCommand::{Prompt, Cancel, Shutdown}`. Broadcasts
-  `SessionEvent` upstream.
-- `session.rs` — `AcpSessions` (Tauri managed state). Keyed
-  `HashMap<(agent_id, profile_id?), SessionHandle>` so distinct
-  profiles against the same agent get distinct actors. The RPC
-  surface + Tauri commands both route through it.
-- `commands.rs` — Tauri `#[command]`s: `acp_submit`, `acp_cancel`,
-  `agents_list`, `profiles_list`, `session_list`, `session_load`,
-  `permission_reply` (unimplemented stub until K-6).
+The generic adapter layer + the ACP impl as one transport among
+many. `rpc::` / `ctl::` / `daemon::` talk to `dyn Adapter` or to the
+concrete `AcpInstances` registry re-exported from `adapters::*`;
+they never `use crate::adapters::acp::*` directly (enforced by the
+`no_acp_imports_outside_adapters` test in `adapters/mod.rs::tests`).
+
+- **Generic layer** (`src-tauri/src/adapters/`):
+  - `mod.rs` — `Adapter` trait + `AdapterId` + `Capabilities` +
+    `AdapterError` + `Bootstrap`. Re-exports `AcpAdapter`,
+    `AcpInstances`, `acp_commands` for out-of-layer consumers.
+  - `instance.rs` — `InstanceHandle`, `InstanceState`,
+    `InstanceEvent`, `InstanceEventStream`.
+  - `transcript.rs` — `TranscriptItem`, `TurnRecord`,
+    `ToolCallRecord`, `UserTurnInput`, `Speaker`.
+  - `permission.rs` — `PermissionPrompt`, `PermissionReply`,
+    `PermissionOptionView`.
+  - `tool.rs` — `ToolCall`, `ToolCallContent`, `ToolState`.
+  - `profile.rs` — `ResolvedInstance` + re-exports `AgentConfig`,
+    `ProfileConfig`, `AgentProvider` from `config::`.
+- **ACP impl** (`src-tauri/src/adapters/acp/`):
+  - `mod.rs` — `AcpAdapter` struct + `impl Adapter for AcpAdapter`.
+  - `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
+    three vendor unit structs. `match_provider_agent(provider)`
+    resolves a `Box<dyn AcpAgent>` off the closed `AgentProvider`
+    enum.
+  - `resolve.rs` — thin re-export of
+    `crate::adapters::profile::ResolvedInstance`.
+  - `spawn.rs` — `spawn_agent(&AgentConfig, system_prompt:
+    Option<&str>)` — wraps `AcpAgent::spawn` +
+    `AcpAgent::inject_system_prompt`.
+  - `client.rs` — `AcpClient` — `on_receive_*` handlers the ACP
+    `Client.builder()` takes. `SessionNotification`s fan out onto a
+    per-instance mpsc; every `RequestPermissionRequest`
+    auto-`Cancelled` until `PermissionController` lands.
+  - `runtime.rs` — one `tokio::spawn`ed actor per instance. Takes a
+    `ResolvedInstance` + `instance_id` and drives `initialize` →
+    `session/new` → `session/prompt` for the first prompt, then
+    loops on an mpsc of `InstanceCommand::{Prompt, Cancel,
+    ListSessions, Shutdown}`. Broadcasts `InstanceEvent` upstream.
+  - `instance.rs` — `AcpInstance` per-actor owner (the handle
+    `AcpInstances` keeps around after `start_instance`).
+  - `instances.rs` — `AcpInstances` registry + `InstanceKey`
+    (`agent_id` + optional `profile_id`). Keyed
+    `HashMap<InstanceKey, AcpInstance>` so distinct profiles
+    against the same agent get distinct actors.
+  - `mapping.rs` — `From` / `TryFrom` bridges between ACP wire DTOs
+    and the generic `adapters::*` vocabulary.
+  - `commands.rs` — Tauri `#[command]`s: `acp_submit`, `acp_cancel`,
+    `agents_list`, `profiles_list`, `session_list`, `session_load`,
+    `permission_reply` (unimplemented stub until K-6).
 
 ### Per-vendor system-prompt injection
 
@@ -1162,8 +1181,8 @@ in `match_provider_agent`.
 ### Shutdown orchestration
 
 Process lifecycle lives in `daemon`, not `rpc`. `daemon::shutdown(app,
-sessions)` is the one orchestrator; it drains ACP sessions via
-`AcpSessions::shutdown`, then calls `app.exit(0)` (which closes
+sessions)` is the one orchestrator; it drains ACP instances via
+`AcpInstances::shutdown`, then calls `app.exit(0)` (which closes
 webviews, drops every `app.manage(...)` value — flushing the tracing
 `WorkerGuard`, the `StatusBroadcast`, and the socket listener — and
 exits with code 0).
@@ -1211,7 +1230,7 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Command | Purpose |
 | ------- | ------- |
-| `acp_submit { text, agent_id?, profile_id? }` | Webview compose-box submit. Delegates to `AcpSessions::submit`. |
+| `acp_submit { text, agent_id?, profile_id? }` | Webview compose-box submit. Delegates to `AcpInstances::submit`. |
 | `acp_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
@@ -1221,12 +1240,25 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Event | Payload | When |
 | ----- | ------- | ---- |
-| `acp:transcript` | `{ agent_id, session_id, update }` | Every `SessionNotification` the agent streams; `update` is the raw `SessionUpdate` JSON. |
-| `acp:permission-request` | `{ agent_id, session_id, options }` | Every `session/request_permission` — auto-denied but surfaced for observability. |
-| `acp:session-state` | `{ agent_id, session_id, state }` | On every lifecycle transition (`starting` / `running` / `ended` / `error`). |
+| `acp:transcript` | `{ agent_id, instance_id, session_id, update }` | Every `SessionNotification` the agent streams; `update` is the raw `SessionUpdate` JSON. |
+| `acp:permission-request` | `{ agent_id, instance_id, session_id, options }` | Every `session/request_permission` — auto-denied but surfaced for observability. |
+| `acp:instance-state` | `{ agent_id, instance_id, session_id?, state }` | On every lifecycle transition (`starting` / `running` / `ended` / `error`). Renamed from `acp:session-state` in K-251; the event now addresses our instance owner, not the ACP wire session. |
 
 Event names use `:` (Tauri-side convention); the JSON-RPC wire keeps
 `/` (`session/submit` etc.); config uses `.`; CSS uses `-`.
+
+### Glossary
+
+- **session** — the ACP wire session id (issued by the agent via
+  `session/new`). Only meaningful inside `adapters::acp`.
+- **instance** — our owner/record of a running agent process + its
+  ACP session + its channels. Keyed by `InstanceKey` (agent_id or
+  agent_id+profile_id). Outlives any single `session/new` cycle.
+- **profile** — user-config bundle of agent + model + cwd + system
+  prompt. Drives `start_instance`.
+- **agent** — the vendor process/binary (claude-code, codex, opencode).
+- **adapter** — the transport trait (`adapters::Adapter`). ACP is one
+  impl; HTTP-based agents will be another.
 
 ## What is not in the scaffold
 

@@ -1,4 +1,4 @@
-//! Per-session actor: owns the ACP `ConnectionTo<Agent>` and the
+//! Per-instance actor: owns the ACP `ConnectionTo<Agent>` and the
 //! child process; drives `initialize` → `session/new` → `session/prompt`
 //! for the first prompt, then loops on a command mpsc while also
 //! fanning `SessionNotification`s out to a broadcast channel the
@@ -18,8 +18,9 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{error, info, warn};
 
 use super::client::{AcpClient, ClientEvent, PermissionOptionView};
-use super::resolve::ResolvedSession;
+use super::instance::AcpInstance;
 use super::spawn::spawn_agent;
+use crate::adapters::profile::ResolvedInstance;
 
 /// Register a typed `on_receive_request` handler that delegates to an
 /// async `AcpClient` method returning `Result<Response,
@@ -38,11 +39,11 @@ macro_rules! register_client_handler {
     }};
 }
 
-/// Commands the per-session actor accepts. The actor keeps state
+/// Commands the per-instance actor accepts. The actor keeps state
 /// internal; this enum is the only public surface the dispatcher
 /// uses to drive it.
 #[derive(Debug)]
-pub enum SessionCommand {
+pub enum InstanceCommand {
     Prompt {
         text: String,
         reply: oneshot::Sender<Result<(), String>>,
@@ -82,23 +83,26 @@ pub enum Bootstrap {
     ListOnly,
 }
 
-/// Events the actor broadcasts upstream. `AcpSessions` owns a
+/// Events the actor broadcasts upstream. `AcpInstances` owns a
 /// `broadcast::Sender` and the daemon's Tauri `setup` closure
 /// subscribes to it to emit `acp:*` events.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SessionEvent {
-    /// Session transitioned to a new lifecycle state.
+pub enum InstanceEvent {
+    /// Instance transitioned to a new lifecycle state.
     State {
         agent_id: String,
+        instance_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        state: SessionState,
+        state: InstanceState,
     },
     /// Agent pushed a `session/update` notification; raw JSON
     /// because the upstream shape is `#[non_exhaustive]` and we
     /// don't want to reshape every variant here.
     Transcript {
         agent_id: String,
+        instance_id: String,
         session_id: String,
         update: serde_json::Value,
     },
@@ -107,6 +111,7 @@ pub enum SessionEvent {
     /// show it anyway.
     PermissionRequest {
         agent_id: String,
+        instance_id: String,
         session_id: String,
         options: Vec<PermissionOptionView>,
     },
@@ -114,89 +119,82 @@ pub enum SessionEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionState {
+pub enum InstanceState {
     Starting,
     Running,
     Ended,
     Error,
 }
 
-/// Handle the caller keeps after `start_session`. Dropping it cancels
-/// the actor (via the `cmd_tx` drop + the actor's select loop
-/// observing `None` from the mpsc receiver).
-#[derive(Debug)]
-pub struct SessionHandle {
-    pub agent_id: String,
-    pub cmd_tx: mpsc::UnboundedSender<SessionCommand>,
-    /// Populated after the first prompt's `session/new` resolves.
-    /// `None` while the session is still bootstrapping.
-    pub session_id: Arc<tokio::sync::RwLock<Option<SessionId>>>,
-}
-
-impl SessionHandle {
-    pub async fn current_session_id(&self) -> Option<String> {
-        self.session_id.read().await.as_ref().map(|id| id.0.to_string())
-    }
-}
-
-/// Start a per-session actor. Returns the handle immediately; the
+/// Start a per-instance actor. Returns the handle immediately; the
 /// `bootstrap` variant picks between `session/new` (`Fresh`),
 /// `session/load` (`Resume`), or neither (`ListOnly`). Sends
-/// `SessionEvent`s onto `events_tx` for every lifecycle transition
+/// `InstanceEvent`s onto `events_tx` for every lifecycle transition
 /// and every `SessionUpdate` the agent streams.
-pub fn start_session(
-    session: ResolvedSession,
-    events_tx: broadcast::Sender<SessionEvent>,
+pub fn start_instance(
+    resolved: ResolvedInstance,
+    instance_id: String,
+    events_tx: broadcast::Sender<InstanceEvent>,
     bootstrap: Bootstrap,
-) -> SessionHandle {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
+) -> AcpInstance {
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
     let initial = match &bootstrap {
         Bootstrap::Resume(id) => Some(id.clone()),
         Bootstrap::Fresh | Bootstrap::ListOnly => None,
     };
     let session_id = Arc::new(tokio::sync::RwLock::new(initial));
 
-    let handle = SessionHandle {
-        agent_id: session.agent.id.clone(),
+    let instance = AcpInstance {
+        agent_id: resolved.agent.id.clone(),
         cmd_tx,
         session_id: session_id.clone(),
     };
 
-    tokio::spawn(run_session(session, cmd_rx, events_tx, session_id, bootstrap));
+    tokio::spawn(run_instance(
+        resolved,
+        instance_id,
+        cmd_rx,
+        events_tx,
+        session_id,
+        bootstrap,
+    ));
 
-    handle
+    instance
 }
 
 /// The long-lived actor body.
-async fn run_session(
-    session: ResolvedSession,
-    mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
-    events_tx: broadcast::Sender<SessionEvent>,
+async fn run_instance(
+    resolved: ResolvedInstance,
+    instance_id: String,
+    mut cmd_rx: mpsc::UnboundedReceiver<InstanceCommand>,
+    events_tx: broadcast::Sender<InstanceEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
     bootstrap: Bootstrap,
 ) {
-    let agent_id = session.agent.id.clone();
-    let _ = events_tx.send(SessionEvent::State {
+    let agent_id = resolved.agent.id.clone();
+    let _ = events_tx.send(InstanceEvent::State {
         agent_id: agent_id.clone(),
+        instance_id: instance_id.clone(),
         session_id: None,
-        state: SessionState::Starting,
+        state: InstanceState::Starting,
     });
 
     let cfg = {
-        let mut cfg = session.agent.clone();
-        cfg.model = session.model.clone();
+        let mut cfg = resolved.agent.clone();
+        cfg.model = resolved.model.clone();
         cfg
     };
-    let system_prompt = session.system_prompt.clone();
+    let system_prompt = resolved.system_prompt.clone();
 
     let (mut child, stdio, mut first_message_prefix) = match spawn_agent(&cfg, system_prompt.as_deref()) {
         Ok(spawned) => (spawned.child, spawned.stdio, spawned.first_message_prefix),
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::runtime: spawn failed");
-            let _ = events_tx.send(SessionEvent::State {
+            let _ = events_tx.send(InstanceEvent::State {
                 agent_id,
+                instance_id,
                 session_id: None,
-                state: SessionState::Error,
+                state: InstanceState::Error,
             });
             return;
         }
@@ -211,10 +209,11 @@ async fn run_session(
         Ok(c) => c,
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::runtime: sandbox init failed");
-            let _ = events_tx.send(SessionEvent::State {
+            let _ = events_tx.send(InstanceEvent::State {
                 agent_id,
+                instance_id,
                 session_id: None,
-                state: SessionState::Error,
+                state: InstanceState::Error,
             });
             return;
         }
@@ -224,6 +223,7 @@ async fn run_session(
 
     let events_tx_notif = events_tx.clone();
     let agent_id_notif = agent_id.clone();
+    let instance_id_notif = instance_id.clone();
     let session_id_forward = session_id_slot.clone();
 
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
@@ -256,20 +256,22 @@ async fn run_session(
                     let mut slot = session_id_forward.write().await;
                     *slot = Some(sid.clone());
                 }
-                let _ = events_tx_notif.send(SessionEvent::State {
+                let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
+                    instance_id: instance_id_notif.clone(),
                     session_id: Some(sid.0.to_string()),
-                    state: SessionState::Running,
+                    state: InstanceState::Running,
                 });
                 Some(sid)
             }
             Bootstrap::Resume(sid) => {
                 if !load_supported {
                     warn!(agent = %agent_id_notif, "acp::runtime: load_session not advertised by agent");
-                    let _ = events_tx_notif.send(SessionEvent::State {
+                    let _ = events_tx_notif.send(InstanceEvent::State {
                         agent_id: agent_id_notif.clone(),
+                        instance_id: instance_id_notif.clone(),
                         session_id: Some(sid.0.to_string()),
-                        state: SessionState::Error,
+                        state: InstanceState::Error,
                     });
                     return Err(
                         agent_client_protocol::Error::method_not_found().data(serde_json::json!({
@@ -287,25 +289,28 @@ async fn run_session(
                     .await
                 {
                     warn!(agent = %agent_id_notif, %err, "acp::runtime: load_session failed");
-                    let _ = events_tx_notif.send(SessionEvent::State {
+                    let _ = events_tx_notif.send(InstanceEvent::State {
                         agent_id: agent_id_notif.clone(),
+                        instance_id: instance_id_notif.clone(),
                         session_id: Some(sid.0.to_string()),
-                        state: SessionState::Error,
+                        state: InstanceState::Error,
                     });
                     return Err(err);
                 }
-                let _ = events_tx_notif.send(SessionEvent::State {
+                let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
+                    instance_id: instance_id_notif.clone(),
                     session_id: Some(sid.0.to_string()),
-                    state: SessionState::Running,
+                    state: InstanceState::Running,
                 });
                 Some(sid)
             }
             Bootstrap::ListOnly => {
-                let _ = events_tx_notif.send(SessionEvent::State {
+                let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
+                    instance_id: instance_id_notif.clone(),
                     session_id: None,
-                    state: SessionState::Running,
+                    state: InstanceState::Running,
                 });
                 None
             }
@@ -319,7 +324,7 @@ async fn run_session(
                         break;
                     };
                     match cmd {
-                        SessionCommand::Prompt { text, reply } => {
+                        InstanceCommand::Prompt { text, reply } => {
                             let Some(sid) = session_id.clone() else {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
@@ -340,7 +345,7 @@ async fn run_session(
                             }).map_err(|e| e.to_string());
                             let _ = reply.send(mapped);
                         }
-                        SessionCommand::Cancel { reply } => {
+                        InstanceCommand::Cancel { reply } => {
                             let Some(sid) = session_id.clone() else {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
@@ -350,7 +355,7 @@ async fn run_session(
                                 .map_err(|e| e.to_string());
                             let _ = reply.send(res);
                         }
-                        SessionCommand::ListSessions { cwd: filter_cwd, reply } => {
+                        InstanceCommand::ListSessions { cwd: filter_cwd, reply } => {
                             let mut req = ListSessionsRequest::new();
                             if let Some(c) = filter_cwd {
                                 req = req.cwd(c);
@@ -362,7 +367,7 @@ async fn run_session(
                                 .map_err(|e| e.to_string());
                             let _ = reply.send(res);
                         }
-                        SessionCommand::Shutdown { reply } => {
+                        InstanceCommand::Shutdown { reply } => {
                             if let Some(sid) = session_id.clone() {
                                 let _ = connection.send_notification(CancelNotification::new(sid));
                             }
@@ -375,15 +380,17 @@ async fn run_session(
                     let Some(evt) = evt else { break };
                     match evt {
                         ClientEvent::Notification { session_id: sid, update } => {
-                            let _ = events_tx_notif.send(SessionEvent::Transcript {
+                            let _ = events_tx_notif.send(InstanceEvent::Transcript {
                                 agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
                                 session_id: sid,
                                 update,
                             });
                         }
                         ClientEvent::PermissionRequested { session_id: sid, options } => {
-                            let _ = events_tx_notif.send(SessionEvent::PermissionRequest {
+                            let _ = events_tx_notif.send(InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
                                 session_id: sid,
                                 options,
                             });
@@ -421,12 +428,12 @@ async fn run_session(
 
     let final_state = match &run {
         Ok(_) => {
-            info!(agent = %agent_id, "acp::runtime: session ended cleanly");
-            SessionState::Ended
+            info!(agent = %agent_id, "acp::runtime: instance ended cleanly");
+            InstanceState::Ended
         }
         Err(err) => {
-            warn!(agent = %agent_id, %err, "acp::runtime: session ended with error");
-            SessionState::Error
+            warn!(agent = %agent_id, %err, "acp::runtime: instance ended with error");
+            InstanceState::Error
         }
     };
 
@@ -435,8 +442,9 @@ async fn run_session(
     if let Some(ref id) = sid {
         client.drain_terminals_for_session(id).await;
     }
-    let _ = events_tx.send(SessionEvent::State {
+    let _ = events_tx.send(InstanceEvent::State {
         agent_id,
+        instance_id,
         session_id: sid.as_ref().map(|id| id.0.to_string()),
         state: final_state,
     });
@@ -447,8 +455,8 @@ mod tests {
     use super::*;
     use crate::config::{AgentConfig, AgentProvider};
 
-    fn dummy_session(id: &str) -> ResolvedSession {
-        ResolvedSession {
+    fn dummy_resolved(id: &str) -> ResolvedInstance {
+        ResolvedInstance {
             agent: AgentConfig {
                 id: id.into(),
                 provider: AgentProvider::AcpClaudeCode,
@@ -470,32 +478,29 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn dead_child_yields_error_state() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = start_session(dummy_session("ded"), tx, Bootstrap::Fresh);
+        let handle = start_instance(dummy_resolved("ded"), "ded".into(), tx, Bootstrap::Fresh);
 
-        // Starting event fires immediately.
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
             .expect("starting event timely")
             .expect("starting event arrives");
         match first {
-            SessionEvent::State {
-                state: SessionState::Starting,
+            InstanceEvent::State {
+                state: InstanceState::Starting,
                 ..
             } => {}
             other => panic!("expected Starting, got {other:?}"),
         }
 
-        // Then the actor reports Error because `/bin/false` exits
-        // before the initialize handshake lands.
         let err = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match rx.recv().await {
-                    Ok(SessionEvent::State {
-                        state: SessionState::Error,
+                    Ok(InstanceEvent::State {
+                        state: InstanceState::Error,
                         ..
                     }) => return Ok::<(), ()>(()),
-                    Ok(SessionEvent::State {
-                        state: SessionState::Ended,
+                    Ok(InstanceEvent::State {
+                        state: InstanceState::Ended,
                         ..
                     }) => return Ok(()),
                     Ok(_) => continue,
@@ -513,14 +518,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn cancel_against_dead_session_does_not_panic() {
         let (tx, _rx) = broadcast::channel(8);
-        let handle = start_session(dummy_session("ded-cancel"), tx, Bootstrap::Fresh);
+        let handle = start_instance(dummy_resolved("ded-cancel"), "ded-cancel".into(), tx, Bootstrap::Fresh);
 
-        // Give the actor a moment to fail.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = handle.cmd_tx.send(SessionCommand::Cancel { reply: reply_tx });
-        // The actor already died, so the reply oneshot closes.
+        let _ = handle.cmd_tx.send(InstanceCommand::Cancel { reply: reply_tx });
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), reply_rx).await;
     }
 
@@ -531,17 +534,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn list_only_against_dead_child_settles() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = start_session(dummy_session("ded-list"), tx, Bootstrap::ListOnly);
+        let handle = start_instance(dummy_resolved("ded-list"), "ded-list".into(), tx, Bootstrap::ListOnly);
 
         let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match rx.recv().await {
-                    Ok(SessionEvent::State {
-                        state: SessionState::Error,
+                    Ok(InstanceEvent::State {
+                        state: InstanceState::Error,
                         ..
                     })
-                    | Ok(SessionEvent::State {
-                        state: SessionState::Ended,
+                    | Ok(InstanceEvent::State {
+                        state: InstanceState::Ended,
                         ..
                     }) => return Ok::<(), ()>(()),
                     Ok(_) => continue,
@@ -558,23 +561,28 @@ mod tests {
 
     /// `Bootstrap::Resume` against a child that dies before responding
     /// never leaks a partial session — the actor funnels through
-    /// `SessionState::Error`. The capability gate is a pre-connection
+    /// `InstanceState::Error`. The capability gate is a pre-connection
     /// check; integration coverage lives against the mock agent.
     #[tokio::test(flavor = "multi_thread")]
     async fn resume_against_dead_child_reports_error() {
         let (tx, mut rx) = broadcast::channel(8);
         let sid = SessionId::new("00000000-0000-0000-0000-000000000000");
-        let handle = start_session(dummy_session("ded-resume"), tx, Bootstrap::Resume(sid));
+        let handle = start_instance(
+            dummy_resolved("ded-resume"),
+            "ded-resume".into(),
+            tx,
+            Bootstrap::Resume(sid),
+        );
 
         let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match rx.recv().await {
-                    Ok(SessionEvent::State {
-                        state: SessionState::Error,
+                    Ok(InstanceEvent::State {
+                        state: InstanceState::Error,
                         ..
                     })
-                    | Ok(SessionEvent::State {
-                        state: SessionState::Ended,
+                    | Ok(InstanceEvent::State {
+                        state: InstanceState::Ended,
                         ..
                     }) => return Ok::<(), ()>(()),
                     Ok(_) => continue,

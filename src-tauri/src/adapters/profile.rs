@@ -1,39 +1,42 @@
-//! Flatten a `(Config, profile_id?)` pair into a `ResolvedSession`
-//! the runtime actor can consume without reaching back into the
-//! layered config. Model precedence: profile > agent > vendor
-//! default (the vendor default is applied lazily by the agent
-//! adapter's spawn flow when `model` is `None`). The system prompt
-//! is read from disk at resolve time, not at spawn time, so a
-//! missing file surfaces as a readable error on the submit path
-//! rather than inside the actor.
+//! Profile vocabulary — re-exports the config-side `AgentConfig` /
+//! `ProfileConfig` / `AgentProvider` types the adapter layer consumes,
+//! plus the flat `ResolvedInstance` view built by resolving a
+//! `(Config, profile_id?)` pair.
 //!
-//! Fallback order when `profile_id` is omitted:
-//! 1. `[agent] default_profile` — if set and it matches a profile.
-//! 2. First profile whose `agent` matches `[agent] default` (if the
-//!    agent registry has a default and the profile list has a
-//!    matching entry).
-//! 3. Bare agent — construct a synthetic profile-less resolution
-//!    from `[agent] default` alone, no system prompt.
+//! The types themselves stay declared in `config::` because the TOML
+//! deserialize + garde-validate wiring belongs with the rest of the
+//! config tree. Re-exports here keep the adapter surface symmetric —
+//! callers reach for `adapters::profile::ProfileConfig`, never
+//! `config::ProfileConfig`, when operating at the adapter layer.
+
+pub use crate::config::{AgentConfig, AgentProvider, ProfileConfig};
 
 use anyhow::{bail, Context, Result};
 
-use crate::config::{AgentConfig, Config, ProfileConfig};
+use crate::config::Config;
 
-/// Flat, runtime-ready view of an agent + its profile overlay.
+/// Flat, runtime-ready view of an agent + its profile overlay. The
+/// adapter takes this (not a raw `Config`) so the actor body never
+/// reaches back into the layered config tree.
+///
+/// Model precedence: profile > agent > vendor default (the vendor
+/// default is applied lazily at spawn time when `model` is `None`).
+/// The system prompt is read from disk at resolve time, not at spawn
+/// time, so a missing file surfaces as a readable error on the
+/// submit path rather than inside the actor.
 #[derive(Debug, Clone)]
-pub struct ResolvedSession {
+pub struct ResolvedInstance {
     pub agent: AgentConfig,
     pub profile_id: Option<String>,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
 }
 
-impl ResolvedSession {
-    /// Resolve the active agent + profile overlay for a
-    /// `session/submit` call. `profile_id` — when `Some` — must name
-    /// a real profile; when `None`, falls back through
-    /// `[agent] default_profile` and finally to a bare agent
-    /// resolution.
+impl ResolvedInstance {
+    /// Resolve the active agent + profile overlay for a submit call.
+    /// `profile_id` — when `Some` — must name a real profile; when
+    /// `None`, falls back through `[agent] default_profile` and
+    /// finally to a bare-agent resolution.
     pub fn from_config(config: &Config, profile_id: Option<&str>) -> Result<Self> {
         if let Some(id) = profile_id {
             return Self::from_profile(config, id);
@@ -118,7 +121,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config::{AgentProvider, AgentsConfig};
+    use crate::config::AgentsConfig;
 
     fn agent(id: &str, model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -152,7 +155,7 @@ mod tests {
             profiles: vec![profile("strict", "cc", Some("opus-4"), None)],
             ..Default::default()
         };
-        let r = ResolvedSession::from_config(&cfg, Some("strict")).unwrap();
+        let r = ResolvedInstance::from_config(&cfg, Some("strict")).unwrap();
         assert_eq!(r.agent.id, "cc");
         assert_eq!(r.model.as_deref(), Some("opus-4"));
     }
@@ -167,7 +170,7 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedSession::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
         assert_eq!(r.model.as_deref(), Some("sonnet"));
     }
 
@@ -190,7 +193,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedSession::from_config(&cfg, Some("plan")).unwrap();
+        let r = ResolvedInstance::from_config(&cfg, Some("plan")).unwrap();
         assert_eq!(r.system_prompt.as_deref(), Some("You are a planner."));
     }
 
@@ -206,7 +209,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let err = ResolvedSession::from_config(&cfg, Some("plan")).expect_err("missing file fails");
+        let err = ResolvedInstance::from_config(&cfg, Some("plan")).expect_err("missing file fails");
         let msg = format!("{err:#}");
         assert!(msg.contains("plan"), "{msg}");
         assert!(msg.contains("system_prompt_file"), "{msg}");
@@ -214,7 +217,6 @@ mod tests {
 
     #[test]
     fn falls_back_to_default_profile_then_bare_agent() {
-        // default_profile set + matches a profile → resolves that profile.
         let mut cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", Some("sonnet"))],
@@ -226,13 +228,12 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedSession::from_config(&cfg, None).unwrap();
+        let r = ResolvedInstance::from_config(&cfg, None).unwrap();
         assert_eq!(r.profile_id.as_deref(), Some("ask"));
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
-        // default_profile cleared → bare agent fallback.
         cfg.agents.agent.default_profile = None;
-        let r = ResolvedSession::from_config(&cfg, None).unwrap();
+        let r = ResolvedInstance::from_config(&cfg, None).unwrap();
         assert!(r.profile_id.is_none());
         assert_eq!(r.agent.id, "cc");
         assert_eq!(r.model.as_deref(), Some("sonnet"));
@@ -249,7 +250,7 @@ mod tests {
             profiles: vec![],
             ..Default::default()
         };
-        let err = ResolvedSession::from_config(&cfg, Some("ghost")).expect_err("unknown profile");
+        let err = ResolvedInstance::from_config(&cfg, Some("ghost")).expect_err("unknown profile");
         assert!(err.to_string().contains("profile 'ghost' not found"));
     }
 }
