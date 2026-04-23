@@ -1,45 +1,15 @@
-import { onBeforeUnmount, reactive, ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 
 import { invoke, listen, type UnlistenFn } from '@ipc'
 
-export enum EventKind {
-  Transcript = 'transcript',
-  State = 'state',
-  PermissionRequest = 'permission_request'
-}
-
-export enum SessionState {
-  Starting = 'starting',
-  Running = 'running',
-  Ended = 'ended',
-  Error = 'error'
-}
-
-export interface PermissionOptionView {
-  option_id: string
-  name: string
-  kind: string
-}
-
-export interface TranscriptEvent {
-  kind: EventKind.Transcript
-  agent_id: string
-  session_id: string
-  update: Record<string, unknown>
-}
+import { type InstanceId } from './useActiveInstance'
+import { type PermissionOptionView } from './useSessionStream'
 
 export interface PermissionRequestEvent {
-  kind: EventKind.PermissionRequest
   agent_id: string
   session_id: string
+  instance_id?: InstanceId
   options: PermissionOptionView[]
-}
-
-export interface SessionStateEvent {
-  kind: EventKind.State
-  agent_id: string
-  session_id?: string
-  state: SessionState
 }
 
 export interface SubmitResult {
@@ -47,6 +17,7 @@ export interface SubmitResult {
   agent_id: string
   profile_id?: string
   session_id?: string
+  instance_id?: InstanceId
 }
 
 export interface CancelResult {
@@ -74,21 +45,19 @@ export interface SubmitOptions {
   profileId?: string
 }
 
+/**
+ * Thin submit/cancel/list surface + a bound `lastPermission` ref.
+ * Event demuxing (`acp:transcript` / `acp:instance-state`) lives in
+ * `useSessionStream`; permission events stay here because the chat
+ * shell consumes them directly for the permission stack.
+ */
 export function useAdapter() {
-  const transcript = reactive<TranscriptEvent[]>([])
-  const state = ref<SessionStateEvent>()
   const lastPermission = ref<PermissionRequestEvent>()
 
   const unlisteners: UnlistenFn[] = []
 
   async function bind() {
     unlisteners.push(
-      await listen<TranscriptEvent>('acp:transcript', (e) => {
-        transcript.push(e.payload)
-      }),
-      await listen<SessionStateEvent>('acp:instance-state', (e) => {
-        state.value = e.payload
-      }),
       await listen<PermissionRequestEvent>('acp:permission-request', (e) => {
         lastPermission.value = e.payload
       })
@@ -96,7 +65,9 @@ export function useAdapter() {
   }
 
   function unbind() {
-    for (const u of unlisteners) u()
+    for (const u of unlisteners) {
+      u()
+    }
     unlisteners.length = 0
   }
 
@@ -127,8 +98,6 @@ export function useAdapter() {
   }
 
   return {
-    transcript,
-    state,
     lastPermission,
     bind,
     unbind,
