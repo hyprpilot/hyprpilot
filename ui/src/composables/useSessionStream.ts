@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { listen, type UnlistenFn } from '@ipc'
 
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
+import { pushInstanceState, resetPhaseSignals } from './usePhase'
 import { pushPermissionRequest } from './usePermissions'
 import { pushPlan, pushThoughtChunk } from './useStream'
 import { pushTerminalChunk } from './useTerminals'
@@ -153,8 +154,12 @@ export async function startSessionStream(): Promise<() => void> {
     }),
     await listen<InstanceStateEventPayload>('acp:instance-state', (e) => {
       lastInstanceState.value = e.payload
+      pushInstanceState(e.payload.instance_id, e.payload.state)
       if (e.payload.state === InstanceState.Running) {
         setIfUnset(e.payload.instance_id)
+      }
+      if (e.payload.state === InstanceState.Ended || e.payload.state === InstanceState.Error) {
+        resetPhaseSignals(e.payload.instance_id)
       }
     }),
     await listen<PermissionRequestEventPayload>('acp:permission-request', (e) => {
