@@ -11,10 +11,14 @@
 //! import from `adapters::*`. They do not reach into `adapters::acp::*`
 //! — that's a layering violation, caught by the lint guard.
 
-// Pass 1 scaffold: generic types + trait land here; Pass 2 relocates
-// ACP code behind them and wires every consumer. Until then some items
-// read as unused — the `EchoAdapter` test exercises the trait surface.
-#![allow(dead_code, unused_imports)]
+// K-251 follow-up: the generic adapter vocabulary (InstanceHandle,
+// Bootstrap, AdapterError, UserTurnInput, …) is the canonical outside
+// shape for future non-ACP adapters (HttpAdapter / …). Today only the
+// ACP impl + test exercise the trait surface, so many items register
+// as dead until a sibling adapter lands and the trait is called through
+// `dyn Adapter` by the rpc / ctl layers. Re-check after the second
+// adapter; narrow to per-item allows for what remains unused.
+#![allow(dead_code)]
 
 pub mod acp;
 pub mod instance;
@@ -25,16 +29,26 @@ pub mod transcript;
 
 use async_trait::async_trait;
 
+// Re-exports are the canonical vocabulary future non-ACP adapters bind
+// to. Today only the ACP impl + adapter test exercise most entries;
+// drop the allow once the second adapter lands and callers reach them
+// through `dyn Adapter` from `rpc::` / `ctl::`.
+#[allow(unused_imports)]
 pub use instance::{InstanceEvent, InstanceEventStream, InstanceHandle, InstanceState};
+#[allow(unused_imports)]
 pub use permission::{PermissionOptionView, PermissionPrompt, PermissionReply};
+#[allow(unused_imports)]
 pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};
+#[allow(unused_imports)]
 pub use tool::{ToolCall, ToolCallContent, ToolState};
+#[allow(unused_imports)]
 pub use transcript::{ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
 
 // Concrete impls we re-export so out-of-layer callers never need to
 // type `adapters::acp::*` — only `adapters::*`. Adding an `HttpAdapter`
 // sibling later adds new re-exports here, not new import paths in
 // `rpc::` / `ctl::` / `daemon::`.
+#[allow(unused_imports)]
 pub use acp::{commands as acp_commands, AcpAdapter, AcpInstances};
 
 /// Closed set of known transport kinds. The string wire-name is stable
@@ -122,11 +136,13 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// Submit a prompt against the addressed `(agent_id, profile_id)`
     /// pair, spawning a new instance on first hit or reusing the live
-    /// one. Returns a JSON envelope the RPC / Tauri surfaces pass
-    /// straight through.
+    /// one. `input` is a structured enum (`UserTurnInput::Text` today;
+    /// future `Attachment` / `Multimodal` variants slot in behind
+    /// `#[non_exhaustive]`). Returns a JSON envelope the RPC / Tauri
+    /// surfaces pass straight through.
     async fn submit(
         &self,
-        text: &str,
+        input: UserTurnInput,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> AdapterResult<serde_json::Value>;
@@ -179,10 +195,11 @@ mod tests {
 
         async fn submit(
             &self,
-            text: &str,
+            input: UserTurnInput,
             _agent_id: Option<&str>,
             _profile_id: Option<&str>,
         ) -> AdapterResult<serde_json::Value> {
+            let UserTurnInput::Text(text) = input;
             Ok(json!({ "echo": text }))
         }
 
@@ -191,7 +208,7 @@ mod tests {
         }
 
         async fn info(&self) -> AdapterResult<serde_json::Value> {
-            Ok(json!({ "sessions": [] }))
+            Ok(json!({ "instances": [] }))
         }
 
         async fn shutdown(&self) {}
@@ -201,10 +218,13 @@ mod tests {
     async fn echo_adapter_satisfies_trait() {
         let a: Box<dyn Adapter> = Box::new(EchoAdapter);
         assert_eq!(a.id(), AdapterId::Acp);
-        let v = a.submit("hi", None, None).await.expect("echo submit ok");
+        let v = a
+            .submit(UserTurnInput::text("hi"), None, None)
+            .await
+            .expect("echo submit ok");
         assert_eq!(v["echo"], "hi");
         let info = a.info().await.expect("info ok");
-        assert_eq!(info["sessions"], json!([]));
+        assert_eq!(info["instances"], json!([]));
     }
 
     /// Layering guard: no file outside `adapters/` may import from

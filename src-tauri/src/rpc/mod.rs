@@ -92,14 +92,14 @@ mod dispatcher_tests {
     /// completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
-        let sessions = Arc::new(AcpInstances::new(
+        let instances = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
         let ctx = HandlerCtx {
             app: None,
             status: broadcast,
-            sessions: Some(sessions),
+            instances: Some(instances),
             id: &id,
             already_subscribed: false,
         };
@@ -151,7 +151,7 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "session/info", Value::Null).await;
-        assert_eq!(v["sessions"], json!([]));
+        assert_eq!(v["instances"], json!([]));
     }
 
     #[tokio::test]
@@ -235,14 +235,14 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let id = RequestId::Number(2);
-        let sessions = Arc::new(AcpInstances::new(
+        let instances = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
         let ctx = HandlerCtx {
             app: None,
             status: &broadcast,
-            sessions: Some(sessions),
+            instances: Some(instances),
             id: &id,
             already_subscribed: true,
         };

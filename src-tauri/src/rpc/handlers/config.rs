@@ -17,14 +17,14 @@ impl RpcHandler for ConfigHandler {
     }
 
     async fn handle(&self, method: &str, _params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-        let sessions = ctx
-            .sessions
+        let instances = ctx
+            .instances
             .as_ref()
             .ok_or_else(|| RpcError::internal_error("AcpInstances not in managed state"))?;
 
         match method {
             "config/profiles" => Ok(HandlerOutcome::Reply(json!({
-                "profiles": sessions.list_profiles(),
+                "profiles": instances.list_profiles(),
             }))),
             other => Err(RpcError::method_not_found(other)),
         }

@@ -47,8 +47,8 @@ impl RpcHandler for SessionHandler {
     }
 
     async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-        let sessions = ctx
-            .sessions
+        let instances = ctx
+            .instances
             .as_ref()
             .ok_or_else(|| RpcError::internal_error("AcpInstances not in managed state"))?;
 
@@ -60,18 +60,18 @@ impl RpcHandler for SessionHandler {
                     profile_id,
                 } = serde_json::from_value(params)
                     .map_err(|e| RpcError::invalid_params(format!("session/submit params: {e}")))?;
-                let v = sessions
+                let v = instances
                     .submit(&text, agent_id.as_deref(), profile_id.as_deref())
                     .await?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/cancel" => {
                 let AgentAddress { agent_id } = params_or_default::<AgentAddress>(params, method)?;
-                let v = sessions.cancel(agent_id.as_deref()).await?;
+                let v = instances.cancel(agent_id.as_deref()).await?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/info" => {
-                let v = sessions.info().await?;
+                let v = instances.info().await?;
                 Ok(HandlerOutcome::Reply(v))
             }
             other => Err(RpcError::method_not_found(other)),

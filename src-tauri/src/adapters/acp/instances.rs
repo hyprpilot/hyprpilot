@@ -14,7 +14,7 @@ use std::sync::Arc;
 use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
 use serde_json::{json, Value};
 use tauri::Emitter;
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 use super::instance::AcpInstance;
 use super::resolve::ResolvedInstance;
@@ -133,6 +133,49 @@ impl AcpInstances {
         Ok(resolved)
     }
 
+    /// Spawn-on-miss / reuse-on-hit for a `(agent_id, profile_id?)`
+    /// pair. `Bootstrap::Fresh` keeps a live instance; `Resume(id)`
+    /// tears the live instance down (if any) and replaces it with a
+    /// session-load actor; `ListOnly` spawns an init-only actor and
+    /// registers it (callers wanting truly ephemeral ListOnly actors
+    /// construct them inline in `list` with a manual Shutdown). Takes
+    /// a `ResolvedInstance` so call sites that already resolved
+    /// (`submit`, `load`) don't re-walk the config.
+    pub async fn ensure(
+        &self,
+        resolved: ResolvedInstance,
+        bootstrap: Bootstrap,
+    ) -> Result<InstanceKey, RpcError> {
+        let key = InstanceKey {
+            agent_id: resolved.agent.id.clone(),
+            profile_id: resolved.profile_id.clone(),
+        };
+
+        let replace_existing = matches!(bootstrap, Bootstrap::Resume(_));
+        let mut active = self.active.lock().await;
+
+        if replace_existing {
+            if let Some(existing) = active.remove(&key) {
+                let (tx, rx) = oneshot::channel();
+                let _ = existing.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
+                drop(active);
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+                active = self.active.lock().await;
+            }
+        } else if active.contains_key(&key) {
+            return Ok(key);
+        }
+
+        let instance = start_instance(resolved, key.as_string(), self.events_tx.clone(), bootstrap);
+        active.insert(key.clone(), instance);
+        Ok(key)
+    }
+
+    async fn cmd_tx_for(&self, key: &InstanceKey) -> Option<mpsc::UnboundedSender<InstanceCommand>> {
+        let active = self.active.lock().await;
+        active.get(key).map(|h| h.cmd_tx.clone())
+    }
+
     /// Submit a prompt. Spawns the agent if no live instance exists
     /// for this `(agent, profile)` pair; reuses the existing instance
     /// otherwise.
@@ -143,10 +186,6 @@ impl AcpInstances {
         profile_id: Option<&str>,
     ) -> Result<Value, RpcError> {
         let resolved = self.resolve(agent_id, profile_id)?;
-        let key = InstanceKey {
-            agent_id: resolved.agent.id.clone(),
-            profile_id: resolved.profile_id.clone(),
-        };
 
         tracing::info!(
             agent = %resolved.agent.id,
@@ -156,22 +195,11 @@ impl AcpInstances {
             "acp::submit: resolved instance"
         );
 
-        let cmd_tx = {
-            let mut active = self.active.lock().await;
-            if let Some(handle) = active.get(&key) {
-                handle.cmd_tx.clone()
-            } else {
-                let instance = start_instance(
-                    resolved.clone(),
-                    key.as_string(),
-                    self.events_tx.clone(),
-                    Bootstrap::Fresh,
-                );
-                let tx = instance.cmd_tx.clone();
-                active.insert(key.clone(), instance);
-                tx
-            }
-        };
+        let key = self.ensure(resolved, Bootstrap::Fresh).await?;
+        let cmd_tx = self
+            .cmd_tx_for(&key)
+            .await
+            .ok_or_else(|| RpcError::internal_error("instance actor vanished before accepting prompt"))?;
 
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
@@ -236,16 +264,16 @@ impl AcpInstances {
     /// Snapshot of every live instance.
     pub async fn info(&self) -> Result<Value, RpcError> {
         let active = self.active.lock().await;
-        let mut sessions = Vec::with_capacity(active.len());
+        let mut instances = Vec::with_capacity(active.len());
         for (key, handle) in active.iter() {
-            sessions.push(json!({
+            instances.push(json!({
                 "agent_id": handle.agent_id,
                 "profile_id": key.profile_id,
                 "instance_id": key.as_string(),
                 "session_id": handle.current_session_id().await,
             }));
         }
-        Ok(json!({ "sessions": sessions }))
+        Ok(json!({ "instances": instances }))
     }
 
     /// Ask the agent for its persisted session index. Reuses the live
@@ -306,29 +334,7 @@ impl AcpInstances {
         session_id: String,
     ) -> Result<(), RpcError> {
         let resolved = self.resolve(agent_id, profile_id)?;
-        let key = InstanceKey {
-            agent_id: resolved.agent.id.clone(),
-            profile_id: resolved.profile_id.clone(),
-        };
-
-        let existing = {
-            let mut active = self.active.lock().await;
-            active.remove(&key)
-        };
-        if let Some(handle) = existing {
-            let (tx, rx) = oneshot::channel();
-            let _ = handle.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
-        }
-
-        let instance = start_instance(
-            resolved,
-            key.as_string(),
-            self.events_tx.clone(),
-            Bootstrap::Resume(SessionId::new(session_id)),
-        );
-        let mut active = self.active.lock().await;
-        active.insert(key, instance);
+        self.ensure(resolved, Bootstrap::Resume(SessionId::new(session_id))).await?;
         Ok(())
     }
 
@@ -390,14 +396,18 @@ impl AcpInstances {
 }
 
 /// Route a runtime `InstanceEvent` onto the corresponding `acp:*`
-/// Tauri event. Separators stay `:` here; JSON-RPC wire uses `/`.
+/// Tauri event. Projects the ACP-side variant onto
+/// `adapters::InstanceEvent` first — the generic vocabulary is the
+/// wire shape the webview sees. Separators stay `:` here; JSON-RPC
+/// wire uses `/`.
 fn emit_acp_event(app: &tauri::AppHandle, evt: InstanceEvent) {
-    let name = match &evt {
-        InstanceEvent::State { .. } => "acp:instance-state",
-        InstanceEvent::Transcript { .. } => "acp:transcript",
-        InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
+    let generic: crate::adapters::InstanceEvent = evt.into();
+    let name = match &generic {
+        crate::adapters::InstanceEvent::State { .. } => "acp:instance-state",
+        crate::adapters::InstanceEvent::Transcript { .. } => "acp:transcript",
+        crate::adapters::InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
     };
-    match serde_json::to_value(&evt) {
+    match serde_json::to_value(&generic) {
         Ok(v) => {
             if let Err(err) = app.emit(name, v) {
                 tracing::warn!(%err, event = name, "failed to emit acp event");
@@ -422,7 +432,7 @@ mod tests {
     async fn info_empty_when_nothing_spawned() {
         let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
         let v = instances.info().await.expect("ok");
-        assert_eq!(v["sessions"], json!([]));
+        assert_eq!(v["instances"], json!([]));
     }
 
     #[tokio::test]

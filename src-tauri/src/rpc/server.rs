@@ -19,7 +19,7 @@ pub struct RpcState {
     pub app: tauri::AppHandle,
     pub status: Arc<StatusBroadcast>,
     pub dispatcher: Arc<RpcDispatcher>,
-    pub sessions: Arc<AcpInstances>,
+    pub instances: Arc<AcpInstances>,
 }
 
 /// One accepted connection. Reads NDJSON, dispatches, writes the
@@ -52,7 +52,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Some(&state.app),
                     &state.status,
                     &state.dispatcher,
-                    Some(state.sessions.clone()),
+                    Some(state.instances.clone()),
                     status_rx.is_some(),
                 ).await;
 
@@ -84,7 +84,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 let _ = writer.flush().await;
 
                 if kill_signalled {
-                    crate::daemon::shutdown(&state.app, &state.sessions).await;
+                    crate::daemon::shutdown(&state.app, &state.instances).await;
                     return;
                 }
             }
@@ -154,7 +154,7 @@ async fn dispatch(
     app: Option<&tauri::AppHandle>,
     status: &StatusBroadcast,
     dispatcher: &RpcDispatcher,
-    sessions: Option<Arc<AcpInstances>>,
+    instances: Option<Arc<AcpInstances>>,
     connection_already_subscribed: bool,
 ) -> (
     Response,
@@ -218,7 +218,7 @@ async fn dispatch(
     let ctx = HandlerCtx {
         app,
         status,
-        sessions,
+        instances,
         id: &id,
         already_subscribed: connection_already_subscribed,
     };
@@ -260,11 +260,11 @@ mod tests {
     async fn run(line: &str) -> serde_json::Value {
         let status = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let sessions = Arc::new(AcpInstances::new(
+        let instances = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
-        let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(sessions), false).await;
+        let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(instances), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
@@ -284,7 +284,7 @@ mod tests {
     async fn session_info_returns_empty_list() {
         let out = run(r#"{"jsonrpc":"2.0","id":"sid","method":"session/info"}"#).await;
         assert_eq!(out["id"], "sid");
-        assert_eq!(out["result"]["sessions"], json!([]));
+        assert_eq!(out["result"]["instances"], json!([]));
     }
 
     #[tokio::test]
@@ -437,7 +437,7 @@ mod tests {
             let mut lines = BufReader::new(reader).lines();
             let status = StatusBroadcast::new(true);
             let dispatcher = RpcDispatcher::with_defaults();
-            let sessions = Arc::new(AcpInstances::new(
+            let instances = Arc::new(AcpInstances::new(
                 Config::default(),
                 Arc::new(StatusBroadcast::new(true)),
             ));
@@ -445,7 +445,7 @@ mod tests {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _) = dispatch(&l, None, &status, &dispatcher, Some(sessions.clone()), false).await;
+                let (resp, _) = dispatch(&l, None, &status, &dispatcher, Some(instances.clone()), false).await;
                 let mut bytes = serde_json::to_vec(&resp).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
@@ -463,7 +463,7 @@ mod tests {
 
         let v: serde_json::Value = serde_json::from_str(&buf).unwrap();
         assert_eq!(v["id"], 1);
-        assert_eq!(v["result"]["sessions"], json!([]));
+        assert_eq!(v["result"]["instances"], json!([]));
 
         drop(client);
         task.await.unwrap();
@@ -478,7 +478,7 @@ mod tests {
     async fn double_subscribe_on_same_connection_is_rejected() {
         let broadcast = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let sessions = Arc::new(AcpInstances::new(
+        let instances = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
@@ -491,7 +491,7 @@ mod tests {
             None,
             &broadcast,
             &dispatcher,
-            Some(sessions.clone()),
+            Some(instances.clone()),
             false,
         )
         .await;
@@ -505,7 +505,7 @@ mod tests {
             None,
             &broadcast,
             &dispatcher,
-            Some(sessions),
+            Some(instances),
             true,
         )
         .await;
@@ -597,7 +597,7 @@ mod tests {
             let (reader, mut writer) = server.into_split();
             let mut lines = BufReader::new(reader).lines();
             let dispatcher = RpcDispatcher::with_defaults();
-            let sessions = Arc::new(AcpInstances::new(
+            let instances = Arc::new(AcpInstances::new(
                 Config::default(),
                 Arc::new(StatusBroadcast::new(true)),
             ));
@@ -614,7 +614,7 @@ mod tests {
                                     None,
                                     &broadcast_clone,
                                     &dispatcher,
-                                    Some(sessions.clone()),
+                                    Some(instances.clone()),
                                     status_rx.is_some(),
                                 ).await;
                                 if let Some(rx) = new_rx {

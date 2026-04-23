@@ -23,10 +23,10 @@ use crate::rpc::status::StatusBroadcast;
 pub struct HandlerCtx<'a> {
     pub app: Option<&'a tauri::AppHandle>,
     pub status: &'a StatusBroadcast,
-    /// Shared ACP session registry. `Option` so the unit-test harness
+    /// Shared ACP instance registry. `Option` so the unit-test harness
     /// can run without building a full `AcpInstances`; production calls
     /// always pass `Some` (the daemon constructs it in `setup`).
-    pub sessions: Option<Arc<AcpInstances>>,
+    pub instances: Option<Arc<AcpInstances>>,
     /// Request id of the in-flight call. Handlers read it for logging /
     /// tracing spans; unused by routing.
     #[allow(dead_code)]

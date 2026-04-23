@@ -30,14 +30,29 @@ pub mod resolve;
 pub mod runtime;
 pub mod spawn;
 
-pub use instances::{AcpInstances, InstanceKey};
+pub use instances::AcpInstances;
+#[allow(unused_imports)]
+pub use instances::InstanceKey;
 
 use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::{
     Adapter, AdapterError, AdapterId, AdapterResult, Bootstrap, Capabilities, InstanceHandle, ResolvedInstance,
+    UserTurnInput,
 };
+use crate::rpc::protocol::RpcError;
+
+/// JSON-RPC error → adapter error. `-32602` is a caller-side shape
+/// problem (`InvalidRequest`); every other code — internal errors,
+/// transport / backend failures, hyprpilot-specific codes in the
+/// `-32000..-32099` range — surfaces as `Backend`.
+fn map_rpc_error(err: RpcError) -> AdapterError {
+    match err.code {
+        -32602 => AdapterError::InvalidRequest(err.message),
+        _ => AdapterError::Backend(err.message),
+    }
+}
 
 /// Thin wrapper that `impl Adapter for AcpAdapter` so the rest of the
 /// crate can interact with `dyn Adapter`. Composes the live
@@ -74,38 +89,41 @@ impl Adapter for AcpAdapter {
 
     async fn start_instance(
         &self,
-        _resolved: ResolvedInstance,
-        _bootstrap: Bootstrap,
+        resolved: ResolvedInstance,
+        bootstrap: Bootstrap,
     ) -> AdapterResult<InstanceHandle> {
-        Err(AdapterError::Unsupported(
-            "AcpAdapter::start_instance: Adapter surface not yet wired through AcpInstances (K-251 follow-up)".into(),
-        ))
+        let agent_id = resolved.agent.id.clone();
+        let key = self
+            .instances
+            .ensure(resolved, bootstrap.into())
+            .await
+            .map_err(map_rpc_error)?;
+        Ok(InstanceHandle {
+            agent_id,
+            instance_id: key.as_string(),
+            session_id: None,
+        })
     }
 
     async fn submit(
         &self,
-        text: &str,
+        input: UserTurnInput,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> AdapterResult<serde_json::Value> {
+        let UserTurnInput::Text(text) = input;
         self.instances
-            .submit(text, agent_id, profile_id)
+            .submit(&text, agent_id, profile_id)
             .await
-            .map_err(|err| AdapterError::InvalidRequest(err.message))
+            .map_err(map_rpc_error)
     }
 
     async fn cancel(&self, agent_id: Option<&str>) -> AdapterResult<serde_json::Value> {
-        self.instances
-            .cancel(agent_id)
-            .await
-            .map_err(|err| AdapterError::InvalidRequest(err.message))
+        self.instances.cancel(agent_id).await.map_err(map_rpc_error)
     }
 
     async fn info(&self) -> AdapterResult<serde_json::Value> {
-        self.instances
-            .info()
-            .await
-            .map_err(|err| AdapterError::InvalidRequest(err.message))
+        self.instances.info().await.map_err(map_rpc_error)
     }
 
     async fn shutdown(&self) {
