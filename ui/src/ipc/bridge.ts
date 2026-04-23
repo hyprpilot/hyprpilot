@@ -40,7 +40,7 @@ export interface LoadSessionArgs {
   sessionId: string
 }
 
-/** Fetches the `[[profiles]]` registry. Errors propagate — `useAcpProfiles::refresh` surfaces them via `lastErr`. */
+/** Fetches the `[[profiles]]` registry. Errors propagate — `useProfiles::refresh` surfaces them via `lastErr`. */
 export async function getProfiles(): Promise<ProfileSummary[]> {
   const r = await invoke<{ profiles: ProfileSummary[] }>('profiles_list')
 

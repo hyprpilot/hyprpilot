@@ -260,13 +260,21 @@ pub struct Theme {
     pub accent: ThemeAccent,
     #[garde(dive)]
     pub state: ThemeState,
+    #[garde(dive)]
+    pub kind: ThemeKind,
+    #[garde(dive)]
+    pub status: ThemeStatus,
+    #[garde(dive)]
+    pub permission: ThemePermission,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeFont {
     #[garde(inner(length(min = 1)))]
-    pub family: Option<String>,
+    pub mono: Option<String>,
+    #[garde(inner(length(min = 1)))]
+    pub sans: Option<String>,
 }
 
 /// Window frame tokens. `default` = background fill; `edge` = accent stripe.
@@ -282,6 +290,12 @@ pub struct ThemeWindow {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeSurface {
+    #[garde(dive)]
+    pub default: Option<HexColor>,
+    #[garde(dive)]
+    pub bg: Option<HexColor>,
+    #[garde(dive)]
+    pub alt: Option<HexColor>,
     #[garde(dive)]
     pub card: SurfaceCard,
     #[garde(dive)]
@@ -314,9 +328,11 @@ pub struct ThemeFg {
     #[garde(dive)]
     pub default: Option<HexColor>,
     #[garde(dive)]
+    pub ink_2: Option<HexColor>,
+    #[garde(dive)]
     pub dim: Option<HexColor>,
     #[garde(dive)]
-    pub muted: Option<HexColor>,
+    pub faint: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -338,7 +354,11 @@ pub struct ThemeAccent {
     #[garde(dive)]
     pub user: Option<HexColor>,
     #[garde(dive)]
+    pub user_soft: Option<HexColor>,
+    #[garde(dive)]
     pub assistant: Option<HexColor>,
+    #[garde(dive)]
+    pub assistant_soft: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -352,6 +372,53 @@ pub struct ThemeState {
     pub pending: Option<HexColor>,
     #[garde(dive)]
     pub awaiting: Option<HexColor>,
+    #[garde(dive)]
+    pub working: Option<HexColor>,
+}
+
+/// Per-tool-family dispatch colours keyed by `ToolCall.kind`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeKind {
+    #[garde(dive)]
+    pub read: Option<HexColor>,
+    #[garde(dive)]
+    pub write: Option<HexColor>,
+    #[garde(dive)]
+    pub bash: Option<HexColor>,
+    #[garde(dive)]
+    pub search: Option<HexColor>,
+    #[garde(dive)]
+    pub agent: Option<HexColor>,
+    #[garde(dive)]
+    pub think: Option<HexColor>,
+    #[garde(dive)]
+    pub terminal: Option<HexColor>,
+    #[garde(dive)]
+    pub acp: Option<HexColor>,
+}
+
+/// Toast / banner status hues. Distinct from the `state` machine —
+/// `ok`/`warn`/`err` are one-shot notifications, not phase transitions.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeStatus {
+    #[garde(dive)]
+    pub ok: Option<HexColor>,
+    #[garde(dive)]
+    pub warn: Option<HexColor>,
+    #[garde(dive)]
+    pub err: Option<HexColor>,
+}
+
+/// Warm-brown panel fills for the permission stack.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemePermission {
+    #[garde(dive)]
+    pub bg: Option<HexColor>,
+    #[garde(dive)]
+    pub bg_active: Option<HexColor>,
 }
 
 /// `[[agents]]` registry + `[agent]` global scope. Entries override
@@ -608,6 +675,9 @@ impl Merge for Theme {
             border: self.border.merge(other.border),
             accent: self.accent.merge(other.accent),
             state: self.state.merge(other.state),
+            kind: self.kind.merge(other.kind),
+            status: self.status.merge(other.status),
+            permission: self.permission.merge(other.permission),
         }
     }
 }
@@ -615,7 +685,8 @@ impl Merge for Theme {
 impl Merge for ThemeFont {
     fn merge(self, other: Self) -> Self {
         Self {
-            family: self.family.merge(other.family),
+            mono: self.mono.merge(other.mono),
+            sans: self.sans.merge(other.sans),
         }
     }
 }
@@ -632,6 +703,9 @@ impl Merge for ThemeWindow {
 impl Merge for ThemeSurface {
     fn merge(self, other: Self) -> Self {
         Self {
+            default: self.default.merge(other.default),
+            bg: self.bg.merge(other.bg),
+            alt: self.alt.merge(other.alt),
             card: self.card.merge(other.card),
             compose: self.compose.merge(other.compose),
             text: self.text.merge(other.text),
@@ -660,8 +734,9 @@ impl Merge for ThemeFg {
     fn merge(self, other: Self) -> Self {
         Self {
             default: self.default.merge(other.default),
+            ink_2: self.ink_2.merge(other.ink_2),
             dim: self.dim.merge(other.dim),
-            muted: self.muted.merge(other.muted),
+            faint: self.faint.merge(other.faint),
         }
     }
 }
@@ -681,7 +756,9 @@ impl Merge for ThemeAccent {
         Self {
             default: self.default.merge(other.default),
             user: self.user.merge(other.user),
+            user_soft: self.user_soft.merge(other.user_soft),
             assistant: self.assistant.merge(other.assistant),
+            assistant_soft: self.assistant_soft.merge(other.assistant_soft),
         }
     }
 }
@@ -693,6 +770,41 @@ impl Merge for ThemeState {
             stream: self.stream.merge(other.stream),
             pending: self.pending.merge(other.pending),
             awaiting: self.awaiting.merge(other.awaiting),
+            working: self.working.merge(other.working),
+        }
+    }
+}
+
+impl Merge for ThemeKind {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            read: self.read.merge(other.read),
+            write: self.write.merge(other.write),
+            bash: self.bash.merge(other.bash),
+            search: self.search.merge(other.search),
+            agent: self.agent.merge(other.agent),
+            think: self.think.merge(other.think),
+            terminal: self.terminal.merge(other.terminal),
+            acp: self.acp.merge(other.acp),
+        }
+    }
+}
+
+impl Merge for ThemeStatus {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            ok: self.ok.merge(other.ok),
+            warn: self.warn.merge(other.warn),
+            err: self.err.merge(other.err),
+        }
+    }
+}
+
+impl Merge for ThemePermission {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            bg: self.bg.merge(other.bg),
+            bg_active: self.bg_active.merge(other.bg_active),
         }
     }
 }
@@ -795,13 +907,17 @@ mod tests {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
         let t = &cfg.ui.theme;
 
-        assert!(t.font.family.is_some(), "font.family");
+        assert!(t.font.mono.is_some(), "font.mono");
+        assert!(t.font.sans.is_some(), "font.sans");
 
         for (n, v) in [("window.default", &t.window.default), ("window.edge", &t.window.edge)] {
             assert!(v.is_some(), "{n}");
         }
 
         for (n, v) in [
+            ("surface.default", &t.surface.default),
+            ("surface.bg", &t.surface.bg),
+            ("surface.alt", &t.surface.alt),
             ("surface.card.user.bg", &t.surface.card.user.bg),
             ("surface.card.assistant.bg", &t.surface.card.assistant.bg),
             ("surface.compose", &t.surface.compose),
@@ -812,8 +928,9 @@ mod tests {
 
         for (n, v) in [
             ("fg.default", &t.fg.default),
+            ("fg.ink_2", &t.fg.ink_2),
             ("fg.dim", &t.fg.dim),
-            ("fg.muted", &t.fg.muted),
+            ("fg.faint", &t.fg.faint),
         ] {
             assert!(v.is_some(), "{n}");
         }
@@ -829,7 +946,9 @@ mod tests {
         for (n, v) in [
             ("accent.default", &t.accent.default),
             ("accent.user", &t.accent.user),
+            ("accent.user_soft", &t.accent.user_soft),
             ("accent.assistant", &t.accent.assistant),
+            ("accent.assistant_soft", &t.accent.assistant_soft),
         ] {
             assert!(v.is_some(), "{n}");
         }
@@ -839,6 +958,35 @@ mod tests {
             ("state.stream", &t.state.stream),
             ("state.pending", &t.state.pending),
             ("state.awaiting", &t.state.awaiting),
+            ("state.working", &t.state.working),
+        ] {
+            assert!(v.is_some(), "{n}");
+        }
+
+        for (n, v) in [
+            ("kind.read", &t.kind.read),
+            ("kind.write", &t.kind.write),
+            ("kind.bash", &t.kind.bash),
+            ("kind.search", &t.kind.search),
+            ("kind.agent", &t.kind.agent),
+            ("kind.think", &t.kind.think),
+            ("kind.terminal", &t.kind.terminal),
+            ("kind.acp", &t.kind.acp),
+        ] {
+            assert!(v.is_some(), "{n}");
+        }
+
+        for (n, v) in [
+            ("status.ok", &t.status.ok),
+            ("status.warn", &t.status.warn),
+            ("status.err", &t.status.err),
+        ] {
+            assert!(v.is_some(), "{n}");
+        }
+
+        for (n, v) in [
+            ("permission.bg", &t.permission.bg),
+            ("permission.bg_active", &t.permission.bg_active),
         ] {
             assert!(v.is_some(), "{n}");
         }
@@ -872,6 +1020,9 @@ focus = "#00ff00"
 
 [ui.theme.surface.card.user]
 bg = "#ff8800"
+
+[ui.theme.kind]
+read = "#123456"
 "##,
         );
         let cfg = load(Some(&p), None).expect("load");
@@ -881,16 +1032,20 @@ bg = "#ff8800"
         assert_eq!(cfg.ui.theme.window.edge.as_deref(), Some("#ff00aa"));
         assert_eq!(cfg.ui.theme.border.focus.as_deref(), Some("#00ff00"));
         assert_eq!(cfg.ui.theme.surface.card.user.bg.as_deref(), Some("#ff8800"));
+        assert_eq!(cfg.ui.theme.kind.read.as_deref(), Some("#123456"));
 
         // Untouched in the same groups still fall back to defaults.
-        assert_eq!(cfg.ui.theme.border.default.as_deref(), Some("#4b5263"));
-        assert_eq!(cfg.ui.theme.border.soft.as_deref(), Some("#2c333d"));
-        assert_eq!(cfg.ui.theme.surface.card.assistant.bg.as_deref(), Some("#22282f"));
-        assert_eq!(cfg.ui.theme.surface.compose.as_deref(), Some("#2c333d"));
+        assert_eq!(cfg.ui.theme.border.default.as_deref(), Some("#2a2e38"));
+        assert_eq!(cfg.ui.theme.border.soft.as_deref(), Some("#353a46"));
+        assert_eq!(cfg.ui.theme.surface.card.assistant.bg.as_deref(), Some("#1c1f26"));
+        assert_eq!(cfg.ui.theme.surface.compose.as_deref(), Some("#21252d"));
+        assert_eq!(cfg.ui.theme.kind.write.as_deref(), Some("#e480d4"));
 
         // Groups not mentioned at all still come from defaults.
-        assert_eq!(cfg.ui.theme.fg.default.as_deref(), Some("#abb2bf"));
-        assert_eq!(cfg.ui.theme.accent.default.as_deref(), Some("#abb2bf"));
+        assert_eq!(cfg.ui.theme.fg.default.as_deref(), Some("#d8dde5"));
+        assert_eq!(cfg.ui.theme.accent.default.as_deref(), Some("#c99bf0"));
+        assert_eq!(cfg.ui.theme.status.ok.as_deref(), Some("#7fcf8a"));
+        assert_eq!(cfg.ui.theme.permission.bg.as_deref(), Some("#1f1a12"));
 
         fs::remove_file(&p).ok();
     }

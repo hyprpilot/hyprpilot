@@ -175,11 +175,25 @@ not a colour.
    `[ui.theme.*]`.
 2. User TOMLs override any subset; `merge_theme` walks the tree field-by-field
    using `.or()` over `Option<String>` leaves.
-3. `config::Theme` is a typed tree. Groups: `font`, `window`
-   (`default` + `edge`), `surface` (`card.{user,assistant}`, `compose`,
-   `text`), `fg` (`default`/`dim`/`muted`), `border`
-   (`default`/`soft`/`focus`), `accent` (`default`/`user`/`assistant`),
-   `state` (`idle`/`stream`/`pending`/`awaiting`).
+3. `config::Theme` is a typed tree. Groups:
+   - `font` (`mono`/`sans`) — monospace stack for chrome, sans stack for
+     inline assistant prose.
+   - `window` (`default` + `edge`).
+   - `surface` (`default`/`bg`/`alt`, `card.{user,assistant}`, `compose`,
+     `text`) — `default` is the primary filled surface, `bg` is the body
+     backdrop, `alt` the elevated variant.
+   - `fg` (`default`/`ink_2`/`dim`/`faint`).
+   - `border` (`default`/`soft`/`focus`).
+   - `accent` (`default`/`user`/`user_soft`/`assistant`/`assistant_soft`) —
+     `*_soft` pairs provide the washed-out tag/pill fill for each speaker.
+   - `state` (`idle`/`stream`/`pending`/`awaiting`/`working`) — five-phase
+     machine driving the overlay's live indicators.
+   - `kind` (`read`/`write`/`bash`/`search`/`agent`/`think`/`terminal`/`acp`)
+     — per-tool-family dispatch colors keyed by `ToolCall.kind`.
+   - `status` (`ok`/`warn`/`err`) — toast / banner notification hues,
+     distinct from phase state.
+   - `permission` (`bg`/`bg_active`) — warm-brown panel fills for the
+     permission stack.
 4. The Tauri `get_theme` command serves the resolved tree to the webview.
 5. `ui/src/composables/useTheme.ts::applyTheme` walks the object and writes
    every scalar leaf onto `:root` as a `--theme-<path>` CSS custom property.
@@ -204,11 +218,12 @@ not a colour.
   seeding values in `defaults.toml`, and updating the two token tests.
 - Add a Tailwind utility alias in `ui/src/assets/styles.css::@theme inline`
   when a new token needs utility-class access (e.g. `bg-theme-<x>`).
-- CSS must not declare literal theme values on `:root`. Rust is the single
-  source of truth. Only exceptions: three `var(--token, literal)` fallbacks
-  on the body / app / window-edge rules — the tokens that affect the first
-  visible frame, to avoid FOUC before `applyTheme()` resolves. Keep those
-  literals in sync with `defaults.toml`.
+- CSS must not declare literal theme values anywhere — not on `:root`, not
+  as `var(--token, literal)` fallbacks, not inline in `.vue` scoped styles.
+  Rust is the sole source; `applyTheme()` runs synchronously in `main.ts`
+  before `createApp().mount('#app')` so no FOUC window exists. Exception:
+  `tauri.conf.json::backgroundColor` paints before the webview mounts —
+  keep it equal to `[ui.theme.window] default`.
 - The Tauri window's native `backgroundColor` (in `src-tauri/tauri.conf.json`)
   is painted before the webview loads; keep it equal to
   `[ui.theme.window] default`.
@@ -216,6 +231,43 @@ not a colour.
 - Cards are keyed by speaker: `surface.card.user`, `surface.card.assistant`.
   Each is an object (`bg` today; `accent` / `border` / `fg` later). Do not
   name surfaces by elevation (`card_hi`, `card_alt`); name them by role.
+
+### Base font size — page zoom from GTK desktop font
+
+The overlay inherits its base size from the user's GTK desktop font
+(`gtk-font-name` via `gtk::Settings::default()`). Daemon queries it
+once in `tauri::Builder::setup(...)` — GTK is initialized by then —
+and applies the result via **`WebviewWindow::set_zoom(f64)`**, the
+Chromium-style page zoom that wry forwards to WebKit's
+`set_zoom_level`. This scales **text + layout together** (not just
+font-size), avoiding the classic WebKitGTK font-scaling-factor bug
+where fonts grow but margins/padding don't (WebKit bug 250138).
+
+The mapping is linear with a 10pt baseline: `zoom = 1.0 + (size_pt -
+10) * 0.1`, clamped `[0.5, 2.0]`. `Segoe UI 11` → 1.1×; `DejaVu Sans
+10` → 1.0×; `Inter 12` → 1.2×. Missing settings singleton,
+unparseable font string, or `set_zoom` failure → no zoom call;
+webview stays at its 1.0× default.
+
+`get_gtk_font` is still exposed so the webview can pick up the
+**family** (not the size) — `useTheme::applyGtkFont()` overrides
+`--theme-font-sans` with the user's GTK family so prose matches the
+desktop; `--theme-font-mono` stays on the configured stack (code
+deserves a monospace regardless of desktop font).
+
+**CSS must not set `font-size` in `px`.** Every primitive uses `rem`
+(or `em`). `text-[0.Nrem]` Tailwind arbitrary-value utility is the
+canonical way to set a font size inside a primitive; full utility
+aliases (`text-xs`, `text-sm`, …) are rem-based and fine. No literal
+`font-size: Npx` anywhere under `ui/src/`. The `set_zoom` call is
+the single scale authority; adding a second `html { font-size }`
+write on top would double-count.
+
+**Why not `WebKitSettings::default-font-size`?** That property only
+scales the default font (unset CSS sizes); it doesn't touch explicit
+`font-size: 1rem` declarations, AND it's the exact axis WebKitGTK
+treats as "font-only, layout fixed" — same bug as manipulating
+`html { font-size }`. Page zoom is the correct knob.
 
 ## Window surface (`[daemon.window]`)
 
@@ -442,6 +494,40 @@ mock-agent subprocess) and gates behind `HYPRPILOT_E2E_MODE=tauri` — see
 `tests/e2e/README.md` for the WebKitGTK-4.1 eval-stall that keeps it
 off the default lane.
 
+### Playwright MCP for interactive UI debugging
+
+The Playwright MCP server (`mcp__mcphub__playwright__*` tools) drives
+Chromium, not the Tauri WebKit webview. It does **not** inspect a
+running Tauri window; it drives a standalone headless browser.
+Useful for one-off layout / flex / height debugging where the agent
+needs to check computed styles against a real layout engine:
+
+1. Start the Vite dev server alone: `pnpm --filter hyprpilot-ui dev`
+   (prints the port — usually `http://localhost:1420/`).
+2. `mcp__mcphub__playwright__browser_navigate { url: "http://localhost:1420/" }`.
+3. `mcp__mcphub__playwright__browser_evaluate { function: "() => { ... }" }`
+   for computed-style inspection, e.g. `getComputedStyle(el).height`.
+4. Kill both the Vite server and the browser process when done
+   (`pkill -f 'vite.*hyprpilot-ui'`, `pkill -f brave` / `chromium`).
+
+**Caveats:**
+
+- The browser mode in MCP may hang during launch in sandboxed shells
+  (Brave-on-Wayland WebSocket handshake can stall). If the first
+  `browser_navigate` call times out, the agent has no Playwright
+  access in that environment — fall back to reading the code +
+  static-checking computed-style rules manually.
+- IPC-dependent UI paths (anything calling `invoke()` / `listen()`)
+  surface the "tauri host missing" soft-fail in browser mode — the
+  UI renders without Rust-side state. That's expected; for IPC-live
+  inspection use the Playwright-tauri bridge (`HYPRPILOT_E2E_MODE=tauri`)
+  once the WebKitGTK eval-stall clears. For pure layout / CSS / DOM
+  debugging, browser mode is sufficient and the fastest path.
+- **Do not** use Playwright MCP for scripted regression tests — those
+  belong in `tests/e2e/` under the `@srsholmes/tauri-playwright`
+  harness, which runs against the real Tauri build. Playwright MCP
+  is for ad-hoc inspection only.
+
 
 
 - **No backwards-compatibility layers — ever.** This repo has no stability
@@ -627,6 +713,58 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
   catch (err) { … }`). Local refs / state that carry the last error use
   `lastErr`, `bindErr`, etc. — same short form. Mirrors the Rust
   convention already in the codebase.
+- **Names are additive: scope first, noun last.** The core rule across
+  the whole codebase — Rust, Vue, TypeScript. Build up identifiers by
+  prepending scope tags that describe *what kind of* the noun it is.
+  When two things share a backend or live in the same layer, give them
+  the same prefix so they group at sort time and read as a family at
+  the import site.
+  - **Rust protocol types** are one instance of the rule, not the
+    rule itself: `Agent` → `AcpAgent` → `AcpAgentClaudeCode`;
+    `AcpAgent` sits next to `AcpSession`, `AcpSessions`,
+    `AcpSessionHandle` because they share the ACP wire protocol.
+    That's a grouping, not a universal prefix mandate — `Acp*` only
+    makes sense for things that actually speak ACP. Same pattern
+    would apply to a future direct-HTTP sibling: `HttpAgent` +
+    `HttpSession` + `HttpSessionHandle`.
+  - **Drop the scope when the whole tree already carries it.** The
+    overlay IS the app — `ui/src/components/` is the overlay's
+    component tree, not nested under an extra `overlay/` folder.
+    The window frame is `components/Frame.vue`, the button is
+    `components/Button.vue`, the toast is `components/Toast.vue`.
+    Only `components/ui/` carries a distinct scope (shadcn
+    primitives come from an external library and deserve their own
+    namespace). Same for scoped CSS classes: `.frame`, not
+    `.overlay-frame` — `<style scoped>` already hashes the selector
+    per SFC. Same for composables: `ui/src/composables/` is one
+    tree, everything in it wires the same overlay — names drop the
+    `Acp*` prefix (`useAdapter`, `useProfiles`, `useSessionHistory`,
+    `useTranscript`). A future `HttpAgent`-speaking sibling would
+    slot in as `useHttpAdapter`, at which point the current file
+    renames to `useAcpAdapter` per the additive rule.
+  - **Keep the scope when it discriminates siblings.** A
+    chat-specific turn is `ChatTurn.vue`, not just `Turn.vue`,
+    because the discriminator is the chat domain, not where the
+    file sits. A command-palette-specific button would be
+    `CommandPaletteButton.vue` — reaching the full noun chain makes
+    the intent unmistakable when a generic `Button.vue` also exists
+    one level up.
+  - **Group related components in subfolders**; the folder name
+    doubles as the short scope. `components/chat/` holds every chat
+    transcript primitive (`ChatTurn`, `ChatComposer`,
+    `ChatToolChips`, …). `components/command-palette/` holds
+    palette primitives (`CommandPaletteShell`, `CommandPaletteRow`,
+    `CommandPaletteMiniCard`). Root `components/` holds
+    scope-agnostic primitives that layer directly on the overlay
+    itself (today: `Frame`, `Button`, `Pill`, `Toast`,
+    `BreadcrumbPill`, `KbdHint` — future additions like settings
+    dialogs or wizards slot in here too). Page-level views that
+    consume components live in `views/`.
+  - **Rename over aliasing.** When a name that once fit becomes
+    misleading (e.g. an old `AcpTurn` that doesn't actually speak
+    ACP), rename it in one commit + update every caller — never
+    leave a `type AcpTurn = ChatTurn` shim. The no-legacy-compat
+    rule applies here too.
 
 ### Style conventions
 
@@ -653,6 +791,11 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 - **No `__` in class names.** Use `-` as the separator — `.placeholder-header`,
   not `.placeholder__header`.
 - **No `--pilot-*` CSS variables.** All theme tokens are `--theme-*`.
+- **Custom animations go in `@theme {}` Tailwind blocks** (`--animate-<name>:
+  <keyframes>`), not `:root { --<name>-shorthand: ... }`. Consumers reach
+  them via the Tailwind utility class (`animate-<name>`), not raw
+  `animation:` declarations. Today the tree ships `animate-pulse-slow` (the
+  tool-running pulse) and `animate-blink` (palette / terminal caret).
 - **`<style scoped>` in every Vue SFC, no `lang="postcss"`.** Tailwind
   v4's vite plugin only transforms virtual modules whose query ends in
   `.css`; `lang="postcss"` emits `lang.postcss` and silently bypasses

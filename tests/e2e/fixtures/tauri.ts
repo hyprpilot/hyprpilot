@@ -13,32 +13,32 @@ export const { test, expect } = createTauriTest({
     // only cover the leaves referenced during render.
     get_theme: () => ({
       font: { family: 'ui-monospace, monospace' },
-      window: { default: '#1e2127', edge: '#d3b051' },
+      window: { default: '#16181d', edge: '#c99bf0' },
       surface: {
-        card: { user: { bg: '#2c333d' }, assistant: { bg: '#22282f' } },
-        compose: '#2c333d',
-        text: '#1e2127'
+        card: { user: { bg: '#1c1f26' }, assistant: { bg: '#1c1f26' } },
+        compose: '#21252d',
+        text: '#16181d'
       },
       fg: {
-        default: '#abb2bf',
-        dim: '#7c8a9d',
-        muted: '#5c6370'
+        default: '#d8dde5',
+        dim: '#6b7280',
+        muted: '#4a5060'
       },
       border: {
-        default: '#4b5263',
-        soft: '#2c333d',
-        focus: '#6c778d'
+        default: '#2a2e38',
+        soft: '#353a46',
+        focus: '#4a5060'
       },
       accent: {
-        default: '#abb2bf',
-        user: '#e5c07b',
-        assistant: '#98c379'
+        default: '#c99bf0',
+        user: '#e8c86c',
+        assistant: '#8ac9a0'
       },
       state: {
-        idle: '#98c379',
-        stream: '#e5c07b',
-        pending: '#e06c75',
-        awaiting: '#d19a66'
+        idle: '#7fcf8a',
+        stream: '#e8c86c',
+        pending: '#e06f6f',
+        awaiting: '#e0a060'
       }
     }),
     get_window_state: () => ({ mode: 'center', anchorEdge: null })

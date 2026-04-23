@@ -10,7 +10,7 @@ test('acp:permission-request mock events reach the webview listener chain', asyn
   // Register a capture listener through the Tauri event IPC call (which the
   // bridge's ipc-mock script intercepts via `plugin:event|listen`) so the
   // subsequent `emitMockEvent` reaches a real subscriber. This exercises
-  // the exact wire `useAcpAgent` subscribes on.
+  // the exact wire `useAdapter` subscribes on.
   await page.evaluate(() => {
     const captured: unknown[] = []
 
