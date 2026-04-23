@@ -1,11 +1,11 @@
-//! Session registry shared across the RPC + Tauri command surfaces.
+//! Instance registry shared across the RPC + Tauri command surfaces.
 //!
-//! Owns the live per-session actors spawned by `acp::runtime`.
-//! Entries are keyed by `(agent_id, profile_id)` so `session/submit`
-//! with an optional `profile_id` keeps distinct sessions per profile
-//! (a follow-up prompt with the same `(agent_id, profile_id)` pair
-//! reuses the live actor; a different profile against the same agent
-//! spawns its own).
+//! Owns the live per-instance actors spawned by `acp::runtime`.
+//! Entries are keyed by `InstanceKey` (`agent_id` + optional
+//! `profile_id`) so `session/submit` with an optional `profile_id`
+//! keeps distinct instances per profile (a follow-up prompt with the
+//! same `(agent_id, profile_id)` pair reuses the live actor; a
+//! different profile against the same agent spawns its own).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,37 +16,51 @@ use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-use super::resolve::ResolvedSession;
-use super::runtime::{start_session, Bootstrap, SessionCommand, SessionEvent, SessionHandle};
+use super::instance::AcpInstance;
+use super::resolve::ResolvedInstance;
+use super::runtime::{start_instance, Bootstrap, InstanceCommand, InstanceEvent};
 use crate::config::Config;
 use crate::rpc::protocol::RpcError;
 use crate::rpc::StatusBroadcast;
 
-/// Capacity of the session-event broadcast. Slow subscribers drop
+/// Capacity of the instance-event broadcast. Slow subscribers drop
 /// notifications; the webview resyncs from the next tick.
 const EVENT_BROADCAST_CAPACITY: usize = 256;
 
 /// Registry key. `profile_id` is `None` for bare-agent resolutions
 /// (no `[agent] default_profile` and no explicit `profile_id` on the
 /// call). Two calls with the same `agent_id` but distinct profiles
-/// get distinct actors — switching profile mid-session changes the
+/// get distinct actors — switching profile mid-instance changes the
 /// system prompt and/or model, which are baked in at spawn time.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct SessionKey {
+pub struct InstanceKey {
     pub agent_id: String,
     pub profile_id: Option<String>,
 }
 
+impl InstanceKey {
+    /// Stable string projection — the `instance_id` field on Tauri
+    /// events + the log-span discriminator. `agent_id` alone when
+    /// `profile_id` is `None`; `agent_id:profile_id` otherwise.
+    #[must_use]
+    pub fn as_string(&self) -> String {
+        match &self.profile_id {
+            Some(p) => format!("{}:{}", self.agent_id, p),
+            None => self.agent_id.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
-pub struct AcpSessions {
+pub struct AcpInstances {
     pub(crate) config: Config,
     #[allow(dead_code)]
     pub(crate) status: Arc<StatusBroadcast>,
-    active: Mutex<HashMap<SessionKey, SessionHandle>>,
-    events_tx: broadcast::Sender<SessionEvent>,
+    active: Mutex<HashMap<InstanceKey, AcpInstance>>,
+    events_tx: broadcast::Sender<InstanceEvent>,
 }
 
-impl AcpSessions {
+impl AcpInstances {
     #[must_use]
     pub fn new(config: Config, status: Arc<StatusBroadcast>) -> Self {
         let (events_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
@@ -59,14 +73,14 @@ impl AcpSessions {
     }
 
     /// Broadcast receiver for every lifecycle + transcript event the
-    /// active sessions emit. Tests subscribe directly; Tauri uses
+    /// active instances emit. Tests subscribe directly; Tauri uses
     /// `spawn_tauri_event_bridge` instead.
     #[must_use]
-    pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {
+    pub fn subscribe_events(&self) -> broadcast::Receiver<InstanceEvent> {
         self.events_tx.subscribe()
     }
 
-    /// Fan every `SessionEvent` out to the webview as an `acp:*`
+    /// Fan every `InstanceEvent` out to the webview as an `acp:*`
     /// Tauri event. One subscriber task per daemon boot — call once
     /// from the Tauri `setup` closure.
     pub fn spawn_tauri_event_bridge(&self, app: tauri::AppHandle) {
@@ -89,8 +103,8 @@ impl AcpSessions {
     /// finally to `[agent] default`. Explicit `agent_id` overrides
     /// whatever agent the resolved profile names (same profile, new
     /// agent spawn).
-    fn resolve_session(&self, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<ResolvedSession, RpcError> {
-        let mut resolved = ResolvedSession::from_config(&self.config, profile_id)
+    fn resolve(&self, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<ResolvedInstance, RpcError> {
+        let mut resolved = ResolvedInstance::from_config(&self.config, profile_id)
             .map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
 
         if let Some(wanted) = agent_id {
@@ -119,8 +133,8 @@ impl AcpSessions {
         Ok(resolved)
     }
 
-    /// Submit a prompt. Spawns the agent if no live session exists
-    /// for this `(agent, profile)` pair; reuses the existing session
+    /// Submit a prompt. Spawns the agent if no live instance exists
+    /// for this `(agent, profile)` pair; reuses the existing instance
     /// otherwise.
     pub async fn submit(
         &self,
@@ -128,8 +142,8 @@ impl AcpSessions {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> Result<Value, RpcError> {
-        let resolved = self.resolve_session(agent_id, profile_id)?;
-        let key = SessionKey {
+        let resolved = self.resolve(agent_id, profile_id)?;
+        let key = InstanceKey {
             agent_id: resolved.agent.id.clone(),
             profile_id: resolved.profile_id.clone(),
         };
@@ -139,7 +153,7 @@ impl AcpSessions {
             profile = ?resolved.profile_id,
             model = ?resolved.model,
             has_prompt = resolved.system_prompt.is_some(),
-            "acp::submit: resolved session"
+            "acp::submit: resolved instance"
         );
 
         let cmd_tx = {
@@ -147,20 +161,25 @@ impl AcpSessions {
             if let Some(handle) = active.get(&key) {
                 handle.cmd_tx.clone()
             } else {
-                let handle = start_session(resolved.clone(), self.events_tx.clone(), Bootstrap::Fresh);
-                let tx = handle.cmd_tx.clone();
-                active.insert(key.clone(), handle);
+                let instance = start_instance(
+                    resolved.clone(),
+                    key.as_string(),
+                    self.events_tx.clone(),
+                    Bootstrap::Fresh,
+                );
+                let tx = instance.cmd_tx.clone();
+                active.insert(key.clone(), instance);
                 tx
             }
         };
 
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
-            .send(SessionCommand::Prompt {
+            .send(InstanceCommand::Prompt {
                 text: text.to_string(),
                 reply: reply_tx,
             })
-            .map_err(|_| RpcError::internal_error("session actor closed before accepting prompt"))?;
+            .map_err(|_| RpcError::internal_error("instance actor closed before accepting prompt"))?;
 
         let session_id = {
             let active = self.active.lock().await;
@@ -182,13 +201,14 @@ impl AcpSessions {
             "accepted": true,
             "agent_id": key.agent_id,
             "profile_id": key.profile_id,
+            "instance_id": key.as_string(),
             "session_id": session_id,
         }))
     }
 
     /// Cancel the active turn on the addressed agent.
     pub async fn cancel(&self, agent_id: Option<&str>) -> Result<Value, RpcError> {
-        let resolved = self.resolve_session(agent_id, None)?;
+        let resolved = self.resolve(agent_id, None)?;
         let cmd_tx = {
             let active = self.active.lock().await;
             active
@@ -198,11 +218,11 @@ impl AcpSessions {
         };
 
         let Some(cmd_tx) = cmd_tx else {
-            return Ok(json!({ "cancelled": false, "reason": "no active session" }));
+            return Ok(json!({ "cancelled": false, "reason": "no active instance" }));
         };
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        if cmd_tx.send(SessionCommand::Cancel { reply: reply_tx }).is_err() {
+        if cmd_tx.send(InstanceCommand::Cancel { reply: reply_tx }).is_err() {
             return Ok(json!({ "cancelled": false, "reason": "actor closed" }));
         }
 
@@ -213,7 +233,7 @@ impl AcpSessions {
         }
     }
 
-    /// Snapshot of every live session.
+    /// Snapshot of every live instance.
     pub async fn info(&self) -> Result<Value, RpcError> {
         let active = self.active.lock().await;
         let mut sessions = Vec::with_capacity(active.len());
@@ -221,6 +241,7 @@ impl AcpSessions {
             sessions.push(json!({
                 "agent_id": handle.agent_id,
                 "profile_id": key.profile_id,
+                "instance_id": key.as_string(),
                 "session_id": handle.current_session_id().await,
             }));
         }
@@ -238,8 +259,8 @@ impl AcpSessions {
         profile_id: Option<&str>,
         cwd: Option<PathBuf>,
     ) -> Result<ListSessionsResponse, RpcError> {
-        let resolved = self.resolve_session(agent_id, profile_id)?;
-        let key = SessionKey {
+        let resolved = self.resolve(agent_id, profile_id)?;
+        let key = InstanceKey {
             agent_id: resolved.agent.id.clone(),
             profile_id: resolved.profile_id.clone(),
         };
@@ -249,25 +270,25 @@ impl AcpSessions {
             if let Some(handle) = active.get(&key) {
                 (handle.cmd_tx.clone(), None)
             } else {
-                let handle = start_session(resolved, self.events_tx.clone(), Bootstrap::ListOnly);
-                let tx = handle.cmd_tx.clone();
-                (tx, Some(handle))
+                let instance = start_instance(resolved, key.as_string(), self.events_tx.clone(), Bootstrap::ListOnly);
+                let tx = instance.cmd_tx.clone();
+                (tx, Some(instance))
             }
         };
 
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
-            .send(SessionCommand::ListSessions { cwd, reply: reply_tx })
-            .map_err(|_| RpcError::internal_error("session actor closed before accepting list request"))?;
+            .send(InstanceCommand::ListSessions { cwd, reply: reply_tx })
+            .map_err(|_| RpcError::internal_error("instance actor closed before accepting list request"))?;
 
         let response = reply_rx
             .await
-            .map_err(|_| RpcError::internal_error("session actor dropped list reply"))?
+            .map_err(|_| RpcError::internal_error("instance actor dropped list reply"))?
             .map_err(|err| RpcError::internal_error(format!("session/list failed: {err}")));
 
         if let Some(handle) = ephemeral {
             let (tx, rx) = oneshot::channel();
-            let _ = handle.cmd_tx.send(SessionCommand::Shutdown { reply: tx });
+            let _ = handle.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
         }
 
@@ -284,8 +305,8 @@ impl AcpSessions {
         profile_id: Option<&str>,
         session_id: String,
     ) -> Result<(), RpcError> {
-        let resolved = self.resolve_session(agent_id, profile_id)?;
-        let key = SessionKey {
+        let resolved = self.resolve(agent_id, profile_id)?;
+        let key = InstanceKey {
             agent_id: resolved.agent.id.clone(),
             profile_id: resolved.profile_id.clone(),
         };
@@ -296,17 +317,18 @@ impl AcpSessions {
         };
         if let Some(handle) = existing {
             let (tx, rx) = oneshot::channel();
-            let _ = handle.cmd_tx.send(SessionCommand::Shutdown { reply: tx });
+            let _ = handle.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
         }
 
-        let handle = start_session(
+        let instance = start_instance(
             resolved,
+            key.as_string(),
             self.events_tx.clone(),
             Bootstrap::Resume(SessionId::new(session_id)),
         );
         let mut active = self.active.lock().await;
-        active.insert(key, handle);
+        active.insert(key, instance);
         Ok(())
     }
 
@@ -315,14 +337,14 @@ impl AcpSessions {
     /// after the acks land (or immediately when the reply oneshot
     /// closes, whichever first).
     pub async fn shutdown(&self) {
-        let handles: Vec<SessionHandle> = {
+        let instances: Vec<AcpInstance> = {
             let mut active = self.active.lock().await;
             active.drain().map(|(_, v)| v).collect()
         };
-        tracing::info!(count = handles.len(), "acp::shutdown: draining sessions");
-        for handle in handles {
+        tracing::info!(count = instances.len(), "acp::shutdown: draining instances");
+        for instance in instances {
             let (tx, rx) = oneshot::channel();
-            let _ = handle.cmd_tx.send(SessionCommand::Shutdown { reply: tx });
+            let _ = instance.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
         }
     }
@@ -367,13 +389,13 @@ impl AcpSessions {
     }
 }
 
-/// Route a runtime `SessionEvent` onto the corresponding `acp:*`
+/// Route a runtime `InstanceEvent` onto the corresponding `acp:*`
 /// Tauri event. Separators stay `:` here; JSON-RPC wire uses `/`.
-fn emit_acp_event(app: &tauri::AppHandle, evt: SessionEvent) {
+fn emit_acp_event(app: &tauri::AppHandle, evt: InstanceEvent) {
     let name = match &evt {
-        SessionEvent::State { .. } => "acp:session-state",
-        SessionEvent::Transcript { .. } => "acp:transcript",
-        SessionEvent::PermissionRequest { .. } => "acp:permission-request",
+        InstanceEvent::State { .. } => "acp:instance-state",
+        InstanceEvent::Transcript { .. } => "acp:transcript",
+        InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {
@@ -391,28 +413,27 @@ mod tests {
 
     #[tokio::test]
     async fn submit_without_default_is_invalid_params() {
-        // Empty registry, no default.
-        let sessions = AcpSessions::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = sessions.submit("hi", None, None).await.expect_err("must fail");
+        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = instances.submit("hi", None, None).await.expect_err("must fail");
         assert_eq!(err.code, -32602);
     }
 
     #[tokio::test]
     async fn info_empty_when_nothing_spawned() {
-        let sessions = AcpSessions::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let v = sessions.info().await.expect("ok");
+        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let v = instances.info().await.expect("ok");
         assert_eq!(v["sessions"], json!([]));
     }
 
     #[tokio::test]
     async fn cancel_unknown_agent_reports_missing_session() {
-        let sessions = AcpSessions::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = sessions.cancel(Some("ghost")).await.expect_err("must fail");
+        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = instances.cancel(Some("ghost")).await.expect_err("must fail");
         assert_eq!(err.code, -32602, "unknown agent id is invalid_params");
     }
 
     #[tokio::test]
-    async fn resolve_session_honors_explicit_profile_id() {
+    async fn resolve_honors_explicit_profile_id() {
         let cfg: Config = toml::from_str(
             r#"
 [agent]
@@ -436,16 +457,15 @@ system_prompt = "be terse"
 "#,
         )
         .expect("fixture parses");
-        let sessions = AcpSessions::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let instances = AcpInstances::new(cfg, Arc::new(StatusBroadcast::new(true)));
 
-        let resolved = sessions.resolve_session(None, Some("strict")).expect("strict resolves");
+        let resolved = instances.resolve(None, Some("strict")).expect("strict resolves");
         assert_eq!(resolved.agent.id, "claude-code");
         assert_eq!(resolved.profile_id.as_deref(), Some("strict"));
         assert_eq!(resolved.model.as_deref(), Some("claude-opus-4-5"));
         assert_eq!(resolved.system_prompt.as_deref(), Some("be terse"));
 
-        // Default fallback picks ask → inherits agent model.
-        let resolved = sessions.resolve_session(None, None).expect("default profile resolves");
+        let resolved = instances.resolve(None, None).expect("default profile resolves");
         assert_eq!(resolved.profile_id.as_deref(), Some("ask"));
         assert_eq!(resolved.model.as_deref(), Some("claude-sonnet-4-5"));
         assert!(resolved.system_prompt.is_none());
@@ -473,8 +493,8 @@ system_prompt = "be terse"
 "#,
         )
         .expect("parses");
-        let sessions = AcpSessions::new(cfg, Arc::new(StatusBroadcast::new(true)));
-        let out = sessions.list_profiles();
+        let instances = AcpInstances::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let out = instances.list_profiles();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], "ask");
         assert_eq!(out[0]["is_default"], true);

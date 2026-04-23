@@ -83,7 +83,7 @@ mod tests {
     use crate::config::{AgentConfig, AgentProvider};
 
     use super::AcpAgentCodex;
-    use crate::acp::agents::AcpAgent;
+    use crate::adapters::acp::agents::AcpAgent;
 
     fn entry_with_model(model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -145,7 +145,10 @@ mod tests {
                 .any(|w| w[0] == "-c" && w[1] == r#"instructions="be terse""#),
             "expected -c instructions=\"be terse\" in {args:?}"
         );
-        assert!(matches!(out, crate::acp::agents::SystemPromptInjection::Handled));
+        assert!(matches!(
+            out,
+            crate::adapters::acp::agents::SystemPromptInjection::Handled
+        ));
     }
 
     #[test]

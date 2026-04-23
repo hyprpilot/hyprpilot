@@ -1,6 +1,6 @@
 //! Tauri `#[command]`s the webview invokes: `acp_submit`, `acp_cancel`,
 //! `permission_reply`, `agents_list`, `profiles_list`, `session_list`,
-//! `session_load`. Each delegates into the shared `AcpSessions`
+//! `session_load`. Each delegates into the shared `AcpInstances`
 //! registry; the RPC surface uses the same entry points.
 
 use std::path::PathBuf;
@@ -10,11 +10,11 @@ use agent_client_protocol::schema::ListSessionsResponse;
 use serde_json::Value;
 use tauri::State;
 
-use super::AcpSessions;
+use super::AcpInstances;
 
 #[tauri::command]
 pub async fn acp_submit(
-    sessions: State<'_, Arc<AcpSessions>>,
+    sessions: State<'_, Arc<AcpInstances>>,
     text: String,
     agent_id: Option<String>,
     profile_id: Option<String>,
@@ -26,23 +26,23 @@ pub async fn acp_submit(
 }
 
 #[tauri::command]
-pub async fn acp_cancel(sessions: State<'_, Arc<AcpSessions>>, agent_id: Option<String>) -> Result<Value, String> {
+pub async fn acp_cancel(sessions: State<'_, Arc<AcpInstances>>, agent_id: Option<String>) -> Result<Value, String> {
     sessions.cancel(agent_id.as_deref()).await.map_err(|e| e.message)
 }
 
 #[tauri::command]
-pub async fn agents_list(sessions: State<'_, Arc<AcpSessions>>) -> Result<Value, String> {
+pub async fn agents_list(sessions: State<'_, Arc<AcpInstances>>) -> Result<Value, String> {
     Ok(serde_json::json!({ "agents": sessions.list_agents() }))
 }
 
 #[tauri::command]
-pub async fn profiles_list(sessions: State<'_, Arc<AcpSessions>>) -> Result<Value, String> {
+pub async fn profiles_list(sessions: State<'_, Arc<AcpInstances>>) -> Result<Value, String> {
     Ok(serde_json::json!({ "profiles": sessions.list_profiles() }))
 }
 
 #[tauri::command]
 pub async fn session_list(
-    sessions: State<'_, Arc<AcpSessions>>,
+    sessions: State<'_, Arc<AcpInstances>>,
     agent_id: Option<String>,
     profile_id: Option<String>,
     cwd: Option<PathBuf>,
@@ -55,7 +55,7 @@ pub async fn session_list(
 
 #[tauri::command]
 pub async fn session_load(
-    sessions: State<'_, Arc<AcpSessions>>,
+    sessions: State<'_, Arc<AcpInstances>>,
     agent_id: Option<String>,
     profile_id: Option<String>,
     session_id: String,

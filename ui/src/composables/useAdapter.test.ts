@@ -51,7 +51,7 @@ describe('useAdapter', () => {
     await flushAsyncMounted()
 
     const events = listen.mock.calls.map((c) => c[0])
-    expect(events).toEqual(expect.arrayContaining(['acp:transcript', 'acp:session-state', 'acp:permission-request']))
+    expect(events).toEqual(expect.arrayContaining(['acp:transcript', 'acp:instance-state', 'acp:permission-request']))
     wrapper.unmount()
   })
 
@@ -68,7 +68,7 @@ describe('useAdapter', () => {
     cbFor('acp:transcript')({
       payload: { kind: EventKind.Transcript, agent_id: 'a', session_id: 's-1', update: { kind: 'msg' } }
     })
-    cbFor('acp:session-state')({
+    cbFor('acp:instance-state')({
       payload: { kind: EventKind.State, agent_id: 'a', session_id: 's-1', state: SessionState.Running }
     })
     await wrapper.vm.$nextTick()

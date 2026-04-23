@@ -67,7 +67,7 @@ mod tests {
     use crate::config::{AgentConfig, AgentProvider};
 
     use super::AcpAgentOpenCode;
-    use crate::acp::agents::AcpAgent;
+    use crate::adapters::acp::agents::AcpAgent;
 
     fn entry_with_model(model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -129,7 +129,7 @@ mod tests {
             .collect();
         assert_eq!(before, after, "opencode must not mutate args from inject");
         match out {
-            crate::acp::agents::SystemPromptInjection::FirstMessage(s) => assert_eq!(s, "be terse"),
+            crate::adapters::acp::agents::SystemPromptInjection::FirstMessage(s) => assert_eq!(s, "be terse"),
             other => panic!("expected FirstMessage, got {other:?}"),
         }
     }

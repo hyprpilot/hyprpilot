@@ -12,8 +12,7 @@ use tauri::{Emitter, Manager, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
-use crate::acp::commands as acp_commands;
-use crate::acp::AcpSessions;
+use crate::adapters::{acp_commands, AcpInstances};
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
@@ -191,9 +190,9 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // `show()` / `show_all()` before the RPC loop accepts connections.
     let status = Arc::new(StatusBroadcast::new(true));
     let dispatcher = Arc::new(RpcDispatcher::with_defaults());
-    // Session registry — Tauri managed state. `SessionHandler` +
+    // Instance registry — Tauri managed state. `SessionHandler` +
     // future `acp_*` Tauri commands both reach into this.
-    let sessions = Arc::new(AcpSessions::new(sessions_cfg, status.clone()));
+    let sessions = Arc::new(AcpInstances::new(sessions_cfg, status.clone()));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -335,14 +334,14 @@ struct SingleInstancePayload {
     cwd: String,
 }
 
-/// Drain ACP sessions, then kick Tauri's teardown. Called by
+/// Drain ACP instances, then kick Tauri's teardown. Called by
 /// `rpc::server` on `daemon/kill` and by the signal task in `run()`.
 /// Socket file is not removed — next-start probes stale sockets via
 /// `ECONNREFUSED`, which handles crash cases too.
-pub(crate) async fn shutdown(app: &tauri::AppHandle, sessions: &AcpSessions) {
+pub(crate) async fn shutdown(app: &tauri::AppHandle, sessions: &AcpInstances) {
     info!("shutdown: initiating clean shutdown");
     sessions.shutdown().await;
-    info!("shutdown: acp sessions drained");
+    info!("shutdown: acp instances drained");
     app.exit(0);
     info!("shutdown: tauri exit dispatched");
 }

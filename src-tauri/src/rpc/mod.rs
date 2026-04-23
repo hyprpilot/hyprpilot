@@ -80,7 +80,7 @@ mod dispatcher_tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::acp::AcpSessions;
+    use crate::adapters::AcpInstances;
     use crate::config::Config;
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
@@ -92,7 +92,7 @@ mod dispatcher_tests {
     /// completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
-        let sessions = Arc::new(AcpSessions::new(
+        let sessions = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
@@ -235,7 +235,7 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let id = RequestId::Number(2);
-        let sessions = Arc::new(AcpSessions::new(
+        let sessions = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));

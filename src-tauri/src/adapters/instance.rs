@@ -12,30 +12,6 @@ use tokio::sync::broadcast;
 
 use super::permission::PermissionOptionView;
 
-/// Registry key — `(agent_id, profile_id?)`. `profile_id` is `None`
-/// for bare-agent resolutions. Two calls with the same `agent_id` but
-/// distinct profiles get distinct instances — profile switch bakes a
-/// new system prompt / model at spawn time, so a mid-instance switch
-/// would be misleading.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstanceKey {
-    pub agent_id: String,
-    pub profile_id: Option<String>,
-}
-
-impl InstanceKey {
-    /// Stable string projection — used as the `instance_id` field on
-    /// Tauri events and as a log-span discriminator. `agent_id` when
-    /// `profile_id` is absent; `agent_id:profile_id` otherwise.
-    #[must_use]
-    pub fn as_string(&self) -> String {
-        match &self.profile_id {
-            Some(p) => format!("{}:{}", self.agent_id, p),
-            None => self.agent_id.clone(),
-        }
-    }
-}
-
 /// Lifecycle phases an instance steps through. Adapters broadcast one
 /// `InstanceEvent::State` per transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,10 +58,12 @@ pub enum InstanceEvent {
 /// Handle returned by `Adapter::start_instance`. Holds just enough
 /// identity for callers to address follow-up submits + cancels
 /// against; the concrete channels live inside the adapter's own
-/// registry.
+/// registry. `instance_id` is the registry-specific string
+/// projection (e.g. `agent_id` or `agent_id:profile_id` for ACP).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceHandle {
-    pub key: InstanceKey,
+    pub agent_id: String,
+    pub instance_id: String,
     /// Populated once the wire-session lands (e.g. `session/new`
     /// resolves on ACP). `None` while the instance is still
     /// bootstrapping.

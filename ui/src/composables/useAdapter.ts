@@ -86,7 +86,7 @@ export function useAdapter() {
       await listen<TranscriptEvent>('acp:transcript', (e) => {
         transcript.push(e.payload)
       }),
-      await listen<SessionStateEvent>('acp:session-state', (e) => {
+      await listen<SessionStateEvent>('acp:instance-state', (e) => {
         state.value = e.payload
       }),
       await listen<PermissionRequestEvent>('acp:permission-request', (e) => {

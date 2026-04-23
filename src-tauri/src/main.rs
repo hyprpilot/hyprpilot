@@ -1,4 +1,3 @@
-mod acp;
 mod adapters;
 mod config;
 mod ctl;

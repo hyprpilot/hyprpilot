@@ -35,8 +35,8 @@ struct AgentAddress {
 /// `session/*` namespace — `session/submit`, `session/cancel`,
 /// `session/info`.
 ///
-/// Delegates every method into `AcpSessions` (Tauri managed state).
-/// Today `AcpSessions` returns the pre-K-239 stubbed shapes; the live
+/// Delegates every method into `AcpInstances` (Tauri managed state).
+/// Today `AcpInstances` returns the pre-K-239 stubbed shapes; the live
 /// ACP plumbing swaps those bodies in without touching this handler.
 pub struct SessionHandler;
 
@@ -50,7 +50,7 @@ impl RpcHandler for SessionHandler {
         let sessions = ctx
             .sessions
             .as_ref()
-            .ok_or_else(|| RpcError::internal_error("AcpSessions not in managed state"))?;
+            .ok_or_else(|| RpcError::internal_error("AcpInstances not in managed state"))?;
 
         match method {
             "session/submit" => {

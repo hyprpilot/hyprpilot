@@ -1,7 +1,7 @@
 //! Profile vocabulary — re-exports the config-side `AgentConfig` /
 //! `ProfileConfig` / `AgentProvider` types the adapter layer consumes,
-//! plus the flat `ResolvedInstance` view (previously `ResolvedSession`)
-//! built by resolving a `(Config, profile_id?)` pair.
+//! plus the flat `ResolvedInstance` view built by resolving a
+//! `(Config, profile_id?)` pair.
 //!
 //! The types themselves stay declared in `config::` because the TOML
 //! deserialize + garde-validate wiring belongs with the rest of the

@@ -4,7 +4,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info, warn};
 
-use crate::acp::AcpSessions;
+use crate::adapters::AcpInstances;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
 use crate::rpc::protocol::{JsonRpcVersion, Outcome, RequestId, Response, RpcError, StatusChangedNotification};
 use crate::rpc::status::StatusBroadcast;
@@ -12,14 +12,14 @@ use crate::rpc::RpcDispatcher;
 
 /// Shared state handed to each connection task. `AppHandle` is cheap to
 /// clone, so we pass by value today; `StatusBroadcast`, `RpcDispatcher`
-/// and `AcpSessions` are wrapped in `Arc` for cheap fan-out across
+/// and `AcpInstances` are wrapped in `Arc` for cheap fan-out across
 /// every accepted connection.
 #[derive(Clone)]
 pub struct RpcState {
     pub app: tauri::AppHandle,
     pub status: Arc<StatusBroadcast>,
     pub dispatcher: Arc<RpcDispatcher>,
-    pub sessions: Arc<AcpSessions>,
+    pub sessions: Arc<AcpInstances>,
 }
 
 /// One accepted connection. Reads NDJSON, dispatches, writes the
@@ -154,7 +154,7 @@ async fn dispatch(
     app: Option<&tauri::AppHandle>,
     status: &StatusBroadcast,
     dispatcher: &RpcDispatcher,
-    sessions: Option<Arc<AcpSessions>>,
+    sessions: Option<Arc<AcpInstances>>,
     connection_already_subscribed: bool,
 ) -> (
     Response,
@@ -253,14 +253,14 @@ mod tests {
     use serde_json::json;
 
     /// Driver for envelope / framing tests: no `AppHandle`, a fresh
-    /// `StatusBroadcast`, a throwaway dispatcher + `AcpSessions` per
+    /// `StatusBroadcast`, a throwaway dispatcher + `AcpInstances` per
     /// call. Handlers that need the app (only `window/toggle`)
     /// surface `-32603`; everything else runs through to the
     /// handler's real logic.
     async fn run(line: &str) -> serde_json::Value {
         let status = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let sessions = Arc::new(AcpSessions::new(
+        let sessions = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
@@ -362,7 +362,7 @@ mod tests {
     /// even when the deeper handler rejects with `-32602` because the
     /// test harness has no agent config. The envelope handling is what
     /// this test pins — happy-path submit is exercised at the
-    /// `AcpSessions` layer.
+    /// `AcpInstances` layer.
     #[tokio::test]
     async fn session_submit_with_string_id_round_trips() {
         let out = run(r#"{"jsonrpc":"2.0","id":"abc-123","method":"session/submit","params":{"text":"hi"}}"#).await;
@@ -437,7 +437,7 @@ mod tests {
             let mut lines = BufReader::new(reader).lines();
             let status = StatusBroadcast::new(true);
             let dispatcher = RpcDispatcher::with_defaults();
-            let sessions = Arc::new(AcpSessions::new(
+            let sessions = Arc::new(AcpInstances::new(
                 Config::default(),
                 Arc::new(StatusBroadcast::new(true)),
             ));
@@ -478,7 +478,7 @@ mod tests {
     async fn double_subscribe_on_same_connection_is_rejected() {
         let broadcast = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let sessions = Arc::new(AcpSessions::new(
+        let sessions = Arc::new(AcpInstances::new(
             Config::default(),
             Arc::new(StatusBroadcast::new(true)),
         ));
@@ -597,7 +597,7 @@ mod tests {
             let (reader, mut writer) = server.into_split();
             let mut lines = BufReader::new(reader).lines();
             let dispatcher = RpcDispatcher::with_defaults();
-            let sessions = Arc::new(AcpSessions::new(
+            let sessions = Arc::new(AcpInstances::new(
                 Config::default(),
                 Arc::new(StatusBroadcast::new(true)),
             ));

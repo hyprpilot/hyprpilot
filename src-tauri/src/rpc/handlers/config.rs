@@ -20,7 +20,7 @@ impl RpcHandler for ConfigHandler {
         let sessions = ctx
             .sessions
             .as_ref()
-            .ok_or_else(|| RpcError::internal_error("AcpSessions not in managed state"))?;
+            .ok_or_else(|| RpcError::internal_error("AcpInstances not in managed state"))?;
 
         match method {
             "config/profiles" => Ok(HandlerOutcome::Reply(json!({

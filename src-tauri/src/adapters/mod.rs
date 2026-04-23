@@ -25,11 +25,17 @@ pub mod transcript;
 
 use async_trait::async_trait;
 
-pub use instance::{InstanceEvent, InstanceEventStream, InstanceHandle, InstanceKey, InstanceState};
+pub use instance::{InstanceEvent, InstanceEventStream, InstanceHandle, InstanceState};
 pub use permission::{PermissionOptionView, PermissionPrompt, PermissionReply};
 pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};
 pub use tool::{ToolCall, ToolCallContent, ToolState};
 pub use transcript::{ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
+
+// Concrete impls we re-export so out-of-layer callers never need to
+// type `adapters::acp::*` — only `adapters::*`. Adding an `HttpAdapter`
+// sibling later adds new re-exports here, not new import paths in
+// `rpc::` / `ctl::` / `daemon::`.
+pub use acp::{commands as acp_commands, AcpAdapter, AcpInstances};
 
 /// Closed set of known transport kinds. The string wire-name is stable
 /// — it appears in tracing spans and (future) config `transport =
@@ -110,14 +116,9 @@ pub trait Adapter: Send + Sync + 'static {
     fn capabilities(&self) -> Capabilities;
 
     /// Spawn a new instance for the resolved `(agent, profile)` pair.
-    /// Registers the instance internally keyed by `InstanceKey`;
-    /// returns the handle callers keep to address follow-up submits /
-    /// cancels against.
-    async fn start_instance(
-        &self,
-        resolved: ResolvedInstance,
-        bootstrap: Bootstrap,
-    ) -> AdapterResult<InstanceHandle>;
+    /// Registers the instance internally; returns the handle callers
+    /// keep to address follow-up submits / cancels against.
+    async fn start_instance(&self, resolved: ResolvedInstance, bootstrap: Bootstrap) -> AdapterResult<InstanceHandle>;
 
     /// Submit a prompt against the addressed `(agent_id, profile_id)`
     /// pair, spawning a new instance on first hit or reusing the live
@@ -166,10 +167,14 @@ mod tests {
 
         async fn start_instance(
             &self,
-            _resolved: ResolvedInstance,
+            resolved: ResolvedInstance,
             _bootstrap: Bootstrap,
         ) -> AdapterResult<InstanceHandle> {
-            Err(AdapterError::Unsupported("echo: start_instance".into()))
+            Ok(InstanceHandle {
+                agent_id: resolved.agent.id.clone(),
+                instance_id: resolved.agent.id,
+                session_id: None,
+            })
         }
 
         async fn submit(
@@ -200,5 +205,50 @@ mod tests {
         assert_eq!(v["echo"], "hi");
         let info = a.info().await.expect("info ok");
         assert_eq!(info["sessions"], json!([]));
+    }
+
+    /// Layering guard: no file outside `adapters/` may import from
+    /// `crate::adapters::acp`. The rest of the crate talks to
+    /// `dyn Adapter` or to the concrete types re-exported from
+    /// `adapters::*` (today `AcpInstances`, `AcpAdapter`,
+    /// `acp_commands`). Walks the source tree, reads every `.rs`
+    /// file, and fails on any offending import.
+    #[test]
+    fn no_acp_imports_outside_adapters() {
+        use std::fs;
+        use std::path::Path;
+
+        fn walk(dir: &Path, out: &mut Vec<String>) {
+            for entry in fs::read_dir(dir).expect("read_dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    let rel = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&path);
+                    let rel_str = rel.to_string_lossy().to_string();
+                    if rel_str.starts_with("src/adapters/") || rel_str.starts_with("src\\adapters\\") {
+                        continue;
+                    }
+                    let body = fs::read_to_string(&path).expect("read file");
+                    for (lineno, line) in body.lines().enumerate() {
+                        if line.trim_start().starts_with("//") {
+                            continue;
+                        }
+                        if line.contains("use crate::adapters::acp") || line.contains("use crate::acp") {
+                            out.push(format!("{rel_str}:{}: {line}", lineno + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        walk(&root, &mut offenders);
+        assert!(
+            offenders.is_empty(),
+            "files outside adapters/ may not import from adapters::acp. Offenders:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 }
