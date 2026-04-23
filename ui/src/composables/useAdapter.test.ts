@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useAdapter, EventKind, SessionState } from '@composables/useAdapter'
+import { useAdapter } from '@composables/useAdapter'
 
 const unlisten = vi.fn()
 const listen = vi.fn()
@@ -30,11 +30,7 @@ function host() {
       agent.bind()
 
       return () =>
-        h('div', [
-          h('span', { 'data-testid': 'transcript' }, JSON.stringify(agent.transcript)),
-          h('span', { 'data-testid': 'state' }, agent.state.value?.state ?? 'none'),
-          h('span', { 'data-testid': 'permission' }, agent.lastPermission.value?.session_id ?? 'none')
-        ])
+        h('div', [h('span', { 'data-testid': 'permission' }, agent.lastPermission.value?.session_id ?? 'none')])
     }
   })
 }
@@ -46,44 +42,34 @@ async function flushAsyncMounted(): Promise<void> {
 }
 
 describe('useAdapter', () => {
-  it('subscribes to every acp:* event channel on bind', async () => {
+  it('subscribes to acp:permission-request on bind', async () => {
     const wrapper = mount(host())
     await flushAsyncMounted()
 
     const events = listen.mock.calls.map((c) => c[0])
-    expect(events).toEqual(expect.arrayContaining(['acp:transcript', 'acp:instance-state', 'acp:permission-request']))
+    expect(events).toEqual(['acp:permission-request'])
     wrapper.unmount()
   })
 
-  it('appends transcript payloads and reflects state transitions', async () => {
+  it('exposes the last permission payload seen on the listener', async () => {
     const wrapper = mount(host())
     await flushAsyncMounted()
 
-    const cbFor = (name: string) => {
-      const entry = listen.mock.calls.find((c) => c[0] === name)
-
-      return entry![1] as (payload: { payload: unknown }) => void
-    }
-
-    cbFor('acp:transcript')({
-      payload: { kind: EventKind.Transcript, agent_id: 'a', session_id: 's-1', update: { kind: 'msg' } }
-    })
-    cbFor('acp:instance-state')({
-      payload: { kind: EventKind.State, agent_id: 'a', session_id: 's-1', state: SessionState.Running }
-    })
+    const entry = listen.mock.calls.find((c) => c[0] === 'acp:permission-request')
+    const cb = entry![1] as (payload: { payload: unknown }) => void
+    cb({ payload: { agent_id: 'a', session_id: 's-1', options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }] } })
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.get('[data-testid="transcript"]').text()).toContain('s-1')
-    expect(wrapper.get('[data-testid="state"]').text()).toBe('running')
+    expect(wrapper.get('[data-testid="permission"]').text()).toBe('s-1')
     wrapper.unmount()
   })
 
-  it('unsubscribes every channel on unmount', async () => {
+  it('unsubscribes on unmount', async () => {
     const wrapper = mount(host())
     await flushAsyncMounted()
 
     wrapper.unmount()
 
-    expect(unlisten).toHaveBeenCalledTimes(3)
+    expect(unlisten).toHaveBeenCalledTimes(1)
   })
 })

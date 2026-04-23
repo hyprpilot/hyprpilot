@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { bashDone, bashRunning, planItems, planningCard, smallTools, terminal, thinkingCard, toolCallsFrame, writeDoneDiff } from './tool-calls.fixture'
+import { bashDone, planItems, planningCard, smallTools, terminal, thinkingCard, toolCallsFrame, writeDoneDiff } from './tool-calls.fixture'
 import { ChatComposer, Frame, ChatStreamCard, ChatTerminalCard, ChatToolChips, ChatToolRowBig } from '@components'
 </script>
 

@@ -45,7 +45,7 @@ const roleLabel = ROLE_LABELS[props.role]
 @reference '../../assets/styles.css';
 
 .turn {
-  @apply flex flex-col gap-1 py-1 pl-2;
+  @apply flex flex-col gap-1 py-2 pl-2;
   border-left: 2px solid var(--theme-accent-user);
   position: relative;
 }
@@ -77,6 +77,6 @@ const roleLabel = ROLE_LABELS[props.role]
 }
 
 .turn-body {
-  @apply flex flex-col gap-1;
+  @apply flex flex-col gap-2;
 }
 </style>

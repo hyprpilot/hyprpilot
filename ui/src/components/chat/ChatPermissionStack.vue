@@ -62,8 +62,8 @@ const activeId = computed(() => {
 @reference '../../assets/styles.css';
 
 .permission-stack {
-  @apply flex flex-col overflow-hidden;
-  border-top: 2px solid var(--theme-status-warn);
+  @apply flex flex-col overflow-hidden py-2 pl-2;
+  border-left: 2px solid var(--theme-status-warn);
   background-color: var(--theme-permission-bg-active);
   max-height: 50vh;
 }

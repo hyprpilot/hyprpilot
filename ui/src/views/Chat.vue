@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import {
   ChatAssistantBody,
@@ -13,32 +13,38 @@ import {
   PlanStatus,
   Role,
   StreamKind,
-  ToolState,
   type PermissionPrompt,
-  type PlanItem,
-  type ToolChipItem
+  type PlanItem
 } from '@components'
 import {
-  EventKind,
-  MessageKind,
+  pushTranscriptChunk,
+  StreamItemKind,
+  toView,
+  TurnRole,
+  useActiveInstance,
   useAdapter,
   useProfiles,
   useSessionHistory,
+  useStream,
+  useTools,
   useTranscript,
-  type ChatMessage,
-  type ContentBlock,
-  type PlanEntry,
-  type PermissionRequestEvent
+  startSessionStream,
+  type PermissionRequestEvent,
+  type PlanEntry
 } from '@composables'
 
-const { transcript, state, lastPermission, bind, submit } = useAdapter()
+const { lastPermission, bind, submit } = useAdapter()
 const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
 // Session history is wired but the new Frame/Chat primitives don't
 // surface a session picker yet — keeping the binding live so the
 // backend stays warm; the palette view (K-249) takes over this role.
 useSessionHistory(activeAgentId, selectedProfile)
-const { messages } = useTranscript(transcript)
+
+const { id: activeInstanceId } = useActiveInstance()
+const { turns } = useTranscript()
+const { items: streamItems } = useStream()
+const { calls: toolCalls } = useTools()
 
 const sending = ref(false)
 const lastErr = ref<string>()
@@ -47,10 +53,85 @@ const composerRef = ref<InstanceType<typeof ChatComposer>>()
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
 const permissionPrompts = computed(() => permissionPromptsFrom(lastPermission.value))
 
-onMounted(() => {
+// One interleaved timeline so thoughts / plans / tool calls render
+// between the text turns they originally arrived between — not in
+// trailing lumps. Sort by the shared createdAt (per-instance
+// monotonic seq); ties stable-sorted by kind for determinism.
+const KIND_ORDER = { turn: 0, stream: 1, tool: 2 } as const
+interface TimelineTurn {
+  kind: 'turn'
+  createdAt: number
+  turn: (typeof turns.value)[number]
+}
+interface TimelineStream {
+  kind: 'stream'
+  createdAt: number
+  item: (typeof streamItems.value)[number]
+}
+interface TimelineTool {
+  kind: 'tool'
+  createdAt: number
+  call: (typeof toolCalls.value)[number]
+}
+type TimelineEntry = TimelineTurn | TimelineStream | TimelineTool
+
+// A "block" is a run of consecutive timeline entries that share a
+// speaker role. Each block renders as ONE <ChatTurn> — header + role
+// tag once, continuous colored left border across every child
+// (thoughts, plans, tool chips, message body). The role flips when
+// the next entry belongs to the other speaker.
+interface TimelineBlock {
+  role: Role
+  startedAt: number
+  entries: TimelineEntry[]
+}
+
+function roleFor(entry: TimelineEntry): Role {
+  if (entry.kind === 'turn') {
+    return entry.turn.role === TurnRole.User ? Role.User : Role.Assistant
+  }
+
+  return Role.Assistant
+}
+
+const timelineBlocks = computed<TimelineBlock[]>(() => {
+  const entries: TimelineEntry[] = [
+    ...turns.value.map<TimelineTurn>((turn) => ({ kind: 'turn', createdAt: turn.createdAt, turn })),
+    ...streamItems.value.map<TimelineStream>((item) => ({ kind: 'stream', createdAt: item.createdAt, item })),
+    ...toolCalls.value.map<TimelineTool>((call) => ({ kind: 'tool', createdAt: call.createdAt, call }))
+  ]
+  entries.sort((a, b) => a.createdAt - b.createdAt || KIND_ORDER[a.kind] - KIND_ORDER[b.kind])
+
+  const blocks: TimelineBlock[] = []
+  for (const entry of entries) {
+    const role = roleFor(entry)
+    const last = blocks[blocks.length - 1]
+    if (last && last.role === role) {
+      last.entries.push(entry)
+    } else {
+      blocks.push({ role, startedAt: entry.createdAt, entries: [entry] })
+    }
+  }
+
+  return blocks
+})
+
+let stopStream: (() => void) | undefined
+
+onMounted(async () => {
+  try {
+    stopStream = await startSessionStream()
+  } catch (err) {
+    lastErr.value = `stream bind failed: ${String(err)}`
+  }
   bind().catch((err) => {
     lastErr.value = `bind failed: ${String(err)}`
   })
+})
+
+onUnmounted(() => {
+  stopStream?.()
+  stopStream = undefined
 })
 
 function mapPlanStatus(raw?: string): PlanStatus {
@@ -66,80 +147,6 @@ function mapPlanStatus(raw?: string): PlanStatus {
 
 function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
   return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
-}
-
-function mapToolStatus(raw?: string): ToolState {
-  switch (raw) {
-    case 'completed':
-    case 'done':
-      return ToolState.Done
-    case 'failed':
-    case 'error':
-      return ToolState.Failed
-    case 'awaiting':
-    case 'pending':
-      return ToolState.Awaiting
-    default:
-      return ToolState.Running
-  }
-}
-
-// Short-form of `rawInput` for the chip body: join the first few
-// key/value pairs, truncate long values. Keeps the chip reading at a
-// glance without re-flowing for big payloads.
-function shortArg(raw: Record<string, unknown>): string | undefined {
-  const parts: string[] = []
-  for (const [k, v] of Object.entries(raw)) {
-    let rendered: string
-    if (typeof v === 'string') {
-      rendered = v
-    } else {
-      try {
-        rendered = JSON.stringify(v)
-      } catch {
-        rendered = String(v)
-      }
-    }
-    if (rendered.length > 60) {
-      rendered = `${rendered.slice(0, 57)}...`
-    }
-    parts.push(`${k}=${rendered}`)
-    if (parts.length >= 3) {
-      break
-    }
-  }
-
-  return parts.length > 0 ? parts.join(' ') : undefined
-}
-
-function pickLastOutput(content: ContentBlock[]): string | undefined {
-  for (let i = content.length - 1; i >= 0; i -= 1) {
-    const block = content[i]
-    if (block && typeof block.text === 'string' && block.text.length > 0) {
-      const first = block.text.split('\n', 1)[0] ?? ''
-
-      return first.length > 120 ? `${first.slice(0, 117)}...` : first
-    }
-  }
-
-  return undefined
-}
-
-// useTranscript merges tool-call chunks into one AgentToolCall per
-// toolCallId; Chat.vue wraps each in a ChatToolChips (which itself
-// handles small-vs-big tool dispatch by label).
-function toolChipFor(msg: Extract<ChatMessage, { kind: MessageKind.AgentToolCall }>): ToolChipItem {
-  const { call } = msg
-  const stat = call.locations?.find((l) => typeof l.path === 'string' && l.path.length > 0)?.path
-
-  return {
-    label: call.title ?? call.toolCallId,
-    kind: call.kind,
-    state: mapToolStatus(call.status),
-    arg: call.rawInput ? shortArg(call.rawInput) : undefined,
-    detail: pickLastOutput(call.content),
-    stat
-  }
 }
 
 function permissionPromptsFrom(ev?: PermissionRequestEvent): PermissionPrompt[] {
@@ -158,21 +165,18 @@ function permissionPromptsFrom(ev?: PermissionRequestEvent): PermissionPrompt[] 
 function onSubmit(text: string): void {
   sending.value = true
   lastErr.value = undefined
-  // Agents don't echo user prompts on session/prompt — they only replay
-  // user_message_chunk during session/load. Inject the local bubble so
-  // the user sees their own submit. The first submit CREATES the session
-  // (Rust side runs session/new on demand), so session_id is unknown
-  // until submit() resolves — we push the bubble against the returned
-  // id rather than fabricating a placeholder.
   submit({ text, profileId: selectedProfile.value })
     .then((result) => {
-      const sessionId = result.session_id ?? state.value?.session_id
-      if (sessionId) {
-        transcript.push({
-          kind: EventKind.Transcript,
-          agent_id: activeAgentId.value ?? '',
-          session_id: sessionId,
-          update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text } }
+      // Agents don't echo user prompts on session/prompt (only on
+      // session/load replay), so push the user turn locally using the
+      // instance/session ids the daemon just handed back. This lands
+      // the captain bubble in the transcript immediately.
+      const instanceId = result.instance_id ?? activeInstanceId.value
+      const sessionId = result.session_id ?? ''
+      if (instanceId) {
+        pushTranscriptChunk(instanceId, sessionId, {
+          sessionUpdate: 'user_message_chunk',
+          content: { type: 'text', text }
         })
       }
       composerRef.value?.clear()
@@ -188,28 +192,30 @@ function onSubmit(text: string): void {
 
 <template>
   <Frame :profile="selectedProfile ?? 'none'" :provider="activeProfile?.agent" :model="activeProfile?.model">
-    <div class="chat-transcript" data-testid="chat-transcript">
-      <template v-for="msg in messages" :key="msg.id">
-        <ChatTurn v-if="msg.kind === MessageKind.User" :role="Role.User">
-          <ChatUserBody>{{ msg.text }}</ChatUserBody>
-        </ChatTurn>
+    <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
+      <ChatTurn v-for="block in timelineBlocks" :key="`${block.role}-${block.startedAt}`" :role="block.role">
+        <template v-for="entry in block.entries" :key="`${entry.kind}-${entry.createdAt}`">
+          <ChatUserBody v-if="entry.kind === 'turn' && entry.turn.role === TurnRole.User">{{ entry.turn.text }}</ChatUserBody>
+          <ChatAssistantBody v-else-if="entry.kind === 'turn'">{{ entry.turn.text }}</ChatAssistantBody>
 
-        <ChatTurn v-else-if="msg.kind === MessageKind.AgentMessage" :role="Role.Assistant">
-          <ChatAssistantBody>{{ msg.text }}</ChatAssistantBody>
-        </ChatTurn>
+          <ChatStreamCard
+            v-else-if="entry.kind === 'stream' && entry.item.kind === StreamItemKind.Thought"
+            :kind="StreamKind.Thinking"
+            :active="true"
+            label="thought"
+            >{{ entry.item.text }}</ChatStreamCard
+          >
+          <ChatStreamCard
+            v-else-if="entry.kind === 'stream'"
+            :kind="StreamKind.Planning"
+            :active="true"
+            label="plan"
+            :items="mapPlanItems(entry.item.entries)"
+          />
 
-        <ChatTurn v-else-if="msg.kind === MessageKind.AgentThought" :role="Role.Assistant">
-          <ChatStreamCard :kind="StreamKind.Thinking" :active="true" label="thought">{{ msg.text }}</ChatStreamCard>
-        </ChatTurn>
-
-        <ChatTurn v-else-if="msg.kind === MessageKind.AgentPlan" :role="Role.Assistant">
-          <ChatStreamCard :kind="StreamKind.Planning" :active="true" label="plan" :items="mapPlanItems(msg.entries)" />
-        </ChatTurn>
-
-        <ChatTurn v-else-if="msg.kind === MessageKind.AgentToolCall" :role="Role.Assistant">
-          <ChatToolChips :items="[toolChipFor(msg)]" />
-        </ChatTurn>
-      </template>
+          <ChatToolChips v-else-if="entry.kind === 'tool'" :items="[toView(entry.call)]" />
+        </template>
+      </ChatTurn>
     </div>
 
     <ChatPermissionStack :prompts="permissionPrompts" />
@@ -226,7 +232,7 @@ function onSubmit(text: string): void {
 @reference '../assets/styles.css';
 
 .chat-transcript {
-  @apply flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-[14px] py-2;
+  @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
 }
 
 .chat-err {
