@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
-    "@vueuse/core": "^11.3.0",
+    "@vueuse/core": "^14.2.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "focus-trap-vue": "^4.0.3",
