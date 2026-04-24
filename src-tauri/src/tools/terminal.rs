@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_client_protocol::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, ReleaseTerminalRequest,
@@ -49,6 +50,8 @@ pub struct TerminalState {
     pub child: Option<Child>,
     pub buffer: Arc<Mutex<OutputBuffer>>,
     pub exit: Arc<Mutex<Option<TerminalExitStatus>>>,
+    /// Captured at spawn time for the exit-log duration field.
+    pub started_at: Instant,
 }
 
 /// Ring-style buffer: grows until `limit`, then shifts bytes off the
@@ -108,11 +111,12 @@ impl Terminals {
         let limit = req.output_byte_limit.unwrap_or(DEFAULT_OUTPUT_LIMIT);
         let terminal_id = TerminalId::new(uuid::Uuid::new_v4().to_string());
 
-        tracing::info!(
+        tracing::debug!(
             session = session_key.as_ref(),
             terminal = %terminal_id.0,
             cwd = %cwd.display(),
             command = %req.command,
+            args_count = req.args.len(),
             "tools::terminal: create"
         );
 
@@ -142,6 +146,7 @@ impl Terminals {
             child: Some(child),
             buffer,
             exit,
+            started_at: Instant::now(),
         };
 
         let mut registry = self.registry.lock().await;
@@ -172,18 +177,27 @@ impl Terminals {
         req: WaitForTerminalExitRequest,
     ) -> Result<WaitForTerminalExitResponse, TerminalError> {
         let key = (session_key.as_ref().to_string(), req.terminal_id.clone());
-        let (child, exit_slot) = {
+        let (child, exit_slot, started_at) = {
             let mut registry = self.registry.lock().await;
             let state = registry
                 .get_mut(&key)
                 .ok_or_else(|| TerminalError::UnknownTerminal(req.terminal_id.0.to_string()))?;
-            (state.child.take(), state.exit.clone())
+            (state.child.take(), state.exit.clone(), state.started_at)
         };
 
         let status = match child {
             Some(mut child) => {
                 let out = child.wait().await?;
                 let status = exit_status_from(&out);
+                let duration_ms = started_at.elapsed().as_millis();
+                tracing::debug!(
+                    session = session_key.as_ref(),
+                    terminal = %req.terminal_id.0,
+                    exit_code = ?status.exit_code,
+                    signal = ?status.signal,
+                    duration_ms = %duration_ms,
+                    "tools::terminal: exit"
+                );
                 *exit_slot.lock().await = Some(status.clone());
                 status
             }
@@ -259,14 +273,17 @@ where
     tokio::spawn(async move {
         let mut reader = reader;
         let mut chunk = [0u8; READ_CHUNK];
+        let mut total: u64 = 0;
         loop {
             match reader.read(&mut chunk).await {
                 Ok(0) => break,
                 Ok(n) => {
+                    total = total.saturating_add(n as u64);
+                    tracing::trace!(chunk_len = n, total_bytes = total, "tools::terminal: pipe chunk");
                     buffer.lock().await.push(&chunk[..n], limit);
                 }
                 Err(err) => {
-                    tracing::debug!(%err, "tools::terminal: pipe read failed");
+                    tracing::debug!(%err, total_bytes = total, "tools::terminal: pipe read failed");
                     break;
                 }
             }

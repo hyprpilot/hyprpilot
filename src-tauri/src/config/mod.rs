@@ -566,18 +566,22 @@ impl ProfileConfig {
 }
 
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
+    tracing::info!(cli_path = ?cli_path, profile = ?profile, "config::load: loading layers");
     let mut layers: Vec<String> = vec![DEFAULTS.to_string()];
 
     match cli_path {
         Some(p) => {
             if !p.exists() {
+                tracing::error!(path = %p.display(), "config::load: cli path missing");
                 bail!("config file not found: {}", p.display());
             }
+            tracing::debug!(path = %p.display(), "config::load: reading cli-provided layer");
             layers.push(read_layer(p)?);
         }
         None => {
             let default = paths::config_file();
             if default.exists() {
+                tracing::debug!(path = %default.display(), "config::load: reading default layer");
                 layers.push(read_layer(&default)?);
             }
         }
@@ -586,15 +590,36 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
     if let Some(name) = profile {
         let p = paths::profile_config_file(name);
         if !p.exists() {
+            tracing::error!(profile = name, path = %p.display(), "config::load: profile not found");
             bail!("profile '{name}' not found at {}", p.display());
         }
+        tracing::debug!(profile = name, path = %p.display(), "config::load: reading profile layer");
         layers.push(read_layer(&p)?);
     }
 
-    layers.iter().try_fold(Config::default(), |acc, body| {
-        let layer: Config = toml::from_str(body).context("failed to parse TOML layer")?;
-        Ok(acc.merge(layer))
-    })
+    let cfg = layers
+        .iter()
+        .enumerate()
+        .try_fold(Config::default(), |acc, (idx, body)| -> Result<Config> {
+            let layer: Config = toml::from_str(body)
+                .map_err(|e| {
+                    tracing::error!(layer_index = idx, err = %e, "config::load: TOML parse failed");
+                    e
+                })
+                .context("failed to parse TOML layer")?;
+            Ok(acc.merge(layer))
+        })?;
+
+    tracing::info!(
+        layers = layers.len(),
+        agents = cfg.agents.agents.len(),
+        profiles = cfg.profiles.len(),
+        default_agent = ?cfg.agents.agent.default,
+        default_profile = ?cfg.agents.agent.default_profile,
+        "config::load: layers merged"
+    );
+
+    Ok(cfg)
 }
 
 fn read_layer(path: &Path) -> Result<String> {
@@ -895,11 +920,17 @@ impl Config {
     /// Run garde's tree walk (every predicate including cross-field
     /// rules wired via higher-order `custom(fn(&self.x))` hooks).
     pub fn validate(&self) -> Result<()> {
-        <Self as Validate>::validate(self).map_err(|report| anyhow!("config is invalid:\n{report}"))?;
+        <Self as Validate>::validate(self).map_err(|report| {
+            tracing::error!(%report, "config::validate: garde report");
+            anyhow!("config is invalid:\n{report}")
+        })?;
         for p in &self.profiles {
-            p.validate_prompt_source()
-                .map_err(|e| anyhow!("config is invalid: profiles[{}]: {e}", p.id))?;
+            p.validate_prompt_source().map_err(|e| {
+                tracing::error!(profile = %p.id, err = %e, "config::validate: profile prompt source clash");
+                anyhow!("config is invalid: profiles[{}]: {e}", p.id)
+            })?;
         }
+        tracing::debug!("config::validate: config validated");
         Ok(())
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::adapters::AcpInstances;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
@@ -46,6 +46,8 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                         return;
                     }
                 };
+
+                trace!(line = %line, "rpc: received line");
 
                 let (response, new_rx) = dispatch(
                     &line,
@@ -213,7 +215,8 @@ async fn dispatch(
     };
     let params = value.get("params").cloned().unwrap_or(serde_json::Value::Null);
 
-    info!(id = ?id, method = %method, "rpc: dispatch");
+    info!(id = ?id, method = %method, "rpc: dispatch entry");
+    trace!(id = ?id, method = %method, params = %params, "rpc: dispatch params");
 
     let ctx = HandlerCtx {
         app,
@@ -228,7 +231,16 @@ async fn dispatch(
     match outcome {
         Ok(HandlerOutcome::Reply(value)) => (Response::success(Some(id), value), None),
         Ok(HandlerOutcome::Subscribed(snapshot, rx)) => (Response::success(Some(id), snapshot), Some(rx)),
-        Err(err) => (Response::error(Some(id), err), None),
+        Err(err) => {
+            warn!(
+                id = ?id,
+                method = %method,
+                code = err.code,
+                message = %err.message,
+                "rpc: handler returned error"
+            );
+            (Response::error(Some(id), err), None)
+        }
     }
 }
 

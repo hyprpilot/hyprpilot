@@ -8,6 +8,7 @@
 
 use anyhow::{bail, Context, Result};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tracing::{error, info};
 
 use super::agents::{match_provider_agent, SystemPromptInjection};
 use crate::config::AgentConfig;
@@ -32,6 +33,15 @@ pub struct SpawnedAgent {
 /// returns a `FirstMessage(...)` the runtime prepends onto the first
 /// `session/prompt`. Vendors without any hook silently drop it.
 pub fn spawn_agent(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<SpawnedAgent> {
+    info!(
+        agent = %cfg.id,
+        provider = ?cfg.provider,
+        cwd = ?cfg.cwd,
+        command = ?cfg.command,
+        has_system_prompt = system_prompt.is_some(),
+        "acp::spawn: launching agent subprocess"
+    );
+
     let agent = match_provider_agent(cfg.provider);
     let mut cmd = agent.spawn(cfg);
     let first_message_prefix = match system_prompt {
@@ -41,9 +51,16 @@ pub fn spawn_agent(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<Spa
         },
         None => None,
     };
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("failed to spawn agent '{}' (provider {:?})", cfg.id, cfg.provider))?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(err) => {
+            error!(agent = %cfg.id, provider = ?cfg.provider, %err, "acp::spawn: failed to spawn agent");
+            return Err(err)
+                .with_context(|| format!("failed to spawn agent '{}' (provider {:?})", cfg.id, cfg.provider));
+        }
+    };
+
+    let pid = child.id();
 
     let stdin = match child.stdin.take() {
         Some(s) => s,
@@ -53,6 +70,13 @@ pub fn spawn_agent(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<Spa
         Some(s) => s,
         None => bail!("agent '{}' stdout not captured — check Stdio::piped()", cfg.id),
     };
+
+    info!(
+        agent = %cfg.id,
+        pid = ?pid,
+        first_message_injection = first_message_prefix.is_some(),
+        "acp::spawn: agent subprocess spawned"
+    );
 
     Ok(SpawnedAgent {
         child,
