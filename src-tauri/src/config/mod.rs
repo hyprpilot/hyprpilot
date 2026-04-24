@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths;
 use validations::{
     validate_agent_default_id, validate_agents_ids, validate_default_profile_id, validate_profile_agent_references,
-    validate_profile_tool_globs, validate_profiles_ids,
+    validate_profile_path_list, validate_profile_string_list, validate_profile_tool_globs, validate_profiles_ids,
 };
 
 const DEFAULTS: &str = include_str!("defaults.toml");
@@ -525,6 +525,33 @@ pub struct ProfileConfig {
     #[serde(default)]
     #[garde(custom(validate_profile_tool_globs(&self.id)))]
     pub auto_reject_tools: Vec<String>,
+    /// Opaque names from a future `[[mcps]]` catalog (K-270 introduces
+    /// the catalog; reference-validation lands with it). `None` → all
+    /// available; `Some(["all"])` → literal sentinel meaning all;
+    /// `Some([])` → none; otherwise → the listed names verbatim.
+    #[garde(custom(validate_profile_string_list))]
+    pub mcps: Option<Vec<String>>,
+    /// Directory paths the skill loader scans (K-268). Follows the
+    /// claude-code skill mechanism — each entry is a folder of
+    /// manually-authored skills; the loader pulls them in at instance
+    /// spawn. `None` → use defaults; `Some([])` → no skills.
+    /// `~` expansion happens at consume time (mirrors `cwd` /
+    /// `system_prompt_file`).
+    #[garde(custom(validate_profile_path_list))]
+    pub skills: Option<Vec<PathBuf>>,
+    /// Default mode id — free string today; validation against a mode
+    /// catalog lands with the catalog.
+    #[garde(inner(length(min = 1)))]
+    pub mode: Option<String>,
+    /// Profile-scoped cwd for the agent process. `~` expansion happens
+    /// at consume time (mirrors `system_prompt_file`).
+    #[garde(skip)]
+    pub cwd: Option<PathBuf>,
+    /// Extra env vars the agent process inherits. `BTreeMap` for
+    /// deterministic serialisation; mirrors `AgentConfig.env`.
+    #[serde(default)]
+    #[garde(skip)]
+    pub env: BTreeMap<String, String>,
 }
 
 impl ProfileConfig {
@@ -1711,6 +1738,166 @@ auto_reject_tools = ["["]
         let msg = err.to_string();
         assert!(msg.contains("profile 'busted'"), "{msg}");
         assert!(msg.contains("invalid tool glob"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_parses_full_schema() {
+        let p = write_tmp(
+            "profile-full.toml",
+            r#"
+[[profiles]]
+id = "full"
+agent = "claude-code"
+model = "claude-opus-4-5"
+system_prompt = "be terse"
+mcps = ["fs", "ripgrep"]
+skills = ["~/.claude/skills/rust", "~/.claude/skills/vue"]
+mode = "ask"
+cwd = "~/work"
+
+[profiles.env]
+FOO = "bar"
+BAZ = "qux"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        let full = cfg.profiles.iter().find(|p| p.id == "full").expect("full entry");
+        assert_eq!(full.model.as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(full.system_prompt.as_deref(), Some("be terse"));
+        assert_eq!(
+            full.mcps.as_deref(),
+            Some(["fs".to_string(), "ripgrep".to_string()].as_slice())
+        );
+        assert_eq!(
+            full.skills.as_deref(),
+            Some(
+                [
+                    PathBuf::from("~/.claude/skills/rust"),
+                    PathBuf::from("~/.claude/skills/vue")
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(full.mode.as_deref(), Some("ask"));
+        assert_eq!(full.cwd.as_deref(), Some(PathBuf::from("~/work")).as_deref());
+        assert_eq!(full.env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(full.env.get("BAZ").map(String::as_str), Some("qux"));
+        cfg.validate().expect("valid full profile");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_duplicate_mcp_name() {
+        let p = write_tmp(
+            "dup-mcp.toml",
+            r#"
+[[profiles]]
+id = "dupe"
+agent = "claude-code"
+mcps = ["fs", "fs"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate entry 'fs'"), "{msg}");
+        assert!(msg.contains("mcps"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_empty_mcp_name() {
+        let p = write_tmp(
+            "empty-mcp.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+mcps = [""]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("empty string"), "{msg}");
+        assert!(msg.contains("mcps"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_absent_mcps_means_all() {
+        let p = write_tmp(
+            "absent-mcp.toml",
+            r#"
+[[profiles]]
+id = "plain"
+agent = "claude-code"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        let plain = cfg.profiles.iter().find(|p| p.id == "plain").expect("plain entry");
+        assert_eq!(plain.mcps, None, "absent key parses as None");
+        assert_eq!(plain.skills, None);
+        cfg.validate().expect("absent list validates");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_duplicate_skills_path() {
+        let p = write_tmp(
+            "dup-skills.toml",
+            r#"
+[[profiles]]
+id = "dupe"
+agent = "claude-code"
+skills = ["~/.claude/skills/rust", "~/.claude/skills/rust"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate entry"), "{msg}");
+        assert!(msg.contains("skills"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_rejects_empty_skills_path() {
+        let p = write_tmp(
+            "empty-skills.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+skills = [""]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("empty path"), "{msg}");
+        assert!(msg.contains("skills"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_empty_mcps_means_none() {
+        let p = write_tmp(
+            "empty-list-mcp.toml",
+            r#"
+[[profiles]]
+id = "deny"
+agent = "claude-code"
+mcps = []
+skills = []
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        let deny = cfg.profiles.iter().find(|p| p.id == "deny").expect("deny entry");
+        assert_eq!(deny.mcps, Some(vec![]), "empty list parses as Some(vec![])");
+        assert_eq!(deny.skills, Some(vec![]));
+        cfg.validate().expect("empty list validates");
         fs::remove_file(&p).ok();
     }
 

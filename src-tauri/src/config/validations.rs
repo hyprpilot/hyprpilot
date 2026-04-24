@@ -1,6 +1,8 @@
 //! Garde predicates for the `config::*` derive surface. Everything
 //! here is `pub(super)`; the outside API is `Config::validate()`.
 
+use std::path::PathBuf;
+
 use globset::Glob;
 
 use super::{AgentConfig, AgentDefaults, AgentsConfig, ProfileConfig};
@@ -73,6 +75,44 @@ pub(super) fn validate_profile_agent_references<'a>(
         }
         Ok(())
     }
+}
+
+/// `mcps` opaque-name list. Rejects empty entries and duplicates
+/// within the list. Reference-validation against the future
+/// `[[mcps]]` catalog (K-270) lives with that issue.
+pub(super) fn validate_profile_string_list(list: &Option<Vec<String>>, _ctx: &()) -> garde::Result {
+    let Some(items) = list else {
+        return Ok(());
+    };
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for item in items {
+        if item.is_empty() {
+            return Err(garde::Error::new("empty string is not a valid entry"));
+        }
+        if !seen.insert(item.as_str()) {
+            return Err(garde::Error::new(format!("duplicate entry '{item}'")));
+        }
+    }
+    Ok(())
+}
+
+/// `skills` directory list. Rejects empty paths and duplicates. `~`
+/// expansion happens at consume time, so the stored path can be a
+/// tilde-prefixed shorthand — validation compares the raw form.
+pub(super) fn validate_profile_path_list(list: &Option<Vec<PathBuf>>, _ctx: &()) -> garde::Result {
+    let Some(items) = list else {
+        return Ok(());
+    };
+    let mut seen: std::collections::HashSet<&std::path::Path> = std::collections::HashSet::new();
+    for item in items {
+        if item.as_os_str().is_empty() {
+            return Err(garde::Error::new("empty path is not a valid entry"));
+        }
+        if !seen.insert(item.as_path()) {
+            return Err(garde::Error::new(format!("duplicate entry '{}'", item.display())));
+        }
+    }
+    Ok(())
 }
 
 /// Glob-pattern validator for `auto_accept_tools` / `auto_reject_tools`.

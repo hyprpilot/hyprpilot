@@ -565,6 +565,11 @@ mod tests {
             system_prompt_file: None,
             auto_accept_tools: accept,
             auto_reject_tools: reject,
+            mcps: None,
+            skills: None,
+            mode: None,
+            cwd: None,
+            env: Default::default(),
         }
     }
 

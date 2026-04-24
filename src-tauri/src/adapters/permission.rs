@@ -339,6 +339,11 @@ mod tests {
             system_prompt_file: None,
             auto_accept_tools: accept.iter().map(|s| s.to_string()).collect(),
             auto_reject_tools: reject.iter().map(|s| s.to_string()).collect(),
+            mcps: None,
+            skills: None,
+            mode: None,
+            cwd: None,
+            env: Default::default(),
         }
     }
 
