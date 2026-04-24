@@ -30,7 +30,24 @@ describe('useAdapter', () => {
       text: 'hi',
       instanceId: 'i-1',
       agentId: undefined,
-      profileId: 'strict'
+      profileId: 'strict',
+      attachments: []
+    })
+  })
+
+  it('submit() forwards attachments when provided', async () => {
+    invoke.mockResolvedValue({ accepted: true, agent_id: 'a' })
+    const { submit } = useAdapter()
+    const attachments = [{ slug: 'debug', path: '/skills/debug.md', body: 'body', title: 'Debug' }]
+
+    await submit({ text: 'hi', profileId: 'strict', attachments })
+
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.SessionSubmit, {
+      text: 'hi',
+      instanceId: undefined,
+      agentId: undefined,
+      profileId: 'strict',
+      attachments
     })
   })
 

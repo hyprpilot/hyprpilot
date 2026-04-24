@@ -15,7 +15,7 @@
 //! with lower seq than the user turn.
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
 use async_trait::async_trait;
@@ -46,11 +46,14 @@ pub struct AcpAdapter {
     pub(crate) status: Arc<StatusBroadcast>,
     registry: Arc<AdapterRegistry<AcpInstance>>,
     permissions: Arc<dyn PermissionController>,
-    /// Channel the per-instance runtime actor publishes ACP-shape
-    /// events onto. A dedicated task forwards each event through
-    /// `mapping::From` onto the registry's generic broadcast. Kept
-    /// as a field so the bridge task shares the adapter's lifetime.
-    runtime_events_bridge: broadcast::Sender<InstanceEvent>,
+    /// Lazy-init channel the per-instance runtime actor publishes
+    /// ACP-shape events onto. A dedicated task forwards each event
+    /// through `mapping::From` onto the registry's generic broadcast.
+    /// Spawning the bridge eagerly in the constructor would `tokio::spawn`
+    /// before Tauri's runtime is alive ("no reactor running" panic on
+    /// `daemon::run`); the `OnceLock` defers spawn to first access,
+    /// which always lands inside the Tauri `.setup(...)` closure.
+    runtime_events_bridge: OnceLock<broadcast::Sender<InstanceEvent>>,
 }
 
 impl std::fmt::Debug for AcpAdapter {
@@ -91,14 +94,12 @@ impl AcpAdapter {
         status: Arc<StatusBroadcast>,
         permissions: Arc<dyn PermissionController>,
     ) -> Self {
-        let registry = Arc::new(AdapterRegistry::new());
-        let runtime_events_bridge = Self::spawn_runtime_bridge(registry.clone());
         Self {
             config,
             status,
-            registry,
+            registry: Arc::new(AdapterRegistry::new()),
             permissions,
-            runtime_events_bridge,
+            runtime_events_bridge: OnceLock::new(),
         }
     }
 
@@ -108,6 +109,16 @@ impl AcpAdapter {
     #[must_use]
     pub fn shared_config(&self) -> Arc<RwLock<Config>> {
         self.config.clone()
+    }
+
+    /// Lazily spawn (and memoise) the ACP → generic events bridge
+    /// task. Defers the `tokio::spawn` call until first access, which
+    /// always happens after `daemon::run` enters the Tauri builder's
+    /// `.setup(...)` closure (runtime alive). Subsequent calls return
+    /// the same sender clone.
+    fn runtime_bridge(&self) -> &broadcast::Sender<InstanceEvent> {
+        self.runtime_events_bridge
+            .get_or_init(|| Self::spawn_runtime_bridge_inner(self.registry.clone()))
     }
 
     /// Profile config lookup by id — used when spawning an actor so
@@ -228,7 +239,7 @@ impl AcpAdapter {
             resolved,
             key,
             profile_id,
-            self.runtime_events_bridge.clone(),
+            self.runtime_bridge().clone(),
             bootstrap,
             self.permissions.clone(),
             profile,
@@ -401,7 +412,7 @@ impl AcpAdapter {
                 resolved,
                 ephemeral_key,
                 profile_id_for_instance,
-                self.runtime_events_bridge.clone(),
+                self.runtime_bridge().clone(),
                 Bootstrap::ListOnly,
                 self.permissions.clone(),
                 profile,
@@ -520,7 +531,7 @@ impl AcpAdapter {
             resolved,
             key,
             profile_id_for_instance,
-            self.runtime_events_bridge.clone(),
+            self.runtime_bridge().clone(),
             Bootstrap::Fresh,
             self.permissions.clone(),
             profile,
@@ -602,10 +613,10 @@ impl AcpAdapter {
 // self-documenting without the actor importing generic types. Owned
 // by the adapter so the bridge task dies when the adapter drops.
 impl AcpAdapter {
-    /// Construct the ACP → generic bridge channel + task. Called
-    /// once by `new`/`with_permissions` via the `runtime_events_bridge`
-    /// field's initialiser.
-    fn spawn_runtime_bridge(registry: Arc<AdapterRegistry<AcpInstance>>) -> broadcast::Sender<InstanceEvent> {
+    /// Construct the ACP → generic bridge channel + task. Invoked
+    /// once on first `runtime_bridge()` access via the `OnceLock`'s
+    /// initialiser.
+    fn spawn_runtime_bridge_inner(registry: Arc<AdapterRegistry<AcpInstance>>) -> broadcast::Sender<InstanceEvent> {
         let (runtime_tx, mut runtime_rx) = broadcast::channel::<InstanceEvent>(256);
         let out_tx = registry.events_tx();
         tokio::spawn(async move {

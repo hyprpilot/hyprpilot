@@ -2,6 +2,7 @@ import {
   invoke,
   TauriCommand,
   type AgentSummary,
+  type Attachment,
   type CancelResult,
   type ProfileSummary,
   type SubmitResult
@@ -23,6 +24,12 @@ export interface SubmitOptions {
   instanceId?: string
   agentId?: string
   profileId?: string
+  /**
+   * First-class skill / resource attachments delivered alongside
+   * `text`. Backend (K-268) maps each entry onto an ACP
+   * `ContentBlock::Resource` prepended before the prompt text block.
+   */
+  attachments?: Attachment[]
 }
 
 export interface CancelOptions {
@@ -42,7 +49,8 @@ export function useAdapter() {
       text: options.text,
       instanceId: options.instanceId,
       agentId: options.agentId,
-      profileId: options.profileId
+      profileId: options.profileId,
+      attachments: options.attachments ?? []
     })
   }
 

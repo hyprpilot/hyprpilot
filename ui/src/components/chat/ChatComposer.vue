@@ -1,45 +1,80 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+/**
+ * Composer row: pills (image attachments + skill attachments) +
+ * autosizing textarea + send button. Owns compose text + image-pill
+ * state via `useComposer`; reads skill attachments off the
+ * `useAttachments` module-scope singleton (the K-268 skills palette
+ * pushes there). The parent's `@submit` receives `{ text, attachments }`
+ * — image pills go in the `attachments` slot, skill attachments
+ * travel separately via `useAttachments().pending`.
+ *
+ * Ctrl+P (`composer.paste_image` binding) reads a clipboard image via
+ * `tauri-plugin-clipboard-manager`'s `readImage()` (RGBA pixels +
+ * dimensions) → encodes as PNG via canvas → base64 dataURL.
+ *
+ * Drag-and-drop: image files become attachment pills via the same
+ * `FileReader` path; non-image files are ignored (skill attachments
+ * are palette-driven, not drop-driven).
+ */
+import { readImage } from '@tauri-apps/plugin-clipboard-manager'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
-import type { ComposerPill } from '../types'
-import { type KeymapEntry, useKeymap, useKeymaps } from '@composables'
+import ChatComposerPill from './ChatComposerPill.vue'
+import { ComposerPillKind, type ComposerPill } from '../types'
+import { type KeymapEntry, useAttachments, useComposer, useKeymap, useKeymaps } from '@composables'
 import { log } from '@lib'
 
-/**
- * Composer row: pills (attachments / resources) + autosizing textarea +
- * send button. Port of D5's `D5Composer`. No submit wiring — the parent
- * decides what `submit` means.
- *
- * design-skip: `reference/*` pill variant dropped — reviewer decision:
- * "no references". Bundle carries it, port omits it; any caller passing
- * a pill with `kind='reference'` just renders the fallback style.
- */
+
 const props = withDefaults(
   defineProps<{
-    pills?: ComposerPill[]
     placeholder?: string
     disabled?: boolean
     sending?: boolean
+    /**
+     * Optional externally-supplied pills. When provided, the composer
+     * renders these instead of its internal `useComposer` pill list —
+     * lets parents (stories, palette pre-seeds) drive state without
+     * re-owning the composable. The parent then listens on
+     * `@removePill`.
+     */
+    pills?: ComposerPill[]
   }>(),
   {
-    pills: () => [],
     placeholder: 'message pilot',
     disabled: false,
-    sending: false
+    sending: false,
+    pills: undefined
   }
 )
 
 const emit = defineEmits<{
-  submit: [text: string]
+  submit: [payload: { text: string; attachments: ComposerPill[] }]
   removePill: [id: string]
 }>()
 
-const text = ref('')
+const composer = useComposer()
+const text = composer.text
+const composerPills = composer.pills
+
+const attachments = useAttachments()
+
+// Skill attachments (palette-driven, K-268) render as resource pills
+// alongside image attachment pills. The composer doesn't own the
+// pending list — it only presents and forwards the remove intent.
+const attachmentPills = computed<ComposerPill[]>(() =>
+  attachments.pending.value.map((a) => ({
+    kind: ComposerPillKind.Resource,
+    id: `attachment:${a.slug}`,
+    label: a.title ?? a.slug,
+    data: a.slug,
+    mimeType: 'skill'
+  }))
+)
+
+const pillsToRender = computed<ComposerPill[]>(() => props.pills ?? [...attachmentPills.value, ...composerPills.value])
+
 const textareaRef = ref<HTMLTextAreaElement>()
 
-// Autosize the textarea: grow from ~5 lines minimum up to 25vh cap, then
-// scroll internally. Runs after every text change + on mount so the
-// initial render already has the 5-line footprint.
 function resize(): void {
   const el = textareaRef.value
   if (!el) {
@@ -50,7 +85,6 @@ function resize(): void {
 }
 
 const { keymaps } = useKeymaps()
-// Listener scopes to the textarea — fires only while it owns focus.
 useKeymap(textareaRef, (): KeymapEntry[] => {
   if (!keymaps.value) {
     return []
@@ -58,8 +92,6 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
 
   return [
     { binding: keymaps.value.chat.submit, handler: onEnter },
-    // Explicit no-op so Shift+Enter falls through to the textarea's
-    // native newline insertion (and doesn't match chat.submit).
     { binding: keymaps.value.chat.newline, handler: () => false },
     { binding: keymaps.value.composer.paste_image, handler: onPasteImage },
     { binding: keymaps.value.composer.tab_completion, handler: onTab },
@@ -77,17 +109,23 @@ watch(text, () => nextTick(resize))
 
 defineExpose({
   clear(): void {
-    text.value = ''
+    composer.clear()
     nextTick(resize)
+  },
+  addPill(pill: ComposerPill): void {
+    composer.addPill(pill)
   }
 })
 
 function trySubmit(): void {
-  const val = text.value.trim()
-  if (!val || props.sending || props.disabled) {
+  if (props.sending || props.disabled) {
     return
   }
-  emit('submit', val)
+  const { text, attachments } = composer.resolvedSubmit()
+  if (!text && attachments.length === 0) {
+    return
+  }
+  emit('submit', { text, attachments })
 }
 
 function onEnter(e: KeyboardEvent): boolean {
@@ -106,46 +144,159 @@ function onTab(): boolean {
   return false
 }
 
-function onPasteImage(): boolean {
-  // TODO(K-image): wire the clipboard-image handler when image attachments land.
-  log.debug('composer keybind', { key: 'ctrl+p', target: 'paste-image' })
+async function readClipboardImagePill(): Promise<ComposerPill | undefined> {
+  try {
+    const image = await readImage()
+    const rgba = await image.rgba()
+    const { width, height } = await image.size()
+    const blob = await rgbaToPngBlob(rgba, width, height)
+    if (!blob) {
+      return undefined
+    }
+    const dataUrl = await blobToDataUrl(blob)
 
-  return false
+    return {
+      kind: ComposerPillKind.Attachment,
+      id: crypto.randomUUID(),
+      label: `image/png · ${formatSize(blob.size)}`,
+      data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+      mimeType: 'image/png'
+    }
+  } catch (err) {
+    log.debug('clipboard readImage failed', { err: String(err) })
+
+    return undefined
+  }
+}
+
+function onPasteImage(e: KeyboardEvent): boolean {
+  log.debug('composer keybind', { key: 'ctrl+p', target: 'paste-image' })
+  e.preventDefault()
+
+  void (async () => {
+    const pill = await readClipboardImagePill()
+    if (pill) {
+      composer.addPill(pill)
+    }
+  })()
+
+  return true
 }
 
 function onHistoryPrev(): boolean {
-  // TODO(K-history): composer history store not yet wired.
   log.debug('composer keybind', { key: 'ctrl+arrowup', target: 'history-prev' })
 
   return false
 }
 
 function onHistoryNext(): boolean {
-  // TODO(K-history): composer history store not yet wired.
   log.debug('composer keybind', { key: 'ctrl+arrowdown', target: 'history-next' })
 
   return false
 }
+
+/** RGBA pixel buffer → PNG blob via offscreen canvas. */
+async function rgbaToPngBlob(rgba: Uint8Array, width: number, height: number): Promise<Blob | undefined> {
+  if (width === 0 || height === 0) {
+    return undefined
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    return undefined
+  }
+  const data = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength)
+  ctx.putImageData(new ImageData(data, width, height), 0, 0)
+
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob ?? undefined), 'image/png')
+  })
+}
+
+/** FileReader-based base64 dataURL — async, off the main thread. */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result as string)
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(blob)
+  })
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)}KB`
+  }
+
+  return `${Math.round(bytes)}B`
+}
+
+function onRemovePill(id: string): void {
+  if (id.startsWith('attachment:')) {
+    attachments.remove(id.slice('attachment:'.length))
+  } else {
+    composer.removePill(id)
+  }
+  emit('removePill', id)
+}
+
+async function onDrop(e: DragEvent): Promise<void> {
+  e.preventDefault()
+  const files = e.dataTransfer?.files
+  if (!files || files.length === 0) {
+    return
+  }
+  for (const file of Array.from(files)) {
+    if (!file.type.startsWith('image/')) {
+      // Skill / reference attachments are palette-driven (K-268); the
+      // composer doesn't accept ad-hoc resource drops.
+      continue
+    }
+    const dataUrl = await blobToDataUrl(file)
+    composer.addPill({
+      kind: ComposerPillKind.Attachment,
+      id: crypto.randomUUID(),
+      label: `${file.name || file.type} · ${formatSize(file.size)}`,
+      data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+      mimeType: file.type
+    })
+  }
+}
+
+function onDragOver(e: DragEvent): void {
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'copy'
+    e.preventDefault()
+  }
+}
 </script>
 
 <template>
-  <form class="composer" data-testid="composer" @submit.prevent="trySubmit">
-    <div v-if="pills.length > 0" class="composer-pills">
-      <span v-for="p in pills" :key="p.id" class="composer-pill" :data-kind="p.kind">
-        <span class="composer-pill-label">{{ p.label }}</span>
-        <button type="button" class="composer-pill-remove" aria-label="remove" @click="emit('removePill', p.id)">
-          <FaIcon :icon="['fas', 'xmark']" class="composer-pill-remove-icon" />
-        </button>
-      </span>
+  <form class="composer" data-testid="composer" @submit.prevent="() => void trySubmit()" @drop="onDrop" @dragover="onDragOver">
+    <div v-if="pillsToRender.length > 0" class="composer-pills">
+      <ChatComposerPill v-for="p in pillsToRender" :key="p.id" :pill="p" @remove="onRemovePill" />
     </div>
 
     <div class="composer-row">
-      <textarea ref="textareaRef" v-model="text" class="composer-textarea" rows="5" :placeholder="placeholder" :disabled="disabled" data-testid="composer-textarea" />
+      <textarea
+        ref="textareaRef"
+        v-model="text"
+        class="composer-textarea"
+        rows="5"
+        :placeholder="placeholder"
+        :disabled="disabled"
+        data-testid="composer-textarea"
+      />
       <button
         type="submit"
         class="composer-submit"
         :aria-label="sending ? 'sending' : 'send'"
-        :disabled="sending || disabled || text.trim().length === 0"
+        :disabled="sending || disabled || (text.trim().length === 0 && composerPills.length === 0 && attachments.pending.value.length === 0)"
         data-testid="composer-submit"
       >
         <FaIcon :icon="['fas', 'reply']" class="composer-submit-icon" aria-hidden="true" />
@@ -166,34 +317,6 @@ function onHistoryNext(): boolean {
   @apply flex flex-wrap items-center gap-1;
 }
 
-.composer-pill {
-  @apply inline-flex items-center gap-1 border px-2 py-[2px] text-[0.7rem] leading-tight;
-  font-family: var(--theme-font-mono);
-  color: var(--theme-fg-ink-2);
-  background-color: var(--theme-surface-alt);
-  border-color: var(--theme-border);
-}
-
-.composer-pill-label {
-  @apply truncate;
-  max-width: 18ch;
-}
-
-.composer-pill-remove {
-  @apply border-0 bg-transparent px-0 text-[0.7rem] leading-none;
-  color: var(--theme-fg-dim);
-  cursor: pointer;
-}
-
-.composer-pill-remove-icon {
-  width: 9px;
-  height: 9px;
-}
-
-.composer-pill-remove:hover {
-  color: var(--theme-status-err);
-}
-
 .composer-row {
   @apply flex items-end gap-2;
   min-width: 0;
@@ -205,7 +328,6 @@ function onHistoryNext(): boolean {
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   border-color: var(--theme-border);
-  /* rows="5" sets the initial visible lines; max-height caps autosize at 25vh. */
   max-height: 25vh;
 }
 

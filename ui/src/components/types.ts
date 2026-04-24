@@ -147,11 +147,29 @@ export interface GitStatus {
   worktree?: string
 }
 
-/** Attachment / resource pill in the composer row. */
+/**
+ * Composer pill kinds. Mirrors pilot.py's two-axis model: `resource`
+ * pills expand inline via `#{<kind>/<slug>}` tokens at submit time;
+ * `attachment` pills ride on the next turn as ACP content blocks
+ * (image / audio / blob) and `data` carries the base64 payload.
+ */
+export enum ComposerPillKind {
+  Resource = 'resource',
+  Attachment = 'attachment'
+}
+
+/**
+ * Attachment / resource chip in the composer row. `data` is wire
+ * payload — a file path / URL for resources, base64 image bytes for
+ * attachments. `mimeType` is set on attachments so the submit path
+ * can map to the right ACP `ContentBlock` variant.
+ */
 export interface ComposerPill {
+  kind: ComposerPillKind
   id: string
   label: string
-  kind?: string
+  data: string
+  mimeType?: string
 }
 
 /** A set of keyboard-hint chips, e.g. `↑ ↓ move`. */

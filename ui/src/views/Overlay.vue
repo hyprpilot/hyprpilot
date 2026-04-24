@@ -24,7 +24,7 @@
  *   useActiveInstance   → current instance id for the transcript data-attr
  *   startSessionStream  → starts the demuxed Tauri event pump
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { openRootPalette, openSkillsPalette } from './palette-root'
 import {
@@ -52,6 +52,7 @@ import {
   TurnRole,
   useActiveInstance,
   useAdapter,
+  useAttachments,
   useKeymap,
   useKeymaps,
   usePalette,
@@ -72,6 +73,7 @@ import { Modifier } from '@ipc'
 import { formatToolCall, log } from '@lib'
 
 const { submit } = useAdapter()
+const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
 const { entries: toasts, dismiss } = useToasts()
 const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
@@ -242,6 +244,15 @@ onUnmounted(() => {
   stopStream = undefined
 })
 
+// Skill attachments are per-turn but tied to the active instance —
+// switching to another instance mid-compose discards any pending
+// picks (they were assembled against the previous instance's context).
+watch(activeInstanceId, (next, prev) => {
+  if (prev && next !== prev) {
+    clearAttachments()
+  }
+})
+
 function mapPlanStatus(raw?: string): PlanStatus {
   switch (raw) {
     case 'completed':
@@ -285,8 +296,18 @@ function mintInstanceId(): InstanceId {
   return crypto.randomUUID()
 }
 
-function onSubmit(text: string): void {
-  log.info('composer submit', { text_len: text.length, profileId: selectedProfile.value })
+function onSubmit(payload: { text: string; attachments: unknown[] }): void {
+  const { text, attachments } = payload
+  // Skill / resource attachments live in the `useAttachments` singleton
+  // (K-268 palette pushes onto it). They snapshot at submit time so a
+  // resubmit after cancel sends the same set; submit-ack clears.
+  const skillAttachments = [...pendingAttachments.value]
+  log.info('composer submit', {
+    text_len: text.length,
+    image_attachments: attachments.length,
+    skill_attachments: skillAttachments.length,
+    profileId: selectedProfile.value
+  })
   sending.value = true
 
   // Pick the instance UUID up-front so we can push the user turn
@@ -304,9 +325,10 @@ function onSubmit(text: string): void {
     content: { type: 'text', text }
   })
 
-  submit({ text, instanceId, profileId: selectedProfile.value })
+  submit({ text, instanceId, profileId: selectedProfile.value, attachments: skillAttachments })
     .then(() => {
       composerRef.value?.clear()
+      clearAttachments()
     })
     .catch((err) => {
       log.error('invoke failed', { command: 'session_submit' }, err)

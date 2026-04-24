@@ -17,6 +17,7 @@ import type {
   PermissionRequestEventPayload,
   ProfileSummary,
   SessionSummary,
+  SkillBody,
   SubmitResult,
   Theme,
   TranscriptEventPayload,
@@ -34,7 +35,11 @@ export enum TauriCommand {
   ProfilesList = 'profiles_list',
   SessionList = 'session_list',
   SessionLoad = 'session_load',
-  PermissionReply = 'permission_reply'
+  PermissionReply = 'permission_reply',
+  // K-268: wire to `skills_get` once the skills loader lands. Today the
+  // UI-side `@ipc/skills.ts` stub short-circuits this enum value so
+  // nothing hits the Rust invoke handler.
+  SkillsGet = 'skills_get'
 }
 
 export enum TauriEvent {
@@ -56,6 +61,7 @@ export interface TauriCommandResult {
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void
   [TauriCommand.PermissionReply]: void
+  [TauriCommand.SkillsGet]: SkillBody
 }
 
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */
