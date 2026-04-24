@@ -59,6 +59,7 @@ import {
   useTools,
   useTranscript,
   startSessionStream,
+  type InstanceId,
   type PlanEntry
 } from '@composables'
 import { log } from '@lib'
@@ -245,23 +246,48 @@ async function onDeny(requestId: string): Promise<void> {
   }
 }
 
+// Client-side prediction of the instance key the Rust side will
+// resolve to. Mirrors `AcpInstances::InstanceKey::as_string`:
+// `<agent>#<profile>` when a profile is selected, else `<agent>`.
+// Used to push the user turn BEFORE `submit` — see `onSubmit` for
+// the ordering rationale.
+function predictInstanceId(): InstanceId | undefined {
+  const existing = activeInstanceId.value
+  if (existing) {
+    return existing
+  }
+  const agent = activeAgentId.value
+  if (!agent) {
+    return undefined
+  }
+  const profile = selectedProfile.value
+  return profile ? `${agent}#${profile}` : agent
+}
+
 function onSubmit(text: string): void {
   log.info('composer submit', { text_len: text.length, profileId: selectedProfile.value })
   sending.value = true
+
+  // Push the user turn BEFORE `submit` resolves so it gets a lower
+  // monotonic seq than any agent response. Without this, the invoke
+  // awaits the RPC round-trip while the agent is already streaming
+  // session/update events back; the first
+  // `agent_thought_chunk`/`agent_message_chunk` fires and pushes with
+  // seq N while the user turn still hasn't landed (lands in `.then()`
+  // at seq N+k). The user msg then sorts AFTER those chunks in the
+  // createdAt-ordered timeline and the chunks absorb into the PRIOR
+  // turn's assistant block — the "thought blocks go to the prior
+  // turn" bug the user reported after live testing.
+  const instanceId = predictInstanceId()
+  if (instanceId) {
+    pushTranscriptChunk(instanceId, '', {
+      sessionUpdate: 'user_message_chunk',
+      content: { type: 'text', text }
+    })
+  }
+
   submit({ text, profileId: selectedProfile.value })
-    .then((result) => {
-      // Agents don't echo user prompts on session/prompt (only on
-      // session/load replay), so push the user turn locally using the
-      // instance/session ids the daemon just handed back. This lands
-      // the captain bubble in the transcript immediately.
-      const instanceId = result.instance_id ?? activeInstanceId.value
-      const sessionId = result.session_id ?? ''
-      if (instanceId) {
-        pushTranscriptChunk(instanceId, sessionId, {
-          sessionUpdate: 'user_message_chunk',
-          content: { type: 'text', text }
-        })
-      }
+    .then(() => {
       composerRef.value?.clear()
     })
     .catch((err) => {
