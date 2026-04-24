@@ -40,6 +40,14 @@ impl LogLevel {
 /// under `$XDG_STATE_HOME/hyprpilot/logs/` in release. The returned guard must
 /// live for the duration of the program so the file writer flushes on drop.
 pub fn init(level: Option<LogLevel>) -> Result<Option<WorkerGuard>> {
+    // Route `log::Record` events (emitted by `tauri-plugin-log` on behalf
+    // of the webview's `log.*` wrapper) into the tracing subscriber below
+    // so UI and backend share one sink. Idempotent across re-inits within
+    // the same process (second call returns SetLoggerError); swallow it.
+    if let Err(err) = tracing_log::LogTracer::init() {
+        eprintln!("LogTracer::init returned {err}; already initialized, continuing");
+    }
+
     let filter = match level {
         Some(l) => EnvFilter::try_new(l.as_str()).context("failed to build log level filter")?,
         None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

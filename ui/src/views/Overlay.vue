@@ -61,6 +61,7 @@ import {
   startSessionStream,
   type PlanEntry
 } from '@composables'
+import { log } from '@lib'
 
 const { submit } = useAdapter()
 const { entries: toasts, dismiss } = useToasts()
@@ -180,6 +181,7 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
   event.preventDefault()
+  log.info('keybind invoked', { key: event.key, target: 'permission' })
   if (event.key === 'a') {
     onAllow(active.requestId)
   } else {
@@ -191,6 +193,7 @@ onMounted(async () => {
   try {
     stopStream = await startSessionStream()
   } catch (err) {
+    log.error('invoke failed', { command: 'startSessionStream' }, err)
     pushToast(ToastTone.Err, `stream bind failed: ${String(err)}`)
   }
   document.addEventListener('keydown', onKeydown)
@@ -218,22 +221,27 @@ function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
 }
 
 async function onAllow(requestId: string): Promise<void> {
+  log.info('permission click', { choice: 'allow', requestId })
   try {
     await allow(requestId)
   } catch (err) {
+    log.error('invoke failed', { command: 'permission_reply', choice: 'allow', requestId }, err)
     pushToast(ToastTone.Err, `allow failed: ${String(err)}`)
   }
 }
 
 async function onDeny(requestId: string): Promise<void> {
+  log.info('permission click', { choice: 'deny', requestId })
   try {
     await deny(requestId)
   } catch (err) {
+    log.error('invoke failed', { command: 'permission_reply', choice: 'deny', requestId }, err)
     pushToast(ToastTone.Err, `deny failed: ${String(err)}`)
   }
 }
 
 function onSubmit(text: string): void {
+  log.info('composer submit', { text_len: text.length, profileId: selectedProfile.value })
   sending.value = true
   submit({ text, profileId: selectedProfile.value })
     .then((result) => {
@@ -252,6 +260,7 @@ function onSubmit(text: string): void {
       composerRef.value?.clear()
     })
     .catch((err) => {
+      log.error('invoke failed', { command: 'session_submit' }, err)
       pushToast(ToastTone.Err, String(err))
     })
     .finally(() => {

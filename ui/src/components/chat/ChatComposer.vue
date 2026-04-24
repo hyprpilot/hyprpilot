@@ -2,6 +2,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 
 import type { ComposerPill } from '../types'
+import { log } from '@lib'
 
 /**
  * Composer row: pills (attachments / resources) + autosizing textarea +
@@ -66,6 +67,17 @@ function trySubmit(): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
+  // Every composer keystroke hits this hook; `log.trace` is off by
+  // default so this is zero-cost unless the user turns the level up.
+  log.trace('composer keydown', { key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey })
+  if (e.key === 'Tab') {
+    log.debug('composer keybind', { key: 'Tab', target: 'completion' })
+
+    return
+  }
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+    log.debug('composer keybind', { key: 'Enter', modifier: e.ctrlKey ? 'ctrl' : e.metaKey ? 'meta' : 'shift' })
+  }
   if (e.key !== 'Enter' || e.shiftKey || e.isComposing) {
     return
   }
