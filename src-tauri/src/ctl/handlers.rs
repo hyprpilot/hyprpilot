@@ -114,6 +114,94 @@ impl CtlHandler for SessionInfoHandler {
     }
 }
 
+/// `ctl skills list [--instance <id>]`. Pretty-prints a slug/title/
+/// description table. Empty list renders the literal "no skills
+/// loaded" message on stderr + exits 0.
+pub struct SkillsListHandler {
+    pub instance_id: Option<String>,
+}
+
+impl CtlHandler for SkillsListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let mut params = json!({});
+        if let Some(id) = self.instance_id {
+            params
+                .as_object_mut()
+                .expect("json! produces a map")
+                .insert("instance_id".into(), Value::String(id));
+        }
+        let mut conn = match client.connect() {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        match conn.call("skills/list", params) {
+            Ok(Outcome::Success { result }) => {
+                let empty: Vec<Value> = Vec::new();
+                let skills = result.get("skills").and_then(Value::as_array).unwrap_or(&empty);
+                if skills.is_empty() {
+                    eprintln!("no skills loaded");
+                    return Ok(());
+                }
+                let widest_slug = skills
+                    .iter()
+                    .filter_map(|s| s.get("slug").and_then(Value::as_str))
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(4);
+                let widest_title = skills
+                    .iter()
+                    .filter_map(|s| s.get("title").and_then(Value::as_str))
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(5);
+                for s in skills {
+                    let slug = s.get("slug").and_then(Value::as_str).unwrap_or("");
+                    let title = s.get("title").and_then(Value::as_str).unwrap_or("");
+                    let desc = s.get("description").and_then(Value::as_str).unwrap_or("");
+                    println!(
+                        "{slug:<wslug$}  {title:<wtitle$}  {desc}",
+                        wslug = widest_slug,
+                        wtitle = widest_title
+                    );
+                }
+                Ok(())
+            }
+            Ok(Outcome::Error { error: err }) => {
+                error!(code = err.code, message = %err.message, "ctl skills list: rpc error");
+                eprintln!("rpc error {}: {}", err.code, err.message);
+                std::process::exit(1);
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// `ctl skills get --slug <slug>` — prints the full JSON response.
+pub struct SkillsGetHandler {
+    pub slug: String,
+}
+
+impl CtlHandler for SkillsGetHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "skills/get", json!({ "slug": self.slug }))
+    }
+}
+
+/// `ctl skills reload` — prints `{"reloaded": N}` count.
+pub struct SkillsReloadHandler;
+
+impl CtlHandler for SkillsReloadHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "skills/reload", Value::Null)
+    }
+}
+
 pub struct AgentsListHandler;
 
 impl CtlHandler for AgentsListHandler {

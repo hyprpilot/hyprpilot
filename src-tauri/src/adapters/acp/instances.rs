@@ -256,12 +256,15 @@ impl AcpAdapter {
         self.registry.get(*key).await.map(|h| h.cmd_tx.clone())
     }
 
-    /// Submit a prompt. When `instance_id` is provided, routes to
-    /// (or adopts) that UUID; otherwise mints a fresh key and spawns
-    /// a new instance against the resolved `(agent, profile)`.
-    pub async fn submit_text(
+    /// Submit a prompt with optional attachments. When `instance_id`
+    /// is provided, routes to (or adopts) that UUID; otherwise mints
+    /// a fresh key and spawns a new instance against the resolved
+    /// `(agent, profile)`. Attachments project onto the wire as
+    /// `ContentBlock::Resource` per `mapping::build_prompt_blocks`.
+    pub async fn submit_prompt(
         &self,
         text: &str,
+        attachments: &[crate::adapters::Attachment],
         instance_id: Option<&str>,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
@@ -279,6 +282,7 @@ impl AcpAdapter {
             profile = ?resolved.profile_id,
             model = ?resolved.model,
             has_prompt = resolved.system_prompt.is_some(),
+            attachments = attachments.len(),
             "acp::submit: resolved instance"
         );
 
@@ -295,6 +299,7 @@ impl AcpAdapter {
         cmd_tx
             .send(InstanceCommand::Prompt {
                 text: text.to_string(),
+                attachments: attachments.to_vec(),
                 reply: reply_tx,
             })
             .map_err(|_| RpcError::internal_error("instance actor closed before accepting prompt"))?;
@@ -713,8 +718,8 @@ impl Adapter for AcpAdapter {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> AdapterResult<serde_json::Value> {
-        let UserTurnInput::Text(text) = input;
-        self.submit_text(&text, instance_id, agent_id, profile_id)
+        let UserTurnInput::Prompt { text, attachments } = input;
+        self.submit_prompt(&text, &attachments, instance_id, agent_id, profile_id)
             .await
             .map_err(rpc_to_adapter)
     }
@@ -779,7 +784,7 @@ mod tests {
     async fn submit_without_default_is_invalid_params() {
         let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
         let err = adapter
-            .submit_text("hi", None, None, None)
+            .submit_prompt("hi", &[], None, None, None)
             .await
             .expect_err("must fail");
         assert_eq!(err.code, -32602);

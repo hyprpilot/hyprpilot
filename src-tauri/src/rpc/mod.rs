@@ -4,17 +4,20 @@ pub mod protocol;
 pub mod server;
 pub mod status;
 
+use std::sync::Arc;
+
 use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
     AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, InstancesHandler, ModelsHandler, ModesHandler,
-    ProfilesHandler, SessionHandler, StatusHandler, WindowHandler,
+    ProfilesHandler, SessionHandler, SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
 
 use crate::rpc::protocol::RpcError;
+use crate::skills::SkillsRegistry;
 
 /// Registry of every `RpcHandler` implementation wired into the daemon.
 ///
@@ -53,6 +56,11 @@ impl RpcDispatcher {
     /// - `CommandsHandler` (namespace `"commands"`): `commands/list`.
     /// - `ModesHandler` (namespace `"modes"`): `modes/list`, `modes/set`.
     /// - `ModelsHandler` (namespace `"models"`): `models/list`, `models/set`.
+    ///
+    /// Stateful handlers (today: `SkillsHandler`, which owns an
+    /// `Arc<SkillsRegistry>`) land via [`Self::with_skills`] — they
+    /// can't live in `with_defaults` without threading registry
+    /// construction into the test harness.
     pub fn with_defaults() -> Self {
         Self {
             handlers: vec![
@@ -69,6 +77,15 @@ impl RpcDispatcher {
                 Box::new(ModelsHandler),
             ],
         }
+    }
+
+    /// `with_defaults` + a live `SkillsHandler`. The daemon uses this
+    /// shape; unit tests that don't exercise `skills/*` keep using
+    /// `with_defaults` so they don't need a temp skills dir.
+    pub fn with_skills(skills: Arc<SkillsRegistry>) -> Self {
+        let mut this = Self::with_defaults();
+        this.handlers.push(Box::new(SkillsHandler::new(skills)));
+        this
     }
 
     /// Look up the handler by the namespace prefix of `method` and
@@ -271,6 +288,53 @@ mod dispatcher_tests {
         )
         .await;
         assert_eq!(v["code"], -32602, "unknown profile_id must be invalid_params: {v}");
+    }
+
+    /// `session/submit` accepts an `attachments` array; with the
+    /// pure-default Config (no `[agent] default`) the call still
+    /// fails on resolution, but the params parse is what's under test
+    /// here — no `-32602` on shape, only on resolution.
+    #[tokio::test]
+    async fn dispatch_session_submit_accepts_attachments_array() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(
+            &dispatcher,
+            &broadcast,
+            "session/submit",
+            json!({
+                "text": "hi",
+                "attachments": [
+                    { "slug": "git-commit", "path": "/tmp/git-commit/SKILL.md", "body": "stage" }
+                ],
+            }),
+        )
+        .await;
+        // Default Config has no `[agent] default`, so resolution fails
+        // and the call surfaces `-32602`. The shape parsed cleanly —
+        // the failure message references "no default agent", not "params".
+        assert_eq!(v["code"], -32602);
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(
+            !msg.contains("session/submit params:"),
+            "params parse must succeed when attachments is a valid array: {v}",
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_session_submit_rejects_malformed_attachments() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(
+            &dispatcher,
+            &broadcast,
+            "session/submit",
+            json!({ "text": "hi", "attachments": "not-an-array" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602);
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("session/submit params:"), "{v}");
     }
 
     /// Every bare method name from the pre-K-239 scaffold must return

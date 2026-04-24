@@ -18,6 +18,7 @@ use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
+use crate::skills::{spawn_watcher, SkillsBroadcast, SkillsRegistry};
 
 #[derive(Args, Debug, Default, Clone)]
 pub struct DaemonArgs {
@@ -174,6 +175,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let theme = cfg.ui.theme.clone();
     let keymaps = cfg.keymaps.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
+    let skills_dirs = resolve_skills_dirs(&cfg);
     // Share one Arc<RwLock<Config>> between AcpAdapter and RpcState so
     // both reach the same instance — config is read-only at runtime,
     // the lock is just to thread one handle through cheaply.
@@ -200,7 +202,6 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // The window starts visible (`true`) because each mode's setup code calls
     // `show()` / `show_all()` before the RPC loop accepts connections.
     let status = Arc::new(StatusBroadcast::new(true));
-    let dispatcher = Arc::new(RpcDispatcher::with_defaults());
     // Single PermissionController shared between AcpClient (one per
     // live instance, accessed through AcpAdapter's instance registry)
     // and the permission_reply Tauri command — both resolve against
@@ -217,6 +218,21 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         permissions.clone(),
     ));
     let adapter: Arc<dyn Adapter> = acp_adapter.clone();
+
+    // Skills registry + watcher. Built after the ACP adapter so we keep
+    // the main-thread runtime context `AcpAdapter::with_permissions`
+    // expects; `spawn_watcher` itself uses `std::thread` so it doesn't
+    // disturb it. Errors here are logged but don't abort boot — the
+    // registry still serves whatever loaded on the initial scan.
+    let skills_broadcast = Arc::new(SkillsBroadcast::new());
+    let skills = Arc::new(SkillsRegistry::new(skills_dirs, skills_broadcast.clone()));
+    if let Err(err) = skills.reload() {
+        warn!(%err, "skills registry: initial reload failed");
+    }
+    if let Err(err) = spawn_watcher(skills.clone()) {
+        warn!(%err, "skills watcher: spawn failed — live reload disabled");
+    }
+    let dispatcher = Arc::new(RpcDispatcher::with_skills(skills.clone()));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -372,6 +388,19 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 struct SingleInstancePayload {
     argv: Vec<String>,
     cwd: String,
+}
+
+/// Resolve the skills roots, honouring `HYPRPILOT_SKILLS_DIR` first
+/// so manual smoke tests can point at a throwaway directory without
+/// editing `config.toml`. Falls back to `[skills] dirs` (each entry
+/// tilde-expanded) — defaults seed `~/.config/hyprpilot/skills`.
+fn resolve_skills_dirs(cfg: &Config) -> Vec<PathBuf> {
+    if let Ok(raw) = std::env::var("HYPRPILOT_SKILLS_DIR") {
+        if !raw.is_empty() {
+            return vec![PathBuf::from(raw)];
+        }
+    }
+    cfg.skills.resolved_dirs()
 }
 
 /// Drain adapter instances, then kick Tauri's teardown. Called by

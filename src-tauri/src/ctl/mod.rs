@@ -9,8 +9,8 @@ use crate::config::Config;
 use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
     AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, KillHandler, ModelsListHandler,
-    ModelsSetHandler, ModesListHandler, ModesSetHandler, SessionInfoHandler, StatusHandler, SubmitHandler,
-    ToggleHandler,
+    ModelsSetHandler, ModesListHandler, ModesSetHandler, SessionInfoHandler, SkillsGetHandler, SkillsListHandler,
+    SkillsReloadHandler, StatusHandler, SubmitHandler, ToggleHandler,
 };
 use crate::paths;
 
@@ -91,6 +91,12 @@ pub enum CtlCommand {
         #[command(subcommand)]
         command: ModelsSubcommand,
     },
+
+    /// Skill catalogue operations.
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommand,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -140,6 +146,25 @@ pub enum ModelsSubcommand {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+pub enum SkillsCommand {
+    /// List every skill currently loaded by the daemon.
+    List {
+        /// Optional instance id — reserved for per-profile skill
+        /// allowlists once K-275 lands. Passing it today surfaces
+        /// the gap loudly via `unimplemented!` on the server side.
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+    },
+    /// Fetch one skill's full markdown body + references.
+    Get {
+        #[arg(long)]
+        slug: String,
+    },
+    /// Force-reload the registry from disk.
+    Reload,
+}
+
 /// Dispatch one `ctl` subcommand. Each arm builds the matching
 /// `CtlHandler` (from `ctl/handlers.rs`) and hands it a `CtlClient`
 /// (from `ctl/client.rs`) — a connection factory pointed at the
@@ -176,6 +201,11 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
         CtlCommand::Models { command } => match command {
             ModelsSubcommand::List { instance_id } => ModelsListHandler { instance_id }.run(&client),
             ModelsSubcommand::Set { instance_id, model_id } => ModelsSetHandler { instance_id, model_id }.run(&client),
+        },
+        CtlCommand::Skills { command } => match command {
+            SkillsCommand::List { instance_id } => SkillsListHandler { instance_id }.run(&client),
+            SkillsCommand::Get { slug } => SkillsGetHandler { slug }.run(&client),
+            SkillsCommand::Reload => SkillsReloadHandler.run(&client),
         },
     }
 }

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::adapters::{AdapterError, UserTurnInput};
+use crate::adapters::{AdapterError, Attachment, UserTurnInput};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::protocol::RpcError;
 
@@ -14,6 +14,11 @@ use crate::rpc::protocol::RpcError;
 #[serde(deny_unknown_fields)]
 struct SubmitParams {
     text: String,
+    /// Palette-picked attachments for this turn. Each entry projects
+    /// onto an ACP `ContentBlock::Resource` prepended before the
+    /// text block (see `adapters::acp::mapping::build_prompt_blocks`).
+    #[serde(default)]
+    attachments: Vec<Attachment>,
     /// Optional — addresses a specific live instance by UUID. When
     /// omitted, a fresh UUID is minted and a new instance is spawned;
     /// when provided but not yet in the registry, the backend adopts
@@ -64,6 +69,7 @@ impl RpcHandler for SessionHandler {
             "session/submit" => {
                 let SubmitParams {
                     text,
+                    attachments,
                     instance_id,
                     agent_id,
                     profile_id,
@@ -71,7 +77,7 @@ impl RpcHandler for SessionHandler {
                     .map_err(|e| RpcError::invalid_params(format!("session/submit params: {e}")))?;
                 let v = adapter
                     .submit(
-                        UserTurnInput::text(text),
+                        UserTurnInput::with_attachments(text, attachments),
                         instance_id.as_deref(),
                         agent_id.as_deref(),
                         profile_id.as_deref(),
