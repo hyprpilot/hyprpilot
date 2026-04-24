@@ -16,17 +16,24 @@ use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionC
 pub async fn session_submit(
     instances: State<'_, Arc<AcpInstances>>,
     text: String,
+    instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
 ) -> Result<Value, String> {
     tracing::info!(
         text_len = text.len(),
+        instance_id = ?instance_id,
         agent_id = ?agent_id,
         profile_id = ?profile_id,
         "cmd::session_submit: entry"
     );
     let out = instances
-        .submit(&text, agent_id.as_deref(), profile_id.as_deref())
+        .submit(
+            &text,
+            instance_id.as_deref(),
+            agent_id.as_deref(),
+            profile_id.as_deref(),
+        )
         .await
         .map_err(|e| e.message);
     match &out {
@@ -39,10 +46,14 @@ pub async fn session_submit(
 #[tauri::command]
 pub async fn session_cancel(
     instances: State<'_, Arc<AcpInstances>>,
+    instance_id: Option<String>,
     agent_id: Option<String>,
 ) -> Result<Value, String> {
-    tracing::info!(agent_id = ?agent_id, "cmd::session_cancel: entry");
-    let out = instances.cancel(agent_id.as_deref()).await.map_err(|e| e.message);
+    tracing::info!(instance_id = ?instance_id, agent_id = ?agent_id, "cmd::session_cancel: entry");
+    let out = instances
+        .cancel(instance_id.as_deref(), agent_id.as_deref())
+        .await
+        .map_err(|e| e.message);
     if let Err(err) = &out {
         tracing::warn!(%err, "cmd::session_cancel: failed");
     }
@@ -62,18 +73,20 @@ pub async fn profiles_list(instances: State<'_, Arc<AcpInstances>>) -> Result<Va
 #[tauri::command]
 pub async fn session_list(
     instances: State<'_, Arc<AcpInstances>>,
+    instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
     cwd: Option<PathBuf>,
 ) -> Result<ListSessionsResponse, String> {
     tracing::info!(
+        instance_id = ?instance_id,
         agent_id = ?agent_id,
         profile_id = ?profile_id,
         cwd = ?cwd,
         "cmd::session_list: entry"
     );
     let out = instances
-        .list(agent_id.as_deref(), profile_id.as_deref(), cwd)
+        .list(instance_id.as_deref(), agent_id.as_deref(), profile_id.as_deref(), cwd)
         .await
         .map_err(|e| e.message);
     if let Err(err) = &out {
@@ -85,18 +98,25 @@ pub async fn session_list(
 #[tauri::command]
 pub async fn session_load(
     instances: State<'_, Arc<AcpInstances>>,
+    instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
     session_id: String,
 ) -> Result<(), String> {
     tracing::info!(
+        instance_id = ?instance_id,
         agent_id = ?agent_id,
         profile_id = ?profile_id,
         session_id = %session_id,
         "cmd::session_load: entry"
     );
     let out = instances
-        .load(agent_id.as_deref(), profile_id.as_deref(), session_id)
+        .load(
+            instance_id.as_deref(),
+            agent_id.as_deref(),
+            profile_id.as_deref(),
+            session_id,
+        )
         .await
         .map_err(|e| e.message);
     match &out {

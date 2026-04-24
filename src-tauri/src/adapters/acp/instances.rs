@@ -1,11 +1,21 @@
 //! Instance registry shared across the RPC + Tauri command surfaces.
 //!
 //! Owns the live per-instance actors spawned by `acp::runtime`.
-//! Entries are keyed by `InstanceKey` (`agent_id` + optional
-//! `profile_id`) so `session/submit` with an optional `profile_id`
-//! keeps distinct instances per profile (a follow-up prompt with the
-//! same `(agent_id, profile_id)` pair reuses the live actor; a
-//! different profile against the same agent spawns its own).
+//! Entries are keyed by a UUID (`InstanceKey`) — a single agent/profile
+//! pair can therefore back N concurrent instances, addressed by their
+//! distinct ids. `agent_id` / `profile_id` are instance metadata, not
+//! identity.
+//!
+//! Addressing:
+//!   - `submit(text, Some(id), ...)`   — route to that UUID. If it
+//!     doesn't exist yet, spawn with that id (adopt-on-first-sight).
+//!   - `submit(text, None, ...)`       — mint a fresh UUID and spawn
+//!     a new instance for the resolved `(agent, profile)`.
+//!
+//! Client-supplied UUIDs let the webview push the user's turn into
+//! its local store BEFORE the RPC round-trip completes (the key is
+//! known up-front), closing the seq race where agent responses landed
+//! with lower seq than the user turn.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +25,7 @@ use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
 use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use uuid::Uuid;
 
 use super::instance::AcpInstance;
 use super::resolve::ResolvedInstance;
@@ -28,27 +39,35 @@ use crate::rpc::StatusBroadcast;
 /// notifications; the webview resyncs from the next tick.
 const EVENT_BROADCAST_CAPACITY: usize = 256;
 
-/// Registry key. `profile_id` is `None` for bare-agent resolutions
-/// (no `[agent] default_profile` and no explicit `profile_id` on the
-/// call). Two calls with the same `agent_id` but distinct profiles
-/// get distinct actors — switching profile mid-instance changes the
-/// system prompt and/or model, which are baked in at spawn time.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct InstanceKey {
-    pub agent_id: String,
-    pub profile_id: Option<String>,
-}
+/// Registry key. A UUID per live instance — collisions across twin
+/// profiles are impossible by construction. Wire shape is the v4
+/// hyphenated string (`Uuid::fmt`); the UI treats it as opaque.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct InstanceKey(pub Uuid);
 
 impl InstanceKey {
-    /// Stable string projection — the `instance_id` field on Tauri
-    /// events + the log-span discriminator. `agent_id` alone when
-    /// `profile_id` is `None`; `agent_id:profile_id` otherwise.
+    #[must_use]
+    pub fn new_v4() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Parse a wire string (hyphenated v4). Surfaces as
+    /// `-32602 invalid_params` when a client sends a malformed id.
+    pub fn parse(s: &str) -> Result<Self, RpcError> {
+        s.parse::<Uuid>()
+            .map(Self)
+            .map_err(|e| RpcError::invalid_params(format!("invalid instance_id '{s}': {e}")))
+    }
+
     #[must_use]
     pub fn as_string(&self) -> String {
-        match &self.profile_id {
-            Some(p) => format!("{}:{}", self.agent_id, p),
-            None => self.agent_id.clone(),
-        }
+        self.0.to_string()
+    }
+}
+
+impl std::fmt::Display for InstanceKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -166,20 +185,20 @@ impl AcpInstances {
         Ok(resolved)
     }
 
-    /// Spawn-on-miss / reuse-on-hit for a `(agent_id, profile_id?)`
-    /// pair. `Bootstrap::Fresh` keeps a live instance; `Resume(id)`
-    /// tears the live instance down (if any) and replaces it with a
-    /// session-load actor; `ListOnly` spawns an init-only actor and
-    /// registers it (callers wanting truly ephemeral ListOnly actors
-    /// construct them inline in `list` with a manual Shutdown). Takes
-    /// a `ResolvedInstance` so call sites that already resolved
-    /// (`submit`, `load`) don't re-walk the config.
-    pub async fn ensure(&self, resolved: ResolvedInstance, bootstrap: Bootstrap) -> Result<InstanceKey, RpcError> {
-        let key = InstanceKey {
-            agent_id: resolved.agent.id.clone(),
-            profile_id: resolved.profile_id.clone(),
-        };
-
+    /// Spawn-or-reuse for a given `InstanceKey`. Caller supplies the
+    /// key (client-generated UUID for new instances; the existing key
+    /// for follow-ups). `Bootstrap::Fresh` reuses a live instance at
+    /// this key; `Resume(id)` tears any existing live instance down
+    /// and replaces it with a session-load actor; `ListOnly` spawns
+    /// an init-only actor and registers it (callers wanting truly
+    /// ephemeral ListOnly actors construct them inline in `list` with
+    /// a manual Shutdown).
+    pub async fn ensure(
+        &self,
+        key: InstanceKey,
+        resolved: ResolvedInstance,
+        bootstrap: Bootstrap,
+    ) -> Result<InstanceKey, RpcError> {
         let replace_existing = matches!(bootstrap, Bootstrap::Resume(_));
         let mut active = self.active.lock().await;
 
@@ -196,15 +215,17 @@ impl AcpInstances {
         }
 
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
+        let profile_id = resolved.profile_id.clone();
         let instance = start_instance(
             resolved,
             key.as_string(),
+            profile_id,
             self.events_tx.clone(),
             bootstrap,
             self.permissions.clone(),
             profile,
         );
-        active.insert(key.clone(), instance);
+        active.insert(key, instance);
         Ok(key)
     }
 
@@ -213,18 +234,27 @@ impl AcpInstances {
         active.get(key).map(|h| h.cmd_tx.clone())
     }
 
-    /// Submit a prompt. Spawns the agent if no live instance exists
-    /// for this `(agent, profile)` pair; reuses the existing instance
-    /// otherwise.
+    /// Submit a prompt. When `instance_id` is provided, routes to
+    /// (or adopts) that UUID; otherwise mints a fresh key and spawns
+    /// a new instance against the resolved `(agent, profile)`.
+    /// Multiple instances of the same `(agent, profile)` can coexist
+    /// as long as they carry distinct UUIDs.
     pub async fn submit(
         &self,
         text: &str,
+        instance_id: Option<&str>,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> Result<Value, RpcError> {
         let resolved = self.resolve(agent_id, profile_id)?;
 
+        let key = match instance_id {
+            Some(s) => InstanceKey::parse(s)?,
+            None => InstanceKey::new_v4(),
+        };
+
         tracing::info!(
+            instance = %key,
             agent = %resolved.agent.id,
             profile = ?resolved.profile_id,
             model = ?resolved.model,
@@ -232,7 +262,10 @@ impl AcpInstances {
             "acp::submit: resolved instance"
         );
 
-        let key = self.ensure(resolved, Bootstrap::Fresh).await?;
+        let resolved_agent_id = resolved.agent.id.clone();
+        let resolved_profile_id = resolved.profile_id.clone();
+
+        let key = self.ensure(key, resolved, Bootstrap::Fresh).await?;
         let cmd_tx = self
             .cmd_tx_for(&key)
             .await
@@ -264,22 +297,27 @@ impl AcpInstances {
 
         Ok(json!({
             "accepted": true,
-            "agent_id": key.agent_id,
-            "profile_id": key.profile_id,
+            "agent_id": resolved_agent_id,
+            "profile_id": resolved_profile_id,
             "instance_id": key.as_string(),
             "session_id": session_id,
         }))
     }
 
-    /// Cancel the active turn on the addressed agent.
-    pub async fn cancel(&self, agent_id: Option<&str>) -> Result<Value, RpcError> {
-        let resolved = self.resolve(agent_id, None)?;
-        let cmd_tx = {
+    /// Cancel the active turn. `instance_id` addresses a specific
+    /// live instance; when omitted, falls back to the first live
+    /// instance matching `agent_id`.
+    pub async fn cancel(&self, instance_id: Option<&str>, agent_id: Option<&str>) -> Result<Value, RpcError> {
+        let cmd_tx = if let Some(id) = instance_id {
+            let key = InstanceKey::parse(id)?;
+            self.cmd_tx_for(&key).await
+        } else {
+            let resolved = self.resolve(agent_id, None)?;
             let active = self.active.lock().await;
             active
-                .iter()
-                .find(|(k, _)| k.agent_id == resolved.agent.id)
-                .map(|(_, h)| h.cmd_tx.clone())
+                .values()
+                .find(|h| h.agent_id == resolved.agent.id)
+                .map(|h| h.cmd_tx.clone())
         };
 
         let Some(cmd_tx) = cmd_tx else {
@@ -305,7 +343,7 @@ impl AcpInstances {
         for (key, handle) in active.iter() {
             instances.push(json!({
                 "agent_id": handle.agent_id,
-                "profile_id": key.profile_id,
+                "profile_id": handle.profile_id,
                 "instance_id": key.as_string(),
                 "session_id": handle.current_session_id().await,
             }));
@@ -313,32 +351,37 @@ impl AcpInstances {
         Ok(json!({ "instances": instances }))
     }
 
-    /// Ask the agent for its persisted session index. Reuses the live
-    /// actor when `(agent_id, profile_id)` is already bootstrapped;
+    /// Ask the agent for its persisted session index. When
+    /// `instance_id` is provided and live, reuses that actor;
     /// otherwise spawns an ephemeral `ListOnly` actor, issues the
     /// query, and tears it down. Ephemeral actors are never inserted
     /// into the registry — they exist for exactly one roundtrip.
     pub async fn list(
         &self,
+        instance_id: Option<&str>,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
         cwd: Option<PathBuf>,
     ) -> Result<ListSessionsResponse, RpcError> {
-        let resolved = self.resolve(agent_id, profile_id)?;
-        let key = InstanceKey {
-            agent_id: resolved.agent.id.clone(),
-            profile_id: resolved.profile_id.clone(),
+        let key = match instance_id {
+            Some(s) => Some(InstanceKey::parse(s)?),
+            None => None,
         };
 
         let (cmd_tx, ephemeral) = {
             let active = self.active.lock().await;
-            if let Some(handle) = active.get(&key) {
-                (handle.cmd_tx.clone(), None)
+            let live = key.and_then(|k| active.get(&k).map(|h| h.cmd_tx.clone()));
+            if let Some(tx) = live {
+                (tx, None)
             } else {
+                let resolved = self.resolve(agent_id, profile_id)?;
+                let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
                 let profile = self.profile_by_id(resolved.profile_id.as_deref());
+                let profile_id_for_instance = resolved.profile_id.clone();
                 let instance = start_instance(
                     resolved,
-                    key.as_string(),
+                    ephemeral_key.as_string(),
+                    profile_id_for_instance,
                     self.events_tx.clone(),
                     Bootstrap::ListOnly,
                     self.permissions.clone(),
@@ -368,18 +411,23 @@ impl AcpInstances {
         response
     }
 
-    /// Resume a persisted session. Tears down the live actor for
-    /// `(agent_id, profile_id)` if present, then spawns a fresh actor
-    /// with `Bootstrap::Resume(session_id)`. Replay updates stream
-    /// through the standard `acp:transcript` event path.
+    /// Resume a persisted session. `instance_id` addresses the live
+    /// (or new) instance to bind the loaded session into — when
+    /// omitted, mints a fresh key. Tears down the live actor at that
+    /// key if present, then spawns with `Bootstrap::Resume(session_id)`.
     pub async fn load(
         &self,
+        instance_id: Option<&str>,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
         session_id: String,
     ) -> Result<(), RpcError> {
+        let key = match instance_id {
+            Some(s) => InstanceKey::parse(s)?,
+            None => InstanceKey::new_v4(),
+        };
         let resolved = self.resolve(agent_id, profile_id)?;
-        self.ensure(resolved, Bootstrap::Resume(SessionId::new(session_id)))
+        self.ensure(key, resolved, Bootstrap::Resume(SessionId::new(session_id)))
             .await?;
         Ok(())
     }
@@ -470,7 +518,7 @@ mod tests {
     #[tokio::test]
     async fn submit_without_default_is_invalid_params() {
         let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = instances.submit("hi", None, None).await.expect_err("must fail");
+        let err = instances.submit("hi", None, None, None).await.expect_err("must fail");
         assert_eq!(err.code, -32602);
     }
 
@@ -484,8 +532,23 @@ mod tests {
     #[tokio::test]
     async fn cancel_unknown_agent_reports_missing_session() {
         let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = instances.cancel(Some("ghost")).await.expect_err("must fail");
+        let err = instances.cancel(None, Some("ghost")).await.expect_err("must fail");
         assert_eq!(err.code, -32602, "unknown agent id is invalid_params");
+    }
+
+    #[tokio::test]
+    async fn cancel_invalid_instance_id_is_invalid_params() {
+        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = instances.cancel(Some("not-a-uuid"), None).await.expect_err("must fail");
+        assert_eq!(err.code, -32602, "malformed instance_id is invalid_params");
+    }
+
+    #[tokio::test]
+    async fn instance_key_roundtrips_v4_string() {
+        let k = InstanceKey::new_v4();
+        let s = k.as_string();
+        let parsed = InstanceKey::parse(&s).expect("parse clean");
+        assert_eq!(k, parsed);
     }
 
     #[tokio::test]

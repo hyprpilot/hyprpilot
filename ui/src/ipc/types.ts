@@ -45,12 +45,14 @@ export interface SessionSummary {
 }
 
 export interface ListSessionsArgs {
+  instanceId?: string
   agentId: string
   profileId?: string
   cwd?: string
 }
 
 export interface LoadSessionArgs {
+  instanceId?: string
   agentId: string
   profileId?: string
   sessionId: string

@@ -909,8 +909,8 @@ can't block others.
 
 | Method | Params | Result | Notes |
 | ------ | ------ | ------ | ----- |
-| `session/submit` | `{ "text": "...", "agent_id"?: "...", "profile_id"?: "..." }` | `{ "accepted": true, "agent_id": "...", "profile_id": "..." \| null, "session_id": "..." \| null }` | Resolves `(agent_id, profile_id)` via `acp::resolve`; distinct profiles spawn distinct actors even against the same agent. |
-| `session/cancel` | *(none)* or `{ "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | Sends `CancelNotification` to the addressed session. |
+| `session/submit` | `{ "text": "...", "instance_id"?: "<uuid>", "agent_id"?: "...", "profile_id"?: "..." }` | `{ "accepted": true, "agent_id": "...", "profile_id": "..." \| null, "instance_id": "<uuid>", "session_id": "..." \| null }` | When `instance_id` is given, routes to (or adopts) that UUID so the webview can push its user turn optimistically against the key it just generated. When omitted, mints a fresh UUID and spawns a new instance for the resolved `(agent, profile)` — N twins of the same profile are addressable by distinct UUIDs. |
+| `session/cancel` | *(none)* or `{ "instance_id"?: "<uuid>", "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | `instance_id` addresses a specific live instance (preferred); `agent_id` is the legacy fallback that cancels the first live instance of that agent. |
 | `session/info` | *(none)* | `{ "sessions": [...] }` | Live session list across every active agent + profile. |
 | `window/toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
 | `daemon/kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
@@ -1126,10 +1126,14 @@ they never `use crate::adapters::acp::*` directly (enforced by the
     ListSessions, Shutdown}`. Broadcasts `InstanceEvent` upstream.
   - `instance.rs` — `AcpInstance` per-actor owner (the handle
     `AcpInstances` keeps around after `start_instance`).
-  - `instances.rs` — `AcpInstances` registry + `InstanceKey`
-    (`agent_id` + optional `profile_id`). Keyed
-    `HashMap<InstanceKey, AcpInstance>` so distinct profiles
-    against the same agent get distinct actors.
+  - `instances.rs` — `AcpInstances` registry + `InstanceKey` (a
+    `Uuid` newtype). Keyed `HashMap<InstanceKey, AcpInstance>`; a
+    single `(agent, profile)` pair can back N concurrent instances
+    addressed by distinct UUIDs. `agent_id` / `profile_id` live on
+    `AcpInstance` as metadata, not identity. Client-supplied UUIDs
+    let the webview push the user's turn into its local store
+    before the RPC round-trip completes — the backend adopts the
+    id on first sight.
   - `mapping.rs` — `From` / `TryFrom` bridges between ACP wire DTOs
     and the generic `adapters::*` vocabulary.
 
@@ -1266,13 +1270,13 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Command | Purpose |
 | ------- | ------- |
-| `session_submit { text, agent_id?, profile_id? }` | Webview compose-box submit. Delegates to `AcpInstances::submit`. |
+| `session_submit { text, instance_id?, agent_id?, profile_id? }` | Webview compose-box submit. `instance_id` is a client-generated UUID the overlay mints on first turn (`crypto.randomUUID()`); subsequent submits pass the same id to continue the session. Delegates to `AcpInstances::submit`. |
 | `session_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
 | `profiles_list` | Populates the profile picker from `[[profiles]]`; parallels the `config/profiles` wire method. |
-| `session_list { agent_id, profile_id?, cwd? }` | Calls ACP `session/list` through the live `(agent_id, profile_id)` adapter; spawns an ephemeral `Bootstrap::ListOnly` actor when none is live (initialize → list → shutdown, never registered). Returns the raw ACP `ListSessionsResponse` — agent owns storage, hyprpilot just passes through. |
-| `session_load { agent_id, profile_id?, session_id }` | Tears down any live handle for `(agent_id, profile_id)`, then starts a fresh actor with `Bootstrap::Resume(session_id)`. Gated on `InitializeResponse.agent_capabilities.load_session` — vendors that don't advertise resume get a `-32601`-shaped error. Replay streams through the normal `acp:transcript` fanout. |
+| `session_list { instance_id?, agent_id, profile_id?, cwd? }` | Calls ACP `session/list` through the addressed instance when `instance_id` resolves to a live actor; otherwise resolves via `(agent, profile)` and spawns an ephemeral `Bootstrap::ListOnly` actor (initialize → list → shutdown, never registered). Returns the raw ACP `ListSessionsResponse` — agent owns storage, hyprpilot just passes through. |
+| `session_load { instance_id?, agent_id, profile_id?, session_id }` | Tears down any live handle at the given `instance_id` (minting a fresh UUID when omitted), then starts a fresh actor with `Bootstrap::Resume(session_id)`. Gated on `InitializeResponse.agent_capabilities.load_session` — vendors that don't advertise resume get a `-32601`-shaped error. Replay streams through the normal `acp:transcript` fanout. |
 
 | Event | Payload | When |
 | ----- | ------- | ---- |
@@ -1288,8 +1292,10 @@ Event names use `:` (Tauri-side convention); the JSON-RPC wire keeps
 - **session** — the ACP wire session id (issued by the agent via
   `session/new`). Only meaningful inside `adapters::acp`.
 - **instance** — our owner/record of a running agent process + its
-  ACP session + its channels. Keyed by `InstanceKey` (agent_id or
-  agent_id+profile_id). Outlives any single `session/new` cycle.
+  ACP session + its channels. Keyed by `InstanceKey` (a `Uuid`
+  newtype). Outlives any single `session/new` cycle; multiple
+  instances of the same `(agent, profile)` are supported by
+  construction.
 - **profile** — user-config bundle of agent + model + cwd + system
   prompt. Drives `start_instance`.
 - **agent** — the vendor process/binary (claude-code, codex, opencode).

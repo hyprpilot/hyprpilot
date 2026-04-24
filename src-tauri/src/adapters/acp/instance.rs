@@ -19,6 +19,11 @@ use super::runtime::InstanceCommand;
 #[derive(Debug)]
 pub struct AcpInstance {
     pub agent_id: String,
+    /// `Some` when a `[[profiles]]` entry resolved during ensure,
+    /// `None` for bare-agent resolutions (no profile selected). Used
+    /// by `info` to report the live instance's origin and by future
+    /// UI pickers to group twins by their profile.
+    pub profile_id: Option<String>,
     pub cmd_tx: mpsc::UnboundedSender<InstanceCommand>,
     /// Populated after the first prompt's `session/new` resolves.
     /// `None` while the instance is still bootstrapping.

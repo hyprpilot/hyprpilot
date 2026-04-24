@@ -141,6 +141,7 @@ pub enum InstanceState {
 pub fn start_instance(
     resolved: ResolvedInstance,
     instance_id: String,
+    profile_id: Option<String>,
     events_tx: broadcast::Sender<InstanceEvent>,
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
@@ -155,6 +156,7 @@ pub fn start_instance(
 
     let instance = AcpInstance {
         agent_id: resolved.agent.id.clone(),
+        profile_id,
         cmd_tx,
         session_id: session_id.clone(),
     };
@@ -721,6 +723,7 @@ mod tests {
         let handle = start_instance(
             dummy_resolved("ded"),
             "ded".into(),
+            None,
             tx,
             Bootstrap::Fresh,
             dummy_permissions(),
@@ -768,6 +771,7 @@ mod tests {
         let handle = start_instance(
             dummy_resolved("ded-cancel"),
             "ded-cancel".into(),
+            None,
             tx,
             Bootstrap::Fresh,
             dummy_permissions(),
@@ -791,6 +795,7 @@ mod tests {
         let handle = start_instance(
             dummy_resolved("ded-list"),
             "ded-list".into(),
+            None,
             tx,
             Bootstrap::ListOnly,
             dummy_permissions(),
@@ -901,6 +906,7 @@ mod tests {
         let handle = start_instance(
             dummy_resolved("ded-resume"),
             "ded-resume".into(),
+            None,
             tx,
             Bootstrap::Resume(sid),
             dummy_permissions(),

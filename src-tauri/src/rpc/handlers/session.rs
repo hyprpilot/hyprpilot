@@ -13,6 +13,13 @@ use crate::rpc::protocol::RpcError;
 #[serde(deny_unknown_fields)]
 struct SubmitParams {
     text: String,
+    /// Optional — addresses a specific live instance by UUID. When
+    /// omitted, a fresh UUID is minted and a new instance is spawned;
+    /// when provided but not yet in the registry, the backend adopts
+    /// the id (lets the webview push its user-turn optimistically
+    /// against the known id before the RPC round-trip completes).
+    #[serde(default)]
+    instance_id: Option<String>,
     /// Optional — when omitted, the daemon resolves the agent via the
     /// addressed profile (or `[agent] default` when no profile is set).
     #[serde(default)]
@@ -23,12 +30,15 @@ struct SubmitParams {
     profile_id: Option<String>,
 }
 
-/// Optional `{ agent_id }` wrapper shared by `session/cancel`. Defaulted
-/// to `{}` so `{"method":"session/cancel"}` (no `params` key) parses
-/// cleanly.
+/// Optional address wrapper shared by `session/cancel`. `instance_id`
+/// addresses a specific live instance by UUID; `agent_id` is the
+/// legacy fallback that cancels the first live instance for that
+/// agent. Defaulted to `{}` so `{"method":"session/cancel"}` (no
+/// `params` key) parses cleanly.
 #[derive(Debug, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
-struct AgentAddress {
+struct CancelAddress {
+    instance_id: Option<String>,
     agent_id: Option<String>,
 }
 
@@ -56,18 +66,24 @@ impl RpcHandler for SessionHandler {
             "session/submit" => {
                 let SubmitParams {
                     text,
+                    instance_id,
                     agent_id,
                     profile_id,
                 } = serde_json::from_value(params)
                     .map_err(|e| RpcError::invalid_params(format!("session/submit params: {e}")))?;
                 let v = instances
-                    .submit(&text, agent_id.as_deref(), profile_id.as_deref())
+                    .submit(
+                        &text,
+                        instance_id.as_deref(),
+                        agent_id.as_deref(),
+                        profile_id.as_deref(),
+                    )
                     .await?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/cancel" => {
-                let AgentAddress { agent_id } = params_or_default::<AgentAddress>(params, method)?;
-                let v = instances.cancel(agent_id.as_deref()).await?;
+                let CancelAddress { instance_id, agent_id } = params_or_default::<CancelAddress>(params, method)?;
+                let v = instances.cancel(instance_id.as_deref(), agent_id.as_deref()).await?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/info" => {

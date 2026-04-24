@@ -24,22 +24,26 @@ describe('useAdapter', () => {
     invoke.mockResolvedValue({ accepted: true, agent_id: 'a' })
     const { submit } = useAdapter()
 
-    await submit({ text: 'hi', profileId: 'strict' })
+    await submit({ text: 'hi', instanceId: 'i-1', profileId: 'strict' })
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.SessionSubmit, {
       text: 'hi',
+      instanceId: 'i-1',
       agentId: undefined,
       profileId: 'strict'
     })
   })
 
-  it('cancel() invokes session_cancel with agentId', async () => {
+  it('cancel() invokes session_cancel with instanceId + agentId', async () => {
     invoke.mockResolvedValue({ cancelled: true })
     const { cancel } = useAdapter()
 
-    await cancel('a')
+    await cancel({ agentId: 'a' })
 
-    expect(invoke).toHaveBeenCalledWith(TauriCommand.SessionCancel, { agentId: 'a' })
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.SessionCancel, {
+      instanceId: undefined,
+      agentId: 'a'
+    })
   })
 
   it('agentsList() unwraps { agents } into an array', async () => {

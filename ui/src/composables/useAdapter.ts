@@ -13,8 +13,22 @@ import { pushToast } from './useToasts'
 
 export interface SubmitOptions {
   text: string
+  /**
+   * UUID of the instance this prompt targets. Omit to mint a fresh
+   * instance server-side; provide to route a follow-up to a live one
+   * (or to adopt-on-first-sight a client-generated UUID so the
+   * webview can push its user turn optimistically before the RPC
+   * round-trip completes).
+   */
+  instanceId?: string
   agentId?: string
   profileId?: string
+}
+
+export interface CancelOptions {
+  /** UUID of the instance to cancel. Preferred over `agentId`. */
+  instanceId?: string
+  agentId?: string
 }
 
 /**
@@ -26,13 +40,17 @@ export function useAdapter() {
   async function submit(options: SubmitOptions): Promise<SubmitResult> {
     return invoke(TauriCommand.SessionSubmit, {
       text: options.text,
+      instanceId: options.instanceId,
       agentId: options.agentId,
       profileId: options.profileId
     })
   }
 
-  async function cancel(agentId?: string): Promise<CancelResult> {
-    const result = await invoke(TauriCommand.SessionCancel, { agentId })
+  async function cancel(options: CancelOptions = {}): Promise<CancelResult> {
+    const result = await invoke(TauriCommand.SessionCancel, {
+      instanceId: options.instanceId,
+      agentId: options.agentId
+    })
     if (result.cancelled) {
       pushToast(ToastTone.Warn, 'turn cancelled')
     }

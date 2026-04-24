@@ -246,47 +246,34 @@ async function onDeny(requestId: string): Promise<void> {
   }
 }
 
-// Client-side prediction of the instance key the Rust side will
-// resolve to. Mirrors `AcpInstances::InstanceKey::as_string`:
-// `<agent>#<profile>` when a profile is selected, else `<agent>`.
-// Used to push the user turn BEFORE `submit` — see `onSubmit` for
-// the ordering rationale.
-function predictInstanceId(): InstanceId | undefined {
-  const existing = activeInstanceId.value
-  if (existing) {
-    return existing
-  }
-  const agent = activeAgentId.value
-  if (!agent) {
-    return undefined
-  }
-  const profile = selectedProfile.value
-  return profile ? `${agent}#${profile}` : agent
+// Mint a fresh instance UUID the backend will adopt. Matches
+// `AcpInstances::InstanceKey` — a v4 UUID, opaque to the UI except
+// for identity. Used when there's no active instance yet (first
+// submit, or after a "new session" reset).
+function mintInstanceId(): InstanceId {
+  return crypto.randomUUID()
 }
 
 function onSubmit(text: string): void {
   log.info('composer submit', { text_len: text.length, profileId: selectedProfile.value })
   sending.value = true
 
-  // Push the user turn BEFORE `submit` resolves so it gets a lower
-  // monotonic seq than any agent response. Without this, the invoke
-  // awaits the RPC round-trip while the agent is already streaming
-  // session/update events back; the first
-  // `agent_thought_chunk`/`agent_message_chunk` fires and pushes with
-  // seq N while the user turn still hasn't landed (lands in `.then()`
-  // at seq N+k). The user msg then sorts AFTER those chunks in the
-  // createdAt-ordered timeline and the chunks absorb into the PRIOR
-  // turn's assistant block — the "thought blocks go to the prior
-  // turn" bug the user reported after live testing.
-  const instanceId = predictInstanceId()
-  if (instanceId) {
-    pushTranscriptChunk(instanceId, '', {
-      sessionUpdate: 'user_message_chunk',
-      content: { type: 'text', text }
-    })
-  }
+  // Pick the instance UUID up-front so we can push the user turn
+  // BEFORE `submit` resolves. Without a known id, we'd have to push
+  // in `.then()` — but by then the agent has already streamed back
+  // session/update events that landed with lower per-instance seq
+  // than the user turn, and those events absorb into the prior
+  // turn's assistant block ("thought blocks go to prior turn" bug).
+  // Client-generated UUIDs let the backend adopt the id on first
+  // sight, closing the race.
+  const instanceId = activeInstanceId.value ?? mintInstanceId()
+  useActiveInstance().set(instanceId)
+  pushTranscriptChunk(instanceId, '', {
+    sessionUpdate: 'user_message_chunk',
+    content: { type: 'text', text }
+  })
 
-  submit({ text, profileId: selectedProfile.value })
+  submit({ text, instanceId, profileId: selectedProfile.value })
     .then(() => {
       composerRef.value?.clear()
     })

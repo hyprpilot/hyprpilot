@@ -93,7 +93,7 @@ impl Adapter for AcpAdapter {
         let agent_id = resolved.agent.id.clone();
         let key = self
             .instances
-            .ensure(resolved, bootstrap.into())
+            .ensure(InstanceKey::new_v4(), resolved, bootstrap.into())
             .await
             .map_err(map_rpc_error)?;
         Ok(InstanceHandle {
@@ -111,13 +111,13 @@ impl Adapter for AcpAdapter {
     ) -> AdapterResult<serde_json::Value> {
         let UserTurnInput::Text(text) = input;
         self.instances
-            .submit(&text, agent_id, profile_id)
+            .submit(&text, None, agent_id, profile_id)
             .await
             .map_err(map_rpc_error)
     }
 
     async fn cancel(&self, agent_id: Option<&str>) -> AdapterResult<serde_json::Value> {
-        self.instances.cancel(agent_id).await.map_err(map_rpc_error)
+        self.instances.cancel(None, agent_id).await.map_err(map_rpc_error)
     }
 
     async fn info(&self) -> AdapterResult<serde_json::Value> {
