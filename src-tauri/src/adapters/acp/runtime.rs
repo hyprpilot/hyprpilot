@@ -250,6 +250,54 @@ async fn run_instance(
         });
     }
 
+    // Tee stdout → tracing + ACP transport. Stdout IS the ACP wire
+    // channel so we can't just redirect it; we read each line, emit it
+    // at `trace!` with target `agent_stdout`, then forward the original
+    // bytes into a duplex pipe the transport reads from. Filter in with
+    // `RUST_LOG=agent_stdout=trace`; noisy (every JSON-RPC frame), so
+    // `trace` is deliberately opt-in.
+    let transport_stdout = {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (mut tee_writer, tee_reader) = tokio::io::duplex(64 * 1024);
+        let agent_for_stdout = agent_id.clone();
+        let child_stdout = stdio.stdout;
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(child_stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim_end_matches(['\n', '\r']);
+                        if !trimmed.is_empty() {
+                            tracing::trace!(target: "agent_stdout", agent = %agent_for_stdout, "{trimmed}");
+                        }
+                        if let Err(err) = tee_writer.write_all(line.as_bytes()).await {
+                            tracing::warn!(
+                                target: "agent_stdout",
+                                agent = %agent_for_stdout,
+                                %err,
+                                "tee forward failed"
+                            );
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "agent_stdout",
+                            agent = %agent_for_stdout,
+                            %err,
+                            "stdout read error"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+        tee_reader
+    };
+
     let (client_events_tx, mut client_events_rx) = mpsc::unbounded_channel::<ClientEvent>();
     let sandbox_root = cfg
         .cwd
@@ -269,7 +317,7 @@ async fn run_instance(
         }
     };
 
-    let transport = ByteStreams::new(stdio.stdin.compat_write(), stdio.stdout.compat());
+    let transport = ByteStreams::new(stdio.stdin.compat_write(), transport_stdout.compat());
 
     let events_tx_notif = events_tx.clone();
     let agent_id_notif = agent_id.clone();
