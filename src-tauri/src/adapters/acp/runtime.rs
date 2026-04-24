@@ -577,14 +577,14 @@ async fn run_instance(
     // claude-code-acp) spew "Query closed before response received" on
     // stderr because they're tearing down a still-open Anthropic
     // streaming connection that's kept warm between turns. Wait up to
-    // 2s for a clean exit, fall back to SIGKILL.
-    match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
+    // 5s for a clean exit, fall back to SIGKILL.
+    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => debug!(agent = %agent_id, ?status, "acp::runtime: child exited cleanly"),
         Ok(Err(err)) => warn!(agent = %agent_id, %err, "acp::runtime: child wait failed"),
         Err(_) => {
             warn!(
                 agent = %agent_id,
-                "acp::runtime: child did not exit within 2s after stdin EOF, sending SIGKILL"
+                "acp::runtime: child did not exit within 5s after stdin EOF, sending SIGKILL"
             );
             let _ = child.kill().await;
         }
