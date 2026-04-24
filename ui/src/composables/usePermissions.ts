@@ -1,11 +1,10 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
 import { type PermissionPrompt } from '@components'
-import { invoke } from '@ipc'
+import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
-import { type PermissionOptionView } from './useSessionStream'
 
 // Stored shape — `queued` is derived at read time in the `pending`
 // computed (oldest-by-createdAt is active, everything else queued), not
@@ -117,7 +116,7 @@ export function usePermissions(instanceId?: InstanceId): {
     }
     // K-245's PermissionController finalises the option-id shape; today
     // `permission_reply` accepts raw decision strings and maps them.
-    await invoke('permission_reply', {
+    await invoke(TauriCommand.PermissionReply, {
       sessionId: entry.sessionId,
       requestId: entry.requestId,
       optionId: decision

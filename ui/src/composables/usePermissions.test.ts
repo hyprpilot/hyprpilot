@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { TauriCommand } from '@ipc'
+
 import { useActiveInstance } from '@composables/useActiveInstance'
 import {
   evictPermission,
@@ -10,10 +12,14 @@ import {
 
 const invoke = vi.fn()
 
-vi.mock('@ipc', () => ({
-  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-  listen: vi.fn()
-}))
+vi.mock('@ipc', async () => {
+  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+  return {
+    ...actual,
+    invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
+    listen: vi.fn()
+  }
+})
 
 beforeEach(() => {
   invoke.mockReset()
@@ -90,7 +96,7 @@ describe('usePermissions', () => {
 
     await usePermissions('A').allow('req-1')
 
-    expect(invoke).toHaveBeenCalledWith('permission_reply', {
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
       optionId: 'allow'
@@ -104,7 +110,7 @@ describe('usePermissions', () => {
 
     await usePermissions('A').deny('req-1')
 
-    expect(invoke).toHaveBeenCalledWith('permission_reply', {
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
       optionId: 'deny'

@@ -1,36 +1,15 @@
-import { invoke } from '@ipc'
+import {
+  invoke,
+  TauriCommand,
+  type AgentSummary,
+  type CancelResult,
+  type ProfileSummary,
+  type SubmitResult
+} from '@ipc'
 
 import { ToastTone } from '@components/types'
 
-import { type InstanceId } from './useActiveInstance'
 import { pushToast } from './useToasts'
-
-export interface SubmitResult {
-  accepted: boolean
-  agent_id: string
-  profile_id?: string
-  session_id?: string
-  instance_id?: InstanceId
-}
-
-export interface CancelResult {
-  cancelled: boolean
-  reason?: string
-}
-
-export interface AgentSummary {
-  id: string
-  provider: string
-  is_default: boolean
-}
-
-export interface ProfileSummary {
-  id: string
-  agent: string
-  model?: string
-  has_prompt: boolean
-  is_default: boolean
-}
 
 export interface SubmitOptions {
   text: string
@@ -45,7 +24,7 @@ export interface SubmitOptions {
  */
 export function useAdapter() {
   async function submit(options: SubmitOptions): Promise<SubmitResult> {
-    return invoke<SubmitResult>('acp_submit', {
+    return invoke(TauriCommand.SessionSubmit, {
       text: options.text,
       agentId: options.agentId,
       profileId: options.profileId
@@ -53,7 +32,7 @@ export function useAdapter() {
   }
 
   async function cancel(agentId?: string): Promise<CancelResult> {
-    const result = await invoke<CancelResult>('acp_cancel', { agentId })
+    const result = await invoke(TauriCommand.SessionCancel, { agentId })
     if (result.cancelled) {
       pushToast(ToastTone.Warn, 'turn cancelled')
     }
@@ -61,13 +40,13 @@ export function useAdapter() {
   }
 
   async function agentsList(): Promise<AgentSummary[]> {
-    const r = await invoke<{ agents: AgentSummary[] }>('agents_list')
+    const r = await invoke(TauriCommand.AgentsList)
 
     return r.agents
   }
 
   async function profilesList(): Promise<ProfileSummary[]> {
-    const r = await invoke<{ profiles: ProfileSummary[] }>('profiles_list')
+    const r = await invoke(TauriCommand.ProfilesList)
 
     return r.profiles
   }

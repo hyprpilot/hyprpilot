@@ -1,81 +1,4 @@
-import { invoke } from '@ipc'
-
-/**
- * Palette tokens surfaced by the Rust config layer. Mirrors
- * `src-tauri/src/config/mod.rs::Theme`. Every leaf is typed as `string`
- * because `defaults.toml` is always loaded as the first layer — the
- * `defaults_populate_every_theme_token` test keeps that invariant true, so
- * by the time a Theme reaches the webview every field is guaranteed to
- * have a value. Groups may nest arbitrarily deep (e.g.
- * `surface.card.user.bg`).
- */
-export interface Theme {
-  font: { mono: string; sans: string }
-  window: {
-    default: string
-    edge: string
-  }
-  surface: {
-    default: string
-    bg: string
-    alt: string
-    card: {
-      user: Card
-      assistant: Card
-    }
-    compose: string
-    text: string
-  }
-  fg: {
-    default: string
-    ink_2: string
-    dim: string
-    faint: string
-  }
-  border: {
-    default: string
-    soft: string
-    focus: string
-  }
-  accent: {
-    default: string
-    user: string
-    user_soft: string
-    assistant: string
-    assistant_soft: string
-  }
-  state: {
-    idle: string
-    stream: string
-    pending: string
-    awaiting: string
-    working: string
-  }
-  kind: {
-    read: string
-    write: string
-    bash: string
-    search: string
-    agent: string
-    think: string
-    terminal: string
-    acp: string
-  }
-  status: {
-    ok: string
-    warn: string
-    err: string
-  }
-  permission: {
-    bg: string
-    bg_active: string
-  }
-}
-
-/** A single card's painted tokens. `bg` today; future additions slot in. */
-export interface Card {
-  bg: string
-}
+import { invoke, TauriCommand, type GtkFont, type Theme } from '@ipc'
 
 /**
  * Builds the CSS custom property name from a token path. Segments named
@@ -91,18 +14,6 @@ function cssVarName(parts: string[]): string {
 }
 
 /**
- * User-desktop GTK font, as parsed from `gtk-font-name` on the default
- * `gtk::Settings`. Mirrors `src-tauri/src/daemon/mod.rs::GtkFont`.
- * `null` when the GTK query failed at boot — the CSS fallback takes
- * over in that case (browser default 16px `html { font-size }`).
- */
-export interface GtkFont {
-  family: string
-  sizePt: number
-}
-
-
-/**
  * Fetches the resolved theme from the daemon and writes each token onto
  * `:root` as a CSS custom property. A missing `@tauri-apps/api/core` host
  * (plain `vite dev` in a browser, vitest jsdom) is a soft-fail — the UI
@@ -112,7 +23,7 @@ export interface GtkFont {
 export async function applyTheme(): Promise<void> {
   let theme: Theme
   try {
-    theme = await invoke<Theme>('get_theme')
+    theme = await invoke(TauriCommand.GetTheme)
   } catch {
     return
   }
@@ -134,7 +45,7 @@ export async function applyTheme(): Promise<void> {
 export async function applyGtkFont(): Promise<void> {
   let font: GtkFont | null
   try {
-    font = await invoke<GtkFont | null>('get_gtk_font')
+    font = await invoke(TauriCommand.GetGtkFont)
   } catch (err) {
     console.warn('[hyprpilot] get_gtk_font invoke failed; using browser default font', err)
 

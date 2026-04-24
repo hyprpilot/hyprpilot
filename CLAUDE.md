@@ -701,6 +701,41 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
   (`state: 'starting' | 'running' | …`) are banned — the enum is the
   single source of names the TS compiler can refactor. Same rule for
   discriminator tags (`kind: EventKind.Transcript`).
+- **Wire-contract strings use an `@ipc` enum, not raw literals.**
+  Every Tauri `invoke` command name and `listen` event name is a
+  closed-set member of the Rust → UI contract; they live as enum
+  values in `ui/src/ipc/commands.ts` (`TauriCommand`, `TauriEvent`)
+  and the `@ipc` barrel re-exports them. `invoke` / `listen` take
+  those enum types — not `string` — so a typo at a call site fails
+  type-check instead of surfacing at runtime. Tests that mock `@ipc`
+  must spread `vi.importActual` so the enum re-export survives the
+  mock:
+  `vi.mock('@ipc', async () => ({ ...await vi.importActual(…), invoke: …, listen: … }))`.
+  Adding a new Tauri command = new variant in `TauriCommand` + new
+  arm in the Rust `invoke_handler![…]` macro, one PR.
+- **Command → response type is a lookup map, not a generic argument.**
+  `ui/src/ipc/commands.ts` pairs `TauriCommand` with
+  `TauriCommandResult` (and `TauriEvent` with `TauriEventPayload`) —
+  an interface keyed by enum value that points at the wire shape the
+  Rust side emits for that command / event. `invoke` / `listen`
+  infer the response off the map so call sites drop the explicit
+  generic:
+  ```ts
+  // wrong — re-states the wire shape, drifts silently if it changes
+  const r = await invoke<{ profiles: ProfileSummary[] }>(TauriCommand.ProfilesList)
+
+  // right — inferred from TauriCommandResult[TauriCommand.ProfilesList]
+  const r = await invoke(TauriCommand.ProfilesList)
+  ```
+  Consequence: every wire-contract interface (`SubmitResult`,
+  `WindowState`, `Theme`, `InstanceStateEventPayload`, …) lives in
+  `ui/src/ipc/types.ts` — not inline in the composable that happens
+  to consume it. Moving a type out of `@ipc` into a feature file
+  re-forks the contract; keep them all in `ipc/types.ts`.
+  Adding a new command = new variant in `TauriCommand` + new key in
+  `TauriCommandResult` + (if the response is a new shape) new
+  interface in `types.ts` + new arm in the Rust `invoke_handler![…]`
+  macro, one PR.
 - **Named types with `T[]` suffix for arrays.** Extract every inline
   object-array type (`Array<{ option_id: string, … }>`) to a named
   interface, then use `PermissionOptionView[]` — not `Array<T>`, not
@@ -1054,8 +1089,12 @@ they never `use crate::adapters::acp::*` directly (enforced by the
 
 - **Generic layer** (`src-tauri/src/adapters/`):
   - `mod.rs` — `Adapter` trait + `AdapterId` + `Capabilities` +
-    `AdapterError` + `Bootstrap`. Re-exports `AcpAdapter`,
-    `AcpInstances`, `acp_commands` for out-of-layer consumers.
+    `AdapterError` + `Bootstrap`. Re-exports `AcpAdapter` and
+    `AcpInstances` for out-of-layer consumers.
+  - `commands.rs` — Tauri `#[command]`s: `session_submit`,
+    `session_cancel`, `agents_list`, `profiles_list`, `session_list`,
+    `session_load`, `permission_reply`. Transport-agnostic; the RPC
+    surface uses the same entry points.
   - `instance.rs` — `InstanceHandle`, `InstanceState`,
     `InstanceEvent`, `InstanceEventStream`.
   - `transcript.rs` — `TranscriptItem`, `TurnRecord`,
@@ -1093,9 +1132,6 @@ they never `use crate::adapters::acp::*` directly (enforced by the
     against the same agent get distinct actors.
   - `mapping.rs` — `From` / `TryFrom` bridges between ACP wire DTOs
     and the generic `adapters::*` vocabulary.
-  - `commands.rs` — Tauri `#[command]`s: `acp_submit`, `acp_cancel`,
-    `agents_list`, `profiles_list`, `session_list`, `session_load`,
-    `permission_reply` (unimplemented stub until K-6).
 
 ### Per-vendor system-prompt injection
 
@@ -1230,8 +1266,8 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Command | Purpose |
 | ------- | ------- |
-| `acp_submit { text, agent_id?, profile_id? }` | Webview compose-box submit. Delegates to `AcpInstances::submit`. |
-| `acp_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
+| `session_submit { text, agent_id?, profile_id? }` | Webview compose-box submit. Delegates to `AcpInstances::submit`. |
+| `session_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
 | `profiles_list` | Populates the profile picker from `[[profiles]]`; parallels the `config/profiles` wire method. |

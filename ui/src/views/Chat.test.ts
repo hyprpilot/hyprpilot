@@ -1,6 +1,8 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { TauriCommand } from '@ipc'
+
 import { useActiveInstance } from '@composables/useActiveInstance'
 import { pushPermissionRequest, resetPermissions } from '@composables/usePermissions'
 
@@ -10,17 +12,21 @@ const invoke = vi.fn()
 const listeners = new Map<string, (payload: { payload: unknown }) => void>()
 const unlisten = vi.fn()
 
-vi.mock('@ipc', () => ({
-  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-  listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
-    listeners.set(event, cb)
+vi.mock('@ipc', async () => {
+  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+  return {
+    ...actual,
+    invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
+    listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
+      listeners.set(event, cb)
 
-    return Promise.resolve(unlisten)
-  },
-  getProfiles: () => Promise.resolve([]),
-  listSessions: () => Promise.resolve([]),
-  loadSession: () => Promise.resolve()
-}))
+      return Promise.resolve(unlisten)
+    },
+    getProfiles: () => Promise.resolve([]),
+    listSessions: () => Promise.resolve([]),
+    loadSession: () => Promise.resolve()
+  }
+})
 
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 5; i++) {
@@ -58,7 +64,7 @@ describe('Chat.vue — permission wiring', () => {
     await allowButton.trigger('click')
     await flushMicrotasks()
 
-    expect(invoke).toHaveBeenCalledWith('permission_reply', {
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
       optionId: 'allow'
@@ -83,7 +89,7 @@ describe('Chat.vue — permission wiring', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true }))
     await flushMicrotasks()
 
-    expect(invoke).toHaveBeenCalledWith('permission_reply', {
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
       optionId: 'deny'
@@ -107,7 +113,7 @@ describe('Chat.vue — permission wiring', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
     await flushMicrotasks()
 
-    expect(invoke).toHaveBeenCalledWith('permission_reply', {
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
       optionId: 'allow'
@@ -135,7 +141,7 @@ describe('Chat.vue — permission wiring', () => {
     textarea.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }))
     await flushMicrotasks()
 
-    expect(invoke).not.toHaveBeenCalledWith('permission_reply', expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
     wrapper.unmount()
   })
 
@@ -178,7 +184,7 @@ describe('Chat.vue — permission wiring', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }))
     await flushMicrotasks()
 
-    expect(invoke).not.toHaveBeenCalledWith('permission_reply', expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
     wrapper.unmount()
   })
 })

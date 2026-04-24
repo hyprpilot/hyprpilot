@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { InstanceState } from '@ipc'
+
 import { Phase } from '@components'
 
 import { useActiveInstance } from '@composables/useActiveInstance'
@@ -7,12 +9,15 @@ import { resetPermissions, pushPermissionRequest } from '@composables/usePermiss
 import { __resetAllPhaseSignals, pushInstanceState, usePhase } from '@composables/usePhase'
 import { resetTools, pushToolCall } from '@composables/useTools'
 import { pushTranscriptChunk, resetTranscript } from '@composables/useTranscript'
-import { InstanceState } from '@composables/useSessionStream'
 
-vi.mock('@ipc', () => ({
-  invoke: vi.fn(),
-  listen: vi.fn()
-}))
+vi.mock('@ipc', async () => {
+  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+  return {
+    ...actual,
+    invoke: vi.fn(),
+    listen: vi.fn()
+  }
+})
 
 beforeEach(() => {
   __resetAllPhaseSignals()

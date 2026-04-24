@@ -21,6 +21,7 @@
 #![allow(dead_code)]
 
 pub mod acp;
+pub mod commands;
 pub mod instance;
 pub mod permission;
 pub mod profile;
@@ -52,7 +53,7 @@ pub use transcript::{ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
 // sibling later adds new re-exports here, not new import paths in
 // `rpc::` / `ctl::` / `daemon::`.
 #[allow(unused_imports)]
-pub use acp::{commands as acp_commands, AcpAdapter, AcpInstances};
+pub use acp::{AcpAdapter, AcpInstances};
 
 /// Closed set of known transport kinds. The string wire-name is stable
 /// — it appears in tracing spans and (future) config `transport =
@@ -233,9 +234,9 @@ mod tests {
     /// Layering guard: no file outside `adapters/` may import from
     /// `crate::adapters::acp`. The rest of the crate talks to
     /// `dyn Adapter` or to the concrete types re-exported from
-    /// `adapters::*` (today `AcpInstances`, `AcpAdapter`,
-    /// `acp_commands`). Walks the source tree, reads every `.rs`
-    /// file, and fails on any offending import.
+    /// `adapters::*` (today `AcpInstances`, `AcpAdapter`) plus the
+    /// Tauri `#[command]`s at `adapters::commands`. Walks the source
+    /// tree, reads every `.rs` file, and fails on any offending import.
     #[test]
     fn no_acp_imports_outside_adapters() {
         use std::fs;

@@ -12,8 +12,9 @@ use tauri::{Emitter, Manager, RunEvent, State};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
+use crate::adapters::commands as adapter_commands;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
-use crate::adapters::{acp_commands, AcpInstances};
+use crate::adapters::AcpInstances;
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
@@ -197,8 +198,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // the same waiter map so UI replies reach the awaiting ACP
     // handler regardless of which instance issued the prompt.
     let permissions: Arc<dyn PermissionController> = Arc::new(DefaultPermissionController::new());
-    // Instance registry — Tauri managed state. `SessionHandler` +
-    // future `acp_*` Tauri commands both reach into this.
+    // Instance registry — Tauri managed state. `SessionHandler` and
+    // `adapters::commands::*` both reach into this.
     let instances = Arc::new(AcpInstances::with_permissions(
         instances_cfg,
         status.clone(),
@@ -225,13 +226,13 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_theme,
             get_window_state,
             get_gtk_font,
-            acp_commands::acp_submit,
-            acp_commands::acp_cancel,
-            acp_commands::agents_list,
-            acp_commands::profiles_list,
-            acp_commands::session_list,
-            acp_commands::session_load,
-            acp_commands::permission_reply,
+            adapter_commands::session_submit,
+            adapter_commands::session_cancel,
+            adapter_commands::agents_list,
+            adapter_commands::profiles_list,
+            adapter_commands::session_list,
+            adapter_commands::session_load,
+            adapter_commands::permission_reply,
         ])
         .setup(move |app| {
             app.manage(theme.clone());

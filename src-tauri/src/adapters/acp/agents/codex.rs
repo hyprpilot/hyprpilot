@@ -1,8 +1,4 @@
 //! Codex ACP adapter.
-//!
-//! Launches via `bunx --bun @zed-industries/codex-acp`. The live
-//! `render_update` + `tool_name_for_permission` bodies land with the
-//! session follow-up; today only the launch command ships.
 
 use tokio::process::Command;
 
@@ -53,27 +49,18 @@ impl AcpAgent for AcpAgentCodex {
         cmd
     }
 
-    /// codex-acp only exposes `-c key=value` config overrides (no
-    /// `--system-prompt` flag). The codex config accepts a TOML
-    /// `instructions = "..."` key; we pass it through `-c` with a
-    /// TOML-quoted value. Assumption: codex config key is
-    /// `instructions`; document in PR body for fact-check.
+    /// codex-acp only exposes `-c key=value` overrides; the TOML
+    /// `instructions` key is the system-prompt slot.
     fn inject_system_prompt(&self, cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
         cmd.arg("-c");
-        cmd.arg(format!("instructions={}", toml_string(prompt)));
+        // JSON strings are a subset of TOML basic strings; `toml::Value::String`
+        // emits multi-line `"""..."""` on newlines which breaks `-c` shell-quoting.
+        cmd.arg(format!(
+            "instructions={}",
+            serde_json::to_string(prompt).expect("str always serializes")
+        ));
         SystemPromptInjection::Handled
     }
-}
-
-/// Serialize a prompt as a TOML basic string literal (single-line,
-/// double-quoted, `\n` / `\"` escapes). `toml::Value::String` would
-/// emit a multi-line literal (`"""..."""`) when the content contains
-/// newlines, which can't survive shell-quoting for a `-c` CLI flag;
-/// JSON strings are a subset of TOML basic strings (no `\/` emitted
-/// by default), so `serde_json` gives us spec-delegated escaping
-/// without hand-rolling.
-fn toml_string(s: &str) -> String {
-    serde_json::to_string(s).expect("str always serializes")
 }
 
 #[cfg(test)]

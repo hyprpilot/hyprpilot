@@ -1,39 +1,45 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { TauriCommand } from '@ipc'
+
 import { useAdapter } from '@composables/useAdapter'
 
 const invoke = vi.fn()
 
-vi.mock('@ipc', () => ({
-  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-  listen: vi.fn()
-}))
+vi.mock('@ipc', async () => {
+  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+  return {
+    ...actual,
+    invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
+    listen: vi.fn()
+  }
+})
 
 beforeEach(() => {
   invoke.mockReset()
 })
 
 describe('useAdapter', () => {
-  it('submit() invokes acp_submit with camel-cased args', async () => {
+  it('submit() invokes session_submit with camel-cased args', async () => {
     invoke.mockResolvedValue({ accepted: true, agent_id: 'a' })
     const { submit } = useAdapter()
 
     await submit({ text: 'hi', profileId: 'strict' })
 
-    expect(invoke).toHaveBeenCalledWith('acp_submit', {
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.SessionSubmit, {
       text: 'hi',
       agentId: undefined,
       profileId: 'strict'
     })
   })
 
-  it('cancel() invokes acp_cancel with agentId', async () => {
+  it('cancel() invokes session_cancel with agentId', async () => {
     invoke.mockResolvedValue({ cancelled: true })
     const { cancel } = useAdapter()
 
     await cancel('a')
 
-    expect(invoke).toHaveBeenCalledWith('acp_cancel', { agentId: 'a' })
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.SessionCancel, { agentId: 'a' })
   })
 
   it('agentsList() unwraps { agents } into an array', async () => {

@@ -1,15 +1,4 @@
 //! Per-vendor ACP adapters.
-//!
-//! Each concrete struct encodes the quirks of a specific
-//! ACP-speaking agent backend: launch command defaults, the
-//! `PermissionOption` kinds the agent actually ships, and the
-//! tool-content shape its `SessionUpdate`s carry.
-//!
-//! The `AcpAgent` trait is the protocol-level surface today; future
-//! refactors can layer a more general `Agent` trait above it once a
-//! non-ACP backend actually ships (HTTP, local echo, …). Keeping the
-//! split minimal for now avoids forward-speculating at traits that
-//! haven't earned their keep.
 
 mod claude_code;
 mod codex;
@@ -23,36 +12,9 @@ pub use self::claude_code::AcpAgentClaudeCode;
 pub use self::codex::AcpAgentCodex;
 pub use self::opencode::AcpAgentOpenCode;
 
-/// Vendor-adapter trait. Concrete implementors are unit structs that
-/// carry no runtime state — everything returned by the trait methods
-/// is a function of the `AgentConfig` + static vendor-specific
-/// knowledge.
-///
-/// Methods listed today:
-///
-/// - `spawn_command` — build the `tokio::process::Command` that
-///   launches the vendor's ACP server binary. Inherits args / env /
-///   cwd from `AgentConfig`, with the vendor's defaults filling in
-///   when fields are omitted.
-///
-/// Future methods (land with the live-session plumbing):
-///
-/// - `render_update(&self, SessionUpdate) -> Option<TranscriptEvent>`
-///   — normalise per-vendor tool-content quirks into the shared
-///   discriminated-union shape the webview consumes.
-/// - `tool_name_for_permission(&self, RequestPermissionRequest) ->
-///   Option<String>` — recover the logical tool name from the
-///   envelope (claude's `_meta.claudeCode.toolName`, codex's
-///   `raw_input` shape, opencode's direct tool name).
-/// - `client_capabilities(&self) -> ClientCapabilities` — advertise
-///   capabilities the vendor requires (terminal, extended permission
-///   modes, …).
+/// Vendor-adapter trait. Implementors are unit structs — state lives
+/// on `AgentConfig`.
 pub trait AcpAgent: Send + Sync + 'static {
-    /// Build the `tokio::process::Command` that launches this
-    /// vendor's ACP server. The default implementation feeds the
-    /// vendor's `default_command` + `default_args` when the user
-    /// config omits them, overlays `env`, and sets
-    /// `stdin=piped`/`stdout=piped`/`kill_on_drop`.
     fn spawn(&self, entry: &AgentConfig) -> Command {
         use std::process::Stdio;
 
@@ -76,44 +38,27 @@ pub trait AcpAgent: Send + Sync + 'static {
         cmd
     }
 
-    /// Vendor's default executable when `AgentConfig::command` is
-    /// unset. Typically `bunx` (to run a Node-side ACP shim) or a
-    /// native binary name.
     fn command(&self) -> &'static str;
 
-    /// Vendor's default arguments when `AgentConfig::args` is empty.
     fn args(&self) -> &'static [&'static str];
 
-    /// Route the resolved `system_prompt` through the vendor's
-    /// injection path. Either mutates `cmd` pre-spawn (launch flag,
-    /// `-c` override, env var) or returns `FirstMessage(...)` for the
-    /// runtime to prepend onto the first `session/prompt`. Default
-    /// drops the prompt — vendors without a hook degrade gracefully.
+    /// Default drops the prompt — vendors without a hook degrade silently
+    /// rather than failing spawn.
     fn inject_system_prompt(&self, _cmd: &mut Command, _prompt: &str) -> SystemPromptInjection {
         SystemPromptInjection::Handled
     }
 }
 
-/// Outcome of pre-spawn system-prompt injection. Returned by
-/// `AcpAgent::inject_system_prompt` so the runtime knows whether it
-/// needs to prepend anything to the first `session/prompt`.
+/// Outcome of pre-spawn system-prompt injection.
 #[derive(Debug, Clone, Default)]
 pub enum SystemPromptInjection {
-    /// Vendor handled the prompt pre-spawn (CLI flag, env, …) or has
-    /// no hook at all — the prompt was consumed or silently dropped.
-    /// Either way, runtime does nothing more.
+    /// Vendor consumed the prompt pre-spawn, or has no hook.
     #[default]
     Handled,
-    /// Runtime must prepend this text to the first `session/prompt`
-    /// text block. For vendors whose only reachable hook is the
-    /// prompt body itself.
+    /// Runtime prepends this text onto the first `session/prompt`.
     FirstMessage(String),
 }
 
-/// Resolve the concrete vendor adapter for a given provider enum.
-/// One match arm per variant; keeps the mapping centralised so
-/// spawn flow + commands surface don't each grow their own
-/// translation.
 #[must_use]
 pub fn match_provider_agent(provider: AgentProvider) -> Box<dyn AcpAgent> {
     match provider {
@@ -141,9 +86,6 @@ mod tests {
 
     #[test]
     fn match_provider_agent_picks_concrete_adapter_per_provider() {
-        // Each variant builds a spawnable command with the vendor's
-        // defaults. Asserting on the program path is enough to
-        // distinguish the three — the spawn flow wraps it further.
         let entry = stub_entry("anon");
 
         let claude_cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
@@ -171,7 +113,6 @@ mod tests {
     #[test]
     fn spawn_command_uses_default_args_when_user_args_empty() {
         let entry = stub_entry("default-args");
-        // claude-code-acp defaults to `--bun @zed-industries/claude-code-acp`.
         let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args, vec!["--bun", "@zed-industries/claude-code-acp"]);

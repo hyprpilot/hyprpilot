@@ -1,7 +1,6 @@
-//! Tauri `#[command]`s the webview invokes: `acp_submit`, `acp_cancel`,
-//! `permission_reply`, `agents_list`, `profiles_list`, `session_list`,
-//! `session_load`. Each delegates into the shared `AcpInstances`
-//! registry; the RPC surface uses the same entry points.
+//! Tauri `#[command]`s live at the generic adapter layer (not under
+//! `acp/`) because they dispatch through the single `Adapter` impl
+//! today and will route via `dyn Adapter` once a second transport lands.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,13 +9,11 @@ use agent_client_protocol::schema::ListSessionsResponse;
 use serde_json::Value;
 use tauri::State;
 
-use super::AcpInstances;
-use crate::adapters::permission::{
-    pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome,
-};
+use super::acp::AcpInstances;
+use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
 
 #[tauri::command]
-pub async fn acp_submit(
+pub async fn session_submit(
     instances: State<'_, Arc<AcpInstances>>,
     text: String,
     agent_id: Option<String>,
@@ -29,7 +26,10 @@ pub async fn acp_submit(
 }
 
 #[tauri::command]
-pub async fn acp_cancel(instances: State<'_, Arc<AcpInstances>>, agent_id: Option<String>) -> Result<Value, String> {
+pub async fn session_cancel(
+    instances: State<'_, Arc<AcpInstances>>,
+    agent_id: Option<String>,
+) -> Result<Value, String> {
     instances.cancel(agent_id.as_deref()).await.map_err(|e| e.message)
 }
 
