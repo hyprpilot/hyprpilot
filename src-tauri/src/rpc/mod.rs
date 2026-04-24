@@ -7,7 +7,7 @@ pub mod status;
 use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
-pub use handlers::{ConfigHandler, DaemonHandler, SessionHandler, StatusHandler, WindowHandler};
+pub use handlers::{ConfigHandler, DaemonHandler, InstancesHandler, SessionHandler, StatusHandler, WindowHandler};
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
 
@@ -42,6 +42,9 @@ impl RpcDispatcher {
     /// - `StatusHandler` (namespace `"status"`): `status/get`,
     ///   `status/subscribe`.
     /// - `ConfigHandler` (namespace `"config"`): `config/profiles`.
+    /// - `InstancesHandler` (namespace `"instances"`): `instances/list`,
+    ///   `instances/spawn`, `instances/focus`, `instances/restart`,
+    ///   `instances/shutdown`, `instances/info`.
     pub fn with_defaults() -> Self {
         Self {
             handlers: vec![
@@ -50,6 +53,7 @@ impl RpcDispatcher {
                 Box::new(DaemonHandler),
                 Box::new(StatusHandler),
                 Box::new(ConfigHandler),
+                Box::new(InstancesHandler),
             ],
         }
     }
@@ -80,7 +84,7 @@ mod dispatcher_tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::adapters::AcpInstances;
+    use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
@@ -92,14 +96,14 @@ mod dispatcher_tests {
     /// completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
-        let instances = Arc::new(AcpInstances::new(
-            Config::default(),
-            Arc::new(StatusBroadcast::new(true)),
-        ));
+        let config = Arc::new(Config::default());
+        let adapter: Arc<dyn Adapter> =
+            Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
         let ctx = HandlerCtx {
             app: None,
             status: broadcast,
-            instances: Some(instances),
+            adapter: Some(adapter),
+            config: Some(config),
             id: &id,
             already_subscribed: false,
         };
@@ -152,6 +156,44 @@ mod dispatcher_tests {
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "session/info", Value::Null).await;
         assert_eq!(v["instances"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_instances_list_to_instances_handler() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(&dispatcher, &broadcast, "instances/list", Value::Null).await;
+        assert_eq!(v["instances"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_instances_focus_unknown_id_is_invalid_params() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(
+            &dispatcher,
+            &broadcast,
+            "instances/focus",
+            json!({ "id": "550e8400-e29b-41d4-a716-446655440000" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "unknown instance id must be invalid_params: {v}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_instances_info_missing_id_is_invalid_params() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(&dispatcher, &broadcast, "instances/info", Value::Null).await;
+        assert_eq!(v["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_instances_verb_is_method_not_found() {
+        let dispatcher = RpcDispatcher::with_defaults();
+        let broadcast = StatusBroadcast::new(true);
+        let v = call(&dispatcher, &broadcast, "instances/bogus", Value::Null).await;
+        assert_eq!(v["code"], -32601);
     }
 
     #[tokio::test]
@@ -235,14 +277,14 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let id = RequestId::Number(2);
-        let instances = Arc::new(AcpInstances::new(
-            Config::default(),
-            Arc::new(StatusBroadcast::new(true)),
-        ));
+        let config = Arc::new(Config::default());
+        let adapter: Arc<dyn Adapter> =
+            Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
         let ctx = HandlerCtx {
             app: None,
             status: &broadcast,
-            instances: Some(instances),
+            adapter: Some(adapter),
+            config: Some(config),
             id: &id,
             already_subscribed: true,
         };

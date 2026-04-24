@@ -1,15 +1,12 @@
-//! Instance registry shared across the RPC + Tauri command surfaces.
-//!
-//! Owns the live per-instance actors spawned by `acp::runtime`.
-//! Entries are keyed by a UUID (`InstanceKey`) — a single agent/profile
-//! pair can therefore back N concurrent instances, addressed by their
-//! distinct ids. `agent_id` / `profile_id` are instance metadata, not
-//! identity.
+//! ACP adapter facade: composes `AdapterRegistry<AcpInstance>` and
+//! carries the ACP-specific glue (profile resolution, vendor
+//! `(command, args)` spawn, permission controller). The registry is
+//! the generic piece; everything here is the ACP translation layer.
 //!
 //! Addressing:
-//!   - `submit(text, Some(id), ...)`   — route to that UUID. If it
+//!   - `submit(text, Some(id), ...)` — route to that UUID. If it
 //!     doesn't exist yet, spawn with that id (adopt-on-first-sight).
-//!   - `submit(text, None, ...)`       — mint a fresh UUID and spawn
+//!   - `submit(text, None, ...)`     — mint a fresh UUID and spawn
 //!     a new instance for the resolved `(agent, profile)`.
 //!
 //! Client-supplied UUIDs let the webview push the user's turn into
@@ -17,80 +14,51 @@
 //! known up-front), closing the seq race where agent responses landed
 //! with lower seq than the user turn.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
+use async_trait::async_trait;
 use serde_json::{json, Value};
 use tauri::Emitter;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
-use uuid::Uuid;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::instance::AcpInstance;
 use super::resolve::ResolvedInstance;
 use super::runtime::{start_instance, Bootstrap, InstanceCommand, InstanceEvent};
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
+use crate::adapters::registry::AdapterRegistry;
+use crate::adapters::{
+    Adapter, AdapterError, AdapterId, AdapterResult, Capabilities, InstanceEventStream, InstanceInfo, InstanceKey,
+    SpawnSpec, UserTurnInput,
+};
 use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
 use crate::rpc::StatusBroadcast;
 
-/// Capacity of the instance-event broadcast. Slow subscribers drop
-/// notifications; the webview resyncs from the next tick.
-const EVENT_BROADCAST_CAPACITY: usize = 256;
-
-/// Registry key. A UUID per live instance — collisions across twin
-/// profiles are impossible by construction. Wire shape is the v4
-/// hyphenated string (`Uuid::fmt`); the UI treats it as opaque.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct InstanceKey(pub Uuid);
-
-impl InstanceKey {
-    #[must_use]
-    pub fn new_v4() -> Self {
-        Self(Uuid::new_v4())
-    }
-
-    /// Parse a wire string (hyphenated v4). Surfaces as
-    /// `-32602 invalid_params` when a client sends a malformed id.
-    pub fn parse(s: &str) -> Result<Self, RpcError> {
-        s.parse::<Uuid>()
-            .map(Self)
-            .map_err(|e| RpcError::invalid_params(format!("invalid instance_id '{s}': {e}")))
-    }
-
-    #[must_use]
-    pub fn as_string(&self) -> String {
-        self.0.to_string()
-    }
-}
-
-impl std::fmt::Display for InstanceKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-pub struct AcpInstances {
+pub struct AcpAdapter {
     pub(crate) config: Config,
     #[allow(dead_code)]
     pub(crate) status: Arc<StatusBroadcast>,
-    active: Mutex<HashMap<InstanceKey, AcpInstance>>,
-    events_tx: broadcast::Sender<InstanceEvent>,
+    registry: Arc<AdapterRegistry<AcpInstance>>,
     permissions: Arc<dyn PermissionController>,
+    /// Channel the per-instance runtime actor publishes ACP-shape
+    /// events onto. A dedicated task forwards each event through
+    /// `mapping::From` onto the registry's generic broadcast. Kept
+    /// as a field so the bridge task shares the adapter's lifetime.
+    runtime_events_bridge: broadcast::Sender<InstanceEvent>,
 }
 
-impl std::fmt::Debug for AcpInstances {
+impl std::fmt::Debug for AcpAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AcpInstances")
+        f.debug_struct("AcpAdapter")
             .field("config", &self.config)
             .field("status", &self.status)
-            .field("active", &self.active)
             .finish_non_exhaustive()
     }
 }
 
-impl AcpInstances {
+impl AcpAdapter {
     #[must_use]
     pub fn new(config: Config, status: Arc<StatusBroadcast>) -> Self {
         Self::with_permissions(
@@ -106,13 +74,14 @@ impl AcpInstances {
         status: Arc<StatusBroadcast>,
         permissions: Arc<dyn PermissionController>,
     ) -> Self {
-        let (events_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let registry = Arc::new(AdapterRegistry::new());
+        let runtime_events_bridge = Self::spawn_runtime_bridge(registry.clone());
         Self {
             config,
             status,
-            active: Mutex::new(HashMap::new()),
-            events_tx,
+            registry,
             permissions,
+            runtime_events_bridge,
         }
     }
 
@@ -126,17 +95,27 @@ impl AcpInstances {
 
     /// Broadcast receiver for every lifecycle + transcript event the
     /// active instances emit. Tests subscribe directly; Tauri uses
-    /// `spawn_tauri_event_bridge` instead.
+    /// `spawn_tauri_event_bridge` instead. Subscribers must handle
+    /// `broadcast::error::RecvError::Lagged` — the channel drops
+    /// messages silently otherwise.
     #[must_use]
-    pub fn subscribe_events(&self) -> broadcast::Receiver<InstanceEvent> {
-        self.events_tx.subscribe()
+    pub fn subscribe_events(&self) -> broadcast::Receiver<crate::adapters::InstanceEvent> {
+        self.registry.subscribe()
     }
+}
 
-    /// Fan every `InstanceEvent` out to the webview as an `acp:*`
-    /// Tauri event. One subscriber task per daemon boot — call once
-    /// from the Tauri `setup` closure.
+impl AcpAdapter {
+    /// Route a generic `InstanceEvent` onto the corresponding `acp:*`
+    /// Tauri event. Projects the generic shape onto the Tauri naming
+    /// convention (`:` separators). Keeps wire topics (`.`) vs Tauri
+    /// event names (`:`) as distinct axes.
+    ///
+    /// Consumers must handle `broadcast::error::RecvError::Lagged`
+    /// — the broadcast channel silently drops notifications
+    /// otherwise. New subscribers (K-276 filter layer, K-277 ctl
+    /// stream) must each own their own lagged handler.
     pub fn spawn_tauri_event_bridge(&self, app: tauri::AppHandle) {
-        let mut rx = self.subscribe_events();
+        let mut rx = self.registry.subscribe();
         tauri::async_runtime::spawn(async move {
             loop {
                 match rx.recv().await {
@@ -193,53 +172,52 @@ impl AcpInstances {
     /// an init-only actor and registers it (callers wanting truly
     /// ephemeral ListOnly actors construct them inline in `list` with
     /// a manual Shutdown).
-    pub async fn ensure(
+    async fn ensure(
         &self,
         key: InstanceKey,
         resolved: ResolvedInstance,
         bootstrap: Bootstrap,
     ) -> Result<InstanceKey, RpcError> {
         let replace_existing = matches!(bootstrap, Bootstrap::Resume(_));
-        let mut active = self.active.lock().await;
-
+        if !replace_existing && self.registry.get(key).await.is_some() {
+            return Ok(key);
+        }
         if replace_existing {
-            if let Some(existing) = active.remove(&key) {
+            if let Some(existing) = self.registry.get(key).await {
+                let _ = self.registry.remove(key).await;
                 let (tx, rx) = oneshot::channel();
                 let _ = existing.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
-                drop(active);
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
-                active = self.active.lock().await;
             }
-        } else if active.contains_key(&key) {
-            return Ok(key);
         }
 
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id = resolved.profile_id.clone();
         let instance = start_instance(
             resolved,
-            key.as_string(),
+            key,
             profile_id,
-            self.events_tx.clone(),
+            self.runtime_events_bridge.clone(),
             bootstrap,
             self.permissions.clone(),
             profile,
         );
-        active.insert(key, instance);
+
+        self.registry
+            .insert(key, Arc::new(instance))
+            .await
+            .map_err(map_adapter_error_to_rpc)?;
         Ok(key)
     }
 
     async fn cmd_tx_for(&self, key: &InstanceKey) -> Option<mpsc::UnboundedSender<InstanceCommand>> {
-        let active = self.active.lock().await;
-        active.get(key).map(|h| h.cmd_tx.clone())
+        self.registry.get(*key).await.map(|h| h.cmd_tx.clone())
     }
 
     /// Submit a prompt. When `instance_id` is provided, routes to
     /// (or adopts) that UUID; otherwise mints a fresh key and spawns
     /// a new instance against the resolved `(agent, profile)`.
-    /// Multiple instances of the same `(agent, profile)` can coexist
-    /// as long as they carry distinct UUIDs.
-    pub async fn submit(
+    pub async fn submit_text(
         &self,
         text: &str,
         instance_id: Option<&str>,
@@ -249,7 +227,7 @@ impl AcpInstances {
         let resolved = self.resolve(agent_id, profile_id)?;
 
         let key = match instance_id {
-            Some(s) => InstanceKey::parse(s)?,
+            Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
             None => InstanceKey::new_v4(),
         };
 
@@ -279,12 +257,9 @@ impl AcpInstances {
             })
             .map_err(|_| RpcError::internal_error("instance actor closed before accepting prompt"))?;
 
-        let session_id = {
-            let active = self.active.lock().await;
-            match active.get(&key) {
-                Some(h) => h.current_session_id().await,
-                None => None,
-            }
+        let session_id = match self.registry.get(key).await {
+            Some(h) => h.current_session_id().await,
+            None => None,
         };
 
         tokio::spawn(async move {
@@ -307,17 +282,23 @@ impl AcpInstances {
     /// Cancel the active turn. `instance_id` addresses a specific
     /// live instance; when omitted, falls back to the first live
     /// instance matching `agent_id`.
-    pub async fn cancel(&self, instance_id: Option<&str>, agent_id: Option<&str>) -> Result<Value, RpcError> {
+    pub async fn cancel_active(&self, instance_id: Option<&str>, agent_id: Option<&str>) -> Result<Value, RpcError> {
         let cmd_tx = if let Some(id) = instance_id {
-            let key = InstanceKey::parse(id)?;
+            let key = InstanceKey::parse(id).map_err(map_adapter_error_to_rpc)?;
             self.cmd_tx_for(&key).await
         } else {
             let resolved = self.resolve(agent_id, None)?;
-            let active = self.active.lock().await;
-            active
-                .values()
-                .find(|h| h.agent_id == resolved.agent.id)
-                .map(|h| h.cmd_tx.clone())
+            let keys = self.registry.ordered_keys().await;
+            let mut tx = None;
+            for k in keys {
+                if let Some(h) = self.registry.get(k).await {
+                    if h.agent_id == resolved.agent.id {
+                        tx = Some(h.cmd_tx.clone());
+                        break;
+                    }
+                }
+            }
+            tx
         };
 
         let Some(cmd_tx) = cmd_tx else {
@@ -336,17 +317,22 @@ impl AcpInstances {
         }
     }
 
-    /// Snapshot of every live instance.
-    pub async fn info(&self) -> Result<Value, RpcError> {
-        let active = self.active.lock().await;
-        let mut instances = Vec::with_capacity(active.len());
-        for (key, handle) in active.iter() {
-            instances.push(json!({
-                "agent_id": handle.agent_id,
-                "profile_id": handle.profile_id,
-                "instance_id": key.as_string(),
-                "session_id": handle.current_session_id().await,
-            }));
+    /// Snapshot of every live instance in the legacy `{ instances: [...] }`
+    /// envelope. `Adapter::list` returns typed `InstanceInfo[]` for
+    /// programmatic consumers.
+    pub async fn info_json(&self) -> Result<Value, RpcError> {
+        let keys = self.registry.ordered_keys().await;
+        let mut instances = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(handle) = self.registry.get(key).await {
+                instances.push(json!({
+                    "agent_id": handle.agent_id,
+                    "profile_id": handle.profile_id,
+                    "instance_id": key.as_string(),
+                    "session_id": handle.current_session_id().await,
+                    "mode": handle.mode,
+                }));
+            }
         }
         Ok(json!({ "instances": instances }))
     }
@@ -356,7 +342,7 @@ impl AcpInstances {
     /// otherwise spawns an ephemeral `ListOnly` actor, issues the
     /// query, and tears it down. Ephemeral actors are never inserted
     /// into the registry — they exist for exactly one roundtrip.
-    pub async fn list(
+    pub async fn list_sessions(
         &self,
         instance_id: Option<&str>,
         agent_id: Option<&str>,
@@ -364,32 +350,33 @@ impl AcpInstances {
         cwd: Option<PathBuf>,
     ) -> Result<ListSessionsResponse, RpcError> {
         let key = match instance_id {
-            Some(s) => Some(InstanceKey::parse(s)?),
+            Some(s) => Some(InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?),
             None => None,
         };
 
-        let (cmd_tx, ephemeral) = {
-            let active = self.active.lock().await;
-            let live = key.and_then(|k| active.get(&k).map(|h| h.cmd_tx.clone()));
-            if let Some(tx) = live {
-                (tx, None)
-            } else {
-                let resolved = self.resolve(agent_id, profile_id)?;
-                let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
-                let profile = self.profile_by_id(resolved.profile_id.as_deref());
-                let profile_id_for_instance = resolved.profile_id.clone();
-                let instance = start_instance(
-                    resolved,
-                    ephemeral_key.as_string(),
-                    profile_id_for_instance,
-                    self.events_tx.clone(),
-                    Bootstrap::ListOnly,
-                    self.permissions.clone(),
-                    profile,
-                );
-                let tx = instance.cmd_tx.clone();
-                (tx, Some(instance))
-            }
+        let live_tx = match key {
+            Some(k) => self.registry.get(k).await.map(|h| h.cmd_tx.clone()),
+            None => None,
+        };
+
+        let (cmd_tx, ephemeral) = if let Some(tx) = live_tx {
+            (tx, None)
+        } else {
+            let resolved = self.resolve(agent_id, profile_id)?;
+            let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
+            let profile = self.profile_by_id(resolved.profile_id.as_deref());
+            let profile_id_for_instance = resolved.profile_id.clone();
+            let instance = start_instance(
+                resolved,
+                ephemeral_key,
+                profile_id_for_instance,
+                self.runtime_events_bridge.clone(),
+                Bootstrap::ListOnly,
+                self.permissions.clone(),
+                profile,
+            );
+            let tx = instance.cmd_tx.clone();
+            (tx, Some(instance))
         };
 
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -415,7 +402,7 @@ impl AcpInstances {
     /// (or new) instance to bind the loaded session into — when
     /// omitted, mints a fresh key. Tears down the live actor at that
     /// key if present, then spawns with `Bootstrap::Resume(session_id)`.
-    pub async fn load(
+    pub async fn load_session(
         &self,
         instance_id: Option<&str>,
         agent_id: Option<&str>,
@@ -423,7 +410,7 @@ impl AcpInstances {
         session_id: String,
     ) -> Result<(), RpcError> {
         let key = match instance_id {
-            Some(s) => InstanceKey::parse(s)?,
+            Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
             None => InstanceKey::new_v4(),
         };
         let resolved = self.resolve(agent_id, profile_id)?;
@@ -434,19 +421,84 @@ impl AcpInstances {
 
     /// Cleanup hook called from `daemon::shutdown` before `app.exit(0)`.
     /// Sends `Shutdown` to every active actor and drops the handles
-    /// after the acks land (or immediately when the reply oneshot
-    /// closes, whichever first).
-    pub async fn shutdown(&self) {
-        let instances: Vec<AcpInstance> = {
-            let mut active = self.active.lock().await;
-            active.drain().map(|(_, v)| v).collect()
-        };
+    /// after the acks land.
+    pub async fn shutdown_all(&self) {
+        let instances = self.registry.drain().await;
         tracing::info!(count = instances.len(), "acp::shutdown: draining instances");
         for instance in instances {
             let (tx, rx) = oneshot::channel();
             let _ = instance.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
         }
+    }
+
+    /// Spawn a fresh instance against the resolved `(agent, profile)`.
+    /// `cwd` / `model` / `mode` overlay on top of the resolved config
+    /// before spawn.
+    pub async fn spawn_instance(&self, spec: SpawnSpec) -> Result<InstanceKey, RpcError> {
+        let SpawnSpec {
+            profile_id,
+            agent_id,
+            cwd,
+            mode,
+            model,
+        } = spec;
+        let mut resolved = self.resolve(agent_id.as_deref(), profile_id.as_deref())?;
+        if let Some(c) = cwd {
+            resolved.agent.cwd = Some(c);
+        }
+        if model.is_some() {
+            resolved.model = model;
+        }
+        if mode.is_some() {
+            resolved.mode = mode;
+        }
+        let key = InstanceKey::new_v4();
+        self.ensure(key, resolved, Bootstrap::Fresh).await
+    }
+
+    /// Graceful shutdown of the instance at `key`, then an immediate
+    /// spawn against the same resolved config under the same key and
+    /// insertion-order slot. Preserves UUID identity so subscribers
+    /// stay bound; preserves slot so auto-focus on next shutdown
+    /// behaves consistently.
+    pub async fn restart_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
+        let existing = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{key}' not found in registry")))?;
+        let agent_id = existing.agent_id.clone();
+        let profile_id = existing.profile_id.clone();
+        let mode = existing.mode.clone();
+        drop(existing);
+
+        let slot = self
+            .registry
+            .drop_preserving_slot(key)
+            .await
+            .map_err(map_adapter_error_to_rpc)?;
+
+        let mut resolved = self.resolve(Some(&agent_id), profile_id.as_deref())?;
+        if mode.is_some() {
+            resolved.mode = mode;
+        }
+        let profile = self.profile_by_id(resolved.profile_id.as_deref());
+        let profile_id_for_instance = resolved.profile_id.clone();
+        let instance = start_instance(
+            resolved,
+            key,
+            profile_id_for_instance,
+            self.runtime_events_bridge.clone(),
+            Bootstrap::Fresh,
+            self.permissions.clone(),
+            profile,
+        );
+        self.registry
+            .insert_at_slot(slot, key, Arc::new(instance))
+            .await
+            .map_err(map_adapter_error_to_rpc)?;
+        Ok(key)
     }
 
     /// Enumerate configured agents for `agents_list`.
@@ -468,9 +520,7 @@ impl AcpInstances {
 
     /// Enumerate configured profiles for `config/profiles` +
     /// `profiles_list`. `has_prompt` is `true` when either
-    /// `system_prompt` is inline or a `system_prompt_file` is set —
-    /// the file contents are not exposed here, matching the shape
-    /// the chat UI needs (does this profile carry a custom prompt).
+    /// `system_prompt` is inline or a `system_prompt_file` is set.
     pub fn list_profiles(&self) -> Vec<Value> {
         let default_profile = self.config.agents.agent.default_profile.as_deref();
         self.config
@@ -487,21 +537,173 @@ impl AcpInstances {
             })
             .collect()
     }
+
+    /// Shutdown a single instance and auto-focus the oldest survivor.
+    pub async fn shutdown_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
+        self.registry.shutdown_one(key).await.map_err(map_adapter_error_to_rpc)
+    }
+
+    /// Designate the focused instance. Unknown id → `-32602 invalid_params`.
+    pub async fn focus_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
+        self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)
+    }
 }
 
-/// Route a runtime `InstanceEvent` onto the corresponding `acp:*`
-/// Tauri event. Projects the ACP-side variant onto
-/// `adapters::InstanceEvent` first — the generic vocabulary is the
-/// wire shape the webview sees. Separators stay `:` here; JSON-RPC
-/// wire uses `/`.
-fn emit_acp_event(app: &tauri::AppHandle, evt: InstanceEvent) {
-    let generic: crate::adapters::InstanceEvent = evt.into();
-    let name = match &generic {
-        crate::adapters::InstanceEvent::State { .. } => "acp:instance-state",
-        crate::adapters::InstanceEvent::Transcript { .. } => "acp:transcript",
-        crate::adapters::InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
+// Runtime actors speak the ACP-internal `InstanceEvent` enum; the
+// registry speaks the generic `adapters::InstanceEvent`. We bridge
+// ACP → generic in a background task so both wire shapes stay
+// self-documenting without the actor importing generic types. Owned
+// by the adapter so the bridge task dies when the adapter drops.
+impl AcpAdapter {
+    /// Construct the ACP → generic bridge channel + task. Called
+    /// once by `new`/`with_permissions` via the `runtime_events_bridge`
+    /// field's initialiser.
+    fn spawn_runtime_bridge(registry: Arc<AdapterRegistry<AcpInstance>>) -> broadcast::Sender<InstanceEvent> {
+        let (runtime_tx, mut runtime_rx) = broadcast::channel::<InstanceEvent>(256);
+        let out_tx = registry.events_tx();
+        tokio::spawn(async move {
+            loop {
+                match runtime_rx.recv().await {
+                    Ok(evt) => {
+                        let generic: crate::adapters::InstanceEvent = evt.into();
+                        let _ = out_tx.send(generic);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(n, "acp runtime bridge: lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+        runtime_tx
+    }
+}
+
+#[async_trait]
+impl Adapter for AcpAdapter {
+    fn id(&self) -> AdapterId {
+        AdapterId::Acp
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            load_session: true,
+            list_sessions: true,
+            permissions: true,
+            terminals: true,
+        }
+    }
+
+    async fn list(&self) -> Vec<InstanceInfo> {
+        // Async session_id fill-in: generic registry snapshots are
+        // sync (`InstanceActor::info` is a plain fn), so a live
+        // session id that's still in-flight can show up as None.
+        // Post-process here to block on the RwLock read.
+        let base = self.registry.list().await;
+        let mut out = Vec::with_capacity(base.len());
+        for mut info in base {
+            if info.session_id.is_none() {
+                if let Ok(key) = InstanceKey::parse(&info.id) {
+                    if let Some(handle) = self.registry.get(key).await {
+                        info.session_id = handle.current_session_id().await;
+                    }
+                }
+            }
+            out.push(info);
+        }
+        out
+    }
+
+    async fn info_for(&self, key: InstanceKey) -> AdapterResult<InstanceInfo> {
+        let mut info = self.registry.info_for(key).await?;
+        if info.session_id.is_none() {
+            if let Some(handle) = self.registry.get(key).await {
+                info.session_id = handle.current_session_id().await;
+            }
+        }
+        Ok(info)
+    }
+
+    async fn focused_id(&self) -> Option<InstanceKey> {
+        self.registry.focused_id().await
+    }
+
+    async fn focus(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+        self.registry.focus(key).await
+    }
+
+    async fn shutdown_one(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+        self.registry.shutdown_one(key).await
+    }
+
+    async fn restart(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+        self.restart_instance(key).await.map_err(rpc_to_adapter)
+    }
+
+    fn subscribe(&self) -> InstanceEventStream {
+        self.registry.subscribe()
+    }
+
+    async fn spawn(&self, spec: SpawnSpec) -> AdapterResult<InstanceKey> {
+        self.spawn_instance(spec).await.map_err(rpc_to_adapter)
+    }
+
+    async fn submit(
+        &self,
+        input: UserTurnInput,
+        instance_id: Option<&str>,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+    ) -> AdapterResult<serde_json::Value> {
+        let UserTurnInput::Text(text) = input;
+        self.submit_text(&text, instance_id, agent_id, profile_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn cancel(&self, instance_id: Option<&str>, agent_id: Option<&str>) -> AdapterResult<serde_json::Value> {
+        self.cancel_active(instance_id, agent_id).await.map_err(rpc_to_adapter)
+    }
+
+    async fn info(&self) -> AdapterResult<serde_json::Value> {
+        self.info_json().await.map_err(rpc_to_adapter)
+    }
+
+    async fn shutdown(&self) {
+        self.shutdown_all().await;
+    }
+}
+
+fn map_adapter_error_to_rpc(err: AdapterError) -> RpcError {
+    match err {
+        AdapterError::InvalidRequest(m) => RpcError::invalid_params(m),
+        AdapterError::Unsupported(m) => RpcError::method_not_found(&m),
+        AdapterError::Backend(m) => RpcError::internal_error(m),
+    }
+}
+
+fn rpc_to_adapter(err: RpcError) -> AdapterError {
+    match err.code {
+        -32602 => AdapterError::InvalidRequest(err.message),
+        -32601 => AdapterError::Unsupported(err.message),
+        _ => AdapterError::Backend(err.message),
+    }
+}
+
+/// Route a generic `InstanceEvent` onto the corresponding `acp:*`
+/// Tauri event. Names follow the Tauri-side convention (`:`
+/// separators); the dot-separated wire topic is accessible via
+/// `InstanceEvent::topic()` for future subscription filtering.
+fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
+    use crate::adapters::InstanceEvent as GenEvt;
+    let name = match &evt {
+        GenEvt::State { .. } => "acp:instance-state",
+        GenEvt::Transcript { .. } => "acp:transcript",
+        GenEvt::PermissionRequest { .. } => "acp:permission-request",
+        GenEvt::InstancesChanged { .. } => "acp:instances-changed",
+        GenEvt::InstancesFocused { .. } => "acp:instances-focused",
     };
-    match serde_json::to_value(&generic) {
+    match serde_json::to_value(&evt) {
         Ok(v) => {
             if let Err(err) = app.emit(name, v) {
                 tracing::warn!(%err, event = name, "failed to emit acp event");
@@ -517,29 +719,35 @@ mod tests {
 
     #[tokio::test]
     async fn submit_without_default_is_invalid_params() {
-        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = instances.submit("hi", None, None, None).await.expect_err("must fail");
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = adapter
+            .submit_text("hi", None, None, None)
+            .await
+            .expect_err("must fail");
         assert_eq!(err.code, -32602);
     }
 
     #[tokio::test]
     async fn info_empty_when_nothing_spawned() {
-        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let v = instances.info().await.expect("ok");
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let v = adapter.info_json().await.expect("ok");
         assert_eq!(v["instances"], json!([]));
     }
 
     #[tokio::test]
     async fn cancel_unknown_agent_reports_missing_session() {
-        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = instances.cancel(None, Some("ghost")).await.expect_err("must fail");
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = adapter.cancel_active(None, Some("ghost")).await.expect_err("must fail");
         assert_eq!(err.code, -32602, "unknown agent id is invalid_params");
     }
 
     #[tokio::test]
     async fn cancel_invalid_instance_id_is_invalid_params() {
-        let instances = AcpInstances::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = instances.cancel(Some("not-a-uuid"), None).await.expect_err("must fail");
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = adapter
+            .cancel_active(Some("not-a-uuid"), None)
+            .await
+            .expect_err("must fail");
         assert_eq!(err.code, -32602, "malformed instance_id is invalid_params");
     }
 
@@ -549,6 +757,12 @@ mod tests {
         let s = k.as_string();
         let parsed = InstanceKey::parse(&s).expect("parse clean");
         assert_eq!(k, parsed);
+    }
+
+    #[tokio::test]
+    async fn instance_key_rejects_empty_string() {
+        let err = InstanceKey::parse("").expect_err("empty");
+        assert!(matches!(err, AdapterError::InvalidRequest(_)));
     }
 
     #[tokio::test]
@@ -576,18 +790,42 @@ system_prompt = "be terse"
 "#,
         )
         .expect("fixture parses");
-        let instances = AcpInstances::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
 
-        let resolved = instances.resolve(None, Some("strict")).expect("strict resolves");
+        let resolved = adapter.resolve(None, Some("strict")).expect("strict resolves");
         assert_eq!(resolved.agent.id, "claude-code");
         assert_eq!(resolved.profile_id.as_deref(), Some("strict"));
         assert_eq!(resolved.model.as_deref(), Some("claude-opus-4-5"));
         assert_eq!(resolved.system_prompt.as_deref(), Some("be terse"));
 
-        let resolved = instances.resolve(None, None).expect("default profile resolves");
+        let resolved = adapter.resolve(None, None).expect("default profile resolves");
         assert_eq!(resolved.profile_id.as_deref(), Some("ask"));
         assert_eq!(resolved.model.as_deref(), Some("claude-sonnet-4-5"));
         assert!(resolved.system_prompt.is_none());
+    }
+
+    #[tokio::test]
+    async fn focus_nonexistent_is_invalid_params() {
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let key = InstanceKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let err = adapter.focus_instance(key).await.expect_err("unknown id must fail");
+        assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn restart_nonexistent_is_invalid_params() {
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let key = InstanceKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let err = adapter.restart_instance(key).await.expect_err("unknown id must fail");
+        assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn shutdown_one_nonexistent_is_invalid_params() {
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let key = InstanceKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let err = adapter.shutdown_instance(key).await.expect_err("unknown id must fail");
+        assert_eq!(err.code, -32602);
     }
 
     #[tokio::test]
@@ -612,8 +850,8 @@ system_prompt = "be terse"
 "#,
         )
         .expect("parses");
-        let instances = AcpInstances::new(cfg, Arc::new(StatusBroadcast::new(true)));
-        let out = instances.list_profiles();
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let out = adapter.list_profiles();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], "ask");
         assert_eq!(out[0]["is_default"], true);
@@ -621,5 +859,36 @@ system_prompt = "be terse"
         assert_eq!(out[1]["id"], "strict");
         assert_eq!(out[1]["is_default"], false);
         assert_eq!(out[1]["has_prompt"], true);
+    }
+
+    /// Mode threading: `spawn(SpawnSpec { mode: Some("plan"), ... })`
+    /// lands on `InstanceInfo.mode` via the `AcpInstance` carry. Uses
+    /// a config with a dead-child agent (so the spawn actor hits
+    /// `Error` immediately) — the mode carry happens before the
+    /// actor even starts, so the field is populated regardless.
+    #[tokio::test]
+    async fn spawn_threads_mode_through_to_instance_info() {
+        let cfg: Config = toml::from_str(
+            r#"
+[agent]
+default = "dead"
+
+[[agents]]
+id = "dead"
+provider = "acp-claude-code"
+command = "/bin/false"
+"#,
+        )
+        .expect("parses");
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let spec = SpawnSpec {
+            mode: Some("plan".into()),
+            ..Default::default()
+        };
+        let key = adapter.spawn_instance(spec).await.expect("spawn ok");
+        let info = <AcpAdapter as Adapter>::info_for(&adapter, key)
+            .await
+            .expect("info_for");
+        assert_eq!(info.mode.as_deref(), Some("plan"));
     }
 }

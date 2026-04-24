@@ -84,6 +84,16 @@ impl From<AcpInstanceEvent> for GenericInstanceEvent {
                 args,
                 options: options.into_iter().map(Into::into).collect(),
             },
+            AcpInstanceEvent::InstancesChanged {
+                instance_ids,
+                focused_id,
+            } => GenericInstanceEvent::InstancesChanged {
+                instance_ids,
+                focused_id,
+            },
+            AcpInstanceEvent::InstancesFocused { instance_id } => {
+                GenericInstanceEvent::InstancesFocused { instance_id }
+            }
         }
     }
 }
