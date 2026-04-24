@@ -144,6 +144,11 @@ mod tests {
             system_prompt_file: None,
             auto_accept_tools: Vec::new(),
             auto_reject_tools: Vec::new(),
+            mcps: None,
+            skills: None,
+            mode: None,
+            cwd: None,
+            env: Default::default(),
         }
     }
 
