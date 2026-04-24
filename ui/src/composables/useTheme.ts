@@ -1,4 +1,5 @@
 import { invoke, TauriCommand, type GtkFont, type Theme } from '@ipc'
+import { log } from '@lib'
 
 /**
  * Builds the CSS custom property name from a token path. Segments named
@@ -47,12 +48,12 @@ export async function applyGtkFont(): Promise<void> {
   try {
     font = await invoke(TauriCommand.GetGtkFont)
   } catch (err) {
-    console.warn('[hyprpilot] get_gtk_font invoke failed; using browser default font', err)
+    log.warn('get_gtk_font invoke failed; using browser default font', undefined, err)
 
     return
   }
   if (!font) {
-    console.warn('[hyprpilot] GTK font unavailable; using browser default font')
+    log.warn('GTK font unavailable; using browser default font')
 
     return
   }
@@ -64,7 +65,7 @@ export async function applyGtkFont(): Promise<void> {
     '--theme-font-sans',
     `'${font.family}', ui-sans-serif, system-ui, sans-serif`
   )
-  console.info(`[hyprpilot] GTK font ${font.family} ${font.sizePt}pt (zoom applied by daemon)`)
+  log.info('GTK font applied', { family: font.family, sizePt: font.sizePt })
 }
 
 /**

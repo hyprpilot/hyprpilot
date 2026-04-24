@@ -211,12 +211,19 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // active monitor on every show transition.
     let renderer = WindowRenderer::new(window_cfg.clone(), wm::detect());
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-        info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
-        if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
-            warn!(%err, "failed to emit single-instance event");
-        }
-    }));
+    let builder = tauri::Builder::default()
+        // Webview-side `log.*` wrapper fans into `log::Record`s here,
+        // which `tracing_log::LogTracer` (installed in `logging::init`)
+        // forwards into the backend tracing subscriber — one file, both
+        // sides. No Targets configured: the default TauriPlugin writer
+        // forwards to `log::logger()`, which the LogTracer owns.
+        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
+            if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
+                warn!(%err, "failed to emit single-instance event");
+            }
+        }));
 
     #[cfg(feature = "e2e-testing")]
     let builder = builder.plugin(tauri_plugin_playwright::init());

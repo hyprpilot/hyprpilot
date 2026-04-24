@@ -2,6 +2,7 @@ import { computed, reactive, type ComputedRef } from 'vue'
 
 import { type PermissionPrompt } from '@components'
 import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
+import { log } from '@lib'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
@@ -65,6 +66,7 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     args: raw.args ?? '',
     createdAt: seq
   })
+  log.trace('permission pending added', { instanceId: id, requestId: raw.request_id, tool: raw.tool, size: slot.pending.size })
 }
 
 /**
@@ -73,7 +75,14 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
  * once the PermissionController emits one.
  */
 export function evictPermission(id: InstanceId, requestId: string): void {
-  states.get(id)?.pending.delete(requestId)
+  const slot = states.get(id)
+  if (!slot) {
+    return
+  }
+  const removed = slot.pending.delete(requestId)
+  if (removed) {
+    log.trace('permission pending evicted', { instanceId: id, requestId, size: slot.pending.size })
+  }
 }
 
 export function resetPermissions(id: InstanceId): void {
