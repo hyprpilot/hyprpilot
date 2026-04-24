@@ -24,8 +24,9 @@ impl RpcHandler for ConfigHandler {
 
         match method {
             "config/profiles" => {
-                let default_profile = config.agents.agent.default_profile.as_deref();
-                let profiles: Vec<Value> = config
+                let guard = config.read().expect("config lock poisoned");
+                let default_profile = guard.agents.agent.default_profile.as_deref();
+                let profiles: Vec<Value> = guard
                     .profiles
                     .iter()
                     .map(|p| {
@@ -33,7 +34,6 @@ impl RpcHandler for ConfigHandler {
                             "id": p.id,
                             "agent": p.agent,
                             "model": p.model,
-                            "has_prompt": p.system_prompt.is_some() || p.system_prompt_file.is_some(),
                             "is_default": default_profile == Some(p.id.as_str()),
                         })
                     })

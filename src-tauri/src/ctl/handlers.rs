@@ -114,6 +114,74 @@ impl CtlHandler for SessionInfoHandler {
     }
 }
 
+pub struct AgentsListHandler;
+
+impl CtlHandler for AgentsListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "agents/list", Value::Null)
+    }
+}
+
+pub struct CommandsListHandler {
+    pub instance_id: String,
+}
+
+impl CtlHandler for CommandsListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "commands/list", json!({ "instance_id": self.instance_id }))
+    }
+}
+
+pub struct ModesListHandler {
+    pub instance_id: String,
+}
+
+impl CtlHandler for ModesListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "modes/list", json!({ "instance_id": self.instance_id }))
+    }
+}
+
+pub struct ModesSetHandler {
+    pub instance_id: String,
+    pub mode_id: String,
+}
+
+impl CtlHandler for ModesSetHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(
+            client,
+            "modes/set",
+            json!({ "instance_id": self.instance_id, "mode_id": self.mode_id }),
+        )
+    }
+}
+
+pub struct ModelsListHandler {
+    pub instance_id: String,
+}
+
+impl CtlHandler for ModelsListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "models/list", json!({ "instance_id": self.instance_id }))
+    }
+}
+
+pub struct ModelsSetHandler {
+    pub instance_id: String,
+    pub model_id: String,
+}
+
+impl CtlHandler for ModelsSetHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(
+            client,
+            "models/set",
+            json!({ "instance_id": self.instance_id, "model_id": self.model_id }),
+        )
+    }
+}
+
 /// Drives `ctl status [--watch]`. Always emits a waybar-shaped JSON
 /// object (`{text, class, tooltip, alt}`) and always exits 0 — waybar
 /// needs a valid payload on stdout even when the daemon is

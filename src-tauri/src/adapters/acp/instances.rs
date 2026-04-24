@@ -15,7 +15,7 @@
 //! with lower seq than the user turn.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
 use async_trait::async_trait;
@@ -37,7 +37,11 @@ use crate::rpc::protocol::RpcError;
 use crate::rpc::StatusBroadcast;
 
 pub struct AcpAdapter {
-    pub(crate) config: Config,
+    /// Shared config handle. Read-only at runtime — config is static
+    /// after daemon start, restart-to-change is the model. Wrapped in
+    /// an `RwLock` so the daemon can hand the same `Arc` to `RpcState`
+    /// for read-only handlers (`config/profiles`) without re-cloning.
+    pub(crate) config: Arc<RwLock<Config>>,
     #[allow(dead_code)]
     pub(crate) status: Arc<StatusBroadcast>,
     registry: Arc<AdapterRegistry<AcpInstance>>,
@@ -74,6 +78,19 @@ impl AcpAdapter {
         status: Arc<StatusBroadcast>,
         permissions: Arc<dyn PermissionController>,
     ) -> Self {
+        Self::with_shared_config(Arc::new(RwLock::new(config)), status, permissions)
+    }
+
+    /// Construct against an already-shared config handle. Used by the
+    /// daemon so `RpcState.config` and `AcpAdapter.config` point at the
+    /// same `RwLock<Config>` instance — readers locking briefly clone
+    /// what they need.
+    #[must_use]
+    pub fn with_shared_config(
+        config: Arc<RwLock<Config>>,
+        status: Arc<StatusBroadcast>,
+        permissions: Arc<dyn PermissionController>,
+    ) -> Self {
         let registry = Arc::new(AdapterRegistry::new());
         let runtime_events_bridge = Self::spawn_runtime_bridge(registry.clone());
         Self {
@@ -85,12 +102,26 @@ impl AcpAdapter {
         }
     }
 
+    /// Handle onto the shared config. Used by the daemon wiring to
+    /// hand the same lock to `RpcState` so reads + writes stay
+    /// coherent.
+    #[must_use]
+    pub fn shared_config(&self) -> Arc<RwLock<Config>> {
+        self.config.clone()
+    }
+
     /// Profile config lookup by id — used when spawning an actor so
     /// the runtime carries the full allowlist definition, not just a
     /// profile id.
     fn profile_by_id(&self, profile_id: Option<&str>) -> Option<ProfileConfig> {
         let id = profile_id?;
-        self.config.profiles.iter().find(|p| p.id == id).cloned()
+        self.read_config().profiles.iter().find(|p| p.id == id).cloned()
+    }
+
+    /// Short-lived read guard helper. Callers drop before any `.await`
+    /// — `std::sync::RwLock` isn't `Send` across suspension points.
+    fn read_config(&self) -> std::sync::RwLockReadGuard<'_, Config> {
+        self.config.read().expect("AcpAdapter config lock poisoned")
     }
 
     /// Broadcast receiver for every lifecycle + transcript event the
@@ -135,12 +166,12 @@ impl AcpAdapter {
     /// whatever agent the resolved profile names (same profile, new
     /// agent spawn).
     fn resolve(&self, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<ResolvedInstance, RpcError> {
-        let mut resolved = ResolvedInstance::from_config(&self.config, profile_id)
-            .map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
+        let cfg = self.read_config();
+        let mut resolved =
+            ResolvedInstance::from_config(&cfg, profile_id).map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
 
         if let Some(wanted) = agent_id {
-            let agent = self
-                .config
+            let agent = cfg
                 .agents
                 .agents
                 .iter()
@@ -504,34 +535,36 @@ impl AcpAdapter {
     /// Enumerate configured agents for `agents_list`.
     #[must_use]
     pub fn list_agents(&self) -> Vec<Value> {
-        self.config
-            .agents
+        let cfg = self.read_config();
+        let default_agent = cfg.agents.agent.default.as_deref();
+        cfg.agents
             .agents
             .iter()
             .map(|a| {
                 json!({
                     "id": a.id,
                     "provider": a.provider,
-                    "is_default": self.config.agents.agent.default.as_deref() == Some(a.id.as_str()),
+                    "binding": a.command,
+                    "is_default": default_agent == Some(a.id.as_str()),
                 })
             })
             .collect()
     }
 
     /// Enumerate configured profiles for `config/profiles` +
-    /// `profiles_list`. `has_prompt` is `true` when either
-    /// `system_prompt` is inline or a `system_prompt_file` is set.
+    /// `profiles/list`. Wire shape: `{ id, agent, model, is_default }`.
+    /// Caller (chat-shell picker) highlights `is_default`; `agent` +
+    /// `model` disambiguate; `id` is the registry key.
     pub fn list_profiles(&self) -> Vec<Value> {
-        let default_profile = self.config.agents.agent.default_profile.as_deref();
-        self.config
-            .profiles
+        let cfg = self.read_config();
+        let default_profile = cfg.agents.agent.default_profile.as_deref();
+        cfg.profiles
             .iter()
             .map(|p| {
                 json!({
                     "id": p.id,
                     "agent": p.agent,
                     "model": p.model,
-                    "has_prompt": p.system_prompt.is_some() || p.system_prompt_file.is_some(),
                     "is_default": default_profile == Some(p.id.as_str()),
                 })
             })
@@ -546,6 +579,20 @@ impl AcpAdapter {
     /// Designate the focused instance. Unknown id → `-32602 invalid_params`.
     pub async fn focus_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)
+    }
+
+    /// Membership check used by `modes/*`, `models/*`, `commands/*`
+    /// handlers to map a wire-supplied `instance_id` onto the live
+    /// registry. `-32602` when the id is malformed or not in the
+    /// registry — same failure mode both paths get.
+    pub async fn contains_instance(&self, id: &str) -> Result<InstanceKey, RpcError> {
+        let key = InstanceKey::parse(id).map_err(map_adapter_error_to_rpc)?;
+        match self.registry.get(key).await {
+            Some(_) => Ok(key),
+            None => Err(RpcError::invalid_params(format!(
+                "instance '{id}' not found in registry"
+            ))),
+        }
     }
 }
 
@@ -854,11 +901,12 @@ system_prompt = "be terse"
         let out = adapter.list_profiles();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], "ask");
+        assert_eq!(out[0]["agent"], "claude-code");
         assert_eq!(out[0]["is_default"], true);
-        assert_eq!(out[0]["has_prompt"], false);
+        assert!(out[0].get("has_prompt").is_none());
         assert_eq!(out[1]["id"], "strict");
         assert_eq!(out[1]["is_default"], false);
-        assert_eq!(out[1]["has_prompt"], true);
+        assert!(out[1].get("has_prompt").is_none());
     }
 
     /// Mode threading: `spawn(SpawnSpec { mode: Some("plan"), ... })`
