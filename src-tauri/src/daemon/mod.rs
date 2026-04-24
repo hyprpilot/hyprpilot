@@ -212,12 +212,15 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let renderer = WindowRenderer::new(window_cfg.clone(), wm::detect());
 
     let builder = tauri::Builder::default()
-        // Webview-side `log.*` wrapper fans into `log::Record`s here,
-        // which `tracing_log::LogTracer` (installed in `logging::init`)
-        // forwards into the backend tracing subscriber — one file, both
-        // sides. No Targets configured: the default TauriPlugin writer
-        // forwards to `log::logger()`, which the LogTracer owns.
-        .plugin(tauri_plugin_log::Builder::default().build())
+        // Webview-side `log.*` wrapper fans into `log::Record`s here.
+        // `.skip_logger()` is load-bearing: without it the plugin
+        // installs its own fern logger and collides with the
+        // `LogTracer` that `tracing-subscriber`'s `tracing-log` feature
+        // auto-registers from `logging::init()`. With it, the plugin's
+        // `log` command forwards to `log::logger()` — i.e. the
+        // LogTracer — which routes into the backend tracing subscriber.
+        // One file, both sides.
+        .plugin(tauri_plugin_log::Builder::default().skip_logger().build())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
             if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {

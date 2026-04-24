@@ -32,8 +32,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 toml = "1"
 tracing = "0.1"
 tracing-appender = "0.2"
-tracing-log = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "tracing-log"] }
 tauri = { version = "2.10", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-playwright = { version = "0.2", optional = true }
