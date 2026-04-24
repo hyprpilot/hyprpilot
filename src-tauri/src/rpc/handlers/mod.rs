@@ -1,11 +1,13 @@
 pub mod config;
 pub mod daemon;
+pub mod instances;
 pub mod session;
 pub mod status;
 pub mod window;
 
 pub use self::config::ConfigHandler;
 pub use self::daemon::DaemonHandler;
+pub use self::instances::InstancesHandler;
 pub use self::session::SessionHandler;
 pub use self::status::StatusHandler;
 pub use self::window::WindowHandler;

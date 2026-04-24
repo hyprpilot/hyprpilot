@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::adapters::{AdapterError, UserTurnInput};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::protocol::RpcError;
 
@@ -43,11 +44,8 @@ struct CancelAddress {
 }
 
 /// `session/*` namespace — `session/submit`, `session/cancel`,
-/// `session/info`.
-///
-/// Delegates every method into `AcpInstances` (Tauri managed state).
-/// Today `AcpInstances` returns the pre-K-239 stubbed shapes; the live
-/// ACP plumbing swaps those bodies in without touching this handler.
+/// `session/info`. Delegates every method through the `Adapter`
+/// trait.
 pub struct SessionHandler;
 
 #[async_trait]
@@ -57,10 +55,10 @@ impl RpcHandler for SessionHandler {
     }
 
     async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-        let instances = ctx
-            .instances
+        let adapter = ctx
+            .adapter
             .as_ref()
-            .ok_or_else(|| RpcError::internal_error("AcpInstances not in managed state"))?;
+            .ok_or_else(|| RpcError::internal_error("adapter not in managed state"))?;
 
         match method {
             "session/submit" => {
@@ -71,23 +69,27 @@ impl RpcHandler for SessionHandler {
                     profile_id,
                 } = serde_json::from_value(params)
                     .map_err(|e| RpcError::invalid_params(format!("session/submit params: {e}")))?;
-                let v = instances
+                let v = adapter
                     .submit(
-                        &text,
+                        UserTurnInput::text(text),
                         instance_id.as_deref(),
                         agent_id.as_deref(),
                         profile_id.as_deref(),
                     )
-                    .await?;
+                    .await
+                    .map_err(map_adapter_err)?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/cancel" => {
                 let CancelAddress { instance_id, agent_id } = params_or_default::<CancelAddress>(params, method)?;
-                let v = instances.cancel(instance_id.as_deref(), agent_id.as_deref()).await?;
+                let v = adapter
+                    .cancel(instance_id.as_deref(), agent_id.as_deref())
+                    .await
+                    .map_err(map_adapter_err)?;
                 Ok(HandlerOutcome::Reply(v))
             }
             "session/info" => {
-                let v = instances.info().await?;
+                let v = adapter.info().await.map_err(map_adapter_err)?;
                 Ok(HandlerOutcome::Reply(v))
             }
             other => Err(RpcError::method_not_found(other)),
@@ -105,4 +107,12 @@ fn params_or_default<T: serde::de::DeserializeOwned + Default>(params: Value, me
         return Ok(T::default());
     }
     serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
+}
+
+fn map_adapter_err(err: AdapterError) -> RpcError {
+    match err {
+        AdapterError::InvalidRequest(m) => RpcError::invalid_params(m),
+        AdapterError::Unsupported(m) => RpcError::method_not_found(&m),
+        AdapterError::Backend(m) => RpcError::internal_error(m),
+    }
 }

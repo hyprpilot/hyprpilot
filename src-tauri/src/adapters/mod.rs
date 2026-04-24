@@ -25,6 +25,7 @@ pub mod commands;
 pub mod instance;
 pub mod permission;
 pub mod profile;
+pub mod registry;
 pub mod tool;
 pub mod transcript;
 
@@ -35,7 +36,10 @@ use async_trait::async_trait;
 // drop the allow once the second adapter lands and callers reach them
 // through `dyn Adapter` from `rpc::` / `ctl::`.
 #[allow(unused_imports)]
-pub use instance::{InstanceEvent, InstanceEventStream, InstanceHandle, InstanceState};
+pub use instance::{
+    InstanceActor, InstanceEvent, InstanceEventStream, InstanceHandle, InstanceInfo, InstanceKey, InstanceState,
+    SpawnSpec,
+};
 #[allow(unused_imports)]
 pub use permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DefaultPermissionController, PermissionController,
@@ -43,6 +47,8 @@ pub use permission::{
 };
 #[allow(unused_imports)]
 pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};
+#[allow(unused_imports)]
+pub use registry::AdapterRegistry;
 #[allow(unused_imports)]
 pub use tool::{ToolCall, ToolCallContent, ToolState};
 #[allow(unused_imports)]
@@ -53,7 +59,7 @@ pub use transcript::{ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
 // sibling later adds new re-exports here, not new import paths in
 // `rpc::` / `ctl::` / `daemon::`.
 #[allow(unused_imports)]
-pub use acp::{AcpAdapter, AcpInstances};
+pub use acp::AcpAdapter;
 
 /// Closed set of known transport kinds. The string wire-name is stable
 /// — it appears in tracing spans and (future) config `transport =
@@ -127,38 +133,68 @@ pub enum Bootstrap {
 
 /// Primary trait every transport impl satisfies. Future `HttpAdapter`
 /// slots in here next to `AcpAdapter`.
+///
+/// Generic instance-lifecycle methods (`list` / `focused_id` / `focus`
+/// / `shutdown_one` / `restart` / `info_for` / `subscribe`) forward
+/// to each adapter's `AdapterRegistry<H>`; the transport-specific
+/// methods (`submit` / `cancel` / `spawn` / `shutdown`) stay on the
+/// impl. Adding an adapter means one new `impl Adapter`; the generic
+/// methods stay one-line delegations.
 #[async_trait]
 pub trait Adapter: Send + Sync + 'static {
     fn id(&self) -> AdapterId;
 
     fn capabilities(&self) -> Capabilities;
 
-    /// Spawn a new instance for the resolved `(agent, profile)` pair.
-    /// Registers the instance internally; returns the handle callers
-    /// keep to address follow-up submits / cancels against.
-    async fn start_instance(&self, resolved: ResolvedInstance, bootstrap: Bootstrap) -> AdapterResult<InstanceHandle>;
+    // ── generic registry ops ──────────────────────────────────────────
+    async fn list(&self) -> Vec<InstanceInfo>;
 
-    /// Submit a prompt against the addressed `(agent_id, profile_id)`
-    /// pair, spawning a new instance on first hit or reusing the live
-    /// one. `input` is a structured enum (`UserTurnInput::Text` today;
-    /// future `Attachment` / `Multimodal` variants slot in behind
-    /// `#[non_exhaustive]`). Returns a JSON envelope the RPC / Tauri
-    /// surfaces pass straight through.
+    async fn info_for(&self, key: InstanceKey) -> AdapterResult<InstanceInfo>;
+
+    async fn focused_id(&self) -> Option<InstanceKey>;
+
+    async fn focus(&self, key: InstanceKey) -> AdapterResult<InstanceKey>;
+
+    async fn shutdown_one(&self, key: InstanceKey) -> AdapterResult<InstanceKey>;
+
+    /// Graceful drop + respawn preserving the insertion-order slot.
+    /// Preserves `InstanceKey` (the UUID) too — callers subscribed to
+    /// a specific key stay bound across the swap.
+    async fn restart(&self, key: InstanceKey) -> AdapterResult<InstanceKey>;
+
+    fn subscribe(&self) -> InstanceEventStream;
+
+    // ── transport-specific ops ────────────────────────────────────────
+
+    /// Spawn a new instance per the spec. Empty-registry → auto-focus
+    /// the new instance (inside the registry). Returns the minted
+    /// `InstanceKey`.
+    async fn spawn(&self, spec: SpawnSpec) -> AdapterResult<InstanceKey>;
+
+    /// Submit a prompt against an existing instance (when
+    /// `instance_id` is provided) or spawn one for the resolved
+    /// `(agent, profile)` pair. `input` is a structured enum
+    /// (`UserTurnInput::Text` today); returns a JSON envelope RPC +
+    /// Tauri pass through verbatim.
     async fn submit(
         &self,
         input: UserTurnInput,
+        instance_id: Option<&str>,
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> AdapterResult<serde_json::Value>;
 
-    /// Cancel the active turn on the addressed agent's instance.
-    async fn cancel(&self, agent_id: Option<&str>) -> AdapterResult<serde_json::Value>;
+    /// Cancel the active turn on the addressed instance (by UUID), or
+    /// fall back to the first live instance of `agent_id`.
+    async fn cancel(&self, instance_id: Option<&str>, agent_id: Option<&str>) -> AdapterResult<serde_json::Value>;
 
-    /// Snapshot of every live instance the adapter owns.
+    /// Snapshot of every live instance as a wire value. Keeps the
+    /// legacy `session/info` shape; UI code reads [`Adapter::list`]
+    /// for typed consumption.
     async fn info(&self) -> AdapterResult<serde_json::Value>;
 
-    /// Best-effort drain of every live instance. Called from
-    /// `daemon::shutdown` before `app.exit(0)`.
+    /// Drain every live instance. Called from `daemon::shutdown`
+    /// before `app.exit(0)`.
     async fn shutdown(&self);
 }
 
@@ -185,21 +221,44 @@ mod tests {
             Capabilities::default()
         }
 
-        async fn start_instance(
-            &self,
-            resolved: ResolvedInstance,
-            _bootstrap: Bootstrap,
-        ) -> AdapterResult<InstanceHandle> {
-            Ok(InstanceHandle {
-                agent_id: resolved.agent.id.clone(),
-                instance_id: resolved.agent.id,
-                session_id: None,
-            })
+        async fn list(&self) -> Vec<InstanceInfo> {
+            Vec::new()
+        }
+
+        async fn info_for(&self, key: InstanceKey) -> AdapterResult<InstanceInfo> {
+            Err(AdapterError::InvalidRequest(format!("no instances (asked for {key})")))
+        }
+
+        async fn focused_id(&self) -> Option<InstanceKey> {
+            None
+        }
+
+        async fn focus(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+            Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
+        }
+
+        async fn shutdown_one(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+            Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
+        }
+
+        async fn restart(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+            Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
+        }
+
+        fn subscribe(&self) -> InstanceEventStream {
+            let (tx, rx) = tokio::sync::broadcast::channel(1);
+            drop(tx);
+            rx
+        }
+
+        async fn spawn(&self, _spec: SpawnSpec) -> AdapterResult<InstanceKey> {
+            Err(AdapterError::Unsupported("echo cannot spawn".into()))
         }
 
         async fn submit(
             &self,
             input: UserTurnInput,
+            _instance_id: Option<&str>,
             _agent_id: Option<&str>,
             _profile_id: Option<&str>,
         ) -> AdapterResult<serde_json::Value> {
@@ -207,7 +266,11 @@ mod tests {
             Ok(json!({ "echo": text }))
         }
 
-        async fn cancel(&self, _agent_id: Option<&str>) -> AdapterResult<serde_json::Value> {
+        async fn cancel(
+            &self,
+            _instance_id: Option<&str>,
+            _agent_id: Option<&str>,
+        ) -> AdapterResult<serde_json::Value> {
             Ok(json!({ "cancelled": false }))
         }
 
@@ -223,7 +286,7 @@ mod tests {
         let a: Box<dyn Adapter> = Box::new(EchoAdapter);
         assert_eq!(a.id(), AdapterId::Acp);
         let v = a
-            .submit(UserTurnInput::text("hi"), None, None)
+            .submit(UserTurnInput::text("hi"), None, None, None)
             .await
             .expect("echo submit ok");
         assert_eq!(v["echo"], "hi");
@@ -234,8 +297,8 @@ mod tests {
     /// Layering guard: no file outside `adapters/` may import from
     /// `crate::adapters::acp`. The rest of the crate talks to
     /// `dyn Adapter` or to the concrete types re-exported from
-    /// `adapters::*` (today `AcpInstances`, `AcpAdapter`) plus the
-    /// Tauri `#[command]`s at `adapters::commands`. Walks the source
+    /// `adapters::*` (today `AcpAdapter`) plus the Tauri
+    /// `#[command]`s at `adapters::commands`. Walks the source
     /// tree, reads every `.rs` file, and fails on any offending import.
     #[test]
     fn no_acp_imports_outside_adapters() {

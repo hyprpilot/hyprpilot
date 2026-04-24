@@ -17,15 +17,29 @@ impl RpcHandler for ConfigHandler {
     }
 
     async fn handle(&self, method: &str, _params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-        let instances = ctx
-            .instances
+        let config = ctx
+            .config
             .as_ref()
-            .ok_or_else(|| RpcError::internal_error("AcpInstances not in managed state"))?;
+            .ok_or_else(|| RpcError::internal_error("config not in managed state"))?;
 
         match method {
-            "config/profiles" => Ok(HandlerOutcome::Reply(json!({
-                "profiles": instances.list_profiles(),
-            }))),
+            "config/profiles" => {
+                let default_profile = config.agents.agent.default_profile.as_deref();
+                let profiles: Vec<Value> = config
+                    .profiles
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "id": p.id,
+                            "agent": p.agent,
+                            "model": p.model,
+                            "has_prompt": p.system_prompt.is_some() || p.system_prompt_file.is_some(),
+                            "is_default": default_profile == Some(p.id.as_str()),
+                        })
+                    })
+                    .collect();
+                Ok(HandlerOutcome::Reply(json!({ "profiles": profiles })))
+            }
             other => Err(RpcError::method_not_found(other)),
         }
     }

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
-use crate::adapters::AcpInstances;
+use crate::adapters::Adapter;
+use crate::config::Config;
 use crate::rpc::protocol::{RequestId, RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
 
@@ -23,10 +24,15 @@ use crate::rpc::status::StatusBroadcast;
 pub struct HandlerCtx<'a> {
     pub app: Option<&'a tauri::AppHandle>,
     pub status: &'a StatusBroadcast,
-    /// Shared ACP instance registry. `Option` so the unit-test harness
-    /// can run without building a full `AcpInstances`; production calls
-    /// always pass `Some` (the daemon constructs it in `setup`).
-    pub instances: Option<Arc<AcpInstances>>,
+    /// Shared adapter. `Option` so the unit-test harness can run
+    /// without building a full adapter; production calls always pass
+    /// `Some`. Typed as `Arc<dyn Adapter>` so handlers are adapter-agnostic
+    /// — adding an HTTP transport does not touch this field.
+    pub adapter: Option<Arc<dyn Adapter>>,
+    /// Shared config snapshot. Read-only handlers (`config/profiles`,
+    /// future `config/agents`) render from this directly; adapter
+    /// methods never see it.
+    pub config: Option<Arc<Config>>,
     /// Request id of the in-flight call. Handlers read it for logging /
     /// tracing spans; unused by routing.
     #[allow(dead_code)]

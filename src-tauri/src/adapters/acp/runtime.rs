@@ -122,6 +122,15 @@ pub enum InstanceEvent {
         args: String,
         options: Vec<PermissionOptionView>,
     },
+    /// Registry membership changed — spawn / shutdown / restart.
+    /// Emitted by `AcpInstances`, not the per-instance actor.
+    InstancesChanged {
+        instance_ids: Vec<String>,
+        focused_id: Option<String>,
+    },
+    /// Focus pointer moved (explicit `focus` call or auto-focus on
+    /// shutdown of the focused instance).
+    InstancesFocused { instance_id: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -140,7 +149,7 @@ pub enum InstanceState {
 /// and every `SessionUpdate` the agent streams.
 pub fn start_instance(
     resolved: ResolvedInstance,
-    instance_id: String,
+    key: crate::adapters::InstanceKey,
     profile_id: Option<String>,
     events_tx: broadcast::Sender<InstanceEvent>,
     bootstrap: Bootstrap,
@@ -153,10 +162,28 @@ pub fn start_instance(
         Bootstrap::Fresh | Bootstrap::ListOnly => None,
     };
     let session_id = Arc::new(tokio::sync::RwLock::new(initial));
+    let mode = resolved.mode.clone();
+    let instance_id = key.as_string();
+
+    // Mode is a per-instance operational override (e.g. claude-code's
+    // `plan` / `edit`). Adapter carries it through to the runtime
+    // tracing span + InstanceInfo so UI pickers see it. Vendor-specific
+    // wire injection (ACP `_meta` field, CLI flag, etc.) lands in the
+    // vendor-agent impl when K-265 wires it; today we surface it here.
+    if let Some(m) = &mode {
+        tracing::info!(
+            agent = %resolved.agent.id,
+            instance = %instance_id,
+            mode = %m,
+            "acp::runtime: instance mode set"
+        );
+    }
 
     let instance = AcpInstance {
+        key,
         agent_id: resolved.agent.id.clone(),
         profile_id,
+        mode,
         cmd_tx,
         session_id: session_id.clone(),
     };
@@ -707,6 +734,7 @@ mod tests {
             profile_id: None,
             model: None,
             system_prompt: None,
+            mode: None,
         }
     }
 
@@ -722,7 +750,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(8);
         let handle = start_instance(
             dummy_resolved("ded"),
-            "ded".into(),
+            crate::adapters::InstanceKey::new_v4(),
             None,
             tx,
             Bootstrap::Fresh,
@@ -770,7 +798,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(8);
         let handle = start_instance(
             dummy_resolved("ded-cancel"),
-            "ded-cancel".into(),
+            crate::adapters::InstanceKey::new_v4(),
             None,
             tx,
             Bootstrap::Fresh,
@@ -794,7 +822,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(8);
         let handle = start_instance(
             dummy_resolved("ded-list"),
-            "ded-list".into(),
+            crate::adapters::InstanceKey::new_v4(),
             None,
             tx,
             Bootstrap::ListOnly,
@@ -905,7 +933,7 @@ mod tests {
         let sid = SessionId::new("00000000-0000-0000-0000-000000000000");
         let handle = start_instance(
             dummy_resolved("ded-resume"),
-            "ded-resume".into(),
+            crate::adapters::InstanceKey::new_v4(),
             None,
             tx,
             Bootstrap::Resume(sid),

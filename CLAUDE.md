@@ -559,14 +559,14 @@ needs to check computed styles against a real layout engine:
   wrapper; prefer unfolding a small setup step into the body (with a short
   comment) over extracting a one-call helper.
 - **Compose behavior onto the owning type, not as free fns.** When a
-  module defines a primary type (`AcpClient`, `AcpInstances`,
+  module defines a primary type (`AcpClient`, `AcpAdapter`,
   `StatusBroadcast`), helpers that operate on that type's state — or
   need to touch the channels / handles / registries it owns — go as
   methods on it, not module-level fns. Free fns are for pure
   transformations that don't read or mutate the type's invariants.
   Drove the K-240 refactor from free `forward_notification` /
   `auto_cancel_permission` + `emit_acp_event` into methods on
-  `AcpClient` / `AcpInstances`; keeps the ownership graph legible and
+  `AcpClient` / `AcpAdapter`; keeps the ownership graph legible and
   avoids passing owned state by parameter.
 - **Small composable primitives live in `src-tauri/src/tools/`; domain
   modules host thin adapters over them.** A type that could exist
@@ -756,8 +756,8 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
   the import site.
   - **Rust protocol types** are one instance of the rule, not the
     rule itself: `Agent` → `AcpAgent` → `AcpAgentClaudeCode`;
-    `AcpAgent` sits next to `AcpAdapter`, `AcpInstances`,
-    `AcpInstance` because they share the ACP wire protocol. That's
+    `AcpAgent` sits next to `AcpAdapter`, `AcpInstance`
+    because they share the ACP wire protocol. That's
     a grouping, not a universal prefix mandate — `Acp*` only makes
     sense for things that actually speak ACP. Same pattern would
     apply to a future direct-HTTP sibling: `HttpAgent` +
@@ -1061,7 +1061,7 @@ message + `exit(1)`.
 
 The `Submit` / `Cancel` / `SessionInfo` handlers hit the live
 `session/submit` / `session/cancel` / `session/info` wire methods
-today — those go through `AcpInstances` on the server side, which
+today — those go through `AcpAdapter` on the server side, which
 returns pre-live-session stubbed shapes (`{ accepted: true, text }`
 / `{ cancelled: false, reason }` / `{ sessions: [] }`) until the
 runtime plumbing lands.
@@ -1083,29 +1083,40 @@ actor so system-prompt + model overlays stay deterministic.
 
 The generic adapter layer + the ACP impl as one transport among
 many. `rpc::` / `ctl::` / `daemon::` talk to `dyn Adapter` or to the
-concrete `AcpInstances` registry re-exported from `adapters::*`;
-they never `use crate::adapters::acp::*` directly (enforced by the
+concrete `AcpAdapter` re-exported from `adapters::*`; they never
+`use crate::adapters::acp::*` directly (enforced by the
 `no_acp_imports_outside_adapters` test in `adapters/mod.rs::tests`).
 
 - **Generic layer** (`src-tauri/src/adapters/`):
   - `mod.rs` — `Adapter` trait + `AdapterId` + `Capabilities` +
-    `AdapterError` + `Bootstrap`. Re-exports `AcpAdapter` and
-    `AcpInstances` for out-of-layer consumers.
+    `AdapterError` + `Bootstrap`. Re-exports `AcpAdapter`,
+    `AdapterRegistry`, `InstanceActor`, `InstanceInfo`,
+    `InstanceKey`, `SpawnSpec` for out-of-layer consumers.
+  - `registry.rs` — `AdapterRegistry<H: InstanceActor>`. Generic
+    instance registry. Owns the `HashMap<InstanceKey, Arc<H>>`, the
+    insertion-order vec, the focused-id pointer, and the
+    `broadcast::Sender<InstanceEvent>` the per-instance actors
+    publish onto. ACP adapter composes it; future `HttpAdapter`
+    will too. See the "Composable registry" section below.
   - `commands.rs` — Tauri `#[command]`s: `session_submit`,
-    `session_cancel`, `agents_list`, `profiles_list`, `session_list`,
-    `session_load`, `permission_reply`. Transport-agnostic; the RPC
-    surface uses the same entry points.
-  - `instance.rs` — `InstanceHandle`, `InstanceState`,
-    `InstanceEvent`, `InstanceEventStream`.
+    `session_cancel`, `agents_list`, `profiles_list`,
+    `session_list`, `session_load`, `permission_reply`. Dispatch
+    through the concrete `Arc<AcpAdapter>` today; the generic RPC
+    surface (`rpc::handlers::*`) dispatches through `Arc<dyn Adapter>`.
+  - `instance.rs` — `InstanceKey` (UUID newtype, empty-string
+    rejecting `parse`), `InstanceState`, `InstanceEvent` (with
+    `topic()` returning the dot-separated wire topic),
+    `InstanceEventStream`, `InstanceInfo`, `InstanceActor` trait,
+    `SpawnSpec`.
   - `transcript.rs` — `TranscriptItem`, `TurnRecord`,
     `ToolCallRecord`, `UserTurnInput`, `Speaker`.
   - `permission.rs` — `PermissionPrompt`, `PermissionReply`,
     `PermissionOptionView`.
   - `tool.rs` — `ToolCall`, `ToolCallContent`, `ToolState`.
-  - `profile.rs` — `ResolvedInstance` + re-exports `AgentConfig`,
-    `ProfileConfig`, `AgentProvider` from `config::`.
+  - `profile.rs` — `ResolvedInstance` (carries `mode`) + re-exports
+    `AgentConfig`, `ProfileConfig`, `AgentProvider` from `config::`.
 - **ACP impl** (`src-tauri/src/adapters/acp/`):
-  - `mod.rs` — `AcpAdapter` struct + `impl Adapter for AcpAdapter`.
+  - `mod.rs` — re-exports `AcpAdapter`.
   - `agents/{mod,claude_code,codex,opencode}.rs` — `AcpAgent` trait +
     three vendor unit structs. `match_provider_agent(provider)`
     resolves a `Box<dyn AcpAgent>` off the closed `AgentProvider`
@@ -1117,25 +1128,91 @@ they never `use crate::adapters::acp::*` directly (enforced by the
     `AcpAgent::inject_system_prompt`.
   - `client.rs` — `AcpClient` — `on_receive_*` handlers the ACP
     `Client.builder()` takes. `SessionNotification`s fan out onto a
-    per-instance mpsc; every `RequestPermissionRequest`
-    auto-`Cancelled` until `PermissionController` lands.
+    per-instance mpsc.
   - `runtime.rs` — one `tokio::spawn`ed actor per instance. Takes a
-    `ResolvedInstance` + `instance_id` and drives `initialize` →
+    `ResolvedInstance` + `InstanceKey` and drives `initialize` →
     `session/new` → `session/prompt` for the first prompt, then
     loops on an mpsc of `InstanceCommand::{Prompt, Cancel,
-    ListSessions, Shutdown}`. Broadcasts `InstanceEvent` upstream.
-  - `instance.rs` — `AcpInstance` per-actor owner (the handle
-    `AcpInstances` keeps around after `start_instance`).
-  - `instances.rs` — `AcpInstances` registry + `InstanceKey` (a
-    `Uuid` newtype). Keyed `HashMap<InstanceKey, AcpInstance>`; a
-    single `(agent, profile)` pair can back N concurrent instances
-    addressed by distinct UUIDs. `agent_id` / `profile_id` live on
-    `AcpInstance` as metadata, not identity. Client-supplied UUIDs
-    let the webview push the user's turn into its local store
-    before the RPC round-trip completes — the backend adopts the
-    id on first sight.
+    ListSessions, Shutdown}`. Publishes ACP-shape `InstanceEvent`s;
+    `AcpAdapter` bridges onto the generic `adapters::InstanceEvent`.
+  - `instance.rs` — `AcpInstance` per-actor handle.
+    `impl InstanceActor` surfaces identity + mode via
+    `InstanceInfo`; `shutdown()` sends `InstanceCommand::Shutdown`
+    and waits up to 2s for the ack.
+  - `instances.rs` — `AcpAdapter`. Composes
+    `Arc<AdapterRegistry<AcpInstance>>`. Owns the config, the
+    permission controller, and the runtime-events → generic-events
+    bridge task. ACP-specific methods (`submit_text`,
+    `cancel_active`, `spawn_instance`, `restart_instance`,
+    `shutdown_instance`, `focus_instance`, `list_sessions`,
+    `load_session`, `list_agents`, `list_profiles`) stay here;
+    generic methods delegate to the registry via `impl Adapter for
+    AcpAdapter`.
   - `mapping.rs` — `From` / `TryFrom` bridges between ACP wire DTOs
     and the generic `adapters::*` vocabulary.
+
+### Composable registry
+
+The generic `AdapterRegistry<H: InstanceActor>` is the single
+owner of per-transport instance state. Every adapter facade
+(`AcpAdapter` today, `HttpAdapter` later) composes
+`Arc<AdapterRegistry<TheirInstance>>` and implements the generic
+methods (`list` / `focus` / `shutdown_one` / `restart` /
+`info_for` / `subscribe`) as one-line delegations. The facade
+owns the transport-specific bits (resolve / spawn / submit /
+cancel / load_session); the registry owns the shared machinery.
+
+**Auto-focus policy:**
+
+- **Empty-registry → first-spawn.** The very first `insert` on an
+  empty registry auto-focuses the new key and emits
+  `InstancesFocused` in addition to `InstancesChanged`. UI never
+  sees an empty-focus state after launch.
+- **Shutdown of focused → oldest survivor.** Dropping the focused
+  key reassigns focus to `order.first()` (insertion-order
+  oldest). Registry empties → focus clears to `None` + emits
+  `InstancesFocused { instance_id: None }`.
+- **Restart preserves slot.** `restart` goes
+  `drop_preserving_slot` → `insert_at_slot(slot, same_key,
+  new_handle)`. The `InstanceKey` (UUID) is preserved across the
+  swap too, so subscribers stay bound.
+
+**Documented races:**
+
+- `shutdown_one` releases all registry locks before awaiting the
+  actor's shutdown ack (2s timeout). A concurrent `insert`
+  between drop and the auto-focus step can land on
+  `order.first()`; that's the value auto-focus picks. Callers
+  reconcile via the `InstancesFocused` event stream.
+- `focus` holds the `instances` + `focused` locks across the
+  membership check + focus write (TOCTOU-safe). A `shutdown_one`
+  on another task serializes; one wins, the other reports
+  `InvalidRequest`.
+
+**Broadcast + lagged contract:** `AdapterRegistry::subscribe`
+returns a `broadcast::Receiver<InstanceEvent>` over a capacity-256
+channel. Every consumer MUST handle
+`broadcast::error::RecvError::Lagged` or the channel silently
+drops notifications. Today the Tauri bridge +
+`runtime_events_bridge` each log + continue on Lagged; K-276
+(ctl-side subscribe) + K-277 (UI delta-subscribe) must do the
+same in their own subscriber loops.
+
+**Topic naming — two axes:**
+
+- **Tauri event names** (colon-separated, consumed by
+  `app.emit`): `acp:instance-state`, `acp:transcript`,
+  `acp:permission-request`, `acp:instances-changed`,
+  `acp:instances-focused`.
+- **Topic strings** (dot-separated, returned by
+  `InstanceEvent::topic()`): `instance.state`,
+  `instance.transcript`, `instance.permission_request`,
+  `instances.changed`, `instances.focused`. Used by tracing
+  spans today and the K-276 subscription filter layer.
+
+Both wire shapes are stable; the two axes carry distinct
+conventions (Tauri-side colons / dot-separated topics) so neither
+bleeds into the other.
 
 ### Per-vendor system-prompt injection
 
@@ -1221,8 +1298,8 @@ in `match_provider_agent`.
 ### Shutdown orchestration
 
 Process lifecycle lives in `daemon`, not `rpc`. `daemon::shutdown(app,
-sessions)` is the one orchestrator; it drains ACP instances via
-`AcpInstances::shutdown`, then calls `app.exit(0)` (which closes
+adapter)` is the one orchestrator; it drains adapter instances via
+`AcpAdapter::shutdown_all`, then calls `app.exit(0)` (which closes
 webviews, drops every `app.manage(...)` value — flushing the tracing
 `WorkerGuard`, the `StatusBroadcast`, and the socket listener — and
 exits with code 0).
@@ -1270,7 +1347,7 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Command | Purpose |
 | ------- | ------- |
-| `session_submit { text, instance_id?, agent_id?, profile_id? }` | Webview compose-box submit. `instance_id` is a client-generated UUID the overlay mints on first turn (`crypto.randomUUID()`); subsequent submits pass the same id to continue the session. Delegates to `AcpInstances::submit`. |
+| `session_submit { text, instance_id?, agent_id?, profile_id? }` | Webview compose-box submit. `instance_id` is a client-generated UUID the overlay mints on first turn (`crypto.randomUUID()`); subsequent submits pass the same id to continue the session. Delegates to `AcpAdapter::submit_text`. |
 | `session_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
@@ -1297,10 +1374,17 @@ Event names use `:` (Tauri-side convention); the JSON-RPC wire keeps
   instances of the same `(agent, profile)` are supported by
   construction.
 - **profile** — user-config bundle of agent + model + cwd + system
-  prompt. Drives `start_instance`.
+  prompt + mode. Drives `SpawnSpec` / `ResolvedInstance`.
+- **mode** — per-instance operational mode (e.g. claude-code's
+  `plan` / `edit`). Threaded through
+  `SpawnSpec → ResolvedInstance → AcpInstance → InstanceInfo`;
+  vendor-specific wire injection is the agent impl's concern.
 - **agent** — the vendor process/binary (claude-code, codex, opencode).
 - **adapter** — the transport trait (`adapters::Adapter`). ACP is one
   impl; HTTP-based agents will be another.
+- **registry** — `AdapterRegistry<H: InstanceActor>` — the generic
+  per-adapter instance map + insertion-order vec + focus pointer +
+  event broadcast. Composed by each adapter facade.
 
 ## What is not in the scaffold
 

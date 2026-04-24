@@ -4,22 +4,25 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info, trace, warn};
 
-use crate::adapters::AcpInstances;
+use crate::adapters::{AcpAdapter, Adapter};
+use crate::config::Config;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
 use crate::rpc::protocol::{JsonRpcVersion, Outcome, RequestId, Response, RpcError, StatusChangedNotification};
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
 
 /// Shared state handed to each connection task. `AppHandle` is cheap to
-/// clone, so we pass by value today; `StatusBroadcast`, `RpcDispatcher`
-/// and `AcpInstances` are wrapped in `Arc` for cheap fan-out across
-/// every accepted connection.
+/// clone, so we pass by value today; `StatusBroadcast`, `RpcDispatcher`,
+/// the adapter, and the config are wrapped in `Arc` for cheap fan-out
+/// across every accepted connection.
 #[derive(Clone)]
 pub struct RpcState {
     pub app: tauri::AppHandle,
     pub status: Arc<StatusBroadcast>,
     pub dispatcher: Arc<RpcDispatcher>,
-    pub instances: Arc<AcpInstances>,
+    pub adapter: Arc<dyn Adapter>,
+    pub acp_adapter: Arc<AcpAdapter>,
+    pub config: Arc<Config>,
 }
 
 /// One accepted connection. Reads NDJSON, dispatches, writes the
@@ -54,7 +57,8 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Some(&state.app),
                     &state.status,
                     &state.dispatcher,
-                    Some(state.instances.clone()),
+                    Some(state.adapter.clone()),
+                    Some(state.config.clone()),
                     status_rx.is_some(),
                 ).await;
 
@@ -86,7 +90,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 let _ = writer.flush().await;
 
                 if kill_signalled {
-                    crate::daemon::shutdown(&state.app, &state.instances).await;
+                    crate::daemon::shutdown(&state.app, state.acp_adapter.as_ref()).await;
                     return;
                 }
             }
@@ -156,7 +160,8 @@ async fn dispatch(
     app: Option<&tauri::AppHandle>,
     status: &StatusBroadcast,
     dispatcher: &RpcDispatcher,
-    instances: Option<Arc<AcpInstances>>,
+    adapter: Option<Arc<dyn Adapter>>,
+    config: Option<Arc<Config>>,
     connection_already_subscribed: bool,
 ) -> (
     Response,
@@ -221,7 +226,8 @@ async fn dispatch(
     let ctx = HandlerCtx {
         app,
         status,
-        instances,
+        adapter,
+        config,
         id: &id,
         already_subscribed: connection_already_subscribed,
     };
@@ -265,18 +271,17 @@ mod tests {
     use serde_json::json;
 
     /// Driver for envelope / framing tests: no `AppHandle`, a fresh
-    /// `StatusBroadcast`, a throwaway dispatcher + `AcpInstances` per
-    /// call. Handlers that need the app (only `window/toggle`)
-    /// surface `-32603`; everything else runs through to the
-    /// handler's real logic.
+    /// `StatusBroadcast`, a throwaway dispatcher + adapter per call.
+    /// Handlers that need the app (only `window/toggle`) surface
+    /// `-32603`; everything else runs through to the handler's real
+    /// logic.
     async fn run(line: &str) -> serde_json::Value {
         let status = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let instances = Arc::new(AcpInstances::new(
-            Config::default(),
-            Arc::new(StatusBroadcast::new(true)),
-        ));
-        let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(instances), false).await;
+        let config = Arc::new(Config::default());
+        let adapter: Arc<dyn Adapter> =
+            Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
+        let (resp, _) = dispatch(line, None, &status, &dispatcher, Some(adapter), Some(config), false).await;
         serde_json::to_value(resp).unwrap()
     }
 
@@ -449,15 +454,23 @@ mod tests {
             let mut lines = BufReader::new(reader).lines();
             let status = StatusBroadcast::new(true);
             let dispatcher = RpcDispatcher::with_defaults();
-            let instances = Arc::new(AcpInstances::new(
-                Config::default(),
-                Arc::new(StatusBroadcast::new(true)),
-            ));
+            let config = Arc::new(Config::default());
+            let adapter: Arc<dyn Adapter> =
+                Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
             while let Some(l) = lines.next_line().await.unwrap() {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _) = dispatch(&l, None, &status, &dispatcher, Some(instances.clone()), false).await;
+                let (resp, _) = dispatch(
+                    &l,
+                    None,
+                    &status,
+                    &dispatcher,
+                    Some(adapter.clone()),
+                    Some(config.clone()),
+                    false,
+                )
+                .await;
                 let mut bytes = serde_json::to_vec(&resp).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
@@ -490,10 +503,9 @@ mod tests {
     async fn double_subscribe_on_same_connection_is_rejected() {
         let broadcast = StatusBroadcast::new(true);
         let dispatcher = RpcDispatcher::with_defaults();
-        let instances = Arc::new(AcpInstances::new(
-            Config::default(),
-            Arc::new(StatusBroadcast::new(true)),
-        ));
+        let config = Arc::new(Config::default());
+        let adapter: Arc<dyn Adapter> =
+            Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
 
         // First subscribe — emulated: we don't actually route, we just
         // mark the connection state as "already_subscribed = true" and
@@ -503,7 +515,8 @@ mod tests {
             None,
             &broadcast,
             &dispatcher,
-            Some(instances.clone()),
+            Some(adapter.clone()),
+            Some(config.clone()),
             false,
         )
         .await;
@@ -517,7 +530,8 @@ mod tests {
             None,
             &broadcast,
             &dispatcher,
-            Some(instances),
+            Some(adapter),
+            Some(config),
             true,
         )
         .await;
@@ -609,10 +623,9 @@ mod tests {
             let (reader, mut writer) = server.into_split();
             let mut lines = BufReader::new(reader).lines();
             let dispatcher = RpcDispatcher::with_defaults();
-            let instances = Arc::new(AcpInstances::new(
-                Config::default(),
-                Arc::new(StatusBroadcast::new(true)),
-            ));
+            let config = Arc::new(Config::default());
+            let adapter: Arc<dyn Adapter> =
+                Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
             let mut status_rx: Option<tokio::sync::broadcast::Receiver<StatusResult>> = None;
 
             loop {
@@ -626,7 +639,8 @@ mod tests {
                                     None,
                                     &broadcast_clone,
                                     &dispatcher,
-                                    Some(instances.clone()),
+                                    Some(adapter.clone()),
+                                    Some(config.clone()),
                                     status_rx.is_some(),
                                 ).await;
                                 if let Some(rx) = new_rx {

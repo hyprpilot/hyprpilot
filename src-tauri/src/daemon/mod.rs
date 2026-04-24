@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use crate::adapters::commands as adapter_commands;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
-use crate::adapters::AcpInstances;
+use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::{Config, Edge, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
@@ -168,7 +168,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
     let theme = cfg.ui.theme.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
-    let instances_cfg = cfg.clone();
+    let adapter_cfg = cfg.clone();
+    let shared_config = Arc::new(cfg.clone());
 
     // Snapshot the resolved window state up-front so the webview can fetch
     // it without re-reading the config at request time. `anchor_edge` is
@@ -198,13 +199,16 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // the same waiter map so UI replies reach the awaiting ACP
     // handler regardless of which instance issued the prompt.
     let permissions: Arc<dyn PermissionController> = Arc::new(DefaultPermissionController::new());
-    // Instance registry — Tauri managed state. `SessionHandler` and
-    // `adapters::commands::*` both reach into this.
-    let instances = Arc::new(AcpInstances::with_permissions(
-        instances_cfg,
+    // ACP adapter + generic `dyn Adapter` view. Tauri managed state
+    // carries both — the concrete for config-adjacent commands
+    // (`agents_list`, `session_load`, …) and the generic for the RPC
+    // handlers which stay adapter-agnostic.
+    let acp_adapter = Arc::new(AcpAdapter::with_permissions(
+        adapter_cfg,
         status.clone(),
         permissions.clone(),
     ));
+    let adapter: Arc<dyn Adapter> = acp_adapter.clone();
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the
@@ -285,22 +289,24 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
                 }
             }
 
-            app.manage(instances.clone());
+            app.manage(acp_adapter.clone());
             app.manage(permissions.clone());
-            instances.spawn_tauri_event_bridge(app.handle().clone());
+            acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
 
             let rpc_state = crate::rpc::RpcState {
                 app: app.handle().clone(),
                 status: status.clone(),
                 dispatcher: dispatcher.clone(),
-                instances: instances.clone(),
+                adapter: adapter.clone(),
+                acp_adapter: acp_adapter.clone(),
+                config: shared_config.clone(),
             };
 
             // SIGINT / SIGTERM → same shutdown path as daemon/kill.
             // Second signal falls through to the default handler
             // (force-kill), so SIGINT-twice escapes a stuck shutdown.
             let signal_app = app.handle().clone();
-            let signal_instances = instances.clone();
+            let signal_adapter = acp_adapter.clone();
             tauri::async_runtime::spawn(async move {
                 use tokio::signal::unix::{signal, SignalKind};
                 let mut sigint = match signal(SignalKind::interrupt()) {
@@ -321,7 +327,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
                     _ = sigint.recv()  => info!("received SIGINT, initiating clean shutdown"),
                     _ = sigterm.recv() => info!("received SIGTERM, initiating clean shutdown"),
                 }
-                shutdown(&signal_app, &signal_instances).await;
+                shutdown(&signal_app, signal_adapter.as_ref()).await;
             });
 
             tauri::async_runtime::spawn(async move {
@@ -357,14 +363,14 @@ struct SingleInstancePayload {
     cwd: String,
 }
 
-/// Drain ACP instances, then kick Tauri's teardown. Called by
+/// Drain adapter instances, then kick Tauri's teardown. Called by
 /// `rpc::server` on `daemon/kill` and by the signal task in `run()`.
 /// Socket file is not removed — next-start probes stale sockets via
 /// `ECONNREFUSED`, which handles crash cases too.
-pub(crate) async fn shutdown(app: &tauri::AppHandle, instances: &AcpInstances) {
+pub(crate) async fn shutdown(app: &tauri::AppHandle, adapter: &AcpAdapter) {
     info!("shutdown: initiating clean shutdown");
-    instances.shutdown().await;
-    info!("shutdown: acp instances drained");
+    adapter.shutdown_all().await;
+    info!("shutdown: adapter instances drained");
     app.exit(0);
     info!("shutdown: tauri exit dispatched");
 }

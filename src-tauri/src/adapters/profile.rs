@@ -30,6 +30,14 @@ pub struct ResolvedInstance {
     pub profile_id: Option<String>,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
+    /// Per-instance mode override. Populated from `SpawnSpec::mode`
+    /// at resolve time (future K-275 will also let a `[[profiles]]`
+    /// entry set a default). Generic layer just carries it; ACP's
+    /// runtime passes it into `AcpInstance` and surfaces it via
+    /// `InstanceInfo`. Vendor-specific interpretation (e.g.
+    /// claude-code's `plan` / `edit`) happens inside the vendor
+    /// agent impl.
+    pub mode: Option<String>,
 }
 
 impl ResolvedInstance {
@@ -74,6 +82,7 @@ impl ResolvedInstance {
             profile_id: Some(profile.id.clone()),
             model,
             system_prompt,
+            mode: None,
         })
     }
 
@@ -94,6 +103,7 @@ impl ResolvedInstance {
             profile_id: None,
             model: agent.model.clone(),
             system_prompt: None,
+            mode: None,
         })
     }
 

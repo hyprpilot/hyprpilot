@@ -1,6 +1,10 @@
 //! Tauri `#[command]`s live at the generic adapter layer (not under
-//! `acp/`) because they dispatch through the single `Adapter` impl
-//! today and will route via `dyn Adapter` once a second transport lands.
+//! `acp/`). Commands that need `dyn Adapter` call through the trait;
+//! commands that need config-adjacent surfaces (`agents_list`,
+//! `profiles_list`, `session_load`) pull the concrete `AcpAdapter`
+//! from managed state. Adding an HTTP sibling later splits those
+//! config-adjacent commands per-adapter or hoists the concept to
+//! trait level.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,12 +13,14 @@ use agent_client_protocol::schema::ListSessionsResponse;
 use serde_json::Value;
 use tauri::State;
 
-use super::acp::AcpInstances;
+use super::acp::AcpAdapter;
 use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
+
+type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
 
 #[tauri::command]
 pub async fn session_submit(
-    instances: State<'_, Arc<AcpInstances>>,
+    adapter: AdapterState<'_>,
     text: String,
     instance_id: Option<String>,
     agent_id: Option<String>,
@@ -27,8 +33,8 @@ pub async fn session_submit(
         profile_id = ?profile_id,
         "cmd::session_submit: entry"
     );
-    let out = instances
-        .submit(
+    let out = adapter
+        .submit_text(
             &text,
             instance_id.as_deref(),
             agent_id.as_deref(),
@@ -45,13 +51,13 @@ pub async fn session_submit(
 
 #[tauri::command]
 pub async fn session_cancel(
-    instances: State<'_, Arc<AcpInstances>>,
+    adapter: AdapterState<'_>,
     instance_id: Option<String>,
     agent_id: Option<String>,
 ) -> Result<Value, String> {
     tracing::info!(instance_id = ?instance_id, agent_id = ?agent_id, "cmd::session_cancel: entry");
-    let out = instances
-        .cancel(instance_id.as_deref(), agent_id.as_deref())
+    let out = adapter
+        .cancel_active(instance_id.as_deref(), agent_id.as_deref())
         .await
         .map_err(|e| e.message);
     if let Err(err) = &out {
@@ -61,18 +67,18 @@ pub async fn session_cancel(
 }
 
 #[tauri::command]
-pub async fn agents_list(instances: State<'_, Arc<AcpInstances>>) -> Result<Value, String> {
-    Ok(serde_json::json!({ "agents": instances.list_agents() }))
+pub async fn agents_list(adapter: AdapterState<'_>) -> Result<Value, String> {
+    Ok(serde_json::json!({ "agents": adapter.list_agents() }))
 }
 
 #[tauri::command]
-pub async fn profiles_list(instances: State<'_, Arc<AcpInstances>>) -> Result<Value, String> {
-    Ok(serde_json::json!({ "profiles": instances.list_profiles() }))
+pub async fn profiles_list(adapter: AdapterState<'_>) -> Result<Value, String> {
+    Ok(serde_json::json!({ "profiles": adapter.list_profiles() }))
 }
 
 #[tauri::command]
 pub async fn session_list(
-    instances: State<'_, Arc<AcpInstances>>,
+    adapter: AdapterState<'_>,
     instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
@@ -85,8 +91,8 @@ pub async fn session_list(
         cwd = ?cwd,
         "cmd::session_list: entry"
     );
-    let out = instances
-        .list(instance_id.as_deref(), agent_id.as_deref(), profile_id.as_deref(), cwd)
+    let out = adapter
+        .list_sessions(instance_id.as_deref(), agent_id.as_deref(), profile_id.as_deref(), cwd)
         .await
         .map_err(|e| e.message);
     if let Err(err) = &out {
@@ -97,7 +103,7 @@ pub async fn session_list(
 
 #[tauri::command]
 pub async fn session_load(
-    instances: State<'_, Arc<AcpInstances>>,
+    adapter: AdapterState<'_>,
     instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
@@ -110,8 +116,8 @@ pub async fn session_load(
         session_id = %session_id,
         "cmd::session_load: entry"
     );
-    let out = instances
-        .load(
+    let out = adapter
+        .load_session(
             instance_id.as_deref(),
             agent_id.as_deref(),
             profile_id.as_deref(),
