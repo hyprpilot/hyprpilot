@@ -85,6 +85,33 @@ err = "#e06f6f"
 bg = "#18130a"
 bg_active = "#22180d"
 
+[keymaps.chat]
+submit = { key = "enter" }
+newline = { modifiers = ["shift"], key = "enter" }
+
+[keymaps.approvals]
+allow = { key = "a" }
+deny = { key = "d" }
+
+[keymaps.composer]
+paste_image = { modifiers = ["ctrl"], key = "p" }
+tab_completion = { key = "tab" }
+shift_tab = { modifiers = ["shift"], key = "tab" }
+history_up = { modifiers = ["ctrl"], key = "arrowup" }
+history_down = { modifiers = ["ctrl"], key = "arrowdown" }
+
+[keymaps.palette]
+open = { modifiers = ["ctrl"], key = "k" }
+close = { key = "escape" }
+
+[keymaps.palette.models]
+focus = { modifiers = ["ctrl"], key = "m" }
+
+[keymaps.palette.sessions]
+focus = { modifiers = ["ctrl"], key = "s" }
+
+[keymaps.transcript]
+
 [agent]
 default = "claude-code"
 

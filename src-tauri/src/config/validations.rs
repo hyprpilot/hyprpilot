@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use globset::Glob;
 
-use super::{AgentConfig, AgentDefaults, AgentsConfig, ProfileConfig};
+use super::{AgentConfig, AgentDefaults, AgentsConfig, Modifier, ProfileConfig};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -156,4 +156,18 @@ pub(super) fn validate_default_profile_id<'a>(
             profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
         )))
     }
+}
+
+/// Per-binding modifier uniqueness check. Unknown modifier tokens
+/// reject at TOML parse time via `Modifier`'s `Deserialize` (closed
+/// enum with `rename_all = "lowercase"`); this predicate just catches
+/// repeats like `modifiers = ["ctrl", "ctrl"]`.
+pub(super) fn validate_unique_modifiers(mods: &Vec<Modifier>, _ctx: &()) -> garde::Result {
+    let mut seen: std::collections::HashSet<Modifier> = std::collections::HashSet::new();
+    for m in mods {
+        if !seen.insert(*m) {
+            return Err(garde::Error::new(format!("duplicate modifier '{m:?}' in binding")));
+        }
+    }
+    Ok(())
 }

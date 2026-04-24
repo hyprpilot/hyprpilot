@@ -30,7 +30,7 @@ import {
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { type Component, createApp } from 'vue'
 
-import { applyGtkFont, applyTheme, applyWindowState } from '@composables'
+import { applyGtkFont, applyTheme, applyWindowState, loadKeymaps } from '@composables'
 import App from './App.vue'
 import '@assets/styles.css'
 
@@ -74,7 +74,7 @@ library.add(
 // "tolerated transform" that can stall the webview under `tauri-plugin-playwright`'s
 // eval path.
 async function boot(): Promise<void> {
-  await Promise.all([applyTheme(), applyWindowState(), applyGtkFont()])
+  await Promise.all([applyTheme(), applyWindowState(), applyGtkFont(), loadKeymaps()])
 
   // Dev-only `/#design` route mounts the K-250 fixture showcase instead
   // of the overlay shell. No vue-router dep; hash is checked once at boot.

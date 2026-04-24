@@ -1,5 +1,6 @@
 export * from './useActiveInstance'
 export * from './useAdapter'
+export * from './useKeymaps'
 export * from './usePermissions'
 export * from './usePhase'
 export * from './useProfiles'

@@ -13,6 +13,7 @@ import type {
   CancelResult,
   GtkFont,
   InstanceStateEventPayload,
+  KeymapsConfig,
   PermissionRequestEventPayload,
   ProfileSummary,
   SessionSummary,
@@ -24,6 +25,7 @@ import type {
 
 export enum TauriCommand {
   GetTheme = 'get_theme',
+  GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
   GetGtkFont = 'get_gtk_font',
   SessionSubmit = 'session_submit',
@@ -44,6 +46,7 @@ export enum TauriEvent {
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
 export interface TauriCommandResult {
   [TauriCommand.GetTheme]: Theme
+  [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.GetGtkFont]: GtkFont | null
   [TauriCommand.SessionSubmit]: SubmitResult

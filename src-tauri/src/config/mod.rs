@@ -1,3 +1,4 @@
+mod keymaps;
 mod validations;
 
 use std::collections::BTreeMap;
@@ -10,6 +11,12 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
+pub use keymaps::KeymapsConfig;
+#[allow(unused_imports)]
+pub use keymaps::{
+    ApprovalsKeymaps, Binding, ChatKeymaps, ComposerKeymaps, Key, ModelsSubPaletteKeymaps, Modifier, NamedKey,
+    PaletteKeymaps, SessionsSubPaletteKeymaps, TranscriptKeymaps,
+};
 use validations::{
     validate_agent_default_id, validate_agents_ids, validate_default_profile_id, validate_profile_agent_references,
     validate_profile_path_list, validate_profile_string_list, validate_profile_tool_globs, validate_profiles_ids,
@@ -40,6 +47,14 @@ pub struct Config {
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
     #[serde(default)]
     pub profiles: Vec<ProfileConfig>,
+    /// Overlay-wide keyboard bindings. Structured group-per-UI-surface
+    /// (chat / approvals / composer / palette / transcript); palette
+    /// carries nested subgroups (`models`, `sessions`) as their own
+    /// collision scopes. Every leaf is a binding string parsed by the
+    /// UI's `parseKeys` grammar; collisions inside a scope reject at
+    /// load time, cross-scope collisions are fine.
+    #[garde(dive)]
+    pub keymaps: KeymapsConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -675,6 +690,7 @@ impl Merge for Config {
             ui: self.ui.merge(other.ui),
             agents: self.agents.merge(other.agents),
             profiles: merge_profiles(self.profiles, other.profiles),
+            keymaps: self.keymaps.merge(other.keymaps),
         }
     }
 }
@@ -957,6 +973,10 @@ impl Config {
                 anyhow!("config is invalid: profiles[{}]: {e}", p.id)
             })?;
         }
+        keymaps::validate_collisions(&self.keymaps).map_err(|e| {
+            tracing::error!(err = %e, "config::validate: keymaps collision");
+            anyhow!("config is invalid: {e}")
+        })?;
         tracing::debug!("config::validate: config validated");
         Ok(())
     }
@@ -1931,6 +1951,216 @@ agent = "claude-code"
         assert_eq!(strict.model.as_deref(), Some("custom-model"));
         assert!(strict.system_prompt.is_none());
 
+        fs::remove_file(&p).ok();
+    }
+
+    fn binding(mods: &[Modifier], key: Key) -> Binding {
+        Binding {
+            modifiers: mods.to_vec(),
+            key,
+        }
+    }
+
+    #[test]
+    fn defaults_populate_every_keymap_leaf() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        let k = &cfg.keymaps;
+
+        assert_eq!(k.chat.submit, Some(binding(&[], Key::Named(NamedKey::Enter))));
+        assert_eq!(
+            k.chat.newline,
+            Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Enter)))
+        );
+        assert_eq!(k.approvals.allow, Some(binding(&[], Key::Char('a'))));
+        assert_eq!(k.approvals.deny, Some(binding(&[], Key::Char('d'))));
+        assert_eq!(k.composer.paste_image, Some(binding(&[Modifier::Ctrl], Key::Char('p'))));
+        assert_eq!(k.composer.tab_completion, Some(binding(&[], Key::Named(NamedKey::Tab))));
+        assert_eq!(
+            k.composer.shift_tab,
+            Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Tab)))
+        );
+        assert_eq!(
+            k.composer.history_up,
+            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::ArrowUp)))
+        );
+        assert_eq!(
+            k.composer.history_down,
+            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::ArrowDown)))
+        );
+        assert_eq!(k.palette.open, Some(binding(&[Modifier::Ctrl], Key::Char('k'))));
+        assert_eq!(k.palette.close, Some(binding(&[], Key::Named(NamedKey::Escape))));
+        assert_eq!(k.palette.models.focus, Some(binding(&[Modifier::Ctrl], Key::Char('m'))));
+        assert_eq!(
+            k.palette.sessions.focus,
+            Some(binding(&[Modifier::Ctrl], Key::Char('s')))
+        );
+
+        cfg.validate().expect("seeded defaults validate");
+    }
+
+    #[test]
+    fn keymaps_validate_rejects_same_scope_collision() {
+        let p = write_tmp(
+            "keymap-collision.toml",
+            r#"
+[keymaps.composer]
+paste_image = { key = "tab" }
+tab_completion = { key = "tab" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject within-scope collision");
+        let msg = err.to_string();
+        assert!(msg.contains("keymaps.composer"), "{msg}");
+        assert!(msg.contains("tab"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn keymaps_validate_allows_cross_scope_collision() {
+        // chat.submit == palette.open — different scopes, OK.
+        let p = write_tmp(
+            "keymap-cross.toml",
+            r#"
+[keymaps.chat]
+submit = { key = "enter" }
+
+[keymaps.palette]
+open = { key = "enter" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        cfg.validate().expect("cross-scope collisions validate");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn keymaps_validate_allows_cross_subgroup_collision() {
+        let p = write_tmp(
+            "keymap-subgroup.toml",
+            r#"
+[keymaps.palette.models]
+focus = { modifiers = ["ctrl"], key = "m" }
+
+[keymaps.palette.sessions]
+focus = { modifiers = ["ctrl"], key = "m" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        cfg.validate()
+            .expect("palette.models vs palette.sessions is cross-scope");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn binding_rejects_unknown_modifier() {
+        let p = write_tmp(
+            "keymap-mod.toml",
+            r#"
+[keymaps.chat]
+submit = { modifiers = ["hyper"], key = "k" }
+"#,
+        );
+        let err = load(Some(&p), None).expect_err("unknown modifier rejects at parse");
+        let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(chain.contains("hyper") || chain.contains("variant"), "{chain}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn binding_rejects_unknown_named_key() {
+        let p = write_tmp(
+            "keymap-bad-key.toml",
+            r#"
+[keymaps.chat]
+submit = { key = "return" }
+"#,
+        );
+        let err = load(Some(&p), None).expect_err("unknown named key rejects at parse");
+        let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(chain.contains("return"), "{chain}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn binding_rejects_duplicate_modifiers() {
+        let p = write_tmp(
+            "keymap-dup-mod.toml",
+            r#"
+[keymaps.chat]
+submit = { modifiers = ["ctrl", "ctrl"], key = "k" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("duplicate modifier rejects");
+        assert!(err.to_string().contains("duplicate modifier"), "{err}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn binding_accepts_single_char_key() {
+        let p = write_tmp(
+            "keymap-char.toml",
+            r#"
+[keymaps.palette]
+open = { key = "?" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        cfg.validate().expect("single-char key accepts");
+        assert_eq!(cfg.keymaps.palette.open, Some(binding(&[], Key::Char('?'))));
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn binding_canonicalises_modifier_order() {
+        let p = write_tmp(
+            "keymap-order.toml",
+            r#"
+[keymaps.chat]
+submit = { modifiers = ["shift", "ctrl"], key = "enter" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        cfg.validate().expect("mixed-order modifiers validate");
+        // Source order ["shift","ctrl"] canonicalises to sorted ascending.
+        let submit = cfg.keymaps.chat.submit.expect("seeded");
+        assert_eq!(submit.modifiers, vec![Modifier::Ctrl, Modifier::Shift]);
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn keymaps_partial_override_preserves_untouched_leaves() {
+        let p = write_tmp(
+            "keymap-partial.toml",
+            r#"
+[keymaps.chat]
+submit = { modifiers = ["ctrl"], key = "enter" }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        // Overridden leaf.
+        assert_eq!(
+            cfg.keymaps.chat.submit,
+            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::Enter)))
+        );
+        // Same-group untouched leaf falls through.
+        assert_eq!(
+            cfg.keymaps.chat.newline,
+            Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Enter)))
+        );
+        // Other groups untouched.
+        assert_eq!(cfg.keymaps.approvals.allow, Some(binding(&[], Key::Char('a'))));
+        assert_eq!(cfg.keymaps.approvals.deny, Some(binding(&[], Key::Char('d'))));
+        assert_eq!(
+            cfg.keymaps.palette.open,
+            Some(binding(&[Modifier::Ctrl], Key::Char('k')))
+        );
+        assert_eq!(
+            cfg.keymaps.palette.models.focus,
+            Some(binding(&[Modifier::Ctrl], Key::Char('m')))
+        );
+        cfg.validate().expect("partial override validates");
         fs::remove_file(&p).ok();
     }
 }

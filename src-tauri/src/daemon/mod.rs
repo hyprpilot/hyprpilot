@@ -15,7 +15,7 @@ use tracing::{info, warn};
 use crate::adapters::commands as adapter_commands;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
 use crate::adapters::{AcpAdapter, Adapter};
-use crate::config::{Config, Edge, Theme, Window, WindowMode};
+use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
 
@@ -29,6 +29,11 @@ pub struct DaemonArgs {
 #[tauri::command]
 fn get_theme(theme: State<'_, Theme>) -> Theme {
     theme.inner().clone()
+}
+
+#[tauri::command]
+fn get_keymaps(keymaps: State<'_, KeymapsConfig>) -> KeymapsConfig {
+    keymaps.inner().clone()
 }
 
 /// Surface state the frontend needs to position chrome relative to the
@@ -167,6 +172,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     info!(socket = %socket_path.display(), "socket bound");
 
     let theme = cfg.ui.theme.clone();
+    let keymaps = cfg.keymaps.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
     let adapter_cfg = cfg.clone();
     let shared_config = Arc::new(cfg.clone());
@@ -194,7 +200,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let status = Arc::new(StatusBroadcast::new(true));
     let dispatcher = Arc::new(RpcDispatcher::with_defaults());
     // Single PermissionController shared between AcpClient (one per
-    // live instance, accessed through AcpInstances::start_instance)
+    // live instance, accessed through AcpAdapter's instance registry)
     // and the permission_reply Tauri command — both resolve against
     // the same waiter map so UI replies reach the awaiting ACP
     // handler regardless of which instance issued the prompt.
@@ -238,6 +244,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     builder
         .invoke_handler(tauri::generate_handler![
             get_theme,
+            get_keymaps,
             get_window_state,
             get_gtk_font,
             adapter_commands::session_submit,
@@ -250,6 +257,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         ])
         .setup(move |app| {
             app.manage(theme.clone());
+            app.manage(keymaps.clone());
             app.manage(window_state.clone());
             app.manage(renderer.clone());
             // GTK is initialized by Tauri before the setup closure fires, so
