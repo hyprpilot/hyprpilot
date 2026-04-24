@@ -3,21 +3,23 @@ import { computed } from 'vue'
 
 import ToolPillSmall from './ChatToolPillSmall.vue'
 import ToolRowBig from './ChatToolRowBig.vue'
-import type { ToolChipItem } from '../types'
+import { ToolKind, type ToolChipItem } from '../types'
 
 /**
  * Two rendering modes:
  *
  *   - `grouped` (per-turn cluster): every tool call for the current
  *     turn renders uniformly as a small pill in a masonry-style grid,
- *     regardless of label. Used between thoughts/plan and the
+ *     regardless of kind. Used between thoughts/plan and the
  *     assistant reply body.
  *   - inline (default): consecutive small-tool items pack into a
- *     flex-wrap row; big tools (Bash/Write/Edit/Terminal) get promoted
- *     to full-bleed rows. Port of D5's `D5ToolChips` +
- *     `D5SmallToolRow` + `D5BigToolRow` dispatch.
+ *     flex-wrap row; big tools (Bash/Write/Terminal) get promoted to
+ *     full-bleed rows. Dispatch is keyed on `item.kind` (ToolKind
+ *     enum) — not on the chip label — so the formatter registry is
+ *     the single source of promotion. Edit-family tools carry
+ *     `ToolKind.Write` so they big-row too.
  */
-const BIG_TOOLS = ['Bash', 'Write', 'Edit', 'Terminal']
+const BIG_KINDS: readonly ToolKind[] = [ToolKind.Bash, ToolKind.Write, ToolKind.Terminal]
 
 const props = withDefaults(
   defineProps<{
@@ -47,7 +49,7 @@ const groups = computed<Group[]>(() => {
     }
   }
   for (const item of props.items) {
-    if (BIG_TOOLS.includes(item.label)) {
+    if (item.kind !== undefined && BIG_KINDS.includes(item.kind)) {
       flush()
       result.push({ kind: 'big', item })
     } else {

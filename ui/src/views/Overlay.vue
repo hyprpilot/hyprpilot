@@ -46,7 +46,6 @@ import {
   pushToast,
   pushTranscriptChunk,
   StreamItemKind,
-  toView,
   TurnRole,
   useActiveInstance,
   useAdapter,
@@ -62,7 +61,7 @@ import {
   type InstanceId,
   type PlanEntry
 } from '@composables'
-import { log } from '@lib'
+import { formatToolCall, log } from '@lib'
 
 const { submit } = useAdapter()
 const { entries: toasts, dismiss } = useToasts()
@@ -308,9 +307,11 @@ function onSubmit(text: string): void {
           />
         </template>
 
+        <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
+        <!-- `activeProfile?.agent` → `profiles_list`'s vendor once per-adapter overrides land. -->
         <ChatToolChips
           v-if="block.toolCalls.length > 0"
-          :items="block.toolCalls.map((t) => toView(t.call))"
+          :items="block.toolCalls.map((t) => formatToolCall(t.call))"
           grouped
         />
 

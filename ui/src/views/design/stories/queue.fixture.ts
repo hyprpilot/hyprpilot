@@ -1,4 +1,4 @@
-import { Phase, StreamKind, ToolState, type BreadcrumbCount, type QueuedMessage, type ToolChipItem } from '@components'
+import { Phase, StreamKind, ToolKind, ToolState, type BreadcrumbCount, type QueuedMessage, type ToolChipItem } from '@components'
 
 /**
  * D5_Queue — session resumed from NDJSON log (note the `resumed` pill +
@@ -28,9 +28,10 @@ export const toast = {
 }
 
 export const bashDone: ToolChipItem = {
-  label: 'Bash',
+  label: '$',
   arg: 'curl -sI https://google.com',
-  state: ToolState.Done
+  state: ToolState.Done,
+  kind: ToolKind.Bash
 }
 
 export const thinkingCard = {
