@@ -200,8 +200,13 @@ async fn run_instance(
     };
     let system_prompt = resolved.system_prompt.clone();
 
-    let (mut child, stdio, mut first_message_prefix) = match spawn_agent(&cfg, system_prompt.as_deref()) {
-        Ok(spawned) => (spawned.child, spawned.stdio, spawned.first_message_prefix),
+    let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_agent(&cfg, system_prompt.as_deref()) {
+        Ok(spawned) => (
+            spawned.child,
+            spawned.stdio,
+            spawned.stderr,
+            spawned.first_message_prefix,
+        ),
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::runtime: spawn failed");
             let _ = events_tx.send(InstanceEvent::State {
@@ -213,6 +218,37 @@ async fn run_instance(
             return;
         }
     };
+
+    // Drain the subprocess's stderr into tracing so vendor-SDK cleanup
+    // noise lands in our rolling log file instead of the parent
+    // terminal. Each line goes through at `info!` with an `agent_stderr`
+    // target so users can filter via
+    // `RUST_LOG=hyprpilot=info,agent_stderr=warn`. The task ends when
+    // the stream closes (child exit).
+    {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let agent_for_stderr = agent_id.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        tracing::info!(target: "agent_stderr", agent = %agent_for_stderr, "{line}");
+                    }
+                    Ok(None) => break,
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "agent_stderr",
+                            agent = %agent_for_stderr,
+                            %err,
+                            "stderr read error"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     let (client_events_tx, mut client_events_rx) = mpsc::unbounded_channel::<ClientEvent>();
     let sandbox_root = cfg

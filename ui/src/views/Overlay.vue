@@ -84,10 +84,11 @@ const composerRef = ref<InstanceType<typeof ChatComposer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
 
-// One interleaved timeline so thoughts / plans / tool calls render
-// between the text turns they originally arrived between — not in
-// trailing lumps. Sort by the shared createdAt (per-instance
-// monotonic seq); ties stable-sorted by kind for determinism.
+// Timeline is interleaved only to determine block boundaries —
+// consecutive entries that share a speaker role collapse into one
+// `<ChatTurn>`. Within an assistant block, entries get split into three
+// buckets so the final render order is: thoughts + plans → tool-call
+// grid → assistant reply body. User blocks carry just a body.
 const KIND_ORDER = { turn: 0, stream: 1, tool: 2 } as const
 interface TimelineTurn {
   kind: 'turn'
@@ -106,15 +107,12 @@ interface TimelineTool {
 }
 type TimelineEntry = TimelineTurn | TimelineStream | TimelineTool
 
-// A "block" is a run of consecutive timeline entries that share a
-// speaker role. Each block renders as ONE <ChatTurn> — header + role
-// tag once, continuous colored left border across every child
-// (thoughts, plans, tool chips, message body). The role flips when
-// the next entry belongs to the other speaker.
 interface TimelineBlock {
   role: Role
   startedAt: number
-  entries: TimelineEntry[]
+  streamEntries: TimelineStream[]
+  toolCalls: TimelineTool[]
+  turnEntries: TimelineTurn[]
 }
 
 function roleFor(entry: TimelineEntry): Role {
@@ -137,10 +135,17 @@ const timelineBlocks = computed<TimelineBlock[]>(() => {
   for (const entry of entries) {
     const role = roleFor(entry)
     const last = blocks[blocks.length - 1]
-    if (last && last.role === role) {
-      last.entries.push(entry)
+    const block =
+      last && last.role === role
+        ? last
+        : (blocks.push({ role, startedAt: entry.createdAt, streamEntries: [], toolCalls: [], turnEntries: [] }),
+          blocks[blocks.length - 1])
+    if (entry.kind === 'stream') {
+      block.streamEntries.push(entry)
+    } else if (entry.kind === 'tool') {
+      block.toolCalls.push(entry)
     } else {
-      blocks.push({ role, startedAt: entry.createdAt, entries: [entry] })
+      block.turnEntries.push(entry)
     }
   }
 
@@ -273,26 +278,32 @@ function onSubmit(text: string): void {
   <Frame :profile="selectedProfile ?? 'none'" :phase="phase" :provider="activeProfile?.agent" :model="activeProfile?.model">
     <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
       <ChatTurn v-for="block in timelineBlocks" :key="`${block.role}-${block.startedAt}`" :role="block.role">
-        <template v-for="entry in block.entries" :key="`${entry.kind}-${entry.createdAt}`">
-          <ChatUserBody v-if="entry.kind === 'turn' && entry.turn.role === TurnRole.User">{{ entry.turn.text }}</ChatUserBody>
-          <ChatAssistantBody v-else-if="entry.kind === 'turn'">{{ entry.turn.text }}</ChatAssistantBody>
-
+        <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
           <ChatStreamCard
-            v-else-if="entry.kind === 'stream' && entry.item.kind === StreamItemKind.Thought"
+            v-if="entry.item.kind === StreamItemKind.Thought"
             :kind="StreamKind.Thinking"
             :active="true"
             label="thought"
             >{{ entry.item.text }}</ChatStreamCard
           >
           <ChatStreamCard
-            v-else-if="entry.kind === 'stream' && entry.item.kind === StreamItemKind.Plan"
+            v-else-if="entry.item.kind === StreamItemKind.Plan"
             :kind="StreamKind.Planning"
             :active="true"
             label="plan"
             :items="mapPlanItems(entry.item.entries)"
           />
+        </template>
 
-          <ChatToolChips v-else-if="entry.kind === 'tool'" :items="[toView(entry.call)]" />
+        <ChatToolChips
+          v-if="block.toolCalls.length > 0"
+          :items="block.toolCalls.map((t) => toView(t.call))"
+          grouped
+        />
+
+        <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
+          <ChatUserBody v-if="entry.turn.role === TurnRole.User">{{ entry.turn.text }}</ChatUserBody>
+          <ChatAssistantBody v-else>{{ entry.turn.text }}</ChatAssistantBody>
         </template>
       </ChatTurn>
     </div>

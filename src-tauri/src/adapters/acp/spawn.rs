@@ -7,7 +7,7 @@
 //! over.
 
 use anyhow::{bail, Context, Result};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tracing::{error, info};
 
 use super::agents::{match_provider_agent, SystemPromptInjection};
@@ -20,10 +20,13 @@ pub struct ChildStdio {
 
 /// Output of a successful spawn: the child + its stdio + the optional
 /// text the runtime should prepend to the first `session/prompt` (for
-/// vendors without a launch-time system-prompt hook).
+/// vendors without a launch-time system-prompt hook). `stderr` is
+/// captured (not inherited) so vendor-SDK cleanup noise stays out of
+/// the parent terminal — the runtime drains it into tracing.
 pub struct SpawnedAgent {
     pub child: Child,
     pub stdio: ChildStdio,
+    pub stderr: ChildStderr,
     pub first_message_prefix: Option<String>,
 }
 
@@ -44,6 +47,12 @@ pub fn spawn_agent(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<Spa
 
     let agent = match_provider_agent(cfg.provider);
     let mut cmd = agent.spawn(cfg);
+    // Centralize stderr capture here rather than duplicating it across
+    // every vendor agent. Vendor SDKs (notably claude-agent-sdk under
+    // claude-code-acp) print noisy cleanup stack traces to stderr on
+    // shutdown; piping keeps that out of the parent terminal and lets
+    // the runtime drain it into tracing.
+    cmd.stderr(std::process::Stdio::piped());
     let first_message_prefix = match system_prompt {
         Some(prompt) => match agent.inject_system_prompt(&mut cmd, prompt) {
             SystemPromptInjection::Handled => None,
@@ -70,6 +79,10 @@ pub fn spawn_agent(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<Spa
         Some(s) => s,
         None => bail!("agent '{}' stdout not captured — check Stdio::piped()", cfg.id),
     };
+    let stderr = match child.stderr.take() {
+        Some(s) => s,
+        None => bail!("agent '{}' stderr not captured — check Stdio::piped()", cfg.id),
+    };
 
     info!(
         agent = %cfg.id,
@@ -81,6 +94,7 @@ pub fn spawn_agent(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<Spa
     Ok(SpawnedAgent {
         child,
         stdio: ChildStdio { stdin, stdout },
+        stderr,
         first_message_prefix,
     })
 }

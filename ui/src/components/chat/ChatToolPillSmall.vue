@@ -27,6 +27,7 @@ const stateTone = computed(() => {
     case ToolState.Awaiting:
       return 'var(--theme-state-awaiting)'
     case ToolState.Done:
+      return 'var(--theme-status-ok)'
     default:
       return 'var(--theme-fg-dim)'
   }

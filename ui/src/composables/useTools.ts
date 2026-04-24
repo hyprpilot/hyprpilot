@@ -104,7 +104,7 @@ export function resetTools(id: InstanceId): void {
 }
 
 function mapToolStatus(raw?: string): ToolState {
-  switch (raw) {
+  switch (raw?.toLowerCase()) {
     case 'completed':
     case 'done':
       return ToolState.Done
@@ -114,6 +114,8 @@ function mapToolStatus(raw?: string): ToolState {
     case 'awaiting':
     case 'pending':
       return ToolState.Awaiting
+    case 'in_progress':
+    case 'running':
     default:
       return ToolState.Running
   }

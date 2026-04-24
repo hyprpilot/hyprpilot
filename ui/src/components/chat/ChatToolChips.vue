@@ -6,19 +6,26 @@ import ToolRowBig from './ChatToolRowBig.vue'
 import type { ToolChipItem } from '../types'
 
 /**
- * Container that groups consecutive small-tool items into flex-wrap
- * rows and promotes big tools (Bash/Write/Edit/Terminal) to full-bleed
- * rows. Small chips pack left-to-right and wrap to additional lines
- * when the container runs out of room. Port of D5's `D5ToolChips` +
- * `D5SmallToolRow` + `D5BigToolRow` dispatch — the 2-col grid in the
- * JSX is intentionally relaxed to flex-wrap here so narrow anchors
- * don't waste the row on a single chip.
+ * Two rendering modes:
+ *
+ *   - `grouped` (per-turn cluster): every tool call for the current
+ *     turn renders uniformly as a small pill in a masonry-style grid,
+ *     regardless of label. Used between thoughts/plan and the
+ *     assistant reply body.
+ *   - inline (default): consecutive small-tool items pack into a
+ *     flex-wrap row; big tools (Bash/Write/Edit/Terminal) get promoted
+ *     to full-bleed rows. Port of D5's `D5ToolChips` +
+ *     `D5SmallToolRow` + `D5BigToolRow` dispatch.
  */
 const BIG_TOOLS = ['Bash', 'Write', 'Edit', 'Terminal']
 
-const props = defineProps<{
-  items: ToolChipItem[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    items: ToolChipItem[]
+    grouped?: boolean
+  }>(),
+  { grouped: false }
+)
 
 interface SmallGroup {
   kind: 'small'
@@ -54,7 +61,10 @@ const groups = computed<Group[]>(() => {
 </script>
 
 <template>
-  <div class="tool-chips" data-testid="tool-chips">
+  <div v-if="grouped" class="tool-chips-grid" data-testid="tool-chips">
+    <ToolPillSmall v-for="(item, i) in items" :key="i" :item="item" />
+  </div>
+  <div v-else class="tool-chips" data-testid="tool-chips">
     <template v-for="(group, idx) in groups" :key="idx">
       <div v-if="group.kind === 'small'" class="tool-chips-small-row">
         <ToolPillSmall v-for="(item, j) in group.items" :key="j" :item="item" />
@@ -73,5 +83,13 @@ const groups = computed<Group[]>(() => {
 
 .tool-chips-small-row {
   @apply flex flex-wrap gap-1;
+}
+
+/* `grid-auto-flow: dense` packs shorter items into earlier-row gaps, */
+/* giving the masonry feel at a fraction of the complexity.           */
+.tool-chips-grid {
+  @apply grid gap-1;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  grid-auto-flow: dense;
 }
 </style>
