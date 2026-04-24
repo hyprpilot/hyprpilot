@@ -43,12 +43,15 @@ import {
   type PlanItem
 } from '@components'
 import {
+  isEditableTarget,
   pushToast,
   pushTranscriptChunk,
   StreamItemKind,
   TurnRole,
   useActiveInstance,
   useAdapter,
+  useKeymap,
+  useKeymaps,
   usePermissions,
   usePhase,
   useProfiles,
@@ -57,6 +60,7 @@ import {
   useToasts,
   useTools,
   useTranscript,
+  type KeymapEntry,
   startSessionStream,
   type InstanceId,
   type PlanEntry
@@ -136,10 +140,7 @@ const timelineBlocks = computed<TimelineBlock[]>(() => {
     const role = roleFor(entry)
     const last = blocks[blocks.length - 1]
     const block =
-      last && last.role === role
-        ? last
-        : (blocks.push({ role, startedAt: entry.createdAt, streamEntries: [], toolCalls: [], turnEntries: [] }),
-          blocks[blocks.length - 1])
+      last && last.role === role ? last : (blocks.push({ role, startedAt: entry.createdAt, streamEntries: [], toolCalls: [], turnEntries: [] }), blocks[blocks.length - 1])
     if (entry.kind === 'stream') {
       block.streamEntries.push(entry)
     } else if (entry.kind === 'tool') {
@@ -154,45 +155,48 @@ const timelineBlocks = computed<TimelineBlock[]>(() => {
 
 let stopStream: (() => void) | undefined
 
-function isEditableTarget(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) {
-    return false
-  }
-  const tag = el.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA') {
-    return true
-  }
-
-  return el.isContentEditable
-}
-
-function onKeydown(event: KeyboardEvent): void {
-  // TODO(K-281 follow-up): Tab = next row cycling. Today keyboard
-  // a/d always addresses the oldest-active (first non-queued) prompt.
-  // Multi-row focus navigation lands with the ChatPermissionStack
-  // focus-index contract (requires the primitive to expose a
-  // :focused-index prop + :focus event).
-  if (event.repeat || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+function firePermission(action: 'allow' | 'deny'): void {
+  if (isEditableTarget(document.activeElement)) {
     return
   }
-  if (event.key !== 'a' && event.key !== 'd') {
-    return
-  }
-  if (isEditableTarget(event.target)) {
-    return
-  }
+  // TODO(K-281 follow-up): Tab = next row cycling. Today the approval
+  // keybind always addresses the oldest-active (first non-queued) prompt.
   const active = permissionPrompts.value.find((p) => !p.queued) ?? permissionPrompts.value[0]
   if (!active) {
     return
   }
-  event.preventDefault()
-  log.info('keybind invoked', { key: event.key, target: 'permission' })
-  if (event.key === 'a') {
-    onAllow(active.requestId)
+  log.info('keybind invoked', { action, target: 'permission' })
+  if (action === 'allow') {
+    void onAllow(active.requestId)
   } else {
-    onDeny(active.requestId)
+    void onDeny(active.requestId)
   }
 }
+
+const { keymaps } = useKeymaps()
+useKeymap(
+  () => document,
+  (): KeymapEntry[] => {
+    if (!keymaps.value) {
+      return []
+    }
+
+    return [
+      {
+        binding: keymaps.value.approvals.allow,
+        handler: () => {
+          firePermission('allow')
+        }
+      },
+      {
+        binding: keymaps.value.approvals.deny,
+        handler: () => {
+          firePermission('deny')
+        }
+      }
+    ]
+  }
+)
 
 onMounted(async () => {
   try {
@@ -201,13 +205,11 @@ onMounted(async () => {
     log.error('invoke failed', { command: 'startSessionStream' }, err)
     pushToast(ToastTone.Err, `stream bind failed: ${String(err)}`)
   }
-  document.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   stopStream?.()
   stopStream = undefined
-  document.removeEventListener('keydown', onKeydown)
 })
 
 function mapPlanStatus(raw?: string): PlanStatus {
@@ -291,20 +293,8 @@ function onSubmit(text: string): void {
     <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
       <ChatTurn v-for="block in timelineBlocks" :key="`${block.role}-${block.startedAt}`" :role="block.role">
         <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
-          <ChatStreamCard
-            v-if="entry.item.kind === StreamItemKind.Thought"
-            :kind="StreamKind.Thinking"
-            :active="true"
-            label="thought"
-            >{{ entry.item.text }}</ChatStreamCard
-          >
-          <ChatStreamCard
-            v-else-if="entry.item.kind === StreamItemKind.Plan"
-            :kind="StreamKind.Planning"
-            :active="true"
-            label="plan"
-            :items="mapPlanItems(entry.item.entries)"
-          />
+          <ChatStreamCard v-if="entry.item.kind === StreamItemKind.Thought" :kind="StreamKind.Thinking" :active="true" label="thought">{{ entry.item.text }}</ChatStreamCard>
+          <ChatStreamCard v-else-if="entry.item.kind === StreamItemKind.Plan" :kind="StreamKind.Planning" :active="true" label="plan" :items="mapPlanItems(entry.item.entries)" />
         </template>
 
         <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->

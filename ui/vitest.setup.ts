@@ -31,7 +31,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { cleanup } from '@testing-library/vue'
-import { config } from '@vue/test-utils'
+import { config, enableAutoUnmount } from '@vue/test-utils'
 import { afterEach } from 'vitest'
 
 // Mirror the production library in main.ts; `faPlay` is test-only (used
@@ -67,6 +67,8 @@ library.add(
   farSquare
 )
 config.global.components = { ...(config.global.components ?? {}), FaIcon: FontAwesomeIcon }
+
+enableAutoUnmount(afterEach)
 
 afterEach(() => {
   cleanup()

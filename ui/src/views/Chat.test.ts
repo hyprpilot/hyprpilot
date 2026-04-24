@@ -1,9 +1,10 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TauriCommand } from '@ipc'
+import { Modifier, TauriCommand } from '@ipc'
 
 import { useActiveInstance } from '@composables/useActiveInstance'
+import { __resetKeymapsForTests, loadKeymaps } from '@composables/useKeymaps'
 import { pushPermissionRequest, resetPermissions } from '@composables/usePermissions'
 
 import Chat from './Overlay.vue'
@@ -28,19 +29,55 @@ vi.mock('@ipc', async () => {
   }
 })
 
+const DEFAULT_KEYMAPS = {
+  chat: {
+    submit: { modifiers: [], key: 'enter' },
+    newline: { modifiers: [Modifier.Shift], key: 'enter' }
+  },
+  approvals: {
+    allow: { modifiers: [], key: 'a' },
+    deny: { modifiers: [], key: 'd' }
+  },
+  composer: {
+    paste_image: { modifiers: [Modifier.Ctrl], key: 'p' },
+    tab_completion: { modifiers: [], key: 'tab' },
+    shift_tab: { modifiers: [Modifier.Shift], key: 'tab' },
+    history_up: { modifiers: [Modifier.Ctrl], key: 'arrowup' },
+    history_down: { modifiers: [Modifier.Ctrl], key: 'arrowdown' }
+  },
+  palette: {
+    open: { modifiers: [Modifier.Ctrl], key: 'k' },
+    close: { modifiers: [], key: 'escape' },
+    models: { focus: { modifiers: [Modifier.Ctrl], key: 'm' } },
+    sessions: { focus: { modifiers: [Modifier.Ctrl], key: 's' } }
+  },
+  transcript: {}
+}
+
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 5; i++) {
     await Promise.resolve()
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   invoke.mockReset()
   listeners.clear()
   unlisten.mockReset()
   resetPermissions('A')
   resetPermissions('B')
   useActiveInstance().id.value = 'A'
+  __resetKeymapsForTests()
+  // Pre-populate the keymap cache — onMounted in Overlay.vue bails
+  // early when `useKeymaps().keymaps.value` is undefined.
+  invoke.mockImplementation((command: string) => {
+    if (command === TauriCommand.GetKeymaps) {
+      return Promise.resolve(DEFAULT_KEYMAPS)
+    }
+    return Promise.resolve(undefined)
+  })
+  await loadKeymaps()
+  invoke.mockReset()
 })
 
 describe('Chat.vue — permission wiring', () => {

@@ -2,6 +2,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 
 import type { ComposerPill } from '../types'
+import { type KeymapEntry, useKeymap, useKeymaps } from '@composables'
 import { log } from '@lib'
 
 /**
@@ -48,7 +49,30 @@ function resize(): void {
   el.style.height = `${el.scrollHeight}px`
 }
 
-onMounted(() => resize())
+const { keymaps } = useKeymaps()
+// Listener scopes to the textarea — fires only while it owns focus.
+useKeymap(textareaRef, (): KeymapEntry[] => {
+  if (!keymaps.value) {
+    return []
+  }
+
+  return [
+    { binding: keymaps.value.chat.submit, handler: onEnter },
+    // Explicit no-op so Shift+Enter falls through to the textarea's
+    // native newline insertion (and doesn't match chat.submit).
+    { binding: keymaps.value.chat.newline, handler: () => false },
+    { binding: keymaps.value.composer.paste_image, handler: onPasteImage },
+    { binding: keymaps.value.composer.tab_completion, handler: onTab },
+    { binding: keymaps.value.composer.shift_tab, handler: onTab },
+    { binding: keymaps.value.composer.history_up, handler: onHistoryPrev, allowRepeat: true },
+    { binding: keymaps.value.composer.history_down, handler: onHistoryNext, allowRepeat: true }
+  ]
+})
+
+onMounted(() => {
+  resize()
+})
+
 watch(text, () => nextTick(resize))
 
 defineExpose({
@@ -66,23 +90,41 @@ function trySubmit(): void {
   emit('submit', val)
 }
 
-function onKeydown(e: KeyboardEvent): void {
-  // Every composer keystroke hits this hook; `log.trace` is off by
-  // default so this is zero-cost unless the user turns the level up.
-  log.trace('composer keydown', { key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey })
-  if (e.key === 'Tab') {
-    log.debug('composer keybind', { key: 'Tab', target: 'completion' })
-
-    return
+function onEnter(e: KeyboardEvent): boolean {
+  if (e.isComposing) {
+    return false
   }
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.shiftKey)) {
-    log.debug('composer keybind', { key: 'Enter', modifier: e.ctrlKey ? 'ctrl' : e.metaKey ? 'meta' : 'shift' })
-  }
-  if (e.key !== 'Enter' || e.shiftKey || e.isComposing) {
-    return
-  }
-  e.preventDefault()
+  log.debug('composer keybind', { key: 'Enter' })
   trySubmit()
+
+  return true
+}
+
+function onTab(): boolean {
+  log.debug('composer keybind', { key: 'Tab', target: 'completion' })
+
+  return false
+}
+
+function onPasteImage(): boolean {
+  // TODO(K-image): wire the clipboard-image handler when image attachments land.
+  log.debug('composer keybind', { key: 'ctrl+p', target: 'paste-image' })
+
+  return false
+}
+
+function onHistoryPrev(): boolean {
+  // TODO(K-history): composer history store not yet wired.
+  log.debug('composer keybind', { key: 'ctrl+arrowup', target: 'history-prev' })
+
+  return false
+}
+
+function onHistoryNext(): boolean {
+  // TODO(K-history): composer history store not yet wired.
+  log.debug('composer keybind', { key: 'ctrl+arrowdown', target: 'history-next' })
+
+  return false
 }
 </script>
 
@@ -98,7 +140,7 @@ function onKeydown(e: KeyboardEvent): void {
     </div>
 
     <div class="composer-row">
-      <textarea ref="textareaRef" v-model="text" class="composer-textarea" rows="5" :placeholder="placeholder" :disabled="disabled" data-testid="composer-textarea" @keydown="onKeydown" />
+      <textarea ref="textareaRef" v-model="text" class="composer-textarea" rows="5" :placeholder="placeholder" :disabled="disabled" data-testid="composer-textarea" />
       <button
         type="submit"
         class="composer-submit"
