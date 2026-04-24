@@ -15,7 +15,7 @@ use agent_client_protocol::{ByteStreams, Client};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::client::{AcpClient, ClientEvent, PermissionOptionView};
 use super::instance::AcpInstance;
@@ -241,6 +241,7 @@ async fn run_instance(
     let session_id_forward = session_id_slot.clone();
 
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
+        debug!(agent = %agent_id_notif, "acp::runtime: sending initialize request");
         let init = connection
             .send_request(
                 InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
@@ -251,7 +252,12 @@ async fn run_instance(
             )
             .block_task()
             .await?;
-        info!(agent = %agent_id_notif, protocol = ?init.protocol_version, "acp::runtime: initialized");
+        info!(
+            agent = %agent_id_notif,
+            protocol = ?init.protocol_version,
+            load_session = init.agent_capabilities.load_session,
+            "acp::runtime: initialized"
+        );
 
         let cwd = cfg
             .cwd
@@ -261,11 +267,18 @@ async fn run_instance(
 
         let session_id: Option<SessionId> = match bootstrap {
             Bootstrap::Fresh => {
+                debug!(agent = %agent_id_notif, "acp::runtime: sending session/new");
                 let new_session = connection
                     .send_request(NewSessionRequest::new(cwd.clone()))
                     .block_task()
                     .await?;
                 let sid = new_session.session_id.clone();
+                info!(
+                    agent = %agent_id_notif,
+                    instance = %instance_id_notif,
+                    session = %sid,
+                    "acp::runtime: session/new accepted"
+                );
                 {
                     let mut slot = session_id_forward.write().await;
                     *slot = Some(sid.clone());
@@ -297,6 +310,7 @@ async fn run_instance(
                     let mut slot = session_id_forward.write().await;
                     *slot = Some(sid.clone());
                 }
+                debug!(agent = %agent_id_notif, session = %sid, "acp::runtime: sending session/load");
                 if let Err(err) = connection
                     .send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
                     .block_task()
@@ -311,6 +325,12 @@ async fn run_instance(
                     });
                     return Err(err);
                 }
+                info!(
+                    agent = %agent_id_notif,
+                    instance = %instance_id_notif,
+                    session = %sid,
+                    "acp::runtime: session/load accepted"
+                );
                 let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
@@ -354,8 +374,15 @@ async fn run_instance(
                                 Some(prefix) => format!("{prefix}\n\n{text}"),
                                 None => text,
                             };
+                            info!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                text_len = text.len(),
+                                "acp::runtime: turn start (session/prompt)"
+                            );
                             let conn = connection.clone();
                             let agent_log = agent_id_notif.clone();
+                            let session_log = sid.clone();
                             tokio::spawn(async move {
                                 let res = conn
                                     .send_request(PromptRequest::new(
@@ -365,8 +392,21 @@ async fn run_instance(
                                     .block_task()
                                     .await;
                                 let mapped = res.map(|resp| {
-                                    info!(agent = %agent_log, stop = ?resp.stop_reason, "acp::runtime: prompt resolved");
-                                }).map_err(|e| e.to_string());
+                                    info!(
+                                        agent = %agent_log,
+                                        session = %session_log,
+                                        stop_reason = ?resp.stop_reason,
+                                        "acp::runtime: turn stop (prompt resolved)"
+                                    );
+                                }).map_err(|e| {
+                                    warn!(
+                                        agent = %agent_log,
+                                        session = %session_log,
+                                        err = %e,
+                                        "acp::runtime: turn ended with error"
+                                    );
+                                    e.to_string()
+                                });
                                 let _ = reply.send(mapped);
                             });
                         }
@@ -375,6 +415,11 @@ async fn run_instance(
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
                             };
+                            info!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                "acp::runtime: turn cancel (CancelNotification)"
+                            );
                             let res = connection
                                 .send_notification(CancelNotification::new(sid))
                                 .map_err(|e| e.to_string());
@@ -384,6 +429,11 @@ async fn run_instance(
                         // seconds against a remote index, and blocking the select! starves
                         // event pumping.
                         InstanceCommand::ListSessions { cwd: filter_cwd, reply } => {
+                            debug!(
+                                agent = %agent_id_notif,
+                                cwd_filter = ?filter_cwd,
+                                "acp::runtime: session/list requested"
+                            );
                             let conn = connection.clone();
                             tokio::spawn(async move {
                                 let mut req = ListSessionsRequest::new();
@@ -399,6 +449,13 @@ async fn run_instance(
                             });
                         }
                         InstanceCommand::Shutdown { reply } => {
+                            info!(
+                                agent = %agent_id_notif,
+                                instance = %instance_id_notif,
+                                has_session = session_id.is_some(),
+                                reason = "shutdown command received",
+                                "acp::runtime: shutting down instance"
+                            );
                             if let Some(sid) = session_id.clone() {
                                 let _ = connection.send_notification(CancelNotification::new(sid));
                             }
@@ -411,6 +468,32 @@ async fn run_instance(
                     let Some(evt) = evt else { break };
                     match evt {
                         ClientEvent::Notification { session_id: sid, update } => {
+                            let update_kind = update
+                                .get("sessionUpdate")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("<unknown>");
+                            if update_kind == "agent_message_chunk" || update_kind == "user_message_chunk" {
+                                let chunk_len = update
+                                    .get("content")
+                                    .and_then(|c| c.get("text"))
+                                    .and_then(|v| v.as_str())
+                                    .map(str::len)
+                                    .unwrap_or(0);
+                                tracing::trace!(
+                                    agent = %agent_id_notif,
+                                    session = %sid,
+                                    update_kind,
+                                    chunk_len,
+                                    "acp::runtime: session/update text chunk"
+                                );
+                            } else {
+                                debug!(
+                                    agent = %agent_id_notif,
+                                    session = %sid,
+                                    update_kind,
+                                    "acp::runtime: session/update received"
+                                );
+                            }
                             let _ = events_tx_notif.send(InstanceEvent::Transcript {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
@@ -426,6 +509,13 @@ async fn run_instance(
                             args,
                             options,
                         } => {
+                            debug!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                request_id,
+                                tool = %tool,
+                                "acp::runtime: fan out permission prompt to UI"
+                            );
                             let _ = events_tx_notif.send(InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),

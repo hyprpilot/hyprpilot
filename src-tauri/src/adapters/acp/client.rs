@@ -229,6 +229,11 @@ impl AcpClient {
     /// finished its select loop.
     pub fn forward_notification(&self, notification: TolerantSessionNotification) {
         let TolerantSessionNotification { session_id, update, .. } = notification;
+        tracing::trace!(
+            session = %session_id,
+            update_kind = ?update.get("sessionUpdate").and_then(|v| v.as_str()),
+            "acp::client: received session/update notification"
+        );
         if self
             .events
             .send(ClientEvent::Notification { session_id, update })
@@ -269,22 +274,55 @@ impl AcpClient {
 
         match self.permissions.decide(&decision_req, self.profile.as_ref()) {
             Decision::Allow => {
-                tracing::debug!(session = %req.session_id, tool = %tool_name, "acp::client: profile auto-accept");
+                tracing::info!(
+                    session = %req.session_id,
+                    tool = %tool_name,
+                    profile = ?self.profile.as_ref().map(|p| &p.id),
+                    "acp::client: permission auto-accepted by profile glob"
+                );
                 let opt_id = pick_allow_option_id(&decision_req.options).ok_or_else(|| {
                     agent_client_protocol::Error::internal_error()
                         .data("profile auto-accept but agent offered no options")
                 })?;
+                tracing::debug!(
+                    session = %req.session_id,
+                    tool = %tool_name,
+                    option_id = %opt_id,
+                    "acp::client: picked allow option id"
+                );
                 Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
                     SelectedPermissionOutcome::new(agent_client_protocol::schema::PermissionOptionId::new(opt_id)),
                 )))
             }
             Decision::Deny => {
-                tracing::debug!(session = %req.session_id, tool = %tool_name, "acp::client: profile auto-reject");
+                tracing::info!(
+                    session = %req.session_id,
+                    tool = %tool_name,
+                    profile = ?self.profile.as_ref().map(|p| &p.id),
+                    "acp::client: permission auto-rejected by profile glob"
+                );
                 match pick_reject_option_id(&decision_req.options) {
-                    Some(opt_id) => Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
-                        SelectedPermissionOutcome::new(agent_client_protocol::schema::PermissionOptionId::new(opt_id)),
-                    ))),
-                    None => Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)),
+                    Some(opt_id) => {
+                        tracing::debug!(
+                            session = %req.session_id,
+                            tool = %tool_name,
+                            option_id = %opt_id,
+                            "acp::client: picked reject option id"
+                        );
+                        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+                            SelectedPermissionOutcome::new(agent_client_protocol::schema::PermissionOptionId::new(
+                                opt_id,
+                            )),
+                        )))
+                    }
+                    None => {
+                        tracing::debug!(
+                            session = %req.session_id,
+                            tool = %tool_name,
+                            "acp::client: no reject option offered, falling through to Cancelled"
+                        );
+                        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
+                    }
                 }
             }
             Decision::AskUser => {
@@ -302,20 +340,35 @@ impl AcpClient {
                     args,
                     options,
                 });
-                tracing::debug!(
+                tracing::info!(
                     session = %req.session_id,
                     request_id = %request_id,
                     tool = %tool_name,
-                    "acp::client: awaiting user permission reply"
+                    "acp::client: permission AskUser emitted, awaiting reply"
                 );
 
                 match tokio::time::timeout(WAITER_TIMEOUT, rx).await {
-                    Ok(Ok(PermissionOutcome::Selected(opt_id))) => Ok(RequestPermissionResponse::new(
-                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                            agent_client_protocol::schema::PermissionOptionId::new(opt_id),
-                        )),
-                    )),
+                    Ok(Ok(PermissionOutcome::Selected(opt_id))) => {
+                        tracing::info!(
+                            session = %req.session_id,
+                            request_id = %request_id,
+                            tool = %tool_name,
+                            option_id = %opt_id,
+                            "acp::client: permission reply resolved"
+                        );
+                        Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+                            SelectedPermissionOutcome::new(agent_client_protocol::schema::PermissionOptionId::new(
+                                opt_id,
+                            )),
+                        )))
+                    }
                     Ok(Ok(PermissionOutcome::Cancelled)) | Ok(Err(_)) => {
+                        tracing::info!(
+                            session = %req.session_id,
+                            request_id = %request_id,
+                            tool = %tool_name,
+                            "acp::client: permission reply resolved as Cancelled"
+                        );
                         Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
                     }
                     Err(_elapsed) => {
@@ -323,6 +376,7 @@ impl AcpClient {
                             session = %req.session_id,
                             request_id = %request_id,
                             tool = %tool_name,
+                            timeout_secs = WAITER_TIMEOUT.as_secs(),
                             "acp::client: permission waiter timed out, resolving as Cancelled"
                         );
                         self.permissions.forget(&request_id).await;
@@ -337,12 +391,12 @@ impl AcpClient {
         &self,
         req: &ReadTextFileRequest,
     ) -> Result<ReadTextFileResponse, agent_client_protocol::Error> {
-        tracing::info!(
+        tracing::debug!(
             session = %req.session_id,
             path = %req.path.display(),
             line = ?req.line,
             limit = ?req.limit,
-            "acp::client: fs/read_text_file"
+            "acp::client: tool call fs/read_text_file"
         );
         let content = self.fs.read(&req.path, req.line, req.limit).await.map_err(fs_error)?;
         Ok(ReadTextFileResponse::new(content))
@@ -352,11 +406,11 @@ impl AcpClient {
         &self,
         req: &WriteTextFileRequest,
     ) -> Result<WriteTextFileResponse, agent_client_protocol::Error> {
-        tracing::info!(
+        tracing::debug!(
             session = %req.session_id,
             path = %req.path.display(),
             bytes = req.content.len(),
-            "acp::client: fs/write_text_file"
+            "acp::client: tool call fs/write_text_file"
         );
         self.fs.write(&req.path, &req.content).await.map_err(fs_error)?;
         Ok(WriteTextFileResponse::new())
@@ -366,6 +420,12 @@ impl AcpClient {
         &self,
         req: &CreateTerminalRequest,
     ) -> Result<CreateTerminalResponse, agent_client_protocol::Error> {
+        tracing::debug!(
+            session = %req.session_id,
+            command = %req.command,
+            args_count = req.args.len(),
+            "acp::client: tool call terminal/create"
+        );
         self.terminals
             .create(req.session_id.0.as_ref(), req.clone())
             .await
@@ -376,6 +436,11 @@ impl AcpClient {
         &self,
         req: &TerminalOutputRequest,
     ) -> Result<TerminalOutputResponse, agent_client_protocol::Error> {
+        tracing::debug!(
+            session = %req.session_id,
+            terminal_id = %req.terminal_id.0,
+            "acp::client: tool call terminal/output"
+        );
         self.terminals
             .output(req.session_id.0.as_ref(), req.clone())
             .await
@@ -386,6 +451,11 @@ impl AcpClient {
         &self,
         req: &WaitForTerminalExitRequest,
     ) -> Result<WaitForTerminalExitResponse, agent_client_protocol::Error> {
+        tracing::debug!(
+            session = %req.session_id,
+            terminal_id = %req.terminal_id.0,
+            "acp::client: tool call terminal/wait_for_exit"
+        );
         self.terminals
             .wait(req.session_id.0.as_ref(), req.clone())
             .await
@@ -396,6 +466,11 @@ impl AcpClient {
         &self,
         req: &KillTerminalRequest,
     ) -> Result<KillTerminalResponse, agent_client_protocol::Error> {
+        tracing::debug!(
+            session = %req.session_id,
+            terminal_id = %req.terminal_id.0,
+            "acp::client: tool call terminal/kill"
+        );
         self.terminals
             .kill(req.session_id.0.as_ref(), req.clone())
             .await
@@ -406,6 +481,11 @@ impl AcpClient {
         &self,
         req: &ReleaseTerminalRequest,
     ) -> Result<ReleaseTerminalResponse, agent_client_protocol::Error> {
+        tracing::debug!(
+            session = %req.session_id,
+            terminal_id = %req.terminal_id.0,
+            "acp::client: tool call terminal/release"
+        );
         self.terminals
             .release(req.session_id.0.as_ref(), req.clone())
             .await

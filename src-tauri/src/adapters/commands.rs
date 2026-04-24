@@ -19,10 +19,21 @@ pub async fn session_submit(
     agent_id: Option<String>,
     profile_id: Option<String>,
 ) -> Result<Value, String> {
-    instances
+    tracing::info!(
+        text_len = text.len(),
+        agent_id = ?agent_id,
+        profile_id = ?profile_id,
+        "cmd::session_submit: entry"
+    );
+    let out = instances
         .submit(&text, agent_id.as_deref(), profile_id.as_deref())
         .await
-        .map_err(|e| e.message)
+        .map_err(|e| e.message);
+    match &out {
+        Ok(_) => tracing::info!("cmd::session_submit: accepted"),
+        Err(err) => tracing::warn!(%err, "cmd::session_submit: failed"),
+    }
+    out
 }
 
 #[tauri::command]
@@ -30,7 +41,12 @@ pub async fn session_cancel(
     instances: State<'_, Arc<AcpInstances>>,
     agent_id: Option<String>,
 ) -> Result<Value, String> {
-    instances.cancel(agent_id.as_deref()).await.map_err(|e| e.message)
+    tracing::info!(agent_id = ?agent_id, "cmd::session_cancel: entry");
+    let out = instances.cancel(agent_id.as_deref()).await.map_err(|e| e.message);
+    if let Err(err) = &out {
+        tracing::warn!(%err, "cmd::session_cancel: failed");
+    }
+    out
 }
 
 #[tauri::command]
@@ -50,10 +66,20 @@ pub async fn session_list(
     profile_id: Option<String>,
     cwd: Option<PathBuf>,
 ) -> Result<ListSessionsResponse, String> {
-    instances
+    tracing::info!(
+        agent_id = ?agent_id,
+        profile_id = ?profile_id,
+        cwd = ?cwd,
+        "cmd::session_list: entry"
+    );
+    let out = instances
         .list(agent_id.as_deref(), profile_id.as_deref(), cwd)
         .await
-        .map_err(|e| e.message)
+        .map_err(|e| e.message);
+    if let Err(err) = &out {
+        tracing::warn!(%err, "cmd::session_list: failed");
+    }
+    out
 }
 
 #[tauri::command]
@@ -63,10 +89,21 @@ pub async fn session_load(
     profile_id: Option<String>,
     session_id: String,
 ) -> Result<(), String> {
-    instances
+    tracing::info!(
+        agent_id = ?agent_id,
+        profile_id = ?profile_id,
+        session_id = %session_id,
+        "cmd::session_load: entry"
+    );
+    let out = instances
         .load(agent_id.as_deref(), profile_id.as_deref(), session_id)
         .await
-        .map_err(|e| e.message)
+        .map_err(|e| e.message);
+    match &out {
+        Ok(_) => tracing::info!("cmd::session_load: accepted"),
+        Err(err) => tracing::warn!(%err, "cmd::session_load: failed"),
+    }
+    out
 }
 
 /// Resolve a pending permission prompt. The UI sends one of:
@@ -96,6 +133,11 @@ pub async fn permission_reply(
     request_id: String,
     option_id: String,
 ) -> Result<(), String> {
+    tracing::info!(
+        request_id = %request_id,
+        option_id = %option_id,
+        "cmd::permission_reply: entry"
+    );
     let controller = controller.inner().clone();
     let outcome = match option_id.as_str() {
         "allow" => {
@@ -120,6 +162,11 @@ pub async fn permission_reply(
         }
         raw => PermissionOutcome::Selected(raw.to_string()),
     };
+    tracing::info!(
+        request_id = %request_id,
+        outcome = ?outcome,
+        "cmd::permission_reply: resolved"
+    );
     controller.resolve(&request_id, outcome).await;
     Ok(())
 }

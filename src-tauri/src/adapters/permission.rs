@@ -172,6 +172,11 @@ impl DefaultPermissionController {
 impl PermissionController for DefaultPermissionController {
     fn decide(&self, req: &PermissionRequest, profile: Option<&ProfileConfig>) -> Decision {
         let Some(profile) = profile else {
+            tracing::debug!(
+                request_id = %req.request_id,
+                tool = %req.tool_call.name,
+                "permission::decide: no profile attached, AskUser"
+            );
             return Decision::AskUser;
         };
         // Glob compile failures never reach here — TOML validation
@@ -179,15 +184,37 @@ impl PermissionController for DefaultPermissionController {
         // profile slips past validation, we fall through to AskUser
         // rather than panic.
         let Ok((accept, reject)) = profile.compile_tool_globs() else {
+            tracing::warn!(
+                profile = %profile.id,
+                "permission::decide: glob compile failed, defaulting to AskUser"
+            );
             return Decision::AskUser;
         };
         let name = req.tool_call.name.as_str();
         if reject.is_match(name) {
+            tracing::debug!(
+                request_id = %req.request_id,
+                profile = %profile.id,
+                tool = %name,
+                "permission::decide: matched auto_reject_tools glob"
+            );
             return Decision::Deny;
         }
         if accept.is_match(name) {
+            tracing::debug!(
+                request_id = %req.request_id,
+                profile = %profile.id,
+                tool = %name,
+                "permission::decide: matched auto_accept_tools glob"
+            );
             return Decision::Allow;
         }
+        tracing::debug!(
+            request_id = %req.request_id,
+            profile = %profile.id,
+            tool = %name,
+            "permission::decide: no glob matched, AskUser"
+        );
         Decision::AskUser
     }
 
@@ -201,6 +228,11 @@ impl PermissionController for DefaultPermissionController {
                 options: req.options.clone(),
             },
         );
+        tracing::debug!(
+            request_id = %req.request_id,
+            waiter_count = waiters.len(),
+            "permission::register_pending: waiter registered"
+        );
         rx
     }
 
@@ -210,13 +242,25 @@ impl PermissionController for DefaultPermissionController {
             waiters.remove(request_id)
         };
         if let Some(w) = removed {
+            tracing::debug!(
+                request_id,
+                outcome = ?outcome,
+                "permission::resolve: firing waiter"
+            );
             let _ = w.tx.send(outcome);
+        } else {
+            tracing::debug!(
+                request_id,
+                "permission::resolve: no waiter (already resolved or never registered)"
+            );
         }
     }
 
     async fn forget(&self, request_id: &str) {
         let mut waiters = self.waiters.lock().await;
-        waiters.remove(request_id);
+        if waiters.remove(request_id).is_some() {
+            tracing::debug!(request_id, "permission::forget: waiter dropped without firing");
+        }
     }
 
     async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>> {
@@ -233,7 +277,7 @@ impl PermissionController for DefaultPermissionController {
 /// the first option overall.
 #[must_use]
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
-    options
+    let picked = options
         .iter()
         .find(|o| o.kind == "allow_once")
         .or_else(|| options.iter().find(|o| o.kind == "allow_always"))
@@ -242,8 +286,16 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
                 o.option_id.to_ascii_lowercase().contains("allow") || o.name.to_ascii_lowercase().contains("allow")
             })
         })
-        .or_else(|| options.first())
-        .map(|o| o.option_id.clone())
+        .or_else(|| options.first());
+    if let Some(opt) = picked {
+        tracing::debug!(
+            option_id = %opt.option_id,
+            kind = %opt.kind,
+            offered = options.len(),
+            "permission::pick_allow: option selected"
+        );
+    }
+    picked.map(|o| o.option_id.clone())
 }
 
 /// Pick a `reject`-shaped option id. Same strategy as allow but for
@@ -251,7 +303,7 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
 /// exists — the caller falls back to `Cancelled`.
 #[must_use]
 pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String> {
-    options
+    let picked = options
         .iter()
         .find(|o| o.kind == "reject_once")
         .or_else(|| options.iter().find(|o| o.kind == "reject_always"))
@@ -262,8 +314,16 @@ pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String>
                     || o.name.to_ascii_lowercase().contains("reject")
                     || o.name.to_ascii_lowercase().contains("deny")
             })
-        })
-        .map(|o| o.option_id.clone())
+        });
+    if let Some(opt) = picked {
+        tracing::debug!(
+            option_id = %opt.option_id,
+            kind = %opt.kind,
+            offered = options.len(),
+            "permission::pick_reject: option selected"
+        );
+    }
+    picked.map(|o| o.option_id.clone())
 }
 
 #[cfg(test)]
