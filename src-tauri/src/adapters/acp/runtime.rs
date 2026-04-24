@@ -569,7 +569,26 @@ async fn run_instance(
         }
     };
 
-    drop(child.kill().await);
+    // Give the agent subprocess a brief window to exit cleanly after
+    // the transport closes above. The `CancelNotification` we sent on
+    // shutdown + the resulting stdin EOF are the standard ACP signals
+    // to terminate. SIGKILL'ing zero-delay mid-cleanup makes vendor
+    // SDKs (notably `@anthropic-ai/claude-agent-sdk` inside
+    // claude-code-acp) spew "Query closed before response received" on
+    // stderr because they're tearing down a still-open Anthropic
+    // streaming connection that's kept warm between turns. Wait up to
+    // 2s for a clean exit, fall back to SIGKILL.
+    match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
+        Ok(Ok(status)) => debug!(agent = %agent_id, ?status, "acp::runtime: child exited cleanly"),
+        Ok(Err(err)) => warn!(agent = %agent_id, %err, "acp::runtime: child wait failed"),
+        Err(_) => {
+            warn!(
+                agent = %agent_id,
+                "acp::runtime: child did not exit within 2s after stdin EOF, sending SIGKILL"
+            );
+            let _ = child.kill().await;
+        }
+    }
     let sid = session_id_slot.read().await.clone();
     if let Some(ref id) = sid {
         client.drain_terminals_for_session(id).await;
