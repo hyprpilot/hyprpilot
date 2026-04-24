@@ -7,9 +7,8 @@
 use std::sync::Arc;
 
 use agent_client_protocol::schema::{
-    CancelNotification, ClientCapabilities, ContentBlock, FileSystemCapabilities, InitializeRequest,
-    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
-    SessionId, TextContent,
+    CancelNotification, ClientCapabilities, FileSystemCapabilities, InitializeRequest, ListSessionsRequest,
+    ListSessionsResponse, LoadSessionRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
 };
 use agent_client_protocol::{ByteStreams, Client};
 use serde::Serialize;
@@ -48,6 +47,7 @@ macro_rules! register_client_handler {
 pub enum InstanceCommand {
     Prompt {
         text: String,
+        attachments: Vec<crate::adapters::Attachment>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Cancel {
@@ -478,7 +478,7 @@ async fn run_instance(
                         // path blocks for up to 10min waiting on a UI reply — but the UI
                         // never sees the prompt because the event is stuck in that same
                         // mpsc. Spawn the request so the loop keeps draining.
-                        InstanceCommand::Prompt { text, reply } => {
+                        InstanceCommand::Prompt { text, attachments, reply } => {
                             let Some(sid) = session_id.clone() else {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
@@ -491,17 +491,16 @@ async fn run_instance(
                                 agent = %agent_id_notif,
                                 session = %sid,
                                 text_len = text.len(),
+                                attachments = attachments.len(),
                                 "acp::runtime: turn start (session/prompt)"
                             );
+                            let blocks = super::mapping::build_prompt_blocks(&text, &attachments);
                             let conn = connection.clone();
                             let agent_log = agent_id_notif.clone();
                             let session_log = sid.clone();
                             tokio::spawn(async move {
                                 let res = conn
-                                    .send_request(PromptRequest::new(
-                                        sid,
-                                        vec![ContentBlock::Text(TextContent::new(text))],
-                                    ))
+                                    .send_request(PromptRequest::new(sid, blocks))
                                     .block_task()
                                     .await;
                                 let mapped = res.map(|resp| {

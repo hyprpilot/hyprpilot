@@ -7,6 +7,7 @@ pub mod models;
 pub mod modes;
 pub mod profiles;
 pub mod session;
+pub mod skills;
 pub mod status;
 pub mod window;
 
@@ -19,5 +20,6 @@ pub use self::models::ModelsHandler;
 pub use self::modes::ModesHandler;
 pub use self::profiles::ProfilesHandler;
 pub use self::session::SessionHandler;
+pub use self::skills::SkillsHandler;
 pub use self::status::StatusHandler;
 pub use self::window::WindowHandler;

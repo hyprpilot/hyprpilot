@@ -15,6 +15,7 @@ use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
+use super::transcript::Attachment;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
 
@@ -22,20 +23,24 @@ type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
 pub async fn session_submit(
     adapter: AdapterState<'_>,
     text: String,
+    #[allow(non_snake_case)] attachments: Option<Vec<Attachment>>,
     instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
 ) -> Result<Value, String> {
+    let attachments = attachments.unwrap_or_default();
     tracing::info!(
         text_len = text.len(),
+        attachments = attachments.len(),
         instance_id = ?instance_id,
         agent_id = ?agent_id,
         profile_id = ?profile_id,
         "cmd::session_submit: entry"
     );
     let out = adapter
-        .submit_text(
+        .submit_prompt(
             &text,
+            &attachments,
             instance_id.as_deref(),
             agent_id.as_deref(),
             profile_id.as_deref(),

@@ -52,7 +52,7 @@ pub use registry::AdapterRegistry;
 #[allow(unused_imports)]
 pub use tool::{ToolCall, ToolCallContent, ToolState};
 #[allow(unused_imports)]
-pub use transcript::{ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
+pub use transcript::{Attachment, ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
 
 // Concrete impls we re-export so out-of-layer callers never need to
 // type `adapters::acp::*` — only `adapters::*`. Adding an `HttpAdapter`
@@ -174,8 +174,8 @@ pub trait Adapter: Send + Sync + 'static {
     /// Submit a prompt against an existing instance (when
     /// `instance_id` is provided) or spawn one for the resolved
     /// `(agent, profile)` pair. `input` is a structured enum
-    /// (`UserTurnInput::Text` today); returns a JSON envelope RPC +
-    /// Tauri pass through verbatim.
+    /// (`UserTurnInput::Prompt { text, attachments }` today);
+    /// returns a JSON envelope RPC + Tauri pass through verbatim.
     async fn submit(
         &self,
         input: UserTurnInput,
@@ -262,8 +262,8 @@ mod tests {
             _agent_id: Option<&str>,
             _profile_id: Option<&str>,
         ) -> AdapterResult<serde_json::Value> {
-            let UserTurnInput::Text(text) = input;
-            Ok(json!({ "echo": text }))
+            let UserTurnInput::Prompt { text, attachments } = input;
+            Ok(json!({ "echo": text, "attachments": attachments.len() }))
         }
 
         async fn cancel(

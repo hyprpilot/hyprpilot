@@ -167,6 +167,37 @@ sees no change through `get_theme`); `impl Validate` enforces
 ergonomics unchanged. `ThemeFont.family` stays `Option<String>` — it's
 not a colour.
 
+### `[skills] dirs` — multi-root catalogue
+
+`[skills] dirs: Vec<PathBuf>` lists the roots the loader scans. Each
+root is a flat directory of `<slug>/SKILL.md` bundles (one level deep
+per root); compatible with the
+[claude-code skill convention](https://github.com/anthropics/claude-code/blob/main/skills/README.md).
+
+- **Defaults** seed `dirs = ["~/.config/hyprpilot/skills"]`. `~` and
+  env vars expand at consume time via `SkillsConfig::resolved_dirs`.
+- **User override replaces wholesale.** `dirs = ["/opt/skills/team",
+  "~/personal"]` in user TOML wipes the default entry; `dirs = []`
+  is the explicit "no skills" override. `None` (no `[skills]` block
+  in user config) inherits the defaults — `Option<Vec<PathBuf>>`
+  carries that distinction.
+- **First-root-wins** on slug collision. The loader processes `dirs`
+  in order and skips later roots' duplicate slugs with a `warn!`
+  naming both paths (`kept = …`, `skipped = …`).
+- **Missing roots warn + skip** — no auto-mkdir on boot, no
+  `canonicalize` (paths are stored as the user wrote them). The
+  watcher attaches one `.watch()` per existing root.
+- **Watcher drops on remove.** `notify::Event::Remove(Folder)` for a
+  watched root drops its `.watch()` subscription with a warn — no
+  auto-rearm. Recovery: `ctl skills reload` after recreating the
+  directory.
+
+Skill delivery to the agent flows exclusively through the palette
+(`Skill.path` lands on the wire so the UI can list / preview / pick);
+the inline `#{skill/<slug>}` token mechanism was deleted end-to-end.
+Picked skills attach to the user turn as `UserTurnInput::Prompt {
+text, attachments }`; see the **ACP bridge** section.
+
 ## Theming
 
 **The palette lives in Rust, not CSS.** Flow:
@@ -1115,7 +1146,7 @@ concrete `AcpAdapter` re-exported from `adapters::*`; they never
     `InstanceEventStream`, `InstanceInfo`, `InstanceActor` trait,
     `SpawnSpec`.
   - `transcript.rs` — `TranscriptItem`, `TurnRecord`,
-    `ToolCallRecord`, `UserTurnInput`, `Speaker`.
+    `ToolCallRecord`, `UserTurnInput`, `Attachment`, `Speaker`.
   - `permission.rs` — `PermissionPrompt`, `PermissionReply`,
     `PermissionOptionView`.
   - `tool.rs` — `ToolCall`, `ToolCallContent`, `ToolState`.
@@ -1353,7 +1384,7 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 | Command | Purpose |
 | ------- | ------- |
-| `session_submit { text, instance_id?, agent_id?, profile_id? }` | Webview compose-box submit. `instance_id` is a client-generated UUID the overlay mints on first turn (`crypto.randomUUID()`); subsequent submits pass the same id to continue the session. Delegates to `AcpAdapter::submit_text`. |
+| `session_submit { text, attachments?, instance_id?, agent_id?, profile_id? }` | Webview compose-box submit. `instance_id` is a client-generated UUID the overlay mints on first turn (`crypto.randomUUID()`); subsequent submits pass the same id to continue the session. `attachments: Attachment[]` carries palette-picked skills (slug + path + body + optional title) — see "User-turn input + attachments" below. Delegates to `AcpAdapter::submit_prompt`. |
 | `session_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
 | `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
@@ -1369,6 +1400,37 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 
 Event names use `:` (Tauri-side convention); the JSON-RPC wire keeps
 `/` (`session/submit` etc.); config uses `.`; CSS uses `-`.
+
+### User-turn input + attachments
+
+`UserTurnInput::Prompt { text, attachments }` is the only variant
+today (the `Text(String)` variant + `expand_tokens` inline-token
+expansion were deleted end-to-end in K-268). `Attachment` is the
+generic palette-picked-context shape:
+
+```rust
+pub struct Attachment {
+    pub slug: String,        // "git-commit"
+    pub path: PathBuf,       // /home/.../skills/git-commit/SKILL.md
+    pub body: String,        // snapshot at pick time
+    pub title: Option<String>,
+}
+```
+
+ACP mapping in `adapters/acp/mapping.rs::build_prompt_blocks`
+projects each attachment onto a `ContentBlock::Resource` carrying
+an `EmbeddedResource { resource: TextResourceContents { uri:
+"file://<path>", mime_type: Some("text/markdown"), text: <body> } }`,
+prepended before the trailing `ContentBlock::Text` — the agent
+reads context first, then the user's instructions. Body
+snapshots at palette-pick time so what the user sees is what
+the agent receives; re-pick to refresh after edits.
+
+Wire shapes: `session_submit` (Tauri), `session/submit` (RPC),
+and the `skills/get` response (`{ slug, title, description, body,
+path, references }`) all share the same `path` field on the wire
+so the UI can build pills + the daemon can build resource URIs
+without a second lookup.
 
 ### Glossary
 

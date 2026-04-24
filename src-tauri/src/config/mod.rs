@@ -32,6 +32,8 @@ pub struct Config {
     #[garde(dive)]
     pub logging: Logging,
     #[garde(dive)]
+    pub skills: SkillsConfig,
+    #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
     /// `AgentsConfig` stays the single Rust-side unit.
@@ -245,6 +247,41 @@ pub struct Logging {
     /// Unknown levels reject at TOML parse (serde closed enum).
     #[garde(skip)]
     pub level: Option<crate::logging::LogLevel>,
+}
+
+/// `[skills]` — loader configuration. `dirs` is the list of roots
+/// scanned by `SkillsRegistry`; each `<slug>/SKILL.md` under any
+/// listed root becomes a loadable skill. Defaults seed
+/// `["~/.config/hyprpilot/skills"]`; `~` / env-var expansion runs at
+/// consume time in `resolved_dirs`. User-supplied `dirs` replaces the
+/// default list wholesale (`None` = inherit defaults; `Some(vec![])`
+/// = explicit "no skills" override).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkillsConfig {
+    #[garde(skip)]
+    pub dirs: Option<Vec<PathBuf>>,
+}
+
+impl SkillsConfig {
+    /// Resolve every `dirs` entry to an absolute path. Tilde + env
+    /// vars in each raw value expand via `shellexpand`; entries that
+    /// fail to expand fall through with their literal text. `None`
+    /// resolves to an empty vec — the loader emits zero skills.
+    pub fn resolved_dirs(&self) -> Vec<PathBuf> {
+        let Some(raw) = &self.dirs else {
+            return Vec::new();
+        };
+        raw.iter()
+            .map(|p| {
+                let raw_str = p.to_string_lossy();
+                let expanded = shellexpand::full(&raw_str)
+                    .map(|s| s.into_owned())
+                    .unwrap_or_else(|_| raw_str.into_owned());
+                PathBuf::from(expanded)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -687,6 +724,7 @@ impl Merge for Config {
         Self {
             daemon: self.daemon.merge(other.daemon),
             logging: self.logging.merge(other.logging),
+            skills: self.skills.merge(other.skills),
             ui: self.ui.merge(other.ui),
             agents: self.agents.merge(other.agents),
             profiles: merge_profiles(self.profiles, other.profiles),
@@ -733,6 +771,16 @@ impl Merge for Logging {
     fn merge(self, other: Self) -> Self {
         Self {
             level: self.level.merge(other.level),
+        }
+    }
+}
+
+impl Merge for SkillsConfig {
+    /// User-supplied `dirs` replaces defaults wholesale. `None` =
+    /// inherit; `Some(vec![])` = explicit "no skills" override.
+    fn merge(self, other: Self) -> Self {
+        Self {
+            dirs: self.dirs.merge(other.dirs),
         }
     }
 }
@@ -1428,6 +1476,64 @@ margin = -5
         assert_eq!(by_id["claude-code"], AgentProvider::AcpClaudeCode);
         assert_eq!(by_id["codex"], AgentProvider::AcpCodex);
         assert_eq!(by_id["opencode"], AgentProvider::AcpOpenCode);
+    }
+
+    #[test]
+    fn defaults_seed_skills_dirs_with_xdg_path() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        let dirs = cfg.skills.dirs.as_deref().expect("defaults must seed [skills] dirs");
+        assert_eq!(dirs, &[PathBuf::from("~/.config/hyprpilot/skills")]);
+    }
+
+    #[test]
+    fn skills_dirs_user_override_replaces_defaults_wholesale() {
+        let p = write_tmp(
+            "skills-override.toml",
+            r#"
+[skills]
+dirs = ["/opt/skills/team", "~/personal/skills"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        assert_eq!(
+            cfg.skills.dirs.as_deref(),
+            Some(&[PathBuf::from("/opt/skills/team"), PathBuf::from("~/personal/skills"),][..])
+        );
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn skills_dirs_explicit_empty_disables_loading() {
+        let p = write_tmp(
+            "skills-empty.toml",
+            r#"
+[skills]
+dirs = []
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        assert_eq!(cfg.skills.dirs.as_deref(), Some(&[][..]));
+        assert!(cfg.skills.resolved_dirs().is_empty());
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn skills_resolved_dirs_expand_tilde() {
+        let cfg = Config {
+            skills: SkillsConfig {
+                dirs: Some(vec![PathBuf::from("~/.config/hyprpilot/skills")]),
+            },
+            ..Default::default()
+        };
+        let resolved = cfg.skills.resolved_dirs();
+        assert_eq!(resolved.len(), 1);
+        let path = resolved[0].to_string_lossy();
+        // Tilde expanded to a real home dir; defensive — accept either
+        // resolved-form or literal if shellexpand didn't have HOME set.
+        assert!(
+            path.starts_with('/') || path.contains("hyprpilot/skills"),
+            "expected expanded path, got {path}",
+        );
     }
 
     #[test]
