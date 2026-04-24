@@ -12,14 +12,14 @@ import {
 
 import { ToastTone } from '@components/types'
 
-import { useActiveInstance, type InstanceId } from './useActiveInstance'
-import { pushInstanceState, resetPhaseSignals } from './usePhase'
-import { pushPermissionRequest } from './usePermissions'
-import { pushPlan, pushThoughtChunk } from './useStream'
-import { pushTerminalChunk } from './useTerminals'
-import { pushToast } from './useToasts'
-import { pushToolCall, useTools } from './useTools'
-import { pushTranscriptChunk } from './useTranscript'
+import { useActiveInstance, type InstanceId } from './use-active-instance'
+import { pushInstanceState, resetPhaseSignals } from './use-phase'
+import { pushPermissionRequest } from './use-permissions'
+import { pushPlan, pushThoughtChunk } from './use-stream'
+import { pushTerminalChunk } from './use-terminals'
+import { pushToast } from './use-toasts'
+import { pushToolCall, useTools } from './use-tools'
+import { pushTranscriptChunk } from './use-transcript'
 
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 

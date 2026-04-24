@@ -4,14 +4,14 @@ import { InstanceState, TauriEvent } from '@ipc'
 
 import { ToastTone } from '@components/types'
 
-import { useActiveInstance } from '@composables/useActiveInstance'
-import { resetPermissions, usePermissions } from '@composables/usePermissions'
-import { startSessionStream } from '@composables/useSessionStream'
-import { resetStream, useStream } from '@composables/useStream'
-import { resetTerminals, useTerminals } from '@composables/useTerminals'
-import { clearToasts, useToasts } from '@composables/useToasts'
-import { resetTools, useTools } from '@composables/useTools'
-import { resetTranscript, useTranscript } from '@composables/useTranscript'
+import { useActiveInstance } from '@composables/use-active-instance'
+import { resetPermissions, usePermissions } from '@composables/use-permissions'
+import { startSessionStream } from '@composables/use-session-stream'
+import { resetStream, useStream } from '@composables/use-stream'
+import { resetTerminals, useTerminals } from '@composables/use-terminals'
+import { clearToasts, useToasts } from '@composables/use-toasts'
+import { resetTools, useTools } from '@composables/use-tools'
+import { resetTranscript, useTranscript } from '@composables/use-transcript'
 
 type Handler = (payload: { payload: unknown }) => void
 

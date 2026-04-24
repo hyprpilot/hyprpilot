@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { applyGtkFont } from './useTheme'
+import { applyGtkFont } from './use-theme'
 
 const invoke = vi.fn()
 

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Modifier, TauriCommand } from '@ipc'
 
-import { __resetKeymapsForTests, loadKeymaps } from '@composables/useKeymaps'
+import { __resetKeymapsForTests, loadKeymaps } from '@composables/use-keymaps'
 
 import ChatComposer from './ChatComposer.vue'
 import type { ComposerPill } from '../types'

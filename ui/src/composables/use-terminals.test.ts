@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { pushTerminalChunk, resetTerminals, useTerminals } from '@composables/useTerminals'
+import { pushTerminalChunk, resetTerminals, useTerminals } from '@composables/use-terminals'
 
 beforeEach(() => {
   resetTerminals('A')

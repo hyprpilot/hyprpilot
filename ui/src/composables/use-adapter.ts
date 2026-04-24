@@ -9,7 +9,7 @@ import {
 
 import { ToastTone } from '@components/types'
 
-import { pushToast } from './useToasts'
+import { pushToast } from './use-toasts'
 
 export interface SubmitOptions {
   text: string

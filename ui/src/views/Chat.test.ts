@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Modifier, TauriCommand } from '@ipc'
 
-import { useActiveInstance } from '@composables/useActiveInstance'
-import { __resetKeymapsForTests, loadKeymaps } from '@composables/useKeymaps'
-import { pushPermissionRequest, resetPermissions } from '@composables/usePermissions'
+import { useActiveInstance } from '@composables/use-active-instance'
+import { __resetKeymapsForTests, loadKeymaps } from '@composables/use-keymaps'
+import { pushPermissionRequest, resetPermissions } from '@composables/use-permissions'
 
 import Chat from './Overlay.vue'
 

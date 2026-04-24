@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { type Binding, Modifier } from '@ipc'
 
-import { type KeymapEntry, useKeymap } from './useKeymaps'
+import { type KeymapEntry, useKeymap } from './use-keymaps'
 
 interface Harness {
   wrapper: ReturnType<typeof mount>

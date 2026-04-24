@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { ToolKind, ToolState } from '@components'
 import { baseRegistry, extendRegistry, formatToolBody, formatToolCall, registries, resolveRegistry, shortHeader } from '@lib'
 
-import type { ToolCallView } from '../composables/useTools'
+import type { ToolCallView } from '../composables/use-tools'
 
 function view(overrides: Partial<ToolCallView> = {}): ToolCallView {
   return {

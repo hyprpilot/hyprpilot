@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TauriCommand } from '@ipc'
 
-import { useActiveInstance } from '@composables/useActiveInstance'
+import { useActiveInstance } from '@composables/use-active-instance'
 import {
   evictPermission,
   pushPermissionRequest,
   resetPermissions,
   usePermissions
-} from '@composables/usePermissions'
+} from '@composables/use-permissions'
 
 const invoke = vi.fn()
 

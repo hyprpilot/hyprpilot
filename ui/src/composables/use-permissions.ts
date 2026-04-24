@@ -5,7 +5,7 @@ import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
 import { log } from '@lib'
 
 import { nextSeq } from './sequence'
-import { useActiveInstance, type InstanceId } from './useActiveInstance'
+import { useActiveInstance, type InstanceId } from './use-active-instance'
 
 // Stored shape — `queued` is derived at read time in the `pending`
 // computed (oldest-by-createdAt is active, everything else queued), not
