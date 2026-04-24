@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { ToolState } from '@components'
-import { pushToolCall, resetTools, toView, useTools } from '@composables/useTools'
+import { pushToolCall, resetTools, useTools } from '@composables/useTools'
 
 beforeEach(() => {
   resetTools('A')
@@ -30,14 +29,5 @@ describe('useTools', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]?.status).toBe('completed')
     expect(calls[0]?.title).toBe('read')
-  })
-
-  it('toView shapes a ToolCallView into a minimal ToolChipItem placeholder', () => {
-    pushToolCall('A', 's-a', { sessionUpdate: 'tool_call', toolCallId: 'tc-1', title: 'grep', kind: 'search', status: 'done' })
-    const [call] = useTools('A').calls.value
-    const view = toView(call!)
-    expect(view.label).toBe('grep')
-    expect(view.kind).toBe('search')
-    expect(view.state).toBe(ToolState.Done)
   })
 })

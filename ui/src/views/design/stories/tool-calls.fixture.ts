@@ -1,4 +1,4 @@
-import { Phase, StreamKind, ToolState, type BreadcrumbCount, type PlanItem, type ToolChipItem } from '@components'
+import { Phase, StreamKind, ToolKind, ToolState, type BreadcrumbCount, type PlanItem, type ToolChipItem } from '@components'
 import { PlanStatus } from '@components'
 
 /**
@@ -46,34 +46,37 @@ export const planItems: PlanItem[] = [
 
 // Small tools — packed as an inline 2-col grid by ToolChips.
 export const smallTools: ToolChipItem[] = [
-  { label: 'Grep', arg: 'flaky', detail: 'across tests/', stat: '3 matches', state: ToolState.Done },
-  { label: 'Read', arg: 'tools/fs.rs', detail: 'confirm extracted module', stat: '118 lines', state: ToolState.Done }
+  { label: '/', arg: 'flaky', detail: 'across tests/', stat: '3 matches', state: ToolState.Done, kind: ToolKind.Search },
+  { label: 'R', arg: 'tools/fs.rs', detail: 'confirm extracted module', stat: '118 lines', state: ToolState.Done, kind: ToolKind.Read }
 ]
 
 // Big tools rendered as standalone rows. JSX hand-rolls these rather
 // than funneling through D5ToolChips; the Vue story mirrors by passing
 // them to ToolRowBig one by one so the fixtures stay inspectable.
 export const bashDone: ToolChipItem = {
-  label: 'Bash',
+  label: '$',
   arg: 'cargo test --package hyprcaptain tools::fs',
   stat: '2.8s',
-  state: ToolState.Done
+  state: ToolState.Done,
+  kind: ToolKind.Bash
 }
 
 export const bashRunning: ToolChipItem = {
-  label: 'Bash',
+  label: '$',
   arg: 'cargo test --package hyprcaptain daemon::acp',
   stat: 'running · 1.4s',
-  state: ToolState.Running
+  state: ToolState.Running,
+  kind: ToolKind.Bash
 }
 
 export const writeDone: ToolChipItem = {
-  label: 'Write',
+  label: '⇲',
   arg: 'tools/fs.rs',
   // Rendered as colored +green / −red diff in the JSX — see writeDoneDiff
   // for the paired primary stats (used by the story to render the
   // colored diff inline).
-  state: ToolState.Done
+  state: ToolState.Done,
+  kind: ToolKind.Write
 }
 
 export const writeDoneDiff = { added: 23, removed: 11 }

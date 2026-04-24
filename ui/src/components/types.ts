@@ -19,6 +19,24 @@ export enum ToolState {
   Awaiting = 'awaiting'
 }
 
+/**
+ * Closed set mirroring `[ui.theme.kind]` in `defaults.toml`. Drives both
+ * the per-tool-family tint (via `var(--theme-kind-<key>)`) and the
+ * big-row dispatch in `ChatToolChips`. Adding a tool family means a
+ * new variant here, a new seed in `defaults.toml`, and a new entry in
+ * `TOOL_KIND_ICONS` below.
+ */
+export enum ToolKind {
+  Read = 'read',
+  Write = 'write',
+  Bash = 'bash',
+  Search = 'search',
+  Agent = 'agent',
+  Think = 'think',
+  Terminal = 'terminal',
+  Acp = 'acp'
+}
+
 export enum ToastTone {
   Ok = 'ok',
   Warn = 'warn',
@@ -65,7 +83,7 @@ export interface ToolChipItem {
   state: ToolState
   detail?: string
   stat?: string
-  kind?: string
+  kind?: ToolKind
 }
 
 export interface PermissionPrompt {
@@ -158,9 +176,11 @@ export function isFaIcon(k: unknown): k is FaIconSpec {
 }
 
 /**
- * Leading glyph per tool-kind dispatch tag on chips/rows. Kind match is
- * case-insensitive against the `kind` field; unknown or missing kinds
- * fall back to the generic `cube` glyph.
+ * Leading glyph per tool-kind dispatch tag on chips/rows. Keys cover
+ * every `ToolKind` variant plus a couple of legacy / alias strings
+ * (`edit`, `grep`) so callers that still hand a raw string through get
+ * a useful icon. Unknown or missing kinds fall back to the generic
+ * `cube` glyph.
  */
 const TOOL_KIND_ICONS: Record<string, FaIconSpec> = {
   bash: ['fas', 'terminal'],
@@ -175,6 +195,6 @@ const TOOL_KIND_ICONS: Record<string, FaIconSpec> = {
   acp: ['fas', 'plug']
 }
 
-export function iconForToolKind(kind: string | undefined): FaIconSpec {
+export function iconForToolKind(kind: ToolKind | string | undefined): FaIconSpec {
   return TOOL_KIND_ICONS[(kind ?? '').toLowerCase()] ?? ['fas', 'cube']
 }

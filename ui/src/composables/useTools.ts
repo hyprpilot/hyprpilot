@@ -1,7 +1,5 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import { ToolState, type ToolChipItem } from '@components'
-
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
 
@@ -101,37 +99,6 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
 
 export function resetTools(id: InstanceId): void {
   states.delete(id)
-}
-
-function mapToolStatus(raw?: string): ToolState {
-  switch (raw?.toLowerCase()) {
-    case 'completed':
-    case 'done':
-      return ToolState.Done
-    case 'failed':
-    case 'error':
-      return ToolState.Failed
-    case 'awaiting':
-    case 'pending':
-      return ToolState.Awaiting
-    case 'in_progress':
-    case 'running':
-    default:
-      return ToolState.Running
-  }
-}
-
-/**
- * K-256 will land a full formatter registry mapping `ToolCallView`
- * onto `ToolChipItem` per tool kind. Today we emit a minimal
- * passthrough — label from title, status mapped, no arg/detail.
- */
-export function toView(call: ToolCallView): ToolChipItem {
-  return {
-    label: call.title ?? call.toolCallId,
-    kind: call.kind,
-    state: mapToolStatus(call.status)
-  }
 }
 
 export function useTools(instanceId?: InstanceId): { calls: ComputedRef<ToolCallView[]> } {

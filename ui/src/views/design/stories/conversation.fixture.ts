@@ -1,4 +1,4 @@
-import { Phase, PlanStatus, StreamKind, ToolState, type BreadcrumbCount, type GitStatus, type PlanItem, type ToolChipItem } from '@components'
+import { Phase, PlanStatus, StreamKind, ToolKind, ToolState, type BreadcrumbCount, type GitStatus, type PlanItem, type ToolChipItem } from '@components'
 
 /**
  * D5_Conversation — single user+assistant exchange with an active plan,
@@ -61,11 +61,11 @@ export const planItems: PlanItem[] = [
 ]
 
 export const tools: ToolChipItem[] = [
-  { label: 'Read', arg: 'daemon/mod.rs', detail: 'lines 240–262', stat: '640 lines', state: ToolState.Done },
-  { label: 'Grep', arg: 'AcpClient', detail: 'usages across crate', stat: '14 matches', state: ToolState.Done },
-  { label: 'Read', arg: 'config/defaults.toml', detail: 'check mcps block', stat: '42 lines', state: ToolState.Done },
-  { label: 'Bash', arg: 'cargo check', detail: 'workspace', stat: '0.8s', state: ToolState.Done },
-  { label: 'Write', arg: 'tools/fs.rs', detail: 'extract read/write', stat: '+23 / −11', state: ToolState.Running }
+  { label: 'R', arg: 'daemon/mod.rs', detail: 'lines 240–262', stat: '640 lines', state: ToolState.Done, kind: ToolKind.Read },
+  { label: '/', arg: 'AcpClient', detail: 'usages across crate', stat: '14 matches', state: ToolState.Done, kind: ToolKind.Search },
+  { label: 'R', arg: 'config/defaults.toml', detail: 'check mcps block', stat: '42 lines', state: ToolState.Done, kind: ToolKind.Read },
+  { label: '$', arg: 'cargo check', detail: 'workspace', stat: '0.8s', state: ToolState.Done, kind: ToolKind.Bash },
+  { label: '⇲', arg: 'tools/fs.rs', detail: 'extract read/write', stat: '+23 / −11', state: ToolState.Running, kind: ToolKind.Write }
 ]
 
 // Closing text block (rendered as a card on the assistant side).
