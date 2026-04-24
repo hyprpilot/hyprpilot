@@ -1,6 +1,14 @@
 import { ref } from 'vue'
 
-import { listen, type UnlistenFn } from '@ipc'
+import {
+  InstanceState,
+  listen,
+  TauriEvent,
+  type InstanceStateEventPayload,
+  type PermissionRequestEventPayload,
+  type TranscriptEventPayload,
+  type UnlistenFn
+} from '@ipc'
 
 import { ToastTone } from '@components/types'
 
@@ -12,44 +20,6 @@ import { pushTerminalChunk } from './useTerminals'
 import { pushToast } from './useToasts'
 import { pushToolCall, useTools } from './useTools'
 import { pushTranscriptChunk } from './useTranscript'
-
-export enum InstanceState {
-  Starting = 'starting',
-  Running = 'running',
-  Ended = 'ended',
-  Error = 'error'
-}
-
-export interface PermissionOptionView {
-  option_id: string
-  name: string
-  kind: string
-}
-
-export interface TranscriptEventPayload {
-  agent_id: string
-  session_id: string
-  instance_id: InstanceId
-  update: Record<string, unknown>
-}
-
-export interface InstanceStateEventPayload {
-  agent_id: string
-  instance_id: InstanceId
-  session_id?: string
-  state: InstanceState
-}
-
-export interface PermissionRequestEventPayload {
-  agent_id: string
-  session_id: string
-  instance_id: InstanceId
-  request_id: string
-  tool: string
-  kind: string
-  args: string
-  options: PermissionOptionView[]
-}
 
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 
@@ -66,6 +36,10 @@ function routePermission(payload: PermissionRequestEventPayload): void {
 interface SessionUpdateEnvelope {
   sessionUpdate?: string
   [k: string]: unknown
+}
+
+interface ContentBlock {
+  text?: string
 }
 
 function routeTranscript(payload: TranscriptEventPayload): void {
@@ -114,7 +88,7 @@ function routeTerminal(instanceId: InstanceId, sessionId: string, raw: SessionUp
   if (kind !== 'bash' && kind !== 'terminal') {
     return
   }
-  const content = Array.isArray(raw['content']) ? (raw['content'] as Array<{ text?: string }>) : []
+  const content = Array.isArray(raw['content']) ? (raw['content'] as ContentBlock[]) : []
   const chunk: Parameters<typeof pushTerminalChunk>[1] = {
     toolCallId,
     sessionId,
@@ -149,12 +123,12 @@ export async function startSessionStream(): Promise<() => void> {
 
   const unlisteners: UnlistenFn[] = []
   unlisteners.push(
-    await listen<TranscriptEventPayload>('acp:transcript', (e) => {
+    await listen(TauriEvent.AcpTranscript, (e) => {
       routeTranscript(e.payload)
       // TODO(K-254): current_mode_update subscriber goes here once the
       // Rust side emits a dedicated sessionUpdate kind for mode switches.
     }),
-    await listen<InstanceStateEventPayload>('acp:instance-state', (e) => {
+    await listen(TauriEvent.AcpInstanceState, (e) => {
       const { instance_id: instanceId, state } = e.payload
       lastInstanceState.value = e.payload
       pushInstanceState(instanceId, state)
@@ -172,7 +146,7 @@ export async function startSessionStream(): Promise<() => void> {
 
       priorState.set(instanceId, state)
     }),
-    await listen<PermissionRequestEventPayload>('acp:permission-request', (e) => {
+    await listen(TauriEvent.AcpPermissionRequest, (e) => {
       routePermission(e.payload)
     })
   )

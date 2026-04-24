@@ -25,7 +25,6 @@
 
 pub mod agents;
 pub mod client;
-pub mod commands;
 pub mod instance;
 pub mod instances;
 pub mod mapping;

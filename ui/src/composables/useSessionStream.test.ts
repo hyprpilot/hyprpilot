@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { InstanceState, TauriEvent } from '@ipc'
+
 import { ToastTone } from '@components/types'
 
 import { useActiveInstance } from '@composables/useActiveInstance'
 import { resetPermissions, usePermissions } from '@composables/usePermissions'
-import { InstanceState, startSessionStream } from '@composables/useSessionStream'
+import { startSessionStream } from '@composables/useSessionStream'
 import { resetStream, useStream } from '@composables/useStream'
 import { resetTerminals, useTerminals } from '@composables/useTerminals'
 import { clearToasts, useToasts } from '@composables/useToasts'
@@ -16,14 +18,18 @@ type Handler = (payload: { payload: unknown }) => void
 const handlers = new Map<string, Handler>()
 const unlisten = vi.fn()
 
-vi.mock('@ipc', () => ({
-  invoke: vi.fn(),
-  listen: (event: string, cb: Handler) => {
-    handlers.set(event, cb)
+vi.mock('@ipc', async () => {
+  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+  return {
+    ...actual,
+    invoke: vi.fn(),
+    listen: (event: string, cb: Handler) => {
+      handlers.set(event, cb)
 
-    return Promise.resolve(unlisten)
+      return Promise.resolve(unlisten)
+    }
   }
-}))
+})
 
 function emit(event: string, payload: unknown) {
   const cb = handlers.get(event)
@@ -53,13 +59,13 @@ beforeEach(() => {
 describe('useSessionStream', () => {
   it('subscribes to acp:transcript + acp:instance-state + acp:permission-request', async () => {
     await startSessionStream()
-    expect([...handlers.keys()].sort()).toEqual(['acp:instance-state', 'acp:permission-request', 'acp:transcript'])
+    expect([...handlers.keys()].sort()).toEqual([TauriEvent.AcpInstanceState, TauriEvent.AcpPermissionRequest, TauriEvent.AcpTranscript])
   })
 
   it('routes acp:permission-request events into the per-instance usePermissions store', async () => {
     await startSessionStream()
 
-    emit('acp:permission-request', {
+    emit(TauriEvent.AcpPermissionRequest, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
@@ -79,7 +85,7 @@ describe('useSessionStream', () => {
   it('keeps concurrent permission prompts distinct when Rust emits unique request_ids', async () => {
     await startSessionStream()
 
-    emit('acp:permission-request', {
+    emit(TauriEvent.AcpPermissionRequest, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
@@ -89,7 +95,7 @@ describe('useSessionStream', () => {
       args: 'ls',
       options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
     })
-    emit('acp:permission-request', {
+    emit(TauriEvent.AcpPermissionRequest, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
@@ -109,13 +115,13 @@ describe('useSessionStream', () => {
   it('routes acp:transcript events to the per-instance transcript store', async () => {
     await startSessionStream()
 
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
       update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'hi' } }
     })
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-b',
       instance_id: 'B',
@@ -131,19 +137,19 @@ describe('useSessionStream', () => {
   it('routes thought / plan / tool_call / terminal chunks to their respective stores', async () => {
     await startSessionStream()
 
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
       update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'planning' } }
     })
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
       update: { sessionUpdate: 'plan', entries: [{ content: 'step-1' }] }
     })
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
@@ -174,20 +180,20 @@ describe('useSessionStream', () => {
     const { id } = useActiveInstance()
     expect(id.value).toBeUndefined()
 
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Starting })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Starting })
     expect(id.value).toBeUndefined()
 
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
     expect(id.value).toBe('A')
 
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'B', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'B', state: InstanceState.Running })
     expect(id.value).toBe('A')
   })
 
   it('keeps routing stdout on tool_call_update chunks that omit `kind` after the initial tool_call', async () => {
     await startSessionStream()
 
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
@@ -200,7 +206,7 @@ describe('useSessionStream', () => {
         content: [{ type: 'text', text: 'line 1\n' }]
       }
     })
-    emit('acp:transcript', {
+    emit(TauriEvent.AcpTranscript, {
       agent_id: 'a',
       session_id: 's-a',
       instance_id: 'A',
@@ -224,7 +230,7 @@ describe('useSessionStream', () => {
   it('pushes an ok toast when acp:instance-state transitions to running', async () => {
     await startSessionStream()
 
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
 
     const { entries } = useToasts()
     expect(entries.value).toHaveLength(1)
@@ -236,8 +242,8 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     // Ended after running → toast
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
 
     const { entries } = useToasts()
     const messages = entries.value.map((t) => t.message)
@@ -245,20 +251,20 @@ describe('useSessionStream', () => {
 
     // Clear and try: ended without ever running → no "session ended" toast
     clearToasts()
-    emit('acp:instance-state', { agent_id: 'b', instance_id: 'B', state: InstanceState.Ended })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'b', instance_id: 'B', state: InstanceState.Ended })
 
     expect(entries.value.find((t) => t.message === 'session ended')).toBeUndefined()
   })
 
   it('clears priorState map on stop so a new startSessionStream begins fresh', async () => {
     const stop = await startSessionStream()
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
     stop()
     clearToasts()
 
     // New stream should not carry prior state from previous stream
     await startSessionStream()
-    emit('acp:instance-state', { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
+    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
 
     const { entries } = useToasts()
     expect(entries.value.find((t) => t.message === 'session ended')).toBeUndefined()

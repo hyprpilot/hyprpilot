@@ -1,8 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 
-import { listen, listSessions, loadSession, type SessionSummary, type UnlistenFn } from '@ipc'
-
-import { InstanceState, type InstanceStateEventPayload } from './useSessionStream'
+import { InstanceState, listen, listSessions, loadSession, TauriEvent, type SessionSummary, type UnlistenFn } from '@ipc'
 
 /**
  * Reactive wrapper around `session_list` + `session_load`. Both are
@@ -51,7 +49,7 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
 
   onMounted(async () => {
     unlisteners.push(
-      await listen<InstanceStateEventPayload>('acp:instance-state', (e) => {
+      await listen(TauriEvent.AcpInstanceState, (e) => {
         if (e.payload.state === InstanceState.Ended) {
           void refresh()
         }

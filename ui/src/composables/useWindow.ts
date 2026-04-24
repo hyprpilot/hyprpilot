@@ -1,18 +1,4 @@
-import { invoke } from '@ipc'
-
-export type WindowMode = 'anchor' | 'center'
-export type Edge = 'top' | 'right' | 'bottom' | 'left'
-
-/**
- * Snapshot of the daemon's resolved `[daemon.window]` state. Mirrors
- * `src-tauri/src/daemon/mod.rs::WindowState`. `anchorEdge` is the edge the
- * layer-shell surface is pinned to in anchor mode; absent in center mode
- * (no screen-edge-relative chrome should render).
- */
-export interface WindowState {
-  mode: WindowMode
-  anchorEdge?: Edge
-}
+import { invoke, TauriCommand, type WindowState } from '@ipc'
 
 /**
  * Fetches the window state and exposes the anchored edge as a
@@ -25,7 +11,7 @@ export interface WindowState {
 export async function applyWindowState(): Promise<void> {
   let state: WindowState
   try {
-    state = await invoke<WindowState>('get_window_state')
+    state = await invoke(TauriCommand.GetWindowState)
   } catch {
     return
   }

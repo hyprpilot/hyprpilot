@@ -4,9 +4,13 @@ import { applyGtkFont } from './useTheme'
 
 const invoke = vi.fn()
 
-vi.mock('@ipc', () => ({
-  invoke: (...args: unknown[]) => invoke(...args)
-}))
+vi.mock('@ipc', async () => {
+  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+  return {
+    ...actual,
+    invoke: (...args: unknown[]) => invoke(...args)
+  }
+})
 
 beforeEach(() => {
   invoke.mockReset()

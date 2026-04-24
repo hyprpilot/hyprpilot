@@ -11,7 +11,12 @@ import { Phase, type PaletteRowItem } from '@components'
  * The full preview breakout lives on the right-side pane.
  */
 
-export type SessionState = 'streaming' | 'awaiting' | 'idle' | 'paused'
+export enum SessionState {
+  Streaming = 'streaming',
+  Awaiting = 'awaiting',
+  Idle = 'idle',
+  Paused = 'paused'
+}
 
 export interface SessionRow extends PaletteRowItem {
   t: string
@@ -25,13 +30,13 @@ export interface SessionRow extends PaletteRowItem {
 
 function phaseFor(state: SessionState): Phase {
   switch (state) {
-    case 'streaming':
+    case SessionState.Streaming:
       return Phase.Streaming
-    case 'awaiting':
+    case SessionState.Awaiting:
       return Phase.Awaiting
-    case 'idle':
+    case SessionState.Idle:
       return Phase.Idle
-    case 'paused':
+    case SessionState.Paused:
     default:
       return Phase.Pending
   }
@@ -41,7 +46,7 @@ export const sessionRows: SessionRow[] = [
   {
     id: 's1',
     t: 'now',
-    state: 'streaming',
+    state: SessionState.Streaming,
     profile: 'captain',
     meta: 'ask · opus-4',
     title: 'refactor fs tools out of AcpClient',
@@ -54,7 +59,7 @@ export const sessionRows: SessionRow[] = [
   {
     id: 's2',
     t: '2m',
-    state: 'awaiting',
+    state: SessionState.Awaiting,
     profile: 'opencode',
     meta: 'build · kimi-k2.6',
     title: 'curl google permission test',
@@ -67,7 +72,7 @@ export const sessionRows: SessionRow[] = [
   {
     id: 's3',
     t: '8m',
-    state: 'idle',
+    state: SessionState.Idle,
     profile: 'captain',
     meta: 'plan · opus-4',
     title: 'review MR !15 K-240 ACP runtime',
@@ -80,7 +85,7 @@ export const sessionRows: SessionRow[] = [
   {
     id: 's4',
     t: 'yday',
-    state: 'paused',
+    state: SessionState.Paused,
     profile: 'captain',
     meta: 'plan · opus-4',
     title: 'profiles config draft',
@@ -93,7 +98,7 @@ export const sessionRows: SessionRow[] = [
   {
     id: 's5',
     t: '2d',
-    state: 'paused',
+    state: SessionState.Paused,
     profile: 'scratch',
     meta: 'ask · gpt-5',
     title: 'daemon.rs line 257 context',

@@ -2,14 +2,14 @@ import { computed, reactive, type ComputedRef } from 'vue'
 
 import { Phase } from '@components'
 
-import { InstanceState } from './useSessionStream'
+import { InstanceState } from '@ipc'
 import { useActiveInstance, type InstanceId } from './useActiveInstance'
 import { usePermissions } from './usePermissions'
 import { useTools } from './useTools'
 import { TurnRole, useTranscript } from './useTranscript'
 
 interface PhaseSignals {
-  runtimeState: InstanceState | undefined
+  runtimeState?: InstanceState
 }
 
 const signals = reactive(new Map<InstanceId, PhaseSignals>())
@@ -17,7 +17,7 @@ const signals = reactive(new Map<InstanceId, PhaseSignals>())
 export function pushInstanceState(id: InstanceId, state: InstanceState): void {
   let slot = signals.get(id)
   if (!slot) {
-    slot = { runtimeState: undefined }
+    slot = {}
     signals.set(id, slot)
   }
   slot.runtimeState = state
