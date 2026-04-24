@@ -1,7 +1,7 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
-import { useActiveInstance, type InstanceId } from './useActiveInstance'
+import { useActiveInstance, type InstanceId } from './use-active-instance'
 
 export enum TurnRole {
   User = 'user',

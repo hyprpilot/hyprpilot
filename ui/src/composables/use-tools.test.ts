@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { pushToolCall, resetTools, useTools } from '@composables/useTools'
+import { pushToolCall, resetTools, useTools } from '@composables/use-tools'
 
 beforeEach(() => {
   resetTools('A')

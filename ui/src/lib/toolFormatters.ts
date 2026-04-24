@@ -38,7 +38,7 @@
 import { ToolKind, ToolState } from '@components'
 import type { ToolChipItem } from '@components'
 
-import type { ToolCallView } from '../composables/useTools'
+import type { ToolCallView } from '../composables/use-tools'
 
 /** Short verb-glyph rendered as the chip's leading label. */
 const BASE_SHORT_HEADERS = {

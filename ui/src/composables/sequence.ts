@@ -6,7 +6,7 @@
  * tool calls into one ordered timeline. Stores never maintain their
  * own counter — the demuxer is the sole authority.
  */
-import type { InstanceId } from './useActiveInstance'
+import type { InstanceId } from './use-active-instance'
 
 const counters = new Map<InstanceId, number>()
 

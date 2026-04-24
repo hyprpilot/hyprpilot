@@ -4,11 +4,11 @@ import { InstanceState } from '@ipc'
 
 import { Phase } from '@components'
 
-import { useActiveInstance } from '@composables/useActiveInstance'
-import { resetPermissions, pushPermissionRequest } from '@composables/usePermissions'
-import { __resetAllPhaseSignals, pushInstanceState, usePhase } from '@composables/usePhase'
-import { resetTools, pushToolCall } from '@composables/useTools'
-import { pushTranscriptChunk, resetTranscript } from '@composables/useTranscript'
+import { useActiveInstance } from '@composables/use-active-instance'
+import { resetPermissions, pushPermissionRequest } from '@composables/use-permissions'
+import { __resetAllPhaseSignals, pushInstanceState, usePhase } from '@composables/use-phase'
+import { resetTools, pushToolCall } from '@composables/use-tools'
+import { pushTranscriptChunk, resetTranscript } from '@composables/use-transcript'
 
 vi.mock('@ipc', async () => {
   const actual = await vi.importActual<typeof import('@ipc')>('@ipc')

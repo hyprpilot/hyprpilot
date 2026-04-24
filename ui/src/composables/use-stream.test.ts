@@ -6,7 +6,7 @@ import {
   resetStream,
   StreamItemKind,
   useStream
-} from '@composables/useStream'
+} from '@composables/use-stream'
 
 beforeEach(() => {
   resetStream('A')

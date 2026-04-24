@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { useActiveInstance } from '@composables/useActiveInstance'
+import { useActiveInstance } from '@composables/use-active-instance'
 import {
   pushTranscriptChunk,
   resetTranscript,
   TurnRole,
   useTranscript
-} from '@composables/useTranscript'
+} from '@composables/use-transcript'
 
 beforeEach(() => {
   resetTranscript('A')

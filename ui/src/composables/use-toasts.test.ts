@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ToastTone } from '@components/types'
 
-import { clearToasts, dismissToast, pushToast, useToasts } from './useToasts'
+import { clearToasts, dismissToast, pushToast, useToasts } from './use-toasts'
 
 beforeEach(() => {
   vi.useFakeTimers()

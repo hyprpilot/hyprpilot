@@ -743,6 +743,12 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 
 ### Naming conventions
 
+- **Filename casing.** `.ts` files are kebab-case
+  (`use-attachments.ts`, `palette-root.ts`); `.vue` SFCs stay
+  PascalCase (`ChatComposer.vue`, `Frame.vue`). Barrels re-export
+  members, so most call sites import by folder
+  (`import { useAttachments } from '@composables'`) and don't change
+  when a file is renamed.
 - **Error variable names are `err`, not `error`.** Applies to both Rust
   (`Err(err) => …`) and TypeScript (`.catch((err) => …)`, `try { … }
   catch (err) { … }`). Local refs / state that carry the last error use

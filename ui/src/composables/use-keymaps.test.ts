@@ -14,7 +14,7 @@ vi.mock('@lib', async () => ({
   log: { warn: warnMock, error: vi.fn(), info: vi.fn(), debug: vi.fn() }
 }))
 
-import { isEditableTarget } from './useKeymaps'
+import { isEditableTarget } from './use-keymaps'
 
 function defaultKeymaps(): KeymapsConfig {
   return {
@@ -47,17 +47,17 @@ describe('useKeymaps', () => {
   beforeEach(async () => {
     invokeMock.mockReset()
     warnMock.mockReset()
-    const mod = await import('./useKeymaps')
+    const mod = await import('./use-keymaps')
     mod.__resetKeymapsForTests()
   })
 
   afterEach(async () => {
-    const mod = await import('./useKeymaps')
+    const mod = await import('./use-keymaps')
     mod.__resetKeymapsForTests()
   })
 
   it('keymaps is undefined before loadKeymaps resolves', async () => {
-    const { useKeymaps } = await import('./useKeymaps')
+    const { useKeymaps } = await import('./use-keymaps')
     const { keymaps } = useKeymaps()
     expect(keymaps.value).toBeUndefined()
   })
@@ -66,7 +66,7 @@ describe('useKeymaps', () => {
     const fixture = defaultKeymaps()
     invokeMock.mockResolvedValueOnce(fixture)
 
-    const { loadKeymaps, useKeymaps } = await import('./useKeymaps')
+    const { loadKeymaps, useKeymaps } = await import('./use-keymaps')
     await loadKeymaps()
 
     const { keymaps } = useKeymaps()
@@ -78,7 +78,7 @@ describe('useKeymaps', () => {
   it('loadKeymaps soft-fails when invoke rejects (no Tauri host)', async () => {
     invokeMock.mockRejectedValueOnce(new Error('tauri host missing'))
 
-    const { loadKeymaps, useKeymaps } = await import('./useKeymaps')
+    const { loadKeymaps, useKeymaps } = await import('./use-keymaps')
     await loadKeymaps()
 
     const { keymaps } = useKeymaps()
@@ -90,7 +90,7 @@ describe('useKeymaps', () => {
     const fixture = defaultKeymaps()
     invokeMock.mockResolvedValueOnce(fixture)
 
-    const { loadKeymaps, useKeymaps } = await import('./useKeymaps')
+    const { loadKeymaps, useKeymaps } = await import('./use-keymaps')
     await loadKeymaps()
 
     const a = useKeymaps()

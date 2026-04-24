@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { useActiveInstance } from '@composables/useActiveInstance'
+import { useActiveInstance } from '@composables/use-active-instance'
 
 // Module-scoped ref: reset to undefined between tests via the
 // exposed set()/setIfUnset() semantics. `setIfUnset('')` is not a

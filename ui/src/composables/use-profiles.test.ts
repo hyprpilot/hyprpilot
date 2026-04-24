@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useProfiles } from '@composables/useProfiles'
+import { useProfiles } from '@composables/use-profiles'
 
 const getProfiles = vi.fn()
 

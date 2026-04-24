@@ -3,10 +3,10 @@ import { computed, reactive, type ComputedRef } from 'vue'
 import { Phase } from '@components'
 
 import { InstanceState } from '@ipc'
-import { useActiveInstance, type InstanceId } from './useActiveInstance'
-import { usePermissions } from './usePermissions'
-import { useTools } from './useTools'
-import { TurnRole, useTranscript } from './useTranscript'
+import { useActiveInstance, type InstanceId } from './use-active-instance'
+import { usePermissions } from './use-permissions'
+import { useTools } from './use-tools'
+import { TurnRole, useTranscript } from './use-transcript'
 
 interface PhaseSignals {
   runtimeState?: InstanceState

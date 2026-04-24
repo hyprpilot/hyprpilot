@@ -26,6 +26,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
+import { openRootPalette, openSkillsPalette } from './palette-root'
 import {
   ChatAssistantBody,
   ChatComposer,
@@ -34,6 +35,7 @@ import {
   ChatToolChips,
   ChatTurn,
   ChatUserBody,
+  CommandPalette,
   Frame,
   PlanStatus,
   Role,
@@ -52,6 +54,7 @@ import {
   useAdapter,
   useKeymap,
   useKeymaps,
+  usePalette,
   usePermissions,
   usePhase,
   useProfiles,
@@ -65,6 +68,7 @@ import {
   type InstanceId,
   type PlanEntry
 } from '@composables'
+import { Modifier } from '@ipc'
 import { formatToolCall, log } from '@lib'
 
 const { submit } = useAdapter()
@@ -174,6 +178,8 @@ function firePermission(action: 'allow' | 'deny'): void {
 }
 
 const { keymaps } = useKeymaps()
+const { closeAll: closeAllPalettes } = usePalette()
+
 useKeymap(
   () => document,
   (): KeymapEntry[] => {
@@ -192,6 +198,30 @@ useKeymap(
         binding: keymaps.value.approvals.deny,
         handler: () => {
           firePermission('deny')
+        }
+      },
+      {
+        binding: keymaps.value.palette.open,
+        handler: () => {
+          openRootPalette()
+
+          return true
+        }
+      },
+      {
+        binding: keymaps.value.palette.close,
+        handler: () => {
+          closeAllPalettes()
+        }
+      },
+      // TODO: replace with keymaps.value.palette.skills.open once the
+      // Rust-side [keymaps.palette.skills] group lands in its own issue.
+      {
+        binding: { modifiers: [Modifier.Ctrl], key: 'space' },
+        handler: () => {
+          openSkillsPalette()
+
+          return true
         }
       }
     ]
@@ -299,11 +329,7 @@ function onSubmit(text: string): void {
 
         <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
         <!-- `activeProfile?.agent` → `profiles_list`'s vendor once per-adapter overrides land. -->
-        <ChatToolChips
-          v-if="block.toolCalls.length > 0"
-          :items="block.toolCalls.map((t) => formatToolCall(t.call))"
-          grouped
-        />
+        <ChatToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
 
         <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
           <ChatUserBody v-if="entry.turn.role === TurnRole.User">{{ entry.turn.text }}</ChatUserBody>
@@ -324,6 +350,8 @@ function onSubmit(text: string): void {
       <ChatComposer ref="composerRef" :sending="sending" @submit="onSubmit" />
     </template>
   </Frame>
+
+  <CommandPalette />
 </template>
 
 <style scoped>

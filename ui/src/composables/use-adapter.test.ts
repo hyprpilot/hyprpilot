@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TauriCommand } from '@ipc'
 
-import { useAdapter } from '@composables/useAdapter'
+import { useAdapter } from '@composables/use-adapter'
 
 const invoke = vi.fn()
 
