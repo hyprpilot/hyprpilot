@@ -50,6 +50,36 @@ export interface ListSessionsArgs {
   cwd?: string
 }
 
+/**
+ * Skill body surfaced by the skills registry (K-268). Mirrors the
+ * Rust `skills_get` command response.
+ */
+export interface SkillBody {
+  slug: string
+  path: string
+  body: string
+  title?: string
+}
+
+/**
+ * A user-turn attachment delivered alongside compose text. Today the
+ * sole producer is the skills palette (K-268): a tick selects a skill,
+ * the body is snapshotted at pick time, and the resulting `Attachment`
+ * lands in `useAttachments().pending`. Submitted with the user turn,
+ * the Rust side maps each entry onto an ACP `ContentBlock::Resource`
+ * (`uri = "file://<path>"`, `text = body`) prepended before the prompt
+ * text block.
+ *
+ * `slug` is the dedup key — the same skill can't ride twice on a turn
+ * even if the user clicks the palette tick a second time.
+ */
+export interface Attachment {
+  slug: string
+  path: string
+  body: string
+  title?: string
+}
+
 export interface LoadSessionArgs {
   instanceId?: string
   agentId: string

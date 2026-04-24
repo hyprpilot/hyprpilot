@@ -1,5 +1,6 @@
 export { default as ChatAssistantBody } from './ChatAssistantBody.vue'
 export { default as ChatComposer } from './ChatComposer.vue'
+export { default as ChatComposerPill } from './ChatComposerPill.vue'
 export { default as ChatLiveSessionRow } from './ChatLiveSessionRow.vue'
 export { default as ChatPermissionStack } from './ChatPermissionStack.vue'
 export { default as ChatQueueStrip } from './ChatQueueStrip.vue'

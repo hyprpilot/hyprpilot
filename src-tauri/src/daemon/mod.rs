@@ -233,6 +233,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         // LogTracer — which routes into the backend tracing subscriber.
         // One file, both sides.
         .plugin(tauri_plugin_log::Builder::default().skip_logger().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
             if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
