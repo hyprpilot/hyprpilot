@@ -56,7 +56,7 @@ describe('useAdapter', () => {
   })
 
   it('profilesList() unwraps { profiles } into an array', async () => {
-    invoke.mockResolvedValue({ profiles: [{ id: 'p', agent: 'a', has_prompt: false, is_default: true }] })
+    invoke.mockResolvedValue({ profiles: [{ id: 'p', agent: 'a', is_default: true }] })
     const { profilesList } = useAdapter()
 
     const profiles = await profilesList()

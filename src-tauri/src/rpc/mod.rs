@@ -7,7 +7,10 @@ pub mod status;
 use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
-pub use handlers::{ConfigHandler, DaemonHandler, InstancesHandler, SessionHandler, StatusHandler, WindowHandler};
+pub use handlers::{
+    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, InstancesHandler, ModelsHandler, ModesHandler,
+    ProfilesHandler, SessionHandler, StatusHandler, WindowHandler,
+};
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
 
@@ -45,6 +48,11 @@ impl RpcDispatcher {
     /// - `InstancesHandler` (namespace `"instances"`): `instances/list`,
     ///   `instances/spawn`, `instances/focus`, `instances/restart`,
     ///   `instances/shutdown`, `instances/info`.
+    /// - `ProfilesHandler` (namespace `"profiles"`): `profiles/list`.
+    /// - `AgentsHandler` (namespace `"agents"`): `agents/list`.
+    /// - `CommandsHandler` (namespace `"commands"`): `commands/list`.
+    /// - `ModesHandler` (namespace `"modes"`): `modes/list`, `modes/set`.
+    /// - `ModelsHandler` (namespace `"models"`): `models/list`, `models/set`.
     pub fn with_defaults() -> Self {
         Self {
             handlers: vec![
@@ -54,6 +62,11 @@ impl RpcDispatcher {
                 Box::new(StatusHandler),
                 Box::new(ConfigHandler),
                 Box::new(InstancesHandler),
+                Box::new(ProfilesHandler),
+                Box::new(AgentsHandler),
+                Box::new(CommandsHandler),
+                Box::new(ModesHandler),
+                Box::new(ModelsHandler),
             ],
         }
     }
@@ -96,13 +109,14 @@ mod dispatcher_tests {
     /// completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
-        let config = Arc::new(Config::default());
-        let adapter: Arc<dyn Adapter> =
-            Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
+        let config = Arc::new(std::sync::RwLock::new(Config::default()));
+        let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
+        let adapter: Arc<dyn Adapter> = acp.clone();
         let ctx = HandlerCtx {
             app: None,
             status: broadcast,
             adapter: Some(adapter),
+            acp_adapter: Some(acp),
             config: Some(config),
             id: &id,
             already_subscribed: false,
@@ -277,13 +291,14 @@ mod dispatcher_tests {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
         let id = RequestId::Number(2);
-        let config = Arc::new(Config::default());
-        let adapter: Arc<dyn Adapter> =
-            Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
+        let config = Arc::new(std::sync::RwLock::new(Config::default()));
+        let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
+        let adapter: Arc<dyn Adapter> = acp.clone();
         let ctx = HandlerCtx {
             app: None,
             status: &broadcast,
             adapter: Some(adapter),
+            acp_adapter: Some(acp),
             config: Some(config),
             id: &id,
             already_subscribed: true,

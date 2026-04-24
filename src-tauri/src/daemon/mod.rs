@@ -4,7 +4,7 @@ pub use renderer::WindowRenderer;
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -174,8 +174,10 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let theme = cfg.ui.theme.clone();
     let keymaps = cfg.keymaps.clone();
     let window_cfg: Window = cfg.daemon.window.clone();
-    let adapter_cfg = cfg.clone();
-    let shared_config = Arc::new(cfg.clone());
+    // Share one Arc<RwLock<Config>> between AcpAdapter and RpcState so
+    // both reach the same instance — config is read-only at runtime,
+    // the lock is just to thread one handle through cheaply.
+    let shared_config = Arc::new(RwLock::new(cfg));
 
     // Snapshot the resolved window state up-front so the webview can fetch
     // it without re-reading the config at request time. `anchor_edge` is
@@ -209,8 +211,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // carries both — the concrete for config-adjacent commands
     // (`agents_list`, `session_load`, …) and the generic for the RPC
     // handlers which stay adapter-agnostic.
-    let acp_adapter = Arc::new(AcpAdapter::with_permissions(
-        adapter_cfg,
+    let acp_adapter = Arc::new(AcpAdapter::with_shared_config(
+        shared_config.clone(),
         status.clone(),
         permissions.clone(),
     ));

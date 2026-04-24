@@ -1,13 +1,23 @@
+pub mod agents;
+pub mod commands;
 pub mod config;
 pub mod daemon;
 pub mod instances;
+pub mod models;
+pub mod modes;
+pub mod profiles;
 pub mod session;
 pub mod status;
 pub mod window;
 
+pub use self::agents::AgentsHandler;
+pub use self::commands::CommandsHandler;
 pub use self::config::ConfigHandler;
 pub use self::daemon::DaemonHandler;
 pub use self::instances::InstancesHandler;
+pub use self::models::ModelsHandler;
+pub use self::modes::ModesHandler;
+pub use self::profiles::ProfilesHandler;
 pub use self::session::SessionHandler;
 pub use self::status::StatusHandler;
 pub use self::window::WindowHandler;

@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
-use crate::adapters::Adapter;
+use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::Config;
 use crate::rpc::protocol::{RequestId, RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
@@ -29,10 +29,16 @@ pub struct HandlerCtx<'a> {
     /// `Some`. Typed as `Arc<dyn Adapter>` so handlers are adapter-agnostic
     /// — adding an HTTP transport does not touch this field.
     pub adapter: Option<Arc<dyn Adapter>>,
-    /// Shared config snapshot. Read-only handlers (`config/profiles`,
-    /// future `config/agents`) render from this directly; adapter
-    /// methods never see it.
-    pub config: Option<Arc<Config>>,
+    /// ACP-specific handle for handlers that need methods outside the
+    /// generic `Adapter` trait — `profiles/list`, `agents/list` today.
+    /// Production daemon always passes the same `Arc<AcpAdapter>` that
+    /// sits behind `adapter`; tests can pass either or both.
+    pub acp_adapter: Option<Arc<AcpAdapter>>,
+    /// Shared config handle. Read-only at runtime — handlers
+    /// (`config/profiles`, future `config/agents`) lock briefly to
+    /// clone what they need. Config is static after daemon start;
+    /// restart-to-change is the model.
+    pub config: Option<Arc<RwLock<Config>>>,
     /// Request id of the in-flight call. Handlers read it for logging /
     /// tracing spans; unused by routing.
     #[allow(dead_code)]

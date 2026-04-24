@@ -8,7 +8,9 @@ use tracing::debug;
 use crate::config::Config;
 use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
-    CancelHandler, CtlHandler, KillHandler, SessionInfoHandler, StatusHandler, SubmitHandler, ToggleHandler,
+    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, KillHandler, ModelsListHandler,
+    ModelsSetHandler, ModesListHandler, ModesSetHandler, SessionInfoHandler, StatusHandler, SubmitHandler,
+    ToggleHandler,
 };
 use crate::paths;
 
@@ -65,6 +67,77 @@ pub enum CtlCommand {
         #[arg(long, default_value_t = false)]
         watch: bool,
     },
+
+    /// Read-only operations over the `[[agents]]` registry.
+    Agents {
+        #[command(subcommand)]
+        command: AgentsSubcommand,
+    },
+
+    /// ACP `session/available_commands` passthrough — per-instance.
+    Commands {
+        #[command(subcommand)]
+        command: CommandsSubcommand,
+    },
+
+    /// ACP `session/set_session_mode` passthrough — per-instance.
+    Modes {
+        #[command(subcommand)]
+        command: ModesSubcommand,
+    },
+
+    /// ACP `session/set_session_model` passthrough — per-instance.
+    Models {
+        #[command(subcommand)]
+        command: ModelsSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum AgentsSubcommand {
+    /// List configured agents.
+    List,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CommandsSubcommand {
+    /// List available commands for the addressed instance.
+    List {
+        #[arg(long = "instance")]
+        instance_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ModesSubcommand {
+    /// List session modes the addressed instance advertised.
+    List {
+        #[arg(long = "instance")]
+        instance_id: String,
+    },
+    /// Set the addressed instance's current mode.
+    Set {
+        #[arg(long = "instance")]
+        instance_id: String,
+        #[arg(long = "mode")]
+        mode_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ModelsSubcommand {
+    /// List models the addressed instance advertised.
+    List {
+        #[arg(long = "instance")]
+        instance_id: String,
+    },
+    /// Set the addressed instance's current model.
+    Set {
+        #[arg(long = "instance")]
+        instance_id: String,
+        #[arg(long = "model")]
+        model_id: String,
+    },
 }
 
 /// Dispatch one `ctl` subcommand. Each arm builds the matching
@@ -90,5 +163,19 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
         CtlCommand::Kill => KillHandler.run(&client),
         CtlCommand::SessionInfo => SessionInfoHandler.run(&client),
         CtlCommand::Status { watch } => StatusHandler { watch }.run(&client),
+        CtlCommand::Agents { command } => match command {
+            AgentsSubcommand::List => AgentsListHandler.run(&client),
+        },
+        CtlCommand::Commands { command } => match command {
+            CommandsSubcommand::List { instance_id } => CommandsListHandler { instance_id }.run(&client),
+        },
+        CtlCommand::Modes { command } => match command {
+            ModesSubcommand::List { instance_id } => ModesListHandler { instance_id }.run(&client),
+            ModesSubcommand::Set { instance_id, mode_id } => ModesSetHandler { instance_id, mode_id }.run(&client),
+        },
+        CtlCommand::Models { command } => match command {
+            ModelsSubcommand::List { instance_id } => ModelsListHandler { instance_id }.run(&client),
+            ModelsSubcommand::Set { instance_id, model_id } => ModelsSetHandler { instance_id, model_id }.run(&client),
+        },
     }
 }

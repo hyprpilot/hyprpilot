@@ -32,7 +32,6 @@ export interface ProfileSummary {
   id: string
   agent: string
   model?: string
-  has_prompt: boolean
   is_default: boolean
 }
 

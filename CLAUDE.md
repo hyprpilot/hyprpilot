@@ -917,7 +917,7 @@ can't block others.
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
 | `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
-| `config/profiles` | *(none)* | `{ "profiles": [{ id, agent, model, has_prompt, is_default }] }` | Read-only profile list for the chat-shell picker (K-246). |
+| `config/profiles` | *(none)* | `{ "profiles": [{ id, agent, model, is_default }] }` | Read-only profile list for the chat-shell picker (K-246). |
 
 `StatusResult` shape: `{ "state": "idle" | "streaming" | "awaiting" | "error", "visible": bool, "active_session": string | null }`.
 
