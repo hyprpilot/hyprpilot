@@ -2,11 +2,11 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::Config;
-use crate::rpc::protocol::{RequestId, RpcError, StatusResult};
+use crate::rpc::protocol::{EventsNotifyParams, RequestId, RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
 
 /// Per-connection context handed to `RpcHandler::handle`. Groups the
@@ -47,19 +47,66 @@ pub struct HandlerCtx<'a> {
     /// Threaded in by the server so `StatusHandler` can reject a second
     /// subscribe on the same socket with `-32600` (Thread 9).
     pub already_subscribed: bool,
+    /// Subscription ids registered to this connection's `events/*`
+    /// channel. Threaded in so `EventsHandler` can reject duplicate
+    /// `events/unsubscribe` ids cleanly (responding with
+    /// `{ unsubscribed: false }` rather than panicking on a vanished
+    /// entry) and surface "not yours" without a server-side lookup.
+    pub existing_event_subscription_ids: &'a [String],
+    /// Lazy mpsc sender the events filter tasks push on. The server
+    /// initialises this on first `events/subscribe`; subsequent
+    /// subscribes on the same connection receive a clone via this
+    /// reference. `None` means the connection has zero active events
+    /// subscriptions and the server must mint a fresh `(tx, rx)` pair.
+    pub events_tx: Option<&'a EventsConnectionTx>,
 }
 
 /// Outcome returned by a handler. Most calls are a plain `Reply(Value)`;
-/// `status/subscribe` returns `Subscribed(snapshot, receiver)` so the
-/// server loop can pin the receiver onto the connection task and fan
-/// `status/changed` notifications out as they arrive.
+/// subscribers return one of the `*Subscribed` variants so the server
+/// loop can pin the receiver onto the connection task and fan
+/// notifications out as they arrive.
 #[allow(clippy::large_enum_variant)]
 pub enum HandlerOutcome {
     Reply(Value),
-    /// Initial snapshot + a broadcast receiver that yields future state
-    /// transitions. The server writes the snapshot as the call's JSON-RPC
-    /// response, then drives the receiver in the connection's `select!`.
-    Subscribed(Value, broadcast::Receiver<StatusResult>),
+    /// `status/subscribe` — initial snapshot + a broadcast receiver that
+    /// yields future state transitions. The server writes the snapshot
+    /// as the call's JSON-RPC response, then drives the receiver in the
+    /// connection's `select!` to push `status/changed` notifications.
+    StatusSubscribed(Value, broadcast::Receiver<StatusResult>),
+    /// `events/subscribe` — initial reply (`{ subscriptionId }`) + the
+    /// data the connection loop needs to evict the subscription on
+    /// `events/unsubscribe` (the cancel sender + an mpsc sender clone
+    /// the spawned filter task pushes onto). The connection's
+    /// `select!` drains a single shared mpsc receiver across every
+    /// active subscription; per-subscription teardown drops the
+    /// matching `EventsSubscription`, which fires the cancel +
+    /// terminates the filter task on its next loop iteration.
+    EventsSubscribed(Value, EventsSubscription),
+}
+
+/// Per-subscription handle the events/subscribe handler returns. The
+/// connection's vec owns one per active subscription; dropping it
+/// signals the cancel oneshot, which the filter task awaits in
+/// `tokio::select!` alongside the broadcast recv — drop = task exits.
+pub struct EventsSubscription {
+    pub subscription_id: String,
+    /// Held to keep the cancel signal armed; dropped only on
+    /// `events/unsubscribe` or connection close. The matching
+    /// receiver lives inside the filter task — never read directly.
+    #[allow(dead_code)]
+    pub cancel: oneshot::Sender<()>,
+}
+
+/// Bag the events handler hands back to the server: the per-subscription
+/// drop-handle the connection vec stores, plus the mpsc sender the
+/// filter task pushes notifications onto. Only the first
+/// `events/subscribe` on a connection passes a fresh `(tx, rx)` pair;
+/// subsequent subscribes receive a clone of the existing tx so every
+/// subscription on a connection feeds the same outbound queue, which
+/// the connection's `select!` drains in a single arm.
+#[derive(Clone)]
+pub struct EventsConnectionTx {
+    pub tx: mpsc::Sender<EventsNotifyParams>,
 }
 
 /// A unit of RPC work, keyed by the namespace prefix of its method names.

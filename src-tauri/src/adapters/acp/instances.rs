@@ -153,6 +153,16 @@ impl AcpAdapter {
     pub fn subscribe_events(&self) -> broadcast::Receiver<crate::adapters::InstanceEvent> {
         self.registry.subscribe()
     }
+
+    /// Test-only publish handle. Production publishers go through the
+    /// runtime → registry pipeline; integration tests reach for this
+    /// to drive deterministic events through the broadcast without
+    /// spawning a real ACP actor.
+    #[cfg(test)]
+    #[must_use]
+    pub fn test_events_tx(&self) -> broadcast::Sender<crate::adapters::InstanceEvent> {
+        self.registry.events_tx()
+    }
 }
 
 impl AcpAdapter {

@@ -6,8 +6,11 @@ use tracing::{error, info, trace, warn};
 
 use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::Config;
-use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
-use crate::rpc::protocol::{JsonRpcVersion, Outcome, RequestId, Response, RpcError, StatusChangedNotification};
+use crate::rpc::handler::{EventsConnectionTx, EventsSubscription, HandlerCtx, HandlerOutcome};
+use crate::rpc::protocol::{
+    EventsNotifyNotification, EventsNotifyParams, JsonRpcVersion, Outcome, RequestId, Response, RpcError,
+    StatusChangedNotification,
+};
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
 
@@ -29,7 +32,9 @@ pub struct RpcState {
 
 /// One accepted connection. Reads NDJSON, dispatches, writes the
 /// response, loops. After `status/subscribe` the same loop
-/// multiplexes `status/changed` notifications via `tokio::select!`.
+/// multiplexes `status/changed` notifications via `tokio::select!`;
+/// after `events/subscribe` it also drains per-subscription mpsc
+/// receivers and writes `events/notify` notifications inline.
 pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -37,6 +42,14 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     // Set by `status/subscribe`; its presence also gates the second-
     // subscribe rejection via `HandlerCtx::already_subscribed`.
     let mut status_rx: Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>> = None;
+    // Per-connection events subscriptions. Empty by default; one entry
+    // per `events/subscribe` call. Each holds a oneshot cancel sender —
+    // dropping the entry signals the filter task to exit. The shared
+    // `events_rx` drains every active subscription's notifications;
+    // every filter task pushes onto a clone of `events_tx`.
+    let mut events_subs: Vec<EventsSubscription> = Vec::new();
+    let mut events_tx_holder: Option<EventsConnectionTx> = None;
+    let mut events_rx: Option<tokio::sync::mpsc::Receiver<EventsNotifyParams>> = None;
 
     loop {
         tokio::select! {
@@ -54,7 +67,20 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 
                 trace!(line = %line, "rpc: received line");
 
-                let (response, new_rx) = dispatch(
+                // Lazy-init the connection's shared events mpsc on first
+                // events/subscribe. Subsequent subscribes clone the
+                // existing tx so every filter task feeds the same rx.
+                if events_tx_holder.is_none() {
+                    let (tx, rx) = tokio::sync::mpsc::channel::<EventsNotifyParams>(EVENTS_CONNECTION_QUEUE_CAPACITY);
+                    events_tx_holder = Some(EventsConnectionTx { tx });
+                    events_rx = Some(rx);
+                }
+
+                let existing_subscription_ids: Vec<String> =
+                    events_subs.iter().map(|s| s.subscription_id.clone()).collect();
+                let events_tx_ref = events_tx_holder.as_ref();
+
+                let dispatch_result = dispatch(
                     &line,
                     Some(&state.app),
                     &state.status,
@@ -63,10 +89,23 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Some(state.acp_adapter.clone()),
                     Some(state.config.clone()),
                     status_rx.is_some(),
+                    &existing_subscription_ids,
+                    events_tx_ref,
                 ).await;
 
-                if let Some(rx) = new_rx {
+                let DispatchOutput { response, new_status_rx, new_events_sub, unsubscribe_id } = dispatch_result;
+
+                if let Some(rx) = new_status_rx {
                     status_rx = Some(rx);
+                }
+                if let Some(sub) = new_events_sub {
+                    events_subs.push(sub);
+                }
+                if let Some(id) = unsubscribe_id {
+                    // Drop the matching EventsSubscription — its cancel
+                    // sender drops with it and the filter task notices
+                    // on its next select! iteration.
+                    events_subs.retain(|s| s.subscription_id != id);
                 }
 
                 // Kill signal rides in the response payload as
@@ -150,14 +189,67 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     }
                 }
             }
+
+            // ── outbound events/notify (single per-connection mpsc) ───────
+            // Every active events subscription pushes onto the same mpsc;
+            // the loop drains it and writes one line per item. When no
+            // subscriptions exist (and thus no rx), the future is
+            // `pending()` and never fires.
+            notification = async {
+                match &mut events_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(params) = notification else {
+                    // Sender side dropped — connection's events_tx
+                    // holder should still be alive; this shouldn't
+                    // happen unless the holder was cleared. Treat as
+                    // a no-op and keep going.
+                    continue;
+                };
+                let notif = EventsNotifyNotification::new(params);
+                let mut bytes = match serde_json::to_vec(&notif) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        error!(%err, "rpc: failed to serialize events/notify");
+                        return;
+                    }
+                };
+                bytes.push(b'\n');
+                if let Err(err) = writer.write_all(&bytes).await {
+                    warn!(%err, "rpc: write error on events/notify, closing");
+                    return;
+                }
+                let _ = writer.flush().await;
+            }
         }
     }
 }
 
+/// Per-connection events queue capacity. Single shared queue across
+/// every active `events/subscribe` on the connection — the filter
+/// tasks all push onto a clone of the same sender. Slow consumers
+/// see `try_send` Full + a `warn!` + drop per CLAUDE.md
+/// "drop on slow-consumer backpressure".
+const EVENTS_CONNECTION_QUEUE_CAPACITY: usize = 256;
+
+/// Dispatch result. Single struct so the connection loop can grow new
+/// fields without reflowing every match arm.
+struct DispatchOutput {
+    response: Response,
+    new_status_rx: Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>,
+    new_events_sub: Option<EventsSubscription>,
+    /// Subscription id to evict from the per-connection vec — set by
+    /// the events/unsubscribe handler via the response payload.
+    unsubscribe_id: Option<String>,
+}
+
 /// Parse one NDJSON line → `RpcDispatcher` → JSON-RPC `Response`.
-/// Second return slot is populated only by `status/subscribe`.
-/// State is passed as pieces (not `RpcState`) so tests can pass
-/// `None` for `app` + stand-alone fixtures without a Tauri runtime.
+/// `DispatchOutput` slots are populated by the corresponding subscriber
+/// handlers; `Reply` paths leave them `None`. Tests pass `None` for
+/// `app` + a stand-alone fixture so they can drive routing without a
+/// live Tauri runtime.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch(
     line: &str,
@@ -168,48 +260,44 @@ async fn dispatch(
     acp_adapter: Option<Arc<AcpAdapter>>,
     config: Option<Arc<RwLock<Config>>>,
     connection_already_subscribed: bool,
-) -> (
-    Response,
-    Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>,
-) {
+    existing_event_subscription_ids: &[String],
+    events_tx: Option<&EventsConnectionTx>,
+) -> DispatchOutput {
     // Stage 1: JSON syntax. Failure here is -32700 parse error.
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(_) => return (Response::error(None, RpcError::parse_error()), None),
+        Err(_) => return DispatchOutput::reply(Response::error(None, RpcError::parse_error())),
     };
 
     let id = value.get("id").and_then(parse_id);
 
     // Stage 2: envelope. `jsonrpc` must be present and equal to "2.0".
     if !value.is_object() {
-        return (
-            Response::error(None, RpcError::invalid_request("request must be a JSON object")),
+        return DispatchOutput::reply(Response::error(
             None,
-        );
+            RpcError::invalid_request("request must be a JSON object"),
+        ));
     }
     match value.get("jsonrpc") {
         Some(v) => {
             if serde_json::from_value::<JsonRpcVersion>(v.clone()).is_err() {
-                return (
-                    Response::error(id, RpcError::invalid_request("jsonrpc must be \"2.0\"")),
-                    None,
-                );
+                return DispatchOutput::reply(Response::error(
+                    id,
+                    RpcError::invalid_request("jsonrpc must be \"2.0\""),
+                ));
             }
         }
         None => {
-            return (
-                Response::error(id, RpcError::invalid_request("missing jsonrpc field")),
-                None,
-            );
+            return DispatchOutput::reply(Response::error(id, RpcError::invalid_request("missing jsonrpc field")));
         }
     }
     let id = match id {
         Some(id) => id,
         None => {
-            return (
-                Response::error(None, RpcError::invalid_request("missing or invalid id")),
+            return DispatchOutput::reply(Response::error(
                 None,
-            );
+                RpcError::invalid_request("missing or invalid id"),
+            ));
         }
     };
 
@@ -217,10 +305,10 @@ async fn dispatch(
     let method = match value.get("method").and_then(|v| v.as_str()) {
         Some(m) => m.to_string(),
         None => {
-            return (
-                Response::error(Some(id), RpcError::invalid_request("missing method field")),
-                None,
-            );
+            return DispatchOutput::reply(Response::error(
+                Some(id),
+                RpcError::invalid_request("missing method field"),
+            ));
         }
     };
     let params = value.get("params").cloned().unwrap_or(serde_json::Value::Null);
@@ -236,13 +324,48 @@ async fn dispatch(
         config,
         id: &id,
         already_subscribed: connection_already_subscribed,
+        existing_event_subscription_ids,
+        events_tx,
     };
 
     let outcome = dispatcher.dispatch(&method, params, ctx).await;
 
     match outcome {
-        Ok(HandlerOutcome::Reply(value)) => (Response::success(Some(id), value), None),
-        Ok(HandlerOutcome::Subscribed(snapshot, rx)) => (Response::success(Some(id), snapshot), Some(rx)),
+        Ok(HandlerOutcome::Reply(value)) => {
+            // events/unsubscribe rides in the result payload as
+            // `{"unsubscribed": true, "subscriptionId": "<id>"}`. Pull
+            // the id so the connection loop can evict the matching
+            // entry. The protocol stays self-describing — no separate
+            // out-of-band signal threaded through the dispatcher tuple.
+            let unsubscribe_id = value
+                .get("unsubscribed")
+                .and_then(serde_json::Value::as_bool)
+                .and_then(|b| {
+                    if b {
+                        value.get("subscriptionId").and_then(|v| v.as_str()).map(str::to_string)
+                    } else {
+                        None
+                    }
+                });
+            DispatchOutput {
+                response: Response::success(Some(id), value),
+                new_status_rx: None,
+                new_events_sub: None,
+                unsubscribe_id,
+            }
+        }
+        Ok(HandlerOutcome::StatusSubscribed(snapshot, rx)) => DispatchOutput {
+            response: Response::success(Some(id), snapshot),
+            new_status_rx: Some(rx),
+            new_events_sub: None,
+            unsubscribe_id: None,
+        },
+        Ok(HandlerOutcome::EventsSubscribed(reply, sub)) => DispatchOutput {
+            response: Response::success(Some(id), reply),
+            new_status_rx: None,
+            new_events_sub: Some(sub),
+            unsubscribe_id: None,
+        },
         Err(err) => {
             warn!(
                 id = ?id,
@@ -251,7 +374,18 @@ async fn dispatch(
                 message = %err.message,
                 "rpc: handler returned error"
             );
-            (Response::error(Some(id), err), None)
+            DispatchOutput::reply(Response::error(Some(id), err))
+        }
+    }
+}
+
+impl DispatchOutput {
+    fn reply(response: Response) -> Self {
+        Self {
+            response,
+            new_status_rx: None,
+            new_events_sub: None,
+            unsubscribe_id: None,
         }
     }
 }
@@ -287,7 +421,7 @@ mod tests {
         let config = Arc::new(RwLock::new(Config::default()));
         let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
         let adapter: Arc<dyn Adapter> = acp.clone();
-        let (resp, _) = dispatch(
+        let out = dispatch(
             line,
             None,
             &status,
@@ -296,9 +430,11 @@ mod tests {
             Some(acp),
             Some(config),
             false,
+            &[],
+            None,
         )
         .await;
-        serde_json::to_value(resp).unwrap()
+        serde_json::to_value(out.response).unwrap()
     }
 
     /// With an empty `Config` (no `[agent] default`, no
@@ -477,7 +613,7 @@ mod tests {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let (resp, _) = dispatch(
+                let out = dispatch(
                     &l,
                     None,
                     &status,
@@ -486,9 +622,11 @@ mod tests {
                     Some(acp.clone()),
                     Some(config.clone()),
                     false,
+                    &[],
+                    None,
                 )
                 .await;
-                let mut bytes = serde_json::to_vec(&resp).unwrap();
+                let mut bytes = serde_json::to_vec(&out.response).unwrap();
                 bytes.push(b'\n');
                 writer.write_all(&bytes).await.unwrap();
                 writer.flush().await.unwrap();
@@ -527,7 +665,7 @@ mod tests {
         // First subscribe — emulated: we don't actually route, we just
         // mark the connection state as "already_subscribed = true" and
         // drive the second subscribe through `dispatch_line`.
-        let (resp, rx) = dispatch(
+        let out = dispatch(
             r#"{"jsonrpc":"2.0","id":1,"method":"status/subscribe"}"#,
             None,
             &broadcast,
@@ -536,14 +674,16 @@ mod tests {
             Some(acp.clone()),
             Some(config.clone()),
             false,
+            &[],
+            None,
         )
         .await;
-        let v = serde_json::to_value(resp).unwrap();
+        let v = serde_json::to_value(&out.response).unwrap();
         assert_eq!(v["result"]["state"], "idle", "first subscribe succeeds");
-        assert!(rx.is_some(), "first subscribe returns a receiver");
+        assert!(out.new_status_rx.is_some(), "first subscribe returns a receiver");
 
         // Second subscribe on the same connection — already_subscribed = true.
-        let (resp, rx) = dispatch(
+        let out = dispatch(
             r#"{"jsonrpc":"2.0","id":2,"method":"status/subscribe"}"#,
             None,
             &broadcast,
@@ -552,12 +692,17 @@ mod tests {
             Some(acp),
             Some(config),
             true,
+            &[],
+            None,
         )
         .await;
-        let v = serde_json::to_value(resp).unwrap();
+        let v = serde_json::to_value(&out.response).unwrap();
         assert_eq!(v["error"]["code"], -32600, "second subscribe is rejected: {v}");
         assert_eq!(v["id"], 2);
-        assert!(rx.is_none(), "rejected subscribe must not produce a receiver");
+        assert!(
+            out.new_status_rx.is_none(),
+            "rejected subscribe must not produce a receiver"
+        );
     }
 
     /// Regression for the Lagged arm: when a subscriber falls behind
@@ -653,7 +798,7 @@ mod tests {
                         match line_result {
                             Ok(Some(l)) if l.trim().is_empty() => continue,
                             Ok(Some(l)) => {
-                                let (resp, new_rx) = dispatch(
+                                let out = dispatch(
                                     &l,
                                     None,
                                     &broadcast_clone,
@@ -662,11 +807,13 @@ mod tests {
                                     Some(acp.clone()),
                                     Some(config.clone()),
                                     status_rx.is_some(),
+                                    &[],
+                                    None,
                                 ).await;
-                                if let Some(rx) = new_rx {
+                                if let Some(rx) = out.new_status_rx {
                                     status_rx = Some(rx);
                                 }
-                                let mut bytes = serde_json::to_vec(&resp).unwrap();
+                                let mut bytes = serde_json::to_vec(&out.response).unwrap();
                                 bytes.push(b'\n');
                                 writer.write_all(&bytes).await.unwrap();
                                 writer.flush().await.unwrap();
@@ -720,5 +867,213 @@ mod tests {
 
         drop(client_writer);
         task.await.unwrap();
+    }
+
+    /// Spin up a minimal handle_connection-shaped loop and drive a
+    /// full events/subscribe → publish → events/notify path. Uses the
+    /// real `AcpAdapter` broadcast so the filter task wires through
+    /// the same `subscribe_events()` consumers see in production. The
+    /// connection's events mpsc + per-subscription cancel flow are
+    /// exercised end-to-end.
+    #[tokio::test]
+    async fn events_subscribe_publish_notify_round_trips() {
+        let broadcast = Arc::new(StatusBroadcast::new(true));
+        let acp = Arc::new(AcpAdapter::new(Config::default(), broadcast.clone()));
+
+        let (client, server) = UnixStream::pair().expect("pair");
+        let (client_reader, mut client_writer) = client.into_split();
+        let mut client_lines = BufReader::new(client_reader).lines();
+
+        let acp_clone = acp.clone();
+        let task = tokio::spawn(async move {
+            let (reader, mut writer) = server.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let dispatcher = RpcDispatcher::with_defaults();
+            let config = Arc::new(RwLock::new(Config::default()));
+            let adapter: Arc<dyn Adapter> = acp_clone.clone();
+
+            let mut events_subs: Vec<EventsSubscription> = Vec::new();
+            let mut events_tx_holder: Option<EventsConnectionTx> = None;
+            let mut events_rx: Option<tokio::sync::mpsc::Receiver<EventsNotifyParams>> = None;
+
+            loop {
+                tokio::select! {
+                    line_result = lines.next_line() => {
+                        match line_result {
+                            Ok(Some(l)) if l.trim().is_empty() => continue,
+                            Ok(Some(l)) => {
+                                if events_tx_holder.is_none() {
+                                    let (tx, rx) = tokio::sync::mpsc::channel::<EventsNotifyParams>(EVENTS_CONNECTION_QUEUE_CAPACITY);
+                                    events_tx_holder = Some(EventsConnectionTx { tx });
+                                    events_rx = Some(rx);
+                                }
+                                let existing: Vec<String> = events_subs.iter().map(|s| s.subscription_id.clone()).collect();
+                                let out = dispatch(
+                                    &l,
+                                    None,
+                                    &broadcast,
+                                    &dispatcher,
+                                    Some(adapter.clone()),
+                                    Some(acp_clone.clone()),
+                                    Some(config.clone()),
+                                    false,
+                                    &existing,
+                                    events_tx_holder.as_ref(),
+                                ).await;
+                                if let Some(sub) = out.new_events_sub {
+                                    events_subs.push(sub);
+                                }
+                                if let Some(id) = out.unsubscribe_id {
+                                    events_subs.retain(|s| s.subscription_id != id);
+                                }
+                                let mut bytes = serde_json::to_vec(&out.response).unwrap();
+                                bytes.push(b'\n');
+                                writer.write_all(&bytes).await.unwrap();
+                                writer.flush().await.unwrap();
+                            }
+                            _ => return,
+                        }
+                    }
+                    notification = async {
+                        match &mut events_rx {
+                            Some(rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let Some(params) = notification else {
+                            continue;
+                        };
+                        let notif = EventsNotifyNotification::new(params);
+                        let mut bytes = serde_json::to_vec(&notif).unwrap();
+                        bytes.push(b'\n');
+                        if writer.write_all(&bytes).await.is_err() {
+                            return;
+                        }
+                        writer.flush().await.unwrap();
+                    }
+                }
+            }
+        });
+
+        // Subscribe.
+        client_writer
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"events/subscribe\"}\n")
+            .await
+            .unwrap();
+        let line = client_lines.next_line().await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        let subscription_id = resp["result"]["subscriptionId"].as_str().unwrap().to_string();
+        assert!(!subscription_id.is_empty());
+
+        // Give the spawned filter task a tick to attach to the broadcast.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Publish via the test-only events_tx handle.
+        let evt_tx = acp.test_events_tx();
+        evt_tx
+            .send(crate::adapters::InstanceEvent::InstancesChanged {
+                instance_ids: vec!["id-1".into()],
+                focused_id: Some("id-1".into()),
+            })
+            .expect("send");
+
+        // Drain events/notify.
+        let notif_line = tokio::time::timeout(std::time::Duration::from_secs(2), client_lines.next_line())
+            .await
+            .expect("notify within timeout")
+            .unwrap()
+            .unwrap();
+        let notif: serde_json::Value = serde_json::from_str(notif_line.trim()).unwrap();
+        assert_eq!(notif["method"], "events/notify");
+        assert_eq!(notif["params"]["subscriptionId"], subscription_id);
+        assert_eq!(notif["params"]["topic"], "instances.changed");
+        assert_eq!(notif["params"]["payload"]["event"], "instances_changed");
+
+        // Unsubscribe.
+        let unsub = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"events/unsubscribe","params":{{"subscriptionId":"{subscription_id}"}}}}"#
+        );
+        client_writer.write_all(unsub.as_bytes()).await.unwrap();
+        client_writer.write_all(b"\n").await.unwrap();
+        let line = client_lines.next_line().await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(resp["result"]["unsubscribed"], true);
+
+        drop(client_writer);
+        task.await.unwrap();
+    }
+
+    /// Connection drop tears down every spawned filter task. We can't
+    /// easily peek at the spawned task vec from inside, but we can
+    /// verify the task that owns the connection loop exits cleanly
+    /// when the client side disappears — which propagates dropping
+    /// the events_tx through to the filter task's mpsc.
+    #[tokio::test]
+    async fn events_subscribe_then_connection_drops_cleanly() {
+        let broadcast = Arc::new(StatusBroadcast::new(true));
+        let acp = Arc::new(AcpAdapter::new(Config::default(), broadcast.clone()));
+
+        let (client, server) = UnixStream::pair().expect("pair");
+        let (_client_reader, mut client_writer) = client.into_split();
+
+        let acp_clone = acp.clone();
+        let task = tokio::spawn(async move {
+            let (reader, mut writer) = server.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let dispatcher = RpcDispatcher::with_defaults();
+            let config = Arc::new(RwLock::new(Config::default()));
+            let adapter: Arc<dyn Adapter> = acp_clone.clone();
+            let mut events_subs: Vec<EventsSubscription> = Vec::new();
+            let mut events_tx_holder: Option<EventsConnectionTx> = None;
+
+            while let Some(l) = lines.next_line().await.unwrap_or(None) {
+                if l.trim().is_empty() {
+                    continue;
+                }
+                if events_tx_holder.is_none() {
+                    let (tx, _rx) = tokio::sync::mpsc::channel::<EventsNotifyParams>(EVENTS_CONNECTION_QUEUE_CAPACITY);
+                    events_tx_holder = Some(EventsConnectionTx { tx });
+                }
+                let existing: Vec<String> = events_subs.iter().map(|s| s.subscription_id.clone()).collect();
+                let out = dispatch(
+                    &l,
+                    None,
+                    &broadcast,
+                    &dispatcher,
+                    Some(adapter.clone()),
+                    Some(acp_clone.clone()),
+                    Some(config.clone()),
+                    false,
+                    &existing,
+                    events_tx_holder.as_ref(),
+                )
+                .await;
+                if let Some(sub) = out.new_events_sub {
+                    events_subs.push(sub);
+                }
+                let mut bytes = serde_json::to_vec(&out.response).unwrap();
+                bytes.push(b'\n');
+                writer.write_all(&bytes).await.unwrap();
+                writer.flush().await.unwrap();
+            }
+            // Connection closed — events_subs drops here, which drops
+            // every cancel sender, which terminates every filter task.
+        });
+
+        client_writer
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"events/subscribe\"}\n")
+            .await
+            .unwrap();
+        // Give the dispatcher + filter task time to attach.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Drop the client side. The server task exits when next_line
+        // returns None / Err. The cancel oneshots fire on drop.
+        drop(client_writer);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("connection task exits within timeout")
+            .unwrap();
     }
 }

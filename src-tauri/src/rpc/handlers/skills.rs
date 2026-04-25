@@ -132,6 +132,8 @@ mod tests {
             config: Some(config),
             id,
             already_subscribed: false,
+            existing_event_subscription_ids: &[],
+            events_tx: None,
         }
     }
 
@@ -154,7 +156,7 @@ mod tests {
         let out = run_handler(&handler, "skills/list", Value::Null).await.unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::Subscribed(..) => panic!("expected Reply"),
+            _ => panic!("expected Reply"),
         };
         assert_eq!(v["skills"].as_array().unwrap().len(), 2);
         assert!(v["skills"][0].get("body").is_none());
@@ -172,7 +174,7 @@ mod tests {
             .unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::Subscribed(..) => panic!("expected Reply"),
+            _ => panic!("expected Reply"),
         };
         assert_eq!(v["slug"], "coder");
         assert!(v["body"].as_str().unwrap().contains("coder body"));
@@ -216,7 +218,7 @@ mod tests {
         let out = run_handler(&handler, "skills/reload", Value::Null).await.unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::Subscribed(..) => panic!("expected Reply"),
+            _ => panic!("expected Reply"),
         };
         assert_eq!(v["reloaded"], 1);
     }

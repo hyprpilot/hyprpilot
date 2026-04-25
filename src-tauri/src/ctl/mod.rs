@@ -8,8 +8,8 @@ use tracing::debug;
 use crate::config::Config;
 use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
-    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, KillHandler, ModelsListHandler,
-    ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler, OverlayPresentHandler,
+    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, EventsTailHandler, KillHandler,
+    ModelsListHandler, ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler, OverlayPresentHandler,
     OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler, PromptsCancelHandler,
     PromptsSendHandler, SessionInfoHandler, SessionsForgetHandler, SessionsInfoHandler, SessionsListHandler,
     SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler, ToggleHandler,
@@ -124,6 +124,14 @@ pub enum CtlCommand {
         command: OverlaySubcommand,
     },
 
+    /// Connection-scoped event subscription. Streams every
+    /// `events/notify` notification the daemon emits as one JSON line
+    /// per event. Live-only — no replay, no reconnect; Ctrl-C exits.
+    Events {
+        #[command(subcommand)]
+        command: EventsSubcommand,
+    },
+
     /// Operations on persisted on-disk session transcripts. Distinct
     /// from `submit` / `prompts` (per-instance ACP wire ops) and
     /// instance lifecycle (`spawn`, `restart`, `shutdown`).
@@ -233,6 +241,20 @@ pub enum PromptsCommand {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum EventsSubcommand {
+    /// Stream events. Optional comma-separated `--topics` filter and
+    /// `--instance` filter scope the stream; firehose otherwise.
+    Tail {
+        /// Comma-separated topic filter (e.g. `instances.changed,state.changed`).
+        #[arg(long, value_delimiter = ',')]
+        topics: Option<Vec<String>>,
+        /// Instance id filter — only events bound to this instance.
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum SessionsCommand {
     /// List the agent's persisted sessions.
     List {
@@ -337,6 +359,13 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
             OverlaySubcommand::Present { instance_id } => OverlayPresentHandler { instance_id }.run(&client),
             OverlaySubcommand::Hide => OverlayHideHandler.run(&client),
             OverlaySubcommand::Toggle => OverlayToggleHandler.run(&client),
+        },
+        CtlCommand::Events { command } => match command {
+            EventsSubcommand::Tail { topics, instance_id } => EventsTailHandler {
+                topics: topics.unwrap_or_default(),
+                instance_id,
+            }
+            .run(&client),
         },
         CtlCommand::Sessions { command } => match command {
             SessionsCommand::List {

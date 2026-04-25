@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tracing::{error, warn};
 
 use crate::ctl::client::{CtlClient, CtlConnection};
-use crate::rpc::protocol::{Outcome, StatusChangedNotification};
+use crate::rpc::protocol::{EventsNotifyNotification, Outcome, StatusChangedNotification};
 
 /// Every `ctl` subcommand implements this. `run` receives a
 /// [`CtlClient`] — a connection factory — and is responsible for
@@ -644,6 +644,74 @@ impl Iterator for StatusStream {
                     }
                 }
                 Err(err) => return Some(Err(anyhow::Error::new(err).context("read notification"))),
+            }
+        }
+    }
+}
+
+/// `ctl events tail [--topics A,B,C] [--instance <id>]` — opens a
+/// connection, calls `events/subscribe`, then loops `into_reader().lines()`
+/// printing one JSON line per `events/notify` notification. No
+/// reconnect — events are live-only per the issue. Ctrl-C tears the
+/// connection down and exits.
+pub struct EventsTailHandler {
+    pub topics: Vec<String>,
+    pub instance_id: Option<String>,
+}
+
+impl CtlHandler for EventsTailHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let mut conn = client.connect()?;
+
+        let mut params = json!({});
+        let obj = params.as_object_mut().expect("json! produces a map");
+        if !self.topics.is_empty() {
+            obj.insert(
+                "topics".into(),
+                Value::Array(self.topics.into_iter().map(Value::String).collect()),
+            );
+        }
+        if let Some(id) = self.instance_id {
+            obj.insert("instanceId".into(), Value::String(id));
+        }
+
+        let initial: Value = match conn.fire("events/subscribe", params) {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        // Echo the subscription id once so a reviewer can spot the
+        // connection in the daemon logs.
+        eprintln!("subscribed: {}", initial);
+        let _ = std::io::stdout().flush();
+
+        let mut reader = conn.into_reader();
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {
+                    let trimmed = line.trim_end();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<EventsNotifyNotification>(trimmed) {
+                        Ok(notif) => {
+                            let v = serde_json::to_value(&notif.params).expect("EventsNotifyParams serializes");
+                            println!("{v}");
+                            let _ = std::io::stdout().flush();
+                        }
+                        Err(_) => {
+                            warn!("ctl events tail: unexpected line from daemon: {trimmed}");
+                            continue;
+                        }
+                    }
+                }
+                Err(err) => {
+                    return Err(anyhow::Error::new(err).context("read events/notify"));
+                }
             }
         }
     }
