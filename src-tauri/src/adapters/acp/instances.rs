@@ -14,7 +14,7 @@
 //! known up-front), closing the seq race where agent responses landed
 //! with lower seq than the user turn.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -61,6 +61,11 @@ pub struct AcpAdapter {
     /// `daemon::run`); the `OnceLock` defers spawn to first access,
     /// which always lands inside the Tauri `.setup(...)` closure.
     runtime_events_bridge: OnceLock<broadcast::Sender<InstanceEvent>>,
+    /// Instance ids with at least one in-flight turn. Driven by a
+    /// background task subscribed to the registry's broadcast —
+    /// `TurnStarted` adds, `TurnEnded` removes. Read by
+    /// `daemon/shutdown`'s busy check.
+    busy_instances: Arc<RwLock<HashSet<String>>>,
 }
 
 impl std::fmt::Debug for AcpAdapter {
@@ -108,6 +113,7 @@ impl AcpAdapter {
             permissions,
             mcps_overrides: Arc::new(RwLock::new(HashMap::new())),
             runtime_events_bridge: OnceLock::new(),
+            busy_instances: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -172,9 +178,77 @@ impl AcpAdapter {
     /// always happens after `daemon::run` enters the Tauri builder's
     /// `.setup(...)` closure (runtime alive). Subsequent calls return
     /// the same sender clone.
+    ///
+    /// Also kicks off the busy-tracker task on first access — it
+    /// subscribes to the registry's generic broadcast and follows
+    /// `TurnStarted` / `TurnEnded` to maintain `busy_instances`.
     fn runtime_bridge(&self) -> &broadcast::Sender<InstanceEvent> {
-        self.runtime_events_bridge
-            .get_or_init(|| Self::spawn_runtime_bridge_inner(self.registry.clone()))
+        self.runtime_events_bridge.get_or_init(|| {
+            self.spawn_busy_tracker();
+            Self::spawn_runtime_bridge_inner(self.registry.clone())
+        })
+    }
+
+    /// Subscribe to the registry's generic broadcast and maintain the
+    /// `busy_instances` set off `TurnStarted` / `TurnEnded`. Called
+    /// once via the `runtime_bridge` `OnceLock` so the spawn lands
+    /// inside the Tauri runtime context.
+    fn spawn_busy_tracker(&self) {
+        let mut rx = self.registry.subscribe();
+        let busy = self.busy_instances.clone();
+        tokio::spawn(async move {
+            use crate::adapters::InstanceEvent;
+            loop {
+                match rx.recv().await {
+                    Ok(InstanceEvent::TurnStarted { instance_id, .. }) => {
+                        if let Ok(mut set) = busy.write() {
+                            set.insert(instance_id);
+                        }
+                    }
+                    Ok(InstanceEvent::TurnEnded { instance_id, .. }) => {
+                        if let Ok(mut set) = busy.write() {
+                            set.remove(&instance_id);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(n, "acp busy tracker: lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
+    /// Snapshot of every instance id currently mid-turn. Used by
+    /// `daemon/shutdown` for the busy check.
+    pub fn busy_instance_ids(&self) -> impl std::future::Future<Output = Vec<String>> + Send {
+        let busy = self.busy_instances.clone();
+        async move { busy.read().map(|set| set.iter().cloned().collect()).unwrap_or_default() }
+    }
+
+    /// Publish a `DaemonReloaded` event onto the registry's broadcast.
+    /// Invoked by the `daemon/reload` RPC handler after the config +
+    /// skills rescans complete.
+    pub fn publish_daemon_reloaded(&self, profiles: usize, skills_count: usize, mcps_count: usize) {
+        let _ = self
+            .registry
+            .events_tx()
+            .send(crate::adapters::InstanceEvent::DaemonReloaded {
+                profiles,
+                skills_count,
+                mcps_count,
+            });
+    }
+
+    /// Test hook: mark an instance id as busy for the busy-check
+    /// path without driving the runtime. Production paths drive this
+    /// through the broadcast bridge instead.
+    #[cfg(test)]
+    pub fn test_mark_busy(&self, id: String) {
+        if let Ok(mut set) = self.busy_instances.write() {
+            set.insert(id);
+        }
     }
 
     /// Profile config lookup by id — used when spawning an actor so
@@ -853,6 +927,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::TurnEnded { .. } => "acp:turn-ended",
         GenEvt::InstancesChanged { .. } => "acp:instances-changed",
         GenEvt::InstancesFocused { .. } => "acp:instances-focused",
+        GenEvt::DaemonReloaded { .. } => "daemon:reloaded",
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {

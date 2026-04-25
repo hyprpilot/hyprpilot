@@ -116,7 +116,9 @@ pub fn event_instance_id(event: &InstanceEvent) -> Option<&str> {
         | InstanceEvent::PermissionRequest { instance_id, .. }
         | InstanceEvent::TurnStarted { instance_id, .. }
         | InstanceEvent::TurnEnded { instance_id, .. } => Some(instance_id),
-        InstanceEvent::InstancesChanged { .. } | InstanceEvent::InstancesFocused { .. } => None,
+        InstanceEvent::InstancesChanged { .. }
+        | InstanceEvent::InstancesFocused { .. }
+        | InstanceEvent::DaemonReloaded { .. } => None,
     }
 }
 

@@ -1,4 +1,6 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -6,8 +8,19 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::Config;
+use crate::mcp::MCPsRegistry;
 use crate::rpc::protocol::{EventsNotifyParams, RequestId, RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
+use crate::skills::SkillsRegistry;
+
+/// Original CLI inputs that fed `config::load`. Threaded through so
+/// `daemon/reload` can replay the load with the same overlay layers
+/// the daemon booted under.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigLoadContext {
+    pub cli_path: Option<PathBuf>,
+    pub profile: Option<String>,
+}
 
 /// Per-connection context handed to `RpcHandler::handle`. Groups the
 /// shared app state, the current request id (for logging), and any
@@ -47,6 +60,22 @@ pub struct HandlerCtx<'a> {
     /// Threaded in by the server so `StatusHandler` can reject a second
     /// subscribe on the same socket with `-32600` (Thread 9).
     pub already_subscribed: bool,
+    /// Process start time. `daemon/status` reports `uptimeSecs` against
+    /// this. `None` in unit tests where uptime is irrelevant.
+    pub started_at: Option<Instant>,
+    /// Resolved unix socket path. Surfaced by `daemon/status` +
+    /// `diag/snapshot`. `None` in unit tests.
+    pub socket_path: Option<&'a Path>,
+    /// Inputs that fed the original `config::load`. `daemon/reload`
+    /// re-runs the loader with the same overlay layers.
+    pub config_load_context: Option<&'a ConfigLoadContext>,
+    /// Skills registry — `daemon/reload` rescans on top of config
+    /// reload. `None` in unit tests that don't exercise reload.
+    pub skills: Option<Arc<SkillsRegistry>>,
+    /// MCP catalogue registry — `daemon/reload` re-applies the new
+    /// config's `[[mcps]]`. `None` in unit tests that don't exercise
+    /// reload.
+    pub mcps: Option<Arc<MCPsRegistry>>,
     /// Subscription ids registered to this connection's `events/*`
     /// channel. Threaded in so `EventsHandler` can reject duplicate
     /// `events/unsubscribe` ids cleanly (responding with

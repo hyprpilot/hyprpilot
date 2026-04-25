@@ -1,4 +1,6 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -6,13 +8,15 @@ use tracing::{error, info, trace, warn};
 
 use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::Config;
-use crate::rpc::handler::{EventsConnectionTx, EventsSubscription, HandlerCtx, HandlerOutcome};
+use crate::mcp::MCPsRegistry;
+use crate::rpc::handler::{ConfigLoadContext, EventsConnectionTx, EventsSubscription, HandlerCtx, HandlerOutcome};
 use crate::rpc::protocol::{
     EventsNotifyNotification, EventsNotifyParams, JsonRpcVersion, Outcome, RequestId, Response, RpcError,
     StatusChangedNotification,
 };
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
+use crate::skills::SkillsRegistry;
 
 /// Shared state handed to each connection task. `AppHandle` is cheap to
 /// clone, so we pass by value today; `StatusBroadcast`, `RpcDispatcher`,
@@ -28,6 +32,20 @@ pub struct RpcState {
     pub adapter: Arc<dyn Adapter>,
     pub acp_adapter: Arc<AcpAdapter>,
     pub config: Arc<RwLock<Config>>,
+    /// Process start time. Surfaced via `daemon/status` `uptimeSecs`.
+    pub started_at: Instant,
+    /// Resolved unix socket path. Surfaced via `daemon/status`
+    /// `socketPath` + `diag/snapshot`.
+    pub socket_path: PathBuf,
+    /// Inputs that fed the original `config::load`. `daemon/reload`
+    /// re-runs the loader with the same overlay layers.
+    pub config_load_context: ConfigLoadContext,
+    /// Skills registry — `daemon/reload` rescans on top of config
+    /// reload.
+    pub skills: Arc<SkillsRegistry>,
+    /// MCP catalogue registry — `daemon/reload` re-applies the new
+    /// config's `[[mcps]]` block.
+    pub mcps: Arc<MCPsRegistry>,
 }
 
 /// One accepted connection. Reads NDJSON, dispatches, writes the
@@ -89,6 +107,11 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Some(state.acp_adapter.clone()),
                     Some(state.config.clone()),
                     status_rx.is_some(),
+                    Some(state.started_at),
+                    Some(state.socket_path.as_path()),
+                    Some(&state.config_load_context),
+                    Some(state.skills.clone()),
+                    Some(state.mcps.clone()),
                     &existing_subscription_ids,
                     events_tx_ref,
                 ).await;
@@ -108,12 +131,16 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     events_subs.retain(|s| s.subscription_id != id);
                 }
 
-                // Kill signal rides in the response payload as
-                // `{"killed": true}`; captured before `response` moves
-                // so we can act after the flush.
+                // Shutdown signal rides in the response payload as
+                // `{"killed": true}` (legacy `daemon/kill`) or
+                // `{"exiting": true}` (graceful `daemon/shutdown`);
+                // captured before `response` moves so we can act after
+                // the flush.
                 let kill_signalled = matches!(
                     &response.outcome,
-                    Outcome::Success { result } if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
+                    Outcome::Success { result }
+                        if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
+                            || result.get("exiting").and_then(|v| v.as_bool()) == Some(true)
                 );
 
                 let mut bytes = match serde_json::to_vec(&response) {
@@ -260,6 +287,11 @@ async fn dispatch(
     acp_adapter: Option<Arc<AcpAdapter>>,
     config: Option<Arc<RwLock<Config>>>,
     connection_already_subscribed: bool,
+    started_at: Option<Instant>,
+    socket_path: Option<&std::path::Path>,
+    config_load_context: Option<&ConfigLoadContext>,
+    skills: Option<Arc<SkillsRegistry>>,
+    mcps: Option<Arc<MCPsRegistry>>,
     existing_event_subscription_ids: &[String],
     events_tx: Option<&EventsConnectionTx>,
 ) -> DispatchOutput {
@@ -324,6 +356,11 @@ async fn dispatch(
         config,
         id: &id,
         already_subscribed: connection_already_subscribed,
+        started_at,
+        socket_path,
+        config_load_context,
+        skills,
+        mcps,
         existing_event_subscription_ids,
         events_tx,
     };
@@ -430,6 +467,11 @@ mod tests {
             Some(acp),
             Some(config),
             false,
+            None,
+            None,
+            None,
+            None,
+            None,
             &[],
             None,
         )
@@ -622,6 +664,11 @@ mod tests {
                     Some(acp.clone()),
                     Some(config.clone()),
                     false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                     &[],
                     None,
                 )
@@ -674,6 +721,11 @@ mod tests {
             Some(acp.clone()),
             Some(config.clone()),
             false,
+            None,
+            None,
+            None,
+            None,
+            None,
             &[],
             None,
         )
@@ -692,6 +744,11 @@ mod tests {
             Some(acp),
             Some(config),
             true,
+            None,
+            None,
+            None,
+            None,
+            None,
             &[],
             None,
         )
@@ -807,6 +864,11 @@ mod tests {
                                     Some(acp.clone()),
                                     Some(config.clone()),
                                     status_rx.is_some(),
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
                                     &[],
                                     None,
                                 ).await;
@@ -917,6 +979,11 @@ mod tests {
                                     Some(acp_clone.clone()),
                                     Some(config.clone()),
                                     false,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
                                     &existing,
                                     events_tx_holder.as_ref(),
                                 ).await;
@@ -1044,6 +1111,11 @@ mod tests {
                     Some(acp_clone.clone()),
                     Some(config.clone()),
                     false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                     &existing,
                     events_tx_holder.as_ref(),
                 )
