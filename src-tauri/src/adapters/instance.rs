@@ -195,6 +195,7 @@ pub enum TerminalChunk {
 pub enum TerminalStream {
     Stdout,
     Stderr,
+}
 
 impl InstanceEvent {
     /// Dot-separated topic name. Stable contract for subscription
