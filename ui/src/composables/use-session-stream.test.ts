@@ -66,14 +66,14 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     emit(TauriEvent.AcpPermissionRequest, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
-      request_id: 'req-1',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
 
     const pending = usePermissions('A').pending.value
@@ -86,24 +86,24 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     emit(TauriEvent.AcpPermissionRequest, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
-      request_id: 'req-1',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'execute',
       args: 'ls',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
     emit(TauriEvent.AcpPermissionRequest, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
-      request_id: 'req-2',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      requestId: 'req-2',
       tool: 'bash',
       kind: 'execute',
       args: 'pwd',
-      options: [{ option_id: 'deny', name: 'Deny', kind: 'n' }]
+      options: [{ optionId: 'deny', name: 'Deny', kind: 'n' }]
     })
 
     const pending = usePermissions('A').pending.value
@@ -116,15 +116,15 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
       update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'hi' } }
     })
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-b',
-      instance_id: 'B',
+      agentId: 'a',
+      sessionId: 's-b',
+      instanceId: 'B',
       update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'yo' } }
     })
 
@@ -138,21 +138,21 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
       update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'planning' } }
     })
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
       update: { sessionUpdate: 'plan', entries: [{ content: 'step-1' }] }
     })
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
       update: {
         sessionUpdate: 'tool_call',
         toolCallId: 'tc-1',
@@ -180,13 +180,13 @@ describe('useSessionStream', () => {
     const { id } = useActiveInstance()
     expect(id.value).toBeUndefined()
 
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Starting })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Starting })
     expect(id.value).toBeUndefined()
 
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Running })
     expect(id.value).toBe('A')
 
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'B', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'B', state: InstanceState.Running })
     expect(id.value).toBe('A')
   })
 
@@ -194,9 +194,9 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
       update: {
         sessionUpdate: 'tool_call',
         toolCallId: 'tc-bash',
@@ -207,9 +207,9 @@ describe('useSessionStream', () => {
       }
     })
     emit(TauriEvent.AcpTranscript, {
-      agent_id: 'a',
-      session_id: 's-a',
-      instance_id: 'A',
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
       update: {
         sessionUpdate: 'tool_call_update',
         toolCallId: 'tc-bash',
@@ -230,7 +230,7 @@ describe('useSessionStream', () => {
   it('pushes an ok toast when acp:instance-state transitions to running', async () => {
     await startSessionStream()
 
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Running })
 
     const { entries } = useToasts()
     expect(entries.value).toHaveLength(1)
@@ -242,8 +242,8 @@ describe('useSessionStream', () => {
     await startSessionStream()
 
     // Ended after running → toast
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Ended })
 
     const { entries } = useToasts()
     const messages = entries.value.map((t) => t.message)
@@ -251,20 +251,20 @@ describe('useSessionStream', () => {
 
     // Clear and try: ended without ever running → no "session ended" toast
     clearToasts()
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'b', instance_id: 'B', state: InstanceState.Ended })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'b', instanceId: 'B', state: InstanceState.Ended })
 
     expect(entries.value.find((t) => t.message === 'session ended')).toBeUndefined()
   })
 
   it('clears priorState map on stop so a new startSessionStream begins fresh', async () => {
     const stop = await startSessionStream()
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Running })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Running })
     stop()
     clearToasts()
 
     // New stream should not carry prior state from previous stream
     await startSessionStream()
-    emit(TauriEvent.AcpInstanceState, { agent_id: 'a', instance_id: 'A', state: InstanceState.Ended })
+    emit(TauriEvent.AcpInstanceState, { agentId: 'a', instanceId: 'A', state: InstanceState.Ended })
 
     const { entries } = useToasts()
     expect(entries.value.find((t) => t.message === 'session ended')).toBeUndefined()

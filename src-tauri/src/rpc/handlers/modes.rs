@@ -3,23 +3,16 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
+use crate::rpc::handlers::util::InstanceIdOnly;
 use crate::rpc::protocol::RpcError;
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceIdOnly {
-    instance_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct SetModeParams {
     instance_id: String,
-    // Round-tripped into the `unimplemented!()` handler body when ACP
-    // `session/set_mode` wiring lands (ref K-251); keeping the
-    // strict `deny_unknown_fields` shape now means downstream
-    // callers can start sending it today without a second contract
-    // change.
+    // Consumed when ACP `session/set_mode` wiring lands (K-251). Kept
+    // strict with `deny_unknown_fields` now so clients can send it
+    // today without a second contract change.
     #[allow(dead_code)]
     mode_id: String,
 }
@@ -114,7 +107,7 @@ mod tests {
     async fn modes_list_unknown_instance_id_is_invalid_params() {
         let v = dispatch(
             "modes/list",
-            json!({ "instance_id": "550e8400-e29b-41d4-a716-446655440000" }),
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
         )
         .await;
         assert_eq!(v["code"], -32602);
@@ -124,7 +117,7 @@ mod tests {
     async fn modes_set_missing_mode_id_is_invalid_params() {
         let v = dispatch(
             "modes/set",
-            json!({ "instance_id": "550e8400-e29b-41d4-a716-446655440000" }),
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
         )
         .await;
         assert_eq!(v["code"], -32602);
@@ -134,7 +127,7 @@ mod tests {
     async fn modes_set_unknown_instance_id_is_invalid_params() {
         let v = dispatch(
             "modes/set",
-            json!({ "instance_id": "550e8400-e29b-41d4-a716-446655440000", "mode_id": "plan" }),
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000", "modeId": "plan" }),
         )
         .await;
         assert_eq!(v["code"], -32602);

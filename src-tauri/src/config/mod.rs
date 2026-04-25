@@ -266,12 +266,9 @@ pub struct SkillsConfig {
 impl SkillsConfig {
     /// Resolve every `dirs` entry to an absolute path. Tilde + env
     /// vars in each raw value expand via `shellexpand`; entries that
-    /// fail to expand fall through with their literal text. `None`
-    /// resolves to an empty vec — the loader emits zero skills.
+    /// fail to expand fall through with their literal text.
     pub fn resolved_dirs(&self) -> Vec<PathBuf> {
-        let Some(raw) = &self.dirs else {
-            return Vec::new();
-        };
+        let raw = self.dirs.as_deref().expect("[skills].dirs seeded by defaults.toml");
         raw.iter()
             .map(|p| {
                 let raw_str = p.to_string_lossy();

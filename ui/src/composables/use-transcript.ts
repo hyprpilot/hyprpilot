@@ -2,6 +2,7 @@ import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from './use-active-instance'
+import { openTurnIdFor } from './use-turns'
 
 export enum TurnRole {
   User = 'user',
@@ -14,19 +15,23 @@ export interface ContentBlock {
   [k: string]: unknown
 }
 
-interface BaseTurn {
+interface Turn {
   id: string
   sessionId: string
+  /// Active ACP turn id at receive time. Only `Agent` turns can carry
+  /// it (the user's chunk lands before any `TurnStarted` for the
+  /// reply); `User` turns are always `undefined` here.
+  turnId?: string
   createdAt: number
   updatedAt: number
 }
 
-export interface UserTurn extends BaseTurn {
+export interface UserTurn extends Turn {
   role: TurnRole.User
   text: string
 }
 
-export interface AgentTurn extends BaseTurn {
+export interface AgentTurn extends Turn {
   role: TurnRole.Agent
   text: string
 }
@@ -95,11 +100,12 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
 
     return
   }
-  const turnId = hasExplicitId ? (raw.messageId as string) : `${role}-${sessionId}-${slot.turns.length}`
+  const messageId = hasExplicitId ? (raw.messageId as string) : `${role}-${sessionId}-${slot.turns.length}`
   const turn: ChatTurnItem = {
     role,
-    id: turnId,
+    id: messageId,
     sessionId,
+    turnId: openTurnIdFor(id, sessionId),
     createdAt: seq,
     updatedAt: seq,
     text

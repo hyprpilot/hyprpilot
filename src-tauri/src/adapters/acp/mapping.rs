@@ -16,10 +16,8 @@ use agent_client_protocol::schema::{
     ContentBlock, EmbeddedResource, EmbeddedResourceResource, TextContent, TextResourceContents,
 };
 
-use super::client::PermissionOptionView as AcpPermissionOptionView;
 use super::runtime::{Bootstrap as AcpBootstrap, InstanceEvent as AcpInstanceEvent, InstanceState as AcpInstanceState};
 use crate::adapters::instance::{InstanceEvent as GenericInstanceEvent, InstanceState as GenericInstanceState};
-use crate::adapters::permission::PermissionOptionView;
 use crate::adapters::transcript::Attachment;
 use crate::adapters::Bootstrap as GenericBootstrap;
 
@@ -38,16 +36,6 @@ pub(crate) fn build_prompt_blocks(text: &str, attachments: &[Attachment]) -> Vec
     }
     blocks.push(ContentBlock::Text(TextContent::new(text.to_owned())));
     blocks
-}
-
-impl From<AcpPermissionOptionView> for PermissionOptionView {
-    fn from(v: AcpPermissionOptionView) -> Self {
-        Self {
-            option_id: v.option_id,
-            name: v.name,
-            kind: v.kind,
-        }
-    }
 }
 
 impl From<AcpInstanceState> for GenericInstanceState {
@@ -79,17 +67,20 @@ impl From<AcpInstanceEvent> for GenericInstanceEvent {
                 agent_id,
                 instance_id,
                 session_id,
+                turn_id,
                 update,
             } => GenericInstanceEvent::Transcript {
                 agent_id,
                 instance_id,
                 session_id,
+                turn_id,
                 update,
             },
             AcpInstanceEvent::PermissionRequest {
                 agent_id,
                 instance_id,
                 session_id,
+                turn_id,
                 request_id,
                 tool,
                 kind,
@@ -99,11 +90,36 @@ impl From<AcpInstanceEvent> for GenericInstanceEvent {
                 agent_id,
                 instance_id,
                 session_id,
+                turn_id,
                 request_id,
                 tool,
                 kind,
                 args,
-                options: options.into_iter().map(Into::into).collect(),
+                options,
+            },
+            AcpInstanceEvent::TurnStarted {
+                agent_id,
+                instance_id,
+                session_id,
+                turn_id,
+            } => GenericInstanceEvent::TurnStarted {
+                agent_id,
+                instance_id,
+                session_id,
+                turn_id,
+            },
+            AcpInstanceEvent::TurnEnded {
+                agent_id,
+                instance_id,
+                session_id,
+                turn_id,
+                stop_reason,
+            } => GenericInstanceEvent::TurnEnded {
+                agent_id,
+                instance_id,
+                session_id,
+                turn_id,
+                stop_reason,
             },
             AcpInstanceEvent::InstancesChanged {
                 instance_ids,

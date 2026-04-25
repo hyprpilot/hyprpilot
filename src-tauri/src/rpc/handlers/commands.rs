@@ -1,22 +1,14 @@
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
+use crate::rpc::handlers::util::InstanceIdOnly;
 use crate::rpc::protocol::RpcError;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceIdOnly {
-    instance_id: String,
-}
 
 /// `commands/*` namespace: `commands/list` today. Instance-scoped;
 /// routes by `instance_id` membership. Past the check the handler
-/// `unimplemented!()`s — the ACP `available_commands` surface ships
-/// as a `SessionUpdate` stream variant, not a request, so surfacing
-/// it requires `AcpInstance` to cache the last-seen update. Ref
-/// K-251.
+/// returns `-32603` until `AcpInstance` caches the
+/// `available_commands` SessionUpdate (ref K-251).
 pub struct CommandsHandler;
 
 #[async_trait]
@@ -90,7 +82,7 @@ mod tests {
     async fn commands_list_unknown_instance_id_is_invalid_params() {
         let v = dispatch(
             "commands/list",
-            json!({ "instance_id": "550e8400-e29b-41d4-a716-446655440000" }),
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
         )
         .await;
         assert_eq!(v["code"], -32602);

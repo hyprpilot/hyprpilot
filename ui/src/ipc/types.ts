@@ -11,10 +11,10 @@
 
 export interface SubmitResult {
   accepted: boolean
-  agent_id: string
-  profile_id?: string
-  session_id?: string
-  instance_id?: string
+  agentId: string
+  profileId?: string
+  sessionId?: string
+  instanceId?: string
 }
 
 export interface CancelResult {
@@ -25,14 +25,14 @@ export interface CancelResult {
 export interface AgentSummary {
   id: string
   provider: string
-  is_default: boolean
+  isDefault: boolean
 }
 
 export interface ProfileSummary {
   id: string
   agent: string
   model?: string
-  is_default: boolean
+  isDefault: boolean
 }
 
 /** ACP-native `SessionInfo` shape returned by the `session_list` Tauri command. */
@@ -276,32 +276,54 @@ export enum InstanceState {
 }
 
 export interface PermissionOptionView {
-  option_id: string
+  optionId: string
   name: string
   kind: string
 }
 
 export interface TranscriptEventPayload {
-  agent_id: string
-  session_id: string
-  instance_id: string
+  agentId: string
+  sessionId: string
+  instanceId: string
+  /// Active turn id while a `session/prompt` is in flight; `undefined`
+  /// for spontaneous updates the agent emits outside any turn.
+  turnId?: string
   update: Record<string, unknown>
 }
 
 export interface InstanceStateEventPayload {
-  agent_id: string
-  instance_id: string
-  session_id?: string
+  agentId: string
+  instanceId: string
+  sessionId?: string
   state: InstanceState
 }
 
 export interface PermissionRequestEventPayload {
-  agent_id: string
-  session_id: string
-  instance_id: string
-  request_id: string
+  agentId: string
+  sessionId: string
+  instanceId: string
+  turnId?: string
+  requestId: string
   tool: string
   kind: string
   args: string
   options: PermissionOptionView[]
+}
+
+export interface TurnStartedEventPayload {
+  agentId: string
+  instanceId: string
+  sessionId: string
+  turnId: string
+}
+
+export interface TurnEndedEventPayload {
+  agentId: string
+  instanceId: string
+  sessionId: string
+  turnId: string
+  /// `EndTurn` / `MaxTokens` / `MaxTurnRequests` / `Refusal` /
+  /// `Cancelled` per ACP `StopReason`. `undefined` when the request
+  /// errored or was cancelled by us.
+  stopReason?: string
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect } from 'vue'
 
-import { Phase } from '@components'
+import { Phase, phaseToCssSuffix } from '@components'
 
 /**
  * Phase-state previewer. Writes `data-agent-state="<phase>"` on
@@ -15,9 +15,9 @@ watchEffect(() => {
   document.documentElement.dataset.agentState = current.value
 })
 
-// circle-notch (spinning) for any "in motion" phase; circle for settled states.
 const isMotion = computed(() => current.value === Phase.Streaming || current.value === Phase.Pending || current.value === Phase.Working)
 const iconName = computed(() => (isMotion.value ? 'circle-notch' : 'circle'))
+const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(current.value)})`)
 </script>
 
 <template>
@@ -26,7 +26,7 @@ const iconName = computed(() => (isMotion.value ? 'circle-notch' : 'circle'))
     <select v-model="current" class="tweak-panel-select">
       <option v-for="p in phases" :key="p" :value="p">{{ p }}</option>
     </select>
-    <FaIcon :icon="['fas', iconName]" :class="['tweak-panel-icon', { 'fa-spin': isMotion }]" :style="{ color: `var(--theme-phase-${current})` }" aria-hidden="true" />
+    <FaIcon :icon="['fas', iconName]" :class="['tweak-panel-icon', { 'fa-spin': isMotion }]" :style="{ color: phaseColor }" aria-hidden="true" />
   </aside>
 </template>
 
@@ -39,7 +39,7 @@ const iconName = computed(() => (isMotion.value ? 'circle-notch' : 'circle'))
   color: var(--theme-fg-ink-2);
   background-color: var(--theme-surface);
   border-color: var(--theme-border);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--theme-surface-bg) 70%, transparent);
 }
 
 .tweak-panel-label {

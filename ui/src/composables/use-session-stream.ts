@@ -15,17 +15,18 @@ import { ToastTone } from '@components/types'
 import { useActiveInstance, type InstanceId } from './use-active-instance'
 import { pushInstanceState, resetPhaseSignals } from './use-phase'
 import { pushPermissionRequest } from './use-permissions'
-import { pushPlan, pushThoughtChunk } from './use-stream'
+import { closeTurn, pushPlan, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk } from './use-terminals'
 import { pushToast } from './use-toasts'
-import { pushToolCall, useTools } from './use-tools'
+import { getToolCall, pushToolCall } from './use-tools'
 import { pushTranscriptChunk } from './use-transcript'
+import { pushTurnEnded, pushTurnStarted } from './use-turns'
 
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 
 function routePermission(payload: PermissionRequestEventPayload): void {
-  pushPermissionRequest(payload.instance_id, payload.session_id, {
-    request_id: payload.request_id,
+  pushPermissionRequest(payload.instanceId, payload.sessionId, {
+    requestId: payload.requestId,
     tool: payload.tool,
     kind: payload.kind,
     args: payload.args,
@@ -45,7 +46,7 @@ interface ContentBlock {
 function routeTranscript(payload: TranscriptEventPayload): void {
   const raw = payload.update as SessionUpdateEnvelope
   const kind = typeof raw.sessionUpdate === 'string' ? raw.sessionUpdate : ''
-  const { instance_id: instanceId, session_id: sessionId } = payload
+  const { instanceId, sessionId } = payload
   switch (kind) {
     case 'user_message_chunk':
     case 'agent_message_chunk':
@@ -80,10 +81,7 @@ function routeTerminal(instanceId: InstanceId, sessionId: string, raw: SessionUp
   // chunks carry stdout without it. Fall back to the tool store's
   // recorded kind so stdout deltas keep flowing.
   const updateKind = typeof raw['kind'] === 'string' ? (raw['kind'] as string).toLowerCase() : ''
-  const recorded =
-    useTools(instanceId)
-      .calls.value.find((c) => c.toolCallId === toolCallId)
-      ?.kind?.toLowerCase() ?? ''
+  const recorded = getToolCall(instanceId, toolCallId)?.kind?.toLowerCase() ?? ''
   const kind = updateKind || recorded
   if (kind !== 'bash' && kind !== 'terminal') {
     return
@@ -125,11 +123,9 @@ export async function startSessionStream(): Promise<() => void> {
   unlisteners.push(
     await listen(TauriEvent.AcpTranscript, (e) => {
       routeTranscript(e.payload)
-      // TODO(K-254): current_mode_update subscriber goes here once the
-      // Rust side emits a dedicated sessionUpdate kind for mode switches.
     }),
     await listen(TauriEvent.AcpInstanceState, (e) => {
-      const { instance_id: instanceId, state } = e.payload
+      const { instanceId, state } = e.payload
       lastInstanceState.value = e.payload
       pushInstanceState(instanceId, state)
 
@@ -148,6 +144,18 @@ export async function startSessionStream(): Promise<() => void> {
     }),
     await listen(TauriEvent.AcpPermissionRequest, (e) => {
       routePermission(e.payload)
+    }),
+    await listen(TauriEvent.AcpTurnStarted, (e) => {
+      const { instanceId, sessionId, turnId } = e.payload
+      // The TurnStarted signal owns the per-turn aggregation reset.
+      // Each new turn opens fresh thought / plan items so chunked
+      // updates within the turn merge cleanly into one block each.
+      closeTurn(instanceId, sessionId)
+      pushTurnStarted(instanceId, { turnId, sessionId })
+    }),
+    await listen(TauriEvent.AcpTurnEnded, (e) => {
+      const { instanceId, sessionId, turnId, stopReason } = e.payload
+      pushTurnEnded(instanceId, { turnId, sessionId, stopReason })
     })
   )
 

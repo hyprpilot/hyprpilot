@@ -11,13 +11,11 @@
 //! import from `adapters::*`. They do not reach into `adapters::acp::*`
 //! — that's a layering violation, caught by the lint guard.
 
-// K-251 follow-up: the generic adapter vocabulary (InstanceHandle,
-// Bootstrap, AdapterError, UserTurnInput, …) is the canonical outside
-// shape for future non-ACP adapters (HttpAdapter / …). Today only the
-// ACP impl + test exercise the trait surface, so many items register
-// as dead until a sibling adapter lands and the trait is called through
-// `dyn Adapter` by the rpc / ctl layers. Re-check after the second
-// adapter; narrow to per-item allows for what remains unused.
+// The generic adapter vocabulary is the canonical outside shape for
+// future non-ACP adapters. Today only the ACP impl + test exercise the
+// trait surface, so many items register as dead until a sibling
+// adapter lands and the trait is called through `dyn Adapter` by the
+// rpc / ctl layers.
 #![allow(dead_code)]
 
 pub mod acp;
@@ -31,10 +29,6 @@ pub mod transcript;
 
 use async_trait::async_trait;
 
-// Re-exports are the canonical vocabulary future non-ACP adapters bind
-// to. Today only the ACP impl + adapter test exercise most entries;
-// drop the allow once the second adapter lands and callers reach them
-// through `dyn Adapter` from `rpc::` / `ctl::`.
 #[allow(unused_imports)]
 pub use instance::{
     InstanceActor, InstanceEvent, InstanceEventStream, InstanceHandle, InstanceInfo, InstanceKey, InstanceState,
@@ -54,10 +48,6 @@ pub use tool::{ToolCall, ToolCallContent, ToolState};
 #[allow(unused_imports)]
 pub use transcript::{Attachment, ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
 
-// Concrete impls we re-export so out-of-layer callers never need to
-// type `adapters::acp::*` — only `adapters::*`. Adding an `HttpAdapter`
-// sibling later adds new re-exports here, not new import paths in
-// `rpc::` / `ctl::` / `daemon::`.
 #[allow(unused_imports)]
 pub use acp::AcpAdapter;
 

@@ -34,7 +34,7 @@ impl RpcHandler for ConfigHandler {
                             "id": p.id,
                             "agent": p.agent,
                             "model": p.model,
-                            "is_default": default_profile == Some(p.id.as_str()),
+                            "isDefault": default_profile == Some(p.id.as_str()),
                         })
                     })
                     .collect();

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { assistantSummary, permissionFrame, prompts, userPrompt } from './permission.fixture'
-import { ChatComposer, Frame, ChatPermissionStack, ChatStreamCard, ChatTurn, ChatUserBody, Role, StreamKind } from '@components'
+import { ChatBody, ChatComposer, Frame, ChatPermissionStack, ChatStreamCard, ChatTurn, Role, StreamKind } from '@components'
 </script>
 
 <template>
   <Frame v-bind="permissionFrame">
     <div class="permission-body">
       <ChatTurn :role="Role.User">
-        <ChatUserBody>{{ userPrompt }}</ChatUserBody>
+        <ChatBody :role="Role.User">{{ userPrompt }}</ChatBody>
       </ChatTurn>
       <ChatTurn :role="Role.Assistant" elapsed="0.4s">
         <ChatStreamCard :kind="StreamKind.Thinking" :active="false" label="thought" elapsed="0.4s" :summary="assistantSummary" />

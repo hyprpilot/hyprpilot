@@ -12,7 +12,7 @@ use super::tool::{ToolCall, ToolCallContent, ToolState};
 /// One entry in an instance's transcript. The UI renders a ChatTurn
 /// per `Turn` + a ToolChip per `ToolCall`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum TranscriptItem {
     Turn(TurnRecord),
     ToolCall(ToolCallRecord),
@@ -24,6 +24,7 @@ pub enum TranscriptItem {
 /// adapters that split a turn across multiple wire notifications are
 /// responsible for the reassembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TurnRecord {
     pub speaker: Speaker,
     pub text: String,
@@ -40,6 +41,7 @@ pub enum Speaker {
 /// `ToolCall` carries the identity bits (`id`, `kind`), `state` the
 /// lifecycle, `content` the accumulated inputs + outputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolCallRecord {
     pub call: ToolCall,
     pub state: ToolState,
@@ -54,7 +56,7 @@ pub struct ToolCallRecord {
 /// through `attachments` and project onto the wire as
 /// `ContentBlock::Resource` per ACP mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 #[non_exhaustive]
 pub enum UserTurnInput {
     Prompt {
@@ -91,6 +93,7 @@ impl UserTurnInput {
 /// stable across `session_submit` (Tauri command) and
 /// `session/submit` (RPC).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Attachment {
     /// Skill slug (or any future attachment-source key). Used for
     /// dedup + UI keying.

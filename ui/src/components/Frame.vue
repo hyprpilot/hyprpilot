@@ -3,7 +3,7 @@ import { computed } from 'vue'
 
 import BreadcrumbPill from './BreadcrumbPill.vue'
 import Pill from './Pill.vue'
-import { Phase, type BreadcrumbCount, type GitStatus } from './types'
+import { Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from './types'
 
 /**
  * Overlay chrome: header row 1 (profile pill + mode + provider/model +
@@ -38,12 +38,6 @@ const emit = defineEmits<{
   close: []
   toggleCwd: []
 }>()
-
-// Rust exposes the streaming state as `stream` (see `config.state.stream`);
-// every other phase value already matches its CSS suffix 1:1.
-function phaseToCssSuffix(p: Phase): string {
-  return p === Phase.Streaming ? 'stream' : p.toLowerCase()
-}
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
 const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working)

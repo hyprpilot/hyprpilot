@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { Phase, type LiveSession } from '../types'
+import { Phase, phaseToCssSuffix, type LiveSession } from '../types'
 
 /**
  * Single row of the idle-state live-sessions grid. Dot · title · cwd ·
@@ -16,7 +16,7 @@ const emit = defineEmits<{
   focus: [id: string]
 }>()
 
-const phaseColor = computed(() => `var(--theme-phase-${props.session.phase})`)
+const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.session.phase)})`)
 
 interface PhaseIcon {
   pack: 'fas' | 'far'

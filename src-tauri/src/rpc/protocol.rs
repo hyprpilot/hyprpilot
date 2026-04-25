@@ -185,6 +185,9 @@ impl RpcError {
             data: None,
         }
     }
+
+    pub const CODE_METHOD_NOT_FOUND: i32 = -32601;
+    pub const CODE_INVALID_PARAMS: i32 = -32602;
 }
 
 impl Response {

@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::adapters::{AdapterError, Attachment, UserTurnInput};
+use crate::adapters::{Attachment, UserTurnInput};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
+use crate::rpc::handlers::util::{map_adapter_err, params_or_default};
 use crate::rpc::protocol::RpcError;
 
 /// Params for `session/submit`. Deserialized per-call from the raw
@@ -11,7 +12,7 @@ use crate::rpc::protocol::RpcError;
 /// used throughout `config::*` — typos in a client payload surface as
 /// `-32602 invalid_params` instead of being silently ignored.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct SubmitParams {
     text: String,
     /// Palette-picked attachments for this turn. Each entry projects
@@ -42,7 +43,7 @@ struct SubmitParams {
 /// agent. Defaulted to `{}` so `{"method":"session/cancel"}` (no
 /// `params` key) parses cleanly.
 #[derive(Debug, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct CancelAddress {
     instance_id: Option<String>,
     agent_id: Option<String>,
@@ -100,25 +101,5 @@ impl RpcHandler for SessionHandler {
             }
             other => Err(RpcError::method_not_found(other)),
         }
-    }
-}
-
-/// Treat `Value::Null` as an empty `{}` for types that derive
-/// `#[serde(default)]`. The `session/cancel` / `session/info` method
-/// surface intentionally accepts no `params` key at all — which the
-/// server hands us as `Null` — and users shouldn't have to type
-/// `"params": {}` just to get past the deserializer.
-fn params_or_default<T: serde::de::DeserializeOwned + Default>(params: Value, method: &str) -> Result<T, RpcError> {
-    if params.is_null() {
-        return Ok(T::default());
-    }
-    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
-}
-
-fn map_adapter_err(err: AdapterError) -> RpcError {
-    match err {
-        AdapterError::InvalidRequest(m) => RpcError::invalid_params(m),
-        AdapterError::Unsupported(m) => RpcError::method_not_found(&m),
-        AdapterError::Backend(m) => RpcError::internal_error(m),
     }
 }

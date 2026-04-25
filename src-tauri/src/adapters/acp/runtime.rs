@@ -16,10 +16,10 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, warn};
 
-use super::client::{AcpClient, ClientEvent, PermissionOptionView};
+use super::client::{AcpClient, ClientEvent};
 use super::instance::AcpInstance;
 use super::spawn::spawn_agent;
-use crate::adapters::permission::PermissionController;
+use crate::adapters::permission::{PermissionController, PermissionOptionView};
 use crate::adapters::profile::ResolvedInstance;
 use crate::config::ProfileConfig;
 
@@ -106,6 +106,10 @@ pub enum InstanceEvent {
         agent_id: String,
         instance_id: String,
         session_id: String,
+        /// Active turn id while the actor is processing a `Prompt`
+        /// command; `None` for spontaneous notifications outside
+        /// any in-flight turn.
+        turn_id: Option<String>,
         update: serde_json::Value,
     },
     /// Agent asked permission and the controller bounced to the UI.
@@ -116,11 +120,32 @@ pub enum InstanceEvent {
         agent_id: String,
         instance_id: String,
         session_id: String,
+        turn_id: Option<String>,
         request_id: String,
         tool: String,
         kind: String,
         args: String,
         options: Vec<PermissionOptionView>,
+    },
+    /// Actor accepted a new `Prompt` command and is about to send
+    /// `session/prompt`. `turn_id` is a fresh UUID stamped onto
+    /// every subsequent `Transcript` / `PermissionRequest` the actor
+    /// emits until the matching `TurnEnded` lands.
+    TurnStarted {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        turn_id: String,
+    },
+    /// `session/prompt` resolved (or errored). `stop_reason` mirrors
+    /// the ACP `StopReason` wire string on success; `None` on error
+    /// or cancellation.
+    TurnEnded {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        turn_id: String,
+        stop_reason: Option<String>,
     },
     /// Registry membership changed — spawn / shutdown / restart.
     /// Emitted by `AcpInstances`, not the per-instance actor.
@@ -169,7 +194,7 @@ pub fn start_instance(
     // `plan` / `edit`). Adapter carries it through to the runtime
     // tracing span + InstanceInfo so UI pickers see it. Vendor-specific
     // wire injection (ACP `_meta` field, CLI flag, etc.) lands in the
-    // vendor-agent impl when K-265 wires it; today we surface it here.
+    // vendor-agent impl; today we surface it here.
     if let Some(m) = &mode {
         tracing::info!(
             agent = %resolved.agent.id,
@@ -352,6 +377,13 @@ async fn run_instance(
     let agent_id_notif = agent_id.clone();
     let instance_id_notif = instance_id.clone();
     let session_id_forward = session_id_slot.clone();
+    // Tracks the in-flight turn id so the notification / permission
+    // arms of the dispatch loop can stamp events with it without
+    // re-coordinating with the Prompt-handling task. Set when a
+    // `Prompt` is accepted, cleared when the spawned `session/prompt`
+    // task replies. `tokio::sync::RwLock` because the spawned task
+    // crosses an `.await`; reads from the loop are non-blocking.
+    let current_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
 
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
         debug!(agent = %agent_id_notif, "acp::runtime: sending initialize request");
@@ -472,10 +504,10 @@ async fn run_instance(
                     };
                     match cmd {
                         // Detached: awaiting `send_request(...).block_task()` inline here
-                        // blocks the select! from pumping `client_events_rx`, which means
-                        // every `SessionNotification` (and every `PermissionRequest`!) queues
-                        // on the mpsc until the prompt resolves. With K-245 the permission
-                        // path blocks for up to 10min waiting on a UI reply — but the UI
+                        // blocks the select! from pumping `client_events_rx`, so every
+                        // `SessionNotification` (and every `PermissionRequest`!) queues
+                        // on the mpsc until the prompt resolves. The permission path
+                        // blocks for up to 10min waiting on a UI reply — but the UI
                         // never sees the prompt because the event is stuck in that same
                         // mpsc. Spawn the request so the loop keeps draining.
                         InstanceCommand::Prompt { text, attachments, reply } => {
@@ -487,37 +519,73 @@ async fn run_instance(
                                 Some(prefix) => format!("{prefix}\n\n{text}"),
                                 None => text,
                             };
+                            let turn_id = uuid::Uuid::new_v4().to_string();
                             info!(
                                 agent = %agent_id_notif,
                                 session = %sid,
+                                turn = %turn_id,
                                 text_len = text.len(),
                                 attachments = attachments.len(),
                                 "acp::runtime: turn start (session/prompt)"
                             );
+                            *current_turn_id.write().await = Some(turn_id.clone());
+                            let _ = events_tx_notif.send(InstanceEvent::TurnStarted {
+                                agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
+                                session_id: sid.0.to_string(),
+                                turn_id: turn_id.clone(),
+                            });
                             let blocks = super::mapping::build_prompt_blocks(&text, &attachments);
                             let conn = connection.clone();
                             let agent_log = agent_id_notif.clone();
                             let session_log = sid.clone();
+                            let events_tx_done = events_tx_notif.clone();
+                            let current_turn_done = current_turn_id.clone();
+                            let agent_id_done = agent_id_notif.clone();
+                            let instance_id_done = instance_id_notif.clone();
+                            let turn_id_done = turn_id.clone();
                             tokio::spawn(async move {
                                 let res = conn
-                                    .send_request(PromptRequest::new(sid, blocks))
+                                    .send_request(PromptRequest::new(sid.clone(), blocks))
                                     .block_task()
                                     .await;
-                                let mapped = res.map(|resp| {
-                                    info!(
-                                        agent = %agent_log,
-                                        session = %session_log,
-                                        stop_reason = ?resp.stop_reason,
-                                        "acp::runtime: turn stop (prompt resolved)"
-                                    );
-                                }).map_err(|e| {
-                                    warn!(
-                                        agent = %agent_log,
-                                        session = %session_log,
-                                        err = %e,
-                                        "acp::runtime: turn ended with error"
-                                    );
-                                    e.to_string()
+                                let (stop_reason, mapped) = match res {
+                                    Ok(resp) => {
+                                        info!(
+                                            agent = %agent_log,
+                                            session = %session_log,
+                                            turn = %turn_id_done,
+                                            stop_reason = ?resp.stop_reason,
+                                            "acp::runtime: turn stop (prompt resolved)"
+                                        );
+                                        let stop = serde_json::to_value(resp.stop_reason)
+                                            .ok()
+                                            .and_then(|v| v.as_str().map(str::to_owned));
+                                        (stop, Ok(()))
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            agent = %agent_log,
+                                            session = %session_log,
+                                            turn = %turn_id_done,
+                                            %err,
+                                            "acp::runtime: turn ended with error"
+                                        );
+                                        (None, Err(err.to_string()))
+                                    }
+                                };
+                                {
+                                    let mut slot = current_turn_done.write().await;
+                                    if slot.as_deref() == Some(turn_id_done.as_str()) {
+                                        *slot = None;
+                                    }
+                                }
+                                let _ = events_tx_done.send(InstanceEvent::TurnEnded {
+                                    agent_id: agent_id_done,
+                                    instance_id: instance_id_done,
+                                    session_id: sid.0.to_string(),
+                                    turn_id: turn_id_done,
+                                    stop_reason,
                                 });
                                 let _ = reply.send(mapped);
                             });
@@ -606,10 +674,12 @@ async fn run_instance(
                                     "acp::runtime: session/update received"
                                 );
                             }
+                            let turn_id = current_turn_id.read().await.clone();
                             let _ = events_tx_notif.send(InstanceEvent::Transcript {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: sid,
+                                turn_id,
                                 update,
                             });
                         }
@@ -628,10 +698,12 @@ async fn run_instance(
                                 tool = %tool,
                                 "acp::runtime: fan out permission prompt to UI"
                             );
+                            let turn_id = current_turn_id.read().await.clone();
                             let _ = events_tx_notif.send(InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: sid,
+                                turn_id,
                                 request_id,
                                 tool,
                                 kind,

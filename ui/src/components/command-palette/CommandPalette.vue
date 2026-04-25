@@ -299,7 +299,7 @@ onUnmounted(() => {
 
 .palette-overlay {
   @apply fixed inset-0 z-50 flex items-center justify-center;
-  background-color: rgba(0, 0, 0, 0.4);
+  background-color: color-mix(in srgb, var(--theme-surface-bg) 60%, transparent);
 }
 
 .palette-frame {
@@ -308,7 +308,7 @@ onUnmounted(() => {
   border-color: var(--theme-border-soft);
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--theme-surface-bg) 70%, transparent);
 }
 
 .palette-title {

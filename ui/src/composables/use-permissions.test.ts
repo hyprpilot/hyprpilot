@@ -30,11 +30,11 @@ beforeEach(() => {
 
 function raw(requestId: string, overrides: Partial<{ tool: string; args: string; kind: string }> = {}) {
   return {
-    request_id: requestId,
+    requestId: requestId,
     tool: overrides.tool ?? 'bash',
     kind: overrides.kind ?? 'bash',
     args: overrides.args ?? 'echo hi',
-    options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+    options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
   }
 }
 

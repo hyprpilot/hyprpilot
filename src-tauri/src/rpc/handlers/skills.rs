@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
+use crate::rpc::handlers::util::{params_or_default, parse_params};
 use crate::rpc::protocol::RpcError;
 use crate::skills::{SkillSlug, SkillSummary, SkillsRegistry};
 
@@ -23,7 +24,7 @@ impl SkillsHandler {
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct ListParams {
     instance_id: Option<String>,
 }
@@ -81,17 +82,6 @@ impl RpcHandler for SkillsHandler {
             other => Err(RpcError::method_not_found(other)),
         }
     }
-}
-
-fn parse_params<T: serde::de::DeserializeOwned>(params: Value, method: &str) -> Result<T, RpcError> {
-    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
-}
-
-fn params_or_default<T: serde::de::DeserializeOwned + Default>(params: Value, method: &str) -> Result<T, RpcError> {
-    if params.is_null() {
-        return Ok(T::default());
-    }
-    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
 }
 
 #[cfg(test)]

@@ -100,9 +100,9 @@ system_prompt = "be terse"
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0]["id"], "ask");
         assert_eq!(profiles[0]["agent"], "claude-code");
-        assert_eq!(profiles[0]["is_default"], true);
+        assert_eq!(profiles[0]["isDefault"], true);
         assert_eq!(profiles[1]["id"], "strict");
-        assert_eq!(profiles[1]["is_default"], false);
+        assert_eq!(profiles[1]["isDefault"], false);
         // No `has_prompt`, no `summary`, no `name`.
         assert!(profiles[0].get("has_prompt").is_none());
         assert!(profiles[0].get("summary").is_none());

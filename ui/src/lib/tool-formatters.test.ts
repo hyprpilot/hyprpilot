@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { ToolKind, ToolState } from '@components'
-import { baseRegistry, extendRegistry, formatToolBody, formatToolCall, registries, resolveRegistry, shortHeader } from '@lib'
+import { baseRegistry, extendRegistry, formatToolBody, formatToolCall, resolveRegistry, shortHeader } from '@lib'
 
 import type { ToolCallView } from '../composables/use-tools'
 
@@ -235,16 +235,14 @@ describe('resolveRegistry', () => {
     expect(resolveRegistry()).toBe(baseRegistry)
   })
 
-  it('returns an adapter-specific registry when provider is known', () => {
-    for (const provider of ['acp-claude-code', 'acp-codex', 'acp-opencode']) {
-      const r = resolveRegistry(provider)
-      expect(r).toBe(registries[provider])
-      expect(r.formatters.bash).toBeDefined()
-    }
-  })
-
   it('falls through to base when provider is unknown', () => {
     expect(resolveRegistry('acp-does-not-exist')).toBe(baseRegistry)
+  })
+
+  it('returns base for every known provider today (no divergence yet)', () => {
+    for (const provider of ['acp-claude-code', 'acp-codex', 'acp-opencode']) {
+      expect(resolveRegistry(provider)).toBe(baseRegistry)
+    }
   })
 
   it('round-trips formatToolCall through a named provider registry', () => {
@@ -287,7 +285,7 @@ describe('extendRegistry', () => {
 })
 
 describe('formatToolBody', () => {
-  it('throws in dev builds to surface premature integration', () => {
-    expect(() => formatToolBody(view({ title: 'Read', rawInput: { file_path: '/x' } }))).toThrow(/not implemented yet/)
+  it('throws to surface premature integration', () => {
+    expect(() => formatToolBody(view({ title: 'Read', rawInput: { file_path: '/x' } }))).toThrow(/not implemented/)
   })
 })

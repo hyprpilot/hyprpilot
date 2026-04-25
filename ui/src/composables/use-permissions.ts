@@ -18,6 +18,7 @@ export interface PendingPermission extends Omit<PermissionPrompt, 'queued'> {
   requestId: string
   sessionId: string
   createdAt: number
+  options: PermissionOptionView[]
 }
 
 export interface PermissionsState {
@@ -25,7 +26,7 @@ export interface PermissionsState {
 }
 
 export interface PermissionRequestRaw {
-  request_id: string
+  requestId: string
   tool: string
   kind?: string
   args?: string
@@ -51,29 +52,25 @@ function slotFor(id: InstanceId): PermissionsState {
 
 /**
  * Accumulates a pending permission prompt for the given instance.
- * Keyed by `request_id`; re-pushing the same id replaces the slot.
+ * Keyed by `requestId`; re-pushing the same id replaces the slot.
  */
 export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: PermissionRequestRaw): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)
-  slot.pending.set(raw.request_id, {
+  slot.pending.set(raw.requestId, {
     instanceId: id,
-    requestId: raw.request_id,
+    requestId: raw.requestId,
     sessionId,
-    id: raw.request_id,
+    id: raw.requestId,
     tool: raw.tool,
     kind: raw.kind ?? 'acp',
     args: raw.args ?? '',
-    createdAt: seq
+    createdAt: seq,
+    options: raw.options
   })
-  log.trace('permission pending added', { instanceId: id, requestId: raw.request_id, tool: raw.tool, size: slot.pending.size })
+  log.trace('permission pending added', { instanceId: id, requestId: raw.requestId, tool: raw.tool, size: slot.pending.size })
 }
 
-/**
- * Removes a pending entry. Called today only on successful reply.
- * TODO(K-245): also evict on a daemon 'permission-cancelled' broadcast
- * once the PermissionController emits one.
- */
 export function evictPermission(id: InstanceId, requestId: string): void {
   const slot = states.get(id)
   if (!slot) {
@@ -123,8 +120,6 @@ export function usePermissions(instanceId?: InstanceId): {
     if (!entry) {
       throw new Error(`no pending permission request ${requestId}`)
     }
-    // K-245's PermissionController finalises the option-id shape; today
-    // `permission_reply` accepts raw decision strings and maps them.
     await invoke(TauriCommand.PermissionReply, {
       sessionId: entry.sessionId,
       requestId: entry.requestId,

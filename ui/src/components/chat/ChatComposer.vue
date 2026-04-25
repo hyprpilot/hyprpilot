@@ -354,7 +354,7 @@ function onDragOver(e: DragEvent): void {
 }
 
 .composer-submit:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--theme-accent-assistant) 85%, black);
+  background-color: color-mix(in srgb, var(--theme-accent-assistant) 85%, var(--theme-surface-bg));
 }
 
 .composer-submit:disabled {

@@ -250,17 +250,15 @@ impl Terminals {
     /// processes never outlive the agent connection.
     pub async fn drain_for(&self, session_key: impl AsRef<str>) {
         let sk = session_key.as_ref();
-        let keys: Vec<_> = {
-            let registry = self.registry.lock().await;
-            registry.keys().filter(|(s, _)| s == sk).cloned().collect()
+        let drained: Vec<_> = {
+            let mut registry = self.registry.lock().await;
+            let keys: Vec<_> = registry.keys().filter(|(s, _)| s == sk).cloned().collect();
+            keys.into_iter().filter_map(|k| registry.remove(&k)).collect()
         };
-        for key in keys {
-            let removed = self.registry.lock().await.remove(&key);
-            if let Some(mut state) = removed {
-                if let Some(mut child) = state.child.take() {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
+        for mut state in drained {
+            if let Some(mut child) = state.child.take() {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
             }
         }
     }

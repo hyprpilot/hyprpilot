@@ -28,13 +28,12 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { openRootPalette, openSkillsPalette } from './palette-root'
 import {
-  ChatAssistantBody,
+  ChatBody,
   ChatComposer,
   ChatPermissionStack,
   ChatStreamCard,
   ChatToolChips,
   ChatTurn,
-  ChatUserBody,
   CommandPalette,
   Frame,
   PlanStatus,
@@ -64,6 +63,7 @@ import {
   useToasts,
   useTools,
   useTranscript,
+  useTurns,
   type KeymapEntry,
   startSessionStream,
   type InstanceId,
@@ -88,17 +88,21 @@ const { turns } = useTranscript()
 const { items: streamItems } = useStream()
 const { calls: toolCalls } = useTools()
 const { pending: permissionPrompts, allow, deny } = usePermissions()
+const { openTurnId } = useTurns()
 
 const sending = ref(false)
 const composerRef = ref<InstanceType<typeof ChatComposer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
 
-// Timeline is interleaved only to determine block boundaries —
-// consecutive entries that share a speaker role collapse into one
-// `<ChatTurn>`. Within an assistant block, entries get split into three
-// buckets so the final render order is: thoughts + plans → tool-call
-// grid → assistant reply body. User blocks carry just a body.
+// Block grouping is driven by ACP turn ids (Rust mints one per
+// `session/prompt` and stamps every notification it emits with that
+// id; see `acp:turn-started` / `acp:turn-ended`). Assistant entries
+// carrying the same `turnId` collapse into one block; user turns —
+// which arrive before any `TurnStarted` for the reply — sit in their
+// own per-message block. Anchored render order within an assistant
+// block stays: thoughts + plans → tool-call grid → assistant reply
+// body.
 const KIND_ORDER = { turn: 0, stream: 1, tool: 2 } as const
 interface TimelineTurn {
   kind: 'turn'
@@ -119,18 +123,35 @@ type TimelineEntry = TimelineTurn | TimelineStream | TimelineTool
 
 interface TimelineBlock {
   role: Role
+  /// Group key — ACP turn id for assistant blocks, synthetic per-row
+  /// key for user blocks (each user message stays in its own block).
+  groupKey: string
+  /// Set when the block represents a real ACP turn; `undefined` for
+  /// user blocks and for spontaneous out-of-turn agent updates.
+  turnId?: string
   startedAt: number
   streamEntries: TimelineStream[]
   toolCalls: TimelineTool[]
   turnEntries: TimelineTurn[]
 }
 
-function roleFor(entry: TimelineEntry): Role {
+function entryRole(entry: TimelineEntry): Role {
   if (entry.kind === 'turn') {
     return entry.turn.role === TurnRole.User ? Role.User : Role.Assistant
   }
 
   return Role.Assistant
+}
+
+function entryTurnId(entry: TimelineEntry): string | undefined {
+  if (entry.kind === 'turn') {
+    return entry.turn.turnId
+  }
+  if (entry.kind === 'stream') {
+    return entry.item.turnId
+  }
+
+  return entry.call.turnId
 }
 
 const timelineBlocks = computed<TimelineBlock[]>(() => {
@@ -143,10 +164,29 @@ const timelineBlocks = computed<TimelineBlock[]>(() => {
 
   const blocks: TimelineBlock[] = []
   for (const entry of entries) {
-    const role = roleFor(entry)
+    const role = entryRole(entry)
+    const turnId = entryTurnId(entry)
+    // User turns and unanchored assistant entries each get their own
+    // block (synthetic key); turn-anchored assistant entries fold into
+    // a shared block keyed by the turn id.
+    const groupKey =
+      role === Role.Assistant && turnId !== undefined ? `turn:${turnId}` : `solo:${role}:${entry.createdAt}:${entry.kind}`
     const last = blocks[blocks.length - 1]
-    const block =
-      last && last.role === role ? last : (blocks.push({ role, startedAt: entry.createdAt, streamEntries: [], toolCalls: [], turnEntries: [] }), blocks[blocks.length - 1])
+    let block: TimelineBlock
+    if (last && last.groupKey === groupKey) {
+      block = last
+    } else {
+      block = {
+        role,
+        groupKey,
+        turnId: role === Role.Assistant ? turnId : undefined,
+        startedAt: entry.createdAt,
+        streamEntries: [],
+        toolCalls: [],
+        turnEntries: []
+      }
+      blocks.push(block)
+    }
     if (entry.kind === 'stream') {
       block.streamEntries.push(entry)
     } else if (entry.kind === 'tool') {
@@ -157,6 +197,18 @@ const timelineBlocks = computed<TimelineBlock[]>(() => {
   }
 
   return blocks
+})
+
+// The "live" block is the assistant block whose ACP turn id is still
+// open (`acp:turn-ended` hasn't landed for it). Once the matching
+// TurnEnded arrives, `openTurnId` clears and the pulse stops.
+const liveBlockIdx = computed<number>(() => {
+  const open = openTurnId.value
+  if (!open) {
+    return -1
+  }
+
+  return timelineBlocks.value.findIndex((b) => b.turnId === open)
 })
 
 let stopStream: (() => void) | undefined
@@ -343,10 +395,27 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
 <template>
   <Frame :profile="selectedProfile ?? 'none'" :phase="phase" :provider="activeProfile?.agent" :model="activeProfile?.model">
     <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
-      <ChatTurn v-for="block in timelineBlocks" :key="`${block.role}-${block.startedAt}`" :role="block.role">
+      <ChatTurn
+        v-for="(block, blockIdx) in timelineBlocks"
+        :key="block.groupKey"
+        :role="block.role"
+        :live="blockIdx === liveBlockIdx"
+      >
         <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
-          <ChatStreamCard v-if="entry.item.kind === StreamItemKind.Thought" :kind="StreamKind.Thinking" :active="true" label="thought">{{ entry.item.text }}</ChatStreamCard>
-          <ChatStreamCard v-else-if="entry.item.kind === StreamItemKind.Plan" :kind="StreamKind.Planning" :active="true" label="plan" :items="mapPlanItems(entry.item.entries)" />
+          <ChatStreamCard
+            v-if="entry.item.kind === StreamItemKind.Thought"
+            :kind="StreamKind.Thinking"
+            :active="blockIdx === liveBlockIdx"
+            label="thought"
+            >{{ entry.item.text }}</ChatStreamCard
+          >
+          <ChatStreamCard
+            v-else-if="entry.item.kind === StreamItemKind.Plan"
+            :kind="StreamKind.Planning"
+            :active="blockIdx === liveBlockIdx"
+            label="plan"
+            :items="mapPlanItems(entry.item.entries)"
+          />
         </template>
 
         <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
@@ -354,8 +423,7 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
         <ChatToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
 
         <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-          <ChatUserBody v-if="entry.turn.role === TurnRole.User">{{ entry.turn.text }}</ChatUserBody>
-          <ChatAssistantBody v-else>{{ entry.turn.text }}</ChatAssistantBody>
+          <ChatBody :role="entry.turn.role === TurnRole.User ? Role.User : Role.Assistant">{{ entry.turn.text }}</ChatBody>
         </template>
       </ChatTurn>
     </div>

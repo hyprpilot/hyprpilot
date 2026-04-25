@@ -578,11 +578,6 @@ const BASE_FORMATTERS: Record<BaseFormatterKey, ToolFormatter> = {
   plan_exit: formatPlanExit
 }
 
-// `BASE_FORMATTERS: Record<BaseFormatterKey, ToolFormatter>` pins every
-// key declared in `BASE_SHORT_HEADERS` to a formatter at compile time —
-// the `todo_write` / `plan_enter` / `plan_exit` silent-no-op case the
-// pre-rework code shipped would be a TS error here now.
-
 export const baseRegistry: ToolFormatterRegistry = {
   shortHeaders: BASE_SHORT_HEADERS,
   aliases: BASE_ALIASES,
@@ -613,28 +608,12 @@ export function extendRegistry(
   }
 }
 
-/**
- * Per-adapter registries. Today every vendor inherits the base
- * untouched; per-adapter divergence (opencode `diagnostics` leftover
- * surfacing, codex `$bash_id` semantics, claude-code MCP tools)
- * lands here as it's discovered.
- */
-export const registries: Record<string, ToolFormatterRegistry> = {
-  'acp-claude-code': extendRegistry(baseRegistry, {}),
-  'acp-codex': extendRegistry(baseRegistry, {}),
-  'acp-opencode': extendRegistry(baseRegistry, {})
-}
-
-/**
- * Resolve the registry for a given provider. Unknown providers fall
- * back to the base registry — safe because the base covers every
- * tool ACP agents overlap on.
- */
-export function resolveRegistry(provider?: string): ToolFormatterRegistry {
-  if (provider && Object.prototype.hasOwnProperty.call(registries, provider)) {
-    return registries[provider]!
-  }
-
+// Per-adapter divergence (opencode `diagnostics` leftover surfacing,
+// codex `$bash_id` semantics, claude-code MCP tools) will land as a
+// `{ provider: extendRegistry(baseRegistry, {...}) }` map the moment
+// the first real override appears. Today every vendor inherits base
+// untouched, so `resolveRegistry` is a pass-through.
+export function resolveRegistry(_provider?: string): ToolFormatterRegistry {
   return baseRegistry
 }
 
@@ -682,24 +661,6 @@ export function formatToolCall(call: ToolCallView, provider?: string): ToolChipI
   return registry.fallback(ctx)
 }
 
-/**
- * Expanded-row markdown body.
- *
- * @todo Wire up when the row-big surface grows an expanded panel.
- *       The Python reference emits markdown via `format_bash` etc.
- *       and then appends a trailing `_leftover_json_block` for any
- *       argument the formatter didn't pop — so agent-specific extras
- *       (opencode's `diagnostics`, `_meta` envelopes, tool-specific
- *       fields the formatter doesn't know about yet) stay visible.
- *       When `formatToolBody` lands it needs that pop-and-leftover
- *       machinery (today `FormatterContext.args` is read-only), or
- *       agent-tacked-on fields disappear silently. Track via a
- *       follow-up K-xxx issue.
- */
 export function formatToolBody(_call: ToolCallView, _provider?: string): string {
-  if (import.meta.env.DEV) {
-    throw new Error('formatToolBody: expanded-row markdown not implemented yet (follow-up issue)')
-  }
-
-  return ''
+  throw new Error('formatToolBody: expanded-row markdown not implemented')
 }

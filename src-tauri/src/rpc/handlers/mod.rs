@@ -9,6 +9,7 @@ pub mod profiles;
 pub mod session;
 pub mod skills;
 pub mod status;
+pub(super) mod util;
 pub mod window;
 
 pub use self::agents::AgentsHandler;

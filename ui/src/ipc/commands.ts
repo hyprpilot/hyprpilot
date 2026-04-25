@@ -21,6 +21,8 @@ import type {
   SubmitResult,
   Theme,
   TranscriptEventPayload,
+  TurnEndedEventPayload,
+  TurnStartedEventPayload,
   WindowState
 } from './types'
 
@@ -45,7 +47,9 @@ export enum TauriCommand {
 export enum TauriEvent {
   AcpTranscript = 'acp:transcript',
   AcpPermissionRequest = 'acp:permission-request',
-  AcpInstanceState = 'acp:instance-state'
+  AcpInstanceState = 'acp:instance-state',
+  AcpTurnStarted = 'acp:turn-started',
+  AcpTurnEnded = 'acp:turn-ended'
 }
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
@@ -69,4 +73,6 @@ export interface TauriEventPayload {
   [TauriEvent.AcpTranscript]: TranscriptEventPayload
   [TauriEvent.AcpInstanceState]: InstanceStateEventPayload
   [TauriEvent.AcpPermissionRequest]: PermissionRequestEventPayload
+  [TauriEvent.AcpTurnStarted]: TurnStartedEventPayload
+  [TauriEvent.AcpTurnEnded]: TurnEndedEventPayload
 }

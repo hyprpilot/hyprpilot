@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { ToolState, iconForToolKind, type ToolChipItem } from '../types'
+import { ToolState, iconForToolKind, toolStateTone, type ToolChipItem } from '../types'
 
 /**
  * Full-bleed tool row. Used for Bash/Write/Edit/Terminal tools that the
@@ -17,20 +17,7 @@ const props = defineProps<{
   item: ToolChipItem
 }>()
 
-const stateTone = computed(() => {
-  switch (props.item.state) {
-    case ToolState.Running:
-      return 'var(--theme-state-stream)'
-    case ToolState.Failed:
-      return 'var(--theme-status-err)'
-    case ToolState.Awaiting:
-      return 'var(--theme-state-awaiting)'
-    case ToolState.Done:
-      return 'var(--theme-status-ok)'
-    default:
-      return 'var(--theme-fg-dim)'
-  }
-})
+const stateTone = computed(() => toolStateTone(props.item.state))
 
 const kindIcon = computed(() => iconForToolKind(props.item.kind))
 </script>

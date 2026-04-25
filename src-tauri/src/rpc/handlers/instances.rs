@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-use crate::adapters::{AdapterError, InstanceKey, SpawnSpec};
+use crate::adapters::{InstanceKey, SpawnSpec};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
+use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_params};
 use crate::rpc::protocol::RpcError;
 
 /// `instances/focus` / `instances/restart` / `instances/shutdown` /
@@ -35,7 +36,7 @@ where
 /// agent fall through to the adapter's default-chain, which rejects
 /// with `-32602 invalid_params` when nothing resolves.
 #[derive(Debug, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct SpawnParams {
     profile_id: Option<String>,
     agent_id: Option<String>,
@@ -69,10 +70,10 @@ impl RpcHandler for InstancesHandler {
                     .iter()
                     .map(|i| {
                         json!({
-                            "agent_id": i.agent_id,
-                            "profile_id": i.profile_id,
-                            "instance_id": i.id,
-                            "session_id": i.session_id,
+                            "agentId": i.agent_id,
+                            "profileId": i.profile_id,
+                            "instanceId": i.id,
+                            "sessionId": i.session_id,
                             "mode": i.mode,
                         })
                     })
@@ -83,7 +84,7 @@ impl RpcHandler for InstancesHandler {
                 let IdParams { id } = parse_params(params, method)?;
                 let key = InstanceKey::parse(&id).map_err(map_adapter_err)?;
                 let key = adapter.focus(key).await.map_err(map_adapter_err)?;
-                Ok(HandlerOutcome::Reply(json!({ "focused_id": key.as_string() })))
+                Ok(HandlerOutcome::Reply(json!({ "focusedId": key.as_string() })))
             }
             "instances/spawn" => {
                 let SpawnParams {
@@ -120,33 +121,14 @@ impl RpcHandler for InstancesHandler {
                 let key = InstanceKey::parse(&id).map_err(map_adapter_err)?;
                 let info = adapter.info_for(key).await.map_err(map_adapter_err)?;
                 Ok(HandlerOutcome::Reply(json!({
-                    "agent_id": info.agent_id,
-                    "profile_id": info.profile_id,
-                    "instance_id": info.id,
-                    "session_id": info.session_id,
+                    "agentId": info.agent_id,
+                    "profileId": info.profile_id,
+                    "instanceId": info.id,
+                    "sessionId": info.session_id,
                     "mode": info.mode,
                 })))
             }
             other => Err(RpcError::method_not_found(other)),
         }
-    }
-}
-
-fn parse_params<T: serde::de::DeserializeOwned>(params: Value, method: &str) -> Result<T, RpcError> {
-    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
-}
-
-fn params_or_default<T: serde::de::DeserializeOwned + Default>(params: Value, method: &str) -> Result<T, RpcError> {
-    if params.is_null() {
-        return Ok(T::default());
-    }
-    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
-}
-
-fn map_adapter_err(err: AdapterError) -> RpcError {
-    match err {
-        AdapterError::InvalidRequest(m) => RpcError::invalid_params(m),
-        AdapterError::Unsupported(m) => RpcError::method_not_found(&m),
-        AdapterError::Backend(m) => RpcError::internal_error(m),
     }
 }

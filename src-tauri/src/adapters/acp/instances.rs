@@ -24,9 +24,10 @@ use tauri::Emitter;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::instance::AcpInstance;
-use super::resolve::ResolvedInstance;
 use super::runtime::{start_instance, Bootstrap, InstanceCommand, InstanceEvent};
+use crate::adapters::instance::InstanceActor;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
+use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::registry::AdapterRegistry;
 use crate::adapters::{
     Adapter, AdapterError, AdapterId, AdapterResult, Capabilities, InstanceEventStream, InstanceInfo, InstanceKey,
@@ -154,8 +155,7 @@ impl AcpAdapter {
     ///
     /// Consumers must handle `broadcast::error::RecvError::Lagged`
     /// — the broadcast channel silently drops notifications
-    /// otherwise. New subscribers (K-276 filter layer, K-277 ctl
-    /// stream) must each own their own lagged handler.
+    /// otherwise.
     pub fn spawn_tauri_event_bridge(&self, app: tauri::AppHandle) {
         let mut rx = self.registry.subscribe();
         tauri::async_runtime::spawn(async move {
@@ -225,12 +225,7 @@ impl AcpAdapter {
             return Ok(key);
         }
         if replace_existing {
-            if let Some(existing) = self.registry.get(key).await {
-                let _ = self.registry.remove(key).await;
-                let (tx, rx) = oneshot::channel();
-                let _ = existing.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
-            }
+            let _ = self.registry.shutdown_one(key).await;
         }
 
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
@@ -319,10 +314,10 @@ impl AcpAdapter {
 
         Ok(json!({
             "accepted": true,
-            "agent_id": resolved_agent_id,
-            "profile_id": resolved_profile_id,
-            "instance_id": key.as_string(),
-            "session_id": session_id,
+            "agentId": resolved_agent_id,
+            "profileId": resolved_profile_id,
+            "instanceId": key.as_string(),
+            "sessionId": session_id,
         }))
     }
 
@@ -368,19 +363,19 @@ impl AcpAdapter {
     /// envelope. `Adapter::list` returns typed `InstanceInfo[]` for
     /// programmatic consumers.
     pub async fn info_json(&self) -> Result<Value, RpcError> {
-        let keys = self.registry.ordered_keys().await;
-        let mut instances = Vec::with_capacity(keys.len());
-        for key in keys {
-            if let Some(handle) = self.registry.get(key).await {
-                instances.push(json!({
-                    "agent_id": handle.agent_id,
-                    "profile_id": handle.profile_id,
-                    "instance_id": key.as_string(),
-                    "session_id": handle.current_session_id().await,
-                    "mode": handle.mode,
-                }));
-            }
-        }
+        let snapshot = self.registry.list().await;
+        let instances: Vec<_> = snapshot
+            .into_iter()
+            .map(|info| {
+                json!({
+                    "agentId": info.agent_id,
+                    "profileId": info.profile_id,
+                    "instanceId": info.id,
+                    "sessionId": info.session_id,
+                    "mode": info.mode,
+                })
+            })
+            .collect();
         Ok(json!({ "instances": instances }))
     }
 
@@ -437,9 +432,7 @@ impl AcpAdapter {
             .map_err(|err| RpcError::internal_error(format!("session/list failed: {err}")));
 
         if let Some(handle) = ephemeral {
-            let (tx, rx) = oneshot::channel();
-            let _ = handle.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+            handle.shutdown().await;
         }
 
         response
@@ -473,9 +466,7 @@ impl AcpAdapter {
         let instances = self.registry.drain().await;
         tracing::info!(count = instances.len(), "acp::shutdown: draining instances");
         for instance in instances {
-            let (tx, rx) = oneshot::channel();
-            let _ = instance.cmd_tx.send(InstanceCommand::Shutdown { reply: tx });
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+            instance.shutdown().await;
         }
     }
 
@@ -561,7 +552,7 @@ impl AcpAdapter {
                     "id": a.id,
                     "provider": a.provider,
                     "binding": a.command,
-                    "is_default": default_agent == Some(a.id.as_str()),
+                    "isDefault": default_agent == Some(a.id.as_str()),
                 })
             })
             .collect()
@@ -581,7 +572,7 @@ impl AcpAdapter {
                     "id": p.id,
                     "agent": p.agent,
                     "model": p.model,
-                    "is_default": default_profile == Some(p.id.as_str()),
+                    "isDefault": default_profile == Some(p.id.as_str()),
                 })
             })
             .collect()
@@ -747,8 +738,8 @@ fn map_adapter_error_to_rpc(err: AdapterError) -> RpcError {
 
 fn rpc_to_adapter(err: RpcError) -> AdapterError {
     match err.code {
-        -32602 => AdapterError::InvalidRequest(err.message),
-        -32601 => AdapterError::Unsupported(err.message),
+        RpcError::CODE_INVALID_PARAMS => AdapterError::InvalidRequest(err.message),
+        RpcError::CODE_METHOD_NOT_FOUND => AdapterError::Unsupported(err.message),
         _ => AdapterError::Backend(err.message),
     }
 }
@@ -763,6 +754,8 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::State { .. } => "acp:instance-state",
         GenEvt::Transcript { .. } => "acp:transcript",
         GenEvt::PermissionRequest { .. } => "acp:permission-request",
+        GenEvt::TurnStarted { .. } => "acp:turn-started",
+        GenEvt::TurnEnded { .. } => "acp:turn-ended",
         GenEvt::InstancesChanged { .. } => "acp:instances-changed",
         GenEvt::InstancesFocused { .. } => "acp:instances-focused",
     };
@@ -918,10 +911,10 @@ system_prompt = "be terse"
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], "ask");
         assert_eq!(out[0]["agent"], "claude-code");
-        assert_eq!(out[0]["is_default"], true);
+        assert_eq!(out[0]["isDefault"], true);
         assert!(out[0].get("has_prompt").is_none());
         assert_eq!(out[1]["id"], "strict");
-        assert_eq!(out[1]["is_default"], false);
+        assert_eq!(out[1]["isDefault"], false);
         assert!(out[1].get("has_prompt").is_none());
     }
 

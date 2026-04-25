@@ -36,7 +36,7 @@ impl RpcHandler for AgentsHandler {
                             "id": v["id"],
                             "binary": v["binding"],
                             "kind": v["provider"],
-                            "is_default": v["is_default"],
+                            "isDefault": v["isDefault"],
                         })
                     })
                     .collect();

@@ -284,7 +284,7 @@ mod dispatcher_tests {
             &dispatcher,
             &broadcast,
             "session/submit",
-            json!({ "text": "hi", "profile_id": "ghost" }),
+            json!({ "text": "hi", "profileId": "ghost" }),
         )
         .await;
         assert_eq!(v["code"], -32602, "unknown profile_id must be invalid_params: {v}");

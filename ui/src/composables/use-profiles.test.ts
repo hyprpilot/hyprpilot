@@ -36,8 +36,8 @@ async function flushAsync(): Promise<void> {
 describe('useProfiles', () => {
   it('fetches profiles and selects the configured default on mount', async () => {
     getProfiles.mockResolvedValueOnce([
-      { id: 'ask', agent: 'claude-code', is_default: true },
-      { id: 'strict', agent: 'claude-code', is_default: false }
+      { id: 'ask', agent: 'claude-code', isDefault: true },
+      { id: 'strict', agent: 'claude-code', isDefault: false }
     ])
 
     const wrapper = mount(host())
@@ -49,15 +49,15 @@ describe('useProfiles', () => {
   })
 
   it('refresh() re-fetches and updates the reactive list', async () => {
-    getProfiles.mockResolvedValueOnce([{ id: 'ask', agent: 'claude-code', is_default: true }])
+    getProfiles.mockResolvedValueOnce([{ id: 'ask', agent: 'claude-code', isDefault: true }])
     const wrapper = mount(host())
     await flushAsync()
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="count"]').text()).toBe('1')
 
     getProfiles.mockResolvedValueOnce([
-      { id: 'ask', agent: 'claude-code', is_default: true },
-      { id: 'new-one', agent: 'codex', is_default: false }
+      { id: 'ask', agent: 'claude-code', isDefault: true },
+      { id: 'new-one', agent: 'codex', isDefault: false }
     ])
     await (wrapper.vm as unknown as ReturnType<typeof useProfiles>).refresh()
     await wrapper.vm.$nextTick()
@@ -67,8 +67,8 @@ describe('useProfiles', () => {
 
   it('select() persists the id to localStorage and next mount restores it', async () => {
     getProfiles.mockResolvedValueOnce([
-      { id: 'ask', agent: 'claude-code', is_default: true },
-      { id: 'strict', agent: 'claude-code', is_default: false }
+      { id: 'ask', agent: 'claude-code', isDefault: true },
+      { id: 'strict', agent: 'claude-code', isDefault: false }
     ])
     const wrapper = mount(host())
     await flushAsync()
@@ -78,8 +78,8 @@ describe('useProfiles', () => {
     expect(window.localStorage.getItem('hyprpilot:last-profile')).toBe('strict')
 
     getProfiles.mockResolvedValueOnce([
-      { id: 'ask', agent: 'claude-code', is_default: true },
-      { id: 'strict', agent: 'claude-code', is_default: false }
+      { id: 'ask', agent: 'claude-code', isDefault: true },
+      { id: 'strict', agent: 'claude-code', isDefault: false }
     ])
     const next = mount(host())
     await flushAsync()
@@ -88,7 +88,7 @@ describe('useProfiles', () => {
   })
 
   it('ignores select() for ids not in the current list', async () => {
-    getProfiles.mockResolvedValueOnce([{ id: 'ask', agent: 'claude-code', is_default: true }])
+    getProfiles.mockResolvedValueOnce([{ id: 'ask', agent: 'claude-code', isDefault: true }])
     const wrapper = mount(host())
     await flushAsync()
     await wrapper.vm.$nextTick()

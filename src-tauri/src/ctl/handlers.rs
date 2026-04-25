@@ -73,10 +73,10 @@ impl CtlHandler for SubmitHandler {
         let mut params = json!({ "text": self.text });
         let obj = params.as_object_mut().expect("json! produces a map");
         if let Some(id) = self.agent_id {
-            obj.insert("agent_id".into(), Value::String(id));
+            obj.insert("agentId".into(), Value::String(id));
         }
         if let Some(id) = self.profile_id {
-            obj.insert("profile_id".into(), Value::String(id));
+            obj.insert("profileId".into(), Value::String(id));
         }
         emit(client, "session/submit", params)
     }
@@ -128,7 +128,7 @@ impl CtlHandler for SkillsListHandler {
             params
                 .as_object_mut()
                 .expect("json! produces a map")
-                .insert("instance_id".into(), Value::String(id));
+                .insert("instanceId".into(), Value::String(id));
         }
         let mut conn = match client.connect() {
             Ok(c) => c,
@@ -216,7 +216,7 @@ pub struct CommandsListHandler {
 
 impl CtlHandler for CommandsListHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        emit(client, "commands/list", json!({ "instance_id": self.instance_id }))
+        emit(client, "commands/list", json!({ "instanceId": self.instance_id }))
     }
 }
 
@@ -226,7 +226,7 @@ pub struct ModesListHandler {
 
 impl CtlHandler for ModesListHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        emit(client, "modes/list", json!({ "instance_id": self.instance_id }))
+        emit(client, "modes/list", json!({ "instanceId": self.instance_id }))
     }
 }
 
@@ -240,7 +240,7 @@ impl CtlHandler for ModesSetHandler {
         emit(
             client,
             "modes/set",
-            json!({ "instance_id": self.instance_id, "mode_id": self.mode_id }),
+            json!({ "instanceId": self.instance_id, "modeId": self.mode_id }),
         )
     }
 }
@@ -251,7 +251,7 @@ pub struct ModelsListHandler {
 
 impl CtlHandler for ModelsListHandler {
     fn run(self, client: &CtlClient) -> Result<()> {
-        emit(client, "models/list", json!({ "instance_id": self.instance_id }))
+        emit(client, "models/list", json!({ "instanceId": self.instance_id }))
     }
 }
 
@@ -265,7 +265,7 @@ impl CtlHandler for ModelsSetHandler {
         emit(
             client,
             "models/set",
-            json!({ "instance_id": self.instance_id, "model_id": self.model_id }),
+            json!({ "instanceId": self.instance_id, "modelId": self.model_id }),
         )
     }
 }

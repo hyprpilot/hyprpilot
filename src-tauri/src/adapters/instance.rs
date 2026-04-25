@@ -80,9 +80,9 @@ pub enum InstanceState {
 /// - **Topic strings** (dot-separated, returned by
 ///   [`InstanceEvent::topic`]): `instance.state`,
 ///   `instances.changed`. Used by tracing spans and the future
-///   subscription filter layer (K-276).
+///   subscription filter layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[serde(tag = "event", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum InstanceEvent {
     State {
         agent_id: String,
@@ -95,17 +95,43 @@ pub enum InstanceEvent {
         agent_id: String,
         instance_id: String,
         session_id: String,
+        /// Active turn id while a `session/prompt` is in flight; `None`
+        /// for spontaneous updates the agent emits outside a turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         update: serde_json::Value,
     },
     PermissionRequest {
         agent_id: String,
         instance_id: String,
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         request_id: String,
         tool: String,
         kind: String,
         args: String,
         options: Vec<PermissionOptionView>,
+    },
+    /// A `session/prompt` request was accepted by the actor — the
+    /// frontend uses `turn_id` to group every subsequent `Transcript`
+    /// / `PermissionRequest` until the matching `TurnEnded` lands.
+    TurnStarted {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        turn_id: String,
+    },
+    /// The active `session/prompt` resolved (or errored). `stop_reason`
+    /// mirrors the ACP `StopReason` wire string when the response was
+    /// successful; `None` when the request errored / was cancelled.
+    TurnEnded {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        turn_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<String>,
     },
     /// Registry membership changed — an instance spawned, shut down,
     /// or restarted. `instance_ids` is the full post-change set;
@@ -125,15 +151,17 @@ pub enum InstanceEvent {
 }
 
 impl InstanceEvent {
-    /// Dot-separated topic name. Stable; the K-276 filter layer
-    /// subscribes on these. Colon-separated Tauri event names live
-    /// only in the bridge's mapping table.
+    /// Dot-separated topic name. Stable contract for subscription
+    /// filtering. Colon-separated Tauri event names live only in the
+    /// bridge's mapping table.
     #[must_use]
     pub fn topic(&self) -> &'static str {
         match self {
             InstanceEvent::State { .. } => "instance.state",
             InstanceEvent::Transcript { .. } => "instance.transcript",
             InstanceEvent::PermissionRequest { .. } => "instance.permission_request",
+            InstanceEvent::TurnStarted { .. } => "instance.turn_started",
+            InstanceEvent::TurnEnded { .. } => "instance.turn_ended",
             InstanceEvent::InstancesChanged { .. } => "instances.changed",
             InstanceEvent::InstancesFocused { .. } => "instances.focused",
         }
@@ -144,6 +172,7 @@ impl InstanceEvent {
 /// callers to address follow-up submits + cancels against; the
 /// concrete channels live inside the adapter's own registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstanceHandle {
     pub agent_id: String,
     pub instance_id: String,
@@ -158,6 +187,7 @@ pub struct InstanceHandle {
 /// shape regardless of transport — consumers (RPC / UI pickers)
 /// render off this.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstanceInfo {
     pub id: String,
     pub agent_id: String,
@@ -179,9 +209,7 @@ pub struct InstanceInfo {
 ///
 /// Every consumer MUST handle `broadcast::error::RecvError::Lagged`
 /// explicitly — the broadcast channel silently drops messages to the
-/// lagging subscriber otherwise. The Tauri bridge does this in
-/// `AcpAdapter::spawn_tauri_event_bridge`; new subscribers added by
-/// K-276 / K-277 must too.
+/// lagging subscriber otherwise.
 pub type InstanceEventStream = broadcast::Receiver<InstanceEvent>;
 
 /// Per-actor contract the generic registry needs from each adapter's

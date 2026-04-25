@@ -12,3 +12,4 @@ playwright.config.ts
 eslint.config.mjs
 .prettierrc.mjs
 components.json
+**/*.spec.ts

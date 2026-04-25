@@ -85,11 +85,11 @@ describe('usePhase', () => {
       status: 'running'
     })
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
 
     const { phase } = usePhase()

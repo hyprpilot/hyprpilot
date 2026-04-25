@@ -39,13 +39,12 @@ describe('useStream', () => {
     expect(items[0]?.kind === StreamItemKind.Thought ? items[0].text : null).toBe('hello')
   })
 
-  it('appends a plan entry per pushPlan call', () => {
+  it('replaces entries on the open plan item across the same turn', () => {
     pushPlan('A', 's-a', { sessionUpdate: 'plan', entries: [{ content: 'e1' }] })
     pushPlan('A', 's-a', { sessionUpdate: 'plan', entries: [{ content: 'e2' }, { content: 'e3' }] })
 
     const items = useStream('A').items.value
-    expect(items).toHaveLength(2)
-    expect(items[0]?.kind === StreamItemKind.Plan ? items[0].entries.length : null).toBe(1)
-    expect(items[1]?.kind === StreamItemKind.Plan ? items[1].entries.length : null).toBe(2)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.kind === StreamItemKind.Plan ? items[0].entries.length : null).toBe(2)
   })
 })

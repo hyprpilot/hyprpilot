@@ -21,7 +21,7 @@ beforeEach(() => {
 
 describe('useAdapter', () => {
   it('submit() invokes session_submit with camel-cased args', async () => {
-    invoke.mockResolvedValue({ accepted: true, agent_id: 'a' })
+    invoke.mockResolvedValue({ accepted: true, agentId: 'a' })
     const { submit } = useAdapter()
 
     await submit({ text: 'hi', instanceId: 'i-1', profileId: 'strict' })
@@ -36,7 +36,7 @@ describe('useAdapter', () => {
   })
 
   it('submit() forwards attachments when provided', async () => {
-    invoke.mockResolvedValue({ accepted: true, agent_id: 'a' })
+    invoke.mockResolvedValue({ accepted: true, agentId: 'a' })
     const { submit } = useAdapter()
     const attachments = [{ slug: 'debug', path: '/skills/debug.md', body: 'body', title: 'Debug' }]
 
@@ -64,7 +64,7 @@ describe('useAdapter', () => {
   })
 
   it('agentsList() unwraps { agents } into an array', async () => {
-    invoke.mockResolvedValue({ agents: [{ id: 'a', provider: 'acp-claude-code', is_default: true }] })
+    invoke.mockResolvedValue({ agents: [{ id: 'a', provider: 'acp-claude-code', isDefault: true }] })
     const { agentsList } = useAdapter()
 
     const agents = await agentsList()
@@ -73,7 +73,7 @@ describe('useAdapter', () => {
   })
 
   it('profilesList() unwraps { profiles } into an array', async () => {
-    invoke.mockResolvedValue({ profiles: [{ id: 'p', agent: 'a', is_default: true }] })
+    invoke.mockResolvedValue({ profiles: [{ id: 'p', agent: 'a', isDefault: true }] })
     const { profilesList } = useAdapter()
 
     const profiles = await profilesList()

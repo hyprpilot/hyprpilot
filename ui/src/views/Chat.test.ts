@@ -83,11 +83,11 @@ beforeEach(async () => {
 describe('Chat.vue — permission wiring', () => {
   it('renders pending prompts from usePermissions and dispatches permission_reply on allow click', async () => {
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
     invoke.mockResolvedValue(undefined)
 
@@ -112,11 +112,11 @@ describe('Chat.vue — permission wiring', () => {
 
   it('dispatches deny via keyboard `d` when no input has focus', async () => {
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'rm -rf /',
-      options: [{ option_id: 'deny', name: 'Deny', kind: 'n' }]
+      options: [{ optionId: 'deny', name: 'Deny', kind: 'n' }]
     })
     invoke.mockResolvedValue(undefined)
 
@@ -136,11 +136,11 @@ describe('Chat.vue — permission wiring', () => {
 
   it('dispatches allow via keyboard `a` when no input has focus', async () => {
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
     invoke.mockResolvedValue(undefined)
 
@@ -160,11 +160,11 @@ describe('Chat.vue — permission wiring', () => {
 
   it('does not dispatch when the composer textarea has focus', async () => {
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
 
     const wrapper = mount(Chat, { attachTo: document.body })
@@ -184,11 +184,11 @@ describe('Chat.vue — permission wiring', () => {
 
   it('surfaces reply failure as an error toast', async () => {
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
     invoke.mockRejectedValue(new Error('permission_reply not implemented (K-245)'))
 
@@ -208,11 +208,11 @@ describe('Chat.vue — permission wiring', () => {
 
   it('ignores keyboard shortcuts when modifier keys are held', async () => {
     pushPermissionRequest('A', 's-a', {
-      request_id: 'req-1',
+      requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ option_id: 'allow', name: 'Allow', kind: 'y' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
     })
 
     const wrapper = mount(Chat, { attachTo: document.body })

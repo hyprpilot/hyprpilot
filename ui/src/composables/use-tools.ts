@@ -2,6 +2,7 @@ import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from './use-active-instance'
+import { openTurnIdFor } from './use-turns'
 
 export interface ToolCallLocation {
   path?: string
@@ -17,6 +18,9 @@ export interface ToolCallContentBlock {
 export interface ToolCallView {
   id: string
   sessionId: string
+  /// Active ACP turn id at first-sight; preserved across subsequent
+  /// `tool_call_update` chunks for the same `toolCallId`.
+  turnId?: string
   toolCallId: string
   title?: string
   status?: string
@@ -85,6 +89,7 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
   slot.calls.push({
     id: `tc-${toolCallId}`,
     sessionId,
+    turnId: openTurnIdFor(id, sessionId),
     toolCallId,
     title: raw.title,
     status: raw.status,
@@ -99,6 +104,10 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
 
 export function resetTools(id: InstanceId): void {
   states.delete(id)
+}
+
+export function getToolCall(id: InstanceId, toolCallId: string): ToolCallView | undefined {
+  return states.get(id)?.calls.find((c) => c.toolCallId === toolCallId)
 }
 
 export function useTools(instanceId?: InstanceId): { calls: ComputedRef<ToolCallView[]> } {

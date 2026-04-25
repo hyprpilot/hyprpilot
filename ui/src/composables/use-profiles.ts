@@ -38,7 +38,7 @@ export function useProfiles() {
     if (persisted && list.some((p) => p.id === persisted)) {
       return persisted
     }
-    const flagged = list.find((p) => p.is_default)
+    const flagged = list.find((p) => p.isDefault)
     if (flagged) {
       return flagged.id
     }

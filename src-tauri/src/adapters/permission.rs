@@ -31,6 +31,7 @@ pub const WAITER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// UI-facing projection of a permission option. Wire-normalised so
 /// the webview doesn't need to speak any specific vendor's shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionOptionView {
     pub option_id: String,
     pub name: String,
@@ -46,6 +47,7 @@ pub struct PermissionOptionView {
 /// carried for the UI and (future) argument-scoped rules — they are
 /// opaque to the allowlist decision today.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolCallRef {
     /// Canonical tool name for glob matching. Adapters populate with
     /// the most stable identifier their wire exposes (for ACP: the
@@ -94,6 +96,7 @@ pub enum PermissionOutcome {
 /// `acp:permission-request`. Carries the options + the identity bits
 /// needed to route the reply back to the awaiting actor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionPrompt {
     pub session_id: String,
     pub request_id: String,
@@ -103,6 +106,7 @@ pub struct PermissionPrompt {
 /// The UI's answer back. `PermissionController` threads these
 /// through the adapter so the awaiting actor resumes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionReply {
     pub session_id: String,
     pub request_id: String,

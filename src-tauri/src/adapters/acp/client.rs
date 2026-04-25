@@ -1,12 +1,11 @@
 //! ACP `Client`-side adapter. `AcpClient` forwards every incoming
 //! `fs/*` and `terminal/*` request to the typed tool layer (`tools::`)
 //! and maps domain errors into `agent_client_protocol::Error`.
-//! `request_permission` routes through the generic
-//! `PermissionController` (K-245) — profile allowlists decide
-//! `Allow` / `Deny` without UI traffic; `AskUser` emits the
-//! `acp:permission-request` event and blocks on a controller-managed
-//! oneshot until the webview replies (or the 10-minute waiter
-//! timeout fires).
+//! `request_permission` routes through `PermissionController`:
+//! profile allowlists decide `Allow` / `Deny` without UI traffic;
+//! `AskUser` emits the `acp:permission-request` event and blocks on a
+//! controller-managed oneshot until the webview replies (or the
+//! 10-minute waiter timeout fires).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::adapters::permission::{
-    pick_allow_option_id, pick_reject_option_id, Decision, PermissionController, PermissionOutcome, PermissionRequest,
-    ToolCallRef, WAITER_TIMEOUT,
+    pick_allow_option_id, pick_reject_option_id, Decision, PermissionController, PermissionOptionView,
+    PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
 };
 use crate::config::ProfileConfig;
 use crate::tools::{FsTools, Sandbox, SandboxError, Terminals};
@@ -71,36 +70,29 @@ pub enum ClientEvent {
     },
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PermissionOptionView {
-    pub option_id: String,
-    pub name: String,
-    pub kind: String,
-}
-
-impl From<&agent_client_protocol::schema::PermissionOption> for PermissionOptionView {
-    fn from(v: &agent_client_protocol::schema::PermissionOption) -> Self {
-        let kind = wire_name(&v.kind).unwrap_or_else(|| {
-            tracing::error!(
-                kind = ?v.kind,
-                "acp::client: PermissionOptionKind serialised to non-string — upstream crate shape changed"
-            );
-            "unknown".to_string()
-        });
-        Self {
-            option_id: v.option_id.0.to_string(),
-            name: v.name.clone(),
-            kind,
-        }
+/// Project an ACP `PermissionOption` into the generic
+/// `PermissionOptionView`. Lives here (not in `mapping.rs`) because
+/// the `From` impl reads the ACP `PermissionOptionKind` via
+/// `wire_name` which is an ACP-local helper.
+pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOption) -> PermissionOptionView {
+    let kind = wire_name(&v.kind).unwrap_or_else(|| {
+        tracing::error!(
+            kind = ?v.kind,
+            "acp::client: PermissionOptionKind serialised to non-string — upstream crate shape changed"
+        );
+        "unknown".to_string()
+    });
+    PermissionOptionView {
+        option_id: v.option_id.0.to_string(),
+        name: v.name.clone(),
+        kind,
     }
 }
 
 /// Resolved tool identity for the **permission path only** — globs-
 /// match name + minimal fields for the two-button prompt. The
-/// transcript-side tool chips / rows get a proper vendor-aware
-/// formatter in K-256 (port of `lib/tools.py::ToolFormatters`,
-/// TypeScript, `ui/src/lib/toolFormatters.ts`); nothing here should
-/// grow to cover that scope.
+/// transcript-side tool chips / rows get their own vendor-aware
+/// formatter in `ui/src/lib/tool-formatters.ts`.
 ///
 /// `name` is the canonical key globs match against; `title` is ACP's
 /// opaque human-readable summary; `kind_wire` is `Some` only when
@@ -252,7 +244,7 @@ impl AcpClient {
         &self,
         req: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
-        let options = req.options.iter().map(PermissionOptionView::from).collect::<Vec<_>>();
+        let options = req.options.iter().map(option_view_from).collect::<Vec<_>>();
         let ToolIdentity {
             name: tool_name,
             title,
@@ -269,7 +261,7 @@ impl AcpClient {
                 title: title.clone(),
                 raw_args: raw_args.clone(),
             },
-            options: options.iter().cloned().map(Into::into).collect(),
+            options: options.clone(),
         };
 
         match self.permissions.decide(&decision_req, self.profile.as_ref()) {
@@ -679,7 +671,7 @@ mod tests {
             (PermissionOptionKind::RejectAlways, "reject_always"),
         ] {
             let opt = PermissionOption::new(PermissionOptionId::new("x"), "X", kind);
-            let view: PermissionOptionView = (&opt).into();
+            let view = option_view_from(&opt);
             assert_eq!(view.kind, wire);
         }
     }
