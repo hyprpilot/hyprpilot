@@ -12,7 +12,7 @@
 //! valid payload even when the daemon is down) and owns a
 //! reconnect-with-back-off loop for `--watch`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -296,6 +296,131 @@ impl CtlHandler for ModelsSetHandler {
             client,
             "models/set",
             json!({ "instanceId": self.instance_id, "modelId": self.model_id }),
+        )
+    }
+}
+
+/// `ctl prompts send --instance <id> <text>`. Pass `-` for `text` to
+/// read from stdin.
+pub struct PromptsSendHandler {
+    pub instance_id: String,
+    pub text: String,
+}
+
+impl CtlHandler for PromptsSendHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let text = if self.text.trim() == "-" {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        } else {
+            self.text
+        };
+        emit(
+            client,
+            "prompts/send",
+            json!({ "instanceId": self.instance_id, "text": text }),
+        )
+    }
+}
+
+pub struct PromptsCancelHandler {
+    pub instance_id: String,
+}
+
+impl CtlHandler for PromptsCancelHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "prompts/cancel", json!({ "instanceId": self.instance_id }))
+    }
+}
+
+/// `ctl permissions pending [--instance <id>]`. Pretty-prints a
+/// requestId / instance / tool / args table; empty list renders the
+/// literal "no pending permissions" message on stderr + exits 0.
+pub struct PermissionsPendingHandler {
+    pub instance_id: Option<String>,
+}
+
+impl CtlHandler for PermissionsPendingHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let mut params = json!({});
+        if let Some(id) = self.instance_id {
+            params
+                .as_object_mut()
+                .expect("json! produces a map")
+                .insert("instanceId".into(), Value::String(id));
+        }
+        let mut conn = match client.connect() {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        match conn.call("permissions/pending", params) {
+            Ok(Outcome::Success { result }) => {
+                let empty: Vec<Value> = Vec::new();
+                let pending = result.get("pending").and_then(Value::as_array).unwrap_or(&empty);
+                if pending.is_empty() {
+                    eprintln!("no pending permissions");
+                    return Ok(());
+                }
+                let widest_req = pending
+                    .iter()
+                    .filter_map(|p| p.get("requestId").and_then(Value::as_str))
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(9);
+                let widest_inst = pending
+                    .iter()
+                    .filter_map(|p| p.get("instanceId").and_then(Value::as_str))
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(8);
+                let widest_tool = pending
+                    .iter()
+                    .filter_map(|p| p.get("tool").and_then(Value::as_str))
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(4);
+                for p in pending {
+                    let req = p.get("requestId").and_then(Value::as_str).unwrap_or("");
+                    let inst = p.get("instanceId").and_then(Value::as_str).unwrap_or("");
+                    let tool = p.get("tool").and_then(Value::as_str).unwrap_or("");
+                    let args = p.get("args").and_then(Value::as_str).unwrap_or("");
+                    println!(
+                        "{req:<wreq$}  {inst:<winst$}  {tool:<wtool$}  {args}",
+                        wreq = widest_req,
+                        winst = widest_inst,
+                        wtool = widest_tool
+                    );
+                }
+                Ok(())
+            }
+            Ok(Outcome::Error { error: err }) => {
+                error!(code = err.code, message = %err.message, "ctl permissions pending: rpc error");
+                eprintln!("rpc error {}: {}", err.code, err.message);
+                std::process::exit(1);
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+pub struct PermissionsRespondHandler {
+    pub request_id: String,
+    pub option_id: String,
+}
+
+impl CtlHandler for PermissionsRespondHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(
+            client,
+            "permissions/respond",
+            json!({ "requestId": self.request_id, "optionId": self.option_id }),
         )
     }
 }

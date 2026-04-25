@@ -112,6 +112,14 @@ impl AcpAdapter {
         self.config.clone()
     }
 
+    /// Handle onto the shared permission controller. Used by the
+    /// `permissions/*` RPC handlers to enumerate + resolve waiters
+    /// against the same map the runtime registered them in.
+    #[must_use]
+    pub fn permissions(&self) -> Arc<dyn PermissionController> {
+        self.permissions.clone()
+    }
+
     /// Lazily spawn (and memoise) the ACP → generic events bridge
     /// task. Defers the `tokio::spawn` call until first access, which
     /// always happens after `daemon::run` enters the Tauri builder's

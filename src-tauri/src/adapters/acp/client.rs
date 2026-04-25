@@ -187,6 +187,10 @@ pub struct AcpClient {
     /// resolution); the decision chain treats that as "ask user"
     /// unconditionally.
     profile: Option<ProfileConfig>,
+    /// Owning instance UUID. Stamped onto every `PermissionRequest`
+    /// the controller registers so `permissions/pending` can address
+    /// the originating instance without a session-id hop.
+    instance_id: Option<String>,
 }
 
 impl std::fmt::Debug for AcpClient {
@@ -206,6 +210,16 @@ impl AcpClient {
         permissions: Arc<dyn PermissionController>,
         profile: Option<ProfileConfig>,
     ) -> Result<Self, SandboxError> {
+        Self::with_instance_id(events, sandbox_root, permissions, profile, None)
+    }
+
+    pub fn with_instance_id(
+        events: mpsc::UnboundedSender<ClientEvent>,
+        sandbox_root: PathBuf,
+        permissions: Arc<dyn PermissionController>,
+        profile: Option<ProfileConfig>,
+        instance_id: Option<String>,
+    ) -> Result<Self, SandboxError> {
         let sandbox = Sandbox::new(sandbox_root)?;
         Ok(Self {
             events,
@@ -213,6 +227,7 @@ impl AcpClient {
             terminals: Arc::new(Terminals::new(sandbox)),
             permissions,
             profile,
+            instance_id,
         })
     }
 
@@ -255,6 +270,7 @@ impl AcpClient {
 
         let decision_req = PermissionRequest {
             session_id: req.session_id.0.to_string(),
+            instance_id: self.instance_id.clone(),
             request_id: request_id.clone(),
             tool_call: ToolCallRef {
                 name: tool_name.clone(),
