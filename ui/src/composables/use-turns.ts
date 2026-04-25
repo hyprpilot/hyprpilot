@@ -63,6 +63,27 @@ export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
   slot.openBySession.set(raw.sessionId, raw.turnId)
 }
 
+export type TurnEndedListener = (id: InstanceId, raw: TurnEndedRaw) => void
+
+const turnEndedListeners = new Set<TurnEndedListener>()
+
+/**
+ * Register a sibling-store hook that fires after `pushTurnEnded`
+ * lands its mutation. Returns the unsubscribe fn. Used by
+ * `use-queue.ts` to dispatch the queue head on `end_turn` and
+ * cancel-flush on `cancelled`.
+ */
+export function onTurnEnded(listener: TurnEndedListener): () => void {
+  turnEndedListeners.add(listener)
+  return () => {
+    turnEndedListeners.delete(listener)
+  }
+}
+
+export function __resetTurnEndedListeners(): void {
+  turnEndedListeners.clear()
+}
+
 export function pushTurnEnded(id: InstanceId, raw: TurnEndedRaw): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)
@@ -73,6 +94,9 @@ export function pushTurnEnded(id: InstanceId, raw: TurnEndedRaw): void {
   }
   if (slot.openBySession.get(raw.sessionId) === raw.turnId) {
     slot.openBySession.delete(raw.sessionId)
+  }
+  for (const listener of turnEndedListeners) {
+    listener(id, raw)
   }
 }
 
