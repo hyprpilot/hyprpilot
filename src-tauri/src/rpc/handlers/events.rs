@@ -213,6 +213,7 @@ fn wire_topic_for(evt: &InstanceEvent) -> Option<WireTopic> {
         InstanceEvent::TurnEnded { .. } => WireTopic::InstanceTurnEnded,
         InstanceEvent::InstancesChanged { .. } => WireTopic::InstancesChanged,
         InstanceEvent::InstancesFocused { .. } => WireTopic::InstancesFocused,
+        InstanceEvent::DaemonReloaded { .. } => WireTopic::DaemonReloaded,
     })
 }
 
@@ -240,6 +241,11 @@ mod tests {
             config: None,
             id,
             already_subscribed: false,
+            started_at: None,
+            socket_path: None,
+            config_load_context: None,
+            skills: None,
+            mcps: None,
             existing_event_subscription_ids: existing,
             events_tx,
         }

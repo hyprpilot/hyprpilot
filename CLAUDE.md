@@ -954,6 +954,11 @@ can't block others.
 | `overlay/hide` | *(none)* | `{ "visible": false }` | Hide the overlay (idempotent; webview stays warm). |
 | `overlay/toggle` | *(none)* | `{ "visible": bool }` | Flip the overlay's visibility. Race-safe across concurrent calls — every `overlay/*` entry serialises through `WindowRenderer::lock_present`. |
 | `daemon/kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
+| `daemon/status` | *(none)* | `{ "pid", "uptimeSecs", "socketPath", "version", "instanceCount" }` | Snapshot for support tickets / `ctl daemon status`. |
+| `daemon/version` | *(none)* | `{ "version", "commit"?, "buildDate"? }` | Version string (`CARGO_PKG_VERSION`). `commit` / `buildDate` populate when `HYPRPILOT_BUILD_COMMIT` / `HYPRPILOT_BUILD_DATE` env vars are present at compile time. |
+| `daemon/reload` | *(none)* | `{ "profiles", "skillsCount", "mcpsCount" }` | Re-runs `config::load` against the original CLI overlay layers, then `SkillsRegistry::reload()`. Publishes a `DaemonReloaded` event on the registry broadcast (Tauri name: `daemon:reloaded`; topic: `daemon.reloaded`). |
+| `daemon/shutdown` | `{ "force"?: bool }` | `{ "exiting": true }` | Graceful counterpart to `daemon/kill`. Without `--force`, refuses with `-32603` when any instance has an in-flight turn (busy = an emitted `TurnStarted` without matching `TurnEnded`). The `data` payload carries `{ counts: { instances, busyInstances }, busyInstanceIds }`. |
+| `diag/snapshot` | *(none)* | `{ daemon, instances, profiles, skills, mcps, configPaths }` | Read-only structural dump for "what is this daemon doing" tickets. **Redacted**: profile `env` values + transcript bodies never appear. `mcps.count` is `0` until K-270 wires the catalogue. |
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
 | `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
@@ -970,8 +975,10 @@ can't block others.
   `window/show`, `window/hide`, `window/focus`).
 - `overlay/*` — race-safe present/hide/toggle for hyprland-bind users;
   accepts `instanceId` to focus alongside the present.
-- `daemon/*` — daemon lifecycle (`daemon/kill`; future `daemon/status`,
-  `daemon/reload`).
+- `daemon/*` — daemon lifecycle / introspection (`daemon/kill`,
+  `daemon/status`, `daemon/version`, `daemon/reload`,
+  `daemon/shutdown`).
+- `diag/*` — read-only operator diagnostics (`diag/snapshot`).
 - `status/*` — agent state broadcasts (drives waybar).
 - `config/*` — read-only config slices consumed by UI pickers
   (`config/profiles` today; future `config/agents`).
@@ -1346,7 +1353,7 @@ webviews, drops every `app.manage(...)` value — flushing the tracing
 `WorkerGuard`, the `StatusBroadcast`, and the socket listener — and
 exits with code 0).
 
-Three call sites funnel through this one fn:
+Four call sites funnel through this one fn:
 
 1. **`daemon/kill` RPC** — `DaemonHandler` returns
    `{"killed": true}` in the result; `rpc::server::handle_connection`
@@ -1355,8 +1362,14 @@ Three call sites funnel through this one fn:
    dispatcher tuple — the marker is the response itself, so any
    future respond-then-shut-down handler just emits the same
    `{"killed": true}` shape.
-2. **SIGINT (Ctrl-C)** — tokio signal task spawned in `daemon::run`.
-3. **SIGTERM** — same task; systemd / `pkill` both use this.
+2. **`daemon/shutdown` RPC** — graceful counterpart with a busy
+   check (`AcpAdapter::busy_instance_ids`). Refuses with `-32603`
+   when any instance has an in-flight turn unless `force = true`.
+   On accept, returns `{"exiting": true}`; the same flush-then-shutdown
+   path inspects either marker (`killed` OR `exiting`) so adding
+   another graceful surface costs zero new code.
+3. **SIGINT (Ctrl-C)** — tokio signal task spawned in `daemon::run`.
+4. **SIGTERM** — same task; systemd / `pkill` both use this.
 
 First signal triggers the orchestrator; a second signal during
 shutdown falls through to the default handler (force-kill) — standard

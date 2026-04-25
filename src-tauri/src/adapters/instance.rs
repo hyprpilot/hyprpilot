@@ -148,6 +148,14 @@ pub enum InstanceEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         instance_id: Option<String>,
     },
+    /// Daemon-wide reload (`daemon/reload`) — config + skills (+ MCPs
+    /// once K-270 lands) rescanned. Carries post-reload counts so
+    /// subscribers can refresh their caches without a separate roundtrip.
+    DaemonReloaded {
+        profiles: usize,
+        skills_count: usize,
+        mcps_count: usize,
+    },
 }
 
 impl InstanceEvent {
@@ -164,6 +172,7 @@ impl InstanceEvent {
             InstanceEvent::TurnEnded { .. } => "instance.turn_ended",
             InstanceEvent::InstancesChanged { .. } => "instances.changed",
             InstanceEvent::InstancesFocused { .. } => "instances.focused",
+            InstanceEvent::DaemonReloaded { .. } => "daemon.reloaded",
         }
     }
 }

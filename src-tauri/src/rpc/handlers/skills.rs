@@ -132,6 +132,11 @@ mod tests {
             config: Some(config),
             id,
             already_subscribed: false,
+            started_at: None,
+            socket_path: None,
+            config_load_context: None,
+            skills: None,
+            mcps: None,
             existing_event_subscription_ids: &[],
             events_tx: None,
         }

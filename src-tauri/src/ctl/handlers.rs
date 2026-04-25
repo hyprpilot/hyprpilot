@@ -114,6 +114,87 @@ impl CtlHandler for SessionInfoHandler {
     }
 }
 
+pub struct DaemonStatusHandler;
+
+impl CtlHandler for DaemonStatusHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "daemon/status", Value::Null)
+    }
+}
+
+pub struct DaemonVersionHandler;
+
+impl CtlHandler for DaemonVersionHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "daemon/version", Value::Null)
+    }
+}
+
+pub struct DaemonReloadHandler;
+
+impl CtlHandler for DaemonReloadHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "daemon/reload", Value::Null)
+    }
+}
+
+/// Graceful daemon shutdown. `--force` skips the busy check.
+pub struct DaemonShutdownHandler {
+    pub force: bool,
+}
+
+impl CtlHandler for DaemonShutdownHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let params = if self.force {
+            json!({ "force": true })
+        } else {
+            Value::Null
+        };
+        emit(client, "daemon/shutdown", params)
+    }
+}
+
+/// `ctl diag snapshot [--output <path>]`. Writes pretty JSON to the
+/// given path or stdout.
+pub struct DiagSnapshotHandler {
+    pub output: Option<std::path::PathBuf>,
+}
+
+impl CtlHandler for DiagSnapshotHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let mut conn = match client.connect() {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        match conn.call("diag/snapshot", Value::Null) {
+            Ok(Outcome::Success { result }) => {
+                let pretty = serde_json::to_string_pretty(&result)?;
+                match self.output {
+                    Some(path) => {
+                        std::fs::write(&path, pretty.as_bytes())
+                            .map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+                        eprintln!("snapshot written to {}", path.display());
+                    }
+                    None => println!("{pretty}"),
+                }
+                Ok(())
+            }
+            Ok(Outcome::Error { error: err }) => {
+                error!(code = err.code, message = %err.message, "ctl diag snapshot: rpc error");
+                eprintln!("rpc error {}: {}", err.code, err.message);
+                std::process::exit(1);
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 pub struct OverlayPresentHandler {
     pub instance_id: Option<String>,
 }

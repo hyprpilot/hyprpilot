@@ -18,6 +18,7 @@ use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::mcp::{MCPsBroadcast, MCPsRegistry};
 use crate::paths;
+use crate::rpc::handler::ConfigLoadContext;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
 use crate::skills::{spawn_watcher, SkillsBroadcast, SkillsRegistry};
 
@@ -144,7 +145,9 @@ fn query_gtk_font() -> Option<GtkFont> {
     None
 }
 
-pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
+pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext) -> Result<()> {
+    let started_at = std::time::Instant::now();
+
     let socket_path = args
         .socket
         .or_else(|| cfg.daemon.socket.clone())
@@ -344,6 +347,11 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
                 adapter: adapter.clone(),
                 acp_adapter: acp_adapter.clone(),
                 config: shared_config.clone(),
+                started_at,
+                socket_path: socket_path.clone(),
+                config_load_context: config_load_context.clone(),
+                skills: skills.clone(),
+                mcps: mcps.clone(),
             };
 
             // SIGINT / SIGTERM → same shutdown path as daemon/kill.

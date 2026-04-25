@@ -71,9 +71,14 @@ fn main() -> Result<()> {
     let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;
     cfg.validate()?;
 
+    let load_ctx = rpc::handler::ConfigLoadContext {
+        cli_path: cli.config.clone(),
+        profile: cli.config_profile.clone(),
+    };
+
     match cli.command {
-        None => daemon::run(cfg, daemon::DaemonArgs::default()),
-        Some(Command::Daemon(args)) => daemon::run(cfg, args),
+        None => daemon::run(cfg, daemon::DaemonArgs::default(), load_ctx),
+        Some(Command::Daemon(args)) => daemon::run(cfg, args, load_ctx),
         Some(Command::Ctl(args)) => ctl::run(cfg, args),
     }
 }

@@ -8,7 +8,8 @@ use tracing::debug;
 use crate::config::Config;
 use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
-    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, EventsTailHandler, KillHandler, MCPsListHandler,
+    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, DaemonReloadHandler, DaemonShutdownHandler,
+    DaemonStatusHandler, DaemonVersionHandler, DiagSnapshotHandler, EventsTailHandler, KillHandler, MCPsListHandler,
     MCPsSetHandler, ModelsListHandler, ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler,
     OverlayPresentHandler, OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler,
     PromptsCancelHandler, PromptsSendHandler, SessionInfoHandler, SessionsForgetHandler, SessionsInfoHandler,
@@ -129,6 +130,21 @@ pub enum CtlCommand {
     Overlay {
         #[command(subcommand)]
         command: OverlaySubcommand,
+    },
+
+    /// Daemon introspection + lifecycle. Distinct from the legacy
+    /// top-level `kill` subcommand: `daemon shutdown` is the graceful
+    /// surface (with a busy check), `daemon kill` would be the
+    /// hard-stop.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonSubcommand,
+    },
+
+    /// Operator diagnostics — read-only structural snapshot.
+    Diag {
+        #[command(subcommand)]
+        command: DiagSubcommand,
     },
 
     /// Connection-scoped event subscription. Streams every
@@ -270,6 +286,23 @@ pub enum PromptsCommand {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum DaemonSubcommand {
+    /// Print daemon pid, uptime, version, instance count.
+    Status,
+    /// Print daemon version (+ commit / build date when wired).
+    Version,
+    /// Re-load config + skills (+ MCPs once K-270 lands). Returns the
+    /// post-reload counts.
+    Reload,
+    /// Graceful shutdown. Refuses with `-32603` when any instance has
+    /// an in-flight turn unless `--force` is set.
+    Shutdown {
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum EventsSubcommand {
     /// Stream events. Optional comma-separated `--topics` filter and
     /// `--instance` filter scope the stream; firehose otherwise.
@@ -280,6 +313,17 @@ pub enum EventsSubcommand {
         /// Instance id filter — only events bound to this instance.
         #[arg(long = "instance")]
         instance_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum DiagSubcommand {
+    /// Pretty-print a structural snapshot of the daemon. With
+    /// `--output <path>`, writes the JSON to a file instead of stdout.
+    Snapshot {
+        /// Write the snapshot to this path. Omit to print to stdout.
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
     },
 }
 
@@ -397,6 +441,15 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
             OverlaySubcommand::Present { instance_id } => OverlayPresentHandler { instance_id }.run(&client),
             OverlaySubcommand::Hide => OverlayHideHandler.run(&client),
             OverlaySubcommand::Toggle => OverlayToggleHandler.run(&client),
+        },
+        CtlCommand::Daemon { command } => match command {
+            DaemonSubcommand::Status => DaemonStatusHandler.run(&client),
+            DaemonSubcommand::Version => DaemonVersionHandler.run(&client),
+            DaemonSubcommand::Reload => DaemonReloadHandler.run(&client),
+            DaemonSubcommand::Shutdown { force } => DaemonShutdownHandler { force }.run(&client),
+        },
+        CtlCommand::Diag { command } => match command {
+            DiagSubcommand::Snapshot { output } => DiagSnapshotHandler { output }.run(&client),
         },
         CtlCommand::Events { command } => match command {
             EventsSubcommand::Tail { topics, instance_id } => EventsTailHandler {

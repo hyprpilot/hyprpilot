@@ -11,9 +11,9 @@ use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, EventsHandler, InstancesHandler, MCPsHandler,
-    ModelsHandler, ModesHandler, OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler,
-    SessionsHandler, SkillsHandler, StatusHandler, WindowHandler,
+    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, DiagHandler, EventsHandler, InstancesHandler,
+    MCPsHandler, ModelsHandler, ModesHandler, OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler,
+    SessionHandler, SessionsHandler, SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -50,7 +50,10 @@ impl RpcDispatcher {
     /// - `OverlayHandler` (namespace `"overlay"`): `overlay/present`,
     ///   `overlay/hide`, `overlay/toggle` — hyprland-bind surface,
     ///   serialised through `WindowRenderer::lock_present`.
-    /// - `DaemonHandler` (namespace `"daemon"`): `daemon/kill`.
+    /// - `DaemonHandler` (namespace `"daemon"`): `daemon/kill`,
+    ///   `daemon/status`, `daemon/version`, `daemon/reload`,
+    ///   `daemon/shutdown`.
+    /// - `DiagHandler` (namespace `"diag"`): `diag/snapshot`.
     /// - `StatusHandler` (namespace `"status"`): `status/get`,
     ///   `status/subscribe`.
     /// - `ConfigHandler` (namespace `"config"`): `config/profiles`.
@@ -86,6 +89,7 @@ impl RpcDispatcher {
                 Box::new(WindowHandler),
                 Box::new(OverlayHandler),
                 Box::new(DaemonHandler),
+                Box::new(DiagHandler),
                 Box::new(StatusHandler),
                 Box::new(ConfigHandler),
                 Box::new(InstancesHandler),
@@ -163,6 +167,11 @@ mod dispatcher_tests {
             config: Some(config),
             id: &id,
             already_subscribed: false,
+            started_at: None,
+            socket_path: None,
+            config_load_context: None,
+            skills: None,
+            mcps: None,
             existing_event_subscription_ids: &[],
             events_tx: None,
         };
@@ -395,6 +404,11 @@ mod dispatcher_tests {
             config: Some(config),
             id: &id,
             already_subscribed: true,
+            started_at: None,
+            socket_path: None,
+            config_load_context: None,
+            skills: None,
+            mcps: None,
             existing_event_subscription_ids: &[],
             events_tx: None,
         };
