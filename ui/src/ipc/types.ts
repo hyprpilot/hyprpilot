@@ -76,6 +76,18 @@ export interface SkillBody {
 }
 
 /**
+ * Slash-command summary surfaced by the agent's `available_commands`
+ * SessionUpdate. Returned as a list by the `commands_list` Tauri
+ * command + `commands/list` RPC. The cache lands in K-251; until
+ * then the call surfaces a not-implemented error and the palette
+ * renders an empty state.
+ */
+export interface SlashCommand {
+  name: string
+  description?: string
+}
+
+/**
  * A user-turn attachment delivered alongside compose text. Today the
  * sole producer is the skills palette (K-268): a tick selects a skill,
  * the body is snapshotted at pick time, and the resulting `Attachment`

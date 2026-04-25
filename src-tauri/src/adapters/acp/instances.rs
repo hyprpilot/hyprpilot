@@ -757,6 +757,16 @@ impl AcpAdapter {
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)
     }
 
+    /// Slash-commands cache (K-267 palette leaf, K-280 wire).
+    /// `AcpInstance` will cache the `available_commands` SessionUpdate
+    /// in K-251; until then this surfaces the same `-32603` the RPC
+    /// handler does so the Tauri caller can render an empty / error
+    /// state without inventing a fake-success path.
+    pub async fn list_commands(&self, id: &str) -> Result<Vec<Value>, RpcError> {
+        let _ = self.contains_instance(id).await?;
+        Err(RpcError::internal_error("commands/list not implemented — ref K-251"))
+    }
+
     /// Membership check used by `modes/*`, `models/*`, `commands/*`
     /// handlers to map a wire-supplied `instance_id` onto the live
     /// registry. `-32602` when the id is malformed or not in the
@@ -1087,6 +1097,16 @@ system_prompt = "be terse"
         assert_eq!(out[1]["id"], "strict");
         assert_eq!(out[1]["isDefault"], false);
         assert!(out[1].get("has_prompt").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_commands_unknown_instance_id_is_invalid_params() {
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let err = adapter
+            .list_commands("550e8400-e29b-41d4-a716-446655440000")
+            .await
+            .expect_err("unknown id must fail");
+        assert_eq!(err.code, -32602);
     }
 
     /// Mode threading: `spawn(SpawnSpec { mode: Some("plan"), ... })`

@@ -19,6 +19,7 @@ import type {
   SessionSummary,
   SkillBody,
   SkillSummary,
+  SlashCommand,
   SubmitResult,
   TerminalEventPayload,
   Theme,
@@ -37,6 +38,7 @@ export enum TauriCommand {
   SessionSubmit = 'session_submit',
   SessionCancel = 'session_cancel',
   AgentsList = 'agents_list',
+  CommandsList = 'commands_list',
   ProfilesList = 'profiles_list',
   SessionList = 'session_list',
   SessionLoad = 'session_load',
@@ -64,6 +66,7 @@ export interface TauriCommandResult {
   [TauriCommand.SessionSubmit]: SubmitResult
   [TauriCommand.SessionCancel]: CancelResult
   [TauriCommand.AgentsList]: { agents: AgentSummary[] }
+  [TauriCommand.CommandsList]: { commands: SlashCommand[] }
   [TauriCommand.ProfilesList]: { profiles: ProfileSummary[] }
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void

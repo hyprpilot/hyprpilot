@@ -17,7 +17,7 @@
  * are palette-driven, not drop-driven).
  */
 import { readImage } from '@tauri-apps/plugin-clipboard-manager'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import ChatComposerPill from './ChatComposerPill.vue'
 import { ComposerPillKind, type ComposerPill } from '../types'
@@ -103,6 +103,11 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
 
 onMounted(() => {
   resize()
+  composer.registerTextarea(textareaRef.value)
+})
+
+onUnmounted(() => {
+  composer.registerTextarea(undefined)
 })
 
 watch(text, () => nextTick(resize))

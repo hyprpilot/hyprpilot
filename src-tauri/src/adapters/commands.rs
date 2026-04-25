@@ -77,6 +77,12 @@ pub async fn agents_list(adapter: AdapterState<'_>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn commands_list(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    let commands = adapter.list_commands(&instance_id).await.map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "commands": commands }))
+}
+
+#[tauri::command]
 pub async fn profiles_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     Ok(serde_json::json!({ "profiles": adapter.list_profiles() }))
 }
