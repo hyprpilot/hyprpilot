@@ -16,8 +16,11 @@ use tauri::State;
 use super::acp::AcpAdapter;
 use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
 use super::transcript::Attachment;
+use super::instance::InstanceKey;
+use crate::mcp::MCPsRegistry;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
+type MCPsState<'a> = State<'a, Arc<MCPsRegistry>>;
 
 #[tauri::command]
 pub async fn session_submit(
@@ -206,4 +209,62 @@ pub async fn permission_reply(
     );
     controller.resolve(&request_id, outcome).await;
     Ok(())
+}
+
+/// `mcps_list` — return the global catalog with a per-instance
+/// `enabled` bit. When `instance_id` resolves to a live actor the bit
+/// reflects the override-or-profile-default; otherwise everything is
+/// enabled (the daemon-wide "no filter" semantics).
+#[tauri::command]
+pub async fn mcps_list(
+    adapter: AdapterState<'_>,
+    mcps: MCPsState<'_>,
+    instance_id: Option<String>,
+) -> Result<Value, String> {
+    let catalog = mcps.list();
+    let enabled_filter = match instance_id.as_deref() {
+        Some(id) => {
+            let key = InstanceKey::parse(id).map_err(|err| format!("mcps_list instance_id '{id}': {err}"))?;
+            Some(adapter.effective_mcps_for(key).await)
+        }
+        None => None,
+    };
+    let items: Vec<Value> = catalog
+        .iter()
+        .map(|m| {
+            let enabled = match &enabled_filter {
+                None => true,
+                Some(None) => true,
+                Some(Some(list)) => list.iter().any(|n| n == &m.name),
+            };
+            serde_json::json!({
+                "name": m.name,
+                "command": m.command,
+                "enabled": enabled,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "mcps": items }))
+}
+
+/// `mcps_set` — install a per-instance enabled-list override and
+/// trigger an instance restart. Mirrors the `mcps/set` socket RPC.
+#[tauri::command]
+pub async fn mcps_set(
+    adapter: AdapterState<'_>,
+    mcps: MCPsState<'_>,
+    instance_id: String,
+    enabled: Vec<String>,
+) -> Result<Value, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|err| format!("mcps_set instance_id '{instance_id}': {err}"))?;
+    let _ = adapter.contains_instance(&instance_id).await.map_err(|e| e.message)?;
+    let catalog = mcps.list();
+    for name in &enabled {
+        if !catalog.iter().any(|m| &m.name == name) {
+            return Err(format!("mcps_set: '{name}' not in [[mcps]] catalog"));
+        }
+    }
+    adapter.set_mcps_override(key, enabled);
+    adapter.restart_instance(key).await.map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "restarted": true }))
 }

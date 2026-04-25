@@ -14,6 +14,8 @@ import type {
   GtkFont,
   InstanceStateEventPayload,
   KeymapsConfig,
+  MCPListResult,
+  MCPSetResult,
   PermissionRequestEventPayload,
   ProfileSummary,
   SessionSummary,
@@ -44,7 +46,9 @@ export enum TauriCommand {
   SessionLoad = 'session_load',
   PermissionReply = 'permission_reply',
   SkillsList = 'skills_list',
-  SkillsGet = 'skills_get'
+  SkillsGet = 'skills_get',
+  McpsList = 'mcps_list',
+  McpsSet = 'mcps_set'
 }
 
 export enum TauriEvent {
@@ -73,6 +77,8 @@ export interface TauriCommandResult {
   [TauriCommand.PermissionReply]: void
   [TauriCommand.SkillsList]: { skills: SkillSummary[] }
   [TauriCommand.SkillsGet]: SkillBody
+  [TauriCommand.McpsList]: MCPListResult
+  [TauriCommand.McpsSet]: MCPSetResult
 }
 
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */

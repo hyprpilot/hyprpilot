@@ -11,6 +11,7 @@ import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@c
 import { log } from '@lib'
 
 import { openCommandsLeaf } from './palette-commands'
+import { openMcpsLeaf, type OpenMcpsLeafOptions } from './palette-mcps'
 import { openProfilesLeaf } from './palette-profiles'
 import { openSkillsLeaf } from './palette-skills'
 
@@ -164,12 +165,21 @@ export function openSkillsPalette(): void {
 }
 
 /**
- * Open one of the root leaves directly — used by header pill clicks
- * (cwd / mode / model / mcps / sessions). Live leaves dispatch off
- * the id; the rest fall through to the K-249 stub until their
- * follow-up issues land.
+ * Per-leaf context the dispatcher hands wired leaves at open time.
+ * Stub leaves ignore the bag entirely — adding a field here without a
+ * consumer is a no-op.
  */
-export function openRootLeaf(leafId: PaletteLeafId): void {
+export interface RootLeafContext {
+  mcps?: OpenMcpsLeafOptions
+}
+
+/**
+ * Open one of the root leaves directly — used by header pill clicks
+ * (cwd / mode / model / mcps / sessions). Wired leaves dispatch to
+ * their dedicated `open*Leaf()` exporter; everything else falls
+ * through to the K-249 stub spec.
+ */
+export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): void {
   if (leafId === PaletteLeafId.Commands) {
     void openCommandsLeaf()
 
@@ -195,5 +205,32 @@ export function openRootLeaf(leafId: PaletteLeafId): void {
 
     return
   }
+  if (leafId === PaletteLeafId.Mcps) {
+    if (!ctx.mcps) {
+      pushNoActiveInstanceStub(leaf, open)
+
+      return
+    }
+    void openMcpsLeaf(ctx.mcps).catch((err) => {
+      log.warn('openMcpsLeaf failed', { instanceId: ctx.mcps?.instanceId }, err)
+    })
+
+    return
+  }
   open(stubLeafSpec(leaf))
+}
+
+function pushNoActiveInstanceStub(leaf: RootLeaf, open: ReturnType<typeof usePalette>['open']): void {
+  open({
+    mode: PaletteMode.Select,
+    title: leaf.name,
+    entries: [
+      {
+        id: `${leaf.id}-no-active-instance`,
+        name: 'no active instance',
+        description: 'spawn or focus an instance first'
+      }
+    ],
+    onCommit: () => {}
+  })
 }

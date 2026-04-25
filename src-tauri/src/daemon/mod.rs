@@ -294,6 +294,8 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
             adapter_commands::session_list,
             adapter_commands::session_load,
             adapter_commands::permission_reply,
+            adapter_commands::mcps_list,
+            adapter_commands::mcps_set,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
         ])
@@ -341,6 +343,7 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
 
             app.manage(acp_adapter.clone());
             app.manage(permissions.clone());
+            app.manage(mcps.clone());
             app.manage(skills.clone());
             acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
 

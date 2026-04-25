@@ -106,6 +106,26 @@ export interface Attachment {
   title?: string
 }
 
+/**
+ * One row from the global `[[mcps]]` catalog as surfaced by the
+ * `mcps_list` Tauri command. `enabled` reflects the per-instance
+ * override or the resolved profile default when `instanceId` was passed
+ * on the request; otherwise it's always `true`.
+ */
+export interface MCPItem {
+  name: string
+  command: string
+  enabled: boolean
+}
+
+export interface MCPListResult {
+  mcps: MCPItem[]
+}
+
+export interface MCPSetResult {
+  restarted: boolean
+}
+
 export interface LoadSessionArgs {
   instanceId?: string
   agentId: string
