@@ -86,10 +86,7 @@ impl RpcHandler for SessionsHandler {
                 let mut payload = project_summary(info);
                 if let Some(obj) = payload.as_object_mut() {
                     obj.insert("agentId".into(), Value::String(agent_id));
-                    obj.insert(
-                        "profileId".into(),
-                        profile_id.map(Value::String).unwrap_or(Value::Null),
-                    );
+                    obj.insert("profileId".into(), profile_id.map(Value::String).unwrap_or(Value::Null));
                 }
                 Ok(HandlerOutcome::Reply(payload))
             }

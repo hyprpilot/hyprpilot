@@ -11,8 +11,8 @@ use serde_json::Value;
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
     AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, InstancesHandler, ModelsHandler, ModesHandler,
-    OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SessionsHandler, SkillsHandler,
-    StatusHandler, WindowHandler,
+    OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SessionsHandler,
+    SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;

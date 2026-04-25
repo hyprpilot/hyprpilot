@@ -410,6 +410,67 @@ impl CtlHandler for PermissionsPendingHandler {
     }
 }
 
+/// `ctl sessions list [--instance <id>] [--agent <id>] [--profile <id>] [--cwd <path>]`.
+/// Pretty-prints the JSON response — wire shape lands as
+/// `{ sessions: [{ id, title, cwd, lastTurnAt, messageCount }] }`.
+pub struct SessionsListHandler {
+    pub instance_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub cwd: Option<std::path::PathBuf>,
+}
+
+impl CtlHandler for SessionsListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let mut params = json!({});
+        let obj = params.as_object_mut().expect("json! produces a map");
+        if let Some(id) = self.instance_id {
+            obj.insert("instanceId".into(), Value::String(id));
+        }
+        if let Some(id) = self.agent_id {
+            obj.insert("agentId".into(), Value::String(id));
+        }
+        if let Some(id) = self.profile_id {
+            obj.insert("profileId".into(), Value::String(id));
+        }
+        if let Some(cwd) = self.cwd {
+            obj.insert("cwd".into(), Value::String(cwd.display().to_string()));
+        }
+        emit(client, "sessions/list", params)
+    }
+}
+
+/// `ctl sessions forget --id <id>`. Client-side stub — ACP 0.12
+/// doesn't expose a session-delete verb yet, so round-tripping
+/// through `sessions/forget` would panic the daemon. Surface the
+/// gap loudly per CLAUDE.md "stubs panic, don't pretend"; flip
+/// to a real `emit(...)` call when ACP lands the underlying verb.
+pub struct SessionsForgetHandler {
+    pub id: String,
+}
+
+impl CtlHandler for SessionsForgetHandler {
+    fn run(self, _client: &CtlClient) -> Result<()> {
+        unimplemented!(
+            "ctl sessions forget '{}': ACP 0.12 does not expose a session-delete verb (track upstream)",
+            self.id
+        )
+    }
+}
+
+/// `ctl sessions info --id <id>` — pretty-prints the full record.
+/// `-32602` for unknown ids surfaces via the shared `emit` body
+/// (stderr + exit 1).
+pub struct SessionsInfoHandler {
+    pub id: String,
+}
+
+impl CtlHandler for SessionsInfoHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "sessions/info", json!({ "id": self.id }))
+    }
+}
+
 pub struct PermissionsRespondHandler {
     pub request_id: String,
     pub option_id: String,
