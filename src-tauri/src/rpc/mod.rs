@@ -11,8 +11,8 @@ use serde_json::Value;
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
     AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, InstancesHandler, ModelsHandler, ModesHandler,
-    OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SkillsHandler, StatusHandler,
-    WindowHandler,
+    OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SessionsHandler,
+    SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -64,6 +64,11 @@ impl RpcDispatcher {
     ///   `prompts/cancel`.
     /// - `PermissionsHandler` (namespace `"permissions"`):
     ///   `permissions/pending`, `permissions/respond`.
+    /// - `SessionsHandler` (namespace `"sessions"`): `sessions/list`,
+    ///   `sessions/forget`, `sessions/info` — operations on persisted
+    ///   on-disk transcripts. Distinct from `session/*`
+    ///   (per-instance ACP wire ops) and `instances/*` (running
+    ///   processes).
     ///
     /// Stateful handlers (today: `SkillsHandler`, which owns an
     /// `Arc<SkillsRegistry>`) land via [`Self::with_skills`] — they
@@ -86,6 +91,7 @@ impl RpcDispatcher {
                 Box::new(ModelsHandler),
                 Box::new(PromptsHandler),
                 Box::new(PermissionsHandler),
+                Box::new(SessionsHandler),
             ],
         }
     }

@@ -10,9 +10,9 @@ use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
     AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, KillHandler, ModelsListHandler,
     ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler, OverlayPresentHandler,
-    OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler, PromptsCancelHandler, PromptsSendHandler,
-    SessionInfoHandler, SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler,
-    ToggleHandler,
+    OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler, PromptsCancelHandler,
+    PromptsSendHandler, SessionInfoHandler, SessionsForgetHandler, SessionsInfoHandler, SessionsListHandler,
+    SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler, ToggleHandler,
 };
 use crate::paths;
 
@@ -123,6 +123,14 @@ pub enum CtlCommand {
         #[command(subcommand)]
         command: OverlaySubcommand,
     },
+
+    /// Operations on persisted on-disk session transcripts. Distinct
+    /// from `submit` / `prompts` (per-instance ACP wire ops) and
+    /// instance lifecycle (`spawn`, `restart`, `shutdown`).
+    Sessions {
+        #[command(subcommand)]
+        command: SessionsCommand,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -225,6 +233,34 @@ pub enum PromptsCommand {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum SessionsCommand {
+    /// List the agent's persisted sessions.
+    List {
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+        #[arg(long = "agent")]
+        agent_id: Option<String>,
+        #[arg(long = "profile")]
+        profile_id: Option<String>,
+        #[arg(long = "cwd")]
+        cwd: Option<std::path::PathBuf>,
+    },
+    /// Delete a persisted session transcript by id. Idempotent on
+    /// the wire shape; today the daemon panics with `unimplemented!`
+    /// because ACP 0.12 doesn't expose a delete verb — `ctl` mirrors
+    /// the panic on the client side rather than round-tripping.
+    Forget {
+        #[arg(long)]
+        id: String,
+    },
+    /// Fetch one session's projection by id.
+    Info {
+        #[arg(long)]
+        id: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum PermissionsCommand {
     /// List pending permission requests, optionally filtered by
     /// instance.
@@ -301,6 +337,22 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
             OverlaySubcommand::Present { instance_id } => OverlayPresentHandler { instance_id }.run(&client),
             OverlaySubcommand::Hide => OverlayHideHandler.run(&client),
             OverlaySubcommand::Toggle => OverlayToggleHandler.run(&client),
+        },
+        CtlCommand::Sessions { command } => match command {
+            SessionsCommand::List {
+                instance_id,
+                agent_id,
+                profile_id,
+                cwd,
+            } => SessionsListHandler {
+                instance_id,
+                agent_id,
+                profile_id,
+                cwd,
+            }
+            .run(&client),
+            SessionsCommand::Forget { id } => SessionsForgetHandler { id }.run(&client),
+            SessionsCommand::Info { id } => SessionsInfoHandler { id }.run(&client),
         },
     }
 }
