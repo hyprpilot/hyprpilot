@@ -4,13 +4,13 @@ import { type KeymapsConfig, Modifier } from '@ipc'
 
 const { invokeMock, warnMock } = vi.hoisted(() => ({ invokeMock: vi.fn(), warnMock: vi.fn() }))
 
-vi.mock('@ipc', async () => ({
-  ...(await vi.importActual<object>('@ipc')),
+vi.mock('@ipc/bridge', async () => ({
+  ...(await vi.importActual<object>('@ipc/bridge')),
   invoke: (...args: unknown[]) => invokeMock(...args)
 }))
 
-vi.mock('@lib', async () => ({
-  ...(await vi.importActual<object>('@lib')),
+vi.mock('@lib/log', async () => ({
+  ...(await vi.importActual<object>('@lib/log')),
   log: { warn: warnMock, error: vi.fn(), info: vi.fn(), debug: vi.fn() }
 }))
 

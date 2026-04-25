@@ -19,6 +19,7 @@ import type {
   SessionSummary,
   SkillBody,
   SubmitResult,
+  TerminalEventPayload,
   Theme,
   TranscriptEventPayload,
   TurnEndedEventPayload,
@@ -50,7 +51,8 @@ export enum TauriEvent {
   AcpPermissionRequest = 'acp:permission-request',
   AcpInstanceState = 'acp:instance-state',
   AcpTurnStarted = 'acp:turn-started',
-  AcpTurnEnded = 'acp:turn-ended'
+  AcpTurnEnded = 'acp:turn-ended',
+  AcpTerminal = 'acp:terminal'
 }
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
@@ -77,4 +79,5 @@ export interface TauriEventPayload {
   [TauriEvent.AcpPermissionRequest]: PermissionRequestEventPayload
   [TauriEvent.AcpTurnStarted]: TurnStartedEventPayload
   [TauriEvent.AcpTurnEnded]: TurnEndedEventPayload
+  [TauriEvent.AcpTerminal]: TerminalEventPayload
 }

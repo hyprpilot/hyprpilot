@@ -274,6 +274,7 @@ function formatBash({ args, state }: FormatterContext): ToolChipItem {
   const command = pickString(args, 'command')
   const description = pickString(args, 'description')
   const background = Boolean(args.runinbackground)
+  const terminalId = pickString(args, 'terminalid', 'id')
   let detail: string | undefined
   if (description && background) {
     detail = `${description} (background)`
@@ -288,7 +289,8 @@ function formatBash({ args, state }: FormatterContext): ToolChipItem {
     arg: command,
     detail,
     state,
-    kind: ToolKind.Bash
+    kind: ToolKind.Bash,
+    terminalId: terminalId || undefined
   }
 }
 
@@ -420,7 +422,8 @@ function formatTerminal({ args, state }: FormatterContext): ToolChipItem {
     arg: terminalId || command,
     detail: terminalId && command ? command : undefined,
     state,
-    kind: ToolKind.Terminal
+    kind: ToolKind.Terminal,
+    terminalId: terminalId || undefined
   }
 }
 

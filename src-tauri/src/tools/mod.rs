@@ -11,4 +11,4 @@ pub mod terminal;
 
 pub use fs::{FsError, FsTools};
 pub use sandbox::{Sandbox, SandboxError};
-pub use terminal::{TerminalError, Terminals};
+pub use terminal::{TerminalError, TerminalToolEvent, TerminalToolEventKind, TerminalToolStream, Terminals};

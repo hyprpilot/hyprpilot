@@ -4,6 +4,27 @@ import { InstanceState, TauriEvent } from '@ipc'
 
 import { ToastTone } from '@components/types'
 
+type Handler = (payload: { payload: unknown }) => void
+
+const { handlers, unlisten } = vi.hoisted(() => ({
+  handlers: new Map<string, Handler>(),
+  unlisten: vi.fn()
+}))
+
+// Mock `@ipc/bridge` directly — `@ipc` is a barrel and the
+// `listen` re-export binds at evaluation time, so mocking `@ipc`
+// alone leaves bridge.ts's `tauriListen` pinned through. Same
+// pattern as `use-home-dir.test.ts`.
+vi.mock('@ipc/bridge', async () => ({
+  ...(await vi.importActual<object>('@ipc/bridge')),
+  invoke: vi.fn(),
+  listen: (event: string, cb: Handler) => {
+    handlers.set(event, cb)
+
+    return Promise.resolve(unlisten)
+  }
+}))
+
 import { useActiveInstance } from '@composables/use-active-instance'
 import { resetPermissions, usePermissions } from '@composables/use-permissions'
 import { startSessionStream } from '@composables/use-session-stream'
@@ -12,24 +33,6 @@ import { resetTerminals, useTerminals } from '@composables/use-terminals'
 import { clearToasts, useToasts } from '@composables/use-toasts'
 import { resetTools, useTools } from '@composables/use-tools'
 import { resetTranscript, useTranscript } from '@composables/use-transcript'
-
-type Handler = (payload: { payload: unknown }) => void
-
-const handlers = new Map<string, Handler>()
-const unlisten = vi.fn()
-
-vi.mock('@ipc', async () => {
-  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
-  return {
-    ...actual,
-    invoke: vi.fn(),
-    listen: (event: string, cb: Handler) => {
-      handlers.set(event, cb)
-
-      return Promise.resolve(unlisten)
-    }
-  }
-})
 
 function emit(event: string, payload: unknown) {
   const cb = handlers.get(event)
@@ -57,9 +60,16 @@ beforeEach(() => {
 })
 
 describe('useSessionStream', () => {
-  it('subscribes to acp:transcript + acp:instance-state + acp:permission-request', async () => {
+  it('subscribes to acp:transcript + acp:instance-state + acp:permission-request + turn + terminal', async () => {
     await startSessionStream()
-    expect([...handlers.keys()].sort()).toEqual([TauriEvent.AcpInstanceState, TauriEvent.AcpPermissionRequest, TauriEvent.AcpTranscript])
+    expect([...handlers.keys()].sort()).toEqual([
+      TauriEvent.AcpInstanceState,
+      TauriEvent.AcpPermissionRequest,
+      TauriEvent.AcpTerminal,
+      TauriEvent.AcpTranscript,
+      TauriEvent.AcpTurnEnded,
+      TauriEvent.AcpTurnStarted
+    ])
   })
 
   it('routes acp:permission-request events into the per-instance usePermissions store', async () => {
@@ -134,7 +144,7 @@ describe('useSessionStream', () => {
     expect(b.map((t) => t.text)).toEqual(['yo'])
   })
 
-  it('routes thought / plan / tool_call / terminal chunks to their respective stores', async () => {
+  it('routes thought / plan / tool_call updates to their respective stores', async () => {
     await startSessionStream()
 
     emit(TauriEvent.AcpTranscript, {
@@ -169,10 +179,52 @@ describe('useSessionStream', () => {
     const tools = useTools('A').calls.value
     expect(tools).toHaveLength(1)
     expect(tools[0]?.toolCallId).toBe('tc-1')
+  })
 
-    const term = useTerminals('A').streams.value
-    expect(term['tc-1']?.stdout).toBe('hi\n')
-    expect(term['tc-1']?.command).toBe('echo hi')
+  it('routes acp:terminal output and exit chunks to useTerminals', async () => {
+    await startSessionStream()
+
+    // Bind the command via the tool_call path so the inline card has a header.
+    emit(TauriEvent.AcpTranscript, {
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'tc-bash',
+        title: 'bash',
+        kind: 'bash',
+        rawInput: { command: 'tail -f log', terminal_id: 'term-1' }
+      }
+    })
+
+    emit(TauriEvent.AcpTerminal, {
+      agentId: 'a',
+      instanceId: 'A',
+      sessionId: 's-a',
+      terminalId: 'term-1',
+      chunk: { kind: 'output', stream: 'stdout', data: 'line 1\n' }
+    })
+    emit(TauriEvent.AcpTerminal, {
+      agentId: 'a',
+      instanceId: 'A',
+      sessionId: 's-a',
+      terminalId: 'term-1',
+      chunk: { kind: 'output', stream: 'stdout', data: 'line 2\n' }
+    })
+    emit(TauriEvent.AcpTerminal, {
+      agentId: 'a',
+      instanceId: 'A',
+      sessionId: 's-a',
+      terminalId: 'term-1',
+      chunk: { kind: 'exit', exitCode: 0 }
+    })
+
+    const entry = useTerminals('A').byId('term-1').value
+    expect(entry?.command).toBe('tail -f log')
+    expect(entry?.output).toBe('line 1\nline 2\n')
+    expect(entry?.running).toBe(false)
+    expect(entry?.exitCode).toBe(0)
   })
 
   it('promotes the first running instance to active via useActiveInstance', async () => {
@@ -190,41 +242,10 @@ describe('useSessionStream', () => {
     expect(id.value).toBe('A')
   })
 
-  it('keeps routing stdout on tool_call_update chunks that omit `kind` after the initial tool_call', async () => {
-    await startSessionStream()
-
-    emit(TauriEvent.AcpTranscript, {
-      agentId: 'a',
-      sessionId: 's-a',
-      instanceId: 'A',
-      update: {
-        sessionUpdate: 'tool_call',
-        toolCallId: 'tc-bash',
-        title: 'bash',
-        kind: 'bash',
-        rawInput: { command: 'tail -f log' },
-        content: [{ type: 'text', text: 'line 1\n' }]
-      }
-    })
-    emit(TauriEvent.AcpTranscript, {
-      agentId: 'a',
-      sessionId: 's-a',
-      instanceId: 'A',
-      update: {
-        sessionUpdate: 'tool_call_update',
-        toolCallId: 'tc-bash',
-        content: [{ type: 'text', text: 'line 2\n' }]
-      }
-    })
-
-    const term = useTerminals('A').streams.value
-    expect(term['tc-bash']?.stdout).toBe('line 1\nline 2\n')
-  })
-
   it('unsubscribes every channel when the returned stop fn runs', async () => {
     const stop = await startSessionStream()
     stop()
-    expect(unlisten).toHaveBeenCalledTimes(3)
+    expect(unlisten).toHaveBeenCalledTimes(6)
   })
 
   it('pushes an ok toast when acp:instance-state transitions to running', async () => {

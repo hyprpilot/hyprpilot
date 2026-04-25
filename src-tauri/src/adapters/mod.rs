@@ -32,7 +32,7 @@ use async_trait::async_trait;
 #[allow(unused_imports)]
 pub use instance::{
     InstanceActor, InstanceEvent, InstanceEventStream, InstanceHandle, InstanceInfo, InstanceKey, InstanceState,
-    SpawnSpec,
+    SpawnSpec, TerminalChunk, TerminalStream,
 };
 #[allow(unused_imports)]
 pub use permission::{

@@ -5,8 +5,10 @@ import {
   listen,
   SessionUpdateKind,
   TauriEvent,
+  TerminalChunkKind,
   type InstanceStateEventPayload,
   type PermissionRequestEventPayload,
+  type TerminalEventPayload,
   type TranscriptEventPayload,
   type UnlistenFn
 } from '@ipc'
@@ -18,9 +20,9 @@ import { pushInstanceState, resetPhaseSignals } from './use-phase'
 import { pushPermissionRequest } from './use-permissions'
 import { pushSessionInfoUpdate, resetSessionInfo } from './use-session-info'
 import { closeTurn, pushPlan, pushThoughtChunk } from './use-stream'
-import { pushTerminalChunk } from './use-terminals'
+import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { pushToast } from './use-toasts'
-import { getToolCall, pushToolCall } from './use-tools'
+import { pushToolCall } from './use-tools'
 import { pushTranscriptChunk } from './use-transcript'
 import { pushTurnEnded, pushTurnStarted } from './use-turns'
 
@@ -41,10 +43,6 @@ interface SessionUpdateEnvelope {
   [k: string]: unknown
 }
 
-interface ContentBlock {
-  text?: string
-}
-
 function routeTranscript(payload: TranscriptEventPayload): void {
   const raw = payload.update as SessionUpdateEnvelope
   const kind = typeof raw.sessionUpdate === 'string' ? (raw.sessionUpdate as SessionUpdateKind) : undefined
@@ -63,7 +61,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
     case SessionUpdateKind.ToolCall:
     case SessionUpdateKind.ToolCallUpdate:
       pushToolCall(instanceId, sessionId, raw as Parameters<typeof pushToolCall>[2])
-      routeTerminal(instanceId, sessionId, raw)
+      bindTerminalMetadata(instanceId, raw)
       return
     case SessionUpdateKind.CurrentModeUpdate:
     case SessionUpdateKind.SessionInfoUpdate:
@@ -74,42 +72,46 @@ function routeTranscript(payload: TranscriptEventPayload): void {
   }
 }
 
-// Terminal streams ride inside tool-call updates today (the content
-// blocks carry the stdout delta). K-251's Rust-side rework may promote
-// terminal chunks to their own session-update kind — at that point
-// this route becomes a top-level case in routeTranscript.
-function routeTerminal(instanceId: InstanceId, sessionId: string, raw: SessionUpdateEnvelope): void {
-  const toolCallId = typeof raw['toolCallId'] === 'string' ? (raw['toolCallId'] as string) : undefined
-  if (!toolCallId) {
-    return
-  }
-  // `kind` only rides on the initial `tool_call`; `tool_call_update`
-  // chunks carry stdout without it. Fall back to the tool store's
-  // recorded kind so stdout deltas keep flowing.
-  const updateKind = typeof raw['kind'] === 'string' ? (raw['kind'] as string).toLowerCase() : ''
-  const recorded = getToolCall(instanceId, toolCallId)?.kind?.toLowerCase() ?? ''
-  const kind = updateKind || recorded
-  if (kind !== 'bash' && kind !== 'terminal') {
-    return
-  }
-  const content = Array.isArray(raw['content']) ? (raw['content'] as ContentBlock[]) : []
-  const chunk: Parameters<typeof pushTerminalChunk>[1] = {
-    toolCallId,
-    sessionId,
-    stdout: content.map((b) => (typeof b.text === 'string' ? b.text : '')).join('')
-  }
+// `tool_call` updates carry the agent-side `rawInput` (with `command`
+// / `cwd`) and the agent's allocated `terminal_id` when the tool is a
+// terminal. We pluck just the metadata so the inline card has a
+// header — stdout streaming flows through the dedicated `acp:terminal`
+// path (live push from `tools::Terminals`), not these snapshots.
+function bindTerminalMetadata(instanceId: InstanceId, raw: SessionUpdateEnvelope): void {
   const rawInput = raw['rawInput'] as Record<string, unknown> | undefined
-  if (rawInput && typeof rawInput['command'] === 'string') {
-    chunk.command = rawInput['command'] as string
+  if (!rawInput) {
+    return
   }
-  if (rawInput && typeof rawInput['cwd'] === 'string') {
-    chunk.cwd = rawInput['cwd'] as string
+  const terminalId = pickString(rawInput, 'terminal_id', 'terminalId')
+  if (!terminalId) {
+    return
   }
-  const status = typeof raw['status'] === 'string' ? (raw['status'] as string) : undefined
-  if (status === 'completed' || status === 'done' || status === 'failed' || status === 'error') {
-    chunk.running = false
+  const command = pickString(rawInput, 'command')
+  const cwd = pickString(rawInput, 'cwd')
+  if (!command && !cwd) {
+    return
   }
-  pushTerminalChunk(instanceId, chunk)
+  pushTerminalChunk(instanceId, { terminalId, data: '', command, cwd })
+}
+
+function pickString(o: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = o[k]
+    if (typeof v === 'string') {
+      return v
+    }
+  }
+
+  return undefined
+}
+
+function routeTerminal(payload: TerminalEventPayload): void {
+  const { instanceId, terminalId, chunk } = payload
+  if (chunk.kind === TerminalChunkKind.Output) {
+    pushTerminalChunk(instanceId, { terminalId, data: chunk.data })
+    return
+  }
+  pushTerminalExit(instanceId, { terminalId, exitCode: chunk.exitCode, signal: chunk.signal })
 }
 
 /**
@@ -163,6 +165,9 @@ export async function startSessionStream(): Promise<() => void> {
     await listen(TauriEvent.AcpTurnEnded, (e) => {
       const { instanceId, sessionId, turnId, stopReason } = e.payload
       pushTurnEnded(instanceId, { turnId, sessionId, stopReason })
+    }),
+    await listen(TauriEvent.AcpTerminal, (e) => {
+      routeTerminal(e.payload)
     })
   )
 

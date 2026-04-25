@@ -26,7 +26,7 @@ use crate::adapters::permission::{
     PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
 };
 use crate::config::ProfileConfig;
-use crate::tools::{FsTools, Sandbox, SandboxError, Terminals};
+use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals};
 
 use self::error::{fs_error, terminal_error};
 
@@ -505,6 +505,18 @@ impl AcpClient {
     /// never outlive the agent connection.
     pub async fn drain_terminals_for_session(&self, session_id: &agent_client_protocol::schema::SessionId) {
         self.terminals.drain_for(session_id.0.as_ref()).await;
+    }
+
+    /// Subscribe to live stdout / stderr / exit chunks for every
+    /// terminal this client owns. The runtime actor subscribes once at
+    /// startup and re-publishes each chunk as an
+    /// `InstanceEvent::Terminal` stamped with `(agent_id, instance_id,
+    /// session_id, turn_id?)`. Consumers must handle
+    /// `broadcast::error::RecvError::Lagged` — the channel silently
+    /// drops messages otherwise.
+    #[must_use]
+    pub fn subscribe_terminals(&self) -> tokio::sync::broadcast::Receiver<TerminalToolEvent> {
+        self.terminals.subscribe()
     }
 }
 

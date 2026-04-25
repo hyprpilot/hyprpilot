@@ -131,6 +131,21 @@ impl From<AcpInstanceEvent> for GenericInstanceEvent {
             AcpInstanceEvent::InstancesFocused { instance_id } => {
                 GenericInstanceEvent::InstancesFocused { instance_id }
             }
+            AcpInstanceEvent::Terminal {
+                agent_id,
+                instance_id,
+                session_id,
+                turn_id,
+                terminal_id,
+                chunk,
+            } => GenericInstanceEvent::Terminal {
+                agent_id,
+                instance_id,
+                session_id,
+                turn_id,
+                terminal_id,
+                chunk,
+            },
         }
     }
 }

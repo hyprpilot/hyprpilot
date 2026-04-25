@@ -927,6 +927,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::TurnEnded { .. } => "acp:turn-ended",
         GenEvt::InstancesChanged { .. } => "acp:instances-changed",
         GenEvt::InstancesFocused { .. } => "acp:instances-focused",
+        GenEvt::Terminal { .. } => "acp:terminal",
         GenEvt::DaemonReloaded { .. } => "daemon:reloaded",
     };
     match serde_json::to_value(&evt) {

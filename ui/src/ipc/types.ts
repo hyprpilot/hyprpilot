@@ -347,3 +347,43 @@ export interface TurnEndedEventPayload {
   /// errored or was cancelled by us.
   stopReason?: string
 }
+
+/**
+ * Live terminal-stream event. Mirrors `adapters::InstanceEvent::Terminal`
+ * — the Rust runtime pushes one of these per stdout / stderr chunk
+ * and once on exit. UI accumulates output deltas into a
+ * per-`terminalId` scrollable card; exit chunks flip the card to its
+ * terminal state.
+ */
+export enum TerminalChunkKind {
+  Output = 'output',
+  Exit = 'exit'
+}
+
+export enum TerminalStream {
+  Stdout = 'stdout',
+  Stderr = 'stderr'
+}
+
+export interface TerminalOutputChunk {
+  kind: TerminalChunkKind.Output
+  stream: TerminalStream
+  data: string
+}
+
+export interface TerminalExitChunk {
+  kind: TerminalChunkKind.Exit
+  exitCode?: number
+  signal?: string
+}
+
+export type TerminalChunk = TerminalOutputChunk | TerminalExitChunk
+
+export interface TerminalEventPayload {
+  agentId: string
+  instanceId: string
+  sessionId: string
+  turnId?: string
+  terminalId: string
+  chunk: TerminalChunk
+}

@@ -148,15 +148,53 @@ pub enum InstanceEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         instance_id: Option<String>,
     },
-    /// Daemon-wide reload (`daemon/reload`) — config + skills (+ MCPs
-    /// once K-270 lands) rescanned. Carries post-reload counts so
-    /// subscribers can refresh their caches without a separate roundtrip.
+    /// Terminal output / exit chunk. Pushed live as the agent's child
+    /// process emits stdout / stderr; the UI accumulates these into a
+    /// per-`terminal_id` scrollable card without polling
+    /// `terminal/output`.
+    Terminal {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        terminal_id: String,
+        chunk: TerminalChunk,
+    },
+    /// Daemon-wide reload (`daemon/reload`) — config + skills + MCPs
+    /// rescanned. Carries post-reload counts so subscribers can refresh
+    /// their caches without a separate roundtrip.
     DaemonReloaded {
         profiles: usize,
         skills_count: usize,
         mcps_count: usize,
     },
 }
+
+/// Per-terminal payload variant. `Output` carries stdout / stderr
+/// bytes as the child process emits them; `Exit` lands once on exit
+/// with the resolved status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum TerminalChunk {
+    Output {
+        stream: TerminalStream,
+        data: String,
+    },
+    Exit {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signal: Option<String>,
+    },
+}
+
+/// Which standard stream a terminal `Output` chunk came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalStream {
+    Stdout,
+    Stderr,
 
 impl InstanceEvent {
     /// Dot-separated topic name. Stable contract for subscription
@@ -172,6 +210,7 @@ impl InstanceEvent {
             InstanceEvent::TurnEnded { .. } => "instance.turn_ended",
             InstanceEvent::InstancesChanged { .. } => "instances.changed",
             InstanceEvent::InstancesFocused { .. } => "instances.focused",
+            InstanceEvent::Terminal { .. } => "terminal.output",
             InstanceEvent::DaemonReloaded { .. } => "daemon.reloaded",
         }
     }
