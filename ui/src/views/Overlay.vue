@@ -147,6 +147,17 @@ function onBreadcrumbClick(id: string): void {
   if (!isPaletteLeafId(id)) {
     return
   }
+  if (id === PaletteLeafId.Mcps) {
+    const instanceId = activeInstanceId.value
+    if (!instanceId) {
+      openRootLeaf(id)
+
+      return
+    }
+    openRootLeaf(id, { mcps: { instanceId, agentLabel: activeAgentId.value ?? 'agent' } })
+
+    return
+  }
   openRootLeaf(id)
 }
 
