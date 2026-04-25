@@ -11,7 +11,7 @@ use serde_json::Value;
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
     AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, InstancesHandler, ModelsHandler, ModesHandler,
-    ProfilesHandler, SessionHandler, SkillsHandler, StatusHandler, WindowHandler,
+    OverlayHandler, ProfilesHandler, SessionHandler, SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -44,6 +44,9 @@ impl RpcDispatcher {
     /// - `SessionHandler` (namespace `"session"`): `session/submit`,
     ///   `session/cancel`, `session/info`.
     /// - `WindowHandler` (namespace `"window"`): `window/toggle`.
+    /// - `OverlayHandler` (namespace `"overlay"`): `overlay/present`,
+    ///   `overlay/hide`, `overlay/toggle` — hyprland-bind surface,
+    ///   serialised through `WindowRenderer::lock_present`.
     /// - `DaemonHandler` (namespace `"daemon"`): `daemon/kill`.
     /// - `StatusHandler` (namespace `"status"`): `status/get`,
     ///   `status/subscribe`.
@@ -66,6 +69,7 @@ impl RpcDispatcher {
             handlers: vec![
                 Box::new(SessionHandler),
                 Box::new(WindowHandler),
+                Box::new(OverlayHandler),
                 Box::new(DaemonHandler),
                 Box::new(StatusHandler),
                 Box::new(ConfigHandler),

@@ -950,6 +950,9 @@ can't block others.
 | `session/cancel` | *(none)* or `{ "instance_id"?: "<uuid>", "agent_id"?: "..." }` | `{ "cancelled": bool, "reason"?: "..." }` | `instance_id` addresses a specific live instance (preferred); `agent_id` is the legacy fallback that cancels the first live instance of that agent. |
 | `session/info` | *(none)* | `{ "sessions": [...] }` | Live session list across every active agent + profile. |
 | `window/toggle` | *(none)* | `{ "visible": bool }` | Flips main window visibility; updates `StatusBroadcast` visible bit. |
+| `overlay/present` | `{ "instanceId"?: "<uuid>" }` | `{ "visible": true, "focusedInstanceId": "<uuid>" \| null }` | Show + focus the overlay (idempotent). When `instanceId` is given, also focuses that instance via `Adapter::focus`. Hyprland-bind surface (e.g. `bind = SUPER, space, exec, hyprpilot ctl overlay toggle`). |
+| `overlay/hide` | *(none)* | `{ "visible": false }` | Hide the overlay (idempotent; webview stays warm). |
+| `overlay/toggle` | *(none)* | `{ "visible": bool }` | Flip the overlay's visibility. Race-safe across concurrent calls — every `overlay/*` entry serialises through `WindowRenderer::lock_present`. |
 | `daemon/kill` | *(none)* | `{ "exiting": true }` | Calls `app.exit(0)` after write + flush. Delivery is best-effort: the process may tear down before the peer finishes reading. |
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
@@ -965,6 +968,8 @@ can't block others.
 - `session/*` — anything scoped to an agent session (prompts, cancel, info).
 - `window/*` — overlay window state (`window/toggle`; future
   `window/show`, `window/hide`, `window/focus`).
+- `overlay/*` — race-safe present/hide/toggle for hyprland-bind users;
+  accepts `instanceId` to focus alongside the present.
 - `daemon/*` — daemon lifecycle (`daemon/kill`; future `daemon/status`,
   `daemon/reload`).
 - `status/*` — agent state broadcasts (drives waybar).
