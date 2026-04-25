@@ -21,7 +21,9 @@ use super::instance::AcpInstance;
 use super::spawn::spawn_agent;
 use crate::adapters::permission::{PermissionController, PermissionOptionView};
 use crate::adapters::profile::ResolvedInstance;
+use crate::adapters::TerminalChunk;
 use crate::config::ProfileConfig;
+use crate::tools::{TerminalToolEvent, TerminalToolEventKind, TerminalToolStream};
 
 /// Register a typed `on_receive_request` handler that delegates to an
 /// async `AcpClient` method returning `Result<Response,
@@ -156,6 +158,17 @@ pub enum InstanceEvent {
     /// Focus pointer moved (explicit `focus` call or auto-focus on
     /// shutdown of the focused instance).
     InstancesFocused { instance_id: Option<String> },
+    /// Terminal stdout / stderr / exit pushed live by `tools::Terminals`.
+    /// Bridges onto the generic `InstanceEvent::Terminal` for the
+    /// `acp:terminal` Tauri event.
+    Terminal {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        turn_id: Option<String>,
+        terminal_id: String,
+        chunk: crate::adapters::TerminalChunk,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -411,6 +424,19 @@ async fn run_instance(
     // task replies. `tokio::sync::RwLock` because the spawned task
     // crosses an `.await`; reads from the loop are non-blocking.
     let current_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
+
+    // Bridge live terminal output → InstanceEvent::Terminal. The ACP
+    // `terminal/output` request remains a polled snapshot path
+    // (agent-side); the UI consumes this push stream so it never
+    // re-polls and matches pilot's behavior.
+    spawn_terminal_event_bridge(
+        client.subscribe_terminals(),
+        events_tx.clone(),
+        agent_id.clone(),
+        instance_id.clone(),
+        session_id_slot.clone(),
+        current_turn_id.clone(),
+    );
 
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
         debug!(agent = %agent_id_notif, "acp::runtime: sending initialize request");
@@ -809,6 +835,57 @@ async fn run_instance(
         instance_id,
         session_id: sid.as_ref().map(|id| id.0.to_string()),
         state: final_state,
+    });
+}
+
+/// Subscribe to a `Terminals` broadcast and re-publish each output /
+/// exit chunk as an `InstanceEvent::Terminal`. Stamped with the
+/// owning `(agent_id, instance_id)` plus the latest known
+/// `(session_id, turn_id)` so the UI can group chunks by terminal +
+/// turn without polling. Output that arrives outside an active turn
+/// (mid-shutdown vendor stderr) ships with `turn_id: None`.
+fn spawn_terminal_event_bridge(
+    mut rx: tokio::sync::broadcast::Receiver<TerminalToolEvent>,
+    events_tx: tokio::sync::broadcast::Sender<InstanceEvent>,
+    agent_id: String,
+    instance_id: String,
+    session_id_slot: Arc<tokio::sync::RwLock<Option<agent_client_protocol::schema::SessionId>>>,
+    current_turn_id: Arc<tokio::sync::RwLock<Option<String>>>,
+) {
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(evt) => {
+                    let session_id = match session_id_slot.read().await.clone() {
+                        Some(sid) => sid.0.to_string(),
+                        None => evt.session_key.clone(),
+                    };
+                    let turn_id = current_turn_id.read().await.clone();
+                    let chunk = match evt.kind {
+                        TerminalToolEventKind::Output { stream, data } => TerminalChunk::Output {
+                            stream: match stream {
+                                TerminalToolStream::Stdout => crate::adapters::TerminalStream::Stdout,
+                                TerminalToolStream::Stderr => crate::adapters::TerminalStream::Stderr,
+                            },
+                            data,
+                        },
+                        TerminalToolEventKind::Exit { exit_code, signal } => TerminalChunk::Exit { exit_code, signal },
+                    };
+                    let _ = events_tx.send(InstanceEvent::Terminal {
+                        agent_id: agent_id.clone(),
+                        instance_id: instance_id.clone(),
+                        session_id,
+                        turn_id,
+                        terminal_id: evt.terminal_id,
+                        chunk,
+                    });
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(n, instance = %instance_id, "acp::runtime: terminal-event bridge lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
     });
 }
 

@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TauriCommand } from '@ipc'
 
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
+
+vi.mock('@ipc/bridge', async () => ({
+  ...(await vi.importActual<object>('@ipc/bridge')),
+  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
+  listen: vi.fn()
+}))
+
 import { useActiveInstance } from '@composables/use-active-instance'
 import {
   evictPermission,
@@ -9,17 +17,6 @@ import {
   resetPermissions,
   usePermissions
 } from '@composables/use-permissions'
-
-const invoke = vi.fn()
-
-vi.mock('@ipc', async () => {
-  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
-  return {
-    ...actual,
-    invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-    listen: vi.fn()
-  }
-})
 
 beforeEach(() => {
   invoke.mockReset()

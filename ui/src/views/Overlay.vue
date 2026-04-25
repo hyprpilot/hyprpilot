@@ -34,6 +34,7 @@ import {
   ChatPermissionStack,
   ChatQueueStrip,
   ChatStreamCard,
+  ChatTerminalCard,
   ChatToolChips,
   ChatTurn,
   CommandPalette,
@@ -84,7 +85,7 @@ import {
 import { Modifier, SessionUpdateKind } from '@ipc'
 import { formatToolCall, log } from '@lib'
 
-const { submit } = useAdapter()
+const { submit, cancel } = useAdapter()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
 const { entries: toasts, dismiss } = useToasts()
 const { phase } = usePhase()
@@ -365,6 +366,30 @@ watch(activeInstanceId, (next, prev) => {
   }
 })
 
+// Pull the agent-supplied terminal id off a tool call's rawInput so
+// the timeline can render an inline `ChatTerminalCard` next to the
+// chip. Bash + Terminal tool variants both surface `terminal_id`
+// when the agent allocates one.
+function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string | undefined {
+  const raw = call.rawInput
+  if (!raw) {
+    return undefined
+  }
+  const candidate = raw['terminal_id'] ?? raw['terminalId']
+
+  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
+}
+
+async function onCancel(): Promise<void> {
+  log.info('terminal cancel clicked', { instanceId: activeInstanceId.value })
+  try {
+    await cancel({ instanceId: activeInstanceId.value })
+  } catch (err) {
+    log.error('invoke failed', { command: 'session_cancel' }, err)
+    pushToast(ToastTone.Err, `cancel failed: ${String(err)}`)
+  }
+}
+
 function mapPlanStatus(raw?: string): PlanStatus {
   switch (raw) {
     case 'completed':
@@ -514,6 +539,17 @@ function onQueueDropAll(): void {
         <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
         <!-- `activeProfile?.agent` → `profiles_list`'s vendor once per-adapter overrides land. -->
         <ChatToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
+
+        <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
+        <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->
+        <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
+          <ChatTerminalCard
+            v-if="terminalIdForCall(entry.call)"
+            :terminal-id="terminalIdForCall(entry.call) ?? ''"
+            :instance-id="activeInstanceId"
+            @cancel="onCancel"
+          />
+        </template>
 
         <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
           <ChatBody

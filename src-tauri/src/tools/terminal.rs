@@ -16,9 +16,10 @@ use agent_client_protocol::schema::{
     ReleaseTerminalResponse, TerminalExitStatus, TerminalId, TerminalOutputRequest, TerminalOutputResponse,
     WaitForTerminalExitRequest, WaitForTerminalExitResponse,
 };
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 use super::sandbox::{Sandbox, SandboxError};
 
@@ -31,7 +32,41 @@ const DEFAULT_OUTPUT_LIMIT: u64 = 1024 * 1024;
 /// output or long unterminated lines.
 const READ_CHUNK: usize = 4096;
 
+/// Broadcast capacity for terminal output events. Slow consumers
+/// (lagged UI, ctl subscribers) drop messages — buffer is per-tick,
+/// not the source-of-truth (`OutputBuffer` keeps the full snapshot).
+const TERMINAL_EVENT_CAPACITY: usize = 256;
+
 type RegistryKey = (String, TerminalId);
+
+/// Per-terminal stream / exit event published by [`Terminals`] when
+/// it reads child stdout / stderr or sees the child exit. The ACP
+/// adapter subscribes via [`Terminals::subscribe`] and bridges each
+/// payload onto the generic `InstanceEvent::Terminal`.
+#[derive(Debug, Clone)]
+pub struct TerminalToolEvent {
+    pub session_key: String,
+    pub terminal_id: String,
+    pub kind: TerminalToolEventKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TerminalToolEventKind {
+    Output {
+        stream: TerminalToolStream,
+        data: String,
+    },
+    Exit {
+        exit_code: Option<i32>,
+        signal: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TerminalToolStream {
+    Stdout,
+    Stderr,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TerminalError {
@@ -89,14 +124,28 @@ impl OutputBuffer {
 pub struct Terminals {
     sandbox: Sandbox,
     registry: Arc<Mutex<HashMap<RegistryKey, TerminalState>>>,
+    /// Live-output broadcast. Subscribers receive every stdout / stderr
+    /// chunk + exit; lagged subscribers drop messages silently — the
+    /// `OutputBuffer` is the source of truth for the full snapshot.
+    events_tx: broadcast::Sender<TerminalToolEvent>,
 }
 
 impl Terminals {
     pub fn new(sandbox: Sandbox) -> Self {
+        let (events_tx, _) = broadcast::channel(TERMINAL_EVENT_CAPACITY);
         Self {
             sandbox,
             registry: Arc::new(Mutex::new(HashMap::new())),
+            events_tx,
         }
+    }
+
+    /// Subscribe to live terminal events. Consumers must handle
+    /// `broadcast::error::RecvError::Lagged` — the channel silently
+    /// drops messages otherwise.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<TerminalToolEvent> {
+        self.events_tx.subscribe()
     }
 
     pub async fn create(
@@ -135,11 +184,29 @@ impl Terminals {
         let buffer = Arc::new(Mutex::new(OutputBuffer::default()));
         let exit = Arc::new(Mutex::new(None::<TerminalExitStatus>));
 
+        let session_key_str = session_key.as_ref().to_string();
+        let terminal_id_str = terminal_id.0.to_string();
         if let Some(stdout) = child.stdout.take() {
-            spawn_buffer_reader(stdout, buffer.clone(), limit);
+            spawn_buffer_reader(
+                stdout,
+                buffer.clone(),
+                limit,
+                self.events_tx.clone(),
+                session_key_str.clone(),
+                terminal_id_str.clone(),
+                TerminalToolStream::Stdout,
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_buffer_reader(stderr, buffer.clone(), limit);
+            spawn_buffer_reader(
+                stderr,
+                buffer.clone(),
+                limit,
+                self.events_tx.clone(),
+                session_key_str.clone(),
+                terminal_id_str.clone(),
+                TerminalToolStream::Stderr,
+            );
         }
 
         let state = TerminalState {
@@ -199,6 +266,14 @@ impl Terminals {
                     "tools::terminal: exit"
                 );
                 *exit_slot.lock().await = Some(status.clone());
+                let _ = self.events_tx.send(TerminalToolEvent {
+                    session_key: session_key.as_ref().to_string(),
+                    terminal_id: req.terminal_id.0.to_string(),
+                    kind: TerminalToolEventKind::Exit {
+                        exit_code: status.exit_code.map(|c| c as i32),
+                        signal: status.signal.clone(),
+                    },
+                });
                 status
             }
             None => exit_slot
@@ -264,8 +339,16 @@ impl Terminals {
     }
 }
 
-fn spawn_buffer_reader<R>(reader: R, buffer: Arc<Mutex<OutputBuffer>>, limit: u64)
-where
+#[allow(clippy::too_many_arguments)]
+fn spawn_buffer_reader<R>(
+    reader: R,
+    buffer: Arc<Mutex<OutputBuffer>>,
+    limit: u64,
+    events_tx: broadcast::Sender<TerminalToolEvent>,
+    session_key: String,
+    terminal_id: String,
+    stream: TerminalToolStream,
+) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -279,6 +362,12 @@ where
                     total = total.saturating_add(n as u64);
                     tracing::trace!(chunk_len = n, total_bytes = total, "tools::terminal: pipe chunk");
                     buffer.lock().await.push(&chunk[..n], limit);
+                    let data = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                    let _ = events_tx.send(TerminalToolEvent {
+                        session_key: session_key.clone(),
+                        terminal_id: terminal_id.clone(),
+                        kind: TerminalToolEventKind::Output { stream, data },
+                    });
                 }
                 Err(err) => {
                     tracing::debug!(%err, total_bytes = total, "tools::terminal: pipe read failed");
@@ -379,5 +468,53 @@ mod tests {
         let req = TerminalOutputRequest::new(sid.clone(), TerminalId::new("nope"));
         let err = terms.output(session_key(&sid), req).await.expect_err("must fail");
         assert!(matches!(err, TerminalError::UnknownTerminal(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn subscribers_receive_output_and_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let terms = mk(dir.path());
+        let sid = SessionId::new("s");
+        let mut rx = terms.subscribe();
+
+        let mut req = CreateTerminalRequest::new(sid.clone(), "sh");
+        req.args = vec!["-c".into(), "printf 'hi'".into()];
+        let resp = terms.create(session_key(&sid), req).await.expect("spawn ok");
+        let term_id = resp.terminal_id.0.to_string();
+
+        // Drain output / exit events with a generous timeout so we
+        // tolerate child-startup latency on slow runners.
+        let collected = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut events: Vec<TerminalToolEvent> = Vec::new();
+            // Drive the wait concurrently so the Exit event can land.
+            let wait = WaitForTerminalExitRequest::new(sid.clone(), resp.terminal_id.clone());
+            let _exit = terms.wait(session_key(&sid), wait).await.expect("exit ok");
+            // After exit we should already have at least one Output + one Exit.
+            while let Ok(evt) = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                if let Ok(evt) = evt {
+                    events.push(evt);
+                }
+            }
+            events
+        })
+        .await
+        .expect("events drained");
+
+        assert!(
+            collected.iter().all(|e| e.terminal_id == term_id),
+            "all events stamped with the spawned terminal id"
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|e| matches!(e.kind, TerminalToolEventKind::Output { .. })),
+            "saw at least one Output event"
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|e| matches!(e.kind, TerminalToolEventKind::Exit { .. })),
+            "saw an Exit event"
+        );
     }
 }

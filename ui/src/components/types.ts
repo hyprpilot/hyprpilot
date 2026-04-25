@@ -105,6 +105,11 @@ export interface ToolChipItem {
   detail?: string
   stat?: string
   kind?: ToolKind
+  /// Set when the originating tool call carries a terminal id
+  /// (`rawInput.terminal_id`). Drives the inline `ChatTerminalCard`
+  /// link from a Bash / Terminal chip — without this the timeline
+  /// can't bind the chip back to the live stdout stream.
+  terminalId?: string
 }
 
 export interface PermissionPrompt {

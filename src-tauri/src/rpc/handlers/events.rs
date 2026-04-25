@@ -213,6 +213,7 @@ fn wire_topic_for(evt: &InstanceEvent) -> Option<WireTopic> {
         InstanceEvent::TurnEnded { .. } => WireTopic::InstanceTurnEnded,
         InstanceEvent::InstancesChanged { .. } => WireTopic::InstancesChanged,
         InstanceEvent::InstancesFocused { .. } => WireTopic::InstancesFocused,
+        InstanceEvent::Terminal { .. } => WireTopic::TerminalOutput,
         InstanceEvent::DaemonReloaded { .. } => WireTopic::DaemonReloaded,
     })
 }

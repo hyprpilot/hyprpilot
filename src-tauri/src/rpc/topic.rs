@@ -61,8 +61,9 @@ pub enum WireTopic {
     McpsChanged,
     #[serde(rename = "daemon.reloaded")]
     DaemonReloaded,
-    /// Per-instance terminal stdout/stderr. No producer wires events to
-    /// it today — accepted for forward compatibility.
+    /// Per-instance terminal stdout/stderr / exit chunks. Wired to
+    /// `InstanceEvent::Terminal` produced by the ACP runtime as the
+    /// agent's child processes emit data.
     #[serde(rename = "terminal.output")]
     TerminalOutput,
 }
@@ -75,12 +76,7 @@ impl WireTopic {
     pub fn is_unwired(self) -> bool {
         matches!(
             self,
-            Self::ToastEmitted
-                | Self::SessionLoaded
-                | Self::SkillsChanged
-                | Self::McpsChanged
-                | Self::DaemonReloaded
-                | Self::TerminalOutput
+            Self::ToastEmitted | Self::SessionLoaded | Self::SkillsChanged | Self::McpsChanged | Self::DaemonReloaded
         )
     }
 
@@ -102,6 +98,7 @@ impl WireTopic {
                 )
                 | (Self::InstanceTurnStarted, InstanceEvent::TurnStarted { .. })
                 | (Self::InstanceTurnEnded, InstanceEvent::TurnEnded { .. })
+                | (Self::TerminalOutput, InstanceEvent::Terminal { .. })
         )
     }
 }
@@ -115,7 +112,8 @@ pub fn event_instance_id(event: &InstanceEvent) -> Option<&str> {
         | InstanceEvent::Transcript { instance_id, .. }
         | InstanceEvent::PermissionRequest { instance_id, .. }
         | InstanceEvent::TurnStarted { instance_id, .. }
-        | InstanceEvent::TurnEnded { instance_id, .. } => Some(instance_id),
+        | InstanceEvent::TurnEnded { instance_id, .. }
+        | InstanceEvent::Terminal { instance_id, .. } => Some(instance_id),
         InstanceEvent::InstancesChanged { .. }
         | InstanceEvent::InstancesFocused { .. }
         | InstanceEvent::DaemonReloaded { .. } => None,
@@ -215,6 +213,20 @@ mod tests {
         }
     }
 
+    fn evt_terminal() -> InstanceEvent {
+        InstanceEvent::Terminal {
+            agent_id: "a".into(),
+            instance_id: "id-1".into(),
+            session_id: "s".into(),
+            turn_id: None,
+            terminal_id: "term-1".into(),
+            chunk: crate::adapters::TerminalChunk::Output {
+                stream: crate::adapters::TerminalStream::Stdout,
+                data: "hello".into(),
+            },
+        }
+    }
+
     fn evt_instances_changed() -> InstanceEvent {
         InstanceEvent::InstancesChanged {
             instance_ids: vec![],
@@ -240,6 +252,7 @@ mod tests {
             (WireTopic::PermissionRequested, evt_permission),
             (WireTopic::InstanceTurnStarted, evt_turn_started),
             (WireTopic::InstanceTurnEnded, evt_turn_ended),
+            (WireTopic::TerminalOutput, evt_terminal),
             (WireTopic::InstancesChanged, evt_instances_changed),
             (WireTopic::InstancesFocused, evt_instances_focused),
         ];
@@ -262,11 +275,14 @@ mod tests {
             WireTopic::SkillsChanged,
             WireTopic::McpsChanged,
             WireTopic::DaemonReloaded,
-            WireTopic::TerminalOutput,
         ] {
             assert!(topic.is_unwired(), "{topic:?} must report unwired");
         }
-        for topic in [WireTopic::InstanceState, WireTopic::InstanceTranscript] {
+        for topic in [
+            WireTopic::InstanceState,
+            WireTopic::InstanceTranscript,
+            WireTopic::TerminalOutput,
+        ] {
             assert!(!topic.is_unwired());
         }
     }
@@ -278,6 +294,7 @@ mod tests {
         assert_eq!(event_instance_id(&evt_permission()), Some("id-1"));
         assert_eq!(event_instance_id(&evt_turn_started()), Some("id-1"));
         assert_eq!(event_instance_id(&evt_turn_ended()), Some("id-1"));
+        assert_eq!(event_instance_id(&evt_terminal()), Some("id-1"));
         assert!(event_instance_id(&evt_instances_changed()).is_none());
         assert!(event_instance_id(&evt_instances_focused()).is_none());
     }

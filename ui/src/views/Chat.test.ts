@@ -3,31 +3,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Modifier, TauriCommand } from '@ipc'
 
+const { invoke, listeners, unlisten } = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listeners: new Map<string, (payload: { payload: unknown }) => void>(),
+  unlisten: vi.fn()
+}))
+
+vi.mock('@ipc/bridge', async () => ({
+  ...(await vi.importActual<object>('@ipc/bridge')),
+  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
+  listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
+    listeners.set(event, cb)
+
+    return Promise.resolve(unlisten)
+  },
+  getProfiles: () => Promise.resolve([]),
+  listSessions: () => Promise.resolve([]),
+  loadSession: () => Promise.resolve()
+}))
+
 import { useActiveInstance } from '@composables/use-active-instance'
 import { __resetKeymapsForTests, loadKeymaps } from '@composables/use-keymaps'
 import { pushPermissionRequest, resetPermissions } from '@composables/use-permissions'
 
 import Chat from './Overlay.vue'
-
-const invoke = vi.fn()
-const listeners = new Map<string, (payload: { payload: unknown }) => void>()
-const unlisten = vi.fn()
-
-vi.mock('@ipc', async () => {
-  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
-  return {
-    ...actual,
-    invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-    listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
-      listeners.set(event, cb)
-
-      return Promise.resolve(unlisten)
-    },
-    getProfiles: () => Promise.resolve([]),
-    listSessions: () => Promise.resolve([]),
-    loadSession: () => Promise.resolve()
-  }
-})
 
 const DEFAULT_KEYMAPS = {
   chat: {
