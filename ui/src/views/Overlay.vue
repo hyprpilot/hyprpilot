@@ -26,8 +26,9 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import { openRootPalette, openSkillsPalette } from './palette-root'
+import { isPaletteLeafId, openRootLeaf, openRootPalette, openSkillsPalette, PaletteLeafId } from './palette-root'
 import {
+  type BreadcrumbCount,
   ChatBody,
   ChatComposer,
   ChatPermissionStack,
@@ -48,10 +49,12 @@ import {
   pushToast,
   pushTranscriptChunk,
   StreamItemKind,
+  truncateCwd,
   TurnRole,
   useActiveInstance,
   useAdapter,
   useAttachments,
+  useHomeDir,
   useKeymap,
   useKeymaps,
   usePalette,
@@ -59,6 +62,7 @@ import {
   usePhase,
   useProfiles,
   useSessionHistory,
+  useSessionInfo,
   useStream,
   useToasts,
   useTools,
@@ -69,7 +73,7 @@ import {
   type InstanceId,
   type PlanEntry
 } from '@composables'
-import { Modifier } from '@ipc'
+import { Modifier, SessionUpdateKind } from '@ipc'
 import { formatToolCall, log } from '@lib'
 
 const { submit } = useAdapter()
@@ -80,8 +84,9 @@ const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
 // Session history is wired but the overlay shell doesn't surface a
 // session picker yet — keeping the binding live so the backend stays
-// warm; the palette view (K-249) takes over this role.
-useSessionHistory(activeAgentId, selectedProfile)
+// warm; the palette view (K-249) takes over this role. The list count
+// rides on the row-2 sessions breadcrumb pill.
+const { sessions: sessionList } = useSessionHistory(activeAgentId, selectedProfile)
 
 const { id: activeInstanceId } = useActiveInstance()
 const { turns } = useTranscript()
@@ -89,11 +94,53 @@ const { items: streamItems } = useStream()
 const { calls: toolCalls } = useTools()
 const { pending: permissionPrompts, allow, deny } = usePermissions()
 const { openTurnId } = useTurns()
+const { info: sessionInfo } = useSessionInfo()
+const { homeDir } = useHomeDir()
 
 const sending = ref(false)
 const composerRef = ref<InstanceType<typeof ChatComposer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
+
+const headerCwd = computed(() => {
+  const raw = sessionInfo.value.cwd
+  if (!raw) {
+    return undefined
+  }
+
+  return truncateCwd(raw, 32, homeDir.value)
+})
+
+const headerCounts = computed<BreadcrumbCount[]>(() => [
+  { id: PaletteLeafId.Mcps, label: 'mcps', count: sessionInfo.value.mcpsCount },
+  { id: PaletteLeafId.Skills, label: 'skills', count: sessionInfo.value.skillsCount },
+  { id: PaletteLeafId.Sessions, label: 'sessions', count: sessionList.value.length }
+])
+
+function onPillClick(target: 'profile' | 'mode' | 'provider'): void {
+  switch (target) {
+    case 'profile':
+      openRootLeaf(PaletteLeafId.Profiles)
+      return
+    case 'mode':
+      openRootLeaf(PaletteLeafId.Modes)
+      return
+    case 'provider':
+      openRootLeaf(PaletteLeafId.Models)
+      return
+  }
+}
+
+function onBreadcrumbClick(id: string): void {
+  if (!isPaletteLeafId(id)) {
+    return
+  }
+  openRootLeaf(id)
+}
+
+function onToggleCwd(): void {
+  openRootLeaf(PaletteLeafId.Cwd)
+}
 
 // Block grouping is driven by ACP turn ids (Rust mints one per
 // `session/prompt` and stamps every notification it emits with that
@@ -373,7 +420,7 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
   const instanceId = activeInstanceId.value ?? mintInstanceId()
   useActiveInstance().set(instanceId)
   pushTranscriptChunk(instanceId, '', {
-    sessionUpdate: 'user_message_chunk',
+    sessionUpdate: SessionUpdateKind.UserMessageChunk,
     content: { type: 'text', text }
   })
 
@@ -393,7 +440,20 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
 </script>
 
 <template>
-  <Frame :profile="selectedProfile ?? 'none'" :phase="phase" :provider="activeProfile?.agent" :model="activeProfile?.model">
+  <Frame
+    :profile="selectedProfile ?? 'none'"
+    :phase="phase"
+    :mode-tag="sessionInfo.mode ?? 'ask'"
+    :provider="activeProfile?.agent"
+    :model="sessionInfo.model ?? activeProfile?.model"
+    :title="sessionInfo.title"
+    :cwd="headerCwd"
+    :counts="headerCounts"
+    :restored="sessionInfo.restored"
+    @pill-click="onPillClick"
+    @breadcrumb-click="onBreadcrumbClick"
+    @toggle-cwd="onToggleCwd"
+  >
     <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
       <ChatTurn
         v-for="(block, blockIdx) in timelineBlocks"

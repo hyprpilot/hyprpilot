@@ -73,6 +73,16 @@ fn get_gtk_font(font: State<'_, Option<GtkFont>>) -> Option<GtkFont> {
     font.inner().clone()
 }
 
+/// Resolved `$HOME` for the running user. The webview cannot read
+/// `$HOME` itself (no `process` global, no `~` expansion in the
+/// renderer), so the daemon hands it off via Tauri command. `None`
+/// when `$HOME` is unset — the consumer (cwd truncation) skips the
+/// `~` collapse step then.
+#[tauri::command]
+fn get_home_dir() -> Option<String> {
+    std::env::var("HOME").ok()
+}
+
 /// Parse a GTK font string ("Inter 10", "JetBrains Mono Bold 11", "Sans 10")
 /// into `{ family, size_pt }`. The last whitespace-separated token is the
 /// point size; every preceding token is family (joined back with spaces).
@@ -266,6 +276,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_keymaps,
             get_window_state,
             get_gtk_font,
+            get_home_dir,
             adapter_commands::session_submit,
             adapter_commands::session_cancel,
             adapter_commands::agents_list,

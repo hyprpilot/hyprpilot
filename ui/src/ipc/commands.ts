@@ -31,6 +31,7 @@ export enum TauriCommand {
   GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
   GetGtkFont = 'get_gtk_font',
+  GetHomeDir = 'get_home_dir',
   SessionSubmit = 'session_submit',
   SessionCancel = 'session_cancel',
   AgentsList = 'agents_list',
@@ -58,6 +59,7 @@ export interface TauriCommandResult {
   [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.GetGtkFont]: GtkFont | null
+  [TauriCommand.GetHomeDir]: string | null
   [TauriCommand.SessionSubmit]: SubmitResult
   [TauriCommand.SessionCancel]: CancelResult
   [TauriCommand.AgentsList]: { agents: AgentSummary[] }

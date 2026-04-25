@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import {
   InstanceState,
   listen,
+  SessionUpdateKind,
   TauriEvent,
   type InstanceStateEventPayload,
   type PermissionRequestEventPayload,
@@ -15,6 +16,7 @@ import { ToastTone } from '@components/types'
 import { useActiveInstance, type InstanceId } from './use-active-instance'
 import { pushInstanceState, resetPhaseSignals } from './use-phase'
 import { pushPermissionRequest } from './use-permissions'
+import { pushSessionInfoUpdate, resetSessionInfo } from './use-session-info'
 import { closeTurn, pushPlan, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk } from './use-terminals'
 import { pushToast } from './use-toasts'
@@ -45,23 +47,27 @@ interface ContentBlock {
 
 function routeTranscript(payload: TranscriptEventPayload): void {
   const raw = payload.update as SessionUpdateEnvelope
-  const kind = typeof raw.sessionUpdate === 'string' ? raw.sessionUpdate : ''
+  const kind = typeof raw.sessionUpdate === 'string' ? (raw.sessionUpdate as SessionUpdateKind) : undefined
   const { instanceId, sessionId } = payload
   switch (kind) {
-    case 'user_message_chunk':
-    case 'agent_message_chunk':
+    case SessionUpdateKind.UserMessageChunk:
+    case SessionUpdateKind.AgentMessageChunk:
       pushTranscriptChunk(instanceId, sessionId, raw as Parameters<typeof pushTranscriptChunk>[2])
       return
-    case 'agent_thought_chunk':
+    case SessionUpdateKind.AgentThoughtChunk:
       pushThoughtChunk(instanceId, sessionId, raw as Parameters<typeof pushThoughtChunk>[2])
       return
-    case 'plan':
+    case SessionUpdateKind.Plan:
       pushPlan(instanceId, sessionId, raw as Parameters<typeof pushPlan>[2])
       return
-    case 'tool_call':
-    case 'tool_call_update':
+    case SessionUpdateKind.ToolCall:
+    case SessionUpdateKind.ToolCallUpdate:
       pushToolCall(instanceId, sessionId, raw as Parameters<typeof pushToolCall>[2])
       routeTerminal(instanceId, sessionId, raw)
+      return
+    case SessionUpdateKind.CurrentModeUpdate:
+    case SessionUpdateKind.SessionInfoUpdate:
+      pushSessionInfoUpdate(instanceId, raw as Parameters<typeof pushSessionInfoUpdate>[1])
       return
     default:
       return
@@ -138,6 +144,7 @@ export async function startSessionStream(): Promise<() => void> {
 
       if (state === InstanceState.Ended || state === InstanceState.Error) {
         resetPhaseSignals(instanceId)
+        resetSessionInfo(instanceId)
       }
 
       priorState.set(instanceId, state)

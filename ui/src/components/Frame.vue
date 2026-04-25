@@ -25,18 +25,29 @@ const props = withDefaults(
     gitStatus?: GitStatus
     counts?: BreadcrumbCount[]
     cwdExpanded?: boolean
+    /// `true` when the active instance was created via `session_load`
+    /// (resume). Surfaces a small "restored" tag in row 1.
+    restored?: boolean
   }>(),
   {
     phase: Phase.Idle,
     modeTag: 'ask',
     counts: () => [],
-    cwdExpanded: false
+    cwdExpanded: false,
+    restored: false
   }
 )
 
 const emit = defineEmits<{
   close: []
   toggleCwd: []
+  /// Emitted when the user clicks a row-1 pill (`profile` / `mode` /
+  /// `provider`); the parent dispatches the matching palette leaf.
+  pillClick: [target: 'profile' | 'mode' | 'provider']
+  /// Emitted when the user clicks a breadcrumb pill in row 2; the
+  /// parent dispatches the matching palette leaf. Pill id falls back
+  /// to `label` when `BreadcrumbCount.id` is unset.
+  breadcrumbClick: [id: string]
 }>()
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
@@ -48,14 +59,29 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   <section class="frame" data-testid="frame">
     <header class="frame-header">
       <div class="frame-row frame-row-1">
-        <span class="frame-profile-pill" :style="{ backgroundColor: phaseColor }">
+        <button
+          type="button"
+          class="frame-profile-pill"
+          :style="{ backgroundColor: phaseColor }"
+          aria-label="profile"
+          @click="emit('pillClick', 'profile')"
+        >
           <span class="frame-profile-dot" :class="{ 'animate-pulse-slow': isPulsing }" aria-hidden="true" />
           {{ profile }}
-        </span>
-        <Pill mono color="var(--theme-fg-dim)">{{ modeTag }}</Pill>
-        <Pill v-if="provider" mono color="var(--theme-fg-dim)" class="frame-provider-pill"
-          >{{ provider }}<template v-if="model"> · {{ model }}</template></Pill
+        </button>
+        <button type="button" class="frame-pill-button" aria-label="mode" @click="emit('pillClick', 'mode')">
+          <Pill mono color="var(--theme-fg-dim)">{{ modeTag }}</Pill>
+        </button>
+        <button
+          v-if="provider"
+          type="button"
+          class="frame-pill-button frame-provider-pill"
+          aria-label="provider"
+          @click="emit('pillClick', 'provider')"
         >
+          <Pill mono color="var(--theme-fg-dim)">{{ provider }}<template v-if="model"> · {{ model }}</template></Pill>
+        </button>
+        <span v-if="restored" class="frame-restored-tag" aria-label="restored">restored</span>
         <span v-if="title" class="frame-title">{{ title }}</span>
         <span v-else class="frame-title-spacer" />
         <button type="button" class="frame-close" aria-label="close" @click="emit('close')">
@@ -77,7 +103,16 @@ const hasGit = computed(() => Boolean(props.gitStatus))
           <span v-if="hasGit && gitStatus!.worktree" class="frame-cwd-worktree">worktree: {{ gitStatus!.worktree }}</span>
         </button>
         <div class="frame-counts">
-          <BreadcrumbPill v-for="c in counts" :key="c.label" :color="c.color" :label="c.label" :count="c.count" />
+          <button
+            v-for="c in counts"
+            :key="c.label"
+            type="button"
+            class="frame-pill-button"
+            :aria-label="c.id ?? c.label"
+            @click="emit('breadcrumbClick', c.id ?? c.label)"
+          >
+            <BreadcrumbPill :color="c.color" :label="c.label" :count="c.count" />
+          </button>
         </div>
       </div>
 
@@ -127,9 +162,10 @@ const hasGit = computed(() => Boolean(props.gitStatus))
 }
 
 .frame-profile-pill {
-  @apply inline-flex shrink-0 items-center gap-[6px] rounded-sm px-[11px] py-[3px] text-[0.72rem] font-bold leading-tight;
+  @apply inline-flex shrink-0 items-center gap-[6px] rounded-sm border-0 px-[11px] py-[3px] text-[0.72rem] font-bold leading-tight;
   color: var(--theme-surface-bg);
   font-family: var(--theme-font-mono);
+  cursor: pointer;
 }
 
 .frame-profile-dot {
@@ -137,8 +173,22 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   background-color: var(--theme-surface-bg);
 }
 
+.frame-pill-button {
+  @apply inline-flex shrink-0 items-center border-0 bg-transparent p-0;
+  cursor: pointer;
+}
+
 .frame-provider-pill {
   @apply shrink-0;
+}
+
+.frame-restored-tag {
+  @apply inline-flex shrink-0 items-center rounded-sm border px-[6px] py-[1px] text-[0.62rem];
+  font-family: var(--theme-font-mono);
+  color: var(--theme-status-warn);
+  border-color: var(--theme-status-warn);
+  background-color: var(--theme-surface-alt);
+  text-transform: lowercase;
 }
 
 .frame-title {
