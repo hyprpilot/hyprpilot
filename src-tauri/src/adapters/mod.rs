@@ -37,7 +37,8 @@ pub use instance::{
 #[allow(unused_imports)]
 pub use permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DefaultPermissionController, PermissionController,
-    PermissionOptionView, PermissionOutcome, PermissionPrompt, PermissionReply, PermissionRequest, ToolCallRef,
+    PermissionOptionView, PermissionOutcome, PermissionPrompt, PermissionReply, PermissionRequest,
+    PermissionRequestSnapshot, ToolCallRef,
 };
 #[allow(unused_imports)]
 pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};

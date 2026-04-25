@@ -357,7 +357,13 @@ async fn run_instance(
         .cwd
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-    let client = match AcpClient::new(client_events_tx, sandbox_root, permissions.clone(), profile.clone()) {
+    let client = match AcpClient::with_instance_id(
+        client_events_tx,
+        sandbox_root,
+        permissions.clone(),
+        profile.clone(),
+        Some(instance_id.clone()),
+    ) {
         Ok(c) => c,
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::runtime: sandbox init failed");

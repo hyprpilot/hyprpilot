@@ -10,8 +10,9 @@ use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
     AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, KillHandler, ModelsListHandler,
     ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler, OverlayPresentHandler,
-    OverlayToggleHandler, SessionInfoHandler, SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler,
-    SubmitHandler, ToggleHandler,
+    OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler, PromptsCancelHandler, PromptsSendHandler,
+    SessionInfoHandler, SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler,
+    ToggleHandler,
 };
 use crate::paths;
 
@@ -97,6 +98,21 @@ pub enum CtlCommand {
     Skills {
         #[command(subcommand)]
         command: SkillsCommand,
+    },
+
+    /// Send / cancel single-shot prompts addressed to a specific
+    /// instance. Distinct from `submit` — `submit` resolves through
+    /// `(agent, profile)` and may auto-spawn; `prompts send` requires
+    /// a live `--instance <id>`.
+    Prompts {
+        #[command(subcommand)]
+        command: PromptsCommand,
+    },
+
+    /// Inspect / resolve pending permission prompts.
+    Permissions {
+        #[command(subcommand)]
+        command: PermissionsCommand,
     },
 
     /// Overlay window control — hyprland-bind surface.
@@ -189,6 +205,42 @@ pub enum SkillsCommand {
     Reload,
 }
 
+#[derive(Subcommand, Debug, Clone)]
+pub enum PromptsCommand {
+    /// Send a prompt to a live instance. `text` is positional; pass
+    /// `-` to read it from stdin.
+    Send {
+        #[arg(long = "instance")]
+        instance_id: String,
+
+        /// Prompt text. Use `-` to read from stdin.
+        #[arg(trailing_var_arg = true)]
+        text: Vec<String>,
+    },
+    /// Cancel the addressed instance's in-flight turn.
+    Cancel {
+        #[arg(long = "instance")]
+        instance_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PermissionsCommand {
+    /// List pending permission requests, optionally filtered by
+    /// instance.
+    Pending {
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+    },
+    /// Resolve a pending permission request by id.
+    Respond {
+        #[arg(long = "request")]
+        request_id: String,
+        #[arg(long = "option")]
+        option_id: String,
+    },
+}
+
 /// Dispatch one `ctl` subcommand. Each arm builds the matching
 /// `CtlHandler` (from `ctl/handlers.rs`) and hands it a `CtlClient`
 /// (from `ctl/client.rs`) — a connection factory pointed at the
@@ -230,6 +282,20 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
             SkillsCommand::List { instance_id } => SkillsListHandler { instance_id }.run(&client),
             SkillsCommand::Get { slug } => SkillsGetHandler { slug }.run(&client),
             SkillsCommand::Reload => SkillsReloadHandler.run(&client),
+        },
+        CtlCommand::Prompts { command } => match command {
+            PromptsCommand::Send { instance_id, text } => PromptsSendHandler {
+                instance_id,
+                text: text.join(" "),
+            }
+            .run(&client),
+            PromptsCommand::Cancel { instance_id } => PromptsCancelHandler { instance_id }.run(&client),
+        },
+        CtlCommand::Permissions { command } => match command {
+            PermissionsCommand::Pending { instance_id } => PermissionsPendingHandler { instance_id }.run(&client),
+            PermissionsCommand::Respond { request_id, option_id } => {
+                PermissionsRespondHandler { request_id, option_id }.run(&client)
+            }
         },
         CtlCommand::Overlay { command } => match command {
             OverlaySubcommand::Present { instance_id } => OverlayPresentHandler { instance_id }.run(&client),

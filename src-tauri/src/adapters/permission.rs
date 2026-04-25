@@ -63,10 +63,13 @@ pub struct ToolCallRef {
 
 /// Everything the controller needs to make a decision and route a
 /// later reply. `request_id` is the correlation key the reply
-/// command sends back.
+/// command sends back; `instance_id` tags the snapshot returned by
+/// `permissions/pending` so callers can address a specific live
+/// instance.
 #[derive(Debug, Clone)]
 pub struct PermissionRequest {
     pub session_id: String,
+    pub instance_id: Option<String>,
     pub request_id: String,
     pub tool_call: ToolCallRef,
     pub options: Vec<PermissionOptionView>,
@@ -100,6 +103,21 @@ pub enum PermissionOutcome {
 pub struct PermissionPrompt {
     pub session_id: String,
     pub request_id: String,
+    pub options: Vec<PermissionOptionView>,
+}
+
+/// Snapshot of a pending permission request returned by
+/// `permissions/pending`. `args` carries `tool_call.raw_args` (or
+/// `tool_call.title` when no raw args were available) verbatim — the
+/// UI decides how to render / truncate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequestSnapshot {
+    pub request_id: String,
+    pub instance_id: Option<String>,
+    pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
     pub options: Vec<PermissionOptionView>,
 }
 
@@ -146,6 +164,21 @@ pub trait PermissionController: Send + Sync + 'static {
     /// ids. Returns `None` when the waiter has already been resolved
     /// or never existed.
     async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>>;
+
+    /// Atomic membership-check + option-validation + resolve under a
+    /// single lock. Used by `permissions/respond` so the lookup ≠
+    /// resolve race window collapses to zero.
+    ///
+    /// - `None` — no waiter for `request_id` (already resolved or
+    ///   never registered).
+    /// - `Some(false)` — waiter exists but `option_id` is not in its
+    ///   stored options list; nothing fired.
+    /// - `Some(true)` — waiter resolved with `Selected(option_id)`.
+    async fn resolve_if_pending(&self, request_id: &str, option_id: &str) -> Option<bool>;
+
+    /// Snapshot every currently-pending request as a
+    /// `PermissionRequestSnapshot` vector. Powers `permissions/pending`.
+    async fn list_pending(&self) -> Vec<PermissionRequestSnapshot>;
 }
 
 /// Default impl: an in-memory waiter map, profile globs compiled on
@@ -163,6 +196,11 @@ struct PendingWaiter {
     /// `permission_reply` command can resolve synthetic `"allow"` /
     /// `"deny"` shortcuts against real ACP option ids.
     options: Vec<PermissionOptionView>,
+    /// Snapshot of the tool + instance identity at registration time.
+    /// `permissions/pending` reads from this so the wire shape is
+    /// fully derivable without reaching back into the originating
+    /// ACP request.
+    snapshot: PermissionRequestSnapshot,
 }
 
 impl DefaultPermissionController {
@@ -224,12 +262,20 @@ impl PermissionController for DefaultPermissionController {
 
     async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome> {
         let (tx, rx) = oneshot::channel();
+        let snapshot = PermissionRequestSnapshot {
+            request_id: req.request_id.clone(),
+            instance_id: req.instance_id.clone(),
+            tool: req.tool_call.name.clone(),
+            args: req.tool_call.raw_args.clone().or_else(|| req.tool_call.title.clone()),
+            options: req.options.clone(),
+        };
         let mut waiters = self.waiters.lock().await;
         waiters.insert(
             req.request_id.clone(),
             PendingWaiter {
                 tx,
                 options: req.options.clone(),
+                snapshot,
             },
         );
         tracing::debug!(
@@ -270,6 +316,28 @@ impl PermissionController for DefaultPermissionController {
     async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>> {
         let waiters = self.waiters.lock().await;
         waiters.get(request_id).map(|w| w.options.clone())
+    }
+
+    async fn resolve_if_pending(&self, request_id: &str, option_id: &str) -> Option<bool> {
+        let mut waiters = self.waiters.lock().await;
+        let entry = waiters.get(request_id)?;
+        if !entry.options.iter().any(|o| o.option_id == option_id) {
+            tracing::debug!(
+                request_id,
+                option_id,
+                "permission::resolve_if_pending: option not in stored options"
+            );
+            return Some(false);
+        }
+        let removed = waiters.remove(request_id).expect("entry checked above");
+        let _ = removed.tx.send(PermissionOutcome::Selected(option_id.to_string()));
+        tracing::debug!(request_id, option_id, "permission::resolve_if_pending: waiter fired");
+        Some(true)
+    }
+
+    async fn list_pending(&self) -> Vec<PermissionRequestSnapshot> {
+        let waiters = self.waiters.lock().await;
+        waiters.values().map(|w| w.snapshot.clone()).collect()
     }
 }
 
@@ -354,6 +422,7 @@ mod tests {
     fn request(id: &str, tool: &str) -> PermissionRequest {
         PermissionRequest {
             session_id: "sess-1".into(),
+            instance_id: Some("instance-1".into()),
             request_id: id.into(),
             tool_call: ToolCallRef {
                 name: tool.into(),
@@ -448,6 +517,41 @@ mod tests {
         let _rx = controller.register_pending(request("once", "A")).await;
         controller.resolve("once", PermissionOutcome::Cancelled).await;
         controller.resolve("once", PermissionOutcome::Cancelled).await;
+    }
+
+    #[tokio::test]
+    async fn resolve_if_pending_unknown_request_returns_none() {
+        let controller = DefaultPermissionController::new();
+        assert_eq!(controller.resolve_if_pending("ghost", "allow-once").await, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_if_pending_invalid_option_returns_some_false_and_keeps_waiter() {
+        let controller = DefaultPermissionController::new();
+        let mut rx = controller.register_pending(request("r1", "Bash")).await;
+        let res = controller.resolve_if_pending("r1", "ghost-option").await;
+        assert_eq!(res, Some(false));
+        match tokio::time::timeout(Duration::from_millis(50), &mut rx).await {
+            Err(_) => {}
+            Ok(_) => panic!("waiter must not fire on invalid option"),
+        }
+        // Waiter still registered — options_for returns the original list.
+        assert!(controller.options_for("r1").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_if_pending_valid_option_returns_some_true_and_fires_waiter() {
+        let controller = DefaultPermissionController::new();
+        let rx = controller.register_pending(request("r1", "Bash")).await;
+        let res = controller.resolve_if_pending("r1", "allow-once").await;
+        assert_eq!(res, Some(true));
+        let outcome = tokio::time::timeout(Duration::from_millis(50), rx)
+            .await
+            .expect("waiter fires")
+            .expect("receiver ok");
+        assert_eq!(outcome, PermissionOutcome::Selected("allow-once".into()));
+        // Waiter dropped from the map.
+        assert!(controller.options_for("r1").await.is_none());
     }
 
     /// Timeout enforcement moved out of the controller in the K-245
