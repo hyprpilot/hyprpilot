@@ -483,7 +483,13 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
         <ChatToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
 
         <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-          <ChatBody :role="entry.turn.role === TurnRole.User ? Role.User : Role.Assistant">{{ entry.turn.text }}</ChatBody>
+          <ChatBody
+            v-if="entry.turn.role === TurnRole.Agent"
+            :role="Role.Assistant"
+            :text="entry.turn.text"
+            markdown
+          />
+          <ChatBody v-else :role="Role.User">{{ entry.turn.text }}</ChatBody>
         </template>
       </ChatTurn>
     </div>
