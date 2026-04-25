@@ -11,3 +11,18 @@ declare module '*.vue' {
   export default component
 }
 
+// markdown-it-task-lists ships pure CJS without bundled types. The plugin
+// is a single-arg `(md) => void` registration; see upstream README.
+declare module 'markdown-it-task-lists' {
+  import type { PluginWithOptions } from 'markdown-it'
+
+  interface TaskListsOptions {
+    enabled?: boolean
+    label?: boolean
+    labelAfter?: boolean
+  }
+
+  const plugin: PluginWithOptions<TaskListsOptions>
+  export default plugin
+}
+
