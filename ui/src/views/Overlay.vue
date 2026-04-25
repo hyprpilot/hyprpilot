@@ -32,12 +32,15 @@ import {
   ChatBody,
   ChatComposer,
   ChatPermissionStack,
+  ChatQueueStrip,
   ChatStreamCard,
   ChatToolChips,
   ChatTurn,
   CommandPalette,
   Frame,
+  Phase,
   PlanStatus,
+  type QueuedMessage,
   Role,
   StreamKind,
   Toast,
@@ -47,7 +50,11 @@ import {
 import {
   isEditableTarget,
   pushToast,
+  pushToQueue,
   pushTranscriptChunk,
+  removeFromQueue,
+  startQueueDispatcher,
+  stopQueueDispatcher,
   StreamItemKind,
   truncateCwd,
   TurnRole,
@@ -61,6 +68,7 @@ import {
   usePermissions,
   usePhase,
   useProfiles,
+  useQueue,
   useSessionHistory,
   useSessionInfo,
   useStream,
@@ -96,6 +104,9 @@ const { pending: permissionPrompts, allow, deny } = usePermissions()
 const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
 const { homeDir } = useHomeDir()
+const { items: queuedItems, flush: flushActiveQueue } = useQueue()
+
+const queueRows = computed<QueuedMessage[]>(() => queuedItems.value.map((q) => ({ id: q.id, text: q.text })))
 
 const sending = ref(false)
 const composerRef = ref<InstanceType<typeof ChatComposer>>()
@@ -330,6 +341,7 @@ useKeymap(
 )
 
 onMounted(async () => {
+  startQueueDispatcher()
   try {
     stopStream = await startSessionStream()
   } catch (err) {
@@ -341,6 +353,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopStream?.()
   stopStream = undefined
+  stopQueueDispatcher()
 })
 
 // Skill attachments are per-turn but tied to the active instance —
@@ -407,18 +420,27 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
     skill_attachments: skillAttachments.length,
     profileId: selectedProfile.value
   })
-  sending.value = true
 
-  // Pick the instance UUID up-front so we can push the user turn
-  // BEFORE `submit` resolves. Without a known id, we'd have to push
-  // in `.then()` — but by then the agent has already streamed back
-  // session/update events that landed with lower per-instance seq
-  // than the user turn, and those events absorb into the prior
-  // turn's assistant block ("thought blocks go to prior turn" bug).
-  // Client-generated UUIDs let the backend adopt the id on first
-  // sight, closing the race.
   const instanceId = activeInstanceId.value ?? mintInstanceId()
   useActiveInstance().set(instanceId)
+
+  // Submit-while-busy: queue instead of dispatching. The composer
+  // clears as in the dispatch path so the user can keep typing; the
+  // K-260 turn-end watcher in `useQueue` drains the head when the
+  // in-flight turn lands `acp:turn-ended` with stop_reason=end_turn.
+  // `attachments` (image pills) is wire-untyped today and not actually
+  // sent through `submit()`; the queued slot still snapshots them
+  // verbatim so a future composer-pill round-trip lands cleanly.
+  const composerPills = (attachments ?? []) as Parameters<typeof pushToQueue>[1]['pills']
+  if (phase.value !== Phase.Idle) {
+    pushToQueue(instanceId, { text, pills: composerPills, skillAttachments })
+    composerRef.value?.clear()
+    clearAttachments()
+
+    return
+  }
+
+  sending.value = true
   pushTranscriptChunk(instanceId, '', {
     sessionUpdate: SessionUpdateKind.UserMessageChunk,
     content: { type: 'text', text }
@@ -436,6 +458,17 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
     .finally(() => {
       sending.value = false
     })
+}
+
+function onQueueDrop(id: string): void {
+  if (!activeInstanceId.value) {
+    return
+  }
+  removeFromQueue(activeInstanceId.value, id)
+}
+
+function onQueueDropAll(): void {
+  flushActiveQueue()
 }
 </script>
 
@@ -503,6 +536,7 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
     </template>
 
     <template #composer>
+      <ChatQueueStrip :messages="queueRows" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
       <ChatComposer ref="composerRef" :sending="sending" @submit="onSubmit" />
     </template>
   </Frame>
