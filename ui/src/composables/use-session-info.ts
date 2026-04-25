@@ -3,11 +3,40 @@ import { computed, reactive, type ComputedRef } from 'vue'
 import { useActiveInstance, type InstanceId } from './use-active-instance'
 import { useProfiles } from './use-profiles'
 
+/**
+ * One advertised mode option. Mirrors ACP `SessionMode` —
+ * `{ id, name, description? }`. Values stay snake_case in the
+ * envelope but reach us camelCased through Tauri's serde
+ * configuration.
+ */
+export interface SessionModeOption {
+  id: string
+  name: string
+  description?: string
+}
+
+/**
+ * One advertised model option. Mirrors ACP `SessionModel` —
+ * `{ id, name, description? }`. Reaches the UI as part of the
+ * `current_model_update` / `session_info_update` envelope.
+ */
+export interface SessionModelOption {
+  id: string
+  name: string
+  description?: string
+}
+
 export interface SessionInfo {
   title?: string
   cwd?: string
   mode?: string
   model?: string
+  /// Most-recent `availableModes` advertisement for the addressed
+  /// instance. Empty when no `current_mode_update` has arrived yet.
+  availableModes: SessionModeOption[]
+  /// Most-recent `availableModels` advertisement. Empty until a
+  /// `current_model_update` lands.
+  availableModels: SessionModelOption[]
   mcpsCount: number
   skillsCount: number
   /// `true` when the active instance was created via `session_load`
@@ -21,6 +50,8 @@ export interface SessionInfoState {
   cwd?: string
   mode?: string
   model?: string
+  availableModes: SessionModeOption[]
+  availableModels: SessionModelOption[]
   restored: boolean
 }
 
@@ -32,6 +63,15 @@ export interface SessionInfoUpdateRaw {
   /// either spelling so the demuxer can forward the raw envelope.
   currentModeId?: string
   model?: string
+  /// `current_model_update` payload uses `currentModelId`; mirrors
+  /// the mode wire shape.
+  currentModelId?: string
+  /// Advertised mode options accompanying a `current_mode_update`.
+  /// ACP emits these under `availableModes`; the cache lets the
+  /// modes palette light up without an extra round-trip.
+  availableModes?: SessionModeOption[]
+  /// Advertised model options accompanying a `current_model_update`.
+  availableModels?: SessionModelOption[]
   /// `session_info_update` carries `updatedAt` but we don't surface
   /// it today — kept here so future palette previews can read it
   /// without another wire add.
@@ -43,7 +83,7 @@ const states = reactive(new Map<InstanceId, SessionInfoState>())
 function slotFor(id: InstanceId): SessionInfoState {
   let slot = states.get(id)
   if (!slot) {
-    slot = { restored: false }
+    slot = { availableModes: [], availableModels: [], restored: false }
     states.set(id, slot)
   }
 
@@ -69,8 +109,15 @@ export function pushSessionInfoUpdate(id: InstanceId, raw: SessionInfoUpdateRaw)
   if (typeof raw.cwd === 'string') {
     slot.cwd = raw.cwd
   }
-  if (typeof raw.model === 'string') {
-    slot.model = raw.model
+  const model = raw.currentModelId ?? raw.model
+  if (typeof model === 'string') {
+    slot.model = model
+  }
+  if (Array.isArray(raw.availableModes)) {
+    slot.availableModes = raw.availableModes
+  }
+  if (Array.isArray(raw.availableModels)) {
+    slot.availableModels = raw.availableModels
   }
 }
 
@@ -142,6 +189,8 @@ export function useSessionInfo(instanceId?: InstanceId): {
       cwd: slot?.cwd,
       mode: slot?.mode,
       model: slot?.model ?? activeProfile?.model,
+      availableModes: slot?.availableModes ?? [],
+      availableModels: slot?.availableModels ?? [],
       mcpsCount: 0,
       skillsCount: 0,
       restored: slot?.restored ?? false

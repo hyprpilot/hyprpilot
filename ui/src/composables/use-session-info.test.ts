@@ -99,6 +99,56 @@ describe('useSessionInfo profile derivation', () => {
   })
 })
 
+describe('availableModes / availableModels caching', () => {
+  it('records the most-recent availableModes advertisement', () => {
+    pushSessionInfoUpdate('A', {
+      availableModes: [
+        { id: 'plan', name: 'Plan' },
+        { id: 'edit', name: 'Edit' }
+      ]
+    })
+
+    expect(useSessionInfo('A').info.value.availableModes).toEqual([
+      { id: 'plan', name: 'Plan' },
+      { id: 'edit', name: 'Edit' }
+    ])
+  })
+
+  it('records the most-recent availableModels advertisement', () => {
+    pushSessionInfoUpdate('A', {
+      availableModels: [{ id: 'sonnet', name: 'Sonnet' }]
+    })
+
+    expect(useSessionInfo('A').info.value.availableModels).toEqual([{ id: 'sonnet', name: 'Sonnet' }])
+  })
+
+  it('replaces the prior advertisement wholesale', () => {
+    pushSessionInfoUpdate('A', { availableModes: [{ id: 'plan', name: 'Plan' }] })
+    pushSessionInfoUpdate('A', { availableModes: [{ id: 'edit', name: 'Edit' }] })
+
+    const modes = useSessionInfo('A').info.value.availableModes
+    expect(modes).toEqual([{ id: 'edit', name: 'Edit' }])
+  })
+
+  it('preserves prior advertisement when an update omits the field', () => {
+    pushSessionInfoUpdate('A', { availableModels: [{ id: 'sonnet', name: 'Sonnet' }] })
+    pushSessionInfoUpdate('A', { title: 'unrelated' })
+
+    expect(useSessionInfo('A').info.value.availableModels).toEqual([{ id: 'sonnet', name: 'Sonnet' }])
+  })
+
+  it('records currentModelId as the active model', () => {
+    pushSessionInfoUpdate('A', { currentModelId: 'opus' })
+
+    expect(useSessionInfo('A').info.value.model).toBe('opus')
+  })
+
+  it('defaults availableModes / availableModels to empty arrays', () => {
+    expect(useSessionInfo('A').info.value.availableModes).toEqual([])
+    expect(useSessionInfo('A').info.value.availableModels).toEqual([])
+  })
+})
+
 describe('setSessionRestored', () => {
   it('flips the restored flag and survives subsequent updates', () => {
     setSessionRestored('A', true)

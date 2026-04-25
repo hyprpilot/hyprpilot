@@ -146,6 +146,41 @@ pub async fn session_load(
     out
 }
 
+/// Switch the active model for the addressed instance. Today
+/// returns the same `-32603`-shaped error the `models/set` wire
+/// handler does — `AcpAdapter::set_session_model` stubs past the
+/// membership check until K-251 wires the runtime side. The UI
+/// surfaces the message via toast.
+#[tauri::command]
+pub async fn models_set(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    model_id: String,
+) -> Result<Value, String> {
+    tracing::info!(instance_id = %instance_id, model_id = %model_id, "cmd::models_set: entry");
+    let out = adapter.set_session_model(&instance_id, &model_id).await.map_err(|e| e.message);
+    if let Err(err) = &out {
+        tracing::warn!(%err, "cmd::models_set: failed");
+    }
+    out
+}
+
+/// Switch the active operational mode for the addressed instance.
+/// Mirrors `models_set` — stubbed at the adapter until K-251.
+#[tauri::command]
+pub async fn modes_set(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    mode_id: String,
+) -> Result<Value, String> {
+    tracing::info!(instance_id = %instance_id, mode_id = %mode_id, "cmd::modes_set: entry");
+    let out = adapter.set_session_mode(&instance_id, &mode_id).await.map_err(|e| e.message);
+    if let Err(err) = &out {
+        tracing::warn!(%err, "cmd::modes_set: failed");
+    }
+    out
+}
+
 /// Resolve a pending permission prompt. The UI sends one of:
 ///
 /// - `"allow"` — the controller picks the best allow-kind option id

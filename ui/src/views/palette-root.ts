@@ -12,6 +12,8 @@ import { log } from '@lib'
 
 import { openCommandsLeaf } from './palette-commands'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './palette-mcps'
+import { openModelsLeaf } from './palette-models'
+import { openModesLeaf } from './palette-modes'
 import { openProfilesLeaf } from './palette-profiles'
 import { openSkillsLeaf } from './palette-skills'
 
@@ -180,44 +182,54 @@ export interface RootLeafContext {
  * through to the K-249 stub spec.
  */
 export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): void {
-  if (leafId === PaletteLeafId.Commands) {
-    void openCommandsLeaf()
+  switch (leafId) {
+    case PaletteLeafId.Models:
+      openModelsLeaf()
+      return
+    case PaletteLeafId.Modes:
+      openModesLeaf()
+      return
+    case PaletteLeafId.Profiles:
+      openProfilesLeaf()
+      return
+    case PaletteLeafId.Skills:
+      void openSkillsLeaf()
+      return
+    case PaletteLeafId.Commands:
+      void openCommandsLeaf()
+      return
+    case PaletteLeafId.Mcps: {
+      const { open } = usePalette()
+      const leaf = ROOT_LEAVES[leafId]
+      if (!ctx.mcps) {
+        pushNoActiveInstanceStub(leaf, open)
 
-    return
-  }
-  if (leafId === PaletteLeafId.Profiles) {
-    openProfilesLeaf()
-
-    return
-  }
-  if (leafId === PaletteLeafId.Skills) {
-    openSkillsPalette()
-
-    return
-  }
-  const { open } = usePalette()
-  const leaf = ROOT_LEAVES[leafId]
-  if (!leaf) {
-    // Defensive: a new PaletteLeafId variant added without a ROOT_LEAVES
-    // entry would land here. The exhaustiveness assertion below makes
-    // that a compile-error first; this branch is the runtime safety net.
-    log.warn('openRootLeaf: no ROOT_LEAVES entry for', { leafId })
-
-    return
-  }
-  if (leafId === PaletteLeafId.Mcps) {
-    if (!ctx.mcps) {
-      pushNoActiveInstanceStub(leaf, open)
-
+        return
+      }
+      void openMcpsLeaf(ctx.mcps).catch((err) => {
+        log.warn('openMcpsLeaf failed', { instanceId: ctx.mcps?.instanceId }, err)
+      })
       return
     }
-    void openMcpsLeaf(ctx.mcps).catch((err) => {
-      log.warn('openMcpsLeaf failed', { instanceId: ctx.mcps?.instanceId }, err)
-    })
+    case PaletteLeafId.Sessions:
+    case PaletteLeafId.Cwd:
+    case PaletteLeafId.Permissions:
+    case PaletteLeafId.References: {
+      const { open } = usePalette()
+      const leaf = ROOT_LEAVES[leafId]
+      if (!leaf) {
+        // Defensive: a new PaletteLeafId variant added without a
+        // ROOT_LEAVES entry would land here. The match above makes
+        // adding a leaf variant a compile-error first; this branch
+        // is the runtime safety net.
+        log.warn('openRootLeaf: no ROOT_LEAVES entry for', { leafId })
 
-    return
+        return
+      }
+      open(stubLeafSpec(leaf))
+      return
+    }
   }
-  open(stubLeafSpec(leaf))
 }
 
 function pushNoActiveInstanceStub(leaf: RootLeaf, open: ReturnType<typeof usePalette>['open']): void {

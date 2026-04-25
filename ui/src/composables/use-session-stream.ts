@@ -64,6 +64,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       bindTerminalMetadata(instanceId, raw)
       return
     case SessionUpdateKind.CurrentModeUpdate:
+    case SessionUpdateKind.CurrentModelUpdate:
     case SessionUpdateKind.SessionInfoUpdate:
       pushSessionInfoUpdate(instanceId, raw as Parameters<typeof pushSessionInfoUpdate>[1])
       return

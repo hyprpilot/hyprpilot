@@ -344,6 +344,7 @@ export enum SessionUpdateKind {
   ToolCall = 'tool_call',
   ToolCallUpdate = 'tool_call_update',
   CurrentModeUpdate = 'current_mode_update',
+  CurrentModelUpdate = 'current_model_update',
   SessionInfoUpdate = 'session_info_update'
 }
 
