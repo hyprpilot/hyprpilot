@@ -3,6 +3,7 @@ mod config;
 mod ctl;
 mod daemon;
 mod logging;
+mod mcp;
 mod paths;
 mod rpc;
 mod skills;

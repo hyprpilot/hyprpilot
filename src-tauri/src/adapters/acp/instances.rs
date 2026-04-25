@@ -14,6 +14,7 @@
 //! known up-front), closing the seq race where agent responses landed
 //! with lower seq than the user turn.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -47,6 +48,11 @@ pub struct AcpAdapter {
     pub(crate) status: Arc<StatusBroadcast>,
     registry: Arc<AdapterRegistry<AcpInstance>>,
     permissions: Arc<dyn PermissionController>,
+    /// Per-instance MCP enabled-list overrides. Keyed by `InstanceKey`,
+    /// installed by `mcps/set` and read at spawn time (after restart)
+    /// to compute the effective MCP set. Survives restart of the
+    /// addressed instance (key preserved); cleared on shutdown.
+    mcps_overrides: Arc<RwLock<HashMap<InstanceKey, Vec<String>>>>,
     /// Lazy-init channel the per-instance runtime actor publishes
     /// ACP-shape events onto. A dedicated task forwards each event
     /// through `mapping::From` onto the registry's generic broadcast.
@@ -100,8 +106,49 @@ impl AcpAdapter {
             status,
             registry: Arc::new(AdapterRegistry::new()),
             permissions,
+            mcps_overrides: Arc::new(RwLock::new(HashMap::new())),
             runtime_events_bridge: OnceLock::new(),
         }
+    }
+
+    /// Effective MCP enabled-list for an instance: per-instance
+    /// override wins; otherwise the resolved profile's `mcps` field;
+    /// otherwise `None` (meaning "all catalog entries enabled" — the
+    /// default-empty-list semantics from CLAUDE.md).
+    pub(crate) async fn effective_mcps_for(&self, key: InstanceKey) -> Option<Vec<String>> {
+        if let Some(o) = self
+            .mcps_overrides
+            .read()
+            .expect("mcps overrides lock poisoned")
+            .get(&key)
+            .cloned()
+        {
+            return Some(o);
+        }
+        let profile_id = self.registry.get(key).await.and_then(|h| h.profile_id.clone())?;
+        let cfg = self.read_config();
+        cfg.profiles
+            .iter()
+            .find(|p| p.id == profile_id)
+            .and_then(|p| p.mcps.clone())
+    }
+
+    /// Install a per-instance MCP override. Replaces any existing
+    /// override for `key`; subsequent `restart` reads it back when
+    /// (re-)spawning the actor. Returns the previous override if any.
+    pub(crate) fn set_mcps_override(&self, key: InstanceKey, enabled: Vec<String>) -> Option<Vec<String>> {
+        let mut map = self.mcps_overrides.write().expect("mcps overrides lock poisoned");
+        map.insert(key, enabled)
+    }
+
+    /// Drop a per-instance MCP override. Called from shutdown paths
+    /// so a fresh-spawned instance reusing a recycled UUID doesn't
+    /// inherit a stale override. (UUIDs are unique by construction
+    /// today — this is defensive.)
+    #[allow(dead_code)]
+    pub(crate) fn clear_mcps_override(&self, key: InstanceKey) {
+        let mut map = self.mcps_overrides.write().expect("mcps overrides lock poisoned");
+        map.remove(&key);
     }
 
     /// Handle onto the shared config. Used by the daemon wiring to
@@ -248,6 +295,12 @@ impl AcpAdapter {
 
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id = resolved.profile_id.clone();
+        let mcps_override = self
+            .mcps_overrides
+            .read()
+            .expect("mcps overrides lock poisoned")
+            .get(&key)
+            .cloned();
         let instance = start_instance(
             resolved,
             key,
@@ -256,6 +309,7 @@ impl AcpAdapter {
             bootstrap,
             self.permissions.clone(),
             profile,
+            mcps_override,
         );
 
         self.registry
@@ -426,6 +480,7 @@ impl AcpAdapter {
             let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
             let profile = self.profile_by_id(resolved.profile_id.as_deref());
             let profile_id_for_instance = resolved.profile_id.clone();
+            // Ephemeral list-only actor never reads MCPs; pass None.
             let instance = start_instance(
                 resolved,
                 ephemeral_key,
@@ -434,6 +489,7 @@ impl AcpAdapter {
                 Bootstrap::ListOnly,
                 self.permissions.clone(),
                 profile,
+                None,
             );
             let tx = instance.cmd_tx.clone();
             (tx, Some(instance))
@@ -486,6 +542,10 @@ impl AcpAdapter {
         for instance in instances {
             instance.shutdown().await;
         }
+        self.mcps_overrides
+            .write()
+            .expect("mcps overrides lock poisoned")
+            .clear();
     }
 
     /// Spawn a fresh instance against the resolved `(agent, profile)`.
@@ -541,6 +601,14 @@ impl AcpAdapter {
         }
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id_for_instance = resolved.profile_id.clone();
+        // Restart preserves the per-instance MCP override, so the
+        // post-restart actor reads the same effective set.
+        let mcps_override = self
+            .mcps_overrides
+            .read()
+            .expect("mcps overrides lock poisoned")
+            .get(&key)
+            .cloned();
         let instance = start_instance(
             resolved,
             key,
@@ -549,6 +617,7 @@ impl AcpAdapter {
             Bootstrap::Fresh,
             self.permissions.clone(),
             profile,
+            mcps_override,
         );
         self.registry
             .insert_at_slot(slot, key, Arc::new(instance))
@@ -597,8 +666,16 @@ impl AcpAdapter {
     }
 
     /// Shutdown a single instance and auto-focus the oldest survivor.
+    /// Drops any per-instance MCP override so a UUID never inherits a
+    /// stale override (defensive — UUIDs are unique by construction).
     pub async fn shutdown_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
-        self.registry.shutdown_one(key).await.map_err(map_adapter_error_to_rpc)
+        let key = self
+            .registry
+            .shutdown_one(key)
+            .await
+            .map_err(map_adapter_error_to_rpc)?;
+        self.clear_mcps_override(key);
+        Ok(key)
     }
 
     /// Designate the focused instance. Unknown id → `-32602 invalid_params`.

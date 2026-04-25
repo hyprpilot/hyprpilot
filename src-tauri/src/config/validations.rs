@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use globset::Glob;
 
-use super::{AgentConfig, AgentDefaults, AgentsConfig, Modifier, ProfileConfig};
+use super::{AgentConfig, AgentDefaults, AgentsConfig, MCPDefinition, Modifier, ProfileConfig};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -155,6 +155,50 @@ pub(super) fn validate_default_profile_id<'a>(
              Configured ids: [{}]",
             profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
         )))
+    }
+}
+
+/// `[[mcps]]` uniqueness check. Mirrors `validate_agents_ids` /
+/// `validate_profiles_ids` — duplicate names in the catalog reject at
+/// load time so profile references are unambiguous.
+pub(super) fn validate_mcps_unique_name(mcps: &[MCPDefinition], _ctx: &()) -> garde::Result {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for m in mcps {
+        if !seen.insert(m.name.as_str()) {
+            return Err(garde::Error::new(format!(
+                "duplicate mcp name '{}' — each [[mcps]] entry must have a unique name",
+                m.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every name in a profile's `mcps` list must reference a real
+/// `[[mcps]]` entry. Closes over the catalog so the cross-field
+/// `custom(...)` attribute on `Config.profiles` runs inside the garde
+/// tree walk. Mirrors `validate_profile_agent_references` shape.
+pub(super) fn validate_profile_mcps_references<'a>(
+    mcps: &'a [MCPDefinition],
+) -> impl FnOnce(&Vec<ProfileConfig>, &()) -> garde::Result + 'a {
+    move |profiles, _ctx| {
+        for p in profiles {
+            let Some(names) = p.mcps.as_ref() else {
+                continue;
+            };
+            for name in names {
+                if !mcps.iter().any(|m| m.name == *name) {
+                    return Err(garde::Error::new(format!(
+                        "profile '{}' references mcp '{}' but no matching [[mcps]] entry exists. \
+                         Configured names: [{}]",
+                        p.id,
+                        name,
+                        mcps.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
