@@ -27,8 +27,8 @@ impl RpcHandler for CommandsHandler {
             "commands/list" => {
                 let InstanceIdOnly { instance_id } = serde_json::from_value(params)
                     .map_err(|err| RpcError::invalid_params(format!("commands/list params: {err}")))?;
-                let _ = adapter.contains_instance(&instance_id).await?;
-                Err(RpcError::internal_error("commands/list not implemented — ref K-251"))
+                let commands = adapter.list_commands(&instance_id).await?;
+                Ok(HandlerOutcome::Reply(serde_json::json!({ "commands": commands })))
             }
             other => Err(RpcError::method_not_found(other)),
         }

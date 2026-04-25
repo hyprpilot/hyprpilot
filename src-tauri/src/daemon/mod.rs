@@ -289,6 +289,7 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
             adapter_commands::session_submit,
             adapter_commands::session_cancel,
             adapter_commands::agents_list,
+            adapter_commands::commands_list,
             adapter_commands::profiles_list,
             adapter_commands::session_list,
             adapter_commands::session_load,

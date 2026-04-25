@@ -10,6 +10,7 @@
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables/palette'
 import { log } from '@lib'
 
+import { openCommandsLeaf } from './palette-commands'
 import { openProfilesLeaf } from './palette-profiles'
 import { openSkillsLeaf } from './palette-skills'
 
@@ -164,11 +165,16 @@ export function openSkillsPalette(): void {
 
 /**
  * Open one of the root leaves directly — used by header pill clicks
- * (cwd / mode / model / mcps / sessions). Each `case` swaps to a
- * real leaf as its issue lands; the `default` arm keeps the K-249
- * stub for the rest.
+ * (cwd / mode / model / mcps / sessions). Live leaves dispatch off
+ * the id; the rest fall through to the K-249 stub until their
+ * follow-up issues land.
  */
 export function openRootLeaf(leafId: PaletteLeafId): void {
+  if (leafId === PaletteLeafId.Commands) {
+    void openCommandsLeaf()
+
+    return
+  }
   if (leafId === PaletteLeafId.Profiles) {
     openProfilesLeaf()
 
@@ -179,7 +185,6 @@ export function openRootLeaf(leafId: PaletteLeafId): void {
 
     return
   }
-
   const { open } = usePalette()
   const leaf = ROOT_LEAVES[leafId]
   if (!leaf) {

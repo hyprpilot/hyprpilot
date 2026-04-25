@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Modifier, TauriCommand } from '@ipc'
 
+import { __resetComposerForTests } from '@composables/use-composer'
 import { __resetKeymapsForTests, useKeymaps } from '@composables/use-keymaps'
 
 import ChatComposer from './ChatComposer.vue'
@@ -50,6 +51,7 @@ const DEFAULT_KEYMAPS = {
 describe('ChatComposer.vue', () => {
   beforeEach(() => {
     __resetKeymapsForTests()
+    __resetComposerForTests()
     invokeMock.mockReset()
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === TauriCommand.GetKeymaps) {

@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { ComposerPillKind } from '@components/types'
 
-import { useComposer } from './use-composer'
+import { __resetComposerForTests, useComposer } from './use-composer'
 
 describe('useComposer', () => {
+  beforeEach(() => {
+    __resetComposerForTests()
+  })
+
   it('addPill appends; duplicate ids are ignored', () => {
     const c = useComposer()
     c.addPill({ kind: ComposerPillKind.Attachment, id: 'a', label: 'image/png · 1KB', data: 'AA==', mimeType: 'image/png' })
@@ -57,5 +61,55 @@ describe('useComposer', () => {
 
     const { text } = c.resolvedSubmit()
     expect(text).toBe('please #{skill/debug} this')
+  })
+
+  it('useComposer() returns the same module-scope state across calls', () => {
+    const a = useComposer()
+    const b = useComposer()
+    a.text.value = 'shared'
+    expect(b.text.value).toBe('shared')
+  })
+
+  it('insertAtCaret with no registered textarea appends to the buffer', () => {
+    const c = useComposer()
+    c.text.value = 'hello'
+    c.insertAtCaret(' world')
+    expect(c.text.value).toBe('hello world')
+  })
+
+  it('insertAtCaret with a registered textarea splices at the selection', () => {
+    const c = useComposer()
+    c.text.value = 'hello world'
+    const ta = document.createElement('textarea')
+    document.body.appendChild(ta)
+    try {
+      ta.value = 'hello world'
+      ta.setSelectionRange(5, 5)
+      c.registerTextarea(ta)
+
+      c.insertAtCaret(' beautiful')
+      expect(c.text.value).toBe('hello beautiful world')
+    } finally {
+      c.registerTextarea(undefined)
+      ta.remove()
+    }
+  })
+
+  it('insertAtCaret with a selected range replaces the selection', () => {
+    const c = useComposer()
+    c.text.value = 'hello world'
+    const ta = document.createElement('textarea')
+    document.body.appendChild(ta)
+    try {
+      ta.value = 'hello world'
+      ta.setSelectionRange(0, 5)
+      c.registerTextarea(ta)
+
+      c.insertAtCaret('greetings')
+      expect(c.text.value).toBe('greetings world')
+    } finally {
+      c.registerTextarea(undefined)
+      ta.remove()
+    }
   })
 })
