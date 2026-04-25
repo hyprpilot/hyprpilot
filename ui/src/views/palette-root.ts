@@ -10,6 +10,8 @@
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables/palette'
 import { log } from '@lib'
 
+import { openProfilesLeaf } from './palette-profiles'
+
 /**
  * Closed set of root-palette leaf ids. Used by header-pill /
  * breadcrumb-click dispatch and the root palette's commit handler.
@@ -150,7 +152,7 @@ export function openRootPalette(): void {
       if (!isPaletteLeafId(pick.id)) {
         return
       }
-      open(stubLeafSpec(ROOT_LEAVES[pick.id]))
+      openRootLeaf(pick.id)
     }
   })
 }
@@ -173,10 +175,17 @@ export function openSkillsPalette(): void {
 
 /**
  * Open one of the root leaves directly — used by header pill clicks
- * (cwd / mode / model / mcps / sessions). Today every leaf is the
- * K-249 stub; follow-up issues swap each leaf for live content.
+ * (cwd / mode / model / mcps / sessions). Each `case` swaps to a
+ * real leaf as its issue lands; the `default` arm keeps the K-249
+ * stub for the rest.
  */
 export function openRootLeaf(leafId: PaletteLeafId): void {
+  if (leafId === PaletteLeafId.Profiles) {
+    openProfilesLeaf()
+
+    return
+  }
+
   const { open } = usePalette()
   const leaf = ROOT_LEAVES[leafId]
   if (!leaf) {
