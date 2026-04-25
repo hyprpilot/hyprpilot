@@ -15,6 +15,7 @@
 //! inline-token expansion runs server-side; raw user text passes
 //! through the `session/submit` handler verbatim.
 
+pub mod commands;
 mod loader;
 mod watcher;
 

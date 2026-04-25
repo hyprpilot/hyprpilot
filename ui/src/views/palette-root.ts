@@ -11,6 +11,7 @@ import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@c
 import { log } from '@lib'
 
 import { openProfilesLeaf } from './palette-profiles'
+import { openSkillsLeaf } from './palette-skills'
 
 /**
  * Closed set of root-palette leaf ids. Used by header-pill /
@@ -84,8 +85,8 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
   [PaletteLeafId.Skills]: {
     id: PaletteLeafId.Skills,
     name: 'skills',
-    description: 'browse skills catalog',
-    followUp: 'K-TBD'
+    description: 'attach a skill to the next prompt',
+    followUp: 'K-269'
   },
   [PaletteLeafId.References]: {
     id: PaletteLeafId.References,
@@ -158,19 +159,7 @@ export function openRootPalette(): void {
 }
 
 export function openSkillsPalette(): void {
-  const { open } = usePalette()
-  open({
-    mode: PaletteMode.MultiSelect,
-    title: 'skills',
-    entries: [
-      {
-        id: 'skills-placeholder',
-        name: 'not yet wired — see K-268',
-        description: 'browse skills catalog'
-      }
-    ],
-    onCommit: () => {}
-  })
+  void openSkillsLeaf()
 }
 
 /**
@@ -182,6 +171,11 @@ export function openSkillsPalette(): void {
 export function openRootLeaf(leafId: PaletteLeafId): void {
   if (leafId === PaletteLeafId.Profiles) {
     openProfilesLeaf()
+
+    return
+  }
+  if (leafId === PaletteLeafId.Skills) {
+    openSkillsPalette()
 
     return
   }
