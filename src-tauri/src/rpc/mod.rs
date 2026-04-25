@@ -3,6 +3,7 @@ pub mod handlers;
 pub mod protocol;
 pub mod server;
 pub mod status;
+pub mod topic;
 
 use std::sync::Arc;
 
@@ -10,8 +11,8 @@ use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, InstancesHandler, ModelsHandler, ModesHandler,
-    OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SessionsHandler,
+    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, EventsHandler, InstancesHandler, ModelsHandler,
+    ModesHandler, OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SessionsHandler,
     SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
@@ -64,6 +65,8 @@ impl RpcDispatcher {
     ///   `prompts/cancel`.
     /// - `PermissionsHandler` (namespace `"permissions"`):
     ///   `permissions/pending`, `permissions/respond`.
+    /// - `EventsHandler` (namespace `"events"`): `events/subscribe`,
+    ///   `events/unsubscribe`.
     /// - `SessionsHandler` (namespace `"sessions"`): `sessions/list`,
     ///   `sessions/forget`, `sessions/info` — operations on persisted
     ///   on-disk transcripts. Distinct from `session/*`
@@ -91,6 +94,7 @@ impl RpcDispatcher {
                 Box::new(ModelsHandler),
                 Box::new(PromptsHandler),
                 Box::new(PermissionsHandler),
+                Box::new(EventsHandler),
                 Box::new(SessionsHandler),
             ],
         }
@@ -154,11 +158,14 @@ mod dispatcher_tests {
             config: Some(config),
             id: &id,
             already_subscribed: false,
+            existing_event_subscription_ids: &[],
+            events_tx: None,
         };
         match dispatcher.dispatch(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
-            Ok(HandlerOutcome::Subscribed(v, _rx)) => v,
-            Err(e) => json!({ "code": e.code, "message": e.message }),
+            Ok(HandlerOutcome::StatusSubscribed(v, _rx)) => v,
+            Ok(HandlerOutcome::EventsSubscribed(v, _sub)) => v,
+            Err(e) => json!({ "code": e.code, "message": e.message}),
         }
     }
 
@@ -383,6 +390,8 @@ mod dispatcher_tests {
             config: Some(config),
             id: &id,
             already_subscribed: true,
+            existing_event_subscription_ids: &[],
+            events_tx: None,
         };
         let res = dispatcher.dispatch("status/subscribe", Value::Null, ctx).await;
         match res {

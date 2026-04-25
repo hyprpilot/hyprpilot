@@ -85,10 +85,13 @@ system_prompt = "be terse"
             config: Some(shared),
             id: &id,
             already_subscribed: false,
+            existing_event_subscription_ids: &[],
+            events_tx: None,
         };
         match ProfilesHandler.handle(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
-            Ok(HandlerOutcome::Subscribed(v, _)) => v,
+            Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
+            Ok(HandlerOutcome::EventsSubscribed(v, _)) => v,
             Err(err) => json!({ "code": err.code, "message": err.message }),
         }
     }
