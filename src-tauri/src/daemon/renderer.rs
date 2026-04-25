@@ -18,15 +18,31 @@ use crate::daemon::wm::WindowManager;
 /// behind `Arc<dyn ...>` so cloning the renderer (managed-state
 /// requirement) is cheap and the same adapter instance serves every
 /// show transition — no per-show re-detection.
+///
+/// `present_lock` serializes every show/hide/toggle entry path so
+/// concurrent `overlay/*` calls land in a deterministic visible-XOR-
+/// hidden state — without it the `is_visible() → show/hide` window in
+/// `overlay/toggle` would race two callers into the same branch.
 #[derive(Clone)]
 pub struct WindowRenderer {
     config: Window,
     wm: Arc<dyn WindowManager>,
+    present_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl WindowRenderer {
     pub fn new(config: Window, wm: Arc<dyn WindowManager>) -> Self {
-        Self { config, wm }
+        Self {
+            config,
+            wm,
+            present_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    /// Serialise present/hide/toggle so two concurrent `overlay/*`
+    /// callers can't straddle the `is_visible() → show/hide` window.
+    pub async fn lock_present(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.present_lock.lock().await
     }
 
     #[cfg(test)]
@@ -593,5 +609,42 @@ mod tests {
             WindowRenderer::new(make_anchor_config(), test_wm()).resolve_dim(Dimension::Percent(50), 1080),
             540
         );
+    }
+
+    /// Race-safety: two concurrent acquirers of `lock_present` must
+    /// serialise — the second observes the first's bump before its
+    /// own. Pins the contract `overlay/*` relies on to flip visible
+    /// XOR hidden under concurrent invocations.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lock_present_serialises_concurrent_acquirers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use tokio::time::sleep;
+
+        let renderer = Arc::new(WindowRenderer::new(make_anchor_config(), test_wm()));
+        let observed = Arc::new(AtomicUsize::new(0));
+
+        let r1 = renderer.clone();
+        let o1 = observed.clone();
+        let t1 = tokio::spawn(async move {
+            let _g = r1.lock_present().await;
+            o1.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(50)).await;
+        });
+
+        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(5)).await;
+
+        let r2 = renderer.clone();
+        let o2 = observed.clone();
+        let t2 = tokio::spawn(async move {
+            let _g = r2.lock_present().await;
+            // If the lock is exclusive, t1's bump must already be visible.
+            o2.load(Ordering::SeqCst)
+        });
+
+        let (_, observed_at_t2) = tokio::join!(t1, t2);
+        assert_eq!(observed_at_t2.unwrap(), 1, "t2 must see t1's bump (lock is exclusive)");
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
     }
 }

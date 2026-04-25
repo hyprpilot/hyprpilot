@@ -114,6 +114,36 @@ impl CtlHandler for SessionInfoHandler {
     }
 }
 
+pub struct OverlayPresentHandler {
+    pub instance_id: Option<String>,
+}
+
+impl CtlHandler for OverlayPresentHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let params = match self.instance_id {
+            Some(id) => json!({ "instanceId": id }),
+            None => Value::Null,
+        };
+        emit(client, "overlay/present", params)
+    }
+}
+
+pub struct OverlayHideHandler;
+
+impl CtlHandler for OverlayHideHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "overlay/hide", Value::Null)
+    }
+}
+
+pub struct OverlayToggleHandler;
+
+impl CtlHandler for OverlayToggleHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(client, "overlay/toggle", Value::Null)
+    }
+}
+
 /// `ctl skills list [--instance <id>]`. Pretty-prints a slug/title/
 /// description table. Empty list renders the literal "no skills
 /// loaded" message on stderr + exits 0.

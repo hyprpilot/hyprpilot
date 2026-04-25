@@ -18,6 +18,13 @@ task dev             # launch the Tauri app with hot-reload
 See `CLAUDE.md` for the full agent-facing manual (toolchain, tasks,
 config layering, logging, framework quirks).
 
+Compositor / panel integration:
+
+- `docs/hyprland.md` — recommended `bind = SUPER, space, exec, hyprpilot
+  ctl overlay toggle` keybind + the full `overlay/*` surface.
+- `docs/waybar.md` — `custom/hyprpilot` waybar module driven by
+  `ctl status --watch`.
+
 ## Layout
 
 ```

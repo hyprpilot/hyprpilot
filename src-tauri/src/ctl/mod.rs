@@ -9,8 +9,9 @@ use crate::config::Config;
 use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
     AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, KillHandler, ModelsListHandler,
-    ModelsSetHandler, ModesListHandler, ModesSetHandler, SessionInfoHandler, SkillsGetHandler, SkillsListHandler,
-    SkillsReloadHandler, StatusHandler, SubmitHandler, ToggleHandler,
+    ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler, OverlayPresentHandler,
+    OverlayToggleHandler, SessionInfoHandler, SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler,
+    SubmitHandler, ToggleHandler,
 };
 use crate::paths;
 
@@ -97,6 +98,15 @@ pub enum CtlCommand {
         #[command(subcommand)]
         command: SkillsCommand,
     },
+
+    /// Overlay window control — hyprland-bind surface.
+    ///
+    /// Recommended hyprland binding:
+    /// `bind = SUPER, space, exec, hyprpilot ctl overlay toggle`.
+    Overlay {
+        #[command(subcommand)]
+        command: OverlaySubcommand,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -144,6 +154,20 @@ pub enum ModelsSubcommand {
         #[arg(long = "model")]
         model_id: String,
     },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum OverlaySubcommand {
+    /// Show + focus the overlay (no-op when already visible). With
+    /// `--instance`, also focuses that instance after the present.
+    Present {
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+    },
+    /// Hide the overlay (no-op when already hidden). Webview stays warm.
+    Hide,
+    /// Flip the overlay's visibility. Race-safe across concurrent calls.
+    Toggle,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -206,6 +230,11 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
             SkillsCommand::List { instance_id } => SkillsListHandler { instance_id }.run(&client),
             SkillsCommand::Get { slug } => SkillsGetHandler { slug }.run(&client),
             SkillsCommand::Reload => SkillsReloadHandler.run(&client),
+        },
+        CtlCommand::Overlay { command } => match command {
+            OverlaySubcommand::Present { instance_id } => OverlayPresentHandler { instance_id }.run(&client),
+            OverlaySubcommand::Hide => OverlayHideHandler.run(&client),
+            OverlaySubcommand::Toggle => OverlayToggleHandler.run(&client),
         },
     }
 }
