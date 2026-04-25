@@ -780,6 +780,22 @@ impl AcpAdapter {
             ))),
         }
     }
+
+    /// Switch the active model on the addressed instance. Today returns
+    /// the same `-32603` shape as the `models/set` wire handler — the
+    /// runtime actor doesn't accept a `SetModel` command yet (K-251).
+    /// Single edit when K-251 lands flips both paths at once.
+    pub async fn set_session_model(&self, instance_id: &str, _model_id: &str) -> Result<Value, RpcError> {
+        let _ = self.contains_instance(instance_id).await?;
+        Err(RpcError::internal_error("models/set not implemented — ref K-251"))
+    }
+
+    /// Switch the active mode on the addressed instance. Mirrors
+    /// `set_session_model` — gated behind K-251.
+    pub async fn set_session_mode(&self, instance_id: &str, _mode_id: &str) -> Result<Value, RpcError> {
+        let _ = self.contains_instance(instance_id).await?;
+        Err(RpcError::internal_error("modes/set not implemented — ref K-251"))
+    }
 }
 
 // Runtime actors speak the ACP-internal `InstanceEvent` enum; the

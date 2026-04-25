@@ -45,6 +45,12 @@ export enum TauriCommand {
   SessionList = 'session_list',
   SessionLoad = 'session_load',
   PermissionReply = 'permission_reply',
+  // K-265: switch the active model / mode on the addressed instance.
+  // Both Tauri commands stub past the membership check at the adapter
+  // (matching the `models/set` / `modes/set` wire shape) until K-251
+  // wires the runtime side; UI surfaces the error via toast.
+  ModelsSet = 'models_set',
+  ModesSet = 'modes_set',
   SkillsList = 'skills_list',
   SkillsGet = 'skills_get',
   McpsList = 'mcps_list',
@@ -75,6 +81,8 @@ export interface TauriCommandResult {
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void
   [TauriCommand.PermissionReply]: void
+  [TauriCommand.ModelsSet]: unknown
+  [TauriCommand.ModesSet]: unknown
   [TauriCommand.SkillsList]: { skills: SkillSummary[] }
   [TauriCommand.SkillsGet]: SkillBody
   [TauriCommand.McpsList]: MCPListResult
