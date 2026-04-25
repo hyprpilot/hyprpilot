@@ -51,14 +51,28 @@ export interface ListSessionsArgs {
 }
 
 /**
- * Skill body surfaced by the skills registry (K-268). Mirrors the
- * Rust `skills_get` command response.
+ * Skill summary surfaced by `skills_list` (K-268). Slim shape — full
+ * `body` + `references` stay behind `skills_get` so a registry of
+ * thousands of skills doesn't ship megabytes per palette open.
+ */
+export interface SkillSummary {
+  slug: string
+  title: string
+  description: string
+}
+
+/**
+ * Skill body surfaced by `skills_get` (K-268). Mirrors the Rust
+ * `skills_get` command response — same shape as the `skills/get`
+ * socket RPC reply.
  */
 export interface SkillBody {
   slug: string
-  path: string
+  title: string
+  description: string
   body: string
-  title?: string
+  path: string
+  references: string[]
 }
 
 /**

@@ -293,6 +293,8 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
             adapter_commands::session_list,
             adapter_commands::session_load,
             adapter_commands::permission_reply,
+            crate::skills::commands::skills_list,
+            crate::skills::commands::skills_get,
         ])
         .setup(move |app| {
             app.manage(theme.clone());
@@ -338,6 +340,7 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
 
             app.manage(acp_adapter.clone());
             app.manage(permissions.clone());
+            app.manage(skills.clone());
             acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
 
             let rpc_state = crate::rpc::RpcState {
