@@ -7,10 +7,9 @@ use crate::rpc::protocol::RpcError;
 /// Status namespace: `status/get`, `status/subscribe`.
 ///
 /// Reads from the shared `StatusBroadcast` via `HandlerCtx.status`.
-/// `status/subscribe` is the only method in the whole RPC surface that
-/// returns a `HandlerOutcome::Subscribed` — the server pins the receiver
-/// onto the connection task and fans `status/changed` notifications out
-/// as they arrive.
+/// `status/subscribe` returns a `HandlerOutcome::StatusSubscribed` —
+/// the server pins the receiver onto the connection task and fans
+/// `status/changed` notifications out as they arrive.
 pub struct StatusHandler;
 
 #[async_trait]

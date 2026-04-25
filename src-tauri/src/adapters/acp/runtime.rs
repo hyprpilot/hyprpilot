@@ -172,6 +172,11 @@ pub enum InstanceState {
 /// `session/load` (`Resume`), or neither (`ListOnly`). Sends
 /// `InstanceEvent`s onto `events_tx` for every lifecycle transition
 /// and every `SessionUpdate` the agent streams.
+// `mcps_override` is the per-instance MCP enabled-list override;
+// `None` falls back to `profile.mcps`. `Some(vec![])` is the explicit
+// "no MCPs" override; `Some(["all"])` is reserved for the
+// catalog-wildcard sentinel (see `ProfileConfig.mcps` doc).
+#[allow(clippy::too_many_arguments)]
 pub fn start_instance(
     resolved: ResolvedInstance,
     key: crate::adapters::InstanceKey,
@@ -180,6 +185,7 @@ pub fn start_instance(
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     profile: Option<ProfileConfig>,
+    mcps_override: Option<Vec<String>>,
 ) -> AcpInstance {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
     let initial = match &bootstrap {
@@ -201,6 +207,21 @@ pub fn start_instance(
             instance = %instance_id,
             mode = %m,
             "acp::runtime: instance mode set"
+        );
+    }
+
+    // Effective MCP list: per-instance override wins; falls through to
+    // profile.mcps. Vendor-specific MCP injection at spawn (CLI flag,
+    // `_meta` field, env) is incremental per vendor — log the intent
+    // for now so the wire surface lands in K-270 without a per-vendor
+    // dependency.
+    let effective_mcps = mcps_override.or_else(|| profile.as_ref().and_then(|p| p.mcps.clone()));
+    if let Some(names) = &effective_mcps {
+        tracing::warn!(
+            agent = %resolved.agent.id,
+            instance = %instance_id,
+            mcps = ?names,
+            "acp::runtime: MCP enabled-list resolved but vendor injection not yet wired — see K-270"
         );
     }
 
@@ -833,6 +854,7 @@ mod tests {
             Bootstrap::Fresh,
             dummy_permissions(),
             None,
+            None,
         );
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -881,6 +903,7 @@ mod tests {
             Bootstrap::Fresh,
             dummy_permissions(),
             None,
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -904,6 +927,7 @@ mod tests {
             tx,
             Bootstrap::ListOnly,
             dummy_permissions(),
+            None,
             None,
         );
 
@@ -1015,6 +1039,7 @@ mod tests {
             tx,
             Bootstrap::Resume(sid),
             dummy_permissions(),
+            None,
             None,
         );
 

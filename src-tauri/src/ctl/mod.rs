@@ -8,11 +8,12 @@ use tracing::debug;
 use crate::config::Config;
 use crate::ctl::client::CtlClient;
 use crate::ctl::handlers::{
-    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, EventsTailHandler, KillHandler,
-    ModelsListHandler, ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler, OverlayPresentHandler,
-    OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler, PromptsCancelHandler,
-    PromptsSendHandler, SessionInfoHandler, SessionsForgetHandler, SessionsInfoHandler, SessionsListHandler,
-    SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler, ToggleHandler,
+    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, EventsTailHandler, KillHandler, MCPsListHandler,
+    MCPsSetHandler, ModelsListHandler, ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler,
+    OverlayPresentHandler, OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler,
+    PromptsCancelHandler, PromptsSendHandler, SessionInfoHandler, SessionsForgetHandler, SessionsInfoHandler,
+    SessionsListHandler, SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler,
+    ToggleHandler,
 };
 use crate::paths;
 
@@ -98,6 +99,12 @@ pub enum CtlCommand {
     Skills {
         #[command(subcommand)]
         command: SkillsCommand,
+    },
+
+    /// MCP catalogue + per-instance enabled-set operations.
+    Mcps {
+        #[command(subcommand)]
+        command: MCPsCommand,
     },
 
     /// Send / cancel single-shot prompts addressed to a specific
@@ -200,6 +207,28 @@ pub enum OverlaySubcommand {
     Hide,
     /// Flip the overlay's visibility. Race-safe across concurrent calls.
     Toggle,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum MCPsCommand {
+    /// List the global MCP catalogue. With `--instance`, every entry
+    /// gets an `enabled` flag reflecting the per-instance override
+    /// (or the resolved profile's `mcps` allowlist).
+    List {
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+    },
+    /// Install a per-instance MCP enabled-list override and restart
+    /// the addressed instance. `--enabled` is comma-separated; pass
+    /// an empty value (`--enabled=`) for the explicit "no MCPs"
+    /// override.
+    Set {
+        #[arg(long = "instance")]
+        instance_id: String,
+        /// Comma-separated MCP names. Empty value installs `[]`.
+        #[arg(long, value_delimiter = ',', default_value = "")]
+        enabled: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -340,6 +369,15 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
             SkillsCommand::List { instance_id } => SkillsListHandler { instance_id }.run(&client),
             SkillsCommand::Get { slug } => SkillsGetHandler { slug }.run(&client),
             SkillsCommand::Reload => SkillsReloadHandler.run(&client),
+        },
+        CtlCommand::Mcps { command } => match command {
+            MCPsCommand::List { instance_id } => MCPsListHandler { instance_id }.run(&client),
+            MCPsCommand::Set { instance_id, enabled } => MCPsSetHandler {
+                instance_id,
+                // `--enabled=` produces `[""]` from clap; treat as empty.
+                enabled: enabled.into_iter().filter(|s| !s.is_empty()).collect(),
+            }
+            .run(&client),
         },
         CtlCommand::Prompts { command } => match command {
             PromptsCommand::Send { instance_id, text } => PromptsSendHandler {

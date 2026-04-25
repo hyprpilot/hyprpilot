@@ -18,8 +18,9 @@ pub use keymaps::{
     PaletteKeymaps, SessionsSubPaletteKeymaps, TranscriptKeymaps,
 };
 use validations::{
-    validate_agent_default_id, validate_agents_ids, validate_default_profile_id, validate_profile_agent_references,
-    validate_profile_path_list, validate_profile_string_list, validate_profile_tool_globs, validate_profiles_ids,
+    validate_agent_default_id, validate_agents_ids, validate_default_profile_id, validate_mcps_unique_name,
+    validate_profile_agent_references, validate_profile_mcps_references, validate_profile_path_list,
+    validate_profile_string_list, validate_profile_tool_globs, validate_profiles_ids,
 };
 
 const DEFAULTS: &str = include_str!("defaults.toml");
@@ -33,6 +34,12 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub skills: SkillsConfig,
+    /// `[[mcps]]` global catalog. Profiles reference entries by `name`;
+    /// runtime per-instance overrides filter the visible subset.
+    #[garde(dive)]
+    #[garde(custom(validate_mcps_unique_name))]
+    #[serde(default)]
+    pub mcps: Vec<MCPDefinition>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
@@ -47,6 +54,7 @@ pub struct Config {
     #[garde(dive)]
     #[garde(custom(validate_profiles_ids))]
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
+    #[garde(custom(validate_profile_mcps_references(&self.mcps)))]
     #[serde(default)]
     pub profiles: Vec<ProfileConfig>,
     /// Overlay-wide keyboard bindings. Structured group-per-UI-surface
@@ -279,6 +287,28 @@ impl SkillsConfig {
             })
             .collect()
     }
+}
+
+/// One `[[mcps]]` entry in the global catalog. `name` is the dedup
+/// key + the value referenced from `profile.mcps`. `command` / `args`
+/// / `env` describe the MCP server subprocess to spawn; `scope` is a
+/// coarse classifier for UI grouping (non-load-bearing today).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct MCPDefinition {
+    #[garde(length(min = 1))]
+    pub name: String,
+    #[garde(length(min = 1))]
+    pub command: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
@@ -722,12 +752,36 @@ impl Merge for Config {
             daemon: self.daemon.merge(other.daemon),
             logging: self.logging.merge(other.logging),
             skills: self.skills.merge(other.skills),
+            mcps: merge_mcps(self.mcps, other.mcps),
             ui: self.ui.merge(other.ui),
             agents: self.agents.merge(other.agents),
             profiles: merge_profiles(self.profiles, other.profiles),
             keymaps: self.keymaps.merge(other.keymaps),
         }
     }
+}
+
+/// Keyed-list merge for `[[mcps]]`. Mirrors `[[profiles]]` /
+/// `[[agents]]`: override by `name`, append new names in order.
+/// Whole-entry replace; "override env, keep old args" would surprise.
+fn merge_mcps(base: Vec<MCPDefinition>, over: Vec<MCPDefinition>) -> Vec<MCPDefinition> {
+    let mut out: Vec<MCPDefinition> = Vec::with_capacity(base.len() + over.len());
+    let base_names: std::collections::HashSet<String> = base.iter().map(|m| m.name.clone()).collect();
+
+    for b in base {
+        match over.iter().find(|o| o.name == b.name) {
+            Some(override_entry) => out.push(override_entry.clone()),
+            None => out.push(b),
+        }
+    }
+
+    for o in over {
+        if !base_names.contains(&o.name) {
+            out.push(o);
+        }
+    }
+
+    out
 }
 
 /// Keyed-list merge for `[[profiles]]`. Mirrors `AgentsConfig`'s
@@ -1869,6 +1923,16 @@ auto_reject_tools = ["["]
         let p = write_tmp(
             "profile-full.toml",
             r#"
+[[mcps]]
+name = "fs"
+command = "uvx"
+args = ["mcp-server-filesystem"]
+
+[[mcps]]
+name = "ripgrep"
+command = "uvx"
+args = ["mcp-server-ripgrep"]
+
 [[profiles]]
 id = "full"
 agent = "claude-code"
@@ -1908,6 +1972,183 @@ BAZ = "qux"
         assert_eq!(full.env.get("BAZ").map(String::as_str), Some("qux"));
         cfg.validate().expect("valid full profile");
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn mcps_catalog_parses_full_entry() {
+        let p = write_tmp(
+            "mcps-full.toml",
+            r#"
+[[mcps]]
+name = "filesystem"
+command = "uvx"
+args = ["mcp-server-filesystem", "--root", "$HOME"]
+scope = "user"
+
+[mcps.env]
+LOG_LEVEL = "info"
+TOKEN = "abc"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        assert_eq!(cfg.mcps.len(), 1);
+        let fs_entry = &cfg.mcps[0];
+        assert_eq!(fs_entry.name, "filesystem");
+        assert_eq!(fs_entry.command, "uvx");
+        assert_eq!(
+            fs_entry.args,
+            vec![
+                "mcp-server-filesystem".to_string(),
+                "--root".to_string(),
+                "$HOME".to_string(),
+            ]
+        );
+        assert_eq!(fs_entry.scope.as_deref(), Some("user"));
+        assert_eq!(fs_entry.env.get("LOG_LEVEL").map(String::as_str), Some("info"));
+        assert_eq!(fs_entry.env.get("TOKEN").map(String::as_str), Some("abc"));
+        cfg.validate().expect("valid catalog");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn mcps_rejects_duplicate_name() {
+        let p = write_tmp(
+            "mcps-dup.toml",
+            r#"
+[[mcps]]
+name = "fs"
+command = "uvx"
+args = ["a"]
+
+[[mcps]]
+name = "fs"
+command = "uvx"
+args = ["b"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate mcp name 'fs'"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn mcps_rejects_empty_name() {
+        let p = write_tmp(
+            "mcps-empty.toml",
+            r#"
+[[mcps]]
+name = ""
+command = "uvx"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("length"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn mcps_rejects_unknown_field() {
+        let p = write_tmp(
+            "mcps-unknown.toml",
+            r#"
+[[mcps]]
+name = "fs"
+command = "uvx"
+bogus = true
+"#,
+        );
+        let err = load(Some(&p), None).expect_err("should reject");
+        assert!(err.to_string().contains("failed to parse TOML layer"), "{err}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_mcps_must_reference_known_catalog_entry() {
+        let p = write_tmp(
+            "profile-mcps-unknown.toml",
+            r#"
+[[mcps]]
+name = "fs"
+command = "uvx"
+
+[[profiles]]
+id = "ghost"
+agent = "claude-code"
+mcps = ["unknown"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("should reject");
+        let msg = err.to_string();
+        assert!(msg.contains("profile 'ghost'"), "{msg}");
+        assert!(msg.contains("'unknown'"), "{msg}");
+        assert!(msg.contains("Configured names:"), "{msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_mcps_passes_when_every_name_resolves() {
+        let p = write_tmp(
+            "profile-mcps-ok.toml",
+            r#"
+[[mcps]]
+name = "fs"
+command = "uvx"
+
+[[mcps]]
+name = "ripgrep"
+command = "rg"
+
+[[profiles]]
+id = "p"
+agent = "claude-code"
+mcps = ["fs", "ripgrep"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        cfg.validate().expect("all references resolve");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn mcps_user_override_replaces_entry_by_name() {
+        // Mirrors the user_agent_entry_overrides_default_by_id pattern.
+        // No defaults seed `[[mcps]]`, so we set up two layers manually
+        // to exercise merge: a fixture-as-base with `fs` + `ripgrep`,
+        // plus a user override that replaces `fs` and appends `git`.
+        let base: Config = toml::from_str(
+            r#"
+[[mcps]]
+name = "fs"
+command = "old"
+
+[[mcps]]
+name = "ripgrep"
+command = "rg"
+"#,
+        )
+        .expect("base parses");
+        let over: Config = toml::from_str(
+            r#"
+[[mcps]]
+name = "fs"
+command = "new"
+
+[[mcps]]
+name = "git"
+command = "git"
+"#,
+        )
+        .expect("over parses");
+        let merged = base.merge(over);
+        let names: Vec<&str> = merged.mcps.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["fs", "ripgrep", "git"]);
+        let fs = merged.mcps.iter().find(|m| m.name == "fs").unwrap();
+        assert_eq!(fs.command, "new");
     }
 
     #[test]

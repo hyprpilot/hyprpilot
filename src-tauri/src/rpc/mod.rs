@@ -11,13 +11,14 @@ use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, EventsHandler, InstancesHandler, ModelsHandler,
-    ModesHandler, OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler, SessionsHandler,
-    SkillsHandler, StatusHandler, WindowHandler,
+    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, EventsHandler, InstancesHandler, MCPsHandler,
+    ModelsHandler, ModesHandler, OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler, SessionHandler,
+    SessionsHandler, SkillsHandler, StatusHandler, WindowHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
 
+use crate::mcp::MCPsRegistry;
 use crate::rpc::protocol::RpcError;
 use crate::skills::SkillsRegistry;
 
@@ -73,10 +74,11 @@ impl RpcDispatcher {
     ///   (per-instance ACP wire ops) and `instances/*` (running
     ///   processes).
     ///
-    /// Stateful handlers (today: `SkillsHandler`, which owns an
-    /// `Arc<SkillsRegistry>`) land via [`Self::with_skills`] — they
-    /// can't live in `with_defaults` without threading registry
-    /// construction into the test harness.
+    /// Stateful handlers (today: `SkillsHandler` + `MCPsHandler`,
+    /// which own `Arc<SkillsRegistry>` / `Arc<MCPsRegistry>`) land via
+    /// [`Self::with_skills_and_mcps`] — they can't live in
+    /// `with_defaults` without threading registry construction into the
+    /// test harness.
     pub fn with_defaults() -> Self {
         Self {
             handlers: vec![
@@ -100,12 +102,15 @@ impl RpcDispatcher {
         }
     }
 
-    /// `with_defaults` + a live `SkillsHandler`. The daemon uses this
-    /// shape; unit tests that don't exercise `skills/*` keep using
-    /// `with_defaults` so they don't need a temp skills dir.
-    pub fn with_skills(skills: Arc<SkillsRegistry>) -> Self {
+    /// `with_defaults` + live `SkillsHandler` + `MCPsHandler`. The
+    /// daemon uses this shape so both `skills/*` and `mcps/*` route
+    /// through real registries; unit tests that don't exercise either
+    /// namespace keep using `with_defaults` so they don't need a temp
+    /// skills/mcps registry.
+    pub fn with_skills_and_mcps(skills: Arc<SkillsRegistry>, mcps: Arc<MCPsRegistry>) -> Self {
         let mut this = Self::with_defaults();
         this.handlers.push(Box::new(SkillsHandler::new(skills)));
+        this.handlers.push(Box::new(MCPsHandler::new(mcps)));
         this
     }
 

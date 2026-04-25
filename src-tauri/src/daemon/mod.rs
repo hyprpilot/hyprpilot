@@ -16,6 +16,7 @@ use crate::adapters::commands as adapter_commands;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
 use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
+use crate::mcp::{MCPsBroadcast, MCPsRegistry};
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
 use crate::skills::{spawn_watcher, SkillsBroadcast, SkillsRegistry};
@@ -242,7 +243,12 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     if let Err(err) = spawn_watcher(skills.clone()) {
         warn!(%err, "skills watcher: spawn failed — live reload disabled");
     }
-    let dispatcher = Arc::new(RpcDispatcher::with_skills(skills.clone()));
+    // MCP catalog registry. Static after daemon start (no live
+    // reload yet — `daemon/reload` lands in K-279).
+    let mcps_broadcast = Arc::new(MCPsBroadcast::new());
+    let mcps_defs = shared_config.read().expect("config lock poisoned").mcps.clone();
+    let mcps = Arc::new(MCPsRegistry::new(mcps_defs, mcps_broadcast.clone()));
+    let dispatcher = Arc::new(RpcDispatcher::with_skills_and_mcps(skills.clone(), mcps.clone()));
 
     // Build the renderer from the resolved config and register it in managed
     // state so the RPC toggle handler can re-resolve dimensions against the

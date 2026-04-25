@@ -212,6 +212,46 @@ impl CtlHandler for SkillsListHandler {
     }
 }
 
+/// `ctl mcps list [--instance <id>]`. Prints the catalog as JSON
+/// with each entry tagged `enabled`.
+pub struct MCPsListHandler {
+    pub instance_id: Option<String>,
+}
+
+impl CtlHandler for MCPsListHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        let mut params = json!({});
+        if let Some(id) = self.instance_id {
+            params
+                .as_object_mut()
+                .expect("json! produces a map")
+                .insert("instanceId".into(), Value::String(id));
+        }
+        emit(client, "mcps/list", params)
+    }
+}
+
+/// `ctl mcps set --instance <id> --enabled <name1,name2,...>`. Empty
+/// `--enabled` (or `--enabled=`) installs the explicit "no MCPs"
+/// override.
+pub struct MCPsSetHandler {
+    pub instance_id: String,
+    pub enabled: Vec<String>,
+}
+
+impl CtlHandler for MCPsSetHandler {
+    fn run(self, client: &CtlClient) -> Result<()> {
+        emit(
+            client,
+            "mcps/set",
+            json!({
+                "instanceId": self.instance_id,
+                "enabled": self.enabled,
+            }),
+        )
+    }
+}
+
 /// `ctl skills get --slug <slug>` — prints the full JSON response.
 pub struct SkillsGetHandler {
     pub slug: String,

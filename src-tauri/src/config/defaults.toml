@@ -23,6 +23,18 @@ level = "info"
 # slug collision across roots.
 dirs = ["~/.config/hyprpilot/skills"]
 
+# `[[mcps]]` — MCP server catalogue. Empty by default; users add
+# entries naming each MCP server they want available across profiles.
+# Per-profile `mcps = [...]` selects which catalogue entries that
+# profile uses; missing names reject at config-load time.
+#
+# [[mcps]]
+# name = "filesystem"
+# command = "uvx"
+# args = ["mcp-server-filesystem", "--root", "$HOME"]
+# [mcps.env]
+# LOG_LEVEL = "info"
+
 # D5 design tokens (K-250). The Rust config layer is the single source
 # of truth — `ui/src/assets/styles.css` declares no literal theme values
 # on :root. `applyTheme()` runs synchronously in main.ts before the app
