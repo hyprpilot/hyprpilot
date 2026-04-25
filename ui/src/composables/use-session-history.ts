@@ -2,6 +2,8 @@ import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 
 import { InstanceState, listen, listSessions, loadSession, TauriEvent, type SessionSummary, type UnlistenFn } from '@ipc'
 
+import { setSessionRestored } from './use-session-info'
+
 /**
  * Reactive wrapper around `session_list` + `session_load`. Both are
  * Tauri commands — a live ACP adapter is required on the daemon
@@ -40,8 +42,15 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     if (!agent) {
       return
     }
+    // Mint the target instance id up-front so the restored flag keys
+    // off the resumed handle, not whatever happens to be active when
+    // the await resolves. `session_load` adopts the supplied UUID
+    // verbatim — no race window between the daemon minting one and
+    // the renderer learning it.
+    const target = crypto.randomUUID()
     try {
-      await loadSession({ agentId: agent, profileId: profileId.value, sessionId })
+      await loadSession({ agentId: agent, profileId: profileId.value, sessionId, instanceId: target })
+      setSessionRestored(target, true)
     } catch (err) {
       lastErr.value = String(err)
     }

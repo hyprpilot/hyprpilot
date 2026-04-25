@@ -48,10 +48,7 @@ describe('Frame.vue', () => {
   it('emits toggleCwd on the cwd row button', async () => {
     const wrapper = mount(Frame, { props: { profile: 'captain', cwd: '/tmp' } })
 
-    await wrapper
-      .findAll('button')
-      .filter((b) => b.attributes('aria-label') !== 'close')[0]!
-      .trigger('click')
+    await wrapper.find('button.frame-cwd').trigger('click')
 
     expect(wrapper.emitted('toggleCwd')).toHaveLength(1)
   })
@@ -102,5 +99,58 @@ describe('Frame.vue', () => {
     expect(wrapper.find('.frame-cwd-git-behind').exists()).toBe(false)
     expect(wrapper.find('.frame-cwd-worktree').exists()).toBe(false)
     expect(wrapper.text()).toContain('main')
+  })
+
+  it('emits pillClick with target=mode when the mode pill is clicked', async () => {
+    const wrapper = mount(Frame, { props: { profile: 'captain', modeTag: 'plan' } })
+
+    await wrapper.find('button[aria-label="mode"]').trigger('click')
+
+    expect(wrapper.emitted('pillClick')).toEqual([['mode']])
+  })
+
+  it('emits pillClick with target=provider when the provider pill is clicked', async () => {
+    const wrapper = mount(Frame, {
+      props: { profile: 'captain', provider: 'claude-code', model: 'sonnet-4.5' }
+    })
+
+    await wrapper.find('button[aria-label="provider"]').trigger('click')
+
+    expect(wrapper.emitted('pillClick')).toEqual([['provider']])
+  })
+
+  it('emits breadcrumbClick with the pill id when a count is clicked', async () => {
+    const wrapper = mount(Frame, {
+      props: {
+        profile: 'captain',
+        counts: [
+          { id: 'mcps', label: 'mcps', count: 3 },
+          { id: 'skills', label: 'skills', count: 7 }
+        ]
+      }
+    })
+
+    await wrapper.find('button[aria-label="skills"]').trigger('click')
+
+    expect(wrapper.emitted('breadcrumbClick')).toEqual([['skills']])
+  })
+
+  it('falls back to the label when BreadcrumbCount.id is unset', async () => {
+    const wrapper = mount(Frame, {
+      props: { profile: 'captain', counts: [{ label: 'turns', count: 4 }] }
+    })
+
+    await wrapper.find('button[aria-label="turns"]').trigger('click')
+
+    expect(wrapper.emitted('breadcrumbClick')).toEqual([['turns']])
+  })
+
+  it('renders the restored tag only when restored=true', async () => {
+    const wrapper = mount(Frame, { props: { profile: 'captain', restored: true } })
+    expect(wrapper.find('.frame-restored-tag').exists()).toBe(true)
+    expect(wrapper.text()).toContain('restored')
+
+    await wrapper.setProps({ restored: false })
+    expect(wrapper.find('.frame-restored-tag').exists()).toBe(false)
   })
 })

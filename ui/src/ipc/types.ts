@@ -281,6 +281,26 @@ export interface PermissionOptionView {
   kind: string
 }
 
+/**
+ * Discriminator for ACP `SessionUpdate` envelopes — the values inside
+ * `update.sessionUpdate` on every `acp:transcript` event payload. The
+ * variant strings stay snake_case because they're ACP wire literals:
+ * `agent-client-protocol-schema` mandates snake_case for the
+ * `sessionUpdate` discriminator and we don't rename them on the way
+ * through. The enum gives consumers TS-compile-time enforcement on
+ * the demuxer's switch arms.
+ */
+export enum SessionUpdateKind {
+  UserMessageChunk = 'user_message_chunk',
+  AgentMessageChunk = 'agent_message_chunk',
+  AgentThoughtChunk = 'agent_thought_chunk',
+  Plan = 'plan',
+  ToolCall = 'tool_call',
+  ToolCallUpdate = 'tool_call_update',
+  CurrentModeUpdate = 'current_mode_update',
+  SessionInfoUpdate = 'session_info_update'
+}
+
 export interface TranscriptEventPayload {
   agentId: string
   sessionId: string
