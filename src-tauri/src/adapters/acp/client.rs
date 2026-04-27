@@ -30,31 +30,27 @@ use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals}
 
 use self::error::{fs_error, terminal_error};
 
-/// Tolerant mirror of `schema::SessionNotification`. Carries `update` as
-/// raw JSON so we never fail `parse_message` on variants the
-/// `agent-client-protocol-schema` crate version we pin doesn't know
-/// about yet. The typed path fails closed — `send_error_notification`
-/// then emits a `{jsonrpc, error}` envelope with no `id` that the
-/// agent SDK logs as "Invalid message" (see `typed.rs:889`). Keeping
-/// the payload untyped at receive time avoids the whole cascade; the
-/// UI discriminates on `sessionUpdate` variants and drops unknowns.
+/// Notification shape for `session/update`. Carries `update` as raw
+/// JSON so the boundary doesn't depend on the upstream typed
+/// `SessionUpdate` enum (which is `#[non_exhaustive]` with no
+/// `#[serde(other)]` fallback). The typed projection happens at the
+/// mapping step downstream — see `acp::instance::map_session_update`
+/// where unknowns fall through to `TranscriptItem::Unknown`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
 #[notification(method = "session/update")]
 #[serde(rename_all = "camelCase")]
-pub struct TolerantSessionNotification {
+pub struct SessionUpdateNotification {
     pub session_id: String,
     pub update: serde_json::Value,
-    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
 }
 
 /// Payload pushed onto the per-session forwarding channel.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
-    Notification {
-        session_id: String,
-        update: serde_json::Value,
-    },
+    /// Raw `session/update` notification — same shape as the wire
+    /// type. The runtime actor maps `update` into a typed
+    /// `TranscriptItem` before broadcasting upstream.
+    Notification(SessionUpdateNotification),
     /// A permission request the controller bounced to the UI. The
     /// runtime actor re-broadcasts this as `InstanceEvent::PermissionRequest`.
     /// Fields mirror the final Tauri `acp:permission-request` payload
@@ -89,77 +85,43 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
     }
 }
 
-/// Resolved tool identity for the **permission path only** — globs-
-/// match name + minimal fields for the two-button prompt. The
-/// transcript-side tool chips / rows get their own vendor-aware
-/// formatter in `ui/src/lib/tool-formatters.ts`.
-///
-/// `name` is the canonical key globs match against; `title` is ACP's
-/// opaque human-readable summary; `kind_wire` is `Some` only when
-/// `name` came from the closed-set `ToolKind`, so the UI can key its
-/// theme off a known-short string.
-struct ToolIdentity {
-    name: String,
-    title: Option<String>,
-    kind_wire: Option<String>,
-}
-
-/// ACP `title` is a human-readable summary ("Read package.json"),
-/// while `kind` is the closed-set category ("read" / "edit" /
-/// "execute"). For a `[[profiles]].auto_accept_tools = ["Read", "Edit*"]`
-/// style allowlist the *canonical* name is the `kind` wire string —
-/// ACP doesn't currently surface a third "programmatic name" field.
+/// Project an ACP `ToolCallUpdate` into the generic `ToolCallRef`
+/// the permission flow consumes. ACP's `title` is a human-readable
+/// summary ("Read package.json"); `kind` is the closed-set category
+/// ("read" / "edit" / "execute"). For a
+/// `[[profiles]].auto_accept_tools = ["Read", "Edit*"]` style
+/// allowlist the *canonical* `name` is the `kind` wire string — ACP
+/// doesn't currently surface a third "programmatic name" field.
 /// Vendor-specific programmatic names ride in `_meta.*.toolName` but
 /// that extractor is a separate issue; we match on `kind` first,
 /// then the title, then a neutral `"tool"` sentinel.
-fn extract_tool_identity(update: &agent_client_protocol::schema::ToolCallUpdate) -> ToolIdentity {
-    let title = update.fields.title.clone();
-    if let Some(k) = &update.fields.kind {
-        if let Some(wire) = wire_name(k) {
-            return ToolIdentity {
-                name: wire.clone(),
-                title,
-                kind_wire: Some(wire),
-            };
+///
+/// `raw_args` pulls `command` from `raw_input` for Bash-family tools,
+/// `path` for fs tools, else single-line JSON of `raw_input`.
+impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
+    fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
+        let title = update.fields.title.clone();
+        let kind_wire = update.fields.kind.as_ref().and_then(wire_name);
+        let name = kind_wire
+            .clone()
+            .or_else(|| title.clone())
+            .unwrap_or_else(|| "tool".to_string());
+        let raw_args = update.fields.raw_input.as_ref().and_then(|raw| {
+            if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
+                Some(cmd.to_string())
+            } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
+                Some(path.to_string())
+            } else {
+                serde_json::to_string(raw).ok()
+            }
+        });
+        ToolCallRef {
+            name,
+            title,
+            raw_args,
+            kind_wire,
         }
     }
-    if let Some(t) = &title {
-        return ToolIdentity {
-            name: t.clone(),
-            title,
-            kind_wire: None,
-        };
-    }
-    ToolIdentity {
-        name: "tool".to_string(),
-        title,
-        kind_wire: None,
-    }
-}
-
-/// Short UI string summarising the tool args. Pulls `command` from
-/// `raw_input` for Bash-family tools, `path` for fs tools, else
-/// serialises a single-line JSON of `raw_input` when present.
-fn extract_raw_args(update: &agent_client_protocol::schema::ToolCallUpdate) -> Option<String> {
-    let raw = update.fields.raw_input.as_ref()?;
-    if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
-        return Some(cmd.to_string());
-    }
-    if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
-        return Some(path.to_string());
-    }
-    serde_json::to_string(raw).ok()
-}
-
-/// The `kind` string the UI uses to colour the permission prompt.
-/// Only emits the wire name when `extract_tool_identity` resolved it
-/// from ACP's closed ToolKind enum; anything else (title fallback,
-/// neutral sentinel) maps to `"acp"` so free-form English never
-/// bleeds into the UI's closed-set theme map.
-fn permission_kind_wire(kind_wire: Option<&str>) -> String {
-    kind_wire
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| "acp".to_string())
 }
 
 /// Map an SDK enum to its canonical wire string via its own serde
@@ -234,18 +196,13 @@ impl AcpClient {
     /// Forward a raw session/update notification to the actor. Closed
     /// receiver degrades to a trace line — the actor has already
     /// finished its select loop.
-    pub fn forward_notification(&self, notification: TolerantSessionNotification) {
-        let TolerantSessionNotification { session_id, update, .. } = notification;
+    pub fn forward_notification(&self, notification: SessionUpdateNotification) {
         tracing::trace!(
-            session = %session_id,
-            update_kind = ?update.get("sessionUpdate").and_then(|v| v.as_str()),
+            session = %notification.session_id,
+            update_kind = ?notification.update.get("sessionUpdate").and_then(|v| v.as_str()),
             "acp::client: received session/update notification"
         );
-        if self
-            .events
-            .send(ClientEvent::Notification { session_id, update })
-            .is_err()
-        {
+        if self.events.send(ClientEvent::Notification(notification)).is_err() {
             tracing::trace!("acp::client: events channel closed, dropping notification");
         }
     }
@@ -260,23 +217,14 @@ impl AcpClient {
         req: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
         let options = req.options.iter().map(option_view_from).collect::<Vec<_>>();
-        let ToolIdentity {
-            name: tool_name,
-            title,
-            kind_wire,
-        } = extract_tool_identity(&req.tool_call);
-        let raw_args = extract_raw_args(&req.tool_call);
+        let tool_call = ToolCallRef::from(&req.tool_call);
         let request_id = uuid::Uuid::new_v4().to_string();
 
         let decision_req = PermissionRequest {
             session_id: req.session_id.0.to_string(),
             instance_id: self.instance_id.clone(),
             request_id: request_id.clone(),
-            tool_call: ToolCallRef {
-                name: tool_name.clone(),
-                title: title.clone(),
-                raw_args: raw_args.clone(),
-            },
+            tool_call: tool_call.clone(),
             options: options.clone(),
         };
 
@@ -284,7 +232,7 @@ impl AcpClient {
             Decision::Allow => {
                 tracing::info!(
                     session = %req.session_id,
-                    tool = %tool_name,
+                    tool = %tool_call.name,
                     profile = ?self.profile.as_ref().map(|p| &p.id),
                     "acp::client: permission auto-accepted by profile glob"
                 );
@@ -294,7 +242,7 @@ impl AcpClient {
                 })?;
                 tracing::debug!(
                     session = %req.session_id,
-                    tool = %tool_name,
+                    tool = %tool_call.name,
                     option_id = %opt_id,
                     "acp::client: picked allow option id"
                 );
@@ -305,7 +253,7 @@ impl AcpClient {
             Decision::Deny => {
                 tracing::info!(
                     session = %req.session_id,
-                    tool = %tool_name,
+                    tool = %tool_call.name,
                     profile = ?self.profile.as_ref().map(|p| &p.id),
                     "acp::client: permission auto-rejected by profile glob"
                 );
@@ -313,7 +261,7 @@ impl AcpClient {
                     Some(opt_id) => {
                         tracing::debug!(
                             session = %req.session_id,
-                            tool = %tool_name,
+                            tool = %tool_call.name,
                             option_id = %opt_id,
                             "acp::client: picked reject option id"
                         );
@@ -326,7 +274,7 @@ impl AcpClient {
                     None => {
                         tracing::debug!(
                             session = %req.session_id,
-                            tool = %tool_name,
+                            tool = %tool_call.name,
                             "acp::client: no reject option offered, falling through to Cancelled"
                         );
                         Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
@@ -334,9 +282,9 @@ impl AcpClient {
                 }
             }
             Decision::AskUser => {
-                let tool = tool_name.clone();
-                let kind = permission_kind_wire(kind_wire.as_deref());
-                let args = raw_args.clone().unwrap_or_else(|| tool.clone());
+                let tool = tool_call.name.clone();
+                let kind = tool_call.permission_kind_wire();
+                let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
 
                 let rx = self.permissions.register_pending(decision_req.clone()).await;
 
@@ -351,7 +299,7 @@ impl AcpClient {
                 tracing::info!(
                     session = %req.session_id,
                     request_id = %request_id,
-                    tool = %tool_name,
+                    tool = %tool_call.name,
                     "acp::client: permission AskUser emitted, awaiting reply"
                 );
 
@@ -360,7 +308,7 @@ impl AcpClient {
                         tracing::info!(
                             session = %req.session_id,
                             request_id = %request_id,
-                            tool = %tool_name,
+                            tool = %tool_call.name,
                             option_id = %opt_id,
                             "acp::client: permission reply resolved"
                         );
@@ -374,7 +322,7 @@ impl AcpClient {
                         tracing::info!(
                             session = %req.session_id,
                             request_id = %request_id,
-                            tool = %tool_name,
+                            tool = %tool_call.name,
                             "acp::client: permission reply resolved as Cancelled"
                         );
                         Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
@@ -383,7 +331,7 @@ impl AcpClient {
                         tracing::warn!(
                             session = %req.session_id,
                             request_id = %request_id,
-                            tool = %tool_name,
+                            tool = %tool_call.name,
                             timeout_secs = WAITER_TIMEOUT.as_secs(),
                             "acp::client: permission waiter timed out, resolving as Cancelled"
                         );
@@ -706,10 +654,12 @@ mod tests {
 
     /// Any JSON payload — including unknown `sessionUpdate` variants —
     /// must round-trip through the tolerant notification without
-    /// triggering `send_error_notification`. Pins the fix for the
-    /// "Invalid message" cascade.
+    /// `SessionUpdateNotification` deserializes any variant payload,
+    /// including ones the upstream typed `SessionUpdate` enum doesn't
+    /// know about — the boundary doesn't depend on `SessionUpdate`'s
+    /// match arms; the typed projection happens downstream.
     #[test]
-    fn tolerant_notification_accepts_unknown_variant() {
+    fn session_update_notification_accepts_unknown_variant() {
         let raw = serde_json::json!({
             "sessionId": "sess-1",
             "update": {
@@ -717,7 +667,7 @@ mod tests {
                 "anything": { "nested": true }
             }
         });
-        let n: TolerantSessionNotification = serde_json::from_value(raw.clone()).expect("tolerant parse");
+        let n: SessionUpdateNotification = serde_json::from_value(raw.clone()).expect("raw parse");
         assert_eq!(n.session_id, "sess-1");
         assert_eq!(n.update, raw["update"]);
     }

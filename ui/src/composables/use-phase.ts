@@ -7,6 +7,7 @@ import { useActiveInstance, type InstanceId } from './use-active-instance'
 import { usePermissions } from './use-permissions'
 import { useTools } from './use-tools'
 import { TurnRole, useTranscript } from './use-transcript'
+import { useTurns } from './use-turns'
 
 interface PhaseSignals {
   runtimeState?: InstanceState
@@ -30,9 +31,22 @@ export function pushInstanceState(id: InstanceId, state: InstanceState): void {
  * Decision ladder (first-matching wins):
  *   1. awaiting  ← a pending permission prompt exists
  *   2. pending   ← any tool call has no terminal status
- *   3. streaming ← instance is running and an agent turn has arrived
- *   4. working   ← instance is running but no agent chunks yet
- *   5. idle      ← default (including null active instance)
+ *   3. streaming ← instance is running, a turn is currently open, and
+ *                  the agent has produced at least one chunk in the
+ *                  transcript (any past turn counts — distinguishes
+ *                  "agent has begun replying" vs the pre-reply gap)
+ *   4. working   ← instance is running and a turn is open but no agent
+ *                  chunks yet (sent prompt, awaiting first chunk)
+ *   5. idle      ← default — including the in-between-turns state where
+ *                  the session is alive but no turn is open. Composer
+ *                  dispatches in `idle`; routes to queue otherwise.
+ *
+ * Gating busy phases on `openTurnId` (vs. the previous "any agent turn
+ * exists in the transcript") is the K-281 fix for the queue-stuck bug:
+ * once the agent had spoken once, phase used to stay `streaming`
+ * forever, so submits routed to the queue and the queue dispatcher
+ * (which only fires on `acp:turn-ended`) had no future event to
+ * trigger a drain.
  */
 export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> } {
   const { id: activeId } = useActiveInstance()
@@ -58,9 +72,10 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
       return Phase.Pending
     }
 
-    const { turns } = useTranscript(id)
     const sig = signals.get(id)
-    if (sig?.runtimeState === InstanceState.Running) {
+    const { openTurnId } = useTurns(id)
+    if (sig?.runtimeState === InstanceState.Running && openTurnId.value) {
+      const { turns } = useTranscript(id)
       const hasAgentTurn = turns.value.some((t) => t.role === TurnRole.Agent)
       if (hasAgentTurn) {
         return Phase.Streaming

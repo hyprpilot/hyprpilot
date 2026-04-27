@@ -129,13 +129,13 @@ describe('useSessionStream', () => {
       agentId: 'a',
       sessionId: 's-a',
       instanceId: 'A',
-      update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'hi' } }
+      item: { kind: 'user_text', text: 'hi' }
     })
     emit(TauriEvent.AcpTranscript, {
       agentId: 'a',
       sessionId: 's-b',
       instanceId: 'B',
-      update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'yo' } }
+      item: { kind: 'user_text', text: 'yo' }
     })
 
     const a = useTranscript('A').turns.value
@@ -151,25 +151,26 @@ describe('useSessionStream', () => {
       agentId: 'a',
       sessionId: 's-a',
       instanceId: 'A',
-      update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'planning' } }
+      item: { kind: 'agent_thought', text: 'planning' }
     })
     emit(TauriEvent.AcpTranscript, {
       agentId: 'a',
       sessionId: 's-a',
       instanceId: 'A',
-      update: { sessionUpdate: 'plan', entries: [{ content: 'step-1' }] }
+      item: { kind: 'plan', steps: [{ content: 'step-1' }] }
     })
     emit(TauriEvent.AcpTranscript, {
       agentId: 'a',
       sessionId: 's-a',
       instanceId: 'A',
-      update: {
-        sessionUpdate: 'tool_call',
-        toolCallId: 'tc-1',
+      item: {
+        kind: 'tool_call',
+        id: 'tc-1',
         title: 'bash',
-        kind: 'bash',
-        rawInput: { command: 'echo hi' },
-        content: [{ type: 'text', text: 'hi\n' }]
+        toolKind: 'bash',
+        state: 'running',
+        rawArgs: 'echo hi',
+        content: [{ kind: 'text', text: 'hi\n' }]
       }
     })
 
@@ -183,20 +184,6 @@ describe('useSessionStream', () => {
 
   it('routes acp:terminal output and exit chunks to useTerminals', async () => {
     await startSessionStream()
-
-    // Bind the command via the tool_call path so the inline card has a header.
-    emit(TauriEvent.AcpTranscript, {
-      agentId: 'a',
-      sessionId: 's-a',
-      instanceId: 'A',
-      update: {
-        sessionUpdate: 'tool_call',
-        toolCallId: 'tc-bash',
-        title: 'bash',
-        kind: 'bash',
-        rawInput: { command: 'tail -f log', terminal_id: 'term-1' }
-      }
-    })
 
     emit(TauriEvent.AcpTerminal, {
       agentId: 'a',
@@ -221,7 +208,6 @@ describe('useSessionStream', () => {
     })
 
     const entry = useTerminals('A').byId('term-1').value
-    expect(entry?.command).toBe('tail -f log')
     expect(entry?.output).toBe('line 1\nline 2\n')
     expect(entry?.running).toBe(false)
     expect(entry?.exitCode).toBe(0)

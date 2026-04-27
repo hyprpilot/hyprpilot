@@ -43,9 +43,10 @@ pub struct PermissionOptionView {
 }
 
 /// Identity projection of the tool behind a permission request. The
-/// glob chain matches on `name` only; `title` / `raw_args` are
-/// carried for the UI and (future) argument-scoped rules — they are
-/// opaque to the allowlist decision today.
+/// glob chain matches on `name` only; `title` / `raw_args` /
+/// `kind_wire` are carried for the UI and (future) argument-scoped /
+/// kind-scoped rules — they are opaque to the allowlist decision
+/// today.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRef {
@@ -59,6 +60,27 @@ pub struct ToolCallRef {
     /// the allowlist matcher.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_args: Option<String>,
+    /// Closed-set tool kind wire string when `name` was resolved from
+    /// a typed enum (ACP `ToolKind`); `None` when name fell back to
+    /// the human-readable title. The UI uses this to colour the
+    /// permission prompt off the closed-set theme map; the matcher
+    /// ignores it today (future kind-scoped rules will read it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind_wire: Option<String>,
+}
+
+impl ToolCallRef {
+    /// Wire `kind` string for the permission-prompt UI. Reads
+    /// `kind_wire` (lowercased) when set; falls back to the neutral
+    /// `"acp"` sentinel so free-form English (title fallbacks) never
+    /// bleeds into the UI's closed-set theme map.
+    #[must_use]
+    pub fn permission_kind_wire(&self) -> String {
+        self.kind_wire
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| "acp".to_string())
+    }
 }
 
 /// Everything the controller needs to make a decision and route a
@@ -428,6 +450,7 @@ mod tests {
                 name: tool.into(),
                 title: Some(tool.into()),
                 raw_args: None,
+                kind_wire: None,
             },
             options: vec![
                 PermissionOptionView {

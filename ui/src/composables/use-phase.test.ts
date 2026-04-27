@@ -9,6 +9,7 @@ import { resetPermissions, pushPermissionRequest } from '@composables/use-permis
 import { __resetAllPhaseSignals, pushInstanceState, usePhase } from '@composables/use-phase'
 import { resetTools, pushToolCall } from '@composables/use-tools'
 import { pushTranscriptChunk, resetTranscript } from '@composables/use-transcript'
+import { pushTurnEnded, pushTurnStarted, resetTurns } from '@composables/use-turns'
 
 vi.mock('@ipc', async () => {
   const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
@@ -27,6 +28,8 @@ beforeEach(() => {
   resetTools('B')
   resetPermissions('A')
   resetPermissions('B')
+  resetTurns('A')
+  resetTurns('B')
   useActiveInstance().id.value = undefined
 })
 
@@ -36,17 +39,19 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Idle)
   })
 
-  it('returns working when instance is running but has no agent turns and no tools or perms', () => {
+  it('returns working when instance is running with an open turn but no agent chunks yet', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
 
     const { phase } = usePhase()
     expect(phase.value).toBe(Phase.Working)
   })
 
-  it('returns streaming when instance is running and an agent turn has arrived', () => {
+  it('returns streaming when instance is running, a turn is open, and agent chunks have arrived', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hello' }
@@ -56,9 +61,24 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Streaming)
   })
 
+  it('returns idle in-between turns even when prior agent turns exist (queue-stuck regression)', () => {
+    useActiveInstance().set('A')
+    pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTranscriptChunk('A', 's-a', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'hello' }
+    })
+    pushTurnEnded('A', { turnId: 't-1', sessionId: 's-a', stopReason: 'end_turn' })
+
+    const { phase } = usePhase()
+    expect(phase.value).toBe(Phase.Idle)
+  })
+
   it('returns pending when a tool call is running (beats streaming)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hi' }
@@ -78,6 +98,7 @@ describe('usePhase', () => {
   it('returns awaiting when there is a pending permission prompt (beats pending)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
     pushToolCall('A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
@@ -99,6 +120,7 @@ describe('usePhase', () => {
   it('returns idle when instance state is ended', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
     pushInstanceState('A', InstanceState.Ended)
 
     const { phase } = usePhase()
@@ -108,6 +130,7 @@ describe('usePhase', () => {
   it('isolates instances: pushing signals for A does not affect B', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'from A' }
@@ -124,6 +147,7 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushInstanceState('B', InstanceState.Running)
+    pushTurnStarted('B', { turnId: 't-1', sessionId: 's-b' })
     pushTranscriptChunk('B', 's-b', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'from B' }

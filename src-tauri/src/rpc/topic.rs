@@ -176,7 +176,7 @@ mod tests {
             instance_id: "id-1".into(),
             session_id: "s".into(),
             turn_id: None,
-            update: json!({ "kind": "text" }),
+            item: crate::adapters::TranscriptItem::AgentText { text: "hi".into() },
         }
     }
 

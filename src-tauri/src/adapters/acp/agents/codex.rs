@@ -1,10 +1,14 @@
 //! Codex ACP adapter.
+//!
+//! Launches via `bunx --bun @zed-industries/codex-acp`. Model selection
+//! rides on the `--model` argv flag; the system prompt rides on a
+//! `-c instructions="..."` TOML override.
 
 use tokio::process::Command;
 
-use crate::config::AgentConfig;
+use crate::adapters::Capabilities;
 
-use super::{AcpAgent, SystemPromptInjection};
+use super::{AcpAgent, ModelInjection, SystemPromptInjection};
 
 pub struct AcpAgentCodex;
 
@@ -17,36 +21,23 @@ impl AcpAgent for AcpAgentCodex {
         &["--bun", "@zed-industries/codex-acp"]
     }
 
-    fn spawn(&self, entry: &AgentConfig) -> Command {
-        use std::process::Stdio;
+    fn model_injection(&self) -> ModelInjection {
+        ModelInjection::Argv("--model")
+    }
 
-        let program = entry.command.clone().unwrap_or_else(|| self.command().to_string());
-
-        let args = if entry.args.is_empty() {
-            self.args().iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
-        } else {
-            entry.args.clone()
-        };
-
-        let mut final_args = args;
-        // User args win — only append --model when --model not already present.
-        if let Some(model) = &entry.model {
-            if !entry.args.iter().any(|a| a == "--model") {
-                final_args.push("--model".into());
-                final_args.push(model.clone());
-            }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            load_session: true,
+            list_sessions: true,
+            permissions: true,
+            terminals: true,
+            mcps_per_instance: true,
+            restart_with_cwd: true,
+            // K-251 follow-ups — flip true when the override lands.
+            session_model_switch: false,
+            session_mode_switch: false,
+            list_commands: false,
         }
-
-        let mut cmd = Command::new(&program);
-        cmd.args(&final_args);
-        cmd.envs(entry.env.iter());
-        if let Some(cwd) = entry.cwd.as_ref() {
-            cmd.current_dir(cwd);
-        }
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd
     }
 
     /// codex-acp only exposes `-c key=value` overrides; the TOML

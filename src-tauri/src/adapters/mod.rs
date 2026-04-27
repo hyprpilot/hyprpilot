@@ -3,19 +3,19 @@
 //! An `Adapter` is a way to talk to an agent — today ACP subprocesses,
 //! tomorrow HTTP-based vendor APIs. This module owns the generic
 //! vocabulary every adapter impl emits: instance handles, transcript
-//! items, permission prompts, tool-call records, profile config.
-//! ACP-specific shapes live under `adapters::acp` and bridge into the
-//! generic types via `From`/`TryFrom` in `adapters::acp::mapping`.
+//! items, permission prompts, profile config. Transport-specific
+//! mapping into `TranscriptItem` lives inside the transport module
+//! (e.g. `acp::instance::map_session_update`).
 //!
 //! The split: `rpc::` / `ctl::` / `daemon::` / `config::` only ever
 //! import from `adapters::*`. They do not reach into `adapters::acp::*`
 //! — that's a layering violation, caught by the lint guard.
 
-// The generic adapter vocabulary is the canonical outside shape for
-// future non-ACP adapters. Today only the ACP impl + test exercise the
-// trait surface, so many items register as dead until a sibling
-// adapter lands and the trait is called through `dyn Adapter` by the
-// rpc / ctl layers.
+// Speculative trait expansion: most wire-method dispatchers default to
+// `AdapterError::Unsupported` and only the AcpAdapter overrides the
+// methods it supports today. Until handlers fully migrate to dispatch
+// through `dyn Adapter` (and a sibling adapter lands), several trait
+// methods register as dead.
 #![allow(dead_code)]
 
 pub mod acp;
@@ -24,7 +24,6 @@ pub mod instance;
 pub mod permission;
 pub mod profile;
 pub mod registry;
-pub mod tool;
 pub mod transcript;
 
 use async_trait::async_trait;
@@ -45,9 +44,10 @@ pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};
 #[allow(unused_imports)]
 pub use registry::AdapterRegistry;
 #[allow(unused_imports)]
-pub use tool::{ToolCall, ToolCallContent, ToolState};
-#[allow(unused_imports)]
-pub use transcript::{Attachment, ToolCallRecord, TranscriptItem, TurnRecord, UserTurnInput};
+pub use transcript::{
+    Attachment, PermissionRequestRecord, PlanRecord, PlanStep, Speaker, ToolCallContentItem, ToolCallRecord,
+    ToolCallState, ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
+};
 
 #[allow(unused_imports)]
 pub use acp::AcpAdapter;
@@ -69,17 +69,39 @@ impl AdapterId {
     }
 }
 
-/// Static capability bits each adapter advertises at construction. Used
-/// by UI pickers to disable features against adapters that don't
-/// advertise the underlying hook (e.g. "resume session" is ACP-only until
-/// an HTTP vendor ships its own equivalent). Bool rather than
-/// `Option<…>` because every field is a yes/no feature flag.
-#[derive(Debug, Clone, Copy, Default)]
+/// Static capability bits each agent advertises. Used by UI pickers to
+/// gate features against agents that don't advertise the underlying
+/// hook (e.g. "resume session" is greyed out for an agent whose
+/// `load_session` is `false`). Bool rather than `Option<…>` because
+/// every field is a yes/no feature flag.
+///
+/// Capabilities are static per-agent (declared on the `AcpAgent` trait
+/// in the ACP layer; future HTTP impls expose their own per-agent
+/// declarations). Vendors are version-pinned through the package
+/// manager — hyprpilot's static cap declaration tracks the pinned
+/// version. Vendor lies surface as `AdapterError::Backend`, not as
+/// runtime capability negotiation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    /// `session/load` — resume a persisted session.
     pub load_session: bool,
+    /// `session/list` — enumerate persisted sessions.
     pub list_sessions: bool,
+    /// `request_permission` flow + `permissions/*` RPC surface.
     pub permissions: bool,
+    /// `terminal/*` tool requests (ACP terminal extension).
     pub terminals: bool,
+    /// `models/set` — switch the active model on a live session.
+    pub session_model_switch: bool,
+    /// `modes/set` — switch the active operational mode on a live session.
+    pub session_mode_switch: bool,
+    /// `mcps/set` per-instance MCP enabled-list overrides.
+    pub mcps_per_instance: bool,
+    /// `commands/list` — slash-command catalogue cache.
+    pub list_commands: bool,
+    /// `instances/restart` accepts a `cwd` overlay (palette cwd swap).
+    pub restart_with_cwd: bool,
 }
 
 /// Structured adapter-level error. Every adapter impl maps its
@@ -135,7 +157,10 @@ pub enum Bootstrap {
 pub trait Adapter: Send + Sync + 'static {
     fn id(&self) -> AdapterId;
 
-    fn capabilities(&self) -> Capabilities;
+    /// Per-agent static capability set. UI gates buttons on this
+    /// lookup; daemon enforces by checking caps before dispatching
+    /// gated trait methods.
+    async fn capabilities_for_agent(&self, agent_id: &str) -> AdapterResult<Capabilities>;
 
     // ── generic registry ops ──────────────────────────────────────────
     async fn list(&self) -> Vec<InstanceInfo>;
@@ -189,6 +214,112 @@ pub trait Adapter: Send + Sync + 'static {
     /// Drain every live instance. Called from `daemon::shutdown`
     /// before `app.exit(0)`.
     async fn shutdown(&self);
+
+    // ── wire-method dispatch surface (S3 expansion) ───────────────────
+    //
+    // Each method has a `Capabilities`-gated default that returns
+    // `AdapterError::Unsupported`. Concrete adapters override only the
+    // methods their capability bit advertises true. A future HTTP
+    // adapter slots in clean — implement what you support, leave the
+    // rest at the default. Callers (RPC + Tauri handlers) dispatch
+    // through `dyn Adapter`; capability-gating happens here so wire
+    // surfaces stay symmetric across adapters.
+
+    /// `agents/list` — every configured agent + its static
+    /// `Capabilities`. Default returns an empty list (adapters with
+    /// no agent registry).
+    async fn list_agents(&self) -> AdapterResult<Vec<serde_json::Value>> {
+        Ok(Vec::new())
+    }
+
+    /// `profiles/list` — every configured profile. Default returns
+    /// an empty list.
+    async fn list_profiles(&self) -> AdapterResult<Vec<serde_json::Value>> {
+        Ok(Vec::new())
+    }
+
+    /// `session/list` — persisted session index for the addressed
+    /// agent. Gated by `Capabilities::list_sessions`.
+    async fn list_sessions(
+        &self,
+        _instance_id: Option<&str>,
+        _agent_id: Option<&str>,
+        _profile_id: Option<&str>,
+        _cwd: Option<std::path::PathBuf>,
+    ) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "session/list not supported by this adapter".into(),
+        ))
+    }
+
+    /// `session/load` — resume a persisted session. Gated by
+    /// `Capabilities::load_session`.
+    async fn load_session(
+        &self,
+        _instance_id: Option<&str>,
+        _agent_id: Option<&str>,
+        _profile_id: Option<&str>,
+        _session_id: String,
+    ) -> AdapterResult<()> {
+        Err(AdapterError::Unsupported(
+            "session/load not supported by this adapter".into(),
+        ))
+    }
+
+    /// `commands/list` — slash-command catalogue for the addressed
+    /// instance. Gated by `Capabilities::list_commands`.
+    async fn list_commands(&self, _instance_id: &str) -> AdapterResult<Vec<serde_json::Value>> {
+        Err(AdapterError::Unsupported(
+            "commands/list not supported by this adapter".into(),
+        ))
+    }
+
+    /// `models/set` — switch active model on a live session. Gated by
+    /// `Capabilities::session_model_switch`.
+    async fn set_session_model(&self, _instance_id: &str, _model_id: &str) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "models/set not supported by this adapter".into(),
+        ))
+    }
+
+    /// `modes/set` — switch active operational mode on a live session.
+    /// Gated by `Capabilities::session_mode_switch`.
+    async fn set_session_mode(&self, _instance_id: &str, _mode_id: &str) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "modes/set not supported by this adapter".into(),
+        ))
+    }
+
+    /// `mcps/set` — install per-instance MCP enabled-list override.
+    /// Gated by `Capabilities::mcps_per_instance`. Returns the previous
+    /// override if any.
+    async fn set_mcps_override(&self, _key: InstanceKey, _enabled: Vec<String>) -> AdapterResult<Option<Vec<String>>> {
+        Err(AdapterError::Unsupported(
+            "mcps/set not supported by this adapter".into(),
+        ))
+    }
+
+    /// Effective MCP enabled-list for an instance. Per-instance
+    /// override wins; otherwise the resolved profile's `mcps` field;
+    /// otherwise `None` ("all enabled" semantics). Gated by
+    /// `Capabilities::mcps_per_instance`.
+    async fn mcps_list_for(&self, _key: InstanceKey) -> AdapterResult<Option<Vec<String>>> {
+        Err(AdapterError::Unsupported(
+            "mcps/list not supported by this adapter".into(),
+        ))
+    }
+
+    /// Snapshot of every instance id currently mid-turn. Default
+    /// returns an empty list — adapters without busy-tracking claim
+    /// "nothing busy" so `daemon/shutdown` can proceed without a
+    /// false-positive wedge.
+    async fn busy_instance_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Publish a `DaemonReloaded` event onto the adapter's event
+    /// broadcast. Adapters with no registry no-op silently.
+    fn publish_daemon_reloaded(&self, _profiles: usize, _skills_count: usize, _mcps_count: usize) {}
 }
 
 #[cfg(test)]
@@ -210,8 +341,8 @@ mod tests {
             AdapterId::Acp
         }
 
-        fn capabilities(&self) -> Capabilities {
-            Capabilities::default()
+        async fn capabilities_for_agent(&self, _agent_id: &str) -> AdapterResult<Capabilities> {
+            Ok(Capabilities::default())
         }
 
         async fn list(&self) -> Vec<InstanceInfo> {

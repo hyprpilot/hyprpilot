@@ -227,6 +227,7 @@ describe('submit-routing (Overlay.vue parity)', () => {
   it('phase=Working → submit enqueues, no invoke', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', { turnId: 't-active', sessionId: 's-a' })
     expect(usePhase().phase.value).toBe(Phase.Working)
 
     const r = routeSubmit('second message')

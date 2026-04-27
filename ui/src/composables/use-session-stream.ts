@@ -3,9 +3,9 @@ import { ref } from 'vue'
 import {
   InstanceState,
   listen,
-  SessionUpdateKind,
   TauriEvent,
   TerminalChunkKind,
+  TranscriptItemKind,
   type InstanceStateEventPayload,
   type PermissionRequestEventPayload,
   type TerminalEventPayload,
@@ -38,72 +38,94 @@ function routePermission(payload: PermissionRequestEventPayload): void {
   })
 }
 
-interface SessionUpdateEnvelope {
-  sessionUpdate?: string
-  [k: string]: unknown
-}
-
+/**
+ * Demux typed `TranscriptItem` payloads into the per-concern composables.
+ * Switch arms are exhaustive on `TranscriptItemKind`. Each arm shapes
+ * the typed item into the legacy raw payload its destination
+ * composable consumes (kept for backward compat with existing
+ * composable internals; the wire contract is now typed).
+ *
+ * `Unknown` items dispatch on `wireKind` to keep session-metadata
+ * variants (mode/model/title updates) flowing into `use-session-info`
+ * — they're not transcript-content so they don't have typed
+ * variants on `TranscriptItem` today.
+ */
 function routeTranscript(payload: TranscriptEventPayload): void {
-  const raw = payload.update as SessionUpdateEnvelope
-  const kind = typeof raw.sessionUpdate === 'string' ? (raw.sessionUpdate as SessionUpdateKind) : undefined
-  const { instanceId, sessionId } = payload
-  switch (kind) {
-    case SessionUpdateKind.UserMessageChunk:
-    case SessionUpdateKind.AgentMessageChunk:
-      pushTranscriptChunk(instanceId, sessionId, raw as Parameters<typeof pushTranscriptChunk>[2])
+  const { instanceId, sessionId, item } = payload
+  switch (item.kind) {
+    case TranscriptItemKind.UserPrompt:
+      // Daemon-authoritative user echo — replaces the old optimistic
+      // `pushTranscriptChunk` mirror in Overlay.vue.
+      pushTranscriptChunk(instanceId, sessionId, {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: item.text }
+      } as Parameters<typeof pushTranscriptChunk>[2])
       return
-    case SessionUpdateKind.AgentThoughtChunk:
-      pushThoughtChunk(instanceId, sessionId, raw as Parameters<typeof pushThoughtChunk>[2])
+    case TranscriptItemKind.UserText:
+      pushTranscriptChunk(instanceId, sessionId, {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: item.text }
+      } as Parameters<typeof pushTranscriptChunk>[2])
       return
-    case SessionUpdateKind.Plan:
-      pushPlan(instanceId, sessionId, raw as Parameters<typeof pushPlan>[2])
+    case TranscriptItemKind.AgentText:
+      pushTranscriptChunk(instanceId, sessionId, {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: item.text }
+      } as Parameters<typeof pushTranscriptChunk>[2])
       return
-    case SessionUpdateKind.ToolCall:
-    case SessionUpdateKind.ToolCallUpdate:
-      pushToolCall(instanceId, sessionId, raw as Parameters<typeof pushToolCall>[2])
-      bindTerminalMetadata(instanceId, raw)
+    case TranscriptItemKind.AgentThought:
+      pushThoughtChunk(instanceId, sessionId, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', text: item.text }
+      } as Parameters<typeof pushThoughtChunk>[2])
       return
-    case SessionUpdateKind.CurrentModeUpdate:
-    case SessionUpdateKind.CurrentModelUpdate:
-    case SessionUpdateKind.SessionInfoUpdate:
-      pushSessionInfoUpdate(instanceId, raw as Parameters<typeof pushSessionInfoUpdate>[1])
+    case TranscriptItemKind.Plan:
+      pushPlan(instanceId, sessionId, {
+        sessionUpdate: 'plan',
+        entries: item.steps
+      } as Parameters<typeof pushPlan>[2])
       return
-    default:
+    case TranscriptItemKind.ToolCall:
+      pushToolCall(instanceId, sessionId, {
+        sessionUpdate: 'tool_call',
+        toolCallId: item.id,
+        kind: item.toolKind,
+        title: item.title,
+        status: item.state,
+        rawInput: item.rawArgs ? { command: item.rawArgs } : undefined,
+        content: item.content
+      } as Parameters<typeof pushToolCall>[2])
+      return
+    case TranscriptItemKind.ToolCallUpdate:
+      pushToolCall(instanceId, sessionId, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: item.id,
+        kind: item.toolKind,
+        title: item.title,
+        status: item.state,
+        rawInput: item.rawArgs ? { command: item.rawArgs } : undefined,
+        content: item.content
+      } as Parameters<typeof pushToolCall>[2])
+      return
+    case TranscriptItemKind.PermissionRequest:
+      // Permission rendering rides the dedicated `acp:permission-request`
+      // event channel (sticky stack today). The transcript variant
+      // exists for typed completeness; UI ignores it here.
+      return
+    case TranscriptItemKind.Unknown:
+      // Forward-compat catch-all. Today we still need to route
+      // session-metadata variants (mode/model/title) into
+      // `use-session-info` until they get typed transcript variants
+      // of their own.
+      if (
+        item.wireKind === 'current_mode_update' ||
+        item.wireKind === 'current_model_update' ||
+        item.wireKind === 'session_info_update'
+      ) {
+        pushSessionInfoUpdate(instanceId, item.payload as Parameters<typeof pushSessionInfoUpdate>[1])
+      }
       return
   }
-}
-
-// `tool_call` updates carry the agent-side `rawInput` (with `command`
-// / `cwd`) and the agent's allocated `terminal_id` when the tool is a
-// terminal. We pluck just the metadata so the inline card has a
-// header — stdout streaming flows through the dedicated `acp:terminal`
-// path (live push from `tools::Terminals`), not these snapshots.
-function bindTerminalMetadata(instanceId: InstanceId, raw: SessionUpdateEnvelope): void {
-  const rawInput = raw['rawInput'] as Record<string, unknown> | undefined
-  if (!rawInput) {
-    return
-  }
-  const terminalId = pickString(rawInput, 'terminal_id', 'terminalId')
-  if (!terminalId) {
-    return
-  }
-  const command = pickString(rawInput, 'command')
-  const cwd = pickString(rawInput, 'cwd')
-  if (!command && !cwd) {
-    return
-  }
-  pushTerminalChunk(instanceId, { terminalId, data: '', command, cwd })
-}
-
-function pickString(o: Record<string, unknown>, ...keys: string[]): string | undefined {
-  for (const k of keys) {
-    const v = o[k]
-    if (typeof v === 'string') {
-      return v
-    }
-  }
-
-  return undefined
 }
 
 function routeTerminal(payload: TerminalEventPayload): void {
