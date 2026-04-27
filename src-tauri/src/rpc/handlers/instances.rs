@@ -9,15 +9,26 @@ use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_params};
 use crate::rpc::protocol::RpcError;
 
-/// `instances/focus` / `instances/restart` / `instances/shutdown` /
-/// `instances/info` — all take a single UUID string under `id`.
-/// Empty-string ids reject at the serde layer with a clean message;
-/// malformed uuids reject inside `InstanceKey::parse`.
+/// `instances/focus` / `instances/shutdown` / `instances/info` —
+/// all take a single UUID string under `id`. Empty-string ids
+/// reject at the serde layer with a clean message; malformed
+/// uuids reject inside `InstanceKey::parse`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdParams {
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     id: String,
+}
+
+/// `instances/restart` — takes a UUID id plus an optional `cwd`
+/// override. Missing / null `cwd` preserves the resolved agent cwd.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestartParams {
+    #[serde(deserialize_with = "deserialize_non_empty_string")]
+    id: String,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
 }
 
 fn deserialize_non_empty_string<'de, D>(de: D) -> Result<String, D::Error>
@@ -105,9 +116,9 @@ impl RpcHandler for InstancesHandler {
                 Ok(HandlerOutcome::Reply(json!({ "id": key.as_string() })))
             }
             "instances/restart" => {
-                let IdParams { id } = parse_params(params, method)?;
+                let RestartParams { id, cwd } = parse_params(params, method)?;
                 let key = InstanceKey::parse(&id).map_err(map_adapter_err)?;
-                let key = adapter.restart(key).await.map_err(map_adapter_err)?;
+                let key = adapter.restart(key, cwd).await.map_err(map_adapter_err)?;
                 Ok(HandlerOutcome::Reply(json!({ "id": key.as_string() })))
             }
             "instances/shutdown" => {

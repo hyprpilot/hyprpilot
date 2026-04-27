@@ -12,6 +12,7 @@ import type {
   AgentSummary,
   CancelResult,
   GtkFont,
+  InstanceRestartResult,
   InstanceStateEventPayload,
   KeymapsConfig,
   MCPListResult,
@@ -47,10 +48,7 @@ export enum TauriCommand {
   SessionLoad = 'session_load',
   SessionsInfo = 'sessions_info',
   PermissionReply = 'permission_reply',
-  // K-265: switch the active model / mode on the addressed instance.
-  // Both Tauri commands stub past the membership check at the adapter
-  // (matching the `models/set` / `modes/set` wire shape) until K-251
-  // wires the runtime side; UI surfaces the error via toast.
+  InstanceRestart = 'instance_restart',
   ModelsSet = 'models_set',
   ModesSet = 'modes_set',
   SkillsList = 'skills_list',
@@ -84,6 +82,7 @@ export interface TauriCommandResult {
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
+  [TauriCommand.InstanceRestart]: InstanceRestartResult
   [TauriCommand.ModelsSet]: unknown
   [TauriCommand.ModesSet]: unknown
   [TauriCommand.SkillsList]: { skills: SkillSummary[] }

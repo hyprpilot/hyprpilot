@@ -22,6 +22,11 @@ export interface CancelResult {
   reason?: string
 }
 
+/** Wire shape for the `instance_restart` Tauri command. `id` is the (preserved) instance UUID. */
+export interface InstanceRestartResult {
+  id: string
+}
+
 export interface AgentSummary {
   id: string
   provider: string

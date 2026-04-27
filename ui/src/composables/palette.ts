@@ -38,7 +38,12 @@ export interface PaletteSpec {
   entries: PaletteEntry[]
   preseedActive?: PaletteEntry[]
   preview?: PalettePreview
-  onCommit(picks: PaletteEntry[]): void | Promise<void>
+  /**
+   * `query` is the live search-input value at commit time. Most
+   * leaves ignore it; the cwd leaf reads it as the manual-path input
+   * when the `manual` sentinel row is the highlighted pick.
+   */
+  onCommit(picks: PaletteEntry[], query?: string): void | Promise<void>
   onDelete?(entry: PaletteEntry): void | Promise<void>
 }
 

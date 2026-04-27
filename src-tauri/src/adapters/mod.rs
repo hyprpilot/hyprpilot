@@ -150,8 +150,10 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// Graceful drop + respawn preserving the insertion-order slot.
     /// Preserves `InstanceKey` (the UUID) too — callers subscribed to
-    /// a specific key stay bound across the swap.
-    async fn restart(&self, key: InstanceKey) -> AdapterResult<InstanceKey>;
+    /// a specific key stay bound across the swap. Optional `cwd`
+    /// overlays the resolved agent cwd before the new actor spawns —
+    /// load-bearing for the K-266 cwd palette.
+    async fn restart(&self, key: InstanceKey, cwd: Option<std::path::PathBuf>) -> AdapterResult<InstanceKey>;
 
     fn subscribe(&self) -> InstanceEventStream;
 
@@ -232,7 +234,7 @@ mod tests {
             Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
         }
 
-        async fn restart(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
+        async fn restart(&self, key: InstanceKey, _cwd: Option<std::path::PathBuf>) -> AdapterResult<InstanceKey> {
             Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
         }
 

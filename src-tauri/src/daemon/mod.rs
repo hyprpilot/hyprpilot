@@ -295,6 +295,7 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
             adapter_commands::session_load,
             adapter_commands::sessions_info,
             adapter_commands::permission_reply,
+            adapter_commands::instance_restart,
             adapter_commands::models_set,
             adapter_commands::modes_set,
             adapter_commands::mcps_list,
