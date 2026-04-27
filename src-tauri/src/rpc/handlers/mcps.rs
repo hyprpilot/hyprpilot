@@ -100,7 +100,7 @@ impl RpcHandler for MCPsHandler {
                 }
 
                 acp_adapter.set_mcps_override(key, enabled);
-                acp_adapter.restart_instance(key).await?;
+                acp_adapter.restart_instance(key, None).await?;
                 Ok(HandlerOutcome::Reply(json!({ "restarted": true })))
             }
             other => Err(RpcError::method_not_found(other)),

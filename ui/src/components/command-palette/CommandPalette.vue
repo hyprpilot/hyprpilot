@@ -222,8 +222,9 @@ function commit(): void {
   // Close before dispatching onCommit so a recursive `open()` in the
   // callback pushes onto a clean stack rather than stacking under the
   // just-committed spec.
+  const liveQuery = query.value
   close()
-  void spec.onCommit(picks)
+  void spec.onCommit(picks, liveQuery)
 }
 
 function onRowClick(entry: PaletteEntry): void {
@@ -240,8 +241,9 @@ function onRowClick(entry: PaletteEntry): void {
   // Close before dispatching onCommit so a recursive `open()` in the
   // callback pushes onto a clean stack rather than stacking under the
   // just-committed spec.
+  const liveQuery = query.value
   close()
-  void spec.onCommit([entry])
+  void spec.onCommit([entry], liveQuery)
 }
 
 onMounted(() => {

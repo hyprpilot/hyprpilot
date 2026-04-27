@@ -11,6 +11,7 @@ import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@c
 import { log } from '@lib'
 
 import { openCommandsLeaf } from './palette-commands'
+import { openCwdLeaf } from './palette-cwd'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './palette-mcps'
 import { openModelsLeaf } from './palette-models'
 import { openModesLeaf } from './palette-modes'
@@ -79,7 +80,7 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
     id: PaletteLeafId.Cwd,
     name: 'cwd',
     description: 'change the working directory',
-    followUp: 'K-TBD'
+    followUp: 'K-266'
   },
   [PaletteLeafId.Permissions]: {
     id: PaletteLeafId.Permissions,
@@ -202,6 +203,9 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
     case PaletteLeafId.Commands:
       void openCommandsLeaf()
       return
+    case PaletteLeafId.Cwd:
+      openCwdLeaf()
+      return
     case PaletteLeafId.Mcps: {
       const { open } = usePalette()
       const leaf = ROOT_LEAVES[leafId]
@@ -215,7 +219,6 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       })
       return
     }
-    case PaletteLeafId.Cwd:
     case PaletteLeafId.Permissions:
     case PaletteLeafId.References: {
       const { open } = usePalette()

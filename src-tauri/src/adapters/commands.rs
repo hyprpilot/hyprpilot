@@ -75,6 +75,25 @@ pub async fn session_cancel(
     out
 }
 
+/// Mirror of the `instances/restart` JSON-RPC method for the webview.
+/// `cwd` is optional — supplying it overlays the resolved agent cwd
+/// before the post-restart actor spawns. Drives the K-266 cwd palette.
+#[tauri::command]
+pub async fn instance_restart(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    cwd: Option<PathBuf>,
+) -> Result<Value, String> {
+    tracing::info!(instance_id = %instance_id, cwd = ?cwd, "cmd::instance_restart: entry");
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let out = adapter.restart_instance(key, cwd).await.map_err(|e| e.message);
+    match &out {
+        Ok(_) => tracing::info!("cmd::instance_restart: accepted"),
+        Err(err) => tracing::warn!(%err, "cmd::instance_restart: failed"),
+    }
+    out.map(|key| serde_json::json!({ "id": key.as_string() }))
+}
+
 #[tauri::command]
 pub async fn agents_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     Ok(serde_json::json!({ "agents": adapter.list_agents() }))
@@ -351,6 +370,6 @@ pub async fn mcps_set(
         }
     }
     adapter.set_mcps_override(key, enabled);
-    adapter.restart_instance(key).await.map_err(|e| e.message)?;
+    adapter.restart_instance(key, None).await.map_err(|e| e.message)?;
     Ok(serde_json::json!({ "restarted": true }))
 }

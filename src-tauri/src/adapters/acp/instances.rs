@@ -651,8 +651,11 @@ impl AcpAdapter {
     /// spawn against the same resolved config under the same key and
     /// insertion-order slot. Preserves UUID identity so subscribers
     /// stay bound; preserves slot so auto-focus on next shutdown
-    /// behaves consistently.
-    pub async fn restart_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
+    /// behaves consistently. Optional `cwd` overlays
+    /// `resolved.agent.cwd` before the new actor spawns so the cwd
+    /// palette can swap working directories without a full
+    /// shutdown / respawn cycle.
+    pub async fn restart_instance(&self, key: InstanceKey, cwd: Option<PathBuf>) -> Result<InstanceKey, RpcError> {
         let existing = self
             .registry
             .get(key)
@@ -663,6 +666,15 @@ impl AcpAdapter {
         let mode = existing.mode.clone();
         drop(existing);
 
+        if let Some(c) = &cwd {
+            if !c.is_dir() {
+                return Err(RpcError::invalid_params(format!(
+                    "cwd '{}' is not an existing directory",
+                    c.display()
+                )));
+            }
+        }
+
         let slot = self
             .registry
             .drop_preserving_slot(key)
@@ -672,6 +684,9 @@ impl AcpAdapter {
         let mut resolved = self.resolve(Some(&agent_id), profile_id.as_deref())?;
         if mode.is_some() {
             resolved.mode = mode;
+        }
+        if let Some(c) = cwd {
+            resolved.agent.cwd = Some(c);
         }
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id_for_instance = resolved.profile_id.clone();
@@ -885,8 +900,8 @@ impl Adapter for AcpAdapter {
         self.registry.shutdown_one(key).await
     }
 
-    async fn restart(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
-        self.restart_instance(key).await.map_err(rpc_to_adapter)
+    async fn restart(&self, key: InstanceKey, cwd: Option<PathBuf>) -> AdapterResult<InstanceKey> {
+        self.restart_instance(key, cwd).await.map_err(rpc_to_adapter)
     }
 
     fn subscribe(&self) -> InstanceEventStream {
@@ -1069,7 +1084,10 @@ system_prompt = "be terse"
     async fn restart_nonexistent_is_invalid_params() {
         let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
         let key = InstanceKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let err = adapter.restart_instance(key).await.expect_err("unknown id must fail");
+        let err = adapter
+            .restart_instance(key, None)
+            .await
+            .expect_err("unknown id must fail");
         assert_eq!(err.code, -32602);
     }
 

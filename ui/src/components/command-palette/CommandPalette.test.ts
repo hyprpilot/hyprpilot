@@ -186,7 +186,7 @@ describe('CommandPalette.vue', () => {
     dispatchKey({ key: 'Enter' })
     await nextTick()
 
-    expect(onCommit).toHaveBeenCalledWith([{ id: 'beta', name: 'beta' }])
+    expect(onCommit).toHaveBeenCalledWith([{ id: 'beta', name: 'beta' }], '')
     expect(wrapper.find('[data-testid="palette-overlay"]').exists()).toBe(false)
 
     wrapper.unmount()
