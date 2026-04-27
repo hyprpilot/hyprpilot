@@ -1,15 +1,47 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useActiveInstance } from '@composables/use-active-instance'
+import { InstanceState, TauriEvent } from '@ipc'
 
-// Module-scoped ref: reset to undefined between tests via the
-// exposed set()/setIfUnset() semantics. `setIfUnset('')` is not a
-// valid reset because the store stores any truthy string — we
-// instead reach through set(undefined as unknown as string) in
-// a pre-flight for each test.
+import { ToastTone } from '@components/types'
+
+type Handler = (payload: { payload: unknown }) => void
+
+const { handlers, unlisten } = vi.hoisted(() => ({
+  handlers: new Map<string, Handler>(),
+  unlisten: vi.fn()
+}))
+
+vi.mock('@ipc/bridge', async () => ({
+  ...(await vi.importActual<object>('@ipc/bridge')),
+  invoke: vi.fn(),
+  listen: (event: string, cb: Handler) => {
+    handlers.set(event, cb)
+
+    return Promise.resolve(unlisten)
+  }
+}))
+
+import {
+  __resetActiveInstanceForTests,
+  recordInstanceState,
+  startActiveInstance,
+  useActiveInstance
+} from '@composables/use-active-instance'
+import { clearToasts, useToasts } from '@composables/use-toasts'
+
+function emit(event: string, payload: unknown) {
+  const cb = handlers.get(event)
+  if (!cb) {
+    throw new Error(`no listener registered for ${event}`)
+  }
+  cb({ payload })
+}
+
 beforeEach(() => {
-  const { id } = useActiveInstance()
-  id.value = undefined
+  handlers.clear()
+  unlisten.mockReset()
+  __resetActiveInstanceForTests()
+  clearToasts()
 })
 
 describe('useActiveInstance', () => {
@@ -39,5 +71,90 @@ describe('useActiveInstance', () => {
     const b = useActiveInstance()
     a.set('inst-shared')
     expect(b.id.value).toBe('inst-shared')
+  })
+
+  it('clear() drops the active id', () => {
+    const { id, set, clear } = useActiveInstance()
+    set('inst-a')
+    clear()
+    expect(id.value).toBeUndefined()
+  })
+
+  it('subscribes to acp:instances-focused + acp:instances-changed', async () => {
+    await startActiveInstance()
+    expect([...handlers.keys()].sort()).toEqual([TauriEvent.AcpInstancesChanged, TauriEvent.AcpInstancesFocused])
+  })
+
+  it('routes acp:instances-focused payload onto the active id', async () => {
+    await startActiveInstance()
+
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-X' })
+    expect(useActiveInstance().id.value).toBe('inst-X')
+
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-Y' })
+    expect(useActiveInstance().id.value).toBe('inst-Y')
+  })
+
+  it('clears the active id when the registry empties (instanceId omitted)', async () => {
+    await startActiveInstance()
+
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-A' })
+    expect(useActiveInstance().id.value).toBe('inst-A')
+
+    emit(TauriEvent.AcpInstancesFocused, {})
+    expect(useActiveInstance().id.value).toBeUndefined()
+  })
+
+  it('toasts a warn tone when the previous instance had an Error state', async () => {
+    await startActiveInstance()
+
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-A' })
+    recordInstanceState('inst-A', 'claude-code', InstanceState.Error)
+    clearToasts()
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-B' })
+
+    const { entries } = useToasts()
+    expect(entries.value).toHaveLength(1)
+    expect(entries.value[0]?.tone).toBe(ToastTone.Warn)
+    expect(entries.value[0]?.message).toContain('claude-code')
+    expect(entries.value[0]?.message).toContain('exited')
+  })
+
+  it('toasts an ok tone when the previous instance had a clean Ended state', async () => {
+    await startActiveInstance()
+
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-A' })
+    recordInstanceState('inst-A', 'claude-code', InstanceState.Ended)
+    clearToasts()
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-B' })
+
+    const { entries } = useToasts()
+    expect(entries.value[0]?.tone).toBe(ToastTone.Ok)
+  })
+
+  it('does not toast when manual set() flips the active id', () => {
+    const { set } = useActiveInstance()
+    set('inst-A')
+    set('inst-B')
+
+    const { entries } = useToasts()
+    expect(entries.value).toHaveLength(0)
+  })
+
+  it('clears the active id when InstancesChanged drops it without a focused-id replacement', async () => {
+    await startActiveInstance()
+
+    emit(TauriEvent.AcpInstancesFocused, { instanceId: 'inst-A' })
+    expect(useActiveInstance().id.value).toBe('inst-A')
+
+    emit(TauriEvent.AcpInstancesChanged, { instanceIds: [] })
+    expect(useActiveInstance().id.value).toBeUndefined()
+  })
+
+  it('startActiveInstance is idempotent', async () => {
+    await startActiveInstance()
+    const sizeAfterFirst = handlers.size
+    await startActiveInstance()
+    expect(handlers.size).toBe(sizeAfterFirst)
   })
 })

@@ -12,6 +12,7 @@ import { log } from '@lib'
 
 import { openCommandsLeaf } from './palette-commands'
 import { openCwdLeaf } from './palette-cwd'
+import { openInstancesLeaf } from './palette-instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './palette-mcps'
 import { openModelsLeaf } from './palette-models'
 import { openModesLeaf } from './palette-modes'
@@ -32,6 +33,7 @@ export enum PaletteLeafId {
   Modes = 'modes',
   Commands = 'commands',
   Cwd = 'cwd',
+  Instances = 'instances',
   Permissions = 'permissions',
   Skills = 'skills',
   References = 'references',
@@ -82,6 +84,12 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
     description: 'change the working directory',
     followUp: 'K-266'
   },
+  [PaletteLeafId.Instances]: {
+    id: PaletteLeafId.Instances,
+    name: 'instances',
+    description: 'switch / shut down a live instance',
+    followUp: 'K-274'
+  },
   [PaletteLeafId.Permissions]: {
     id: PaletteLeafId.Permissions,
     name: 'permissions',
@@ -115,6 +123,7 @@ const ROOT_LEAF_ORDER: PaletteLeafId[] = [
   PaletteLeafId.Modes,
   PaletteLeafId.Commands,
   PaletteLeafId.Cwd,
+  PaletteLeafId.Instances,
   PaletteLeafId.Permissions,
   PaletteLeafId.Skills,
   PaletteLeafId.References,
@@ -179,9 +188,9 @@ export interface RootLeafContext {
 
 /**
  * Open one of the root leaves directly — used by header pill clicks
- * (cwd / mode / model / mcps / sessions). Wired leaves dispatch to
- * their dedicated `open*Leaf()` exporter; everything else falls
- * through to the K-249 stub spec.
+ * (cwd / mode / model / mcps / sessions / instances). Wired leaves
+ * dispatch to their dedicated `open*Leaf()` exporter; everything else
+ * falls through to the K-249 stub spec.
  */
 export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): void {
   switch (leafId) {
@@ -202,6 +211,9 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       return
     case PaletteLeafId.Commands:
       void openCommandsLeaf()
+      return
+    case PaletteLeafId.Instances:
+      void openInstancesLeaf()
       return
     case PaletteLeafId.Cwd:
       openCwdLeaf()

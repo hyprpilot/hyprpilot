@@ -12,7 +12,10 @@ import type {
   AgentSummary,
   CancelResult,
   GtkFont,
+  InstanceListEntry,
   InstanceRestartResult,
+  InstancesChangedEventPayload,
+  InstancesFocusedEventPayload,
   InstanceStateEventPayload,
   KeymapsConfig,
   MCPListResult,
@@ -48,6 +51,9 @@ export enum TauriCommand {
   SessionLoad = 'session_load',
   SessionsInfo = 'sessions_info',
   PermissionReply = 'permission_reply',
+  InstancesList = 'instances_list',
+  InstancesFocus = 'instances_focus',
+  InstancesShutdown = 'instances_shutdown',
   InstanceRestart = 'instance_restart',
   ModelsSet = 'models_set',
   ModesSet = 'modes_set',
@@ -63,7 +69,9 @@ export enum TauriEvent {
   AcpInstanceState = 'acp:instance-state',
   AcpTurnStarted = 'acp:turn-started',
   AcpTurnEnded = 'acp:turn-ended',
-  AcpTerminal = 'acp:terminal'
+  AcpTerminal = 'acp:terminal',
+  AcpInstancesChanged = 'acp:instances-changed',
+  AcpInstancesFocused = 'acp:instances-focused'
 }
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
@@ -82,6 +90,9 @@ export interface TauriCommandResult {
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
+  [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
+  [TauriCommand.InstancesFocus]: { focusedId: string }
+  [TauriCommand.InstancesShutdown]: { id: string }
   [TauriCommand.InstanceRestart]: InstanceRestartResult
   [TauriCommand.ModelsSet]: unknown
   [TauriCommand.ModesSet]: unknown
@@ -99,4 +110,6 @@ export interface TauriEventPayload {
   [TauriEvent.AcpTurnStarted]: TurnStartedEventPayload
   [TauriEvent.AcpTurnEnded]: TurnEndedEventPayload
   [TauriEvent.AcpTerminal]: TerminalEventPayload
+  [TauriEvent.AcpInstancesChanged]: InstancesChangedEventPayload
+  [TauriEvent.AcpInstancesFocused]: InstancesFocusedEventPayload
 }

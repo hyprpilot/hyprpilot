@@ -457,3 +457,35 @@ export interface TerminalEventPayload {
   terminalId: string
   chunk: TerminalChunk
 }
+
+/**
+ * Snapshot of one live instance, surfaced by `instances_list`. Mirrors
+ * `adapters::InstanceInfo` in the Rust adapter layer (the wire shape
+ * `instances/list` emits over JSON-RPC).
+ */
+export interface InstanceListEntry {
+  agentId: string
+  instanceId: string
+  profileId?: string
+  sessionId?: string
+  mode?: string
+}
+
+/**
+ * Registry-membership delta event. Mirrors
+ * `InstanceEvent::InstancesChanged` — fired on spawn / shutdown /
+ * restart with the post-change membership + current focus.
+ */
+export interface InstancesChangedEventPayload {
+  instanceIds: string[]
+  focusedId?: string
+}
+
+/**
+ * Focus-pointer event. Mirrors `InstanceEvent::InstancesFocused` —
+ * `instanceId` is `undefined` when the registry emptied and no
+ * auto-focus target exists.
+ */
+export interface InstancesFocusedEventPayload {
+  instanceId?: string
+}
