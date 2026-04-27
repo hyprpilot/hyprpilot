@@ -15,6 +15,7 @@ import { openMcpsLeaf, type OpenMcpsLeafOptions } from './palette-mcps'
 import { openModelsLeaf } from './palette-models'
 import { openModesLeaf } from './palette-modes'
 import { openProfilesLeaf } from './palette-profiles'
+import { openSessionsLeaf } from './palette-sessions'
 import { openSkillsLeaf } from './palette-skills'
 
 /**
@@ -48,7 +49,7 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
     id: PaletteLeafId.Sessions,
     name: 'sessions',
     description: 'resume a previous session',
-    followUp: 'K-TBD'
+    followUp: 'K-264'
   },
   [PaletteLeafId.Profiles]: {
     id: PaletteLeafId.Profiles,
@@ -183,6 +184,9 @@ export interface RootLeafContext {
  */
 export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): void {
   switch (leafId) {
+    case PaletteLeafId.Sessions:
+      void openSessionsLeaf()
+      return
     case PaletteLeafId.Models:
       openModelsLeaf()
       return
@@ -211,7 +215,6 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       })
       return
     }
-    case PaletteLeafId.Sessions:
     case PaletteLeafId.Cwd:
     case PaletteLeafId.Permissions:
     case PaletteLeafId.References: {

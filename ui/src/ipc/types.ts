@@ -43,9 +43,27 @@ export interface SessionSummary {
   updatedAt?: string
 }
 
+/**
+ * Single-session projection returned by the `sessions_info` Tauri
+ * command. Mirrors the wire `sessions/info` RPC handler — the row
+ * data plus the resolved `agentId`/`profileId` so the palette preview
+ * can correlate the picked session to a known profile.
+ *
+ * `messageCount` is `null` until ACP exposes a per-session turn count.
+ */
+export interface SessionInfoResult {
+  id: string
+  title?: string
+  cwd: string
+  lastTurnAt?: string
+  messageCount?: number
+  agentId: string
+  profileId?: string
+}
+
 export interface ListSessionsArgs {
   instanceId?: string
-  agentId: string
+  agentId?: string
   profileId?: string
   cwd?: string
 }
@@ -128,7 +146,7 @@ export interface MCPSetResult {
 
 export interface LoadSessionArgs {
   instanceId?: string
-  agentId: string
+  agentId?: string
   profileId?: string
   sessionId: string
 }

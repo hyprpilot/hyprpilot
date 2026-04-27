@@ -8,7 +8,7 @@
  * the same stack.
  */
 
-import { ref, type Ref } from 'vue'
+import { ref, type Component, type Ref } from 'vue'
 
 export enum PaletteMode {
   Select = 'select',
@@ -22,11 +22,22 @@ export interface PaletteEntry {
   kind?: string
 }
 
+/**
+ * Optional right-pane preview. When set, `CommandPalette.vue` renders
+ * a wide shell with the preview component bound to the currently
+ * highlighted entry. The component receives `{ entry }` as a prop —
+ * `entry` is `undefined` when the list is empty / unfiltered out.
+ */
+export interface PalettePreview {
+  component: Component
+}
+
 export interface PaletteSpec {
   mode: PaletteMode
   title?: string
   entries: PaletteEntry[]
   preseedActive?: PaletteEntry[]
+  preview?: PalettePreview
   onCommit(picks: PaletteEntry[]): void | Promise<void>
   onDelete?(entry: PaletteEntry): void | Promise<void>
 }
