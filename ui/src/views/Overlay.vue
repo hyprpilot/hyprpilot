@@ -52,7 +52,6 @@ import {
   isEditableTarget,
   pushToast,
   pushToQueue,
-  pushTranscriptChunk,
   removeFromQueue,
   startActiveInstance,
   startQueueDispatcher,
@@ -83,7 +82,7 @@ import {
   type InstanceId,
   type PlanEntry
 } from '@composables'
-import { Modifier, SessionUpdateKind } from '@ipc'
+import { Modifier } from '@ipc'
 import { formatToolCall, log } from '@lib'
 
 const { submit, cancel } = useAdapter()
@@ -489,11 +488,10 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
   }
 
   sending.value = true
-  pushTranscriptChunk(instanceId, '', {
-    sessionUpdate: SessionUpdateKind.UserMessageChunk,
-    content: { type: 'text', text }
-  })
-
+  // The user turn lands as a daemon-emitted `TranscriptItem::UserPrompt`
+  // event; the demuxer in `use-session-stream` routes it through to
+  // `pushTranscriptChunk`. No optimistic mirror here — daemon is the
+  // single source of truth.
   submit({ text, instanceId, profileId: selectedProfile.value, attachments: skillAttachments })
     .then(() => {
       composerRef.value?.clear()

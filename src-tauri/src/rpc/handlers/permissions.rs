@@ -106,6 +106,7 @@ mod tests {
                 name: tool.into(),
                 title: Some(tool.into()),
                 raw_args: Some(format!("{tool} args")),
+                kind_wire: None,
             },
             options: options(),
         }

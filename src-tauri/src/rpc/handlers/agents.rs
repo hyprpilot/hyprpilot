@@ -18,18 +18,21 @@ impl RpcHandler for AgentsHandler {
 
     async fn handle(&self, method: &str, _params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         let adapter = ctx
-            .acp_adapter
+            .adapter
             .as_ref()
-            .ok_or_else(|| RpcError::internal_error("acp adapter not in managed state"))?;
+            .ok_or_else(|| RpcError::internal_error("adapter not in managed state"))?;
 
         match method {
             "agents/list" => {
-                // `list_agents` already emits `{ id, provider, binding, is_default }`
-                // — we only rename keys on the wire for this verb (provider → kind,
-                // binding → binary) so downstream pickers don't have to know the
-                // internal vocabulary.
+                // `Adapter::list_agents` emits `{ id, provider, binding, isDefault, capabilities }`
+                // — we rename keys on the wire (provider → kind, binding → binary) so
+                // downstream pickers don't have to know the internal vocabulary, and
+                // pass `capabilities` through verbatim so the UI can gate features
+                // per-agent.
                 let agents: Vec<Value> = adapter
                     .list_agents()
+                    .await
+                    .map_err(|err| RpcError::internal_error(err.to_string()))?
                     .into_iter()
                     .map(|v| {
                         json!({
@@ -37,6 +40,7 @@ impl RpcHandler for AgentsHandler {
                             "binary": v["binding"],
                             "kind": v["provider"],
                             "isDefault": v["isDefault"],
+                            "capabilities": v["capabilities"],
                         })
                     })
                     .collect();

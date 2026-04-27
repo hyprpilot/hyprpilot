@@ -1,14 +1,15 @@
 //! Claude Code ACP adapter.
 //!
-//! Launches via `bunx --bun @zed-industries/claude-code-acp`. The live
-//! `render_update` + `tool_name_for_permission` bodies land with the
-//! session follow-up; today only the launch command ships.
+//! Launches via `bunx --bun @zed-industries/claude-code-acp`. Model
+//! selection rides on the `ANTHROPIC_MODEL` env var; the system prompt
+//! goes through `FirstMessage` because the shim doesn't expose a
+//! launch-time hook.
 
 use tokio::process::Command;
 
-use crate::config::AgentConfig;
+use crate::adapters::Capabilities;
 
-use super::{AcpAgent, SystemPromptInjection};
+use super::{AcpAgent, ModelInjection, SystemPromptInjection};
 
 pub struct AcpAgentClaudeCode;
 
@@ -21,33 +22,23 @@ impl AcpAgent for AcpAgentClaudeCode {
         &["--bun", "@zed-industries/claude-code-acp"]
     }
 
-    fn spawn(&self, entry: &AgentConfig) -> Command {
-        use std::process::Stdio;
+    fn model_injection(&self) -> ModelInjection {
+        ModelInjection::Env("ANTHROPIC_MODEL")
+    }
 
-        let program = entry.command.clone().unwrap_or_else(|| self.command().to_string());
-
-        let args = if entry.args.is_empty() {
-            self.args().iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
-        } else {
-            entry.args.clone()
-        };
-
-        let mut cmd = Command::new(&program);
-        cmd.args(&args);
-        cmd.envs(entry.env.iter());
-        // User env wins — only inject ANTHROPIC_MODEL when not already set.
-        if let Some(model) = &entry.model {
-            if !entry.env.contains_key("ANTHROPIC_MODEL") {
-                cmd.env("ANTHROPIC_MODEL", model);
-            }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            load_session: true,
+            list_sessions: true,
+            permissions: true,
+            terminals: true,
+            mcps_per_instance: true,
+            restart_with_cwd: true,
+            // K-251 follow-ups — flip true when the override lands.
+            session_model_switch: false,
+            session_mode_switch: false,
+            list_commands: false,
         }
-        if let Some(cwd) = entry.cwd.as_ref() {
-            cmd.current_dir(cwd);
-        }
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd
     }
 
     /// `@zed-industries/claude-code-acp` never reads `process.argv`;
@@ -101,8 +92,6 @@ mod tests {
         entry.env.insert("ANTHROPIC_MODEL".into(), "claude-haiku-3-5".into());
         let cmd = AcpAgentClaudeCode.spawn(&entry);
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
-        // The env map has ANTHROPIC_MODEL from entry.env; the model field
-        // must not override it.  We check the entry.env value survived.
         let val = envs
             .iter()
             .find(|(k, _)| *k == "ANTHROPIC_MODEL")

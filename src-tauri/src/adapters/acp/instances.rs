@@ -16,23 +16,22 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
-use agent_client_protocol::schema::{ListSessionsResponse, SessionId};
+use agent_client_protocol::schema::ListSessionsResponse;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use super::instance::AcpInstance;
-use super::runtime::{start_instance, Bootstrap, InstanceCommand, InstanceEvent};
+use super::instance::{AcpInstance, InstanceCommand};
 use crate::adapters::instance::InstanceActor;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::registry::AdapterRegistry;
 use crate::adapters::{
-    Adapter, AdapterError, AdapterId, AdapterResult, Capabilities, InstanceEventStream, InstanceInfo, InstanceKey,
-    SpawnSpec, UserTurnInput,
+    Adapter, AdapterError, AdapterId, AdapterResult, Bootstrap, Capabilities, InstanceEvent, InstanceEventStream,
+    InstanceInfo, InstanceKey, SpawnSpec, UserTurnInput,
 };
 use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
@@ -53,14 +52,6 @@ pub struct AcpAdapter {
     /// to compute the effective MCP set. Survives restart of the
     /// addressed instance (key preserved); cleared on shutdown.
     mcps_overrides: Arc<RwLock<HashMap<InstanceKey, Vec<String>>>>,
-    /// Lazy-init channel the per-instance runtime actor publishes
-    /// ACP-shape events onto. A dedicated task forwards each event
-    /// through `mapping::From` onto the registry's generic broadcast.
-    /// Spawning the bridge eagerly in the constructor would `tokio::spawn`
-    /// before Tauri's runtime is alive ("no reactor running" panic on
-    /// `daemon::run`); the `OnceLock` defers spawn to first access,
-    /// which always lands inside the Tauri `.setup(...)` closure.
-    runtime_events_bridge: OnceLock<broadcast::Sender<InstanceEvent>>,
     /// Instance ids with at least one in-flight turn. Driven by a
     /// background task subscribed to the registry's broadcast —
     /// `TurnStarted` adds, `TurnEnded` removes. Read by
@@ -112,7 +103,6 @@ impl AcpAdapter {
             registry: Arc::new(AdapterRegistry::new()),
             permissions,
             mcps_overrides: Arc::new(RwLock::new(HashMap::new())),
-            runtime_events_bridge: OnceLock::new(),
             busy_instances: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -171,53 +161,6 @@ impl AcpAdapter {
     #[must_use]
     pub fn permissions(&self) -> Arc<dyn PermissionController> {
         self.permissions.clone()
-    }
-
-    /// Lazily spawn (and memoise) the ACP → generic events bridge
-    /// task. Defers the `tokio::spawn` call until first access, which
-    /// always happens after `daemon::run` enters the Tauri builder's
-    /// `.setup(...)` closure (runtime alive). Subsequent calls return
-    /// the same sender clone.
-    ///
-    /// Also kicks off the busy-tracker task on first access — it
-    /// subscribes to the registry's generic broadcast and follows
-    /// `TurnStarted` / `TurnEnded` to maintain `busy_instances`.
-    fn runtime_bridge(&self) -> &broadcast::Sender<InstanceEvent> {
-        self.runtime_events_bridge.get_or_init(|| {
-            self.spawn_busy_tracker();
-            Self::spawn_runtime_bridge_inner(self.registry.clone())
-        })
-    }
-
-    /// Subscribe to the registry's generic broadcast and maintain the
-    /// `busy_instances` set off `TurnStarted` / `TurnEnded`. Called
-    /// once via the `runtime_bridge` `OnceLock` so the spawn lands
-    /// inside the Tauri runtime context.
-    fn spawn_busy_tracker(&self) {
-        let mut rx = self.registry.subscribe();
-        let busy = self.busy_instances.clone();
-        tokio::spawn(async move {
-            use crate::adapters::InstanceEvent;
-            loop {
-                match rx.recv().await {
-                    Ok(InstanceEvent::TurnStarted { instance_id, .. }) => {
-                        if let Ok(mut set) = busy.write() {
-                            set.insert(instance_id);
-                        }
-                    }
-                    Ok(InstanceEvent::TurnEnded { instance_id, .. }) => {
-                        if let Ok(mut set) = busy.write() {
-                            set.remove(&instance_id);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(n, "acp busy tracker: lagged");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
     }
 
     /// Snapshot of every instance id currently mid-turn. Used by
@@ -308,6 +251,37 @@ impl AcpAdapter {
                 }
             }
         });
+
+        // Busy tracker — subscribes to the same registry broadcast and
+        // maintains `busy_instances` off `TurnStarted` / `TurnEnded`.
+        // Co-located with the Tauri event bridge so the spawn lands in
+        // the Tauri runtime context (daemon `.setup(...)` closure).
+        // Uses `tauri::async_runtime::spawn` because `setup` is a sync
+        // closure — there's no current tokio reactor to call plain
+        // `tokio::spawn` against.
+        let mut busy_rx = self.registry.subscribe();
+        let busy = self.busy_instances.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match busy_rx.recv().await {
+                    Ok(InstanceEvent::TurnStarted { instance_id, .. }) => {
+                        if let Ok(mut set) = busy.write() {
+                            set.insert(instance_id);
+                        }
+                    }
+                    Ok(InstanceEvent::TurnEnded { instance_id, .. }) => {
+                        if let Ok(mut set) = busy.write() {
+                            set.remove(&instance_id);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(n, "acp busy tracker: lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
     }
 
     /// Resolve a `(agent_id?, profile_id?)` pair. When both are
@@ -375,11 +349,11 @@ impl AcpAdapter {
             .expect("mcps overrides lock poisoned")
             .get(&key)
             .cloned();
-        let instance = start_instance(
+        let instance = AcpInstance::start(
             resolved,
             key,
             profile_id,
-            self.runtime_bridge().clone(),
+            self.registry.events_tx(),
             bootstrap,
             self.permissions.clone(),
             profile,
@@ -555,11 +529,11 @@ impl AcpAdapter {
             let profile = self.profile_by_id(resolved.profile_id.as_deref());
             let profile_id_for_instance = resolved.profile_id.clone();
             // Ephemeral list-only actor never reads MCPs; pass None.
-            let instance = start_instance(
+            let instance = AcpInstance::start(
                 resolved,
                 ephemeral_key,
                 profile_id_for_instance,
-                self.runtime_bridge().clone(),
+                self.registry.events_tx(),
                 Bootstrap::ListOnly,
                 self.permissions.clone(),
                 profile,
@@ -602,8 +576,7 @@ impl AcpAdapter {
             None => InstanceKey::new_v4(),
         };
         let resolved = self.resolve(agent_id, profile_id)?;
-        self.ensure(key, resolved, Bootstrap::Resume(SessionId::new(session_id)))
-            .await?;
+        self.ensure(key, resolved, Bootstrap::Resume(session_id)).await?;
         Ok(())
     }
 
@@ -698,11 +671,11 @@ impl AcpAdapter {
             .expect("mcps overrides lock poisoned")
             .get(&key)
             .cloned();
-        let instance = start_instance(
+        let instance = AcpInstance::start(
             resolved,
             key,
             profile_id_for_instance,
-            self.runtime_bridge().clone(),
+            self.registry.events_tx(),
             Bootstrap::Fresh,
             self.permissions.clone(),
             profile,
@@ -715,7 +688,10 @@ impl AcpAdapter {
         Ok(key)
     }
 
-    /// Enumerate configured agents for `agents_list`.
+    /// Enumerate configured agents for `agents_list`. Each entry
+    /// embeds the per-vendor `Capabilities` so the UI can gate
+    /// features (resume / model-switch / mcps) per-agent without a
+    /// second roundtrip.
     #[must_use]
     pub fn list_agents(&self) -> Vec<Value> {
         let cfg = self.read_config();
@@ -724,11 +700,13 @@ impl AcpAdapter {
             .agents
             .iter()
             .map(|a| {
+                let caps = super::agents::match_provider_agent(a.provider).capabilities();
                 json!({
                     "id": a.id,
                     "provider": a.provider,
                     "binding": a.command,
                     "isDefault": default_agent == Some(a.id.as_str()),
+                    "capabilities": caps,
                 })
             })
             .collect()
@@ -813,49 +791,25 @@ impl AcpAdapter {
     }
 }
 
-// Runtime actors speak the ACP-internal `InstanceEvent` enum; the
-// registry speaks the generic `adapters::InstanceEvent`. We bridge
-// ACP → generic in a background task so both wire shapes stay
-// self-documenting without the actor importing generic types. Owned
-// by the adapter so the bridge task dies when the adapter drops.
-impl AcpAdapter {
-    /// Construct the ACP → generic bridge channel + task. Invoked
-    /// once on first `runtime_bridge()` access via the `OnceLock`'s
-    /// initialiser.
-    fn spawn_runtime_bridge_inner(registry: Arc<AdapterRegistry<AcpInstance>>) -> broadcast::Sender<InstanceEvent> {
-        let (runtime_tx, mut runtime_rx) = broadcast::channel::<InstanceEvent>(256);
-        let out_tx = registry.events_tx();
-        tokio::spawn(async move {
-            loop {
-                match runtime_rx.recv().await {
-                    Ok(evt) => {
-                        let generic: crate::adapters::InstanceEvent = evt.into();
-                        let _ = out_tx.send(generic);
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(n, "acp runtime bridge: lagged");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
-        runtime_tx
-    }
-}
-
 #[async_trait]
 impl Adapter for AcpAdapter {
     fn id(&self) -> AdapterId {
         AdapterId::Acp
     }
 
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            load_session: true,
-            list_sessions: true,
-            permissions: true,
-            terminals: true,
-        }
+    async fn capabilities_for_agent(&self, agent_id: &str) -> AdapterResult<Capabilities> {
+        let provider = {
+            let cfg = self.read_config();
+            cfg.agents
+                .agents
+                .iter()
+                .find(|a| a.id == agent_id)
+                .ok_or_else(|| {
+                    AdapterError::InvalidRequest(format!("agent '{agent_id}' not found in [[agents]] registry"))
+                })?
+                .provider
+        };
+        Ok(super::agents::match_provider_agent(provider).capabilities())
     }
 
     async fn list(&self) -> Vec<InstanceInfo> {
@@ -935,6 +889,58 @@ impl Adapter for AcpAdapter {
 
     async fn shutdown(&self) {
         self.shutdown_all().await;
+    }
+
+    // ── wire-method dispatch (S3 expansion) ───────────────────────────
+
+    async fn list_agents(&self) -> AdapterResult<Vec<Value>> {
+        Ok(AcpAdapter::list_agents(self))
+    }
+
+    async fn list_profiles(&self) -> AdapterResult<Vec<Value>> {
+        Ok(AcpAdapter::list_profiles(self))
+    }
+
+    async fn list_sessions(
+        &self,
+        instance_id: Option<&str>,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+        cwd: Option<PathBuf>,
+    ) -> AdapterResult<Value> {
+        let resp = AcpAdapter::list_sessions(self, instance_id, agent_id, profile_id, cwd)
+            .await
+            .map_err(rpc_to_adapter)?;
+        serde_json::to_value(resp)
+            .map_err(|err| AdapterError::Backend(format!("serialize ListSessionsResponse: {err}")))
+    }
+
+    async fn load_session(
+        &self,
+        instance_id: Option<&str>,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+        session_id: String,
+    ) -> AdapterResult<()> {
+        AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn set_mcps_override(&self, key: InstanceKey, enabled: Vec<String>) -> AdapterResult<Option<Vec<String>>> {
+        Ok(AcpAdapter::set_mcps_override(self, key, enabled))
+    }
+
+    async fn mcps_list_for(&self, key: InstanceKey) -> AdapterResult<Option<Vec<String>>> {
+        Ok(self.effective_mcps_for(key).await)
+    }
+
+    async fn busy_instance_ids(&self) -> Vec<String> {
+        AcpAdapter::busy_instance_ids(self).await
+    }
+
+    fn publish_daemon_reloaded(&self, profiles: usize, skills_count: usize, mcps_count: usize) {
+        AcpAdapter::publish_daemon_reloaded(self, profiles, skills_count, mcps_count);
     }
 }
 

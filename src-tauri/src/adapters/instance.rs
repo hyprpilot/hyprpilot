@@ -15,6 +15,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use super::permission::PermissionOptionView;
+use super::transcript::TranscriptItem;
 use super::AdapterError;
 
 /// Registry key. A UUID per live instance — collisions across twin
@@ -99,7 +100,11 @@ pub enum InstanceEvent {
         /// for spontaneous updates the agent emits outside a turn.
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
-        update: serde_json::Value,
+        /// Typed transcript item the UI renders. Transports map their
+        /// wire-format updates into this enum; unknown variants land
+        /// as `TranscriptItem::Unknown` so the wire shape stays
+        /// forward-compatible without bricking sessions.
+        item: TranscriptItem,
     },
     PermissionRequest {
         agent_id: String,

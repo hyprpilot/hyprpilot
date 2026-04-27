@@ -27,10 +27,41 @@ export interface InstanceRestartResult {
   id: string
 }
 
+/**
+ * Per-agent static capability set. Mirrors the Rust
+ * `adapters::Capabilities` struct. Populated on each `AgentSummary`
+ * by the `agents/list` (and Tauri `agents_list`) wire methods so the
+ * UI can gate features (resume / model-switch / mcps panel / etc.)
+ * per-agent without a second roundtrip.
+ *
+ * Static today — vendors are version-pinned via package manager and
+ * hyprpilot's declaration tracks the pinned version. Per-instance
+ * dynamic discovery (overlaying ACP `InitializeResponse.agent_capabilities`
+ * on top of the static layer) is out of scope until version skew shows
+ * up as real user pain.
+ */
+export interface Capabilities {
+  loadSession: boolean
+  listSessions: boolean
+  permissions: boolean
+  terminals: boolean
+  sessionModelSwitch: boolean
+  sessionModeSwitch: boolean
+  mcpsPerInstance: boolean
+  listCommands: boolean
+  restartWithCwd: boolean
+}
+
 export interface AgentSummary {
   id: string
   provider: string
   isDefault: boolean
+  /**
+   * Per-vendor capability set. Embedded by `agents/list` so the UI
+   * can gate buttons (resume / model-switch / mcps panel / etc.)
+   * against the agent's declared surface.
+   */
+  capabilities: Capabilities
 }
 
 export interface ProfileSummary {
@@ -351,25 +382,90 @@ export interface PermissionOptionView {
 }
 
 /**
- * Discriminator for ACP `SessionUpdate` envelopes — the values inside
- * `update.sessionUpdate` on every `acp:transcript` event payload. The
- * variant strings stay snake_case because they're ACP wire literals:
- * `agent-client-protocol-schema` mandates snake_case for the
- * `sessionUpdate` discriminator and we don't rename them on the way
- * through. The enum gives consumers TS-compile-time enforcement on
- * the demuxer's switch arms.
+ * Typed transcript item kind — discriminator for the
+ * `TranscriptItem` enum mirrored from the Rust
+ * `adapters::transcript::TranscriptItem` enum. Switch arms on this
+ * give TS compile-time exhaustive checking on the demuxer.
  */
-export enum SessionUpdateKind {
-  UserMessageChunk = 'user_message_chunk',
-  AgentMessageChunk = 'agent_message_chunk',
-  AgentThoughtChunk = 'agent_thought_chunk',
-  Plan = 'plan',
+export enum TranscriptItemKind {
+  UserPrompt = 'user_prompt',
+  UserText = 'user_text',
+  AgentText = 'agent_text',
+  AgentThought = 'agent_thought',
   ToolCall = 'tool_call',
   ToolCallUpdate = 'tool_call_update',
-  CurrentModeUpdate = 'current_mode_update',
-  CurrentModelUpdate = 'current_model_update',
-  SessionInfoUpdate = 'session_info_update'
+  Plan = 'plan',
+  PermissionRequest = 'permission_request',
+  Unknown = 'unknown'
 }
+
+export enum ToolCallState {
+  Pending = 'pending',
+  Running = 'running',
+  Completed = 'completed',
+  Failed = 'failed'
+}
+
+export type ToolCallContentItem =
+  | { kind: 'text'; text: string }
+  | { kind: 'file'; path: string; snippet?: string }
+  | { kind: 'json'; value: unknown }
+
+export interface ToolCallRecord {
+  id: string
+  /// Closed-set tool kind wire string (ACP `ToolKind`). Named
+  /// `toolKind` (not `kind`) because the parent `TranscriptItem`
+  /// uses `kind` as its discriminator tag — flattening this record
+  /// into the `ToolCall` variant would otherwise collide.
+  toolKind: string
+  title: string
+  state: ToolCallState
+  rawArgs?: string
+  content: ToolCallContentItem[]
+}
+
+export interface ToolCallUpdateRecord {
+  id: string
+  toolKind?: string
+  title?: string
+  state?: ToolCallState
+  rawArgs?: string
+  content: ToolCallContentItem[]
+}
+
+export interface PlanStep {
+  content: string
+  priority?: string
+  status?: string
+}
+
+export interface PlanRecord {
+  steps: PlanStep[]
+}
+
+export interface PermissionRequestRecord {
+  requestId: string
+  tool: string
+  toolKind: string
+  args: string
+  options: PermissionOptionView[]
+}
+
+/**
+ * Typed transcript item the daemon emits via `acp:transcript`. The
+ * `kind` discriminator is exhaustive — the UI demuxer should switch
+ * on it and surface `Unknown` as a placeholder for forward-compat.
+ */
+export type TranscriptItem =
+  | { kind: TranscriptItemKind.UserPrompt; text: string; attachments: Attachment[] }
+  | { kind: TranscriptItemKind.UserText; text: string }
+  | { kind: TranscriptItemKind.AgentText; text: string }
+  | { kind: TranscriptItemKind.AgentThought; text: string }
+  | ({ kind: TranscriptItemKind.ToolCall } & ToolCallRecord)
+  | ({ kind: TranscriptItemKind.ToolCallUpdate } & ToolCallUpdateRecord)
+  | ({ kind: TranscriptItemKind.Plan } & PlanRecord)
+  | ({ kind: TranscriptItemKind.PermissionRequest } & PermissionRequestRecord)
+  | { kind: TranscriptItemKind.Unknown; wireKind: string; payload: Record<string, unknown> }
 
 export interface TranscriptEventPayload {
   agentId: string
@@ -378,7 +474,8 @@ export interface TranscriptEventPayload {
   /// Active turn id while a `session/prompt` is in flight; `undefined`
   /// for spontaneous updates the agent emits outside any turn.
   turnId?: string
-  update: Record<string, unknown>
+  /// Typed transcript item the UI dispatches on `kind`.
+  item: TranscriptItem
 }
 
 export interface InstanceStateEventPayload {

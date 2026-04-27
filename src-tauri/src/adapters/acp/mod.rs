@@ -28,8 +28,5 @@ pub mod agents;
 pub mod client;
 pub mod instance;
 pub mod instances;
-pub mod mapping;
-pub mod runtime;
-pub mod spawn;
 
 pub use instances::AcpAdapter;

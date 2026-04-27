@@ -6,11 +6,28 @@ mod opencode;
 
 use tokio::process::Command;
 
+use crate::adapters::Capabilities;
 use crate::config::{AgentConfig, AgentProvider};
 
 pub use self::claude_code::AcpAgentClaudeCode;
 pub use self::codex::AcpAgentCodex;
 pub use self::opencode::AcpAgentOpenCode;
+
+/// Per-vendor pre-spawn model injection knob. Three flavors:
+/// - `None` — vendor doesn't accept a model override.
+/// - `Env(name)` — set `name=<model>` env when `entry.env` doesn't
+///   already define it.
+/// - `Argv(flag)` — append `flag <model>` to argv when `entry.args`
+///   doesn't already include `flag`.
+///
+/// "User value wins" enforcement lives in the trait-default `spawn()`
+/// — vendors only declare *where* the injection lands.
+#[derive(Debug, Clone, Copy)]
+pub enum ModelInjection {
+    None,
+    Env(&'static str),
+    Argv(&'static str),
+}
 
 /// Vendor-adapter trait. Implementors are unit structs — state lives
 /// on `AgentConfig`.
@@ -20,15 +37,35 @@ pub trait AcpAgent: Send + Sync + 'static {
 
         let program = entry.command.clone().unwrap_or_else(|| self.command().to_string());
 
-        let args = if entry.args.is_empty() {
-            self.args().iter().map(|s| (*s).to_string()).collect::<Vec<_>>()
+        let mut args: Vec<String> = if entry.args.is_empty() {
+            self.args().iter().map(|s| (*s).to_string()).collect()
         } else {
             entry.args.clone()
         };
 
+        // Argv-style model injection — append flag + value when user
+        // didn't already pass the flag explicitly. Done before
+        // Command::new so the arg ordering reflects user intent.
+        if let (Some(model), ModelInjection::Argv(flag)) = (entry.model.as_deref(), self.model_injection()) {
+            if !entry.args.iter().any(|a| a == flag) {
+                args.push(flag.to_string());
+                args.push(model.to_string());
+            }
+        }
+
         let mut cmd = Command::new(&program);
         cmd.args(&args);
         cmd.envs(entry.env.iter());
+
+        // Env-style model injection — set the env var when user didn't
+        // already define it. Runs after envs(entry.env) so the user's
+        // entry overrides the vendor default.
+        if let (Some(model), ModelInjection::Env(name)) = (entry.model.as_deref(), self.model_injection()) {
+            if !entry.env.contains_key(name) {
+                cmd.env(name, model);
+            }
+        }
+
         if let Some(cwd) = entry.cwd.as_ref() {
             cmd.current_dir(cwd);
         }
@@ -41,6 +78,19 @@ pub trait AcpAgent: Send + Sync + 'static {
     fn command(&self) -> &'static str;
 
     fn args(&self) -> &'static [&'static str];
+
+    /// Per-vendor static capability set. Drives UI gating + the
+    /// `Adapter::capabilities_for_agent` lookup. Defaults to no caps —
+    /// vendors override to declare their truthful surface.
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    /// Where to splice `entry.model` into the spawn command. Default
+    /// `None` means the vendor doesn't accept a model override.
+    fn model_injection(&self) -> ModelInjection {
+        ModelInjection::None
+    }
 
     /// Default drops the prompt — vendors without a hook degrade silently
     /// rather than failing spawn.
