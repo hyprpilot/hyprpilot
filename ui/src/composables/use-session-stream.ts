@@ -15,7 +15,7 @@ import {
 
 import { ToastTone } from '@components/types'
 
-import { useActiveInstance, type InstanceId } from './use-active-instance'
+import { recordInstanceState, useActiveInstance, type InstanceId } from './use-active-instance'
 import { pushInstanceState, resetPhaseSignals } from './use-phase'
 import { pushPermissionRequest } from './use-permissions'
 import { pushSessionInfoUpdate, resetSessionInfo } from './use-session-info'
@@ -134,9 +134,10 @@ export async function startSessionStream(): Promise<() => void> {
       routeTranscript(e.payload)
     }),
     await listen(TauriEvent.AcpInstanceState, (e) => {
-      const { instanceId, state } = e.payload
+      const { instanceId, agentId, state } = e.payload
       lastInstanceState.value = e.payload
       pushInstanceState(instanceId, state)
+      recordInstanceState(instanceId, agentId, state)
 
       if (state === InstanceState.Running) {
         setIfUnset(instanceId)

@@ -54,6 +54,7 @@ import {
   pushToQueue,
   pushTranscriptChunk,
   removeFromQueue,
+  startActiveInstance,
   startQueueDispatcher,
   stopQueueDispatcher,
   StreamItemKind,
@@ -97,7 +98,7 @@ const activeAgentId = computed(() => profiles.value.find((p) => p.id === selecte
 // rides on the row-2 sessions breadcrumb pill.
 const { sessions: sessionList } = useSessionHistory(activeAgentId, selectedProfile)
 
-const { id: activeInstanceId } = useActiveInstance()
+const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 const { turns } = useTranscript()
 const { items: streamItems } = useStream()
 const { calls: toolCalls } = useTools()
@@ -126,6 +127,7 @@ const headerCwd = computed(() => {
 const headerCounts = computed<BreadcrumbCount[]>(() => [
   { id: PaletteLeafId.Mcps, label: 'mcps', count: sessionInfo.value.mcpsCount },
   { id: PaletteLeafId.Skills, label: 'skills', count: sessionInfo.value.skillsCount },
+  { id: PaletteLeafId.Instances, label: 'instances', count: instancesCount.value },
   { id: PaletteLeafId.Sessions, label: 'sessions', count: sessionList.value.length }
 ])
 
@@ -352,8 +354,16 @@ useKeymap(
   }
 )
 
+let stopActiveInstanceStore: (() => void) | undefined
+
 onMounted(async () => {
   startQueueDispatcher()
+  try {
+    stopActiveInstanceStore = await startActiveInstance()
+  } catch (err) {
+    log.error('invoke failed', { command: 'startActiveInstance' }, err)
+    pushToast(ToastTone.Err, `active-instance bind failed: ${String(err)}`)
+  }
   try {
     stopStream = await startSessionStream()
   } catch (err) {
@@ -365,6 +375,8 @@ onMounted(async () => {
 onUnmounted(() => {
   stopStream?.()
   stopStream = undefined
+  stopActiveInstanceStore?.()
+  stopActiveInstanceStore = undefined
   stopQueueDispatcher()
 })
 

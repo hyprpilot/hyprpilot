@@ -19,6 +19,7 @@
     "types": ["vite/client", "node"],
     "paths": {
       "@ipc": ["./src/ipc"],
+      "@ipc/*": ["./src/ipc/*"],
       "@lib": ["./src/lib"],
       "@lib/*": ["./src/lib/*"],
       "@ui": ["./src/components/ui"],

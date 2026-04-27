@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use agent_client_protocol::schema::ListSessionsResponse;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
 use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
 use super::transcript::Attachment;
+use super::Adapter;
 use crate::mcp::MCPsRegistry;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
@@ -216,6 +217,43 @@ pub async fn session_load(
         Err(err) => tracing::warn!(%err, "cmd::session_load: failed"),
     }
     out
+}
+
+/// List every live instance the adapter knows about. Mirrors the
+/// `instances/list` JSON-RPC method; used by the K-274 instances
+/// palette leaf to drive its row list. Returns the same shape the
+/// JSON-RPC handler emits so UI code reading either surface treats
+/// them uniformly.
+#[tauri::command]
+pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> {
+    let items = adapter.list().await;
+    let wire: Vec<Value> = items
+        .iter()
+        .map(|i| {
+            json!({
+                "agentId": i.agent_id,
+                "profileId": i.profile_id,
+                "instanceId": i.id,
+                "sessionId": i.session_id,
+                "mode": i.mode,
+            })
+        })
+        .collect();
+    Ok(json!({ "instances": wire }))
+}
+
+#[tauri::command]
+pub async fn instances_focus(adapter: AdapterState<'_>, id: String) -> Result<Value, String> {
+    let key = InstanceKey::parse(&id).map_err(|e| e.to_string())?;
+    let key = adapter.focus(key).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "focusedId": key.as_string() }))
+}
+
+#[tauri::command]
+pub async fn instances_shutdown(adapter: AdapterState<'_>, id: String) -> Result<Value, String> {
+    let key = InstanceKey::parse(&id).map_err(|e| e.to_string())?;
+    let key = adapter.shutdown_one(key).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "id": key.as_string() }))
 }
 
 /// Switch the active model for the addressed instance. Today
