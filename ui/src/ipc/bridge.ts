@@ -2,7 +2,7 @@ import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event'
 
 import { TauriCommand, TauriEvent, type TauriCommandResult, type TauriEventPayload } from './commands'
-import type { ListSessionsArgs, LoadSessionArgs, ProfileSummary, SessionSummary } from './types'
+import type { ListSessionsArgs, LoadSessionArgs, ProfileSummary, SessionInfoResult, SessionSummary } from './types'
 
 export async function invoke<K extends TauriCommand>(
   command: K,
@@ -42,4 +42,13 @@ export async function listSessions(args: ListSessionsArgs): Promise<SessionSumma
  */
 export async function loadSession(args: LoadSessionArgs): Promise<void> {
   await invoke(TauriCommand.SessionLoad, { ...args })
+}
+
+/**
+ * Single-session lookup for palette previews — mirrors the wire
+ * `sessions/info` RPC handler. List + filter through the daemon's
+ * default agent/profile.
+ */
+export async function getSessionInfo(id: string): Promise<SessionInfoResult> {
+  return invoke(TauriCommand.SessionsInfo, { id })
 }

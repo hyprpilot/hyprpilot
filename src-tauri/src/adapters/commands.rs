@@ -10,13 +10,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::ListSessionsResponse;
+use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 
 use super::acp::AcpAdapter;
+use super::instance::InstanceKey;
 use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
 use super::transcript::Attachment;
-use super::instance::InstanceKey;
 use crate::mcp::MCPsRegistry;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
@@ -115,6 +116,58 @@ pub async fn session_list(
     out
 }
 
+/// Single-session projection returned by `sessions_info`. Mirrors the
+/// `sessions/info` RPC handler — one session by id with the resolved
+/// agent/profile riding back so the palette preview can correlate the
+/// row to a known profile.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfoResult {
+    pub id: String,
+    pub title: Option<String>,
+    pub cwd: String,
+    pub last_turn_at: Option<String>,
+    pub message_count: Option<u64>,
+    pub agent_id: String,
+    pub profile_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn sessions_info(adapter: AdapterState<'_>, id: String) -> Result<SessionInfoResult, String> {
+    tracing::info!(session_id = %id, "cmd::sessions_info: entry");
+    // No ACP `session/get` verb — list + filter, mirroring the
+    // `sessions/info` RPC handler. Default agent/profile resolution.
+    let resp = adapter
+        .list_sessions(None, None, None, None)
+        .await
+        .map_err(|e| e.message)?;
+    let info = resp
+        .sessions
+        .iter()
+        .find(|s| s.session_id.0.as_ref() == id.as_str())
+        .ok_or_else(|| format!("no session '{id}'"))?;
+    let (agent_id, profile_id) = {
+        let cfg = adapter.config.read().expect("AcpAdapter config lock poisoned");
+        let agent_id = cfg
+            .agents
+            .agent
+            .default
+            .clone()
+            .or_else(|| cfg.agents.agents.first().map(|a| a.id.clone()))
+            .unwrap_or_default();
+        (agent_id, cfg.agents.agent.default_profile.clone())
+    };
+    Ok(SessionInfoResult {
+        id: info.session_id.0.to_string(),
+        title: info.title.clone(),
+        cwd: info.cwd.display().to_string(),
+        last_turn_at: info.updated_at.clone(),
+        message_count: None,
+        agent_id,
+        profile_id,
+    })
+}
+
 #[tauri::command]
 pub async fn session_load(
     adapter: AdapterState<'_>,
@@ -152,13 +205,12 @@ pub async fn session_load(
 /// membership check until K-251 wires the runtime side. The UI
 /// surfaces the message via toast.
 #[tauri::command]
-pub async fn models_set(
-    adapter: AdapterState<'_>,
-    instance_id: String,
-    model_id: String,
-) -> Result<Value, String> {
+pub async fn models_set(adapter: AdapterState<'_>, instance_id: String, model_id: String) -> Result<Value, String> {
     tracing::info!(instance_id = %instance_id, model_id = %model_id, "cmd::models_set: entry");
-    let out = adapter.set_session_model(&instance_id, &model_id).await.map_err(|e| e.message);
+    let out = adapter
+        .set_session_model(&instance_id, &model_id)
+        .await
+        .map_err(|e| e.message);
     if let Err(err) = &out {
         tracing::warn!(%err, "cmd::models_set: failed");
     }
@@ -168,13 +220,12 @@ pub async fn models_set(
 /// Switch the active operational mode for the addressed instance.
 /// Mirrors `models_set` — stubbed at the adapter until K-251.
 #[tauri::command]
-pub async fn modes_set(
-    adapter: AdapterState<'_>,
-    instance_id: String,
-    mode_id: String,
-) -> Result<Value, String> {
+pub async fn modes_set(adapter: AdapterState<'_>, instance_id: String, mode_id: String) -> Result<Value, String> {
     tracing::info!(instance_id = %instance_id, mode_id = %mode_id, "cmd::modes_set: entry");
-    let out = adapter.set_session_mode(&instance_id, &mode_id).await.map_err(|e| e.message);
+    let out = adapter
+        .set_session_mode(&instance_id, &mode_id)
+        .await
+        .map_err(|e| e.message);
     if let Err(err) = &out {
         tracing::warn!(%err, "cmd::modes_set: failed");
     }

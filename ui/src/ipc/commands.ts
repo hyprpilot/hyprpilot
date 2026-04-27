@@ -18,6 +18,7 @@ import type {
   MCPSetResult,
   PermissionRequestEventPayload,
   ProfileSummary,
+  SessionInfoResult,
   SessionSummary,
   SkillBody,
   SkillSummary,
@@ -44,6 +45,7 @@ export enum TauriCommand {
   ProfilesList = 'profiles_list',
   SessionList = 'session_list',
   SessionLoad = 'session_load',
+  SessionsInfo = 'sessions_info',
   PermissionReply = 'permission_reply',
   // K-265: switch the active model / mode on the addressed instance.
   // Both Tauri commands stub past the membership check at the adapter
@@ -80,6 +82,7 @@ export interface TauriCommandResult {
   [TauriCommand.ProfilesList]: { profiles: ProfileSummary[] }
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void
+  [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
   [TauriCommand.ModelsSet]: unknown
   [TauriCommand.ModesSet]: unknown

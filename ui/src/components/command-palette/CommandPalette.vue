@@ -101,6 +101,8 @@ const visibleEntries = computed<PaletteEntry[]>(() => {
   return ordered
 })
 
+const highlightedEntry = computed<PaletteEntry | undefined>(() => visibleEntries.value[highlighted.value])
+
 watch(visibleEntries, (rows) => {
   if (rows.length === 0) {
     highlighted.value = 0
@@ -254,7 +256,15 @@ onUnmounted(() => {
 <template>
   <FocusTrap v-if="top" :active="trapActive" :escape-deactivates="false" :allow-outside-click="true">
     <div class="palette-overlay" data-testid="palette-overlay">
-      <div class="palette-frame" role="dialog" aria-modal="true" tabindex="0" :aria-label="top.title ?? 'palette'" data-testid="palette-frame">
+      <div
+        class="palette-frame"
+        :data-width="top.preview ? 'wide' : 'default'"
+        role="dialog"
+        aria-modal="true"
+        tabindex="0"
+        :aria-label="top.title ?? 'palette'"
+        data-testid="palette-frame"
+      >
         <header v-if="top.title" class="palette-title">{{ top.title }}</header>
 
         <div class="palette-query">
@@ -271,24 +281,30 @@ onUnmounted(() => {
           />
         </div>
 
-        <ul class="palette-list" data-testid="palette-list">
-          <li
-            v-for="(entry, idx) in visibleEntries"
-            :key="entry.id"
-            class="palette-row"
-            :data-selected="idx === highlighted"
-            :data-ticked="tickedIds.has(entry.id)"
-            :data-testid="`palette-row-${entry.id}`"
-            @mouseenter="highlighted = idx"
-            @click="onRowClick(entry)"
-          >
-            <span v-if="top.mode === PaletteMode.MultiSelect" class="palette-tick" aria-hidden="true">{{ tickedIds.has(entry.id) ? '✓' : '·' }}</span>
-            <span class="palette-name">{{ entry.name }}</span>
-            <span v-if="entry.kind" class="palette-kind">({{ entry.kind }})</span>
-            <span v-if="entry.description" class="palette-description">{{ entry.description }}</span>
-          </li>
-          <li v-if="visibleEntries.length === 0" class="palette-empty">no matches</li>
-        </ul>
+        <div class="palette-content">
+          <ul class="palette-list" data-testid="palette-list">
+            <li
+              v-for="(entry, idx) in visibleEntries"
+              :key="entry.id"
+              class="palette-row"
+              :data-selected="idx === highlighted"
+              :data-ticked="tickedIds.has(entry.id)"
+              :data-testid="`palette-row-${entry.id}`"
+              @mouseenter="highlighted = idx"
+              @click="onRowClick(entry)"
+            >
+              <span v-if="top.mode === PaletteMode.MultiSelect" class="palette-tick" aria-hidden="true">{{ tickedIds.has(entry.id) ? '✓' : '·' }}</span>
+              <span class="palette-name">{{ entry.name }}</span>
+              <span v-if="entry.kind" class="palette-kind">({{ entry.kind }})</span>
+              <span v-if="entry.description" class="palette-description">{{ entry.description }}</span>
+            </li>
+            <li v-if="visibleEntries.length === 0" class="palette-empty">no matches</li>
+          </ul>
+
+          <aside v-if="top.preview" class="palette-preview" data-testid="palette-preview">
+            <component :is="top.preview.component" :entry="highlightedEntry" />
+          </aside>
+        </div>
       </div>
     </div>
   </FocusTrap>
@@ -303,12 +319,37 @@ onUnmounted(() => {
 }
 
 .palette-frame {
-  @apply flex w-full max-w-[38rem] flex-col border;
+  @apply flex w-full flex-col border;
   max-height: 50vh;
+  max-width: 95vw;
   border-color: var(--theme-border-soft);
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
   box-shadow: 0 12px 40px color-mix(in srgb, var(--theme-surface-bg) 70%, transparent);
+}
+
+.palette-frame[data-width='default'] {
+  max-width: 38rem;
+}
+
+.palette-frame[data-width='wide'] {
+  max-width: 56rem;
+}
+
+.palette-content {
+  @apply flex min-h-0 flex-1;
+}
+
+.palette-preview {
+  @apply flex min-h-0 w-2/5 flex-col overflow-y-auto border-l;
+  border-color: var(--theme-border-soft);
+  background-color: var(--theme-surface);
+}
+
+@media (max-width: 560px) {
+  .palette-preview {
+    display: none;
+  }
 }
 
 .palette-title {
@@ -331,6 +372,10 @@ onUnmounted(() => {
 
 .palette-list {
   @apply m-0 flex min-h-0 flex-1 list-none flex-col overflow-y-auto p-0;
+  /* In wide-preview mode the list shares the row with the preview pane,
+   * so it needs an explicit min-width-0 floor — `flex-1` alone defaults
+   * to min-content which lets long row labels push the pane out. */
+  min-width: 0;
 }
 
 .palette-row {
