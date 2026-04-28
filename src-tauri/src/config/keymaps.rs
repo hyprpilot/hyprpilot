@@ -9,10 +9,12 @@
 use std::fmt;
 
 use garde::Validate;
+use merge::Merge;
 use serde::de::{self, Deserializer, Visitor};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
+use super::merge_strategies::overwrite_some;
 use super::validations::validate_unique_modifiers;
 
 /// Modifier keys that combine with a `Key` to form a `Binding`. Order
@@ -229,7 +231,7 @@ impl<'de> Deserialize<'de> for Binding {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeymapsConfig {
     #[garde(dive)]
@@ -244,8 +246,9 @@ pub struct KeymapsConfig {
     pub transcript: TranscriptKeymaps,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct ChatKeymaps {
     #[garde(dive)]
     pub submit: Option<Binding>,
@@ -253,8 +256,9 @@ pub struct ChatKeymaps {
     pub newline: Option<Binding>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct ApprovalsKeymaps {
     #[garde(dive)]
     pub allow: Option<Binding>,
@@ -262,8 +266,9 @@ pub struct ApprovalsKeymaps {
     pub deny: Option<Binding>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct ComposerKeymaps {
     #[garde(dive)]
     pub paste_image: Option<Binding>,
@@ -277,12 +282,14 @@ pub struct ComposerKeymaps {
     pub history_down: Option<Binding>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 pub struct PaletteKeymaps {
     #[garde(dive)]
+    #[merge(strategy = overwrite_some)]
     pub open: Option<Binding>,
     #[garde(dive)]
+    #[merge(strategy = overwrite_some)]
     pub close: Option<Binding>,
     #[garde(dive)]
     pub models: ModelsSubPaletteKeymaps,
@@ -290,100 +297,25 @@ pub struct PaletteKeymaps {
     pub sessions: SessionsSubPaletteKeymaps,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct ModelsSubPaletteKeymaps {
     #[garde(dive)]
     pub focus: Option<Binding>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct SessionsSubPaletteKeymaps {
     #[garde(dive)]
     pub focus: Option<Binding>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 pub struct TranscriptKeymaps {}
-
-use super::Merge;
-
-impl Merge for KeymapsConfig {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            chat: self.chat.merge(other.chat),
-            approvals: self.approvals.merge(other.approvals),
-            composer: self.composer.merge(other.composer),
-            palette: self.palette.merge(other.palette),
-            transcript: self.transcript.merge(other.transcript),
-        }
-    }
-}
-
-impl Merge for ChatKeymaps {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            submit: self.submit.merge(other.submit),
-            newline: self.newline.merge(other.newline),
-        }
-    }
-}
-
-impl Merge for ApprovalsKeymaps {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            allow: self.allow.merge(other.allow),
-            deny: self.deny.merge(other.deny),
-        }
-    }
-}
-
-impl Merge for ComposerKeymaps {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            paste_image: self.paste_image.merge(other.paste_image),
-            tab_completion: self.tab_completion.merge(other.tab_completion),
-            shift_tab: self.shift_tab.merge(other.shift_tab),
-            history_up: self.history_up.merge(other.history_up),
-            history_down: self.history_down.merge(other.history_down),
-        }
-    }
-}
-
-impl Merge for PaletteKeymaps {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            open: self.open.merge(other.open),
-            close: self.close.merge(other.close),
-            models: self.models.merge(other.models),
-            sessions: self.sessions.merge(other.sessions),
-        }
-    }
-}
-
-impl Merge for ModelsSubPaletteKeymaps {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            focus: self.focus.merge(other.focus),
-        }
-    }
-}
-
-impl Merge for SessionsSubPaletteKeymaps {
-    fn merge(self, other: Self) -> Self {
-        Self {
-            focus: self.focus.merge(other.focus),
-        }
-    }
-}
-
-impl Merge for TranscriptKeymaps {
-    fn merge(self, _other: Self) -> Self {
-        self
-    }
-}
 
 type ScopeField<'a> = (&'static str, Option<&'a Binding>);
 type CollisionScope<'a> = (&'static str, Vec<ScopeField<'a>>);

@@ -45,6 +45,7 @@ tauri-plugin-playwright = { version = "0.2", optional = true }
 tauri-plugin-single-instance = "2.4"
 uuid = { version = "1", features = ["v4"] }
 mime_guess = "2.0.5"
+merge = { version = "0.2.0", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"
