@@ -3,8 +3,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::rpc::protocol::{Outcome, RequestId, Response};
@@ -35,9 +33,12 @@ impl CtlClient {
 }
 
 /// Synchronous client owning one unix-socket connection. Every CLI
-/// round-trip — `status/get`, `status/subscribe`, `submit`, `toggle`,
-/// `kill`, `cancel`, `session-info`, and every future namespace —
-/// goes through `CtlConnection::call` / `call_outcome`.
+/// round-trip goes through [`CtlConnection::call`], which writes one
+/// NDJSON request line and reads one response line back. Callers that
+/// want a typed result deserialise [`Outcome::Success { result }`]
+/// themselves; callers that subscribe to a notification stream consume
+/// the connection via [`CtlConnection::into_reader`] after the initial
+/// reply lands.
 ///
 /// Request ids are per-call UUID v4 strings. There is no monotonic
 /// counter on the client side: each call embeds a fresh
@@ -90,31 +91,11 @@ impl CtlConnection {
         Ok(())
     }
 
-    /// Single JSON-RPC round-trip. Serializes the `method` + `params`,
-    /// writes one NDJSON line, reads one line back, parses the outcome.
-    pub fn fire<Req: Serialize, Resp: DeserializeOwned>(&mut self, method: &str, params: Req) -> Result<Resp> {
-        let id = RequestId::String(uuid::Uuid::new_v4().to_string());
-        let envelope = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        self.write(&envelope)?;
-
-        let line = self.read("read response line")?;
-        let response: Response =
-            serde_json::from_str(line.trim_end()).with_context(|| format!("parse response: {}", line.trim_end()))?;
-        match response.outcome {
-            Outcome::Success { result } => serde_json::from_value(result).context("deserialize result"),
-            Outcome::Error { error } => bail!("rpc error {}: {}", error.code, error.message),
-        }
-    }
-
-    /// Variant of `call` that preserves the `Outcome` instead of
-    /// collapsing errors into `anyhow`. Used by paths that want to
-    /// inspect the JSON-RPC error code (e.g. `status/get` in one-shot
-    /// mode falls back to the offline payload on error).
+    /// Single JSON-RPC round-trip. Writes one NDJSON request line,
+    /// reads one line back, returns the raw [`Outcome`] so the caller
+    /// decides how to handle `Success` vs `Error` (e.g. `status/get`
+    /// falls back to the offline sentinel on error rather than
+    /// propagating).
     pub fn call(&mut self, method: &str, params: Value) -> Result<Outcome> {
         let id = RequestId::String(uuid::Uuid::new_v4().to_string());
         let envelope = json!({
