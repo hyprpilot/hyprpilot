@@ -10,6 +10,7 @@ mod skills;
 mod tools;
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -51,7 +52,7 @@ enum Command {
     Ctl(ctl::CtlArgs),
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     // HACK: webkit2gtk's default DMABUF renderer triggers `Gdk-Message: Error 71
     // (Protocol error) dispatching to Wayland display` on NVIDIA + Hyprland /
     // Sway sessions. Force the legacy shared-memory path so the daemon boots
@@ -77,8 +78,8 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
-        None => daemon::run(cfg, daemon::DaemonArgs::default(), load_ctx),
-        Some(Command::Daemon(args)) => daemon::run(cfg, args, load_ctx),
+        None => daemon::run(cfg, daemon::DaemonArgs::default(), load_ctx).map(|()| ExitCode::SUCCESS),
+        Some(Command::Daemon(args)) => daemon::run(cfg, args, load_ctx).map(|()| ExitCode::SUCCESS),
         Some(Command::Ctl(args)) => ctl::run(cfg, args),
     }
 }

@@ -1,22 +1,33 @@
+mod agents;
 mod client;
-mod handlers;
+mod commands;
+mod daemon;
+mod diag;
+mod events;
+mod mcps;
+mod models;
+mod modes;
+mod overlay;
+mod permissions;
+mod prompts;
+mod session;
+mod sessions;
+mod skills;
+mod status;
+mod window;
 
-use anyhow::Result;
+use std::process::ExitCode;
+
+use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
-use tracing::debug;
+use serde::Serialize;
+use serde_json::Value;
+use tracing::{debug, error};
 
 use crate::config::Config;
 use crate::ctl::client::CtlClient;
-use crate::ctl::handlers::{
-    AgentsListHandler, CancelHandler, CommandsListHandler, CtlHandler, DaemonReloadHandler, DaemonShutdownHandler,
-    DaemonStatusHandler, DaemonVersionHandler, DiagSnapshotHandler, EventsTailHandler, KillHandler, MCPsListHandler,
-    MCPsSetHandler, ModelsListHandler, ModelsSetHandler, ModesListHandler, ModesSetHandler, OverlayHideHandler,
-    OverlayPresentHandler, OverlayToggleHandler, PermissionsPendingHandler, PermissionsRespondHandler,
-    PromptsCancelHandler, PromptsSendHandler, SessionInfoHandler, SessionsForgetHandler, SessionsInfoHandler,
-    SessionsListHandler, SkillsGetHandler, SkillsListHandler, SkillsReloadHandler, StatusHandler, SubmitHandler,
-    ToggleHandler,
-};
 use crate::paths;
+use crate::rpc::protocol::Outcome;
 
 #[derive(Args, Debug)]
 pub struct CtlArgs {
@@ -24,6 +35,18 @@ pub struct CtlArgs {
     pub command: CtlCommand,
 }
 
+/// Top-level `ctl` subcommand tree. Each variant either:
+///
+/// - is a top-level shortcut (`Submit`, `Cancel`, `Toggle`, `Kill`,
+///   `SessionInfo`) that maps directly to a single wire method, or
+/// - holds a namespaced sub-enum owned by the matching `ctl/<ns>.rs`
+///   submodule (`Agents { command: AgentsSubcommand }`,
+///   `Sessions { command: SessionsCommand }`, …).
+///
+/// Routing happens once in [`dispatch`]: shortcut variants call into
+/// the namespace fns directly (`session::submit(...)`); namespaced
+/// variants delegate to the namespace's own `dispatch` fn
+/// (`agents::dispatch(client, command)`).
 #[derive(Subcommand, Debug, Clone)]
 pub enum CtlCommand {
     /// Submit a prompt to the primary session.
@@ -75,37 +98,37 @@ pub enum CtlCommand {
     /// Read-only operations over the `[[agents]]` registry.
     Agents {
         #[command(subcommand)]
-        command: AgentsSubcommand,
+        command: agents::AgentsSubcommand,
     },
 
     /// ACP `session/available_commands` passthrough — per-instance.
     Commands {
         #[command(subcommand)]
-        command: CommandsSubcommand,
+        command: commands::CommandsSubcommand,
     },
 
     /// ACP `session/set_session_mode` passthrough — per-instance.
     Modes {
         #[command(subcommand)]
-        command: ModesSubcommand,
+        command: modes::ModesSubcommand,
     },
 
     /// ACP `session/set_session_model` passthrough — per-instance.
     Models {
         #[command(subcommand)]
-        command: ModelsSubcommand,
+        command: models::ModelsSubcommand,
     },
 
     /// Skill catalogue operations.
     Skills {
         #[command(subcommand)]
-        command: SkillsCommand,
+        command: skills::SkillsCommand,
     },
 
     /// MCP catalogue + per-instance enabled-set operations.
     Mcps {
         #[command(subcommand)]
-        command: MCPsCommand,
+        command: mcps::MCPsCommand,
     },
 
     /// Send / cancel single-shot prompts addressed to a specific
@@ -114,13 +137,13 @@ pub enum CtlCommand {
     /// a live `--instance <id>`.
     Prompts {
         #[command(subcommand)]
-        command: PromptsCommand,
+        command: prompts::PromptsCommand,
     },
 
     /// Inspect / resolve pending permission prompts.
     Permissions {
         #[command(subcommand)]
-        command: PermissionsCommand,
+        command: permissions::PermissionsCommand,
     },
 
     /// Overlay window control — hyprland-bind surface.
@@ -129,7 +152,7 @@ pub enum CtlCommand {
     /// `bind = SUPER, space, exec, hyprpilot ctl overlay toggle`.
     Overlay {
         #[command(subcommand)]
-        command: OverlaySubcommand,
+        command: overlay::OverlaySubcommand,
     },
 
     /// Daemon introspection + lifecycle. Distinct from the legacy
@@ -138,13 +161,13 @@ pub enum CtlCommand {
     /// hard-stop.
     Daemon {
         #[command(subcommand)]
-        command: DaemonSubcommand,
+        command: daemon::DaemonSubcommand,
     },
 
     /// Operator diagnostics — read-only structural snapshot.
     Diag {
         #[command(subcommand)]
-        command: DiagSubcommand,
+        command: diag::DiagSubcommand,
     },
 
     /// Connection-scoped event subscription. Streams every
@@ -152,7 +175,7 @@ pub enum CtlCommand {
     /// per event. Live-only — no replay, no reconnect; Ctrl-C exits.
     Events {
         #[command(subcommand)]
-        command: EventsSubcommand,
+        command: events::EventsSubcommand,
     },
 
     /// Operations on persisted on-disk session transcripts. Distinct
@@ -160,319 +183,98 @@ pub enum CtlCommand {
     /// instance lifecycle (`spawn`, `restart`, `shutdown`).
     Sessions {
         #[command(subcommand)]
-        command: SessionsCommand,
+        command: sessions::SessionsCommand,
     },
 }
 
-#[derive(Subcommand, Debug, Clone)]
-pub enum AgentsSubcommand {
-    /// List configured agents.
-    List,
+/// Every command-holder in this module implements `CtlDispatch`. The
+/// top-level [`CtlCommand`] is the hub: its impl either handles a
+/// top-level shortcut variant inline (`Submit`, `Cancel`, …) or
+/// delegates to the inner sub-enum via the same trait method
+/// (`agents::AgentsSubcommand` etc. all impl `CtlDispatch`). Each
+/// namespace file owns one impl over its own sub-enum.
+///
+/// Adding a new namespace = new file + new sub-enum + `impl
+/// CtlDispatch for NewSubcommand` + new variant on `CtlCommand` + one
+/// match arm in `CtlCommand`'s impl that delegates `command.dispatch(client)`.
+pub(super) trait CtlDispatch {
+    fn dispatch(self, client: &CtlClient) -> Result<()>;
 }
 
-#[derive(Subcommand, Debug, Clone)]
-pub enum CommandsSubcommand {
-    /// List available commands for the addressed instance.
-    List {
-        #[arg(long = "instance")]
-        instance_id: String,
-    },
+/// Connect, send `method` + `params`, pretty-print the success result
+/// to stdout. RPC errors and transport failures bubble as `anyhow::Error`
+/// so the top-level `run` catches once and prints + exits.
+pub(super) fn emit<P: Serialize>(client: &CtlClient, method: &str, params: &P) -> Result<()> {
+    let value = request_value(client, method, params)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 
-#[derive(Subcommand, Debug, Clone)]
-pub enum ModesSubcommand {
-    /// List session modes the addressed instance advertised.
-    List {
-        #[arg(long = "instance")]
-        instance_id: String,
-    },
-    /// Set the addressed instance's current mode.
-    Set {
-        #[arg(long = "instance")]
-        instance_id: String,
-        #[arg(long = "mode")]
-        mode_id: String,
-    },
+/// Connect, send `method` + `params`, return the raw `Value` from the
+/// success branch. RPC errors carry the JSON-RPC code in the error
+/// message; transport errors bubble as-is. Used by namespaces whose
+/// success branch needs post-processing beyond pretty-printing
+/// (`diag::snapshot` writes to a file).
+pub(super) fn request_value<P: Serialize>(client: &CtlClient, method: &str, params: &P) -> Result<Value> {
+    let mut conn = client.connect()?;
+    let params_value = serde_json::to_value(params).context("serialize params")?;
+    match conn.call(method, params_value)? {
+        Outcome::Success { result } => Ok(result),
+        Outcome::Error { error } => {
+            error!(code = error.code, message = %error.message, "ctl: rpc error");
+            bail!("rpc error {}: {}", error.code, error.message)
+        }
+    }
 }
 
-#[derive(Subcommand, Debug, Clone)]
-pub enum ModelsSubcommand {
-    /// List models the addressed instance advertised.
-    List {
-        #[arg(long = "instance")]
-        instance_id: String,
-    },
-    /// Set the addressed instance's current model.
-    Set {
-        #[arg(long = "instance")]
-        instance_id: String,
-        #[arg(long = "model")]
-        model_id: String,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum OverlaySubcommand {
-    /// Show + focus the overlay (no-op when already visible). With
-    /// `--instance`, also focuses that instance after the present.
-    Present {
-        #[arg(long = "instance")]
-        instance_id: Option<String>,
-    },
-    /// Hide the overlay (no-op when already hidden). Webview stays warm.
-    Hide,
-    /// Flip the overlay's visibility. Race-safe across concurrent calls.
-    Toggle,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum MCPsCommand {
-    /// List the global MCP catalogue. With `--instance`, every entry
-    /// gets an `enabled` flag reflecting the per-instance override
-    /// (or the resolved profile's `mcps` allowlist).
-    List {
-        #[arg(long = "instance")]
-        instance_id: Option<String>,
-    },
-    /// Install a per-instance MCP enabled-list override and restart
-    /// the addressed instance. `--enabled` is comma-separated; pass
-    /// an empty value (`--enabled=`) for the explicit "no MCPs"
-    /// override.
-    Set {
-        #[arg(long = "instance")]
-        instance_id: String,
-        /// Comma-separated MCP names. Empty value installs `[]`.
-        #[arg(long, value_delimiter = ',', default_value = "")]
-        enabled: Vec<String>,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum SkillsCommand {
-    /// List every skill currently loaded by the daemon.
-    List {
-        /// Optional instance id — reserved for per-profile skill
-        /// allowlists once K-275 lands. Passing it today surfaces
-        /// the gap loudly via `unimplemented!` on the server side.
-        #[arg(long = "instance")]
-        instance_id: Option<String>,
-    },
-    /// Fetch one skill's full markdown body + references.
-    Get {
-        #[arg(long)]
-        slug: String,
-    },
-    /// Force-reload the registry from disk.
-    Reload,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum PromptsCommand {
-    /// Send a prompt to a live instance. `text` is positional; pass
-    /// `-` to read it from stdin.
-    Send {
-        #[arg(long = "instance")]
-        instance_id: String,
-
-        /// Prompt text. Use `-` to read from stdin.
-        #[arg(trailing_var_arg = true)]
-        text: Vec<String>,
-    },
-    /// Cancel the addressed instance's in-flight turn.
-    Cancel {
-        #[arg(long = "instance")]
-        instance_id: String,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum DaemonSubcommand {
-    /// Print daemon pid, uptime, version, instance count.
-    Status,
-    /// Print daemon version (+ commit / build date when wired).
-    Version,
-    /// Re-load config + skills (+ MCPs once K-270 lands). Returns the
-    /// post-reload counts.
-    Reload,
-    /// Graceful shutdown. Refuses with `-32603` when any instance has
-    /// an in-flight turn unless `--force` is set.
-    Shutdown {
-        #[arg(long, default_value_t = false)]
-        force: bool,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum EventsSubcommand {
-    /// Stream events. Optional comma-separated `--topics` filter and
-    /// `--instance` filter scope the stream; firehose otherwise.
-    Tail {
-        /// Comma-separated topic filter (e.g. `instances.changed,state.changed`).
-        #[arg(long, value_delimiter = ',')]
-        topics: Option<Vec<String>>,
-        /// Instance id filter — only events bound to this instance.
-        #[arg(long = "instance")]
-        instance_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum DiagSubcommand {
-    /// Pretty-print a structural snapshot of the daemon. With
-    /// `--output <path>`, writes the JSON to a file instead of stdout.
-    Snapshot {
-        /// Write the snapshot to this path. Omit to print to stdout.
-        #[arg(long)]
-        output: Option<std::path::PathBuf>,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum SessionsCommand {
-    /// List the agent's persisted sessions.
-    List {
-        #[arg(long = "instance")]
-        instance_id: Option<String>,
-        #[arg(long = "agent")]
-        agent_id: Option<String>,
-        #[arg(long = "profile")]
-        profile_id: Option<String>,
-        #[arg(long = "cwd")]
-        cwd: Option<std::path::PathBuf>,
-    },
-    /// Delete a persisted session transcript by id. Idempotent on
-    /// the wire shape; today the daemon panics with `unimplemented!`
-    /// because ACP 0.12 doesn't expose a delete verb — `ctl` mirrors
-    /// the panic on the client side rather than round-tripping.
-    Forget {
-        #[arg(long)]
-        id: String,
-    },
-    /// Fetch one session's projection by id.
-    Info {
-        #[arg(long)]
-        id: String,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum PermissionsCommand {
-    /// List pending permission requests, optionally filtered by
-    /// instance.
-    Pending {
-        #[arg(long = "instance")]
-        instance_id: Option<String>,
-    },
-    /// Resolve a pending permission request by id.
-    Respond {
-        #[arg(long = "request")]
-        request_id: String,
-        #[arg(long = "option")]
-        option_id: String,
-    },
-}
-
-/// Dispatch one `ctl` subcommand. Each arm builds the matching
-/// `CtlHandler` (from `ctl/handlers.rs`) and hands it a `CtlClient`
-/// (from `ctl/client.rs`) — a connection factory pointed at the
-/// resolved socket. The handler decides how many connections to open
-/// and how transport failure should affect its exit semantics; `run`
-/// just wires clap to the handler registry.
-pub fn run(cfg: Config, args: CtlArgs) -> Result<()> {
+/// Top-level `ctl` entry point. Builds the `CtlClient` from config,
+/// then asks the parsed [`CtlCommand`] to dispatch itself via
+/// [`CtlDispatch`]. Returns an [`ExitCode`] so `main` can defer to
+/// the OS. Errors short-circuit with `?` inside the trait impls and
+/// land here, where they're printed as a friendly stderr line.
+pub fn run(cfg: Config, args: CtlArgs) -> Result<ExitCode> {
     let socket = cfg.daemon.socket.clone().unwrap_or_else(paths::socket_path);
     debug!(socket = %socket.display(), "ctl: dispatching");
     let client = CtlClient::new(socket);
 
-    match args.command {
-        CtlCommand::Submit { agent, profile, text } => SubmitHandler {
-            text: text.join(" "),
-            agent_id: agent,
-            profile_id: profile,
+    match args.command.dispatch(&client) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(ExitCode::from(1))
         }
-        .run(&client),
-        CtlCommand::Cancel => CancelHandler.run(&client),
-        CtlCommand::Toggle => ToggleHandler.run(&client),
-        CtlCommand::Kill => KillHandler.run(&client),
-        CtlCommand::SessionInfo => SessionInfoHandler.run(&client),
-        CtlCommand::Status { watch } => StatusHandler { watch }.run(&client),
-        CtlCommand::Agents { command } => match command {
-            AgentsSubcommand::List => AgentsListHandler.run(&client),
-        },
-        CtlCommand::Commands { command } => match command {
-            CommandsSubcommand::List { instance_id } => CommandsListHandler { instance_id }.run(&client),
-        },
-        CtlCommand::Modes { command } => match command {
-            ModesSubcommand::List { instance_id } => ModesListHandler { instance_id }.run(&client),
-            ModesSubcommand::Set { instance_id, mode_id } => ModesSetHandler { instance_id, mode_id }.run(&client),
-        },
-        CtlCommand::Models { command } => match command {
-            ModelsSubcommand::List { instance_id } => ModelsListHandler { instance_id }.run(&client),
-            ModelsSubcommand::Set { instance_id, model_id } => ModelsSetHandler { instance_id, model_id }.run(&client),
-        },
-        CtlCommand::Skills { command } => match command {
-            SkillsCommand::List { instance_id } => SkillsListHandler { instance_id }.run(&client),
-            SkillsCommand::Get { slug } => SkillsGetHandler { slug }.run(&client),
-            SkillsCommand::Reload => SkillsReloadHandler.run(&client),
-        },
-        CtlCommand::Mcps { command } => match command {
-            MCPsCommand::List { instance_id } => MCPsListHandler { instance_id }.run(&client),
-            MCPsCommand::Set { instance_id, enabled } => MCPsSetHandler {
-                instance_id,
-                // `--enabled=` produces `[""]` from clap; treat as empty.
-                enabled: enabled.into_iter().filter(|s| !s.is_empty()).collect(),
-            }
-            .run(&client),
-        },
-        CtlCommand::Prompts { command } => match command {
-            PromptsCommand::Send { instance_id, text } => PromptsSendHandler {
-                instance_id,
-                text: text.join(" "),
-            }
-            .run(&client),
-            PromptsCommand::Cancel { instance_id } => PromptsCancelHandler { instance_id }.run(&client),
-        },
-        CtlCommand::Permissions { command } => match command {
-            PermissionsCommand::Pending { instance_id } => PermissionsPendingHandler { instance_id }.run(&client),
-            PermissionsCommand::Respond { request_id, option_id } => {
-                PermissionsRespondHandler { request_id, option_id }.run(&client)
-            }
-        },
-        CtlCommand::Overlay { command } => match command {
-            OverlaySubcommand::Present { instance_id } => OverlayPresentHandler { instance_id }.run(&client),
-            OverlaySubcommand::Hide => OverlayHideHandler.run(&client),
-            OverlaySubcommand::Toggle => OverlayToggleHandler.run(&client),
-        },
-        CtlCommand::Daemon { command } => match command {
-            DaemonSubcommand::Status => DaemonStatusHandler.run(&client),
-            DaemonSubcommand::Version => DaemonVersionHandler.run(&client),
-            DaemonSubcommand::Reload => DaemonReloadHandler.run(&client),
-            DaemonSubcommand::Shutdown { force } => DaemonShutdownHandler { force }.run(&client),
-        },
-        CtlCommand::Diag { command } => match command {
-            DiagSubcommand::Snapshot { output } => DiagSnapshotHandler { output }.run(&client),
-        },
-        CtlCommand::Events { command } => match command {
-            EventsSubcommand::Tail { topics, instance_id } => EventsTailHandler {
-                topics: topics.unwrap_or_default(),
-                instance_id,
-            }
-            .run(&client),
-        },
-        CtlCommand::Sessions { command } => match command {
-            SessionsCommand::List {
-                instance_id,
-                agent_id,
-                profile_id,
-                cwd,
-            } => SessionsListHandler {
-                instance_id,
-                agent_id,
-                profile_id,
-                cwd,
-            }
-            .run(&client),
-            SessionsCommand::Forget { id } => SessionsForgetHandler { id }.run(&client),
-            SessionsCommand::Info { id } => SessionsInfoHandler { id }.run(&client),
-        },
+    }
+}
+
+/// The hub. Top-level shortcut variants (`Submit`, `Cancel`, …) call
+/// into the matching namespace fn directly; namespaced variants
+/// delegate to the inner sub-enum's `CtlDispatch` impl. `Status` is
+/// the documented exception — `status::run` swallows transport / RPC
+/// errors via the offline sentinel so waybar's `exec` contract holds
+/// when the daemon is down.
+impl CtlDispatch for CtlCommand {
+    fn dispatch(self, client: &CtlClient) -> Result<()> {
+        match self {
+            CtlCommand::Submit { agent, profile, text } => session::submit(client, text, agent, profile),
+            CtlCommand::Cancel => session::cancel(client),
+            CtlCommand::SessionInfo => session::info(client),
+            CtlCommand::Toggle => window::toggle(client),
+            CtlCommand::Kill => daemon::kill(client),
+            CtlCommand::Status { watch } => status::run(client, watch),
+
+            CtlCommand::Agents { command } => command.dispatch(client),
+            CtlCommand::Commands { command } => command.dispatch(client),
+            CtlCommand::Modes { command } => command.dispatch(client),
+            CtlCommand::Models { command } => command.dispatch(client),
+            CtlCommand::Skills { command } => command.dispatch(client),
+            CtlCommand::Mcps { command } => command.dispatch(client),
+            CtlCommand::Prompts { command } => command.dispatch(client),
+            CtlCommand::Permissions { command } => command.dispatch(client),
+            CtlCommand::Overlay { command } => command.dispatch(client),
+            CtlCommand::Daemon { command } => command.dispatch(client),
+            CtlCommand::Diag { command } => command.dispatch(client),
+            CtlCommand::Events { command } => command.dispatch(client),
+            CtlCommand::Sessions { command } => command.dispatch(client),
+        }
     }
 }

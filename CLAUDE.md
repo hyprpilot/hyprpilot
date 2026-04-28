@@ -654,6 +654,40 @@ needs to check computed styles against a real layout engine:
   `AgentProvider` is the closed enum, `AcpAgent` is the trait whose
   impls match 1:1 onto its variants; `match_provider_agent(provider)`
   is the bridge.
+- **Hub-and-spokes dispatch — trait + impl-per-sub-enum, single
+  delegating impl on the parent.** When you have a forest of closed
+  enums each with its own `match self → call method fn` body
+  (clap subcommand trees, multi-namespace command routers, any
+  parent-enum-of-sub-enums shape), lift the contract to a small
+  shared trait — one method, takes the per-call context, returns
+  `Result<()>` — and impl it once per sub-enum in the file that
+  owns the sub-enum. The parent enum gets one impl whose body
+  either handles top-level shortcut variants inline or delegates to
+  the inner via the same trait method (`command.dispatch(ctx)`). The
+  call site collapses to `args.command.dispatch(&ctx)`.
+
+  Canonical example: `src-tauri/src/ctl` — `pub(super) trait
+  CtlDispatch { fn dispatch(self, client: &CtlClient) -> Result<()>; }`
+  in `mod.rs`, one impl per namespace file (`agents.rs`, `sessions.rs`,
+  …), the parent `CtlCommand` impl in `mod.rs` is the hub. Adding a
+  new namespace = new file + new sub-enum + `impl CtlDispatch for
+  NewSub` + one variant on the parent + one match arm that delegates.
+
+  Earns its keep over free `dispatch` fns because: many non-trivial
+  implementers (each impl carries a real match), uniform call site
+  (no per-namespace fn name to remember), trait IS the routing
+  protocol at the type system level. Different from the
+  `CtlHandler`-style trait we deleted (one trait impl per leaf
+  command, mostly trivial bodies) — there the trait was ceremony;
+  here it's the shape's actual contract.
+
+  When NOT to force it: don't introduce a dispatch trait for a
+  single-level command tree (just match the one enum), don't add
+  it speculatively before the second sub-enum exists, don't apply
+  it to families where each "implementer" is a one-line shell
+  (that's `CtlHandler`'s failure mode). The trigger is **multiple
+  non-trivial sub-enum match bodies** — that's when the trait pays
+  for itself.
 - **Comment discipline — terse WHY, never WHAT.** Default to no comments.
   Code + well-named identifiers already describe behavior; comments earn
   their keep only when they encode a non-obvious reason (a protocol quirk, a
