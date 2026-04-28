@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use globset::Glob;
 
-use super::{AgentConfig, AgentDefaults, AgentsConfig, MCPDefinition, Modifier, ProfileConfig};
+use super::{AgentConfig, AgentDefaults, AgentsConfig, KeymapsConfig, MCPDefinition, Modifier, ProfileConfig};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -77,39 +77,49 @@ pub(super) fn validate_profile_agent_references<'a>(
     }
 }
 
-/// `mcps` opaque-name list. Rejects empty entries and duplicates
-/// within the list. Reference-validation against the future
-/// `[[mcps]]` catalog (K-270) lives with that issue.
-pub(super) fn validate_profile_string_list(list: &Option<Vec<String>>, _ctx: &()) -> garde::Result {
-    let Some(items) = list else {
-        return Ok(());
-    };
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for item in items {
-        if item.is_empty() {
-            return Err(garde::Error::new("empty string is not a valid entry"));
-        }
-        if !seen.insert(item.as_str()) {
-            return Err(garde::Error::new(format!("duplicate entry '{item}'")));
-        }
-    }
-    Ok(())
+/// Trait that lets `validate_unique_nonempty` reject empty entries +
+/// duplicates over either `String` or `PathBuf` without two copies of
+/// the validator. `is_blank` smooths over `String::is_empty` vs
+/// `PathBuf::as_os_str().is_empty()`; `display_label` powers the error
+/// message (paths use `.display()`).
+pub(super) trait ListEntry: std::hash::Hash + Eq {
+    fn is_blank(&self) -> bool;
+    fn display_label(&self) -> String;
 }
 
-/// `skills` directory list. Rejects empty paths and duplicates. `~`
-/// expansion happens at consume time, so the stored path can be a
-/// tilde-prefixed shorthand — validation compares the raw form.
-pub(super) fn validate_profile_path_list(list: &Option<Vec<PathBuf>>, _ctx: &()) -> garde::Result {
+impl ListEntry for String {
+    fn is_blank(&self) -> bool {
+        self.is_empty()
+    }
+    fn display_label(&self) -> String {
+        self.clone()
+    }
+}
+
+impl ListEntry for PathBuf {
+    fn is_blank(&self) -> bool {
+        self.as_os_str().is_empty()
+    }
+    fn display_label(&self) -> String {
+        self.display().to_string()
+    }
+}
+
+/// Reject empty entries + duplicates inside an `Option<Vec<T>>`.
+/// Generic over `String` / `PathBuf` (and anything else implementing
+/// the local `ListEntry` trait). `~` expansion happens at consume
+/// time so paths are compared in raw form.
+pub(super) fn validate_unique_nonempty<T: ListEntry>(list: &Option<Vec<T>>, _ctx: &()) -> garde::Result {
     let Some(items) = list else {
         return Ok(());
     };
-    let mut seen: std::collections::HashSet<&std::path::Path> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<&T> = std::collections::HashSet::new();
     for item in items {
-        if item.as_os_str().is_empty() {
-            return Err(garde::Error::new("empty path is not a valid entry"));
+        if item.is_blank() {
+            return Err(garde::Error::new("empty entry is not valid"));
         }
-        if !seen.insert(item.as_path()) {
-            return Err(garde::Error::new(format!("duplicate entry '{}'", item.display())));
+        if !seen.insert(item) {
+            return Err(garde::Error::new(format!("duplicate entry '{}'", item.display_label())));
         }
     }
     Ok(())
@@ -211,6 +221,30 @@ pub(super) fn validate_unique_modifiers(mods: &Vec<Modifier>, _ctx: &()) -> gard
     for m in mods {
         if !seen.insert(*m) {
             return Err(garde::Error::new(format!("duplicate modifier '{m:?}' in binding")));
+        }
+    }
+    Ok(())
+}
+
+/// Within-scope keymaps collision check. Garde-walk adapter — wraps
+/// `keymaps::validate_collisions` (which returns `anyhow::Result`)
+/// into `garde::Result` so the rule lives inside the derive walk
+/// alongside every other cross-field validator.
+pub(super) fn validate_keymaps_collisions(cfg: &KeymapsConfig, _ctx: &()) -> garde::Result {
+    super::keymaps::validate_collisions(cfg).map_err(|e| garde::Error::new(format!("{e}")))
+}
+
+/// `system_prompt` ⊕ `system_prompt_file` — exclusive. Iterates the
+/// profile list at validate time; folded into the garde walk so the
+/// rule fires inside the derive tree alongside every other
+/// cross-field validator instead of as a post-walk for-loop.
+pub(super) fn validate_profile_prompt_sources(profiles: &Vec<ProfileConfig>, _ctx: &()) -> garde::Result {
+    for p in profiles {
+        if p.system_prompt.is_some() && p.system_prompt_file.is_some() {
+            return Err(garde::Error::new(format!(
+                "profile '{}' sets both system_prompt and system_prompt_file — pick one",
+                p.id
+            )));
         }
     }
     Ok(())

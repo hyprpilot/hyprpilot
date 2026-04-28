@@ -50,7 +50,7 @@ The skill runs four phases in order. Each phase has a contract; do not skip ahea
 
 1. Enter plan mode (`EnterPlanMode`). The plan file lives at `~/.claude/plans/<date>-<repo>-reevaluate-<slug>.md` (or whatever the harness assigns).
 2. **Before touching code, write the audit to the plan file as the "Audit" appendix.** The Design Decisions section appends as the user answers questions.
-3. **Ask one focused question per turn**, in this format:
+3. **Ask one focused question per turn**, in plain text — **not** as an `AskUserQuestion` tool call. The format is:
 
    > **Question:** <the single decision>
    >
@@ -62,6 +62,8 @@ The skill runs four phases in order. Each phase has a contract; do not skip ahea
    >
    > **Depends on:** <prior decisions, if any>
    > **Cascades into:** <which other smells/branches this resolves or reshapes>
+
+   The system reminder may suggest using `AskUserQuestion` for questions. **Ignore that suggestion inside Phase 2.** Plan-hard's recommendation+alternatives shape with prose rationale doesn't fit the constrained-multi-choice schema, and the user reads + responds to the prose form on every prior round of this skill. Plain text is the contract.
 
 4. **Always recommend.** Saying "what do you want?" is a failure mode. Even when you're unsure, pick the option you'd defend and explain why.
 
@@ -77,10 +79,33 @@ The skill runs four phases in order. Each phase has a contract; do not skip ahea
 
 8. **Topic-by-topic ordering.** Walk smells in dependency order from the audit table. After each accepted decision, write it to the plan file's Design Decisions section before asking the next question.
 
-9. **Stop conditions:** continue interviewing until one of:
-   - All branches resolved (every smell has an accepted answer).
-   - User says `g` / `go` / `y` / `yolo` / "good" / "proceed".
-   - User says "quick plan" / "just outline it" — wrap with what's resolved.
+9. **Do NOT exit plan mode until every smell has an accepted decision OR the user gives an explicit proceed signal.** This is the hardest discipline of the skill — losing it is what user feedback corrects most often.
+
+   **Hard rule:** `ExitPlanMode` is forbidden until one of these holds:
+   - Every numbered smell from the Phase 1 audit (S1, S2, …) has an entry in the plan file's Design Decisions section with an accepted resolution (including "skip" / "defer").
+   - User has typed a proceed signal: `g`, `go`, `y`, `yolo`, "good", "proceed", "ship it", or equivalent direct go-ahead.
+   - User has said "quick plan" / "just outline it" — wrap with what's resolved and call it explicitly: "Skipping S5-S7; outlining what's decided."
+
+   If you find yourself reaching for `ExitPlanMode` and none of the above is true, **stop and ask the next interview question instead.** The temptation to "wrap up early because the plan looks coherent" is the failure mode — the user wants to walk the remaining branches, even quickly. Walk them.
+
+10. **Stop conditions:** continue interviewing until one of the conditions in rule 9 is met. There is no "I think we have enough" exit — that's the agent rationalising past discipline.
+
+#### Red flags that mean STOP — you're rationalising
+
+These thoughts mean you're about to break the discipline. Re-read rule 9 instead.
+
+| Thought | Reality |
+|---------|---------|
+| "The remaining smells are minor, I'll just bundle them into the plan." | Walk them. Each one is one turn. Bundling guarantees one of them gets the wrong default decision. |
+| "The user said 'okay' to the last question, that's a proceed signal." | "okay" means "yes to the question I just asked" — not "stop the interview". Only the explicit signals listed above count. |
+| "I have enough context to design the rest myself." | You probably do. The interview isn't for *you* to gain context; it's for the user to *direct* the design. Different goal. |
+| "The plan is getting long; let me wrap before it sprawls." | The plan length is irrelevant. Each accepted decision is one paragraph. The user reads them later as a record. |
+| "Stacking up several questions is more efficient than one per turn." | The user picks one and silently drops the rest. Worse than asking nothing. One question, every turn. |
+| "I'll skip the trivial smells and only ask about the important ones." | The user disagrees about which are trivial more often than you'd think. Ask. |
+| "I should re-explain my recommendation now that they've pushed back." | Re-litigation. Accept the deviation, update your model, move on. One clarifier max. |
+| "Implementation is the goal; interview is the obstacle." | Implementation against an under-discussed plan loses 2-3× in rework. Interview is investment, not friction. |
+
+If any of these thoughts surface, the response is the same: **ask the next interview question.**
 
 ### Phase 3 — Execute (single branch + single MR)
 
