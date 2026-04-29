@@ -76,40 +76,6 @@ impl StatusChangedNotification {
     }
 }
 
-wire_method!(EventsNotifyMethod, "events/notify");
-
-/// Server-push notification routed to one `events/subscribe` consumer.
-/// `subscriptionId` lets multiplexed clients route incoming lines to
-/// the right local consumer; `topic` is the dot-separated wire string
-/// (matches `InstanceEvent::topic()` for instance-bound topics);
-/// `payload` is the raw event JSON (`adapters::InstanceEvent`).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EventsNotifyParams {
-    pub subscription_id: String,
-    pub topic: crate::rpc::topic::WireTopic,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instance_id: Option<String>,
-    pub payload: serde_json::Value,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct EventsNotifyNotification {
-    pub jsonrpc: JsonRpcVersion,
-    pub method: EventsNotifyMethod,
-    pub params: EventsNotifyParams,
-}
-
-impl EventsNotifyNotification {
-    pub fn new(params: EventsNotifyParams) -> Self {
-        Self {
-            jsonrpc: JsonRpcVersion,
-            method: EventsNotifyMethod,
-            params,
-        }
-    }
-}
-
 /// Marker type that serializes / deserializes as the literal `"2.0"`. Any
 /// other JSON-RPC version on the wire is a `-32600` invalid request.
 ///

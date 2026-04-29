@@ -20,7 +20,6 @@ use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::mcp::MCPsRegistry;
 use crate::paths;
-use crate::rpc::handler::ConfigLoadContext;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
 use crate::skills::{spawn_watcher, SkillsBroadcast, SkillsRegistry};
 
@@ -68,7 +67,7 @@ fn get_window_state(state: State<'_, WindowState>) -> WindowState {
 /// 4. Tauri builder + plugin chain + `invoke_handler!` registration.
 /// 5. [`setup_app`] — `app.manage` calls, GTK font / page zoom,
 ///    [`install_signal_handler`], [`spawn_accept_loop`].
-pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext) -> Result<()> {
+pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let started_at = Instant::now();
     let socket_path = args
         .socket
@@ -130,7 +129,7 @@ pub fn run(cfg: Config, args: DaemonArgs, config_load_context: ConfigLoadContext
             crate::skills::commands::skills_get,
         ])
         .setup(move |app| {
-            setup_app(app, state, listener, started_at, socket_path, config_load_context)?;
+            setup_app(app, state, listener, started_at, socket_path)?;
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -261,10 +260,12 @@ impl RuntimeState {
         }
 
         // MCP catalog registry. Static after daemon start —
-        // restart-to-reconfigure is the model.
+        // restart-to-reconfigure is the model. Daemon-side only;
+        // the RPC layer doesn't expose `mcps/*` (Tauri commands cover
+        // that for the webview).
         let mcps_defs = shared_config.read().expect("config lock poisoned").mcps.clone();
         let mcps = Arc::new(MCPsRegistry::new(mcps_defs));
-        let dispatcher = Arc::new(RpcDispatcher::with_skills_and_mcps(skills.clone(), mcps.clone()));
+        let dispatcher = Arc::new(RpcDispatcher::with_defaults());
 
         let renderer = WindowRenderer::new(window_cfg, wm::detect());
 
@@ -296,7 +297,6 @@ fn setup_app(
     listener: UnixListener,
     started_at: Instant,
     socket_path: PathBuf,
-    config_load_context: ConfigLoadContext,
 ) -> Result<()> {
     app.manage(state.theme);
     app.manage(state.keymaps);
@@ -348,17 +348,13 @@ fn setup_app(
         app: app.handle().clone(),
         status: state.status,
         dispatcher: state.dispatcher,
-        adapter: state.adapter,
-        acp_adapter: state.acp_adapter.clone(),
+        adapter: state.adapter.clone(),
         config: state.shared_config,
         started_at,
         socket_path,
-        config_load_context,
-        skills: state.skills,
-        mcps: state.mcps,
     };
 
-    install_signal_handler(app.handle().clone(), state.acp_adapter);
+    install_signal_handler(app.handle().clone(), state.adapter);
     spawn_accept_loop(listener, rpc_state);
 
     Ok(())
@@ -368,7 +364,7 @@ fn setup_app(
 /// same path as `daemon/kill`. Second signal falls through to the
 /// default handler (force-kill), so SIGINT-twice escapes a stuck
 /// shutdown.
-fn install_signal_handler(app: tauri::AppHandle, adapter: Arc<AcpAdapter>) {
+fn install_signal_handler(app: tauri::AppHandle, adapter: Arc<dyn Adapter>) {
     tauri::async_runtime::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigint = match signal(SignalKind::interrupt()) {
@@ -436,9 +432,12 @@ fn resolve_skills_dirs(cfg: &Config) -> Vec<PathBuf> {
 /// `rpc::server` on `daemon/kill` and by [`install_signal_handler`].
 /// Socket file is not removed — next-start probes stale sockets via
 /// `ECONNREFUSED`, which handles crash cases too.
-pub(crate) async fn shutdown(app: &tauri::AppHandle, adapter: &AcpAdapter) {
+///
+/// Takes `&dyn Adapter` so callers route via the trait — when an HTTP
+/// adapter lands the same shutdown path covers it.
+pub(crate) async fn shutdown(app: &tauri::AppHandle, adapter: &dyn Adapter) {
     info!("shutdown: initiating clean shutdown");
-    adapter.shutdown_all().await;
+    adapter.shutdown().await;
     info!("shutdown: adapter instances drained");
     app.exit(0);
     info!("shutdown: tauri exit dispatched");
