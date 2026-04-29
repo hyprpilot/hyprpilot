@@ -2,11 +2,9 @@
 //! root.
 //!
 //! One `Debouncer` owns N `.watch()` subscriptions — one per existing
-//! root. Every debounced batch triggers a single `registry.reload()`;
-//! the registry itself publishes a `SkillsChanged` event on success
-//! so this task doesn't double up. Debounce window is 500ms, matching
-//! the task spec and leaving plenty of slack for editor save-swap
-//! patterns.
+//! root. Every debounced batch triggers a single `registry.reload()`.
+//! Debounce window is 500ms, matching the task spec and leaving
+//! plenty of slack for editor save-swap patterns.
 //!
 //! Missing roots are skipped (warn + no `.watch()`); a watched root
 //! that disappears at runtime drops its subscription on the
@@ -139,10 +137,8 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::TempDir;
-    use tokio::sync::broadcast;
 
     use super::*;
-    use crate::skills::{SkillsBroadcast, SkillsChanged};
 
     /// Flaky timing on slow runners makes us poll instead of
     /// single-shot waiting. Keeps the test robust without stretching
@@ -161,12 +157,9 @@ mod tests {
     #[test]
     fn watcher_reloads_when_new_skill_appears() {
         let tmp = TempDir::new().unwrap();
-        let (tx, mut rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        let registry = Arc::new(SkillsRegistry::new(vec![tmp.path().to_path_buf()], broadcast));
+        let registry = Arc::new(SkillsRegistry::new(vec![tmp.path().to_path_buf()]));
         registry.reload().unwrap();
         assert_eq!(registry.count(), 0);
-        let _ = rx.try_recv();
 
         spawn_watcher(registry.clone()).expect("watcher armed");
 
@@ -189,12 +182,10 @@ mod tests {
     fn watcher_picks_up_fresh_skills_in_each_root() {
         let a = TempDir::new().unwrap();
         let b = TempDir::new().unwrap();
-        let (tx, _rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        let registry = Arc::new(SkillsRegistry::new(
-            vec![a.path().to_path_buf(), b.path().to_path_buf()],
-            broadcast,
-        ));
+        let registry = Arc::new(SkillsRegistry::new(vec![
+            a.path().to_path_buf(),
+            b.path().to_path_buf(),
+        ]));
         registry.reload().unwrap();
         spawn_watcher(registry.clone()).expect("watcher armed");
 
@@ -219,9 +210,7 @@ mod tests {
     fn watcher_skips_missing_root_without_panic() {
         let a = TempDir::new().unwrap();
         let missing = PathBuf::from("/nonexistent-skills-root-watch-test-k268");
-        let (tx, _rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        let registry = Arc::new(SkillsRegistry::new(vec![missing, a.path().to_path_buf()], broadcast));
+        let registry = Arc::new(SkillsRegistry::new(vec![missing, a.path().to_path_buf()]));
         registry.reload().unwrap();
         spawn_watcher(registry.clone()).expect("watcher armed");
 

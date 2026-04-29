@@ -1,11 +1,23 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use directories::BaseDirs;
 
 const APP_NAME: &str = "hyprpilot";
 
-fn base() -> BaseDirs {
-    BaseDirs::new().expect("unable to resolve user base directories")
+/// Process-lifetime XDG / known-dir base. `BaseDirs::new()` walks env
+/// vars + libc for every call; cache once so the seven helpers below
+/// don't re-pay the cost on every ctl invocation.
+pub fn base() -> &'static BaseDirs {
+    static CACHE: OnceLock<BaseDirs> = OnceLock::new();
+    CACHE.get_or_init(|| BaseDirs::new().expect("unable to resolve user base directories"))
+}
+
+/// Resolved home directory. `BaseDirs::home_dir` returns a borrowed
+/// path; consumers that need an owned `PathBuf` clone at the call
+/// site.
+pub fn home_dir() -> &'static Path {
+    base().home_dir()
 }
 
 pub fn runtime_dir() -> PathBuf {
