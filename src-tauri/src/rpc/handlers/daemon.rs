@@ -93,7 +93,6 @@ async fn reload(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         .map_err(|err| RpcError::internal_error(format!("config validation failed after reload: {err:#}")))?;
 
     let profiles = new_cfg.profiles.len();
-    let mcp_defs = new_cfg.mcps.clone();
     {
         let mut cfg = config_handle.write().expect("config lock poisoned");
         *cfg = new_cfg;
@@ -104,7 +103,11 @@ async fn reload(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
     }
     let skills_count = skills.list().len();
 
-    mcps.reload(mcp_defs);
+    // MCPs are restart-to-reconfigure — the catalog stays at its boot
+    // snapshot. The new `[[mcps]]` from the just-loaded config file
+    // only applies on next daemon start. `mcpsCount` reflects the
+    // current (boot-time) registry, which is the source of truth for
+    // every running instance.
     let mcps_count = mcps.list().len();
 
     acp.publish_daemon_reloaded(profiles, skills_count, mcps_count);
@@ -162,7 +165,7 @@ mod tests {
     use super::*;
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
-    use crate::mcp::{MCPsBroadcast, MCPsRegistry};
+    use crate::mcp::MCPsRegistry;
     use crate::rpc::handler::{ConfigLoadContext, HandlerCtx};
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
@@ -173,7 +176,7 @@ mod tests {
     }
 
     fn build_mcps() -> Arc<MCPsRegistry> {
-        Arc::new(MCPsRegistry::new(Vec::new(), Arc::new(MCPsBroadcast::new())))
+        Arc::new(MCPsRegistry::new(Vec::new()))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -112,12 +112,10 @@ impl RpcHandler for MCPsHandler {
 mod tests {
     use std::sync::RwLock;
 
-    use tokio::sync::broadcast;
-
     use super::*;
     use crate::adapters::{AcpAdapter, Adapter, DefaultPermissionController, PermissionController};
-    use crate::config::{Config, MCPDefinition};
-    use crate::mcp::{MCPsBroadcast, MCPsChanged, MCPsRegistry};
+    use crate::config::Config;
+    use crate::mcp::{MCPDefinition, MCPsRegistry};
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
 
@@ -132,10 +130,7 @@ mod tests {
     }
 
     fn build_handler(defs: Vec<MCPDefinition>) -> MCPsHandler {
-        let (tx, _rx) = broadcast::channel::<MCPsChanged>(8);
-        let broadcast = Arc::new(MCPsBroadcast::from_sender(tx));
-        let reg = Arc::new(MCPsRegistry::new(defs, broadcast));
-        MCPsHandler::new(reg)
+        MCPsHandler::new(Arc::new(MCPsRegistry::new(defs)))
     }
 
     fn build_adapter(cfg: Config) -> Arc<AcpAdapter> {

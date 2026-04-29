@@ -173,28 +173,6 @@ fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
     builder.build().context("failed to compile glob set")
 }
 
-/// One `[[mcps]]` entry in the global catalog. `name` is the dedup
-/// key + the value referenced from `profile.mcps`. `command` / `args`
-/// / `env` describe the MCP server subprocess to spawn; `scope` is a
-/// coarse classifier for UI grouping (non-load-bearing today).
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
-#[serde(deny_unknown_fields)]
-pub struct MCPDefinition {
-    #[garde(length(min = 1))]
-    pub name: String,
-    #[garde(length(min = 1))]
-    pub command: String,
-    #[garde(skip)]
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    #[garde(skip)]
-    #[serde(default)]
-    pub scope: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
