@@ -21,7 +21,7 @@ use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::mcp::MCPsRegistry;
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
-use crate::skills::{spawn_watcher, SkillsBroadcast, SkillsRegistry};
+use crate::skills::{spawn_watcher, SkillsRegistry};
 
 #[derive(Args, Debug, Default, Clone)]
 pub struct DaemonArgs {
@@ -250,8 +250,7 @@ impl RuntimeState {
 
         // Skills registry + watcher. Errors here are logged but don't abort
         // boot — the registry still serves whatever loaded on the initial scan.
-        let skills_broadcast = Arc::new(SkillsBroadcast::new());
-        let skills = Arc::new(SkillsRegistry::new(skills_dirs, skills_broadcast));
+        let skills = Arc::new(SkillsRegistry::new(skills_dirs));
         if let Err(err) = skills.reload() {
             warn!(%err, "skills registry: initial reload failed");
         }

@@ -24,15 +24,16 @@ pub enum LogLevel {
     Error,
 }
 
-impl LogLevel {
-    fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
             LogLevel::Trace => "trace",
             LogLevel::Debug => "debug",
             LogLevel::Info => "info",
             LogLevel::Warn => "warn",
             LogLevel::Error => "error",
-        }
+        };
+        f.write_str(s)
     }
 }
 
@@ -50,7 +51,7 @@ pub fn init(level: Option<LogLevel>) -> Result<Option<WorkerGuard>> {
     // already initialized". `tauri-plugin-log` is registered with
     // `.skip_logger()` so it doesn't fight for the same slot.
     let filter = match level {
-        Some(l) => EnvFilter::try_new(l.as_str()).context("failed to build log level filter")?,
+        Some(l) => EnvFilter::try_new(l.to_string()).context("failed to build log level filter")?,
         None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
     };
 

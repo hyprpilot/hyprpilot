@@ -29,16 +29,13 @@ pub(crate) fn get_gtk_font(font: State<'_, Option<GtkFont>>) -> Option<GtkFont> 
 
 /// Resolved home directory for the running user. The webview cannot
 /// read it itself (no `process` global, no `~` expansion in the
-/// renderer), so the daemon hands it off via Tauri command. `None`
-/// when no home directory is resolvable — the consumer (cwd
-/// truncation) skips the `~` collapse step then.
+/// renderer), so the daemon hands it off via Tauri command.
 ///
-/// Goes through the `home` crate so the mapping is correct on every
-/// platform we ship to (Linux + macOS today, Windows-safe at zero
-/// cost should that ever land).
+/// Goes through `paths::home_dir` (cached `BaseDirs`) so the mapping
+/// is correct on every platform we ship to.
 #[tauri::command]
-pub(crate) fn get_home_dir() -> Option<String> {
-    home::home_dir().map(|p| p.to_string_lossy().into_owned())
+pub(crate) fn get_home_dir() -> String {
+    crate::paths::home_dir().to_string_lossy().into_owned()
 }
 
 /// Parse a GTK font string ("Inter 10", "JetBrains Mono Bold 11",

@@ -3,13 +3,6 @@
 //! `SkillsRegistry`, and keeps the set in sync with disk through a
 //! `notify`-driven watcher.
 //!
-//! Two entry points:
-//! - [`SkillsRegistry`] — owning type, read via `list` / `get` /
-//!   `reload`; constructed once at daemon boot.
-//! - [`SkillsBroadcast`] — tokio broadcast fanout for `skills.changed`
-//!   topic. Consumed by the socket RPC layer and (future) the UI
-//!   bridge.
-//!
 //! Skill delivery onto the wire flows exclusively through the
 //! palette-driven `Attachment` shape on `UserTurnInput::Prompt` — no
 //! inline-token expansion runs server-side; raw user text passes
@@ -21,17 +14,14 @@ mod watcher;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
-use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 pub use watcher::spawn_watcher;
-
-const SKILLS_BROADCAST_CAPACITY: usize = 32;
 
 /// Directory-name slug. Constructor enforces the
 /// `[a-z0-9][a-z0-9_-]*` shape so filesystem + RPC lookups share one
@@ -151,68 +141,14 @@ impl From<&Skill> for SkillSummary {
     }
 }
 
-/// Broadcast event published every time the registry reloads
-/// successfully. Consumers (socket RPC subscribe, UI bridge) tap
-/// [`SkillsBroadcast::subscribe`] and must handle
-/// `RecvError::Lagged` — the channel silently drops messages to
-/// lagging subscribers otherwise (same contract as `StatusBroadcast`
-/// and the adapter registry).
-#[derive(Debug, Clone, Serialize)]
-pub struct SkillsChanged {
-    pub count: usize,
-}
-
-#[derive(Debug)]
-pub struct SkillsBroadcast {
-    sender: broadcast::Sender<SkillsChanged>,
-}
-
-impl SkillsBroadcast {
-    #[must_use]
-    pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(SKILLS_BROADCAST_CAPACITY);
-        Self { sender }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_sender(sender: broadcast::Sender<SkillsChanged>) -> Self {
-        Self { sender }
-    }
-
-    pub fn publish(&self, evt: SkillsChanged) {
-        if let Err(err) = self.sender.send(evt) {
-            tracing::trace!(%err, "skills broadcast: no active subscribers");
-        }
-    }
-
-    /// Subscribe to reload events. Consumed by the future socket
-    /// `skills.changed` subscriber (K-276) + UI delta-bridge (K-277).
-    /// Every consumer MUST handle `RecvError::Lagged` — the broadcast
-    /// channel silently drops messages otherwise (same contract as
-    /// `StatusBroadcast` and the adapter registry).
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<SkillsChanged> {
-        self.sender.subscribe()
-    }
-}
-
-impl Default for SkillsBroadcast {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Owned skill catalogue. Carries its configured roots `dirs` so
-/// call sites never re-pass them. `reload` rescans every root +
-/// publishes a `SkillsChanged` event on success. First-root-wins on
-/// slug collision (warn names both paths); missing roots warn + skip
-/// (no auto-mkdir, no canonicalize).
+/// call sites never re-pass them. `reload` rescans every root.
+/// First-root-wins on slug collision (warn names both paths); missing
+/// roots warn + skip (no auto-mkdir, no canonicalize).
 pub struct SkillsRegistry {
     dirs: Vec<PathBuf>,
     skills: RwLock<HashMap<SkillSlug, Skill>>,
     order: RwLock<Vec<SkillSlug>>,
-    broadcast: Arc<SkillsBroadcast>,
 }
 
 impl SkillsRegistry {
@@ -222,12 +158,11 @@ impl SkillsRegistry {
     /// other init steps. Roots are stored as-is; `reload` skips
     /// missing ones with a warning.
     #[must_use]
-    pub fn new(dirs: Vec<PathBuf>, broadcast: Arc<SkillsBroadcast>) -> Self {
+    pub fn new(dirs: Vec<PathBuf>) -> Self {
         Self {
             dirs,
             skills: RwLock::new(HashMap::new()),
             order: RwLock::new(Vec::new()),
-            broadcast,
         }
     }
 
@@ -239,8 +174,7 @@ impl SkillsRegistry {
     }
 
     /// Rescan the on-disk layout; replace the in-memory table on
-    /// success. Publishes a `SkillsChanged` event so live subscribers
-    /// resync. Roots are processed in `dirs` order — earlier roots
+    /// success. Roots are processed in `dirs` order — earlier roots
     /// win on slug collision.
     pub fn reload(&self) -> Result<()> {
         let mut order = Vec::new();
@@ -274,7 +208,6 @@ impl SkillsRegistry {
         }
         let dirs_display: Vec<String> = self.dirs.iter().map(|p| p.display().to_string()).collect();
         info!(count, dirs = ?dirs_display, "skills registry: reloaded");
-        self.broadcast.publish(SkillsChanged { count });
         Ok(())
     }
 
@@ -315,7 +248,6 @@ mod tests {
     use std::path::Path;
 
     use tempfile::TempDir;
-    use tokio::sync::broadcast;
 
     use super::*;
 
@@ -329,10 +261,8 @@ mod tests {
         .unwrap();
     }
 
-    fn build_registry(tmp: &TempDir) -> (SkillsRegistry, broadcast::Receiver<SkillsChanged>) {
-        let (tx, rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        (SkillsRegistry::new(vec![tmp.path().to_path_buf()], broadcast), rx)
+    fn build_registry(tmp: &TempDir) -> SkillsRegistry {
+        SkillsRegistry::new(vec![tmp.path().to_path_buf()])
     }
 
     #[test]
@@ -350,16 +280,13 @@ mod tests {
     }
 
     #[test]
-    fn reload_fills_registry_and_publishes_event() {
+    fn reload_fills_registry_in_dir_order() {
         let tmp = TempDir::new().unwrap();
         seed_skill(tmp.path(), "a", "alpha", "alpha body");
         seed_skill(tmp.path(), "b", "beta", "beta body");
-        let (reg, mut rx) = build_registry(&tmp);
+        let reg = build_registry(&tmp);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 2);
-
-        let evt = rx.try_recv().expect("change event fired");
-        assert_eq!(evt.count, 2);
 
         let list = reg.list();
         let ids: Vec<&str> = list.iter().map(|s| s.slug.as_str()).collect();
@@ -370,7 +297,7 @@ mod tests {
     fn get_returns_some_for_known_and_none_for_unknown() {
         let tmp = TempDir::new().unwrap();
         seed_skill(tmp.path(), "known", "k", "k body");
-        let (reg, _rx) = build_registry(&tmp);
+        let reg = build_registry(&tmp);
         reg.reload().unwrap();
         let ok = SkillSlug::parse("known").unwrap();
         let miss = SkillSlug::parse("missing").unwrap();
@@ -384,9 +311,7 @@ mod tests {
         let b = TempDir::new().unwrap();
         seed_skill(a.path(), "a-skill", "from a", "a body");
         seed_skill(b.path(), "b-skill", "from b", "b body");
-        let (tx, _rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        let reg = SkillsRegistry::new(vec![a.path().to_path_buf(), b.path().to_path_buf()], broadcast);
+        let reg = SkillsRegistry::new(vec![a.path().to_path_buf(), b.path().to_path_buf()]);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 2);
         assert!(reg.get(&SkillSlug::parse("a-skill").unwrap()).is_some());
@@ -399,9 +324,7 @@ mod tests {
         let b = TempDir::new().unwrap();
         seed_skill(a.path(), "shared", "from a", "FROM_A");
         seed_skill(b.path(), "shared", "from b", "FROM_B");
-        let (tx, _rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        let reg = SkillsRegistry::new(vec![a.path().to_path_buf(), b.path().to_path_buf()], broadcast);
+        let reg = SkillsRegistry::new(vec![a.path().to_path_buf(), b.path().to_path_buf()]);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 1);
         let kept = reg.get(&SkillSlug::parse("shared").unwrap()).unwrap();
@@ -414,9 +337,7 @@ mod tests {
         let a = TempDir::new().unwrap();
         seed_skill(a.path(), "alpha", "alpha", "alpha body");
         let missing = std::path::PathBuf::from("/nonexistent-skills-root-xyz-k268");
-        let (tx, _rx) = broadcast::channel::<SkillsChanged>(8);
-        let broadcast = Arc::new(SkillsBroadcast::from_sender(tx));
-        let reg = SkillsRegistry::new(vec![missing, a.path().to_path_buf()], broadcast);
+        let reg = SkillsRegistry::new(vec![missing, a.path().to_path_buf()]);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 1);
         assert!(reg.get(&SkillSlug::parse("alpha").unwrap()).is_some());

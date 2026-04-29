@@ -38,10 +38,4 @@ describe('useHomeDir', () => {
     await loadHomeDir()
     expect(useHomeDir().homeDir.value).toBeUndefined()
   })
-
-  it('treats null from Rust as undefined ($HOME unset)', async () => {
-    invokeMock.mockResolvedValueOnce(null)
-    await loadHomeDir()
-    expect(useHomeDir().homeDir.value).toBeUndefined()
-  })
 })

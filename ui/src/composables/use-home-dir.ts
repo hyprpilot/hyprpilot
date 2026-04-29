@@ -17,8 +17,7 @@ const homeDir = ref<string>()
  */
 export async function loadHomeDir(): Promise<void> {
   try {
-    const value = await invoke(TauriCommand.GetHomeDir)
-    homeDir.value = value ?? undefined
+    homeDir.value = await invoke(TauriCommand.GetHomeDir)
   } catch {
     homeDir.value = undefined
   }
