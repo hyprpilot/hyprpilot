@@ -13,8 +13,9 @@ use garde::Validate;
 use merge::Merge;
 use serde::{Deserialize, Serialize};
 
+use crate::mcp::MCPDefinition;
 use crate::paths;
-pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, MCPDefinition, ProfileConfig};
+pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig};
 #[allow(unused_imports)]
 pub use daemon::{AnchorWindow, CenterWindow, Daemon, Dimension, Edge, Window, WindowMode};
 pub use keymaps::KeymapsConfig;

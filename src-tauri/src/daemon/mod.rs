@@ -18,7 +18,7 @@ use crate::adapters::commands as adapter_commands;
 use crate::adapters::permission::{DefaultPermissionController, PermissionController};
 use crate::adapters::{AcpAdapter, Adapter};
 use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
-use crate::mcp::{MCPsBroadcast, MCPsRegistry};
+use crate::mcp::MCPsRegistry;
 use crate::paths;
 use crate::rpc::handler::ConfigLoadContext;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
@@ -260,11 +260,10 @@ impl RuntimeState {
             warn!(%err, "skills watcher: spawn failed — live reload disabled");
         }
 
-        // MCP catalog registry. Static after daemon start (no live reload yet
-        // — `daemon/reload` lands in K-279).
-        let mcps_broadcast = Arc::new(MCPsBroadcast::new());
+        // MCP catalog registry. Static after daemon start —
+        // restart-to-reconfigure is the model.
         let mcps_defs = shared_config.read().expect("config lock poisoned").mcps.clone();
-        let mcps = Arc::new(MCPsRegistry::new(mcps_defs, mcps_broadcast));
+        let mcps = Arc::new(MCPsRegistry::new(mcps_defs));
         let dispatcher = Arc::new(RpcDispatcher::with_skills_and_mcps(skills.clone(), mcps.clone()));
 
         let renderer = WindowRenderer::new(window_cfg, wm::detect());

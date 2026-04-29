@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use globset::Glob;
 
-use super::{AgentConfig, AgentDefaults, AgentsConfig, KeymapsConfig, MCPDefinition, Modifier, ProfileConfig};
+use crate::mcp::MCPDefinition;
+
+use super::{AgentConfig, AgentDefaults, AgentsConfig, KeymapsConfig, Modifier, ProfileConfig};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();

@@ -12,7 +12,9 @@
 //! Whole-entry replace — partial field merge inside an entry would
 //! surprise.
 
-use super::{AgentConfig, MCPDefinition, ProfileConfig};
+use crate::mcp::MCPDefinition;
+
+use super::{AgentConfig, ProfileConfig};
 
 /// Right wins on Some; else keep left. Mirrors the old
 /// `Option::merge` blanket impl in our hand-rolled trait.
