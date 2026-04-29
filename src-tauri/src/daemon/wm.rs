@@ -236,3 +236,109 @@ fn cursor_position_gdk() -> Option<(i32, i32)> {
 fn cursor_position_gdk() -> Option<(i32, i32)> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Hyprland's `hyprctl -j monitors` output shape — array of monitor
+    /// objects, the focused entry carries `focused: true` and full EDID
+    /// metadata.
+    #[test]
+    fn focused_monitor_info_picks_hyprland_focused_entry() {
+        let json = json!([
+            {
+                "name": "DP-1",
+                "make": "Dell",
+                "model": "U2723QE",
+                "serial": "ABC123",
+                "focused": false,
+            },
+            {
+                "name": "DP-2",
+                "make": "LG",
+                "model": "27UP850",
+                "serial": "XYZ789",
+                "focused": true,
+            },
+        ]);
+        let info = focused_monitor_info(&json, "focused").expect("focused entry exists");
+        assert_eq!(info.name, "DP-2");
+        assert_eq!(info.make.as_deref(), Some("LG"));
+        assert_eq!(info.model.as_deref(), Some("27UP850"));
+        assert_eq!(info.serial.as_deref(), Some("XYZ789"));
+    }
+
+    /// Sway's `swaymsg -t get_outputs -r` emits the same array shape.
+    /// The `-r` flag returns the raw JSON instead of the IPC-wrapped form.
+    #[test]
+    fn focused_monitor_info_picks_sway_focused_entry() {
+        let json = json!([
+            {
+                "name": "eDP-1",
+                "make": "BOE",
+                "model": "Built-in",
+                "serial": null,
+                "focused": true,
+            },
+            {
+                "name": "HDMI-A-1",
+                "focused": false,
+            },
+        ]);
+        let info = focused_monitor_info(&json, "focused").expect("focused entry exists");
+        assert_eq!(info.name, "eDP-1");
+        assert_eq!(info.make.as_deref(), Some("BOE"));
+        // null serial in JSON deserialises as None on string projection.
+        assert_eq!(info.serial, None);
+    }
+
+    /// No entry with `focused: true` → None. Caller falls through to its
+    /// own monitor-selection fallback (primary → any).
+    #[test]
+    fn focused_monitor_info_returns_none_when_nothing_focused() {
+        let json = json!([
+            { "name": "DP-1", "focused": false },
+            { "name": "DP-2", "focused": false },
+        ]);
+        assert!(focused_monitor_info(&json, "focused").is_none());
+    }
+
+    /// Focused entry exists but has no `name` field — the projection
+    /// short-circuits via `?` on `string_at("name")` and returns None
+    /// rather than emitting a `MonitorInfo` with an empty connector.
+    #[test]
+    fn focused_monitor_info_returns_none_when_name_missing() {
+        let json = json!([
+            { "make": "Anonymous", "focused": true },
+        ]);
+        assert!(focused_monitor_info(&json, "focused").is_none());
+    }
+
+    /// Top-level shape isn't an array (e.g. compositor IPC returned an
+    /// error envelope) — `as_array()?` short-circuits to None.
+    #[test]
+    fn focused_monitor_info_returns_none_for_non_array() {
+        let json = json!({ "error": "no outputs" });
+        assert!(focused_monitor_info(&json, "focused").is_none());
+    }
+
+    /// Spawning a binary that doesn't exist → `Command::output` errors
+    /// with `ENOENT`; the function logs at debug and returns None.
+    #[test]
+    fn ipc_json_returns_none_on_spawn_failure() {
+        let result = ipc_json("/nonexistent/binary/that/does/not/exist", &[]);
+        assert!(result.is_none());
+    }
+
+    /// Binary runs successfully but emits non-JSON stdout → `from_slice`
+    /// fails; the function logs at debug and returns None.
+    #[test]
+    fn ipc_json_returns_none_on_non_json_stdout() {
+        // /bin/echo is POSIX-portable; emits "not-json\n" to stdout
+        // exit code 0. The non-JSON parse path is what we want here.
+        let result = ipc_json("/bin/echo", &["not-json"]);
+        assert!(result.is_none());
+    }
+}

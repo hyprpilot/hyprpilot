@@ -22,6 +22,7 @@ clap = { version = "4.6", features = ["derive", "env"] }
 directories = "6"
 garde = { version = "0.22", features = ["derive"] }
 globset = "0.4"
+home = "0.5"
 libc = "0.2"
 notify = "8"
 notify-debouncer-full = "0.7"
