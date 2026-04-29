@@ -215,6 +215,14 @@ pub trait Adapter: Send + Sync + 'static {
     /// before `app.exit(0)`.
     async fn shutdown(&self);
 
+    /// Permission controller for prompts that need user approval.
+    /// Default: `None` (transports that don't broker permissions).
+    /// `AcpAdapter` returns `Some(...)` so the `permissions/*` RPC
+    /// handlers can list / resolve pending prompts via the trait.
+    fn permissions(&self) -> Option<std::sync::Arc<dyn crate::adapters::permission::PermissionController>> {
+        None
+    }
+
     // ── wire-method dispatch surface (S3 expansion) ───────────────────
     //
     // Each method has a `Capabilities`-gated default that returns

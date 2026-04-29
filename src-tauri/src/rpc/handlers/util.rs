@@ -1,16 +1,7 @@
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::adapters::AdapterError;
 use crate::rpc::protocol::RpcError;
-
-/// Shared param struct for handlers that only route by instance id
-/// (`commands/list`, `modes/list`, `models/list`).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct InstanceIdOnly {
-    pub(super) instance_id: String,
-}
 
 pub(super) fn parse_params<T: serde::de::DeserializeOwned>(params: Value, method: &str) -> Result<T, RpcError> {
     serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))

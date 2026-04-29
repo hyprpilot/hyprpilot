@@ -35,10 +35,7 @@ impl RpcHandler for PromptsHandler {
     }
 
     async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-        let adapter = ctx
-            .adapter
-            .as_ref()
-            .ok_or_else(|| RpcError::internal_error("adapter not in managed state"))?;
+        let adapter = &ctx.adapter;
 
         match method {
             "prompts/send" => {
@@ -113,23 +110,16 @@ mod tests {
         let ctx = HandlerCtx {
             app: None,
             status: &status,
-            adapter: Some(dyn_adapter),
-            acp_adapter: Some(adapter),
+            adapter: dyn_adapter,
             config: Some(shared),
             id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,
-            config_load_context: None,
-            skills: None,
-            mcps: None,
-            existing_event_subscription_ids: &[],
-            events_tx: None,
         };
         match PromptsHandler.handle(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
             Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
-            Ok(HandlerOutcome::EventsSubscribed(v, _)) => v,
             Err(err) => json!({ "code": err.code, "message": err.message }),
         }
     }

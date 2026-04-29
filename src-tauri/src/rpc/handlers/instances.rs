@@ -69,10 +69,7 @@ impl RpcHandler for InstancesHandler {
     }
 
     async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-        let adapter = ctx
-            .adapter
-            .as_ref()
-            .ok_or_else(|| RpcError::internal_error("adapter not in managed state"))?;
+        let adapter = &ctx.adapter;
 
         match method {
             "instances/list" => {

@@ -1,20 +1,11 @@
-mod agents;
 mod client;
-mod commands;
 mod daemon;
 mod diag;
-mod events;
-mod mcps;
-mod models;
-mod modes;
+mod instances;
 mod overlay;
 mod permissions;
 mod prompts;
-mod session;
-mod sessions;
-mod skills;
 mod status;
-mod window;
 
 use std::process::ExitCode;
 
@@ -35,48 +26,16 @@ pub struct CtlArgs {
     pub command: CtlCommand,
 }
 
-/// Top-level `ctl` subcommand tree. Each variant either:
-///
-/// - is a top-level shortcut (`Submit`, `Cancel`, `Toggle`, `Kill`,
-///   `SessionInfo`) that maps directly to a single wire method, or
-/// - holds a namespaced sub-enum owned by the matching `ctl/<ns>.rs`
-///   submodule (`Agents { command: AgentsSubcommand }`,
-///   `Sessions { command: SessionsCommand }`, …).
-///
-/// Routing happens once in [`dispatch`]: shortcut variants call into
-/// the namespace fns directly (`session::submit(...)`); namespaced
-/// variants delegate to the namespace's own `dispatch` fn
-/// (`agents::dispatch(client, command)`).
+/// Top-level `ctl` subcommand tree. Webview consumers go through
+/// Tauri commands (in `adapters/commands.rs`); this is the operator,
+/// scripting, and waybar surface. Routing happens once in
+/// [`CtlDispatch::dispatch`]: shortcut variants call into the
+/// namespace fns directly; namespaced variants delegate to the
+/// inner sub-enum's own `CtlDispatch` impl.
 #[derive(Subcommand, Debug, Clone)]
 pub enum CtlCommand {
-    /// Submit a prompt to the primary session.
-    Submit {
-        /// Agent id override (defaults to `[agent] default` / the
-        /// profile's agent).
-        #[arg(long)]
-        agent: Option<String>,
-
-        /// Profile id — applies the configured model + system prompt
-        /// overlay. Defaults to `[agent] default_profile`.
-        #[arg(long)]
-        profile: Option<String>,
-
-        /// Prompt text to submit. Joined with spaces if supplied as multiple args.
-        #[arg(trailing_var_arg = true)]
-        text: Vec<String>,
-    },
-
-    /// Cancel the in-flight request on the active session.
-    Cancel,
-
-    /// Toggle the overlay window.
-    Toggle,
-
     /// Kill the running daemon.
     Kill,
-
-    /// Print the active session id + profile info.
-    SessionInfo,
 
     /// Print the daemon / session status as JSON.
     ///
@@ -95,46 +54,8 @@ pub enum CtlCommand {
         watch: bool,
     },
 
-    /// Read-only operations over the `[[agents]]` registry.
-    Agents {
-        #[command(subcommand)]
-        command: agents::AgentsSubcommand,
-    },
-
-    /// ACP `session/available_commands` passthrough — per-instance.
-    Commands {
-        #[command(subcommand)]
-        command: commands::CommandsSubcommand,
-    },
-
-    /// ACP `session/set_session_mode` passthrough — per-instance.
-    Modes {
-        #[command(subcommand)]
-        command: modes::ModesSubcommand,
-    },
-
-    /// ACP `session/set_session_model` passthrough — per-instance.
-    Models {
-        #[command(subcommand)]
-        command: models::ModelsSubcommand,
-    },
-
-    /// Skill catalogue operations.
-    Skills {
-        #[command(subcommand)]
-        command: skills::SkillsCommand,
-    },
-
-    /// MCP catalogue + per-instance enabled-set operations.
-    Mcps {
-        #[command(subcommand)]
-        command: mcps::MCPsCommand,
-    },
-
     /// Send / cancel single-shot prompts addressed to a specific
-    /// instance. Distinct from `submit` — `submit` resolves through
-    /// `(agent, profile)` and may auto-spawn; `prompts send` requires
-    /// a live `--instance <id>`.
+    /// instance. Requires a live `--instance <id>`.
     Prompts {
         #[command(subcommand)]
         command: prompts::PromptsCommand,
@@ -155,10 +76,15 @@ pub enum CtlCommand {
         command: overlay::OverlaySubcommand,
     },
 
-    /// Daemon introspection + lifecycle. Distinct from the legacy
-    /// top-level `kill` subcommand: `daemon shutdown` is the graceful
-    /// surface (with a busy check), `daemon kill` would be the
-    /// hard-stop.
+    /// Live process management for scripting.
+    Instances {
+        #[command(subcommand)]
+        command: instances::InstancesSubcommand,
+    },
+
+    /// Daemon introspection + lifecycle. Distinct from the top-level
+    /// `kill` shortcut: `daemon shutdown` is the graceful surface
+    /// (with a busy check), `daemon kill` is the hard-stop.
     Daemon {
         #[command(subcommand)]
         command: daemon::DaemonSubcommand,
@@ -169,34 +95,12 @@ pub enum CtlCommand {
         #[command(subcommand)]
         command: diag::DiagSubcommand,
     },
-
-    /// Connection-scoped event subscription. Streams every
-    /// `events/notify` notification the daemon emits as one JSON line
-    /// per event. Live-only — no replay, no reconnect; Ctrl-C exits.
-    Events {
-        #[command(subcommand)]
-        command: events::EventsSubcommand,
-    },
-
-    /// Operations on persisted on-disk session transcripts. Distinct
-    /// from `submit` / `prompts` (per-instance ACP wire ops) and
-    /// instance lifecycle (`spawn`, `restart`, `shutdown`).
-    Sessions {
-        #[command(subcommand)]
-        command: sessions::SessionsCommand,
-    },
 }
 
 /// Every command-holder in this module implements `CtlDispatch`. The
 /// top-level [`CtlCommand`] is the hub: its impl either handles a
-/// top-level shortcut variant inline (`Submit`, `Cancel`, …) or
-/// delegates to the inner sub-enum via the same trait method
-/// (`agents::AgentsSubcommand` etc. all impl `CtlDispatch`). Each
-/// namespace file owns one impl over its own sub-enum.
-///
-/// Adding a new namespace = new file + new sub-enum + `impl
-/// CtlDispatch for NewSubcommand` + new variant on `CtlCommand` + one
-/// match arm in `CtlCommand`'s impl that delegates `command.dispatch(client)`.
+/// top-level shortcut variant inline (`Kill`, `Status`) or delegates
+/// to the inner sub-enum via the same trait method.
 pub(super) trait CtlDispatch {
     fn dispatch(self, client: &CtlClient) -> Result<()>;
 }
@@ -246,35 +150,23 @@ pub fn run(cfg: Config, args: CtlArgs) -> Result<ExitCode> {
     }
 }
 
-/// The hub. Top-level shortcut variants (`Submit`, `Cancel`, …) call
-/// into the matching namespace fn directly; namespaced variants
-/// delegate to the inner sub-enum's `CtlDispatch` impl. `Status` is
-/// the documented exception — `status::run` swallows transport / RPC
-/// errors via the offline sentinel so waybar's `exec` contract holds
-/// when the daemon is down.
+/// The hub. Top-level shortcut variants call into the matching
+/// namespace fn directly; namespaced variants delegate to the inner
+/// sub-enum's `CtlDispatch` impl. `Status` is the documented
+/// exception — `status::run` swallows transport / RPC errors via the
+/// offline sentinel so waybar's `exec` contract holds when the
+/// daemon is down.
 impl CtlDispatch for CtlCommand {
     fn dispatch(self, client: &CtlClient) -> Result<()> {
         match self {
-            CtlCommand::Submit { agent, profile, text } => session::submit(client, text, agent, profile),
-            CtlCommand::Cancel => session::cancel(client),
-            CtlCommand::SessionInfo => session::info(client),
-            CtlCommand::Toggle => window::toggle(client),
             CtlCommand::Kill => daemon::kill(client),
             CtlCommand::Status { watch } => status::run(client, watch),
-
-            CtlCommand::Agents { command } => command.dispatch(client),
-            CtlCommand::Commands { command } => command.dispatch(client),
-            CtlCommand::Modes { command } => command.dispatch(client),
-            CtlCommand::Models { command } => command.dispatch(client),
-            CtlCommand::Skills { command } => command.dispatch(client),
-            CtlCommand::Mcps { command } => command.dispatch(client),
             CtlCommand::Prompts { command } => command.dispatch(client),
             CtlCommand::Permissions { command } => command.dispatch(client),
             CtlCommand::Overlay { command } => command.dispatch(client),
+            CtlCommand::Instances { command } => command.dispatch(client),
             CtlCommand::Daemon { command } => command.dispatch(client),
             CtlCommand::Diag { command } => command.dispatch(client),
-            CtlCommand::Events { command } => command.dispatch(client),
-            CtlCommand::Sessions { command } => command.dispatch(client),
         }
     }
 }

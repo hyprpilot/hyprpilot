@@ -81,11 +81,7 @@ async fn present(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<Hand
 
     let focused = match parsed_key {
         Some(key) => {
-            let adapter = ctx
-                .adapter
-                .as_ref()
-                .ok_or_else(|| RpcError::internal_error("adapter not in managed state"))?;
-            let key = adapter.focus(key).await.map_err(map_adapter_err)?;
+            let key = ctx.adapter.focus(key).await.map_err(map_adapter_err)?;
             Some(key.as_string())
         }
         None => None,
@@ -165,23 +161,16 @@ mod tests {
         let ctx = HandlerCtx {
             app: None,
             status: &status,
-            adapter: Some(dyn_adapter),
-            acp_adapter: Some(adapter),
+            adapter: dyn_adapter,
             config: Some(shared),
             id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,
-            config_load_context: None,
-            skills: None,
-            mcps: None,
-            existing_event_subscription_ids: &[],
-            events_tx: None,
         };
         match OverlayHandler.handle(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
             Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
-            Ok(HandlerOutcome::EventsSubscribed(v, _)) => v,
             Err(err) => json!({ "code": err.code, "message": err.message }),
         }
     }

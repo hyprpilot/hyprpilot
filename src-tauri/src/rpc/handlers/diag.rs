@@ -32,23 +32,21 @@ async fn snapshot(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
     let uptime_secs = ctx.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
     let socket_path = ctx.socket_path.map(|p| p.display().to_string()).unwrap_or_default();
 
-    let instances = match &ctx.adapter {
-        Some(a) => a
-            .list()
-            .await
-            .into_iter()
-            .map(|info| {
-                json!({
-                    "id": info.id,
-                    "agentId": info.agent_id,
-                    "profileId": info.profile_id,
-                    "sessionId": info.session_id,
-                    "mode": info.mode,
-                })
+    let instances = ctx
+        .adapter
+        .list()
+        .await
+        .into_iter()
+        .map(|info| {
+            json!({
+                "id": info.id,
+                "agentId": info.agent_id,
+                "profileId": info.profile_id,
+                "sessionId": info.session_id,
+                "mode": info.mode,
             })
-            .collect::<Vec<_>>(),
-        None => Vec::new(),
-    };
+        })
+        .collect::<Vec<_>>();
 
     // Profiles: only structural fields (id, agent, has_system_prompt).
     // env values stay behind on the agent side — the snapshot must
@@ -73,31 +71,6 @@ async fn snapshot(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         None => (Vec::new(), 0),
     };
 
-    // Skills: count + slug list. Bodies stay behind `skills/get` —
-    // a snapshot of every skill body would balloon to megabytes.
-    let (skill_slugs, skills_count) = match &ctx.skills {
-        Some(reg) => {
-            let list = reg.list();
-            let slugs: Vec<String> = list.iter().map(|s| s.slug.to_string()).collect();
-            let count = list.len();
-            (slugs, count)
-        }
-        None => (Vec::new(), 0),
-    };
-
-    let mcps_count = match &ctx.mcps {
-        Some(reg) => reg.list().len(),
-        None => 0,
-    };
-
-    let config_paths = match ctx.config_load_context {
-        Some(c) => json!({
-            "cliPath": c.cli_path.as_ref().map(|p| p.display().to_string()),
-            "profile": c.profile,
-        }),
-        None => json!({ "cliPath": null, "profile": null }),
-    };
-
     Ok(HandlerOutcome::Reply(json!({
         "daemon": {
             "pid": pid,
@@ -110,14 +83,6 @@ async fn snapshot(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
             "count": profiles_count,
             "summaries": profile_summaries,
         },
-        "skills": {
-            "count": skills_count,
-            "slugs": skill_slugs,
-        },
-        "mcps": {
-            "count": mcps_count,
-        },
-        "configPaths": config_paths,
     })))
 }
 
@@ -132,14 +97,9 @@ mod tests {
     use super::*;
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
-    use crate::rpc::handler::{ConfigLoadContext, HandlerCtx};
+    use crate::rpc::handler::HandlerCtx;
     use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
-    use crate::skills::{SkillsBroadcast, SkillsRegistry};
-
-    fn build_skills() -> Arc<SkillsRegistry> {
-        Arc::new(SkillsRegistry::new(Vec::new(), Arc::new(SkillsBroadcast::new())))
-    }
 
     /// `diag/snapshot` against an empty config + empty registry —
     /// asserts the redaction shape: `profiles.summaries` must omit
@@ -182,30 +142,22 @@ mod tests {
         let config = Arc::new(std::sync::RwLock::new(cfg));
         let status = StatusBroadcast::new(true);
         let id = RequestId::Number(1);
-        let load_ctx = ConfigLoadContext::default();
         let socket = Path::new("/tmp/hyprpilot.sock");
         let started_at = Instant::now();
-        let skills = build_skills();
         let ctx = HandlerCtx {
             app: None,
             status: &status,
-            adapter: Some(adapter),
-            acp_adapter: Some(acp),
+            adapter,
             config: Some(config),
             id: &id,
             already_subscribed: false,
             started_at: Some(started_at),
             socket_path: Some(socket),
-            config_load_context: Some(&load_ctx),
-            skills: Some(skills),
-            mcps: None,
-            existing_event_subscription_ids: &[],
-            events_tx: None,
         };
         let out = DiagHandler.handle("diag/snapshot", Value::Null, ctx).await.unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::StatusSubscribed(..) | HandlerOutcome::EventsSubscribed(..) => panic!("expected Reply"),
+            HandlerOutcome::StatusSubscribed(..) => panic!("expected Reply"),
         };
 
         // Every secret must stay buried.
@@ -232,15 +184,8 @@ mod tests {
         assert_eq!(summaries[0]["agent"], "claude-code");
         assert_eq!(summaries[0]["hasSystemPrompt"], true);
         assert!(summaries[0].get("env").is_none(), "env must not appear: {v}");
-        assert!(
-            summaries[0].get("systemPrompt").is_none(),
-            "system_prompt body must not appear: {v}",
-        );
 
-        // Instances + skills + mcps are present even when empty.
         assert_eq!(v["instances"], json!([]));
-        assert_eq!(v["skills"]["count"], 0);
-        assert_eq!(v["mcps"]["count"], 0);
     }
 
     #[tokio::test]
@@ -253,18 +198,12 @@ mod tests {
         let ctx = HandlerCtx {
             app: None,
             status: &status,
-            adapter: Some(adapter),
-            acp_adapter: Some(acp),
+            adapter,
             config: Some(config),
             id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,
-            config_load_context: None,
-            skills: None,
-            mcps: None,
-            existing_event_subscription_ids: &[],
-            events_tx: None,
         };
         let res = DiagHandler.handle("diag/bogus", Value::Null, ctx).await;
         let err = match res {

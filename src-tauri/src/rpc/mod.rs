@@ -3,119 +3,59 @@ pub mod handlers;
 pub mod protocol;
 pub mod server;
 pub mod status;
-pub mod topic;
-
-use std::sync::Arc;
 
 use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    AgentsHandler, CommandsHandler, ConfigHandler, DaemonHandler, DiagHandler, EventsHandler, InstancesHandler,
-    MCPsHandler, ModelsHandler, ModesHandler, OverlayHandler, PermissionsHandler, ProfilesHandler, PromptsHandler,
-    SessionHandler, SessionsHandler, SkillsHandler, StatusHandler, WindowHandler,
+    DaemonHandler, DiagHandler, InstancesHandler, OverlayHandler, PermissionsHandler, PromptsHandler, StatusHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
 
-use crate::mcp::MCPsRegistry;
 use crate::rpc::protocol::RpcError;
-use crate::skills::SkillsRegistry;
 
 /// Registry of every `RpcHandler` implementation wired into the daemon.
 ///
 /// Dispatch is a single pass over `handlers`: pull the namespace prefix
-/// from the method name (`"status/get"` → `"status"`, `"window/toggle"`
-/// → `"window"`), find the first handler whose `namespace()` matches,
-/// and delegate. Methods without a `/` route to the empty-namespace
-/// handler; no handler ships for the empty namespace today, so any
-/// bare method name (`submit`, `toggle`, `kill`, etc.) surfaces as
-/// `-32601 method not found`. That's load-bearing: the K-239 renames
-/// are intentionally breaking and bare names must stay dead.
+/// from the method name (`"status/get"` → `"status"`), find the first
+/// handler whose `namespace()` matches, and delegate. Methods without
+/// a `/` route to the empty namespace, which has no registered
+/// handler — bare method names (`submit`, `toggle`, `kill`, etc.) all
+/// return `-32601 method not found`. That's load-bearing: the K-239
+/// renames are intentionally breaking and bare names must stay dead.
 ///
 /// Extending the RPC surface means implementing `RpcHandler` and pushing
-/// a new instance onto the vector in `with_defaults`. No other file
-/// changes required — `server::handle_connection` is namespace-agnostic.
+/// a new instance onto the vector in `with_defaults`.
+///
+/// Wire surface today (7 namespaces, ~18 verbs):
+/// - `daemon/{kill, status, version, shutdown}` — operator surface.
+/// - `diag/snapshot` — read-only structural snapshot.
+/// - `instances/*` — live process management for scripting.
+/// - `overlay/{present, hide, toggle}` — hyprland-bind surface.
+/// - `permissions/{pending, respond}` — script-driven permission resolution.
+/// - `prompts/{send, cancel}` — per-instance scripting.
+/// - `status/{get, subscribe}` — waybar.
+///
+/// The webview goes through Tauri commands (in `adapters/commands.rs`),
+/// not this RPC surface. RPC is the operator / scripting transport.
 pub struct RpcDispatcher {
     handlers: Vec<Box<dyn RpcHandler>>,
 }
 
 impl RpcDispatcher {
-    /// Build the default registry. Every RPC method the daemon implements
-    /// today lives in one of these handlers:
-    ///
-    /// - `SessionHandler` (namespace `"session"`): `session/submit`,
-    ///   `session/cancel`, `session/info`.
-    /// - `WindowHandler` (namespace `"window"`): `window/toggle`.
-    /// - `OverlayHandler` (namespace `"overlay"`): `overlay/present`,
-    ///   `overlay/hide`, `overlay/toggle` — hyprland-bind surface,
-    ///   serialised through `WindowRenderer::lock_present`.
-    /// - `DaemonHandler` (namespace `"daemon"`): `daemon/kill`,
-    ///   `daemon/status`, `daemon/version`, `daemon/reload`,
-    ///   `daemon/shutdown`.
-    /// - `DiagHandler` (namespace `"diag"`): `diag/snapshot`.
-    /// - `StatusHandler` (namespace `"status"`): `status/get`,
-    ///   `status/subscribe`.
-    /// - `ConfigHandler` (namespace `"config"`): `config/profiles`.
-    /// - `InstancesHandler` (namespace `"instances"`): `instances/list`,
-    ///   `instances/spawn`, `instances/focus`, `instances/restart`,
-    ///   `instances/shutdown`, `instances/info`.
-    /// - `ProfilesHandler` (namespace `"profiles"`): `profiles/list`.
-    /// - `AgentsHandler` (namespace `"agents"`): `agents/list`.
-    /// - `CommandsHandler` (namespace `"commands"`): `commands/list`.
-    /// - `ModesHandler` (namespace `"modes"`): `modes/list`, `modes/set`.
-    /// - `ModelsHandler` (namespace `"models"`): `models/list`, `models/set`.
-    /// - `PromptsHandler` (namespace `"prompts"`): `prompts/send`,
-    ///   `prompts/cancel`.
-    /// - `PermissionsHandler` (namespace `"permissions"`):
-    ///   `permissions/pending`, `permissions/respond`.
-    /// - `EventsHandler` (namespace `"events"`): `events/subscribe`,
-    ///   `events/unsubscribe`.
-    /// - `SessionsHandler` (namespace `"sessions"`): `sessions/list`,
-    ///   `sessions/forget`, `sessions/info` — operations on persisted
-    ///   on-disk transcripts. Distinct from `session/*`
-    ///   (per-instance ACP wire ops) and `instances/*` (running
-    ///   processes).
-    ///
-    /// Stateful handlers (today: `SkillsHandler` + `MCPsHandler`,
-    /// which own `Arc<SkillsRegistry>` / `Arc<MCPsRegistry>`) land via
-    /// [`Self::with_skills_and_mcps`] — they can't live in
-    /// `with_defaults` without threading registry construction into the
-    /// test harness.
     pub fn with_defaults() -> Self {
         Self {
             handlers: vec![
-                Box::new(SessionHandler),
-                Box::new(WindowHandler),
                 Box::new(OverlayHandler),
                 Box::new(DaemonHandler),
                 Box::new(DiagHandler),
                 Box::new(StatusHandler),
-                Box::new(ConfigHandler),
                 Box::new(InstancesHandler),
-                Box::new(ProfilesHandler),
-                Box::new(AgentsHandler),
-                Box::new(CommandsHandler),
-                Box::new(ModesHandler),
-                Box::new(ModelsHandler),
                 Box::new(PromptsHandler),
                 Box::new(PermissionsHandler),
-                Box::new(EventsHandler),
-                Box::new(SessionsHandler),
             ],
         }
-    }
-
-    /// `with_defaults` + live `SkillsHandler` + `MCPsHandler`. The
-    /// daemon uses this shape so both `skills/*` and `mcps/*` route
-    /// through real registries; unit tests that don't exercise either
-    /// namespace keep using `with_defaults` so they don't need a temp
-    /// skills/mcps registry.
-    pub fn with_skills_and_mcps(skills: Arc<SkillsRegistry>, mcps: Arc<MCPsRegistry>) -> Self {
-        let mut this = Self::with_defaults();
-        this.handlers.push(Box::new(SkillsHandler::new(skills)));
-        this.handlers.push(Box::new(MCPsHandler::new(mcps)));
-        this
     }
 
     /// Look up the handler by the namespace prefix of `method` and
@@ -151,9 +91,8 @@ mod dispatcher_tests {
     use serde_json::json;
 
     /// Dispatch one call through the registry with `ctx.app = None`.
-    /// Handlers that need the Tauri app (only `window/toggle` today)
-    /// surface `-32603`; everything else drives its handler to
-    /// completion.
+    /// Handlers that need the Tauri app surface `-32603`; everything
+    /// else drives its handler to completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
         let id = RequestId::Number(1);
         let config = Arc::new(std::sync::RwLock::new(Config::default()));
@@ -162,23 +101,16 @@ mod dispatcher_tests {
         let ctx = HandlerCtx {
             app: None,
             status: broadcast,
-            adapter: Some(adapter),
-            acp_adapter: Some(acp),
+            adapter,
             config: Some(config),
             id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,
-            config_load_context: None,
-            skills: None,
-            mcps: None,
-            existing_event_subscription_ids: &[],
-            events_tx: None,
         };
         match dispatcher.dispatch(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
             Ok(HandlerOutcome::StatusSubscribed(v, _rx)) => v,
-            Ok(HandlerOutcome::EventsSubscribed(v, _sub)) => v,
             Err(e) => json!({ "code": e.code, "message": e.message}),
         }
     }
@@ -198,33 +130,6 @@ mod dispatcher_tests {
         let broadcast = StatusBroadcast::new(true);
         let v = call(&dispatcher, &broadcast, "status/subscribe", Value::Null).await;
         assert_eq!(v["state"], "idle");
-    }
-
-    /// Empty `Config` — no `[agent] default`, no registry entries.
-    /// `session/submit` must return `-32602 invalid_params` because
-    /// there's no way to resolve an agent to spawn.
-    #[tokio::test]
-    async fn dispatch_routes_session_submit_to_session_handler() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(&dispatcher, &broadcast, "session/submit", json!({ "text": "hi" })).await;
-        assert_eq!(v["code"], -32602, "empty config must reject with invalid_params: {v}");
-    }
-
-    #[tokio::test]
-    async fn dispatch_routes_session_cancel_to_session_handler() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(&dispatcher, &broadcast, "session/cancel", Value::Null).await;
-        assert_eq!(v["code"], -32602, "empty config rejects cancel: {v}");
-    }
-
-    #[tokio::test]
-    async fn dispatch_routes_session_info_to_session_handler() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(&dispatcher, &broadcast, "session/info", Value::Null).await;
-        assert_eq!(v["instances"], json!([]));
     }
 
     #[tokio::test]
@@ -266,23 +171,6 @@ mod dispatcher_tests {
     }
 
     #[tokio::test]
-    async fn dispatch_routes_config_profiles_to_config_handler() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(&dispatcher, &broadcast, "config/profiles", Value::Null).await;
-        // Empty `Config::default()` has no profiles.
-        assert_eq!(v["profiles"], json!([]));
-    }
-
-    #[tokio::test]
-    async fn dispatch_window_toggle_without_app_is_internal_error() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(&dispatcher, &broadcast, "window/toggle", Value::Null).await;
-        assert_eq!(v["code"], -32603);
-    }
-
-    #[tokio::test]
     async fn dispatch_routes_daemon_kill_to_daemon_handler() {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
@@ -306,78 +194,40 @@ mod dispatcher_tests {
         assert_eq!(v["code"], -32601);
     }
 
+    /// Dropped namespaces (`session/*`, `agents/*`, `commands/*`,
+    /// `config/*`, `events/*`, `mcps/*`, `models/*`, `modes/*`,
+    /// `profiles/*`, `sessions/*`, `skills/*`, `window/*`) all
+    /// return `-32601`. Webview consumers go through Tauri commands;
+    /// hyprland-bind users move from `window/toggle` to
+    /// `overlay/toggle`.
     #[tokio::test]
-    async fn dispatch_session_submit_missing_text_is_invalid_params() {
+    async fn dispatch_pruned_namespaces_are_method_not_found() {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
-        let v = call(&dispatcher, &broadcast, "session/submit", Value::Null).await;
-        assert_eq!(v["code"], -32602);
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_submit_unknown_profile_id_is_invalid_params() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(
-            &dispatcher,
-            &broadcast,
+        for method in [
             "session/submit",
-            json!({ "text": "hi", "profileId": "ghost" }),
-        )
-        .await;
-        assert_eq!(v["code"], -32602, "unknown profile_id must be invalid_params: {v}");
+            "session/cancel",
+            "session/info",
+            "agents/list",
+            "commands/list",
+            "config/profiles",
+            "events/subscribe",
+            "events/unsubscribe",
+            "mcps/list",
+            "models/list",
+            "modes/list",
+            "profiles/list",
+            "sessions/list",
+            "skills/list",
+            "window/toggle",
+        ] {
+            let v = call(&dispatcher, &broadcast, method, Value::Null).await;
+            assert_eq!(v["code"], -32601, "pruned {method} must be method_not_found");
+        }
     }
 
-    /// `session/submit` accepts an `attachments` array; with the
-    /// pure-default Config (no `[agent] default`) the call still
-    /// fails on resolution, but the params parse is what's under test
-    /// here — no `-32602` on shape, only on resolution.
-    #[tokio::test]
-    async fn dispatch_session_submit_accepts_attachments_array() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(
-            &dispatcher,
-            &broadcast,
-            "session/submit",
-            json!({
-                "text": "hi",
-                "attachments": [
-                    { "slug": "git-commit", "path": "/tmp/git-commit/SKILL.md", "body": "stage" }
-                ],
-            }),
-        )
-        .await;
-        // Default Config has no `[agent] default`, so resolution fails
-        // and the call surfaces `-32602`. The shape parsed cleanly —
-        // the failure message references "no default agent", not "params".
-        assert_eq!(v["code"], -32602);
-        let msg = v["message"].as_str().unwrap_or_default();
-        assert!(
-            !msg.contains("session/submit params:"),
-            "params parse must succeed when attachments is a valid array: {v}",
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_submit_rejects_malformed_attachments() {
-        let dispatcher = RpcDispatcher::with_defaults();
-        let broadcast = StatusBroadcast::new(true);
-        let v = call(
-            &dispatcher,
-            &broadcast,
-            "session/submit",
-            json!({ "text": "hi", "attachments": "not-an-array" }),
-        )
-        .await;
-        assert_eq!(v["code"], -32602);
-        let msg = v["message"].as_str().unwrap_or_default();
-        assert!(msg.contains("session/submit params:"), "{v}");
-    }
-
-    /// Every bare method name from the pre-K-239 scaffold must return
-    /// `-32601 method_not_found` after the rename. No backwards-compat
-    /// layer — the contract is broken intentionally.
+    /// Bare method names (the pre-K-239 scaffold) all return
+    /// `-32601 method_not_found`. No backwards-compat layer.
     #[tokio::test]
     async fn dispatch_bare_legacy_method_names_are_method_not_found() {
         let dispatcher = RpcDispatcher::with_defaults();
@@ -399,18 +249,12 @@ mod dispatcher_tests {
         let ctx = HandlerCtx {
             app: None,
             status: &broadcast,
-            adapter: Some(adapter),
-            acp_adapter: Some(acp),
+            adapter,
             config: Some(config),
             id: &id,
             already_subscribed: true,
             started_at: None,
             socket_path: None,
-            config_load_context: None,
-            skills: None,
-            mcps: None,
-            existing_event_subscription_ids: &[],
-            events_tx: None,
         };
         let res = dispatcher.dispatch("status/subscribe", Value::Null, ctx).await;
         match res {

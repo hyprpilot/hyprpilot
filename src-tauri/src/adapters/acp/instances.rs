@@ -891,6 +891,10 @@ impl Adapter for AcpAdapter {
         self.shutdown_all().await;
     }
 
+    fn permissions(&self) -> Option<std::sync::Arc<dyn crate::adapters::permission::PermissionController>> {
+        Some(AcpAdapter::permissions(self))
+    }
+
     // ── wire-method dispatch (S3 expansion) ───────────────────────────
 
     async fn list_agents(&self) -> AdapterResult<Vec<Value>> {

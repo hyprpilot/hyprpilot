@@ -15,9 +15,6 @@ pub enum DaemonSubcommand {
     Status,
     /// Print daemon version (+ commit / build date when wired).
     Version,
-    /// Re-load config + skills (+ MCPs once K-270 lands). Returns the
-    /// post-reload counts.
-    Reload,
     /// Graceful shutdown. Refuses with `-32603` when any instance has
     /// an in-flight turn unless `--force` is set.
     Shutdown {
@@ -36,7 +33,6 @@ impl CtlDispatch for DaemonSubcommand {
         match self {
             DaemonSubcommand::Status => status(client),
             DaemonSubcommand::Version => version(client),
-            DaemonSubcommand::Reload => reload(client),
             DaemonSubcommand::Shutdown { force } => shutdown(client, force),
         }
     }
@@ -52,10 +48,6 @@ fn status(client: &CtlClient) -> Result<()> {
 
 fn version(client: &CtlClient) -> Result<()> {
     emit(client, "daemon/version", &Value::Null)
-}
-
-fn reload(client: &CtlClient) -> Result<()> {
-    emit(client, "daemon/reload", &Value::Null)
 }
 
 fn shutdown(client: &CtlClient, force: bool) -> Result<()> {

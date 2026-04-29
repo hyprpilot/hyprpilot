@@ -72,14 +72,9 @@ fn main() -> Result<ExitCode> {
     let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;
     cfg.validate()?;
 
-    let load_ctx = rpc::handler::ConfigLoadContext {
-        cli_path: cli.config.clone(),
-        profile: cli.config_profile.clone(),
-    };
-
     match cli.command {
-        None => daemon::run(cfg, daemon::DaemonArgs::default(), load_ctx).map(|()| ExitCode::SUCCESS),
-        Some(Command::Daemon(args)) => daemon::run(cfg, args, load_ctx).map(|()| ExitCode::SUCCESS),
+        None => daemon::run(cfg, daemon::DaemonArgs::default()).map(|()| ExitCode::SUCCESS),
+        Some(Command::Daemon(args)) => daemon::run(cfg, args).map(|()| ExitCode::SUCCESS),
         Some(Command::Ctl(args)) => ctl::run(cfg, args),
     }
 }
