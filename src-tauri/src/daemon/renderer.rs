@@ -147,21 +147,13 @@ impl WindowRenderer {
         Ok(((w_px, h_px), monitor))
     }
 
-    /// Called from the setup closure once per process; dispatches to the
-    /// correct per-mode apply. The window is already unrealized at this point
-    /// (tauri.conf.json: `visible = false`); each mode's implementation maps
-    /// it once the mode-specific configuration is in place.
-    pub fn apply_initial(&self, window: &WebviewWindow) -> Result<()> {
-        let mode = self.config.mode.expect("[daemon.window] mode seeded by defaults.toml");
-        match mode {
-            WindowMode::Anchor => self.apply_anchor(window),
-            WindowMode::Center => self.apply_center(window),
-        }
-    }
-
-    /// Called from the `toggle` (and future) show paths. Re-resolves
-    /// dimensions against the current monitor, then sizes and maps the window
-    /// in the mode-appropriate way.
+    /// Map the main window in mode-appropriate fashion. Re-resolves
+    /// dimensions against the current monitor, then sizes and maps the
+    /// surface. Called from the setup closure on first launch and from
+    /// every subsequent `overlay/*` show transition — the layer-shell
+    /// init steps inside `apply_anchor` are idempotent under repeat
+    /// (the window is `hide()`d at the top of the body before the
+    /// `init_layer_shell` call).
     pub fn show(&self, window: &WebviewWindow) -> Result<()> {
         let mode = self.config.mode.expect("[daemon.window] mode seeded by defaults.toml");
         match mode {
