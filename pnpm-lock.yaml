@@ -126,11 +126,11 @@ importers:
         specifier: ^4.1.5
         version: 4.1.5(vitest@4.1.5)
       '@vue/test-utils':
-        specifier: ^2.4.9
-        version: 2.4.9(@vue/compiler-dom@3.5.33)(@vue/server-renderer@3.5.33(vue@3.5.33(typescript@6.0.3)))(vue@3.5.33(typescript@6.0.3))
+        specifier: ^2.4.10
+        version: 2.4.10(@vue/compiler-dom@3.5.33)(@vue/server-renderer@3.5.33(vue@3.5.33(typescript@6.0.3)))(vue@3.5.33(typescript@6.0.3))
       jsdom:
-        specifier: ^29.1.0
-        version: 29.1.0
+        specifier: ^29.1.1
+        version: 29.1.1
       tailwindcss:
         specifier: ^4.2.4
         version: 4.2.4
@@ -139,7 +139,7 @@ importers:
         version: 8.0.10(@types/node@24.12.2)(jiti@2.6.1)
       vitest:
         specifier: ^4.1.5
-        version: 4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.1.0)(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1))
+        version: 4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.1.1)(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1))
       vue-tsc:
         specifier: ^3.2.7
         version: 3.2.7(typescript@6.0.3)
@@ -1034,8 +1034,8 @@ packages:
   '@vue/shared@3.5.33':
     resolution: {integrity: sha512-5vR2QIlmaLG77Ygd4pMP6+SGQ5yox9VhtnbDWTy9DzMzdmeLxZ1QqxrywEZ9sa1AVubfIJyaCG3ytyWU81ufcQ==}
 
-  '@vue/test-utils@2.4.9':
-    resolution: {integrity: sha512-YwgowiO1mPleZqpgAGfxvWu/A5A8nkLrbyH2SqiQRkyzCIaDzzo27/2uS/F1g7fRLvl8BUY0+Sr1eC+6+IHfrw==}
+  '@vue/test-utils@2.4.10':
+    resolution: {integrity: sha512-SmoZ5EA1kYiAFs9NkYdiFFQF+cSnUwnvlYEbY+DogWQZUiqOm/Y29eSbc5T6yi75SgSF9863SBeXniIEoPajCA==}
     peerDependencies:
       '@vue/compiler-dom': 3.x
       '@vue/server-renderer': 3.x
@@ -1847,8 +1847,8 @@ packages:
     resolution: {integrity: sha512-qQKT4zQxXl8lLwBtHMWwaTcGfFOZviOJet3Oy/xmGk2gZH677CJM9EvtfdSkgWcATZhj/55JZ0rmy3myCT5lsA==}
     hasBin: true
 
-  jsdom@29.1.0:
-    resolution: {integrity: sha512-YNUc7fB9QuvSSQWfrH0xF+TyABkxUwx8sswgIDaCrw4Hol8BghdZDkITtZheRJeMtzWlnTfsM3bBBusRvpO1wg==}
+  jsdom@29.1.1:
+    resolution: {integrity: sha512-ECi4Fi2f7BdJtUKTflYRTiaMxIB0O6zfR1fX0GXpUrf6flp8QIYn1UT20YQqdSOfk2dfkCwS8LAFoJDEppNK5Q==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=24.0.0}
     peerDependencies:
       canvas: ^3.0.0
@@ -3296,7 +3296,7 @@ snapshots:
     dependencies:
       '@babel/runtime': 7.29.2
       '@testing-library/dom': 9.3.4
-      '@vue/test-utils': 2.4.9(@vue/compiler-dom@3.5.33)(@vue/server-renderer@3.5.33(vue@3.5.33(typescript@6.0.3)))(vue@3.5.33(typescript@6.0.3))
+      '@vue/test-utils': 2.4.10(@vue/compiler-dom@3.5.33)(@vue/server-renderer@3.5.33(vue@3.5.33(typescript@6.0.3)))(vue@3.5.33(typescript@6.0.3))
       vue: 3.5.33(typescript@6.0.3)
     optionalDependencies:
       '@vue/compiler-sfc': 3.5.33
@@ -3565,7 +3565,7 @@ snapshots:
       sirv: 3.0.2
       tinyglobby: 0.2.16
       tinyrainbow: 3.1.0
-      vitest: 4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.1.0)(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1))
+      vitest: 4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.1.1)(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1))
 
   '@vitest/utils@4.1.5':
     dependencies:
@@ -3662,7 +3662,7 @@ snapshots:
 
   '@vue/shared@3.5.33': {}
 
-  '@vue/test-utils@2.4.9(@vue/compiler-dom@3.5.33)(@vue/server-renderer@3.5.33(vue@3.5.33(typescript@6.0.3)))(vue@3.5.33(typescript@6.0.3))':
+  '@vue/test-utils@2.4.10(@vue/compiler-dom@3.5.33)(@vue/server-renderer@3.5.33(vue@3.5.33(typescript@6.0.3)))(vue@3.5.33(typescript@6.0.3))':
     dependencies:
       '@vue/compiler-dom': 3.5.33
       js-beautify: 1.15.4
@@ -4601,7 +4601,7 @@ snapshots:
     dependencies:
       argparse: 2.0.1
 
-  jsdom@29.1.0:
+  jsdom@29.1.1:
     dependencies:
       '@asamuzakjp/css-color': 5.1.11
       '@asamuzakjp/dom-selector': 7.1.1
@@ -5396,7 +5396,7 @@ snapshots:
       fsevents: 2.3.3
       jiti: 2.6.1
 
-  vitest@4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.1.0)(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1)):
+  vitest@4.1.5(@types/node@24.12.2)(@vitest/ui@4.1.5)(jsdom@29.1.1)(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1)):
     dependencies:
       '@vitest/expect': 4.1.5
       '@vitest/mocker': 4.1.5(vite@8.0.10(@types/node@24.12.2)(jiti@2.6.1))
@@ -5421,7 +5421,7 @@ snapshots:
     optionalDependencies:
       '@types/node': 24.12.2
       '@vitest/ui': 4.1.5(vitest@4.1.5)
-      jsdom: 29.1.0
+      jsdom: 29.1.1
     transitivePeerDependencies:
       - msw
 
