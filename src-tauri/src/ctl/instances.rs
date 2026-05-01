@@ -8,18 +8,20 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::ctl::client::CtlClient;
-use crate::ctl::{emit, CtlDispatch};
+use crate::ctl::{emit, request_value, CtlDispatch};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum InstancesSubcommand {
     /// List live instances.
     List,
-    /// Focus an instance (by uuid).
+    /// Focus an instance. `--id` accepts UUID or captain-set name;
+    /// omitted falls back to the focused pointer (no-op).
     Focus {
         #[arg(long)]
-        id: String,
+        id: Option<String>,
     },
-    /// Spawn a new instance against a profile / agent.
+    /// Spawn a new instance against a profile / agent. Optional
+    /// `--name` applies a captain-set name post-spawn.
     Spawn {
         #[arg(long = "profile")]
         profile_id: Option<String>,
@@ -31,29 +33,45 @@ pub enum InstancesSubcommand {
         mode: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        /// Captain-set name to apply post-spawn (slug, ≤16 chars).
+        #[arg(long)]
+        name: Option<String>,
     },
-    /// Restart an instance, optionally with a new cwd.
+    /// Restart an instance. `--id` accepts UUID or name; omitted
+    /// falls back to focused.
     Restart {
         #[arg(long)]
-        id: String,
+        id: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
-    /// Shut one instance down.
+    /// Shut one instance down. `--id` accepts UUID or name; omitted
+    /// falls back to focused.
     Shutdown {
         #[arg(long)]
-        id: String,
+        id: Option<String>,
     },
-    /// Fetch one instance's projection.
+    /// Fetch one instance's projection. `--id` accepts UUID or name;
+    /// omitted falls back to focused.
     Info {
         #[arg(long)]
-        id: String,
+        id: Option<String>,
+    },
+    /// Rename a live instance. `--id` accepts UUID or current name;
+    /// omitted falls back to focused. Pass an empty `--name ""` to
+    /// clear the name.
+    Rename {
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct IdParams {
-    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -73,9 +91,18 @@ struct SpawnParams {
 
 #[derive(Serialize)]
 struct RestartParams {
-    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cwd: Option<PathBuf>,
+}
+
+#[derive(Serialize)]
+struct RenameParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 impl CtlDispatch for InstancesSubcommand {
@@ -89,20 +116,32 @@ impl CtlDispatch for InstancesSubcommand {
                 cwd,
                 mode,
                 model,
-            } => emit(
-                client,
-                "instances/spawn",
-                &SpawnParams {
+                name,
+            } => {
+                let spawn_params = SpawnParams {
                     profile_id,
                     agent_id,
                     cwd,
                     mode,
                     model,
-                },
-            ),
+                };
+                if let Some(n) = name {
+                    // Two-step composition when --name is supplied:
+                    // spawn (capture minted id) → rename. Single-step
+                    // path stays a plain `emit` for the common case
+                    // where the captain doesn't bother with naming.
+                    let v = request_value(client, "instances/spawn", &spawn_params)?;
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    let key = v.get("id").and_then(Value::as_str).map(str::to_string);
+                    emit(client, "instances/rename", &RenameParams { id: key, name: Some(n) })
+                } else {
+                    emit(client, "instances/spawn", &spawn_params)
+                }
+            }
             InstancesSubcommand::Restart { id, cwd } => emit(client, "instances/restart", &RestartParams { id, cwd }),
             InstancesSubcommand::Shutdown { id } => emit(client, "instances/shutdown", &IdParams { id }),
             InstancesSubcommand::Info { id } => emit(client, "instances/info", &IdParams { id }),
+            InstancesSubcommand::Rename { id, name } => emit(client, "instances/rename", &RenameParams { id, name }),
         }
     }
 }

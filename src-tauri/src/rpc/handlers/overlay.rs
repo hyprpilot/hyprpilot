@@ -3,7 +3,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::Manager;
 
-use crate::adapters::InstanceKey;
 use crate::daemon::WindowRenderer;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, params_or_default};
@@ -13,12 +12,12 @@ use crate::rpc::protocol::RpcError;
 /// (`bind = SUPER, space, exec, hyprpilot ctl overlay toggle`).
 /// Distinct from `window/toggle` because every method here serializes
 /// through `WindowRenderer::lock_present` and accepts an
-/// `instanceId` to focus alongside the present.
+/// `instanceId` to focus alongside the show.
 pub struct OverlayHandler;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PresentParams {
+struct ShowParams {
     instance_id: Option<String>,
 }
 
@@ -30,9 +29,9 @@ impl RpcHandler for OverlayHandler {
 
     async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         match method {
-            "overlay/present" => {
-                let PresentParams { instance_id } = params_or_default::<PresentParams>(params, method)?;
-                present(&ctx, instance_id.as_deref()).await
+            "overlay/show" => {
+                let ShowParams { instance_id } = params_or_default::<ShowParams>(params, method)?;
+                show(&ctx, instance_id.as_deref()).await
             }
             "overlay/hide" => hide(&ctx).await,
             "overlay/toggle" => toggle(&ctx).await,
@@ -56,12 +55,18 @@ fn renderer_and_window(ctx: &HandlerCtx<'_>) -> Result<(WindowRenderer, tauri::W
     Ok((renderer, window))
 }
 
-async fn present(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<HandlerOutcome, RpcError> {
-    // Validate the uuid up front so a malformed `instanceId` reports
-    // `-32602 invalid_params` even when the renderer step would
-    // otherwise succeed — keeps the error model deterministic.
+async fn show(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<HandlerOutcome, RpcError> {
+    // Resolve up front so a bogus `instanceId` reports `-32602
+    // invalid_params` even when the renderer step would otherwise
+    // succeed — keeps the error model deterministic. Accepts UUID OR
+    // captain-set name via `resolve_token`.
     let parsed_key = match instance_id {
-        Some(id) => Some(InstanceKey::parse(id).map_err(map_adapter_err)?),
+        Some(id) => Some(
+            ctx.adapter
+                .resolve_token(id)
+                .await
+                .ok_or_else(|| RpcError::invalid_params(format!("instance '{id}' not found")))?,
+        ),
         None => None,
     };
 
@@ -200,8 +205,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overlay_present_without_app_is_internal_error() {
-        let v = dispatch("overlay/present", Value::Null).await;
+    async fn overlay_show_without_app_is_internal_error() {
+        let v = dispatch("overlay/show", Value::Null).await;
         assert_eq!(v["code"], -32603);
     }
 
@@ -217,8 +222,8 @@ mod tests {
     /// test pins the param-shape side: a non-uuid string is the user
     /// error mode the adapter reports, not the missing-app one.
     #[tokio::test]
-    async fn overlay_present_rejects_unknown_field() {
-        let v = dispatch("overlay/present", json!({ "instance_id": "x" })).await;
+    async fn overlay_show_rejects_unknown_field() {
+        let v = dispatch("overlay/show", json!({ "instance_id": "x" })).await;
         // `instance_id` (snake_case) doesn't match the camelCase serde
         // rename — `deny_unknown_fields` rejects it as -32602.
         assert_eq!(v["code"], -32602);
@@ -231,32 +236,31 @@ mod tests {
         assert_eq!(v["code"], -32601);
     }
 
-    /// `overlay/present` with a malformed `instanceId` rejects with
+    /// `overlay/show` with a malformed `instanceId` rejects with
     /// `-32602 invalid_params` before touching the renderer — the
     /// uuid parse runs first so the error model stays deterministic
     /// regardless of window state.
     #[tokio::test]
-    async fn overlay_present_with_unparseable_instance_id_is_invalid_params() {
-        let v = dispatch("overlay/present", json!({ "instanceId": "not-a-uuid" })).await;
+    async fn overlay_show_with_unparseable_instance_id_is_invalid_params() {
+        let v = dispatch("overlay/show", json!({ "instanceId": "not-a-uuid" })).await;
         assert_eq!(v["code"], -32602);
     }
 
-    /// `overlay/present` with a well-formed but unknown `instanceId`
-    /// also rejects with `-32602` — adapter's `focus` reports the key
-    /// isn't in the registry. Without an app the renderer step fails
-    /// first, but uuid validation has already passed; the test pins
-    /// the focus-delegation branch the adapter exercises in production.
+    /// `overlay/show` with a well-formed but unknown `instanceId`
+    /// rejects with `-32602` — `resolve_token` walks the registry
+    /// (UUID parse OK, but the key isn't a known instance and no
+    /// captain-set name matches) and returns None before the
+    /// renderer step runs. Earlier behavior returned -32603 because
+    /// the renderer lookup failed first; the new contract lifts
+    /// instance-resolution above the renderer for a deterministic
+    /// error model.
     #[tokio::test]
-    async fn overlay_present_with_unknown_instance_id_short_circuits_on_app() {
+    async fn overlay_show_with_unknown_instance_id_is_invalid_params() {
         let v = dispatch(
-            "overlay/present",
+            "overlay/show",
             json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
         )
         .await;
-        // Uuid parse passes; renderer lookup fails first with -32603
-        // because the test harness has no Tauri app. Production: this
-        // would surface -32602 from `Adapter::focus` returning
-        // `InvalidRequest` for the unknown key.
-        assert_eq!(v["code"], -32603);
+        assert_eq!(v["code"], -32602);
     }
 }

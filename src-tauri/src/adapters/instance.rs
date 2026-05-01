@@ -172,6 +172,14 @@ pub enum InstanceEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         instance_id: Option<String>,
     },
+    /// Captain renamed an instance. `name` is the post-change value
+    /// (`None` when the captain cleared the name). UI listens to keep
+    /// row labels in sync without re-fetching the full instance list.
+    InstanceRenamed {
+        instance_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     /// Terminal output / exit chunk. Pushed live as the agent's child
     /// process emits stdout / stderr; the UI accumulates these into a
     /// per-`terminal_id` scrollable card without polling
@@ -305,6 +313,7 @@ impl InstanceEvent {
             InstanceEvent::TurnEnded { .. } => "instance.turn_ended",
             InstanceEvent::InstancesChanged { .. } => "instances.changed",
             InstanceEvent::InstancesFocused { .. } => "instances.focused",
+            InstanceEvent::InstanceRenamed { .. } => "instance.renamed",
             InstanceEvent::Terminal { .. } => "terminal.output",
             InstanceEvent::DaemonReloaded { .. } => "daemon.reloaded",
             InstanceEvent::SessionInfoUpdate { .. } => "instance.session_info_update",
@@ -336,6 +345,12 @@ pub struct InstanceHandle {
 #[serde(rename_all = "camelCase")]
 pub struct InstanceInfo {
     pub id: String,
+    /// Captain-set addressable name. `None` until `instances/rename`
+    /// sets it. Distinct from `id` (canonical UUID): scripts that
+    /// captured the UUID stay valid even after rename. Validated as
+    /// a slug at the rename boundary; safe to display verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub agent_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
@@ -347,6 +362,40 @@ pub struct InstanceInfo {
     /// generic layer only carries + surfaces the value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+}
+
+/// Validate a captain-supplied instance name against the slug rule.
+///
+/// Rule: `[a-z0-9][a-z0-9_-]*`, lowercase, ≤16 chars. Lowercase /
+/// slug-only because anything else needs shell quoting on the ctl
+/// side, and the 16-char ceiling keeps log lines tidy without
+/// being so tight that meaningful names get truncated. Returns
+/// the validated owned `String` for ergonomics; the caller can
+/// move it into the registry without re-allocating.
+pub fn validate_instance_name(raw: &str) -> Result<String, AdapterError> {
+    if raw.is_empty() {
+        return Err(AdapterError::InvalidRequest("instance name must not be empty".into()));
+    }
+    if raw.len() > 16 {
+        return Err(AdapterError::InvalidRequest(format!(
+            "instance name '{raw}' exceeds 16-char limit"
+        )));
+    }
+    let mut chars = raw.chars();
+    let first = chars.next().expect("non-empty checked above");
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err(AdapterError::InvalidRequest(format!(
+            "instance name '{raw}' must start with a lowercase letter or digit"
+        )));
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+            return Err(AdapterError::InvalidRequest(format!(
+                "instance name '{raw}' contains illegal character '{c}' (lowercase a-z, 0-9, '-', '_' only)"
+            )));
+        }
+    }
+    Ok(raw.to_string())
 }
 
 /// Stream typealias — `broadcast::Receiver` per subscriber. One
@@ -365,6 +414,16 @@ pub type InstanceEventStream = broadcast::Receiver<InstanceEvent>;
 pub trait InstanceActor: Send + Sync + 'static {
     /// Identity + metadata snapshot for `list` / `info_for`.
     fn info(&self) -> InstanceInfo;
+
+    /// Captain-set name accessor. Distinct from `info().id`: the id
+    /// is the canonical never-shifting key; the name is mutable.
+    /// Async because the implementor's storage is `RwLock`-protected
+    /// (see `AcpInstance::current_name`).
+    async fn name(&self) -> Option<String>;
+
+    /// Overwrite the captain-set name. The registry has already
+    /// validated (slug rule + uniqueness); this is a raw write.
+    async fn set_name(&self, name: Option<String>);
 
     /// Drain the actor. Best-effort — the registry timeouts on the
     /// ack so a wedged actor can't block shutdown.

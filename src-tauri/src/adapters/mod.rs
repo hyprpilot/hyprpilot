@@ -179,6 +179,14 @@ pub trait Adapter: Send + Sync + 'static {
     /// load-bearing for the K-266 cwd palette.
     async fn restart(&self, key: InstanceKey, cwd: Option<std::path::PathBuf>) -> AdapterResult<InstanceKey>;
 
+    /// Resolve a wire-supplied token (UUID or captain-set name) to a
+    /// canonical `InstanceKey`. `None` when neither matches.
+    async fn resolve_token(&self, token: &str) -> Option<InstanceKey>;
+
+    /// Rename a live instance. `None` clears the name. Validates
+    /// the slug rule + uniqueness; broadcasts `InstanceRenamed`.
+    async fn rename(&self, key: InstanceKey, name: Option<String>) -> AdapterResult<()>;
+
     fn subscribe(&self) -> InstanceEventStream;
 
     // ── transport-specific ops ────────────────────────────────────────
@@ -365,6 +373,14 @@ mod tests {
         }
 
         async fn restart(&self, key: InstanceKey, _cwd: Option<std::path::PathBuf>) -> AdapterResult<InstanceKey> {
+            Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
+        }
+
+        async fn resolve_token(&self, _token: &str) -> Option<InstanceKey> {
+            None
+        }
+
+        async fn rename(&self, key: InstanceKey, _name: Option<String>) -> AdapterResult<()> {
             Err(AdapterError::InvalidRequest(format!("echo has no instance {key}")))
         }
 
