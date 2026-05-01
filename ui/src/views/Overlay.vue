@@ -422,23 +422,22 @@ function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
   return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
 }
 
-/// Plan-modal trigger: ANY permission whose `rawInput` carries a
-/// markdown-shaped body lands in the full-screen `Modal`, not the
-/// inline permission stack. Driving off the *payload shape* (a
-/// non-empty string under one of the known plan-keys) instead of a
-/// tool-name allowlist means we catch claude-code's `Switch mode`
-/// (the ACP `ToolKind` enum has no `ExitPlanMode` variant so the
-/// wire `tool` collapses to the title — pinning the trigger to
-/// `'ExitPlanMode'` misses every actual instance), AND any future
-/// vendor that ships a `{ document }` / `{ content }` body in the
-/// same shape.
-const PLAN_KEYS = ['plan', 'document', 'content', 'body'] as const
+/// Plan-modal trigger: a small allowlist of plan / mode-switch tool
+/// names PLUS a payload-shape fallback for vendors that ship a
+/// markdown body without identifying the tool. Tool-name match is
+/// case-insensitive AND collapses whitespace + non-letters
+/// (`Switch mode` / `switch_mode` / `SwitchMode` all match).
+const MARKDOWN_MODAL_TOOLS = new Set(['switchmode', 'exitplanmode', 'plan', 'planmode'])
+
+function normalizeToolName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
 
 function pickMarkdownBody(raw: Record<string, unknown> | undefined): string | undefined {
   if (!raw) {
     return undefined
   }
-  for (const key of PLAN_KEYS) {
+  for (const key of ['plan', 'document'] as const) {
     const v = raw[key]
     if (typeof v === 'string' && v.trim().length > 0) {
       return v
@@ -453,23 +452,35 @@ interface MarkdownModalView {
   body: string
 }
 
-function bodyOf(p: { rawInput?: Record<string, unknown>; contentText?: string }): string | undefined {
-  const fromRaw = pickMarkdownBody(p.rawInput)
-  if (fromRaw) {
-    return fromRaw
+function modalBodyOf(p: {
+  tool: string
+  rawInput?: Record<string, unknown>
+  contentText?: string
+}): string | undefined {
+  // Tool-name allowlist routes the prompt to the modal regardless of
+  // payload shape; rawInput.plan / rawInput.document wins, otherwise
+  // contentText, otherwise a synthetic placeholder so the modal
+  // still surfaces (the captain needs to accept / reject the mode
+  // change even when the plan body doesn't ride along).
+  if (MARKDOWN_MODAL_TOOLS.has(normalizeToolName(p.tool))) {
+    const fromRaw = pickMarkdownBody(p.rawInput)
+    if (fromRaw) {
+      return fromRaw
+    }
+    if (typeof p.contentText === 'string' && p.contentText.trim().length > 0) {
+      return p.contentText
+    }
+    return '_no plan body supplied_'
   }
-  // Fallback: claude-code's `Switch mode` ships the plan body via
-  // tool_call.content[] blocks (joined into `contentText` Rust-side)
-  // rather than rawInput.
-  if (typeof p.contentText === 'string' && p.contentText.trim().length > 0) {
-    return p.contentText
-  }
-  return undefined
+  // Tools outside the allowlist: only route to modal when rawInput
+  // explicitly carries a plan-shape key. Tools with content blocks
+  // (descriptions, captions) stay in the inline permission stack.
+  return pickMarkdownBody(p.rawInput)
 }
 
 const markdownModalPrompt = computed<MarkdownModalView | undefined>(() => {
   for (const p of permissionPrompts.value) {
-    const body = bodyOf(p)
+    const body = modalBodyOf(p)
     if (body) {
       return { requestId: p.requestId, tool: p.tool, body }
     }
@@ -477,7 +488,9 @@ const markdownModalPrompt = computed<MarkdownModalView | undefined>(() => {
   return undefined
 })
 
-const standardPermissionPrompts = computed(() => permissionPrompts.value.filter((p) => bodyOf(p) === undefined))
+const standardPermissionPrompts = computed(() =>
+  permissionPrompts.value.filter((p) => modalBodyOf(p) === undefined)
+)
 
 async function onAllow(requestId: string): Promise<void> {
   log.info('permission click', { choice: 'allow', requestId })

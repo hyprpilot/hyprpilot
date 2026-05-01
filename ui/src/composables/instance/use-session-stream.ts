@@ -42,6 +42,13 @@ import { pushTurnEnded, pushTurnStarted } from './use-turns'
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 
 function routePermission(payload: PermissionRequestEventPayload): void {
+  log.debug('acp:permission-request received', {
+    instanceId: payload.instanceId,
+    requestId: payload.requestId,
+    tool: payload.tool,
+    hasRawInput: payload.rawInput !== undefined,
+    hasContentText: payload.contentText !== undefined
+  })
   pushPermissionRequest(payload.instanceId, payload.sessionId, {
     requestId: payload.requestId,
     tool: payload.tool,
