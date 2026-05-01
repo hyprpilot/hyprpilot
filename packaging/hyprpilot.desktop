@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=hyprpilot
+GenericName=Agent overlay
+Comment=Tauri 2 overlay daemon for agent-driven workflows
+Exec=hyprpilot daemon
+Icon=hyprpilot
+Categories=Development;Utility;
+StartupNotify=false
+Terminal=false
+Keywords=hyprland;agent;overlay;

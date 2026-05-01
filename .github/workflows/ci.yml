@@ -1,0 +1,108 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Cancel in-flight runs on the same ref when a new push lands —
+# saves CI minutes and surfaces failures from the latest commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Live-adapter tests (`HYPRPILOT_E2E_MODE=tauri`) require Claude /
+# ACP credentials and intentionally do NOT run here; captain runs
+# them locally via `task test:e2e:live` before tagging a release.
+# Future tests that need real-agent access follow the same opt-in
+# env-var gate convention.
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgtk-layer-shell-dev \
+            libayatana-appindicator3-dev \
+            pkg-config
+
+      - name: Bootstrap toolchain via mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install workspace deps
+        run: task install
+
+      - name: Lint
+        run: task lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgtk-layer-shell-dev \
+            libayatana-appindicator3-dev \
+            pkg-config
+
+      - name: Bootstrap toolchain via mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install workspace deps
+        run: task install
+
+      - name: Test
+        run: task test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgtk-layer-shell-dev \
+            libayatana-appindicator3-dev \
+            pkg-config
+
+      - name: Bootstrap toolchain via mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install workspace deps
+        run: task install
+
+      - name: Build (debug, gold-standard verification)
+        run: task build
