@@ -20,7 +20,10 @@ pub struct Daemon {
 }
 
 /// `[daemon.window]`. See CLAUDE.md "Window surface" for why `layer`
-/// and `keyboard_interactivity` aren't config knobs.
+/// and `keyboard_interactivity` aren't config knobs. Boot
+/// visibility is controlled by `--hidden` on the CLI, not config —
+/// the autostart context (systemd unit, hyprland `exec-once`)
+/// passes the flag; interactive runs default to visible.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 pub struct Window {

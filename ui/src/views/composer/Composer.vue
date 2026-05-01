@@ -279,7 +279,13 @@ async function rgbaToPngBlob(rgba: Uint8Array, width: number, height: number): P
   if (!ctx) {
     return undefined
   }
-  const data = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength)
+  // Copy into a fresh `Uint8ClampedArray` (own ArrayBuffer) so the
+  // TS lib's `ImageDataArray` parameter type accepts it — recent
+  // lib.dom.d.ts narrows to `Uint8ClampedArray<ArrayBuffer>`, while
+  // the view-of-rgba.buffer reads as `ArrayBufferLike` (which the
+  // SharedArrayBuffer branch rejects).
+  const data = new Uint8ClampedArray(rgba.byteLength)
+  data.set(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength))
   ctx.putImageData(new ImageData(data, width, height), 0, 0)
 
   return new Promise((resolve) => {

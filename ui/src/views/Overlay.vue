@@ -30,6 +30,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   type BreadcrumbCount,
   Button,
+  ButtonTone,
+  ButtonVariant,
   type ComposerPill,
   ComposerPillKind,
   Loading,
@@ -70,18 +72,15 @@ import {
   useQueue,
   useSessionHistory,
   useSessionInfo,
-  useStream,
   useTimelineBlocks,
   useToasts,
-  useTools,
-  useTranscript,
   useTurns,
   type KeymapEntry,
   startSessionStream,
   type InstanceId,
   type PlanEntry
 } from '@composables'
-import { type Attachment, Modifier } from '@ipc'
+import { type Attachment } from '@ipc'
 import { formatToolCall, log } from '@lib'
 import { Attachments, Body as ChatBody, ChangeBanner, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
@@ -122,9 +121,10 @@ function onRestoreSessionClick(sessionId: string | undefined): void {
 }
 
 const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
-const { turns } = useTranscript()
-const { items: streamItems } = useStream()
-const { calls: toolCalls } = useTools()
+// useTranscript / useStream / useTools wired through useTimelineBlocks
+// — accessing them here would just allocate redundant computeds. The
+// idle-screen branch reads `timelineBlocks.length === 0` for the
+// no-content gate.
 const { pending: permissionPrompts, allow, deny } = usePermissions()
 const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
@@ -768,8 +768,8 @@ function onQueueDropAll(): void {
     :dismissable="false"
   >
     <template #actions>
-      <Button tone="err" @click="onDeny(markdownModalPrompt.requestId)">reject</Button>
-      <Button tone="ok" variant="solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
+      <Button :tone="ButtonTone.Err" @click="onDeny(markdownModalPrompt.requestId)">reject</Button>
+      <Button :tone="ButtonTone.Ok" :variant="ButtonVariant.Solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
     </template>
     <MarkdownBody :source="markdownModalPrompt.body" />
   </Modal>

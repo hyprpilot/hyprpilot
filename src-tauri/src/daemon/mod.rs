@@ -1,5 +1,7 @@
+mod autostart;
 mod desktop;
 mod renderer;
+mod tray;
 mod wm;
 pub use renderer::WindowRenderer;
 
@@ -28,6 +30,14 @@ pub struct DaemonArgs {
     /// Override the unix socket path (default: `$XDG_RUNTIME_DIR/hyprpilot.sock`).
     #[arg(long, env = "HYPRPILOT_SOCKET")]
     pub socket: Option<PathBuf>,
+    /// Force hidden boot — daemon configures the layer-shell role
+    /// without mapping the surface, regardless of `[daemon.window]
+    /// visible`. Intended for systemd / autostart contexts where
+    /// the captain doesn't want a window paint at login. Equivalent
+    /// to `[daemon.window] visible = false` for this run; does not
+    /// persist to config.
+    #[arg(long)]
+    pub hidden: bool,
 }
 
 #[tauri::command]
@@ -78,7 +88,18 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let listener = bind_socket(&socket_path)?;
     info!(socket = %socket_path.display(), "socket bound");
 
-    let state = RuntimeState::new(cfg);
+    // `--hidden` forces a hidden boot — daemon configures the
+    // layer-shell role without mapping the surface. Default is
+    // visible at boot (matches the pre-MR captain experience).
+    // Autostart contexts (systemd unit, hyprland `exec-once`)
+    // pass `--hidden` so the overlay doesn't paint over the
+    // captain's workspace at login.
+    let start_visible = !args.hidden;
+    if args.hidden {
+        info!("--hidden flag: forcing hidden boot");
+    }
+
+    let state = RuntimeState::new(cfg, start_visible);
 
     let builder = tauri::Builder::default()
         // Webview-side `log.*` wrapper fans into `log::Record`s here.
@@ -92,10 +113,36 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         .plugin(tauri_plugin_log::Builder::default().skip_logger().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
+        // tauri-plugin-autostart MUST register before tauri-plugin-
+        // single-instance per the plugin's README — single-instance's
+        // forward-and-exit path needs the autostart manager available
+        // when a second invocation lands.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
-            if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
+            if let Err(err) = app.emit(
+                "single-instance",
+                SingleInstancePayload {
+                    argv: argv.clone(),
+                    cwd,
+                },
+            ) {
                 warn!(%err, "failed to emit single-instance event");
+            }
+            // Bare `hyprpilot` (no subcommand, or just `daemon`) from a
+            // second invocation pops the overlay — captain's CLI escape
+            // hatch when their hyprland keybind isn't bound yet. Same
+            // path the tray "show" item + the overlay/present RPC use.
+            if argv_is_bare(&argv) {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = tray::present(&app).await {
+                        warn!(%err, "second-instance present failed");
+                    }
+                });
             }
         }));
 
@@ -198,10 +245,14 @@ struct RuntimeState {
     mcps: Arc<MCPsRegistry>,
     dispatcher: Arc<RpcDispatcher>,
     shared_config: Arc<RwLock<Config>>,
+    /// Resolved boot visibility from `--hidden`. `true` → map the
+    /// surface at setup; `false` → configure-only, wait for
+    /// `overlay/present`.
+    start_visible: bool,
 }
 
 impl RuntimeState {
-    fn new(cfg: Config) -> Self {
+    fn new(cfg: Config, start_visible: bool) -> Self {
         let theme = cfg.ui.theme.clone();
         let keymaps = cfg.keymaps.clone();
         let window_cfg: Window = cfg.daemon.window.clone();
@@ -229,9 +280,11 @@ impl RuntimeState {
             },
         };
 
-        // The window starts visible (`true`) because each mode's setup code calls
-        // `show()` / `show_all()` before the RPC loop accepts connections.
-        let status = Arc::new(StatusBroadcast::new(true));
+        // Initial visible bit tracks `--hidden` (false → visible at boot,
+        // true → hidden). Waybar's `custom/hyprpilot` block reads this;
+        // the bit flips on every overlay/present / overlay/hide
+        // transition afterwards.
+        let status = Arc::new(StatusBroadcast::new(start_visible));
         // Single PermissionController shared between AcpClient (one per
         // live instance, accessed through AcpAdapter's instance registry)
         // and the permission_reply Tauri command — both resolve against
@@ -282,6 +335,7 @@ impl RuntimeState {
             mcps,
             dispatcher,
             shared_config,
+            start_visible,
         }
     }
 }
@@ -312,7 +366,22 @@ fn setup_app(
     // Wayland compositor rejects layer-shell init on an already-mapped
     // window with a critical assertion. `show` configures the
     // mode-specific surface and maps the window once ready.
-    state.renderer.show(&main)?;
+    //
+    // `--hidden` flow (`start_visible = false`): configure the
+    // layer-shell role + size but don't map the surface. First
+    // user-visible map happens through `overlay/present` (Hyprland
+    // keybind, the tray "show" action, or the bare-`hyprpilot`
+    // escape hatch). Configuring the role early avoids the
+    // "init_layer_shell on a realized window" failure that surfaces
+    // if the first map happens out-of-order, AND defends against
+    // Tauri auto-showing the window after setup (which would paint
+    // a black surface on top of the captain's workspace).
+    if state.start_visible {
+        state.renderer.show(&main)?;
+    } else {
+        state.renderer.configure_hidden(&main)?;
+        info!("--hidden: surface configured but not mapped; waits on overlay/present");
+    }
 
     // Apply the configured page zoom. Chromium-style page zoom via
     // WebKit's `set_zoom_level` — scales text + layout together,
@@ -339,7 +408,24 @@ fn setup_app(
     app.manage(state.permissions);
     app.manage(state.mcps.clone());
     app.manage(state.skills.clone());
+    app.manage(state.status.clone());
+    app.manage(state.adapter.clone());
     state.acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
+
+    // System tray icon — captain's "alive" indicator + quick-action
+    // menu (toggle / show / hide / shutdown). Failures degrade to a
+    // warn so a tray-less environment (no system tray at all) doesn't
+    // abort boot.
+    if let Err(err) = tray::install(app) {
+        warn!(%err, "tray: install failed — daemon continues without a tray icon");
+    }
+
+    // Reconcile autostart entry against `[autostart] enabled`. Source
+    // of truth is the config file; daemon edits the OS-side entry on
+    // every boot to match. Failures warn-and-continue.
+    if let Err(err) = autostart::reconcile(app.handle(), &state.shared_config) {
+        warn!(%err, "autostart: reconcile failed — daemon continues, autostart state may drift");
+    }
 
     let rpc_state = crate::rpc::RpcState {
         app: app.handle().clone(),
@@ -412,6 +498,22 @@ struct SingleInstancePayload {
     cwd: String,
 }
 
+/// True when a second invocation's argv carries no subcommand other
+/// than the implicit `daemon` default — bare `hyprpilot` or
+/// `hyprpilot daemon`. Anything beyond (`ctl …`, `--help`, `--version`)
+/// stays out of the present-on-second-instance escape hatch so
+/// `hyprpilot ctl status` from a shell doesn't accidentally pop the
+/// overlay.
+fn argv_is_bare(argv: &[String]) -> bool {
+    let tail: Vec<&str> = argv
+        .iter()
+        .skip(1) // skip the binary path
+        .filter(|s| !s.is_empty())
+        .map(String::as_str)
+        .collect();
+    matches!(tail.as_slice(), [] | ["daemon"])
+}
+
 /// Resolve the skills roots, honouring `HYPRPILOT_SKILLS_DIR` first
 /// so manual smoke tests can point at a throwaway directory without
 /// editing `config.toml`. Falls back to `[skills] dirs` (each entry
@@ -438,4 +540,43 @@ pub(crate) async fn shutdown(app: &tauri::AppHandle, adapter: &dyn Adapter) {
     info!("shutdown: adapter instances drained");
     app.exit(0);
     info!("shutdown: tauri exit dispatched");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::argv_is_bare;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn argv_is_bare_matches_no_subcommand() {
+        assert!(argv_is_bare(&argv(&["/usr/bin/hyprpilot"])));
+        assert!(argv_is_bare(&argv(&["hyprpilot"])));
+    }
+
+    #[test]
+    fn argv_is_bare_matches_explicit_daemon() {
+        assert!(argv_is_bare(&argv(&["hyprpilot", "daemon"])));
+    }
+
+    #[test]
+    fn argv_is_bare_rejects_ctl_subcommands() {
+        assert!(!argv_is_bare(&argv(&["hyprpilot", "ctl", "status"])));
+        assert!(!argv_is_bare(&argv(&["hyprpilot", "ctl", "overlay", "toggle"])));
+    }
+
+    #[test]
+    fn argv_is_bare_rejects_help_and_flags() {
+        assert!(!argv_is_bare(&argv(&["hyprpilot", "--help"])));
+        assert!(!argv_is_bare(&argv(&["hyprpilot", "--version"])));
+        assert!(!argv_is_bare(&argv(&["hyprpilot", "daemon", "--socket=/tmp/foo"])));
+    }
+
+    #[test]
+    fn argv_is_bare_skips_empty_strings() {
+        assert!(argv_is_bare(&argv(&["hyprpilot", "", ""])));
+        assert!(argv_is_bare(&argv(&["hyprpilot", "", "daemon"])));
+    }
 }

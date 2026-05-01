@@ -49,6 +49,35 @@ updating this file.
 | `task build` | Debug build via `./node_modules/.bin/tauri build --debug`. |
 | `task "build:release"` | Release build via `./node_modules/.bin/tauri build`. |
 
+### Verifying UI changes — use named scripts, never `pnpm exec`
+
+Always run UI lint / type-check / build through **named pnpm scripts**
+or **task targets**, never via `pnpm exec` or `pnpm --filter <pkg> exec
+<binary>`. The recursive-exec path silently exits `0` with
+`Command "<binary>" not found` when the workspace root has no copy of
+the binary in its `.bin/` (the binary lives in `ui/node_modules/.bin/`,
+not the workspace root). A "passed" exit from a not-actually-run check
+hides real errors — that's how the eight `noUnusedLocals` /
+`ImageData` failures slipped through during the autostart MR.
+
+Canonical commands per check:
+
+| Check | Run from anywhere | Run from `ui/` |
+| --- | --- | --- |
+| Type-check | `pnpm --filter hyprpilot-ui run type-check` | `pnpm run type-check` |
+| Lint (eslint + tsc) | `pnpm --filter hyprpilot-ui run lint` | `pnpm run lint` |
+| Production build | `pnpm --filter hyprpilot-ui run build` | `pnpm run build` |
+| Vitest | `pnpm --filter hyprpilot-ui test` | `pnpm test` |
+| Full repo lint | `task lint` | `task lint` |
+| Full repo build (Tauri) | `task build` | `task build` |
+
+`task build` is the gold-standard pre-push verification: it runs the
+UI's `pnpm build` (which runs `vue-tsc --noEmit && vite build`) and
+then the Rust build. If `task build` exits 0, everything that
+landing on `main` would catch is green. If it doesn't, fix it before
+declaring the change verified — never claim "vue-tsc clean" on the
+back of a `pnpm exec` invocation.
+
 ## Running the binary locally
 
 ```sh
@@ -72,7 +101,20 @@ updating this file.
 ```
 
 Second `hyprpilot daemon` forwards argv through `tauri-plugin-single-instance`
-and exits `0` without opening a second window.
+and exits `0` without opening a second window. When the second invocation
+carries no subcommand (bare `hyprpilot` or `hyprpilot daemon`) the
+single-instance callback also routes through `daemon::tray::present` —
+captain's CLI escape hatch for popping the overlay when no Hyprland
+keybind is bound yet. `hyprpilot ctl …` invocations stay out of this
+path (the `ctl` arm runs locally, never reaches the running daemon's
+single-instance callback).
+
+The daemon boots **hidden by default** (`[daemon.window] visible = false`).
+First user-visible map happens via a Hyprland keybind (`overlay/present`),
+the system tray icon (left-click or "Show overlay" menu), or the bare
+`hyprpilot` escape hatch above. Set `visible = true` to glue the overlay
+on at boot. See `docs/autostart.md` for the autostart story
+(`tauri-plugin-autostart` + the `[autostart] enabled` config knob).
 
 ### Waybar integration
 
@@ -350,6 +392,8 @@ for either without a new issue.
 [daemon.window]
 mode = "anchor"        # "anchor" | "center"
 output = "DP-1"        # optional; defaults to primary monitor
+visible = false        # boot with the surface unmapped (default).
+                       #  set true to glue the overlay on at boot.
 
 [daemon.window.anchor]
 edge = "right"         # "top" | "right" | "bottom" | "left"

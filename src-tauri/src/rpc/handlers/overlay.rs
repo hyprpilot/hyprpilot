@@ -65,6 +65,9 @@ async fn present(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<Hand
         None => None,
     };
 
+    let app = ctx
+        .app
+        .ok_or_else(|| RpcError::internal_error("no app handle available"))?;
     let (renderer, window) = renderer_and_window(ctx)?;
     let _guard = renderer.lock_present().await;
 
@@ -73,7 +76,8 @@ async fn present(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<Hand
         .map_err(|err| RpcError::internal_error(format!("is_visible failed: {err}")))?;
     if !visible {
         renderer
-            .show(&window)
+            .show_on_main(app, &window)
+            .await
             .map_err(|err| RpcError::internal_error(format!("show failed: {err}")))?;
         ctx.status.set_visible(true);
     }
@@ -94,6 +98,9 @@ async fn present(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<Hand
 }
 
 async fn hide(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+    let app = ctx
+        .app
+        .ok_or_else(|| RpcError::internal_error("no app handle available"))?;
     let (renderer, window) = renderer_and_window(ctx)?;
     let _guard = renderer.lock_present().await;
 
@@ -102,7 +109,8 @@ async fn hide(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         .map_err(|err| RpcError::internal_error(format!("is_visible failed: {err}")))?;
     if visible {
         renderer
-            .hide(&window)
+            .hide_on_main(app, &window)
+            .await
             .map_err(|err| RpcError::internal_error(format!("hide failed: {err}")))?;
         ctx.status.set_visible(false);
     }
@@ -110,6 +118,9 @@ async fn hide(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
 }
 
 async fn toggle(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+    let app = ctx
+        .app
+        .ok_or_else(|| RpcError::internal_error("no app handle available"))?;
     let (renderer, window) = renderer_and_window(ctx)?;
     let _guard = renderer.lock_present().await;
 
@@ -118,13 +129,15 @@ async fn toggle(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         .map_err(|err| RpcError::internal_error(format!("is_visible failed: {err}")))?;
     if visible {
         renderer
-            .hide(&window)
+            .hide_on_main(app, &window)
+            .await
             .map_err(|err| RpcError::internal_error(format!("hide failed: {err}")))?;
         ctx.status.set_visible(false);
         Ok(HandlerOutcome::Reply(json!({ "visible": false })))
     } else {
         renderer
-            .show(&window)
+            .show_on_main(app, &window)
+            .await
             .map_err(|err| RpcError::internal_error(format!("show failed: {err}")))?;
         ctx.status.set_visible(true);
         let _ = window.set_focus();
