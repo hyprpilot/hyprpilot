@@ -32,6 +32,14 @@ const props = defineProps<{
   flags?: string[]
   detail?: string
   output?: string
+  /**
+   * Optional structured-field rows surfaced under the hardcoded
+   * command / flags / detail block. The fallback formatter
+   * populates this for MCP tools so each input arg renders on its
+   * own labelled row instead of blob-stringified into the `arg`
+   * column.
+   */
+  fields?: { label: string; value: string }[]
 }>()
 
 const descriptionHtml = ref('')
@@ -81,6 +89,10 @@ function toggleOutput(): void {
     <div v-if="detail" class="spec-sheet-field">
       <span class="spec-sheet-label">detail</span>
       <span class="spec-sheet-value">{{ detail }}</span>
+    </div>
+    <div v-for="row in fields ?? []" :key="row.label" class="spec-sheet-field">
+      <span class="spec-sheet-label">{{ row.label }}</span>
+      <span class="spec-sheet-value spec-sheet-value-mono">{{ row.value }}</span>
     </div>
 
     <section v-if="output" class="spec-sheet-output" :data-expanded="outputExpanded">
@@ -150,10 +162,16 @@ function toggleOutput(): void {
   white-space: pre-wrap;
 }
 
+/* Two-column row: label gets `auto` width capped at a quarter of
+ * the row so a long key (`applicationName`) doesn't squeeze the
+ * value out of the visible region — it truncates with ellipsis at
+ * the cap. The `1fr` value column expands to fill the remainder.
+ * `min-width: 0` on the value cell is essential for `overflow-wrap`
+ * to take effect inside the grid. */
 .spec-sheet-field {
   display: grid;
-  grid-template-columns: 72px 1fr;
-  column-gap: 10px;
+  grid-template-columns: minmax(0, max-content) 1fr;
+  column-gap: 12px;
   align-items: baseline;
   min-width: 0;
 }
@@ -163,11 +181,26 @@ function toggleOutput(): void {
   color: var(--theme-fg-ink-2);
   letter-spacing: 0.6px;
   font-weight: 600;
+  /* Cap the label cell so a 30-char key doesn't crowd the value;
+   * ellipsis when it does overflow so the boundary stays visible. */
+  max-width: 25ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .spec-sheet-value {
   color: var(--theme-fg);
   overflow-wrap: anywhere;
+}
+
+/* Mono variant for structured field rows (MCP arg map projection)
+ * — paths, patterns, and JSON-stringified blobs read better in the
+ * monospace stack than the default. */
+.spec-sheet-value-mono {
+  font-family: var(--theme-font-mono);
+  font-size: 0.66rem;
+  color: var(--theme-fg);
 }
 
 .spec-sheet-command {

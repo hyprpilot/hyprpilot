@@ -24,9 +24,7 @@ import type {
   ListSessionsArgs,
   LoadSessionArgs,
   McpsListArgs,
-  McpsSetArgs,
   MCPListResult,
-  MCPSetResult,
   ModelsSetArgs,
   ModesSetArgs,
   PermissionReplyArgs,
@@ -85,7 +83,6 @@ export enum TauriCommand {
   ModesSet = 'modes_set',
   InstanceMeta = 'instance_meta',
   McpsList = 'mcps_list',
-  McpsSet = 'mcps_set',
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
   CompletionCancel = 'completion_cancel',
@@ -134,7 +131,6 @@ export interface TauriCommandArgs {
   [TauriCommand.ModesSet]: ModesSetArgs
   [TauriCommand.InstanceMeta]: InstanceMetaArgs
   [TauriCommand.McpsList]: McpsListArgs
-  [TauriCommand.McpsSet]: McpsSetArgs
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
   [TauriCommand.CompletionCancel]: CompletionCancelArgs
@@ -165,7 +161,6 @@ export interface TauriCommandResult {
   [TauriCommand.ModesSet]: unknown
   [TauriCommand.InstanceMeta]: InstanceMetaSnapshot
   [TauriCommand.McpsList]: MCPListResult
-  [TauriCommand.McpsSet]: MCPSetResult
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
   [TauriCommand.CompletionCancel]: CompletionCancelResponse

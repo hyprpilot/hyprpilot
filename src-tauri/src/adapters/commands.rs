@@ -16,7 +16,9 @@ use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
-use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
+use super::permission::{
+    pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome, TrustDecision,
+};
 use super::tokens::TokenHydrators;
 use super::transcript::Attachment;
 use super::Adapter;
@@ -385,16 +387,29 @@ pub async fn instance_meta(adapter: AdapterState<'_>, instance_id: String) -> Re
 // `hyp:deny` or promote to an explicit enum on the Tauri command — a
 // real fix cross-cuts !36 (UI-side senders) so this lands in a
 // follow-up.
+//
+// `remember` is the "always" half of the 4-button UI: when set,
+// after the wire selection lands, the controller writes a runtime
+// trust-store entry for `(instance_id, tool)` so the next call from
+// the same tool short-circuits at decide() lane 1 without
+// re-prompting. `None` means "once" (no persistence). The `tool`
+// field travels with `remember` because options_for doesn't carry
+// the tool name — UI sends both alongside the option_id.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn permission_reply(
     controller: State<'_, Arc<dyn PermissionController>>,
     _session_id: String,
     request_id: String,
     option_id: String,
+    remember: Option<String>,
+    instance_id: Option<String>,
+    tool: Option<String>,
 ) -> Result<(), String> {
     tracing::info!(
         request_id = %request_id,
         option_id = %option_id,
+        remember = ?remember,
         "cmd::permission_reply: entry"
     );
     let controller = controller.inner().clone();
@@ -427,63 +442,61 @@ pub async fn permission_reply(
         "cmd::permission_reply: resolved"
     );
     controller.resolve(&request_id, outcome).await;
+
+    // Trust-store side effect: only after the wire selection lands.
+    // If either `instance_id` or `tool` is missing we log + skip — the
+    // wire selection still went through, the captain just doesn't get
+    // persistence (a UI bug, not a daemon bug).
+    if let Some(remember_token) = remember {
+        let decision = match remember_token.as_str() {
+            "allow" => Some(TrustDecision::Allow),
+            "deny" => Some(TrustDecision::Deny),
+            other => {
+                tracing::warn!(
+                    request_id,
+                    remember = %other,
+                    "permission_reply: unknown remember token, skipping trust-store update"
+                );
+                None
+            }
+        };
+        if let (Some(decision), Some(iid), Some(tname)) = (decision, instance_id.as_ref(), tool.as_ref()) {
+            controller.remember(iid, tname, decision).await;
+        } else if decision.is_some() {
+            tracing::warn!(
+                request_id,
+                instance_id = ?instance_id,
+                tool = ?tool,
+                "permission_reply: remember requested but instance_id / tool missing"
+            );
+        }
+    }
     Ok(())
 }
 
-/// `mcps_list` — return the global catalog with a per-instance
-/// `enabled` bit. When `instance_id` resolves to a live actor the bit
-/// reflects the override-or-profile-default; otherwise everything is
-/// enabled (the daemon-wide "no filter" semantics).
+/// Read-only snapshot of the resolved MCP set. UI's palette `mcps`
+/// leaf binds to this. With per-instance overrides gone (S5), every
+/// server in the resolved file set is "active"; captains can't
+/// toggle one off without editing the JSON files + `daemon/reload`.
+/// The returned shape passes `raw` through verbatim so the UI's
+/// preview pane can render the full opaque entry — env values are
+/// NOT redacted here (UI does the redaction layer).
 #[tauri::command]
-pub async fn mcps_list(
-    adapter: AdapterState<'_>,
-    mcps: MCPsState<'_>,
-    instance_id: Option<String>,
-) -> Result<Value, String> {
+pub async fn mcps_list(mcps: MCPsState<'_>) -> Result<Value, String> {
     let catalog = mcps.list();
-    let enabled_filter = match instance_id.as_deref() {
-        Some(id) => {
-            let key = InstanceKey::parse(id).map_err(|err| format!("mcps_list instance_id '{id}': {err}"))?;
-            Some(adapter.effective_mcps_for(key).await)
-        }
-        None => None,
-    };
     let items: Vec<Value> = catalog
         .iter()
         .map(|m| {
-            let enabled = match &enabled_filter {
-                None => true,
-                Some(None) => true,
-                Some(Some(list)) => list.iter().any(|n| n == &m.name),
-            };
             serde_json::json!({
                 "name": m.name,
-                "command": m.command,
-                "enabled": enabled,
+                "raw": m.raw,
+                "hyprpilot": {
+                    "autoAcceptTools": m.hyprpilot.auto_accept_tools,
+                    "autoRejectTools": m.hyprpilot.auto_reject_tools,
+                },
+                "source": m.source.display().to_string(),
             })
         })
         .collect();
     Ok(serde_json::json!({ "mcps": items }))
-}
-
-/// `mcps_set` — install a per-instance enabled-list override and
-/// trigger an instance restart. Mirrors the `mcps/set` socket RPC.
-#[tauri::command]
-pub async fn mcps_set(
-    adapter: AdapterState<'_>,
-    mcps: MCPsState<'_>,
-    instance_id: String,
-    enabled: Vec<String>,
-) -> Result<Value, String> {
-    let key = InstanceKey::parse(&instance_id).map_err(|err| format!("mcps_set instance_id '{instance_id}': {err}"))?;
-    let _ = adapter.contains_instance(&instance_id).await.map_err(|e| e.message)?;
-    let catalog = mcps.list();
-    for name in &enabled {
-        if !catalog.iter().any(|m| &m.name == name) {
-            return Err(format!("mcps_set: '{name}' not in [[mcps]] catalog"));
-        }
-    }
-    adapter.set_mcps_override(key, enabled);
-    adapter.restart_instance(key, None).await.map_err(|e| e.message)?;
-    Ok(serde_json::json!({ "restarted": true }))
 }

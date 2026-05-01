@@ -4,7 +4,7 @@ import { computed } from 'vue'
 
 import ToolSpecSheet from '../chat/ToolSpecSheet.vue'
 import { iconForToolKind, type PermissionPrompt } from '@components'
-import { titleCaseFromCanonical } from '@lib'
+import { parseMcpToolName, titleCaseFromCanonical } from '@lib'
 
 /**
  * permission panel — pinned bottom band, max-height 45vh.
@@ -31,8 +31,14 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  allow: [id: string]
-  deny: [id: string]
+  /**
+   * Allow this tool call. `remember=true` writes a persistent
+   * runtime trust-store entry for `(instance_id, tool)` so future
+   * calls of the same tool short-circuit without prompting; `false`
+   * is "once" — wire allow this turn, no persistence.
+   */
+  allow: [id: string, remember: boolean]
+  deny: [id: string, remember: boolean]
 }>()
 
 const active = computed(() => props.prompts.find((p) => !p.queued))
@@ -44,25 +50,64 @@ const activeIndex = computed(() => {
 
   return props.prompts.findIndex((p) => p.id === active.value!.id) + 1
 })
+/**
+ * Tool identity decomposition. ACP's `kind` is the closed-set
+ * category ("execute" / "read" / "other"); `tool` carries the
+ * agent-level identifier (`mcp__filesystem__read_file` for MCP,
+ * `Bash` / `Read` for native). Render rules:
+ *
+ *  - **MCP tools** (`tool` matches `mcp__server__leaf`): split into
+ *    server tag (left, prominent — captain wants to see WHICH server
+ *    is asking) + leaf tool name (right). The wire `kind` is "other"
+ *    for these, so suppressing it dodges the "Other · Other"
+ *    eyesore.
+ *  - **Native tools**: `kind` is the title (Execute / Read / …);
+ *    drop the `tool` suffix when it duplicates the kind (`kind=bash,
+ *    tool=Bash`).
+ *
+ * The leading icon resolves off `kind` for native tools and off the
+ * neutral `acp` sentinel for MCP — `iconForToolKind` falls back to
+ * the generic plug glyph for "other", which reads correctly for an
+ * external server's tool.
+ */
+const mcpParts = computed(() => parseMcpToolName(active.value?.tool ?? ''))
+const isMcp = computed(() => mcpParts.value !== undefined)
+
 const kindIcon = computed(() => iconForToolKind(active.value?.kind))
 
-// Human-readable label for the wire `kind` enum (`execute` → "Execute",
-// `web_fetch` → "Web fetch"). Same casing rule the chat pill uses.
-const kindLabel = computed(() => {
+// Display name for the chip's primary slot. MCP → server name
+// (humans usually configure MCPs by intent: "filesystem", "github");
+// native → title-cased kind ("Bash", "Web fetch").
+const primaryLabel = computed(() => {
+  if (isMcp.value && mcpParts.value) {
+    return mcpParts.value.server
+  }
   const raw = active.value?.kind
   return raw ? titleCaseFromCanonical(raw) : ''
 })
 
-// Drop the `· tool` suffix when the agent's `tool` string matches the
-// kind label case-insensitively (e.g. kind=`bash`, tool="Bash"). Same
-// dedup the chat pill applies via `formatToolCall::isRedundantTitle`.
-const showToolName = computed(() => {
+// Suffix the primary slot with a free-form tool string. MCP shows
+// the leaf name (`read file`); native shows `tool` only when it adds
+// info beyond the kind label — same dedup the chat pill applies via
+// `formatToolCall::isRedundantTitle`.
+const secondaryLabel = computed(() => {
+  if (isMcp.value && mcpParts.value) {
+    // Humanize underscores → spaces so the permission prompt
+    // matches the chat pill's chip header
+    // (`[plug] server · get application workload logs`).
+    return mcpParts.value.tool.replace(/_/g, ' ')
+  }
   const tool = active.value?.tool?.trim()
   if (!tool) {
-    return false
+    return ''
   }
-  return tool.toLowerCase() !== kindLabel.value.toLowerCase()
+  if (tool.toLowerCase() === primaryLabel.value.toLowerCase()) {
+    return ''
+  }
+  return tool
 })
+
+const showSecondary = computed(() => secondaryLabel.value.length > 0)
 
 /**
  * Best-effort flag extraction from the `args` string. Anything starting
@@ -83,17 +128,76 @@ const parsedFlags = computed<string[]>(() => {
   }
   return flags
 })
+
+/**
+ * MCP tools surface their `rawInput` map as structured field rows
+ * in the spec sheet. Mirror the chip-side projection in
+ * `formatters/fallback.ts::fieldsFromArgs` — string values verbatim,
+ * primitives stringified, objects JSON-stringified inline. The
+ * `command` row (which would pick the first arbitrary string and
+ * mislabel it as a shell command) is suppressed for MCP — see
+ * `specCommand` below.
+ */
+const mcpFields = computed<{ label: string; value: string }[]>(() => {
+  if (!isMcp.value) {
+    return []
+  }
+  const raw = active.value?.rawInput
+  if (!raw) {
+    return []
+  }
+  const out: { label: string; value: string }[] = []
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === undefined || v === null) {
+      continue
+    }
+    let value: string
+    if (typeof v === 'string') {
+      if (v.length === 0) {
+        continue
+      }
+      value = v
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      value = String(v)
+    } else {
+      try {
+        value = JSON.stringify(v)
+      } catch {
+        continue
+      }
+    }
+    out.push({ label: k, value })
+  }
+  return out
+})
+
+/**
+ * `command` row content for the spec sheet. Bash-style tools ship
+ * the actual shell command in `args`; the row labels it `command`
+ * which reads correctly. MCP tools have no command — `args` is
+ * just the daemon's "first string-valued input" projection, and
+ * surfacing it under a `command` label is a lie. Suppress for MCP.
+ */
+const specCommand = computed<string | undefined>(() => {
+  if (isMcp.value) {
+    return undefined
+  }
+  return active.value?.args
+})
 </script>
 
 <template>
   <section v-if="active" class="permission-panel" data-testid="permission-stack">
     <header class="permission-panel-header">
-      <span class="permission-panel-tool" :aria-label="`${kindLabel}${showToolName ? ` · ${active.tool}` : ''}`">
+      <span
+        class="permission-panel-tool"
+        :aria-label="`${primaryLabel}${showSecondary ? ` · ${secondaryLabel}` : ''}`"
+      >
         <FaIcon :icon="kindIcon" class="permission-panel-tool-icon" aria-hidden="true" />
-        <span class="permission-panel-tool-kind">{{ kindLabel }}</span>
-        <template v-if="showToolName">
+        <span class="permission-panel-tool-kind">{{ primaryLabel }}</span>
+        <template v-if="showSecondary">
           <span class="permission-panel-tool-sep" aria-hidden="true">·</span>
-          <span class="permission-panel-tool-name">{{ active.tool }}</span>
+          <span class="permission-panel-tool-name">{{ secondaryLabel }}</span>
         </template>
       </span>
       <span v-if="total > 1" class="permission-panel-counter">
@@ -108,7 +212,7 @@ const parsedFlags = computed<string[]>(() => {
           data-variant="solid"
           aria-label="allow once"
           title="allow once"
-          @click="emit('allow', active.id)"
+          @click="emit('allow', active.id, false)"
         >
           <FaIcon :icon="faCheck" class="permission-panel-icon" aria-hidden="true" />
         </button>
@@ -116,9 +220,9 @@ const parsedFlags = computed<string[]>(() => {
           type="button"
           class="permission-panel-icon-btn"
           data-tone="ok"
-          aria-label="allow all"
-          title="allow all (always allow this pattern)"
-          @click="emit('allow', active.id)"
+          aria-label="allow always"
+          title="allow always — remember this tool for the rest of the session"
+          @click="emit('allow', active.id, true)"
         >
           <FaIcon :icon="faCheckDouble" class="permission-panel-icon" aria-hidden="true" />
         </button>
@@ -128,7 +232,7 @@ const parsedFlags = computed<string[]>(() => {
           data-tone="err"
           aria-label="deny once"
           title="deny once"
-          @click="emit('deny', active.id)"
+          @click="emit('deny', active.id, false)"
         >
           <FaIcon :icon="faXmark" class="permission-panel-icon" aria-hidden="true" />
         </button>
@@ -136,9 +240,9 @@ const parsedFlags = computed<string[]>(() => {
           type="button"
           class="permission-panel-icon-btn"
           data-tone="err"
-          aria-label="deny all"
-          title="deny all (always deny this pattern)"
-          @click="emit('deny', active.id)"
+          aria-label="deny always"
+          title="deny always — remember this tool for the rest of the session"
+          @click="emit('deny', active.id, true)"
         >
           <FaIcon :icon="faXmark" class="permission-panel-icon permission-panel-icon-double" aria-hidden="true" />
         </button>
@@ -146,8 +250,9 @@ const parsedFlags = computed<string[]>(() => {
     </header>
     <div class="permission-panel-body">
       <ToolSpecSheet
-        :command="active.args"
+        :command="specCommand"
         :flags="parsedFlags"
+        :fields="mcpFields"
       />
     </div>
   </section>

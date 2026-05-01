@@ -1,22 +1,17 @@
-//! `[agent]` + `[[agents]]` + `[profile]` + `[[profiles]]` + `[[mcps]]`.
+//! `[agent]` + `[[agents]]` + `[profile]` + `[[profiles]]`.
 //! Cross-field reference checks (`profile.agent` → agents,
-//! `profile.mcps` → mcps, `[profile].default` → profiles) are wired
-//! into the garde walk at the `Config` level via higher-order
-//! `custom(...)` hooks.
+//! `[profile].default` → profiles) are wired into the garde walk at
+//! the `Config` level via higher-order `custom(...)` hooks.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::Context;
 use garde::Validate;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use super::merge_strategies::{merge_agents_by_id, overwrite_some};
-use super::validations::{
-    validate_agent_default_id, validate_agents_ids, validate_profile_tool_globs, validate_unique_nonempty,
-};
+use super::validations::{validate_agent_default_id, validate_agents_ids, validate_unique_nonempty};
 
 /// `[[agents]]` registry + `[agent]` global scope. Entries override
 /// by `id`; new ids append. Cross-field check on `agent.default`
@@ -102,19 +97,11 @@ pub enum AgentProvider {
 /// / `system_prompt_file` may be set; the file path is read at
 /// resolve time, not at spawn time, so a missing file fails loudly.
 ///
-/// `auto_accept_tools` / `auto_reject_tools` are glob patterns matched
-/// against the ACP `ToolKind` wire name (falling back to the tool's
-/// title when kind is absent) at permission-request time. Reject
-/// beats accept; misses fall through to a user prompt. Patterns are
-/// validated at load time — empty strings and invalid globs reject
-/// with the profile id + offending pattern in the error.
-///
-/// Allowlists only apply to sessions that resolve through a profile.
-/// Bare-agent sessions (no profile id on submit) always prompt the
-/// user — the fallback to `[agent] default_profile` happens at
-/// `ResolvedInstance` time in `adapters::profile`, so setting a
-/// `default_profile` ensures allowlists are honored on unlabelled
-/// submits.
+/// Per-server tool auto-accept / auto-reject lives inside each MCP
+/// JSON entry's `hyprpilot` extension block (see `mcp/loader.rs`),
+/// not on the profile. Profile-level customization happens via the
+/// `mcps` field — pointing the profile at a different MCP file set
+/// with stricter / looser per-server lists.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileConfig {
@@ -128,18 +115,13 @@ pub struct ProfileConfig {
     pub system_prompt: Option<String>,
     #[garde(skip)]
     pub system_prompt_file: Option<PathBuf>,
-    #[serde(default)]
-    #[garde(custom(validate_profile_tool_globs(&self.id)))]
-    pub auto_accept_tools: Vec<String>,
-    #[serde(default)]
-    #[garde(custom(validate_profile_tool_globs(&self.id)))]
-    pub auto_reject_tools: Vec<String>,
-    /// Opaque names from a future `[[mcps]]` catalog (K-270 introduces
-    /// the catalog; reference-validation lands with it). `None` → all
-    /// available; `Some(["all"])` → literal sentinel meaning all;
-    /// `Some([])` → none; otherwise → the listed names verbatim.
+    /// Profile-level MCP file list. `None` (unset) → fall back to the
+    /// global `mcps`. `Some(vec![path, …])` → wholesale replace the
+    /// global default. `Some(vec![])` → no MCPs at all (explicit
+    /// off-switch, no fallback). `~` + env-var expansion at consume
+    /// time, mirroring `[skills] dirs` / `system_prompt_file`.
     #[garde(custom(validate_unique_nonempty))]
-    pub mcps: Option<Vec<String>>,
+    pub mcps: Option<Vec<PathBuf>>,
     /// Directory paths the skill loader scans (K-268). Follows the
     /// claude-code skill mechanism — each entry is a folder of
     /// manually-authored skills; the loader pulls them in at instance
@@ -161,28 +143,6 @@ pub struct ProfileConfig {
     #[serde(default)]
     #[garde(skip)]
     pub env: BTreeMap<String, String>,
-}
-
-impl ProfileConfig {
-    /// Compile the accept/reject glob sets. Call once per resolved
-    /// instance; `GlobSet` is immutable after build. Patterns are
-    /// validated at TOML load time, so `unwrap()` on the build steps
-    /// would also be fine — we return `Result` for robustness against
-    /// hand-constructed `ProfileConfig` values in tests.
-    pub fn compile_tool_globs(&self) -> anyhow::Result<(GlobSet, GlobSet)> {
-        Ok((
-            build_globset(&self.auto_accept_tools)?,
-            build_globset(&self.auto_reject_tools)?,
-        ))
-    }
-}
-
-fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for p in patterns {
-        builder.add(Glob::new(p).with_context(|| format!("invalid glob pattern '{p}'"))?);
-    }
-    builder.build().context("failed to compile glob set")
 }
 
 #[cfg(test)]
@@ -469,107 +429,15 @@ default = "ghost-profile"
     }
 
     #[test]
-    fn profile_without_allowlists_defaults_to_empty_vecs() {
-        let p = write_tmp(
-            "allowlists-default.toml",
-            r#"
-[[profiles]]
-id = "plain"
-agent = "claude-code"
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let plain = cfg.profiles.iter().find(|p| p.id == "plain").expect("plain entry");
-        assert!(plain.auto_accept_tools.is_empty());
-        assert!(plain.auto_reject_tools.is_empty());
-        cfg.validate().expect("empty allowlists validate");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn profile_parses_glob_allowlists() {
-        let p = write_tmp(
-            "allowlists.toml",
-            r#"
-[[profiles]]
-id = "lax"
-agent = "claude-code"
-auto_accept_tools = ["Read", "Edit*"]
-auto_reject_tools = ["Bash"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let lax = cfg.profiles.iter().find(|p| p.id == "lax").expect("lax entry");
-        assert_eq!(lax.auto_accept_tools, vec!["Read".to_string(), "Edit*".to_string()]);
-        assert_eq!(lax.auto_reject_tools, vec!["Bash".to_string()]);
-        cfg.validate().expect("valid glob set");
-        let (accept, reject) = lax.compile_tool_globs().expect("compiles");
-        assert!(accept.is_match("Read"));
-        assert!(accept.is_match("EditFile"));
-        assert!(!accept.is_match("Bash"));
-        assert!(reject.is_match("Bash"));
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn profile_rejects_empty_glob_pattern() {
-        let p = write_tmp(
-            "empty-glob.toml",
-            r#"
-[[profiles]]
-id = "bad"
-agent = "claude-code"
-auto_accept_tools = [""]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("profile 'bad'"), "{msg}");
-        assert!(msg.contains("empty string"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn profile_rejects_invalid_glob_pattern() {
-        let p = write_tmp(
-            "bad-glob.toml",
-            r#"
-[[profiles]]
-id = "busted"
-agent = "claude-code"
-auto_reject_tools = ["["]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("profile 'busted'"), "{msg}");
-        assert!(msg.contains("invalid tool glob"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn profile_parses_full_schema() {
+    fn profile_parses_full_schema_without_mcp_files() {
         let p = write_tmp(
             "profile-full.toml",
             r#"
-[[mcps]]
-name = "fs"
-command = "uvx"
-args = ["mcp-server-filesystem"]
-
-[[mcps]]
-name = "ripgrep"
-command = "uvx"
-args = ["mcp-server-ripgrep"]
-
 [[profiles]]
 id = "full"
 agent = "claude-code"
 model = "claude-opus-4-5"
 system_prompt = "be terse"
-mcps = ["fs", "ripgrep"]
 skills = ["~/.claude/skills/rust", "~/.claude/skills/vue"]
 mode = "ask"
 cwd = "~/work"
@@ -583,10 +451,7 @@ BAZ = "qux"
         let full = cfg.profiles.iter().find(|p| p.id == "full").expect("full entry");
         assert_eq!(full.model.as_deref(), Some("claude-opus-4-5"));
         assert_eq!(full.system_prompt.as_deref(), Some("be terse"));
-        assert_eq!(
-            full.mcps.as_deref(),
-            Some(["fs".to_string(), "ripgrep".to_string()].as_slice())
-        );
+        assert_eq!(full.mcps, None, "absent mcps parses as None");
         assert_eq!(
             full.skills.as_deref(),
             Some(
@@ -606,206 +471,77 @@ BAZ = "qux"
     }
 
     #[test]
-    fn mcps_catalog_parses_full_entry() {
+    fn profile_parses_mcps_paths() {
         let p = write_tmp(
-            "mcps-full.toml",
+            "profile-mcps-files.toml",
             r#"
-[[mcps]]
-name = "filesystem"
-command = "uvx"
-args = ["mcp-server-filesystem", "--root", "$HOME"]
-scope = "user"
-
-[mcps.env]
-LOG_LEVEL = "info"
-TOKEN = "abc"
+[[profiles]]
+id = "work"
+agent = "claude-code"
+mcps = ["~/.config/hyprpilot/mcps/work.json", "/etc/hyprpilot/shared.json"]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
-        assert_eq!(cfg.mcps.len(), 1);
-        let fs_entry = &cfg.mcps[0];
-        assert_eq!(fs_entry.name, "filesystem");
-        assert_eq!(fs_entry.command, "uvx");
+        let cfg = load(Some(&p), None).expect("parses");
+        let work = cfg.profiles.iter().find(|p| p.id == "work").expect("work entry");
         assert_eq!(
-            fs_entry.args,
-            vec![
-                "mcp-server-filesystem".to_string(),
-                "--root".to_string(),
-                "$HOME".to_string(),
-            ]
+            work.mcps.as_deref(),
+            Some(
+                [
+                    PathBuf::from("~/.config/hyprpilot/mcps/work.json"),
+                    PathBuf::from("/etc/hyprpilot/shared.json"),
+                ]
+                .as_slice()
+            )
         );
-        assert_eq!(fs_entry.scope.as_deref(), Some("user"));
-        assert_eq!(fs_entry.env.get("LOG_LEVEL").map(String::as_str), Some("info"));
-        assert_eq!(fs_entry.env.get("TOKEN").map(String::as_str), Some("abc"));
-        cfg.validate().expect("valid catalog");
+        cfg.validate().expect("valid mcps");
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn mcps_rejects_duplicate_name() {
+    fn profile_empty_mcps_means_no_mcps() {
         let p = write_tmp(
-            "mcps-dup.toml",
+            "profile-empty-mcps.toml",
             r#"
-[[mcps]]
-name = "fs"
-command = "uvx"
-args = ["a"]
-
-[[mcps]]
-name = "fs"
-command = "uvx"
-args = ["b"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("duplicate mcp name 'fs'"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn mcps_rejects_empty_name() {
-        let p = write_tmp(
-            "mcps-empty.toml",
-            r#"
-[[mcps]]
-name = ""
-command = "uvx"
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("length"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn mcps_rejects_unknown_field() {
-        let p = write_tmp(
-            "mcps-unknown.toml",
-            r#"
-[[mcps]]
-name = "fs"
-command = "uvx"
-bogus = true
-"#,
-        );
-        let err = load(Some(&p), None).expect_err("should reject");
-        assert!(err.to_string().contains("failed to parse TOML layer"), "{err}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn profile_mcps_must_reference_known_catalog_entry() {
-        let p = write_tmp(
-            "profile-mcps-unknown.toml",
-            r#"
-[[mcps]]
-name = "fs"
-command = "uvx"
-
 [[profiles]]
-id = "ghost"
+id = "minimal"
 agent = "claude-code"
-mcps = ["unknown"]
+mcps = []
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("profile 'ghost'"), "{msg}");
-        assert!(msg.contains("'unknown'"), "{msg}");
-        assert!(msg.contains("Configured names:"), "{msg}");
+        let minimal = cfg.profiles.iter().find(|p| p.id == "minimal").expect("minimal");
+        assert_eq!(
+            minimal.mcps,
+            Some(vec![]),
+            "empty list parses as Some(vec![]) — explicit off-switch"
+        );
+        cfg.validate().expect("empty list validates");
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn profile_mcps_passes_when_every_name_resolves() {
+    fn profile_rejects_duplicate_mcps_path() {
         let p = write_tmp(
-            "profile-mcps-ok.toml",
-            r#"
-[[mcps]]
-name = "fs"
-command = "uvx"
-
-[[mcps]]
-name = "ripgrep"
-command = "rg"
-
-[[profiles]]
-id = "p"
-agent = "claude-code"
-mcps = ["fs", "ripgrep"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate().expect("all references resolve");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn mcps_user_override_replaces_entry_by_name() {
-        // Mirrors the user_agent_entry_overrides_default_by_id pattern.
-        // No defaults seed `[[mcps]]`, so we set up two layers manually
-        // to exercise merge: a fixture-as-base with `fs` + `ripgrep`,
-        // plus a user override that replaces `fs` and appends `git`.
-        let base: Config = toml::from_str(
-            r#"
-[[mcps]]
-name = "fs"
-command = "old"
-
-[[mcps]]
-name = "ripgrep"
-command = "rg"
-"#,
-        )
-        .expect("base parses");
-        let over: Config = toml::from_str(
-            r#"
-[[mcps]]
-name = "fs"
-command = "new"
-
-[[mcps]]
-name = "git"
-command = "git"
-"#,
-        )
-        .expect("over parses");
-        let mut merged = base;
-        merged.merge(over);
-        let names: Vec<&str> = merged.mcps.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(names, vec!["fs", "ripgrep", "git"]);
-        let fs = merged.mcps.iter().find(|m| m.name == "fs").unwrap();
-        assert_eq!(fs.command, "new");
-    }
-
-    #[test]
-    fn profile_rejects_duplicate_mcp_name() {
-        let p = write_tmp(
-            "dup-mcp.toml",
+            "dup-mcps-files.toml",
             r#"
 [[profiles]]
 id = "dupe"
 agent = "claude-code"
-mcps = ["fs", "fs"]
+mcps = ["~/.config/hyprpilot/mcps/work.json", "~/.config/hyprpilot/mcps/work.json"]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
-        assert!(msg.contains("duplicate entry 'fs'"), "{msg}");
+        assert!(msg.contains("duplicate entry"), "{msg}");
         assert!(msg.contains("mcps"), "{msg}");
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn profile_rejects_empty_mcp_name() {
+    fn profile_rejects_empty_mcps_path() {
         let p = write_tmp(
-            "empty-mcp.toml",
+            "empty-mcps-files.toml",
             r#"
 [[profiles]]
 id = "busted"
@@ -822,21 +558,45 @@ mcps = [""]
     }
 
     #[test]
-    fn profile_absent_mcps_means_all() {
+    fn mcps_global_parse() {
         let p = write_tmp(
-            "absent-mcp.toml",
+            "mcps-global.toml",
             r#"
-[[profiles]]
-id = "plain"
-agent = "claude-code"
+mcps = ["~/.config/hyprpilot/mcps/base.json", "/etc/hyprpilot/team.json"]
 "#,
         );
         let cfg = load(Some(&p), None).expect("load");
-        let plain = cfg.profiles.iter().find(|p| p.id == "plain").expect("plain entry");
-        assert_eq!(plain.mcps, None, "absent key parses as None");
-        assert_eq!(plain.skills, None);
-        cfg.validate().expect("absent list validates");
+        assert_eq!(
+            cfg.mcps.as_deref(),
+            Some(
+                [
+                    PathBuf::from("~/.config/hyprpilot/mcps/base.json"),
+                    PathBuf::from("/etc/hyprpilot/team.json"),
+                ]
+                .as_slice()
+            )
+        );
+        cfg.validate().expect("valid global mcps");
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn mcps_global_unset_defaults_to_none() {
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults parse");
+        assert_eq!(cfg.mcps, None, "defaults must not seed any MCP files");
+    }
+
+    #[test]
+    fn mcps_global_user_overrides_defaults() {
+        let mut base = Config::default();
+        let over: Config = toml::from_str(
+            r#"
+mcps = ["~/work.json"]
+"#,
+        )
+        .expect("over parses");
+        base.merge(over);
+        assert_eq!(base.mcps.as_deref(), Some([PathBuf::from("~/work.json")].as_slice()));
     }
 
     #[test]
@@ -878,20 +638,18 @@ skills = [""]
     }
 
     #[test]
-    fn profile_empty_mcps_means_none() {
+    fn profile_empty_skills_means_none() {
         let p = write_tmp(
-            "empty-list-mcp.toml",
+            "empty-list-skills.toml",
             r#"
 [[profiles]]
 id = "deny"
 agent = "claude-code"
-mcps = []
 skills = []
 "#,
         );
         let cfg = load(Some(&p), None).expect("load");
         let deny = cfg.profiles.iter().find(|p| p.id == "deny").expect("deny entry");
-        assert_eq!(deny.mcps, Some(vec![]), "empty list parses as Some(vec![])");
         assert_eq!(deny.skills, Some(vec![]));
         cfg.validate().expect("empty list validates");
         fs::remove_file(&p).ok();

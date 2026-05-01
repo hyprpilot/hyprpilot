@@ -109,7 +109,7 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow'
+      optionId: 'allow', remember: undefined, instanceId: 'A', tool: 'bash'
     })
     expect(wrapper.find('[data-testid="permission-stack"]').exists()).toBe(false)
     wrapper.unmount()
@@ -134,7 +134,7 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'deny'
+      optionId: 'deny', remember: undefined, instanceId: 'A', tool: 'bash'
     })
     wrapper.unmount()
   })
@@ -158,7 +158,7 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow'
+      optionId: 'allow', remember: undefined, instanceId: 'A', tool: 'bash'
     })
     wrapper.unmount()
   })

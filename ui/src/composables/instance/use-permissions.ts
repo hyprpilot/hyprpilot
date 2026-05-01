@@ -117,8 +117,14 @@ export interface PendingPermissionView extends PendingPermission {
 
 export function usePermissions(instanceId?: InstanceId): {
   pending: ComputedRef<PendingPermissionView[]>
-  allow: (requestId: string) => Promise<void>
-  deny: (requestId: string) => Promise<void>
+  /**
+   * Allow a pending permission. `remember=true` writes a runtime
+   * trust-store entry for `(instance, tool)` so subsequent calls of
+   * the same tool short-circuit at decide() lane 1 — that's the UI's
+   * "always allow" path. `remember=false` (default) is "once".
+   */
+  allow: (requestId: string, remember?: boolean) => Promise<void>
+  deny: (requestId: string, remember?: boolean) => Promise<void>
 } {
   const { id: activeId } = useActiveInstance()
 
@@ -136,7 +142,7 @@ export function usePermissions(instanceId?: InstanceId): {
     return sorted.map((p, i) => ({ ...p, queued: i > 0 }))
   })
 
-  async function respond(requestId: string, decision: PermissionDecision): Promise<void> {
+  async function respond(requestId: string, decision: PermissionDecision, remember: boolean): Promise<void> {
     const resolved = instanceId ?? activeId.value
     if (!resolved) {
       throw new Error('no active instance')
@@ -148,14 +154,17 @@ export function usePermissions(instanceId?: InstanceId): {
     await invoke(TauriCommand.PermissionReply, {
       sessionId: entry.sessionId,
       requestId: entry.requestId,
-      optionId: decision
+      optionId: decision,
+      remember: remember ? decision : undefined,
+      instanceId: entry.instanceId,
+      tool: entry.tool
     })
     evictPermission(resolved, requestId)
   }
 
   return {
     pending,
-    allow: (requestId) => respond(requestId, PermissionDecision.Allow),
-    deny: (requestId) => respond(requestId, PermissionDecision.Deny)
+    allow: (requestId, remember = false) => respond(requestId, PermissionDecision.Allow, remember),
+    deny: (requestId, remember = false) => respond(requestId, PermissionDecision.Deny, remember)
   }
 }

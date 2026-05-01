@@ -278,7 +278,7 @@ onUnmounted(() => {
           </ul>
 
           <aside v-if="top.preview" class="palette-preview" data-testid="palette-preview">
-            <component :is="top.preview.component" :entry="highlightedEntry" />
+            <component :is="top.preview.component" :entry="highlightedEntry" v-bind="top.preview.props ?? {}" />
           </aside>
         </div>
 

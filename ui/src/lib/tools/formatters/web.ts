@@ -5,7 +5,7 @@ import type { ToolFormatter } from '@components'
 
 export const webFetchFormatter: ToolFormatter = {
   canonical: 'web_fetch',
-  kind: ToolKind.Acp,
+  kind: ToolKind.Unknown,
   format({ args, state }) {
     const url = pickString(args, 'url', 'uri')
     const prompt = pickString(args, 'prompt')

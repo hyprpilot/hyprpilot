@@ -206,7 +206,6 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::modes_set,
             adapter_commands::instance_meta,
             adapter_commands::mcps_list,
-            adapter_commands::mcps_set,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
             crate::skills::commands::skills_reload,
@@ -347,11 +346,19 @@ impl RuntimeState {
             warn!(%err, "skills registry: initial reload failed");
         }
 
-        // MCP catalog registry. Static after daemon start —
-        // restart-to-reconfigure is the model. Daemon-side only;
-        // the RPC layer doesn't expose `mcps/*` (Tauri commands cover
-        // that for the webview).
-        let mcps_defs = shared_config.read().expect("config lock poisoned").mcps.clone();
+        // MCP registry — resolved at daemon boot from the JSON files
+        // listed under top-level `mcps`. Empty when no files are
+        // configured (default state for fresh installs). Captain
+        // edits + `daemon/reload` triggers a re-read; existing
+        // instances keep their cached set, only restarted ones pick
+        // up changes (ACP fixes mcpServers at session/new).
+        let mcps_files = shared_config
+            .read()
+            .expect("config lock poisoned")
+            .mcps
+            .clone()
+            .unwrap_or_default();
+        let mcps_defs = crate::mcp::loader::load_files(&mcps_files);
         let mcps = Arc::new(MCPsRegistry::new(mcps_defs));
         let dispatcher = Arc::new(RpcDispatcher::with_defaults());
 

@@ -22,10 +22,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::adapters::permission::{
-    pick_allow_option_id, pick_reject_option_id, Decision, PermissionController, PermissionOptionView,
+    pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
     PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
 };
-use crate::config::ProfileConfig;
+use crate::mcp::MCPsRegistry;
 use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals};
 
 use self::error::{fs_error, terminal_error};
@@ -99,14 +99,24 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 
 /// Project an ACP `ToolCallUpdate` into the generic `ToolCallRef`
 /// the permission flow consumes. ACP's `title` is a human-readable
-/// summary ("Read package.json"); `kind` is the closed-set category
-/// ("read" / "edit" / "execute"). For a
-/// `[[profiles]].auto_accept_tools = ["Read", "Edit*"]` style
-/// allowlist the *canonical* `name` is the `kind` wire string — ACP
-/// doesn't currently surface a third "programmatic name" field.
-/// Vendor-specific programmatic names ride in `_meta.*.toolName` but
-/// that extractor is a separate issue; we match on `kind` first,
-/// then the title, then a neutral `"tool"` sentinel.
+/// summary ("Read package.json") OR the programmatic name when the
+/// agent has no display string (MCP tools ship as
+/// `mcp__server__tool`); `kind` is the closed-set category
+/// ("read" / "edit" / "execute" / "other"). The downstream
+/// permission decision pipeline + the UI both want the most-specific
+/// identifier in `name`:
+///
+/// - `kind = Other` is the catch-all — for MCP tools the agent never
+///   classifies them, so the wire string is "other" and the actual
+///   identity is in `title` (`mcp__filesystem__read_file`). Prefer
+///   the title in that case so `parse_mcp_server_from_tool_name`
+///   downstream can attribute the call to its server, and the UI
+///   gets a meaningful name to render.
+/// - For every other kind we keep the wire string as `name` (Bash,
+///   Read, …) so registered formatters key off the canonical kind.
+/// - `kind_wire` stays separate (carries the original "other" /
+///   "execute" / etc.) so the UI tone-mapper still drives the
+///   correct theme color regardless of the name we picked.
 ///
 /// `raw_args` pulls `command` from `raw_input` for Bash-family tools,
 /// `path` for fs tools, else single-line JSON of `raw_input`.
@@ -114,10 +124,14 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
         let title = update.fields.title.clone();
         let kind_wire = update.fields.kind.as_ref().and_then(wire_name);
-        let name = kind_wire
-            .clone()
-            .or_else(|| title.clone())
-            .unwrap_or_else(|| "tool".to_string());
+        let name = match kind_wire.as_deref() {
+            // Kind didn't classify (catch-all "other" or unmapped
+            // variant) — fall back to the title which carries the
+            // programmatic identifier for MCP tools and similar.
+            Some("other") | None => title.clone().or_else(|| kind_wire.clone()),
+            Some(_) => kind_wire.clone().or_else(|| title.clone()),
+        }
+        .unwrap_or_else(|| "tool".to_string());
         let raw_input = update.fields.raw_input.clone();
         let raw_args = raw_input.as_ref().and_then(|raw| {
             if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
@@ -197,15 +211,20 @@ pub struct AcpClient {
     fs: Arc<FsTools>,
     terminals: Arc<Terminals>,
     permissions: Arc<dyn PermissionController>,
-    /// Profile bound to this instance at spawn time. `None` when the
-    /// actor was started without a profile overlay (bare-agent
-    /// resolution); the decision chain treats that as "ask user"
-    /// unconditionally.
-    profile: Option<ProfileConfig>,
     /// Owning instance UUID. Stamped onto every `PermissionRequest`
     /// the controller registers so `permissions/pending` can address
-    /// the originating instance without a session-id hop.
+    /// the originating instance without a session-id hop. Also keys
+    /// the `PermissionController`'s runtime trust store at decide
+    /// time.
     instance_id: Option<String>,
+    /// Per-instance MCP catalog — built at spawn time from
+    /// `effective_mcp_files_for(profile)`. `None` when no MCP files
+    /// were configured (or all files failed to load); the decision
+    /// pipeline's per-server lane short-circuits to a miss in that
+    /// case and the call falls through to AskUser. Owns the typed
+    /// `hyprpilot.autoAcceptTools` / `autoRejectTools` lists used by
+    /// `PermissionController::decide` lane 2.
+    mcps: Option<Arc<MCPsRegistry>>,
 }
 
 impl std::fmt::Debug for AcpClient {
@@ -213,7 +232,7 @@ impl std::fmt::Debug for AcpClient {
         f.debug_struct("AcpClient")
             .field("fs", &self.fs)
             .field("terminals", &self.terminals)
-            .field("profile", &self.profile)
+            .field("instance_id", &self.instance_id)
             .finish_non_exhaustive()
     }
 }
@@ -223,16 +242,16 @@ impl AcpClient {
         events: mpsc::UnboundedSender<ClientEvent>,
         sandbox_root: PathBuf,
         permissions: Arc<dyn PermissionController>,
-        profile: Option<ProfileConfig>,
+        mcps: Option<Arc<MCPsRegistry>>,
     ) -> Result<Self, SandboxError> {
-        Self::with_instance_id(events, sandbox_root, permissions, profile, None)
+        Self::with_instance_id(events, sandbox_root, permissions, mcps, None)
     }
 
     pub fn with_instance_id(
         events: mpsc::UnboundedSender<ClientEvent>,
         sandbox_root: PathBuf,
         permissions: Arc<dyn PermissionController>,
-        profile: Option<ProfileConfig>,
+        mcps: Option<Arc<MCPsRegistry>>,
         instance_id: Option<String>,
     ) -> Result<Self, SandboxError> {
         let sandbox = Sandbox::new(sandbox_root)?;
@@ -241,8 +260,8 @@ impl AcpClient {
             fs: Arc::new(FsTools::new(sandbox.clone())),
             terminals: Arc::new(Terminals::new(sandbox)),
             permissions,
-            profile,
             instance_id,
+            mcps,
         })
     }
 
@@ -281,17 +300,21 @@ impl AcpClient {
             options: options.clone(),
         };
 
-        match self.permissions.decide(&decision_req, self.profile.as_ref()) {
+        let ctx = DecisionContext {
+            instance_id: self.instance_id.as_deref(),
+            mcps: self.mcps.as_deref(),
+        };
+        match self.permissions.decide(&decision_req, &ctx) {
             Decision::Allow => {
                 tracing::info!(
                     session = %req.session_id,
                     tool = %tool_call.name,
-                    profile = ?self.profile.as_ref().map(|p| &p.id),
-                    "acp::client: permission auto-accepted by profile glob"
+                    instance_id = ?self.instance_id,
+                    "acp::client: permission auto-accepted by trust store / per-server glob"
                 );
                 let opt_id = pick_allow_option_id(&decision_req.options).ok_or_else(|| {
                     agent_client_protocol::Error::internal_error()
-                        .data("profile auto-accept but agent offered no options")
+                        .data("auto-accept resolved but agent offered no options")
                 })?;
                 tracing::debug!(
                     session = %req.session_id,
@@ -307,8 +330,8 @@ impl AcpClient {
                 tracing::info!(
                     session = %req.session_id,
                     tool = %tool_call.name,
-                    profile = ?self.profile.as_ref().map(|p| &p.id),
-                    "acp::client: permission auto-rejected by profile glob"
+                    instance_id = ?self.instance_id,
+                    "acp::client: permission auto-rejected by trust store / per-server glob"
                 );
                 match pick_reject_option_id(&decision_req.options) {
                     Some(opt_id) => {
@@ -569,33 +592,23 @@ mod tests {
         )
     }
 
-    fn mk_client_with_profile(
+    fn mk_client_with_mcps(
         dir: &std::path::Path,
-        profile: ProfileConfig,
+        mcps: Arc<MCPsRegistry>,
     ) -> (AcpClient, mpsc::UnboundedReceiver<ClientEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let controller = Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>;
         (
-            AcpClient::new(tx, dir.to_path_buf(), controller, Some(profile)).expect("sandbox constructs"),
+            AcpClient::with_instance_id(
+                tx,
+                dir.to_path_buf(),
+                controller,
+                Some(mcps),
+                Some("instance-test".into()),
+            )
+            .expect("sandbox constructs"),
             rx,
         )
-    }
-
-    fn profile_with_globs(id: &str, accept: Vec<String>, reject: Vec<String>) -> ProfileConfig {
-        ProfileConfig {
-            id: id.into(),
-            agent: "claude-code".into(),
-            model: None,
-            system_prompt: None,
-            system_prompt_file: None,
-            auto_accept_tools: accept,
-            auto_reject_tools: reject,
-            mcps: None,
-            skills: None,
-            mode: None,
-            cwd: None,
-            env: Default::default(),
-        }
     }
 
     fn sample_permission_request(kind: ToolKind) -> RequestPermissionRequest {
@@ -662,37 +675,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn permission_request_profile_auto_accept_skips_ui() {
-        let dir = tempfile::tempdir().unwrap();
-        let profile = profile_with_globs("p", vec!["execute".into()], vec![]);
-        let (client, mut rx) = mk_client_with_profile(dir.path(), profile);
-        let req = sample_permission_request(ToolKind::Execute);
+    async fn permission_request_with_per_server_accept_short_circuits_ui() {
+        // Per-server hyprpilot.autoAcceptTools entry matches the tool;
+        // decide() returns Allow without prompting the UI. Title is
+        // the discriminator here — `From<&ToolCallUpdate>` falls back
+        // to the title when no `kind` is set, so the
+        // `mcp__filesystem__read_file` name reaches `decide()` for
+        // prefix-parsing.
+        use crate::mcp::{HyprpilotExtension, MCPDefinition};
+        use serde_json::json;
 
-        let resp = client.request_permission(&req).await.expect("accepted");
+        let dir = tempfile::tempdir().unwrap();
+        let mcps = Arc::new(MCPsRegistry::new(vec![MCPDefinition {
+            name: "filesystem".into(),
+            raw: json!({ "command": "echo" }),
+            hyprpilot: HyprpilotExtension {
+                auto_accept_tools: vec!["mcp__filesystem__read_*".into()],
+                auto_reject_tools: vec![],
+            },
+            source: PathBuf::from("test.json"),
+        }]));
+        let (client, mut rx) = mk_client_with_mcps(dir.path(), mcps);
+
+        let fields = ToolCallUpdateFields::new().title("mcp__filesystem__read_file");
+        let req = RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(ToolCallId::new("tc-1"), fields),
+            vec![PermissionOption::new(
+                PermissionOptionId::new("allow-once"),
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+
+        let resp = client.request_permission(&req).await.expect("auto-accept");
         match resp.outcome {
             RequestPermissionOutcome::Selected(sel) => {
                 assert_eq!(&*sel.option_id.0, "allow-once");
             }
             other => panic!("expected Selected, got {other:?}"),
         }
-        assert!(rx.try_recv().is_err(), "no UI event for profile-accept decisions");
+        assert!(rx.try_recv().is_err(), "no UI event for per-server accept decisions");
     }
 
-    #[tokio::test]
-    async fn permission_request_profile_auto_reject_maps_to_reject_option() {
-        let dir = tempfile::tempdir().unwrap();
-        let profile = profile_with_globs("p", vec![], vec!["execute".into()]);
-        let (client, mut rx) = mk_client_with_profile(dir.path(), profile);
-        let req = sample_permission_request(ToolKind::Execute);
+    #[test]
+    fn tool_call_ref_other_kind_falls_back_to_title() {
+        // ACP `kind = Other` is the catch-all for MCP / unmapped
+        // tools. The downstream permission decision pipeline + the
+        // UI both want the most-specific identifier — for MCP tools
+        // that's the programmatic name in `title`
+        // (`mcp__filesystem__read_file`), not the literal "other"
+        // wire string. Pin the From conversion so the regression
+        // path stays closed.
+        let fields = ToolCallUpdateFields::new()
+            .kind(ToolKind::Other)
+            .title("mcp__filesystem__read_file");
+        let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
+        let tool_ref = ToolCallRef::from(&update);
+        assert_eq!(tool_ref.name, "mcp__filesystem__read_file");
+        assert_eq!(tool_ref.kind_wire.as_deref(), Some("other"));
+        assert_eq!(tool_ref.title.as_deref(), Some("mcp__filesystem__read_file"));
+    }
 
-        let resp = client.request_permission(&req).await.expect("rejected");
-        match resp.outcome {
-            RequestPermissionOutcome::Selected(sel) => {
-                assert_eq!(&*sel.option_id.0, "reject-once");
-            }
-            other => panic!("expected Selected(reject-once), got {other:?}"),
-        }
-        assert!(rx.try_recv().is_err(), "no UI event for profile-reject decisions");
+    #[test]
+    fn tool_call_ref_classified_kind_keeps_wire_name() {
+        // For tools the agent DID classify (Bash / Read / Edit / …)
+        // the wire kind stays as `name` so registered formatters
+        // key off the canonical kind. The title rides alongside
+        // for the human-readable summary.
+        let fields = ToolCallUpdateFields::new()
+            .kind(ToolKind::Execute)
+            .title("Run unit tests");
+        let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
+        let tool_ref = ToolCallRef::from(&update);
+        assert_eq!(tool_ref.name, "execute");
+        assert_eq!(tool_ref.kind_wire.as_deref(), Some("execute"));
+        assert_eq!(tool_ref.title.as_deref(), Some("Run unit tests"));
     }
 
     #[test]

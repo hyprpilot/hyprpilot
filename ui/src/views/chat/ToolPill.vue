@@ -58,7 +58,10 @@ const stateTone = computed(() => toolStateTone(props.item.state))
 const info = computed(() => [props.item.arg, props.item.detail].filter(Boolean).join(' · '))
 const hasBody = computed(
   () =>
-    Boolean(props.item.output) || Boolean(props.item.description) || Boolean(props.item.arg)
+    Boolean(props.item.output) ||
+    Boolean(props.item.description) ||
+    Boolean(props.item.arg) ||
+    (props.item.fields !== undefined && props.item.fields.length > 0)
 )
 const isInteractive = computed(() => hasBody.value)
 const kindIcon = computed(() => iconForToolKind(props.item.kind))
@@ -114,6 +117,7 @@ const headerLabel = computed(() => {
         :command="item.arg"
         :detail="item.detail"
         :output="item.output"
+        :fields="item.fields"
       />
     </div>
   </span>
@@ -143,9 +147,18 @@ const headerLabel = computed(() => {
   border-color: var(--theme-border-soft);
 }
 
+/* Header layout — the dot + icon + kind word are fixed-width
+ * (`auto`); the name column (which contains the title) gets
+ * `minmax(0, 1fr)` so the title is the FIRST thing to truncate when
+ * the chip is narrow. `info` (arg + detail summary, used by Bash and
+ * native tools) gets the second `1fr` and shares space with the
+ * name. Stat + caret stay `auto`. The `min-width: 0` on grid
+ * children is what unlocks `text-overflow: ellipsis` inside flex /
+ * grid layouts — without it children push their natural width and
+ * the truncation never fires. */
 .tool-pill-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 8px;
   padding: 3px 8px;
@@ -160,7 +173,8 @@ const headerLabel = computed(() => {
 }
 
 .tool-pill-name {
-  @apply flex shrink-0 items-center gap-[5px];
+  @apply flex items-center gap-[5px];
+  min-width: 0;
 }
 
 .tool-pill-dot {
@@ -172,28 +186,36 @@ const headerLabel = computed(() => {
   width: 11px;
   height: 11px;
   color: var(--tone);
+  flex-shrink: 0;
 }
 
 .tool-pill-label {
-  @apply inline-flex shrink-0 items-baseline gap-1;
+  @apply inline-flex items-baseline gap-1;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .tool-pill-kind {
   @apply font-bold;
   color: var(--tone);
+  flex-shrink: 0;
 }
 
 .tool-pill-sep {
   color: var(--theme-fg-faint);
+  flex-shrink: 0;
 }
 
+/* Title truncates based on whatever space the grid column gives
+ * it. Drop the hardcoded ch cap — a narrow chip should truncate
+ * aggressively, a wide one should show the whole title. */
 .tool-pill-title {
   color: var(--theme-fg-ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 24ch;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .tool-pill-info {

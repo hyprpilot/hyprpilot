@@ -25,11 +25,15 @@ export interface PaletteEntry {
 /**
  * Optional right-pane preview. When set, `CommandPalette.vue` renders
  * a wide shell with the preview component bound to the currently
- * highlighted entry. The component receives `{ entry }` as a prop —
- * `entry` is `undefined` when the list is empty / unfiltered out.
+ * highlighted entry. The component receives `{ entry, ...props }` as
+ * props — `entry` is `undefined` when the list is empty / unfiltered
+ * out. `props` is an optional bag of extra static props (e.g. the
+ * full item collection so the preview can look up structured fields
+ * by id without re-fetching).
  */
 export interface PalettePreview {
   component: Component
+  props?: Record<string, unknown>
 }
 
 export interface PaletteSpec {

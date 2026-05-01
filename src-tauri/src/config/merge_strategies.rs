@@ -12,8 +12,6 @@
 //! Whole-entry replace — partial field merge inside an entry would
 //! surprise.
 
-use crate::mcp::MCPDefinition;
-
 use super::{AgentConfig, ProfileConfig};
 
 /// Right wins on Some; else keep left. Mirrors the old
@@ -58,8 +56,4 @@ pub(crate) fn merge_agents_by_id(left: &mut Vec<AgentConfig>, right: Vec<AgentCo
 
 pub(crate) fn merge_profiles_by_id(left: &mut Vec<ProfileConfig>, right: Vec<ProfileConfig>) {
     merge_keyed_by(left, right, |p| p.id.clone());
-}
-
-pub(crate) fn merge_mcps_by_name(left: &mut Vec<MCPDefinition>, right: Vec<MCPDefinition>) {
-    merge_keyed_by(left, right, |m| m.name.clone());
 }

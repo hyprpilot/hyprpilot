@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::adapters::TrustDecision;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{params_or_default, parse_params};
 use crate::rpc::protocol::RpcError;
@@ -23,6 +24,17 @@ struct PendingParams {
 struct RespondParams {
     request_id: String,
     option_id: String,
+    /// Optional trust-store side effect — `"allow"` / `"deny"` writes
+    /// `(instance_id, tool)` → decision so the next call from the same
+    /// tool short-circuits at decide() lane 1. Absent / null → "once"
+    /// semantics, no persistence. UI's "always" buttons set this; the
+    /// "once" buttons leave it null.
+    #[serde(default)]
+    remember: Option<String>,
+    #[serde(default)]
+    instance_id: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
 }
 
 pub struct PermissionsHandler;
@@ -49,7 +61,13 @@ impl RpcHandler for PermissionsHandler {
                 Ok(HandlerOutcome::Reply(json!({ "pending": snapshots })))
             }
             "permissions/respond" => {
-                let RespondParams { request_id, option_id } = parse_params(params, method)?;
+                let RespondParams {
+                    request_id,
+                    option_id,
+                    remember,
+                    instance_id,
+                    tool,
+                } = parse_params(params, method)?;
                 match controller.resolve_if_pending(&request_id, &option_id).await {
                     None => Err(RpcError::invalid_params(format!(
                         "no pending permission for request_id '{request_id}'"
@@ -57,7 +75,35 @@ impl RpcHandler for PermissionsHandler {
                     Some(false) => Err(RpcError::invalid_params(format!(
                         "option_id '{option_id}' not in permitted set for request_id '{request_id}'"
                     ))),
-                    Some(true) => Ok(HandlerOutcome::Reply(json!({ "resolved": true }))),
+                    Some(true) => {
+                        if let Some(token) = remember.as_deref() {
+                            let decision = match token {
+                                "allow" => Some(TrustDecision::Allow),
+                                "deny" => Some(TrustDecision::Deny),
+                                other => {
+                                    tracing::warn!(
+                                        request_id,
+                                        remember = %other,
+                                        "permissions/respond: unknown remember token, skipping trust-store update"
+                                    );
+                                    None
+                                }
+                            };
+                            if let (Some(decision), Some(iid), Some(tname)) =
+                                (decision, instance_id.as_ref(), tool.as_ref())
+                            {
+                                controller.remember(iid, tname, decision).await;
+                            } else if decision.is_some() {
+                                tracing::warn!(
+                                    request_id,
+                                    instance_id = ?instance_id,
+                                    tool = ?tool,
+                                    "permissions/respond: remember requested but instance_id / tool missing"
+                                );
+                            }
+                        }
+                        Ok(HandlerOutcome::Reply(json!({ "resolved": true })))
+                    }
                 }
             }
             other => Err(RpcError::method_not_found(other)),

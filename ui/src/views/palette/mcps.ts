@@ -1,113 +1,65 @@
 /**
- * Multi-select palette leaf for the global `[[mcps]]` catalog. Lists
- * every entry against the active instance's effective set (per-instance
- * override > profile default > all-enabled). On commit, diffs ticked
- * vs baseline and — when the set changed — fires `mcps_set` which
- * triggers a daemon-side restart of the addressed instance. A "ready"
- * toast follows the next `acp:instance-state` transition to `running`
- * for that id; transitions to `error` are reported as warn.
+ * Read-only palette leaf for the resolved MCP catalog. Lists every
+ * server in the active instance's effective set (profile's `mcps` ⊕
+ * global `mcps`) on the left; the master-detail `preview` slot on the
+ * right shows the structured entry — name, source path (relativized),
+ * command/args, env keys (values redacted), per-server hyprpilot
+ * extension globs, and a collapsible raw JSON disclosure for any
+ * unknown extension keys.
+ *
+ * Captains who want to toggle a server off edit the source JSON file
+ * + restart the daemon (`mcps` on disk is the authoritative state;
+ * UI is read-only because ACP fixes mcpServers at session/new and
+ * mid-session toggling would force a per-toggle restart).
  */
 
-import { type EventCallback, InstanceState, type InstanceStateEventPayload, invoke, listen, TauriCommand, TauriEvent, type UnlistenFn } from '@ipc'
+import { invoke, TauriCommand } from '@ipc'
 
-import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, usePalette } from '@composables'
-import { pushToast } from '@composables'
-import { log } from '@lib'
+import MCPsPreview from './MCPsPreview.vue'
 
 export interface OpenMcpsLeafOptions {
-  instanceId: string
-  /// Display name for the agent under restart — used in the
-  /// "switching MCPs… restarting <agent>" toast. Falls back to
-  /// "agent" when the caller doesn't have it on hand.
-  agentLabel?: string
+  instanceId?: string
 }
 
 /**
- * Pure diff helper. Returns true when the post-commit set differs from
- * the baseline (order-insensitive, set semantics). Exposed for testing.
+ * Open the MCP catalog palette. `instanceId` is optional — when
+ * present the daemon resolves the per-instance effective file set;
+ * when absent the global default is shown.
  */
-export function mcpsDiffersFromBaseline(baseline: ReadonlySet<string>, ticked: ReadonlySet<string>): boolean {
-  if (baseline.size !== ticked.size) {
-    return true
-  }
-  for (const slug of ticked) {
-    if (!baseline.has(slug)) {
-      return true
-    }
-  }
-
-  return false
-}
-
-async function watchForReady(instanceId: string, agentLabel: string): Promise<void> {
-  let unlisten: UnlistenFn | undefined
-  let timer: number | undefined
-  const cleanup = (): void => {
-    if (unlisten) {
-      unlisten()
-      unlisten = undefined
-    }
-    if (timer !== undefined) {
-      window.clearTimeout(timer)
-      timer = undefined
-    }
-  }
-  const cb: EventCallback<InstanceStateEventPayload> = (e) => {
-    if (e.payload.instanceId !== instanceId) {
-      return
-    }
-    if (e.payload.state === InstanceState.Running) {
-      pushToast(ToastTone.Ok, `${agentLabel}: ready`)
-      cleanup()
-    } else if (e.payload.state === InstanceState.Error) {
-      pushToast(ToastTone.Warn, `${agentLabel}: restart failed`)
-      cleanup()
-    }
-  }
-  unlisten = await listen(TauriEvent.AcpInstanceState, cb)
-  // Defensive ceiling — drop the listener after 30s even if no
-  // matching event arrives so we don't accumulate dead subscribers.
-  timer = window.setTimeout(cleanup, 30_000)
-}
-
-/**
- * Open the MCP toggle palette. `instanceId` is the active instance the
- * overlay knows about (typically `useActiveInstance().id.value`). The
- * caller is responsible for skipping the call when no active instance
- * is set.
- */
-export async function openMcpsLeaf(opts: OpenMcpsLeafOptions): Promise<void> {
-  const { instanceId, agentLabel = 'agent' } = opts
+export async function openMcpsLeaf(opts: OpenMcpsLeafOptions = {}): Promise<void> {
   const { open } = usePalette()
-  const result = await invoke(TauriCommand.McpsList, { instanceId })
+  const result = await invoke(TauriCommand.McpsList, { instanceId: opts.instanceId })
   const items = result.mcps
   const entries: PaletteEntry[] = items.map((m) => ({
     id: m.name,
     name: m.name,
-    description: m.command
+    description: relativizePath(m.source)
   }))
-  const preseedActive = items.filter((m) => m.enabled).map((m) => ({ id: m.name, name: m.name }))
-  const baseline = new Set(preseedActive.map((p) => p.id))
 
   open({
-    mode: PaletteMode.MultiSelect,
+    mode: PaletteMode.Select,
     title: 'mcps',
     entries,
-    preseedActive,
-    onCommit(picks: PaletteEntry[]): void {
-      const ticked = new Set(picks.map((p) => p.id))
-      if (!mcpsDiffersFromBaseline(baseline, ticked)) {
-        return
-      }
-      const enabled = [...ticked]
-      pushToast(ToastTone.Info, `switching MCPs… restarting ${agentLabel}`)
-      void invoke(TauriCommand.McpsSet, { instanceId, enabled })
-        .then(() => watchForReady(instanceId, agentLabel))
-        .catch((err) => {
-          log.warn('mcps_set failed', { instanceId }, err)
-          pushToast(ToastTone.Err, `mcps: failed to restart ${agentLabel}`)
-        })
+    preview: { component: MCPsPreview, props: { items } },
+    onCommit(): void {
+      // Read-only — Enter is a no-op. Captain edits source JSON +
+      // restarts to change the set.
     }
   })
+}
+
+/**
+ * Strip `$HOME` from absolute paths so the palette description column
+ * fits in the row width. No path resolution — falls back to the raw
+ * string when no home prefix is found.
+ */
+function relativizePath(raw: string): string {
+  const home = typeof globalThis.process !== 'undefined' && typeof globalThis.process.env !== 'undefined'
+    ? globalThis.process.env.HOME
+    : undefined
+  if (home && raw.startsWith(home)) {
+    return `~${raw.slice(home.length)}`
+  }
+  return raw
 }

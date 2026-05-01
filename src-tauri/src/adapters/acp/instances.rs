@@ -14,7 +14,7 @@
 //! known up-front), closing the seq race where agent responses landed
 //! with lower seq than the user turn.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -47,11 +47,6 @@ pub struct AcpAdapter {
     pub(crate) status: Arc<StatusBroadcast>,
     registry: Arc<AdapterRegistry<AcpInstance>>,
     permissions: Arc<dyn PermissionController>,
-    /// Per-instance MCP enabled-list overrides. Keyed by `InstanceKey`,
-    /// installed by `mcps/set` and read at spawn time (after restart)
-    /// to compute the effective MCP set. Survives restart of the
-    /// addressed instance (key preserved); cleared on shutdown.
-    mcps_overrides: Arc<RwLock<HashMap<InstanceKey, Vec<String>>>>,
     /// Instance ids with at least one in-flight turn. Driven by a
     /// background task subscribed to the registry's broadcast —
     /// `TurnStarted` adds, `TurnEnded` removes. Read by
@@ -107,7 +102,6 @@ impl AcpAdapter {
             status,
             registry: Arc::new(AdapterRegistry::new()),
             permissions,
-            mcps_overrides: Arc::new(RwLock::new(HashMap::new())),
             busy_instances: Arc::new(RwLock::new(HashSet::new())),
             commands_cache: Arc::new(RwLock::new(None)),
         }
@@ -132,44 +126,40 @@ impl AcpAdapter {
             .clone()
     }
 
-    /// Effective MCP enabled-list for an instance: per-instance
-    /// override wins; otherwise the resolved profile's `mcps` field;
-    /// otherwise `None` (meaning "all catalog entries enabled" — the
-    /// default-empty-list semantics from CLAUDE.md).
-    pub(crate) async fn effective_mcps_for(&self, key: InstanceKey) -> Option<Vec<String>> {
-        if let Some(o) = self
-            .mcps_overrides
-            .read()
-            .expect("mcps overrides lock poisoned")
-            .get(&key)
-            .cloned()
-        {
-            return Some(o);
+    /// Resolved MCP file list for an instance. Profile's `mcps` when
+    /// set wholesale-replaces the global `mcps`; None (unset) falls
+    /// back. Used by the `mcps_list` Tauri command's readonly preview
+    /// path AND by the ACP injection at session/new.
+    pub(crate) fn effective_mcp_files_for(
+        &self,
+        profile: Option<&crate::config::ProfileConfig>,
+    ) -> Vec<std::path::PathBuf> {
+        if let Some(p) = profile {
+            if let Some(files) = &p.mcps {
+                return files.clone();
+            }
         }
-        let profile_id = self.registry.get(key).await.and_then(|h| h.profile_id.clone())?;
-        let cfg = self.read_config();
-        cfg.profiles
-            .iter()
-            .find(|p| p.id == profile_id)
-            .and_then(|p| p.mcps.clone())
+        self.read_config().mcps.clone().unwrap_or_default()
     }
 
-    /// Install a per-instance MCP override. Replaces any existing
-    /// override for `key`; subsequent `restart` reads it back when
-    /// (re-)spawning the actor. Returns the previous override if any.
-    pub(crate) fn set_mcps_override(&self, key: InstanceKey, enabled: Vec<String>) -> Option<Vec<String>> {
-        let mut map = self.mcps_overrides.write().expect("mcps overrides lock poisoned");
-        map.insert(key, enabled)
-    }
-
-    /// Drop a per-instance MCP override. Called from shutdown paths
-    /// so a fresh-spawned instance reusing a recycled UUID doesn't
-    /// inherit a stale override. (UUIDs are unique by construction
-    /// today — this is defensive.)
-    #[allow(dead_code)]
-    pub(crate) fn clear_mcps_override(&self, key: InstanceKey) {
-        let mut map = self.mcps_overrides.write().expect("mcps overrides lock poisoned");
-        map.remove(&key);
+    /// Build a per-instance `MCPsRegistry` from the resolved file list.
+    /// Returns `None` when no files are configured (so the permission
+    /// pipeline's lane 2 stays inactive and the call site doesn't pay
+    /// for an empty-registry deref). Per-file load errors warn + skip
+    /// inside `loader::load_files`.
+    fn build_mcp_registry_for(
+        &self,
+        profile: Option<&crate::config::ProfileConfig>,
+    ) -> Option<Arc<crate::mcp::MCPsRegistry>> {
+        let files = self.effective_mcp_files_for(profile);
+        if files.is_empty() {
+            return None;
+        }
+        let defs = crate::mcp::loader::load_files(&files);
+        if defs.is_empty() {
+            return None;
+        }
+        Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
     }
 
     /// Handle onto the shared config. Used by the daemon wiring to
@@ -368,12 +358,13 @@ impl AcpAdapter {
 
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id = resolved.profile_id.clone();
-        let mcps_override = self
-            .mcps_overrides
-            .read()
-            .expect("mcps overrides lock poisoned")
-            .get(&key)
-            .cloned();
+        // Per-instance MCP catalog: profile's `mcps` wholesale-
+        // replaces the global default; the resolved set is what
+        // `PermissionController::decide` lane 2 reads via
+        // `DecisionContext.mcps`. None when no MCP files are wired —
+        // the per-server lane short-circuits and every call falls
+        // through to AskUser (or trust store).
+        let mcps = self.build_mcp_registry_for(profile.as_ref());
         let instance = AcpInstance::start(
             resolved,
             key,
@@ -381,8 +372,7 @@ impl AcpAdapter {
             self.registry.events_tx(),
             bootstrap,
             self.permissions.clone(),
-            profile,
-            mcps_override,
+            mcps,
             self.commands_cache(),
         );
 
@@ -564,6 +554,7 @@ impl AcpAdapter {
             // after the list response resolves.
             let (sink_tx, _sink_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
             // Ephemeral list-only actor never reads MCPs; pass None.
+            let _ = profile;
             let instance = AcpInstance::start(
                 resolved,
                 ephemeral_key,
@@ -571,7 +562,6 @@ impl AcpAdapter {
                 sink_tx,
                 Bootstrap::ListOnly,
                 self.permissions.clone(),
-                profile,
                 None,
                 None,
             );
@@ -633,10 +623,6 @@ impl AcpAdapter {
         for instance in instances {
             instance.shutdown().await;
         }
-        self.mcps_overrides
-            .write()
-            .expect("mcps overrides lock poisoned")
-            .clear();
     }
 
     /// Spawn a fresh instance against the resolved `(agent, profile)`.
@@ -697,6 +683,11 @@ impl AcpAdapter {
             .drop_preserving_slot(key)
             .await
             .map_err(map_adapter_error_to_rpc)?;
+        // Restart resets the per-instance trust store — the captain's
+        // "always allow / always deny" decisions are scoped to a live
+        // actor, not the UUID slot. Same fresh-start semantics as a
+        // brand-new instance.
+        self.permissions.clear_for_instance(&key.as_string()).await;
 
         let mut resolved = self.resolve(Some(&agent_id), profile_id.as_deref())?;
         if mode.is_some() {
@@ -707,14 +698,7 @@ impl AcpAdapter {
         }
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id_for_instance = resolved.profile_id.clone();
-        // Restart preserves the per-instance MCP override, so the
-        // post-restart actor reads the same effective set.
-        let mcps_override = self
-            .mcps_overrides
-            .read()
-            .expect("mcps overrides lock poisoned")
-            .get(&key)
-            .cloned();
+        let mcps = self.build_mcp_registry_for(profile.as_ref());
         let instance = AcpInstance::start(
             resolved,
             key,
@@ -722,8 +706,7 @@ impl AcpAdapter {
             self.registry.events_tx(),
             Bootstrap::Fresh,
             self.permissions.clone(),
-            profile,
-            mcps_override,
+            mcps,
             self.commands_cache(),
         );
         self.registry
@@ -778,15 +761,17 @@ impl AcpAdapter {
     }
 
     /// Shutdown a single instance and auto-focus the oldest survivor.
-    /// Drops any per-instance MCP override so a UUID never inherits a
-    /// stale override (defensive — UUIDs are unique by construction).
+    /// Clears the runtime trust-store entries for this instance so a
+    /// future actor that lands on the same UUID (impossible today —
+    /// keys are UUIDs — but defensive) doesn't inherit stale "always
+    /// allow / always deny" decisions.
     pub async fn shutdown_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
         let key = self
             .registry
             .shutdown_one(key)
             .await
             .map_err(map_adapter_error_to_rpc)?;
-        self.clear_mcps_override(key);
+        self.permissions.clear_for_instance(&key.as_string()).await;
         Ok(key)
     }
 
@@ -1006,14 +991,6 @@ impl Adapter for AcpAdapter {
         AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id)
             .await
             .map_err(rpc_to_adapter)
-    }
-
-    async fn set_mcps_override(&self, key: InstanceKey, enabled: Vec<String>) -> AdapterResult<Option<Vec<String>>> {
-        Ok(AcpAdapter::set_mcps_override(self, key, enabled))
-    }
-
-    async fn mcps_list_for(&self, key: InstanceKey) -> AdapterResult<Option<Vec<String>>> {
-        Ok(self.effective_mcps_for(key).await)
     }
 
     async fn busy_instance_ids(&self) -> Vec<String> {

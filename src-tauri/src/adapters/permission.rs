@@ -1,22 +1,34 @@
 //! Generic permission-prompt vocabulary + `PermissionController` trait.
 //!
-//! The adapter emits a `PermissionPrompt` via
-//! `InstanceEvent::PermissionRequest` when the decision chain bounces
-//! to the UI; the webview replies with a `PermissionReply {
-//! option_id }`. K-245 replaces the auto-`Cancelled` stub with a real
-//! chain: profile reject-globs → profile accept-globs → ask the user
-//! and block the ACP response until the reply lands (or the 10-minute
-//! waiter timeout fires, whichever first).
+//! The unified decision pipeline (S6.5 of the MCP refactor) owns BOTH
+//! the runtime trust store (populated by the UI's "always allow / always
+//! deny" buttons) AND the static per-server hyprpilot extension globs
+//! (loaded from MCP JSON). One match, one ordering:
+//!
+//! 1. **Runtime trust store** — `(instance_id, tool_name) → Allow|Deny`,
+//!    populated by `remember()`. UI's "always" path calls into this.
+//!    Reject beats accept.
+//! 2. **Per-server hyprpilot extension globs** — looked up via the
+//!    tool→server attribution map populated at `session/new` time.
+//!    Reject beats accept.
+//! 3. **Default**: `AskUser` — bounces to the UI.
+//!
+//! `register_pending` + `resolve` own the oneshot waiter map that
+//! bridges the Tauri `permission_reply` command back to the awaiting
+//! ACP handler. Profile-flat `auto_accept_tools` / `auto_reject_tools`
+//! went away — auto-accept / auto-reject lives ONLY inside each MCP
+//! JSON entry's `hyprpilot` extension block.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Mutex};
 
-use crate::config::ProfileConfig;
+use crate::mcp::MCPsRegistry;
 
 /// How long an `AskUser` waiter stays live before the caller
 /// abandons it and treats the outcome as `Cancelled`. Matches the
@@ -169,15 +181,92 @@ pub struct PermissionReply {
     pub option_id: String,
 }
 
-/// The decision + waiter surface. `decide` is synchronous (pure
-/// glob lookup against a profile); `register_pending` + `resolve`
-/// own the oneshot map that bridges the Tauri `permission_reply`
-/// command back to the awaiting ACP handler.
+/// Runtime trust-store decision shape. Populated by the UI's "always
+/// allow / always deny" buttons via `remember()`; consumed at the top
+/// of every `decide()` call. Distinct from `Decision` (which is the
+/// pipeline's output) to make the three-state intent visible — there's
+/// no `AskUser` value to remember.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustDecision {
+    Allow,
+    Deny,
+}
+
+/// Everything the unified decision pipeline needs at call time.
+/// `instance_id` keys the runtime trust store; `mcps` provides the
+/// per-server hyprpilot-extension globs. Both fields are optional —
+/// when no MCPs are configured (or the call site is a test harness
+/// without instance context), the corresponding lane short-circuits
+/// to a miss and the next lane runs.
+///
+/// Tool→server attribution is by prefix convention — `mcp__<server>__<tool>`,
+/// the shared shape across claude-code-acp / codex-acp / opencode-acp
+/// (all three namespace MCP tools the same way). Vendor-side native
+/// tools (Bash, Read, …) carry no `mcp__` prefix and skip lane 2
+/// entirely.
+pub struct DecisionContext<'a> {
+    pub instance_id: Option<&'a str>,
+    pub mcps: Option<&'a MCPsRegistry>,
+}
+
+impl<'a> DecisionContext<'a> {
+    /// All-misses context — every decision falls through to `AskUser`.
+    /// Used by tests and by call sites that haven't yet wired the
+    /// instance id / registry.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            instance_id: None,
+            mcps: None,
+        }
+    }
+}
+
+/// Parse `mcp__<server>__<tool>` → `<server>`. Returns `None` for
+/// vendor-native tool names (Bash, Read, …) that don't carry the MCP
+/// prefix. Used by the per-server permission lane to attribute an
+/// incoming tool call to its origin server without a separate
+/// attribution map.
+#[must_use]
+pub fn parse_mcp_server_from_tool_name(tool: &str) -> Option<&str> {
+    let after_prefix = tool.strip_prefix("mcp__")?;
+    let (server, _rest) = after_prefix.split_once("__")?;
+    if server.is_empty() {
+        return None;
+    }
+    Some(server)
+}
+
+/// The decision + waiter surface + runtime trust store. `decide` is
+/// synchronous (pure lookups); `remember` / `clear_for_instance` mutate
+/// the trust store; `register_pending` + `resolve` own the oneshot map
+/// that bridges the Tauri `permission_reply` command back to the
+/// awaiting ACP handler.
 #[async_trait]
 pub trait PermissionController: Send + Sync + 'static {
-    /// Apply the profile allowlist chain. Reject beats accept; a
-    /// miss on both lists returns `AskUser`.
-    fn decide(&self, req: &PermissionRequest, profile: Option<&ProfileConfig>) -> Decision;
+    /// Run the unified pipeline: trust store → per-server hyprpilot
+    /// globs → AskUser. Reject beats accept inside each lane.
+    fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision;
+
+    /// Persist a runtime trust decision for `(instance_id, tool)`.
+    /// Subsequent calls with the same key short-circuit at lane 1 of
+    /// `decide`. Reject beats accept on conflict — calling
+    /// `remember(.., Allow)` after a `remember(.., Deny)` for the same
+    /// key keeps the deny entry. In-memory only; instance shutdown
+    /// clears via `clear_for_instance`.
+    async fn remember(&self, instance_id: &str, tool: &str, decision: TrustDecision);
+
+    /// Drop every trust-store entry for the given instance. Called by
+    /// `AcpAdapter::shutdown_instance` and `restart_instance` so a
+    /// fresh actor boots with a clean slate. No-op when no entries
+    /// exist for the instance.
+    async fn clear_for_instance(&self, instance_id: &str);
+
+    /// Test/diag: snapshot the trust store as a vector of
+    /// `(instance_id, tool, decision)` triples. Stable iteration order
+    /// is not guaranteed; callers that compare in tests should sort.
+    #[cfg(test)]
+    async fn snapshot_trust_store(&self) -> Vec<(String, String, TrustDecision)>;
 
     /// Register a pending prompt. Returns the receiver the caller
     /// awaits; wrap the receive in `tokio::time::timeout(WAITER_TIMEOUT,
@@ -219,12 +308,19 @@ pub trait PermissionController: Send + Sync + 'static {
     async fn list_pending(&self) -> Vec<PermissionRequestSnapshot>;
 }
 
-/// Default impl: an in-memory waiter map, profile globs compiled on
-/// every `decide` call (the glob set is tiny — a handful of patterns
-/// per profile — so caching is premature).
+/// Default impl: in-memory waiter map + in-memory trust store. Glob
+/// sets are compiled per `decide` call (the per-server lists are tiny
+/// — a handful of patterns each — so caching is premature; if it
+/// surfaces in a profile, swap to a precompiled cache keyed by server
+/// name + content-hash).
 #[derive(Debug, Default)]
 pub struct DefaultPermissionController {
     waiters: Arc<Mutex<HashMap<String, PendingWaiter>>>,
+    /// Runtime trust store keyed by `(instance_id, tool_name)`. Reject
+    /// wins on conflict; `remember(.., Allow)` is a no-op when a Deny
+    /// entry already exists. `std::sync::RwLock` because `decide` is
+    /// sync — we cannot hold a `tokio::sync::Mutex` across the lookup.
+    trust: Arc<RwLock<HashMap<(String, String), TrustDecision>>>,
 }
 
 #[derive(Debug)]
@@ -248,54 +344,139 @@ impl DefaultPermissionController {
     }
 }
 
+/// Compile a list of glob patterns into a `GlobSet`. Returns `None`
+/// when the input is empty or every pattern fails to compile (logged).
+/// Used inside `decide` for per-server hyprpilot extension match.
+fn compile_globs(patterns: &[String]) -> Option<GlobSet> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = GlobSetBuilder::new();
+    let mut added = 0_usize;
+    for p in patterns {
+        match Glob::new(p) {
+            Ok(g) => {
+                builder.add(g);
+                added += 1;
+            }
+            Err(err) => {
+                tracing::warn!(pattern = %p, %err, "permission::decide: skipping invalid glob");
+            }
+        }
+    }
+    if added == 0 {
+        return None;
+    }
+    builder.build().ok()
+}
+
 #[async_trait]
 impl PermissionController for DefaultPermissionController {
-    fn decide(&self, req: &PermissionRequest, profile: Option<&ProfileConfig>) -> Decision {
-        let Some(profile) = profile else {
-            tracing::debug!(
-                request_id = %req.request_id,
-                tool = %req.tool_call.name,
-                "permission::decide: no profile attached, AskUser"
-            );
-            return Decision::AskUser;
-        };
-        // Glob compile failures never reach here — TOML validation
-        // rejects bad patterns at load time. If a hand-constructed
-        // profile slips past validation, we fall through to AskUser
-        // rather than panic.
-        let Ok((accept, reject)) = profile.compile_tool_globs() else {
-            tracing::warn!(
-                profile = %profile.id,
-                "permission::decide: glob compile failed, defaulting to AskUser"
-            );
-            return Decision::AskUser;
-        };
-        let name = req.tool_call.name.as_str();
-        if reject.is_match(name) {
-            tracing::debug!(
-                request_id = %req.request_id,
-                profile = %profile.id,
-                tool = %name,
-                "permission::decide: matched auto_reject_tools glob"
-            );
-            return Decision::Deny;
+    fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision {
+        let tool = req.tool_call.name.as_str();
+
+        // Lane 1 — runtime trust store. Captain's "always allow / always
+        // deny" picks land here; they always beat the static config.
+        if let Some(instance_id) = ctx.instance_id {
+            let trust = self.trust.read().expect("trust store lock poisoned");
+            if let Some(decision) = trust.get(&(instance_id.to_string(), tool.to_string())) {
+                tracing::debug!(
+                    request_id = %req.request_id,
+                    tool,
+                    instance_id,
+                    ?decision,
+                    "permission::decide: trust-store hit"
+                );
+                return match decision {
+                    TrustDecision::Allow => Decision::Allow,
+                    TrustDecision::Deny => Decision::Deny,
+                };
+            }
         }
-        if accept.is_match(name) {
-            tracing::debug!(
-                request_id = %req.request_id,
-                profile = %profile.id,
-                tool = %name,
-                "permission::decide: matched auto_accept_tools glob"
-            );
-            return Decision::Allow;
+
+        // Lane 2 — per-server hyprpilot extension globs. Attribute the
+        // tool to its server via the `mcp__<server>__<tool>` prefix
+        // convention, then match against that server's accept / reject
+        // globs. Reject beats accept. Vendor-native tools (no prefix)
+        // skip this lane entirely.
+        if let Some(registry) = ctx.mcps {
+            if let Some(server_name) = parse_mcp_server_from_tool_name(tool) {
+                if let Some(def) = registry.get(server_name) {
+                    let reject_set = compile_globs(&def.hyprpilot.auto_reject_tools);
+                    if reject_set.as_ref().is_some_and(|gs| gs.is_match(tool)) {
+                        tracing::debug!(
+                            request_id = %req.request_id,
+                            tool,
+                            server = %server_name,
+                            "permission::decide: per-server reject glob hit"
+                        );
+                        return Decision::Deny;
+                    }
+                    let accept_set = compile_globs(&def.hyprpilot.auto_accept_tools);
+                    if accept_set.as_ref().is_some_and(|gs| gs.is_match(tool)) {
+                        tracing::debug!(
+                            request_id = %req.request_id,
+                            tool,
+                            server = %server_name,
+                            "permission::decide: per-server accept glob hit"
+                        );
+                        return Decision::Allow;
+                    }
+                }
+            }
         }
+
         tracing::debug!(
             request_id = %req.request_id,
-            profile = %profile.id,
-            tool = %name,
-            "permission::decide: no glob matched, AskUser"
+            tool,
+            "permission::decide: no rule, AskUser"
         );
         Decision::AskUser
+    }
+
+    async fn remember(&self, instance_id: &str, tool: &str, decision: TrustDecision) {
+        let key = (instance_id.to_string(), tool.to_string());
+        let mut trust = self.trust.write().expect("trust store lock poisoned");
+        // Reject beats accept on conflict — `remember(.., Allow)` after
+        // a `remember(.., Deny)` is a no-op so an accidental click
+        // can't widen access. Re-asserting Deny is fine.
+        match (trust.get(&key), decision) {
+            (Some(TrustDecision::Deny), TrustDecision::Allow) => {
+                tracing::debug!(
+                    instance_id,
+                    tool,
+                    "permission::remember: existing Deny beats Allow, no-op"
+                );
+            }
+            _ => {
+                trust.insert(key, decision);
+                tracing::debug!(
+                    instance_id,
+                    tool,
+                    ?decision,
+                    "permission::remember: trust store updated"
+                );
+            }
+        }
+    }
+
+    async fn clear_for_instance(&self, instance_id: &str) {
+        let mut trust = self.trust.write().expect("trust store lock poisoned");
+        let before = trust.len();
+        trust.retain(|(id, _), _| id != instance_id);
+        let cleared = before - trust.len();
+        if cleared > 0 {
+            tracing::debug!(instance_id, cleared, "permission::clear_for_instance");
+        }
+    }
+
+    #[cfg(test)]
+    async fn snapshot_trust_store(&self) -> Vec<(String, String, TrustDecision)> {
+        let trust = self.trust.read().expect("trust store lock poisoned");
+        trust
+            .iter()
+            .map(|((id, tool), d)| (id.clone(), tool.clone(), *d))
+            .collect()
     }
 
     async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome> {
@@ -438,24 +619,12 @@ pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::PathBuf;
 
-    fn profile_with_globs(id: &str, accept: &[&str], reject: &[&str]) -> ProfileConfig {
-        ProfileConfig {
-            id: id.into(),
-            agent: "claude-code".into(),
-            model: None,
-            system_prompt: None,
-            system_prompt_file: None,
-            auto_accept_tools: accept.iter().map(|s| s.to_string()).collect(),
-            auto_reject_tools: reject.iter().map(|s| s.to_string()).collect(),
-            mcps: None,
-            skills: None,
-            mode: None,
-            cwd: None,
-            env: Default::default(),
-        }
-    }
+    use serde_json::json;
+
+    use super::*;
+    use crate::mcp::{HyprpilotExtension, MCPDefinition, MCPsRegistry};
 
     fn request(id: &str, tool: &str) -> PermissionRequest {
         PermissionRequest {
@@ -485,35 +654,179 @@ mod tests {
         }
     }
 
+    fn registry_with(name: &str, accept: &[&str], reject: &[&str]) -> MCPsRegistry {
+        MCPsRegistry::new(vec![MCPDefinition {
+            name: name.into(),
+            raw: json!({ "command": "echo" }),
+            hyprpilot: HyprpilotExtension {
+                auto_accept_tools: accept.iter().map(|s| (*s).to_string()).collect(),
+                auto_reject_tools: reject.iter().map(|s| (*s).to_string()).collect(),
+            },
+            source: PathBuf::from("test.json"),
+        }])
+    }
+
     #[test]
-    fn decide_profile_reject_beats_accept() {
+    fn decide_empty_context_asks_user() {
         let controller = DefaultPermissionController::new();
-        let profile = profile_with_globs("p", &["Bash"], &["Bash"]);
-        let d = controller.decide(&request("r1", "Bash"), Some(&profile));
+        let d = controller.decide(&request("r1", "Read"), &DecisionContext::empty());
+        assert_eq!(d, Decision::AskUser);
+    }
+
+    #[tokio::test]
+    async fn decide_trust_store_allow_short_circuits() {
+        let controller = DefaultPermissionController::new();
+        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
+        let d = controller.decide(
+            &request("r1", "Bash"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: None,
+            },
+        );
+        assert_eq!(d, Decision::Allow);
+    }
+
+    #[tokio::test]
+    async fn decide_trust_store_deny_short_circuits_over_static_accept() {
+        let controller = DefaultPermissionController::new();
+        // Static accept on the MCP server says allow; trust store says
+        // deny — trust wins because it sits at lane 1 of the pipeline.
+        controller
+            .remember("instance-1", "mcp__filesystem__delete_file", TrustDecision::Deny)
+            .await;
+        let registry = registry_with("filesystem", &["delete_*"], &[]);
+        let d = controller.decide(
+            &request("r1", "mcp__filesystem__delete_file"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: Some(&registry),
+            },
+        );
+        assert_eq!(d, Decision::Deny);
+    }
+
+    #[tokio::test]
+    async fn decide_trust_store_scoped_per_instance() {
+        let controller = DefaultPermissionController::new();
+        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
+        // Same tool, different instance — trust does NOT carry over.
+        let d = controller.decide(
+            &request("r1", "Bash"),
+            &DecisionContext {
+                instance_id: Some("instance-2"),
+                mcps: None,
+            },
+        );
+        assert_eq!(d, Decision::AskUser);
+    }
+
+    #[tokio::test]
+    async fn remember_deny_blocks_subsequent_allow() {
+        let controller = DefaultPermissionController::new();
+        controller.remember("instance-1", "Bash", TrustDecision::Deny).await;
+        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
+        let snapshot = controller.snapshot_trust_store().await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].2, TrustDecision::Deny, "Deny survives an Allow re-assert");
+    }
+
+    #[tokio::test]
+    async fn clear_for_instance_drops_only_matching_entries() {
+        let controller = DefaultPermissionController::new();
+        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
+        controller.remember("instance-1", "Read", TrustDecision::Deny).await;
+        controller.remember("instance-2", "Bash", TrustDecision::Allow).await;
+        controller.clear_for_instance("instance-1").await;
+        let snapshot = controller.snapshot_trust_store().await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0, "instance-2");
+    }
+
+    #[test]
+    fn decide_per_server_reject_beats_accept() {
+        let controller = DefaultPermissionController::new();
+        let registry = registry_with(
+            "filesystem",
+            &["mcp__filesystem__delete_*"],
+            &["mcp__filesystem__delete_*"],
+        );
+        let d = controller.decide(
+            &request("r1", "mcp__filesystem__delete_file"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: Some(&registry),
+            },
+        );
         assert_eq!(d, Decision::Deny);
     }
 
     #[test]
-    fn decide_profile_accept_skips_user() {
+    fn decide_per_server_accept_glob_matches() {
         let controller = DefaultPermissionController::new();
-        let profile = profile_with_globs("p", &["Read*"], &[]);
-        let d = controller.decide(&request("r1", "ReadFile"), Some(&profile));
+        let registry = registry_with("filesystem", &["mcp__filesystem__read_*"], &[]);
+        let d = controller.decide(
+            &request("r1", "mcp__filesystem__read_file"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: Some(&registry),
+            },
+        );
         assert_eq!(d, Decision::Allow);
     }
 
     #[test]
-    fn decide_no_match_asks_user() {
+    fn decide_native_tool_skips_per_server_lane() {
+        // `Bash` is a vendor-native tool with no `mcp__` prefix —
+        // server attribution returns None, lane 2 short-circuits, and
+        // we fall through to AskUser regardless of MCP config.
         let controller = DefaultPermissionController::new();
-        let profile = profile_with_globs("p", &["Read"], &["Delete"]);
-        let d = controller.decide(&request("r1", "Edit"), Some(&profile));
+        let registry = registry_with("filesystem", &["Bash"], &[]);
+        let d = controller.decide(
+            &request("r1", "Bash"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: Some(&registry),
+            },
+        );
         assert_eq!(d, Decision::AskUser);
     }
 
     #[test]
-    fn decide_without_profile_asks_user() {
+    fn decide_per_server_unknown_server_asks_user() {
+        // Tool prefix says it came from "ghost"; registry doesn't
+        // carry that server → falls through to AskUser. Defensive
+        // against a server being removed from the catalog mid-session.
         let controller = DefaultPermissionController::new();
-        let d = controller.decide(&request("r1", "Read"), None);
+        let registry = registry_with("filesystem", &["mcp__filesystem__*"], &[]);
+        let d = controller.decide(
+            &request("r1", "mcp__ghost__some_tool"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: Some(&registry),
+            },
+        );
         assert_eq!(d, Decision::AskUser);
+    }
+
+    #[test]
+    fn parse_mcp_server_from_tool_name_strips_prefix() {
+        assert_eq!(
+            parse_mcp_server_from_tool_name("mcp__filesystem__read_file"),
+            Some("filesystem")
+        );
+        assert_eq!(
+            parse_mcp_server_from_tool_name("mcp__github__create_pr"),
+            Some("github")
+        );
+    }
+
+    #[test]
+    fn parse_mcp_server_from_tool_name_rejects_non_mcp() {
+        assert!(parse_mcp_server_from_tool_name("Bash").is_none());
+        assert!(parse_mcp_server_from_tool_name("Read").is_none());
+        assert!(parse_mcp_server_from_tool_name("mcp__no_separator").is_none());
+        assert!(parse_mcp_server_from_tool_name("mcp____empty_server").is_none());
     }
 
     #[tokio::test]
@@ -614,10 +927,8 @@ mod tests {
     #[tokio::test]
     async fn two_identical_asks_back_to_back_both_prompt() {
         let controller = DefaultPermissionController::new();
-        let profile = profile_with_globs("p", &[], &[]);
-
-        let d1 = controller.decide(&request("r1", "Bash"), Some(&profile));
-        let d2 = controller.decide(&request("r2", "Bash"), Some(&profile));
+        let d1 = controller.decide(&request("r1", "Bash"), &DecisionContext::empty());
+        let d2 = controller.decide(&request("r2", "Bash"), &DecisionContext::empty());
         assert_eq!(d1, Decision::AskUser);
         assert_eq!(d2, Decision::AskUser);
     }

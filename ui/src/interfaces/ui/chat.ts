@@ -11,6 +11,15 @@ export interface PlanItem {
   text: string
 }
 
+export interface ToolField {
+  /// Lowercase short label rendered as the row prefix
+  /// ("path" / "pattern" / "tool"). Stays uniform with the existing
+  /// hardcoded rows so the spec sheet reads as one grid.
+  label: string
+  /// Free-form value. Long values wrap; mono-font.
+  value: string
+}
+
 export interface ToolChipItem {
   /// Short verb word for the chip's text identifier (`Read`,
   /// `Execute`, `Edit`, …).
@@ -34,6 +43,13 @@ export interface ToolChipItem {
   /// Output payload — terminal stdout / stderr for Bash, file diff
   /// for Write, tool result text for everything else.
   output?: string
+  /// Optional structured field rows surfaced under the spec sheet's
+  /// hardcoded `command` / `flags` / `detail` lines. Used by the
+  /// fallback formatter to surface MCP tool inputs as labelled rows
+  /// (`path = …`, `pattern = …`) instead of cramming them all into
+  /// a single arg blob. Native-tool formatters can populate this
+  /// when their custom rendering wants more than one row of args.
+  fields?: ToolField[]
 }
 
 /**
