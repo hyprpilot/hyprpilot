@@ -9,6 +9,7 @@ import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@c
 import { log } from '@lib'
 
 import { openCwdLeaf } from './cwd'
+import { openInstanceLeaf } from './instance'
 import { openInstancesLeaf } from './instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './mcps'
 import { openModelsLeaf } from './models'
@@ -29,6 +30,7 @@ export enum PaletteLeafId {
   Models = 'models',
   Modes = 'modes',
   Cwd = 'cwd',
+  Instance = 'instance',
   Instances = 'instances',
   Permissions = 'permissions',
   Mcps = 'mcps',
@@ -73,6 +75,12 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
     description: 'change the working directory',
     followUp: 'K-266'
   },
+  [PaletteLeafId.Instance]: {
+    id: PaletteLeafId.Instance,
+    name: 'instance',
+    description: 'rename / per-action on the focused instance',
+    followUp: 'K-TBD'
+  },
   [PaletteLeafId.Instances]: {
     id: PaletteLeafId.Instances,
     name: 'instances',
@@ -100,6 +108,7 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
 }
 
 const ROOT_LEAF_ORDER: PaletteLeafId[] = [
+  PaletteLeafId.Instance,
   PaletteLeafId.Instances,
   PaletteLeafId.Sessions,
   PaletteLeafId.Profiles,
@@ -182,6 +191,9 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       return
     case PaletteLeafId.Profiles:
       openProfilesLeaf()
+      return
+    case PaletteLeafId.Instance:
+      void openInstanceLeaf()
       return
     case PaletteLeafId.Instances:
       void openInstancesLeaf()

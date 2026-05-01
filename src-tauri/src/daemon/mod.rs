@@ -200,6 +200,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::instances_list,
             adapter_commands::instances_focus,
             adapter_commands::instances_shutdown,
+            adapter_commands::instances_rename,
             adapter_commands::instance_restart,
             adapter_commands::models_set,
             adapter_commands::modes_set,

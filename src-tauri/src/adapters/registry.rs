@@ -185,6 +185,65 @@ impl<H: InstanceActor> AdapterRegistry<H> {
         *self.focused.read().await
     }
 
+    /// Resolve a wire-supplied token to a key. Tries hyphenated UUID
+    /// v4 parse first; on miss, scans live instances for a matching
+    /// captain-set `name`. Returns `None` when neither matches.
+    ///
+    /// The two-stage lookup is unambiguous because `validate_instance_name`
+    /// caps names at 16 chars (UUIDs are 36) and rejects hyphens-only-
+    /// at-positions-8/13/18/23 — no slug-form name can collide with
+    /// a hyphenated UUID's shape.
+    pub async fn resolve_token(&self, token: &str) -> Option<InstanceKey> {
+        if let Ok(key) = InstanceKey::parse(token) {
+            let instances = self.instances.lock().await;
+            if instances.contains_key(&key) {
+                return Some(key);
+            }
+        }
+        let instances = self.instances.lock().await;
+        for (key, handle) in instances.iter() {
+            if handle.name().await.as_deref() == Some(token) {
+                return Some(*key);
+            }
+        }
+        None
+    }
+
+    /// Rename an instance. `new_name == None` clears the name. Validates
+    /// the slug shape + uniqueness across live instances (the same name
+    /// can be reused after the prior holder shuts down). Broadcasts
+    /// `InstanceRenamed` so the UI updates row labels without a refetch.
+    pub async fn rename(&self, key: InstanceKey, new_name: Option<String>) -> AdapterResult<()> {
+        let validated = match new_name {
+            Some(n) => Some(super::instance::validate_instance_name(&n)?),
+            None => None,
+        };
+        let instances = self.instances.lock().await;
+        let target = instances
+            .get(&key)
+            .ok_or_else(|| AdapterError::InvalidRequest(format!("instance '{key}' not found in registry")))?
+            .clone();
+        if let Some(name_str) = &validated {
+            for (other_key, other) in instances.iter() {
+                if *other_key == key {
+                    continue;
+                }
+                if other.name().await.as_deref() == Some(name_str.as_str()) {
+                    return Err(AdapterError::InvalidRequest(format!(
+                        "instance name '{name_str}' already in use"
+                    )));
+                }
+            }
+        }
+        drop(instances);
+        target.set_name(validated.clone()).await;
+        let _ = self.events_tx.send(InstanceEvent::InstanceRenamed {
+            instance_id: key.as_string(),
+            name: validated,
+        });
+        Ok(())
+    }
+
     /// Ordered list of every live key. Sized for `list` + event
     /// broadcast payloads.
     pub async fn ordered_keys(&self) -> Vec<InstanceKey> {
@@ -301,12 +360,19 @@ mod tests {
         fn info(&self) -> InstanceInfo {
             InstanceInfo {
                 id: self.id.as_string(),
+                name: None,
                 agent_id: self.agent_id.clone(),
                 profile_id: self.profile_id.clone(),
                 session_id: None,
                 mode: self.mode.clone(),
             }
         }
+
+        async fn name(&self) -> Option<String> {
+            None
+        }
+
+        async fn set_name(&self, _name: Option<String>) {}
 
         async fn shutdown(&self) {
             self.shutdown_count.fetch_add(1, Ordering::SeqCst);

@@ -927,6 +927,14 @@ impl Adapter for AcpAdapter {
         self.restart_instance(key, cwd).await.map_err(rpc_to_adapter)
     }
 
+    async fn resolve_token(&self, token: &str) -> Option<InstanceKey> {
+        self.registry.resolve_token(token).await
+    }
+
+    async fn rename(&self, key: InstanceKey, name: Option<String>) -> AdapterResult<()> {
+        self.registry.rename(key, name).await
+    }
+
     fn subscribe(&self) -> InstanceEventStream {
         self.registry.subscribe()
     }
@@ -1047,6 +1055,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::TurnEnded { .. } => "acp:turn-ended",
         GenEvt::InstancesChanged { .. } => "acp:instances-changed",
         GenEvt::InstancesFocused { .. } => "acp:instances-focused",
+        GenEvt::InstanceRenamed { .. } => "acp:instance-renamed",
         GenEvt::Terminal { .. } => "acp:terminal",
         GenEvt::DaemonReloaded { .. } => "daemon:reloaded",
         GenEvt::SessionInfoUpdate { .. } => "acp:session-info-update",

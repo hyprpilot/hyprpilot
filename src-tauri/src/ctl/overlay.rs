@@ -14,8 +14,8 @@ use crate::ctl::{emit, CtlDispatch};
 #[derive(Subcommand, Debug, Clone)]
 pub enum OverlaySubcommand {
     /// Show + focus the overlay (no-op when already visible). With
-    /// `--instance`, also focuses that instance after the present.
-    Present {
+    /// `--instance`, also focuses that instance after the show.
+    Show {
         #[arg(long = "instance")]
         instance_id: Option<String>,
     },
@@ -27,7 +27,7 @@ pub enum OverlaySubcommand {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PresentParams {
+struct ShowParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     instance_id: Option<String>,
 }
@@ -35,15 +35,15 @@ struct PresentParams {
 impl CtlDispatch for OverlaySubcommand {
     fn dispatch(self, client: &CtlClient) -> Result<()> {
         match self {
-            OverlaySubcommand::Present { instance_id } => present(client, instance_id),
+            OverlaySubcommand::Show { instance_id } => show(client, instance_id),
             OverlaySubcommand::Hide => hide(client),
             OverlaySubcommand::Toggle => toggle(client),
         }
     }
 }
 
-fn present(client: &CtlClient, instance_id: Option<String>) -> Result<()> {
-    emit(client, "overlay/present", &PresentParams { instance_id })
+fn show(client: &CtlClient, instance_id: Option<String>) -> Result<()> {
+    emit(client, "overlay/show", &ShowParams { instance_id })
 }
 
 fn hide(client: &CtlClient) -> Result<()> {

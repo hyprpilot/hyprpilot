@@ -24,7 +24,7 @@
  *   useActiveInstance   → current instance id for the transcript data-attr
  *   startSessionStream  → starts the demuxed Tauri event pump
  */
-import { faListCheck } from '@fortawesome/free-solid-svg-icons'
+import { faListCheck, faPenToSquare } from '@fortawesome/free-solid-svg-icons'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import {
@@ -37,6 +37,8 @@ import {
   Loading,
   MarkdownBody,
   Modal,
+  ModalDescription,
+  ModalInput,
   Phase,
   PlanStatus,
   type QueuedMessage,
@@ -67,6 +69,7 @@ import {
   useKeymaps,
   usePalette,
   usePermissions,
+  useRenameInstanceModal,
   usePhase,
   useProfiles,
   useQueue,
@@ -85,7 +88,15 @@ import { formatToolCall, log } from '@lib'
 import { Attachments, Body as ChatBody, ChangeBanner, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
 import { Frame } from '@views/header'
-import { CommandPalette, isPaletteLeafId, openRootLeaf, openRootPalette, PaletteLeafId } from '@views/palette'
+import {
+  CommandPalette,
+  commitInstanceRename,
+  isPaletteLeafId,
+  openRootLeaf,
+  openRootPalette,
+  PaletteLeafId,
+  validateInstanceName
+} from '@views/palette'
 
 const { submit, cancel } = useAdapter()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
@@ -240,6 +251,32 @@ function firePermission(action: 'allow' | 'deny'): void {
 
 const { keymaps } = useKeymaps()
 const { closeAll: closeAllPalettes } = usePalette()
+
+// Singleton "rename instance" modal target. The palette's
+// `instance > rename` action populates `target`; the modal v-ifs
+// off it. Save / cancel reset to undefined → modal unmounts.
+const renameModal = useRenameInstanceModal()
+const renameDraft = ref('')
+watch(
+  () => renameModal.target.value,
+  (next) => {
+    renameDraft.value = next?.currentName ?? ''
+  },
+  { immediate: true }
+)
+async function onRenameAccept(): Promise<void> {
+  const target = renameModal.target.value
+  if (!target) {
+    return
+  }
+  const ok = await commitInstanceRename(target.instanceId, renameDraft.value)
+  if (ok) {
+    renameModal.close()
+  }
+}
+function onRenameCancel(): void {
+  renameModal.close()
+}
 
 useKeymap(
   () => document,
@@ -829,6 +866,33 @@ function onQueueDropAll(): void {
       <Button :tone="ButtonTone.Ok" :variant="ButtonVariant.Solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
     </template>
     <MarkdownBody :source="markdownModalPrompt.body" />
+  </Modal>
+
+  <!-- Rename-instance modal — singleton driven by
+       `useRenameInstanceModal()`. Body composes `<ModalDescription>`
+       above `<ModalInput>` per the compose-not-bag pattern; the
+       modal chrome stays generic. -->
+  <Modal
+    v-if="renameModal.target.value"
+    :title="`rename · ${renameModal.target.value.currentName ?? renameModal.target.value.instanceId.slice(0, 8)}`"
+    :tone="ToastTone.Warn"
+    :icon="faPenToSquare"
+    :dismissable="true"
+    @dismiss="onRenameCancel"
+  >
+    <template #actions>
+      <Button :tone="ButtonTone.Neutral" @click="onRenameCancel">cancel</Button>
+      <Button :tone="ButtonTone.Ok" :variant="ButtonVariant.Solid" @click="onRenameAccept">save</Button>
+    </template>
+    <ModalDescription>
+      Lowercase letters, digits, <code>_</code>, <code>-</code>. Up to 16 chars. Empty clears the name.
+    </ModalDescription>
+    <ModalInput
+      v-model:value="renameDraft"
+      placeholder="ask, plan, review…"
+      :validate="validateInstanceName"
+      @submit="onRenameAccept"
+    />
   </Modal>
 
   <CommandPalette />

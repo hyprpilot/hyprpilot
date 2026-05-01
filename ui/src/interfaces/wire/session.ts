@@ -155,6 +155,8 @@ export interface MCPSetResult {
 export interface InstanceListEntry {
   agentId: string
   instanceId: string
+  /// Captain-set name (slug, ≤16 chars). `undefined` until renamed.
+  name?: string
   profileId?: string
   sessionId?: string
   mode?: string
@@ -174,6 +176,20 @@ export interface InstancesFocusArgs {
 
 export interface InstancesShutdownArgs {
   id: string
+}
+
+export interface InstancesRenameArgs {
+  /// UUID or current captain-set name. Daemon resolves either via
+  /// `Adapter::resolve_token`.
+  id: string
+  /// New name. `null` clears the name; otherwise validated as a slug
+  /// (lowercase, ≤16 chars) inside `AdapterRegistry::rename`.
+  name: string | null
+}
+
+export interface InstancesRenameResult {
+  instanceId: string
+  name: string | null
 }
 
 export interface ModelsSetArgs {

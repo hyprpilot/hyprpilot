@@ -575,11 +575,28 @@ pub struct AcpInstance {
     /// Populated after the first prompt's `session/new` resolves.
     /// `None` while the instance is still bootstrapping.
     pub session_id: Arc<tokio::sync::RwLock<Option<SessionId>>>,
+    /// Captain-set addressable name. Distinct from `key` (the
+    /// canonical UUID). Mutated via `AdapterRegistry::rename`;
+    /// validated as a slug at the rename boundary so it's always
+    /// safe to display verbatim. `None` until the captain renames.
+    pub name: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl AcpInstance {
     pub async fn current_session_id(&self) -> Option<String> {
         self.session_id.read().await.as_ref().map(|id| id.0.to_string())
+    }
+
+    /// Snapshot the captain-set name. Returns `None` when the captain
+    /// hasn't renamed the instance yet (the auto-mint has no name).
+    pub async fn current_name(&self) -> Option<String> {
+        self.name.read().await.clone()
+    }
+
+    /// Overwrite the captain-set name. Caller (`AdapterRegistry::rename`)
+    /// is responsible for validation + uniqueness; this is a raw write.
+    pub async fn set_name(&self, name: Option<String>) {
+        *self.name.write().await = name;
     }
 
     /// Send the actor a `SetMode` command and await the agent's
@@ -686,6 +703,7 @@ impl AcpInstance {
             mode,
             cmd_tx,
             session_id: session_id.clone(),
+            name: Arc::new(tokio::sync::RwLock::new(None)),
         };
 
         tokio::spawn(run(
@@ -717,13 +735,28 @@ impl InstanceActor for AcpInstance {
             .try_read()
             .ok()
             .and_then(|s| s.as_ref().map(|id| id.0.to_string()));
+        // Same try_read pattern as session_id — the rename path uses
+        // a write lock briefly, every other reader (`info()`, ctl
+        // listing, UI labels) is read-only. `try_read` succeeds in
+        // the steady state; on lock contention we read `None` for
+        // this snapshot tick and the next event sync corrects it.
+        let name = self.name.try_read().ok().and_then(|n| n.clone());
         InstanceInfo {
             id: self.key.as_string(),
+            name,
             agent_id: self.agent_id.clone(),
             profile_id: self.profile_id.clone(),
             session_id,
             mode: self.mode.clone(),
         }
+    }
+
+    async fn name(&self) -> Option<String> {
+        self.current_name().await
+    }
+
+    async fn set_name(&self, name: Option<String>) {
+        AcpInstance::set_name(self, name).await
     }
 
     async fn shutdown(&self) {

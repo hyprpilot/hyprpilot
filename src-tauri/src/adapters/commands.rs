@@ -300,6 +300,23 @@ pub async fn instances_shutdown(adapter: AdapterState<'_>, id: String) -> Result
     Ok(json!({ "id": key.as_string() }))
 }
 
+/// Rename a live instance. `id` accepts UUID or current name; `name`
+/// is `None` (clear) or a slug-validated string. The actual slug
+/// validation runs inside `Adapter::rename` so the wire shape stays
+/// consistent with the RPC handler.
+#[tauri::command]
+pub async fn instances_rename(adapter: AdapterState<'_>, id: String, name: Option<String>) -> Result<Value, String> {
+    let key = adapter
+        .resolve_token(&id)
+        .await
+        .ok_or_else(|| format!("instance '{id}' not found"))?;
+    adapter.rename(key, name.clone()).await.map_err(|e| e.to_string())?;
+    Ok(json!({
+        "instanceId": key.as_string(),
+        "name": name,
+    }))
+}
+
 /// Switch the active model for the addressed instance. Today
 /// returns the same `-32603`-shaped error the `models/set` wire
 /// handler does — `AcpAdapter::set_session_model` stubs past the

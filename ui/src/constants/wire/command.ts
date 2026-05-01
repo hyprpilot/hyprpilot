@@ -18,6 +18,8 @@ import type {
   InstanceRestartArgs,
   InstanceRestartResult,
   InstancesFocusArgs,
+  InstancesRenameArgs,
+  InstancesRenameResult,
   InstancesShutdownArgs,
   ListSessionsArgs,
   LoadSessionArgs,
@@ -77,6 +79,7 @@ export enum TauriCommand {
   InstancesList = 'instances_list',
   InstancesFocus = 'instances_focus',
   InstancesShutdown = 'instances_shutdown',
+  InstancesRename = 'instances_rename',
   InstanceRestart = 'instance_restart',
   ModelsSet = 'models_set',
   ModesSet = 'modes_set',
@@ -125,6 +128,7 @@ export interface TauriCommandArgs {
   [TauriCommand.InstancesList]: void
   [TauriCommand.InstancesFocus]: InstancesFocusArgs
   [TauriCommand.InstancesShutdown]: InstancesShutdownArgs
+  [TauriCommand.InstancesRename]: InstancesRenameArgs
   [TauriCommand.InstanceRestart]: InstanceRestartArgs
   [TauriCommand.ModelsSet]: ModelsSetArgs
   [TauriCommand.ModesSet]: ModesSetArgs
@@ -155,6 +159,7 @@ export interface TauriCommandResult {
   [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
   [TauriCommand.InstancesFocus]: { focusedId: string }
   [TauriCommand.InstancesShutdown]: { id: string }
+  [TauriCommand.InstancesRename]: InstancesRenameResult
   [TauriCommand.InstanceRestart]: InstanceRestartResult
   [TauriCommand.ModelsSet]: unknown
   [TauriCommand.ModesSet]: unknown
