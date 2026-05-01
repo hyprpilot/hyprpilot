@@ -1,5 +1,15 @@
 [daemon]
 
+# Autostart at user login via tauri-plugin-autostart. On Linux DEs
+# (GNOME / KDE) this writes ~/.config/autostart/hyprpilot.desktop;
+# on macOS a launchd plist; on Windows a registry entry. Hyprland
+# users on Arch land on the systemd user unit shipped with the AUR
+# package — that path is the recommended runtime, this knob is the
+# cross-platform fallback. Default off so a fresh install doesn't
+# silently start hyprpilot at next login.
+[autostart]
+enabled = false
+
 [daemon.window]
 mode = "anchor"
 
