@@ -195,11 +195,12 @@ mod dispatcher_tests {
     }
 
     /// Dropped namespaces (`session/*`, `agents/*`, `commands/*`,
-    /// `config/*`, `events/*`, `mcps/*`, `models/*`, `modes/*`,
-    /// `profiles/*`, `sessions/*`, `skills/*`, `window/*`) all
-    /// return `-32601`. Webview consumers go through Tauri commands;
+    /// `completion/*`, `config/*`, `events/*`, `mcps/*`, `models/*`,
+    /// `modes/*`, `profiles/*`, `sessions/*`, `skills/*`, `window/*`)
+    /// all return `-32601`. Webview consumers go through Tauri commands;
     /// hyprland-bind users move from `window/toggle` to
-    /// `overlay/toggle`.
+    /// `overlay/toggle`. Completion is webview-only — no socket
+    /// scripting story exists for it.
     #[tokio::test]
     async fn dispatch_pruned_namespaces_are_method_not_found() {
         let dispatcher = RpcDispatcher::with_defaults();
@@ -210,6 +211,9 @@ mod dispatcher_tests {
             "session/info",
             "agents/list",
             "commands/list",
+            "completion/query",
+            "completion/resolve",
+            "completion/cancel",
             "config/profiles",
             "events/subscribe",
             "events/unsubscribe",

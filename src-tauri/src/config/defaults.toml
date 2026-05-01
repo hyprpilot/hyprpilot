@@ -179,6 +179,7 @@ deny = { key = "d" }
 paste_image = { modifiers = ["ctrl"], key = "p" }
 tab_completion = { key = "tab" }
 shift_tab = { modifiers = ["shift"], key = "tab" }
+completion = { modifiers = ["ctrl"], key = "space" }
 history_up = { modifiers = ["ctrl"], key = "arrowup" }
 history_down = { modifiers = ["ctrl"], key = "arrowdown" }
 
@@ -193,6 +194,9 @@ focus = { modifiers = ["ctrl"], key = "m" }
 focus = { modifiers = ["ctrl"], key = "s" }
 
 [keymaps.transcript]
+
+[keymaps.window]
+toggle = { modifiers = ["ctrl"], key = "q" }
 
 [agent]
 default = "claude-code"

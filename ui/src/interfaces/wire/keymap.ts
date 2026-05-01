@@ -37,6 +37,7 @@ export interface ComposerKeymaps {
   paste_image: Binding
   tab_completion: Binding
   shift_tab: Binding
+  completion: Binding
   history_up: Binding
   history_down: Binding
 }
@@ -58,10 +59,15 @@ export interface PaletteKeymaps {
 
 export type TranscriptKeymaps = Record<string, never>
 
+export interface WindowKeymaps {
+  toggle: Binding
+}
+
 export interface KeymapsConfig {
   chat: ChatKeymaps
   approvals: ApprovalsKeymaps
   composer: ComposerKeymaps
   palette: PaletteKeymaps
   transcript: TranscriptKeymaps
+  window: WindowKeymaps
 }

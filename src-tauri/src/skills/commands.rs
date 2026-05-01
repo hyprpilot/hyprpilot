@@ -20,6 +20,13 @@ pub async fn skills_list(skills: SkillsState<'_>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn skills_reload(skills: SkillsState<'_>) -> Result<Value, String> {
+    skills.reload().map_err(|e| format!("skills reload failed: {e:#}"))?;
+    let list: Vec<SkillSummary> = skills.list().iter().map(SkillSummary::from).collect();
+    Ok(json!({ "count": list.len(), "skills": list }))
+}
+
+#[tauri::command]
 pub async fn skills_get(skills: SkillsState<'_>, slug: String) -> Result<Value, String> {
     let parsed = SkillSlug::parse(&slug).map_err(|e| format!("invalid slug '{slug}': {e}"))?;
     let Some(skill) = skills.get(&parsed) else {

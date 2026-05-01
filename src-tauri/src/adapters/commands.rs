@@ -17,23 +17,38 @@ use tauri::State;
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
 use super::permission::{pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome};
+use super::tokens::TokenHydrators;
 use super::transcript::Attachment;
 use super::Adapter;
 use crate::mcp::MCPsRegistry;
+use crate::skills::SkillsRegistry;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
 type MCPsState<'a> = State<'a, Arc<MCPsRegistry>>;
+type HydratorsState<'a> = State<'a, TokenHydrators>;
 
 #[tauri::command]
 pub async fn session_submit(
     adapter: AdapterState<'_>,
+    hydrators: HydratorsState<'_>,
     text: String,
     #[allow(non_snake_case)] attachments: Option<Vec<Attachment>>,
     instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
 ) -> Result<Value, String> {
-    let attachments = attachments.unwrap_or_default();
+    let mut attachments = attachments.unwrap_or_default();
+    // Hydrate inline `#{<scheme>://<value>}` tokens via the generic
+    // hydrator registry. Today only `skills://` is registered; the
+    // dispatcher walks every token, finds the matching scheme owner,
+    // and projects the value into an `Attachment`. Unknown
+    // schemes / unresolved values warn-and-drop. Token text stays
+    // visible in the chat so the captain sees what they referenced.
+    let hydrated = hydrators.hydrate_all(&text);
+    if !hydrated.is_empty() {
+        tracing::debug!(count = hydrated.len(), "cmd::session_submit: hydrated tokens");
+        attachments.extend(hydrated);
+    }
     tracing::info!(
         text_len = text.len(),
         attachments = attachments.len(),
@@ -57,6 +72,41 @@ pub async fn session_submit(
         Err(err) => tracing::warn!(%err, "cmd::session_submit: failed"),
     }
     out
+}
+
+/// `skills://<slug>` token hydrator. Looks the slug up against the
+/// shared `SkillsRegistry` and projects the loaded skill into an
+/// `Attachment`. Registered into the daemon's `TokenHydrators` at
+/// boot (see `daemon::mod::setup_app`).
+pub struct SkillTokenHydrator {
+    registry: Arc<SkillsRegistry>,
+}
+
+impl SkillTokenHydrator {
+    #[must_use]
+    pub fn new(registry: Arc<SkillsRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl super::tokens::TokenHydrator for SkillTokenHydrator {
+    fn scheme(&self) -> &'static str {
+        "skills"
+    }
+
+    fn hydrate(&self, value: &str) -> Option<Attachment> {
+        use crate::skills::SkillSlug;
+        let slug = SkillSlug::parse(value).ok()?;
+        let skill = self.registry.get(&slug)?;
+        Some(Attachment {
+            slug: slug.as_str().to_string(),
+            path: skill.path.clone(),
+            body: skill.body.clone(),
+            title: Some(skill.title.clone()),
+            data: None,
+            mime: Some("text/markdown".to_string()),
+        })
+    }
 }
 
 #[tauri::command]
@@ -98,12 +148,6 @@ pub async fn instance_restart(
 #[tauri::command]
 pub async fn agents_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     Ok(serde_json::json!({ "agents": adapter.list_agents() }))
-}
-
-#[tauri::command]
-pub async fn commands_list(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
-    let commands = adapter.list_commands(&instance_id).await.map_err(|e| e.message)?;
-    Ok(serde_json::json!({ "commands": commands }))
 }
 
 #[tauri::command]

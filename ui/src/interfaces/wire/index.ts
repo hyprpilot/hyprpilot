@@ -1,3 +1,4 @@
+export * from './completion'
 export * from './session'
 export * from './theme'
 export * from './window'

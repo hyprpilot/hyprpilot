@@ -36,7 +36,6 @@ impl AcpAgent for AcpAgentCodex {
             // K-251 follow-ups — flip true when the override lands.
             session_model_switch: false,
             session_mode_switch: false,
-            list_commands: false,
         }
     }
 

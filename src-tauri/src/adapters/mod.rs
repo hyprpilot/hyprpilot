@@ -24,6 +24,7 @@ pub mod instance;
 pub mod permission;
 pub mod profile;
 pub mod registry;
+pub mod tokens;
 pub mod transcript;
 
 use async_trait::async_trait;
@@ -98,8 +99,6 @@ pub struct Capabilities {
     pub session_mode_switch: bool,
     /// `mcps/set` per-instance MCP enabled-list overrides.
     pub mcps_per_instance: bool,
-    /// `commands/list` — slash-command catalogue cache.
-    pub list_commands: bool,
     /// `instances/restart` accepts a `cwd` overlay (palette cwd swap).
     pub restart_with_cwd: bool,
 }
@@ -271,14 +270,6 @@ pub trait Adapter: Send + Sync + 'static {
     ) -> AdapterResult<()> {
         Err(AdapterError::Unsupported(
             "session/load not supported by this adapter".into(),
-        ))
-    }
-
-    /// `commands/list` — slash-command catalogue for the addressed
-    /// instance. Gated by `Capabilities::list_commands`.
-    async fn list_commands(&self, _instance_id: &str) -> AdapterResult<Vec<serde_json::Value>> {
-        Err(AdapterError::Unsupported(
-            "commands/list not supported by this adapter".into(),
         ))
     }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { faArrowRightArrowLeft } from '@fortawesome/free-solid-svg-icons'
+import { faArrowRight, faArrowRightArrowLeft } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
 /**
@@ -42,7 +42,7 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
           <span class="change-banner-sep" aria-hidden="true">·</span>
           <span class="change-banner-from">{{ from }}</span>
         </template>
-        <span class="change-banner-arrow" aria-hidden="true">→</span>
+        <FaIcon :icon="faArrowRight" class="change-banner-arrow" aria-hidden="true" />
         <strong class="change-banner-to">{{ to }}</strong>
       </span>
     </span>

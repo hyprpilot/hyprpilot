@@ -23,7 +23,7 @@ use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::mcp::MCPsRegistry;
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
-use crate::skills::{spawn_watcher, SkillsRegistry};
+use crate::skills::SkillsRegistry;
 
 #[derive(Args, Debug, Default, Clone)]
 pub struct DaemonArgs {
@@ -67,6 +67,39 @@ struct WindowState {
 #[tauri::command]
 fn get_window_state(state: State<'_, WindowState>) -> WindowState {
     state.inner().clone()
+}
+
+/// Webview-side surface for `window/toggle`. Drives the overlay's
+/// show / hide off the same `WindowRenderer` path the RPC + tray use,
+/// serialised through `lock_present` so two concurrent calls can't
+/// straddle the `is_visible() → show/hide` window.
+#[tauri::command]
+async fn window_toggle(
+    app: tauri::AppHandle,
+    renderer: State<'_, crate::daemon::renderer::WindowRenderer>,
+    status: State<'_, Arc<crate::rpc::StatusBroadcast>>,
+) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not available".to_string())?;
+    let _guard = renderer.lock_present().await;
+    let visible = window.is_visible().map_err(|e| format!("is_visible failed: {e}"))?;
+    if visible {
+        renderer
+            .hide_on_main(&app, &window)
+            .await
+            .map_err(|e| format!("hide failed: {e:#}"))?;
+        status.set_visible(false);
+        Ok(false)
+    } else {
+        renderer
+            .show_on_main(&app, &window)
+            .await
+            .map_err(|e| format!("show failed: {e:#}"))?;
+        status.set_visible(true);
+        let _ = window.set_focus();
+        Ok(true)
+    }
 }
 
 /// Daemon entry point. Five phases, each its own helper:
@@ -154,11 +187,11 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_theme,
             get_keymaps,
             get_window_state,
+            window_toggle,
             desktop::get_home_dir,
             adapter_commands::session_submit,
             adapter_commands::session_cancel,
             adapter_commands::agents_list,
-            adapter_commands::commands_list,
             adapter_commands::profiles_list,
             adapter_commands::session_list,
             adapter_commands::session_load,
@@ -175,6 +208,10 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::mcps_set,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
+            crate::skills::commands::skills_reload,
+            crate::completion::commands::completion_query,
+            crate::completion::commands::completion_resolve,
+            crate::completion::commands::completion_cancel,
         ])
         .setup(move |app| {
             setup_app(app, state, listener, started_at, socket_path)?;
@@ -302,14 +339,11 @@ impl RuntimeState {
         ));
         let adapter: Arc<dyn Adapter> = acp_adapter.clone();
 
-        // Skills registry + watcher. Errors here are logged but don't abort
-        // boot — the registry still serves whatever loaded on the initial scan.
+        // Skills registry. Captain-driven reload via the palette's
+        // "reload skills" entry / `skills/reload` RPC; no fs watcher.
         let skills = Arc::new(SkillsRegistry::new(skills_dirs));
         if let Err(err) = skills.reload() {
             warn!(%err, "skills registry: initial reload failed");
-        }
-        if let Err(err) = spawn_watcher(skills.clone()) {
-            warn!(%err, "skills watcher: spawn failed — live reload disabled");
         }
 
         // MCP catalog registry. Static after daemon start —
@@ -412,6 +446,26 @@ fn setup_app(
     app.manage(state.adapter.clone());
     state.acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
 
+    // Inline-token hydration. One scheme today (`skills://`); future
+    // schemes (e.g. `prompt://`, `clip://`) plug in by pushing onto
+    // this registry. session_submit pulls it from managed state.
+    let hydrators = crate::adapters::tokens::TokenHydrators::new().with(Arc::new(
+        crate::adapters::commands::SkillTokenHydrator::new(state.skills.clone()),
+    ));
+    app.manage(hydrators);
+
+    // Composer autocomplete registry — sources walk in order, first
+    // match wins. Cancellation tokens live alongside (one per
+    // request_id, ripgrep checks them between matches). The shared
+    // commands cache is handed to the ACP adapter so per-instance
+    // `available_commands_update` notifications populate the slash
+    // source.
+    let (completion_registry, commands_cache) = build_completion_registry(state.skills.clone());
+    state.acp_adapter.set_commands_cache(commands_cache);
+    let completion_cancellations = Arc::new(crate::completion::CompletionCancellations::default());
+    app.manage(completion_registry);
+    app.manage(completion_cancellations);
+
     // System tray icon — captain's "alive" indicator + quick-action
     // menu (toggle / show / hide / shutdown). Failures degrade to a
     // warn so a tray-less environment (no system tray at all) doesn't
@@ -512,6 +566,34 @@ fn argv_is_bare(argv: &[String]) -> bool {
         .map(String::as_str)
         .collect();
     matches!(tail.as_slice(), [] | ["daemon"])
+}
+
+/// Build the composer-autocomplete `CompletionRegistry` with the four
+/// sources in priority order (slash → skills → path → ripgrep). The
+/// slash source's cache is shared with the ACP adapter so each
+/// instance's `available_commands_update` notification refreshes the
+/// completion list in place.
+fn build_completion_registry(
+    skills: Arc<SkillsRegistry>,
+) -> (
+    Arc<crate::completion::CompletionRegistry>,
+    crate::completion::source::commands::CommandsCache,
+) {
+    use crate::completion::source::{
+        commands::{CommandsCache, CommandsSource},
+        path::PathSource,
+        ripgrep::RipgrepSource,
+        skills::SkillsSource,
+    };
+    let commands_cache: CommandsCache = Arc::new(std::sync::RwLock::new(Vec::new()));
+    let registry = Arc::new(
+        crate::completion::CompletionRegistry::new()
+            .with_source(Arc::new(CommandsSource::new(commands_cache.clone())))
+            .with_source(Arc::new(SkillsSource::new(skills)))
+            .with_source(Arc::new(PathSource::new()))
+            .with_source(Arc::new(RipgrepSource::new())),
+    );
+    (registry, commands_cache)
 }
 
 /// Resolve the skills roots, honouring `HYPRPILOT_SKILLS_DIR` first

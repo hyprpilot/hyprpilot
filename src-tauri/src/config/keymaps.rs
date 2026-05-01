@@ -244,6 +244,8 @@ pub struct KeymapsConfig {
     pub palette: PaletteKeymaps,
     #[garde(dive)]
     pub transcript: TranscriptKeymaps,
+    #[garde(dive)]
+    pub window: WindowKeymaps,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -282,6 +284,11 @@ pub struct ComposerKeymaps {
     pub tab_completion: Option<Binding>,
     #[garde(dive)]
     pub shift_tab: Option<Binding>,
+    /// Force-open the autocomplete popover even when no sigil
+    /// context is present — manual ripgrep / chat-buffer scan
+    /// trigger. Default: `Ctrl+Space`.
+    #[garde(dive)]
+    pub completion: Option<Binding>,
     #[garde(dive)]
     pub history_up: Option<Binding>,
     #[garde(dive)]
@@ -323,6 +330,17 @@ pub struct SessionsSubPaletteKeymaps {
 #[serde(default, deny_unknown_fields)]
 pub struct TranscriptKeymaps {}
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
+pub struct WindowKeymaps {
+    /// Toggle the overlay's visibility — same surface as the
+    /// `window/toggle` RPC and the tray menu's "show/hide" entry.
+    /// Default: `Ctrl+Q`.
+    #[garde(dive)]
+    pub toggle: Option<Binding>,
+}
+
 type ScopeField<'a> = (&'static str, Option<&'a Binding>);
 type CollisionScope<'a> = (&'static str, Vec<ScopeField<'a>>);
 
@@ -353,6 +371,7 @@ pub(crate) fn collect_collision_scopes(cfg: &KeymapsConfig) -> Vec<CollisionScop
                 ("paste_image", cfg.composer.paste_image.as_ref()),
                 ("tab_completion", cfg.composer.tab_completion.as_ref()),
                 ("shift_tab", cfg.composer.shift_tab.as_ref()),
+                ("completion", cfg.composer.completion.as_ref()),
                 ("history_up", cfg.composer.history_up.as_ref()),
                 ("history_down", cfg.composer.history_down.as_ref()),
             ],
@@ -367,6 +386,7 @@ pub(crate) fn collect_collision_scopes(cfg: &KeymapsConfig) -> Vec<CollisionScop
         ("palette.models", vec![("focus", cfg.palette.models.focus.as_ref())]),
         ("palette.sessions", vec![("focus", cfg.palette.sessions.focus.as_ref())]),
         ("transcript", vec![]),
+        ("window", vec![("toggle", cfg.window.toggle.as_ref())]),
     ]
 }
 

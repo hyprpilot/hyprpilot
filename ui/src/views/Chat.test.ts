@@ -43,6 +43,7 @@ const DEFAULT_KEYMAPS = {
     paste_image: { modifiers: [Modifier.Ctrl], key: 'p' },
     tab_completion: { modifiers: [], key: 'tab' },
     shift_tab: { modifiers: [Modifier.Shift], key: 'tab' },
+    completion: { modifiers: [Modifier.Ctrl], key: 'space' },
     history_up: { modifiers: [Modifier.Ctrl], key: 'arrowup' },
     history_down: { modifiers: [Modifier.Ctrl], key: 'arrowdown' }
   },
@@ -52,7 +53,10 @@ const DEFAULT_KEYMAPS = {
     models: { focus: { modifiers: [Modifier.Ctrl], key: 'm' } },
     sessions: { focus: { modifiers: [Modifier.Ctrl], key: 's' } }
   },
-  transcript: {}
+  transcript: {},
+  window: {
+    toggle: { modifiers: [Modifier.Ctrl], key: 'q' }
+  }
 }
 
 async function flushMicrotasks(): Promise<void> {

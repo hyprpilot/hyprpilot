@@ -150,6 +150,9 @@ pub(crate) enum MappedUpdate {
     CurrentMode {
         current_mode_id: String,
     },
+    AvailableCommands {
+        commands: Vec<crate::completion::source::commands::CommandSummary>,
+    },
 }
 
 pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
@@ -241,6 +244,23 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
                 .unwrap_or("")
                 .to_string(),
         },
+        "available_commands_update" => {
+            use crate::completion::source::commands::CommandSummary;
+            let commands = update
+                .get("availableCommands")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|entry| {
+                            let name = entry.get("name").and_then(|v| v.as_str())?.to_string();
+                            let description = entry.get("description").and_then(|v| v.as_str()).map(str::to_string);
+                            Some(CommandSummary { name, description })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            MappedUpdate::AvailableCommands { commands }
+        }
         "tool_call" => {
             let id = update
                 .get("toolCallId")
@@ -622,6 +642,7 @@ impl AcpInstance {
         permissions: Arc<dyn PermissionController>,
         profile: Option<ProfileConfig>,
         mcps_override: Option<Vec<String>>,
+        commands_cache: Option<crate::completion::source::commands::CommandsCache>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
         let initial = match &bootstrap {
@@ -676,6 +697,7 @@ impl AcpInstance {
             bootstrap,
             permissions,
             profile,
+            commands_cache,
         ));
 
         instance
@@ -726,6 +748,7 @@ async fn run(
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     profile: Option<ProfileConfig>,
+    commands_cache: Option<crate::completion::source::commands::CommandsCache>,
 ) {
     let agent_id = resolved.agent.id.clone();
     let _ = events_tx.send(InstanceEvent::State {
@@ -1489,32 +1512,52 @@ async fn run(
                             }
                             let mapped = map_session_update(update);
                             let turn_id = current_turn_id.read().await.clone();
-                            let evt = match mapped {
-                                MappedUpdate::Transcript(item) => InstanceEvent::Transcript {
+                            let evt: Option<InstanceEvent> = match mapped {
+                                MappedUpdate::Transcript(item) => Some(InstanceEvent::Transcript {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid,
                                     turn_id,
                                     item,
-                                },
-                                MappedUpdate::SessionInfo { title, updated_at } => InstanceEvent::SessionInfoUpdate {
+                                }),
+                                MappedUpdate::SessionInfo { title, updated_at } => Some(InstanceEvent::SessionInfoUpdate {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid,
                                     title,
                                     updated_at,
-                                },
+                                }),
                                 MappedUpdate::CurrentMode { current_mode_id } => {
                                     *current_mode_meta.write().await = Some(current_mode_id.clone());
-                                    InstanceEvent::CurrentModeUpdate {
+                                    Some(InstanceEvent::CurrentModeUpdate {
                                         agent_id: agent_id_notif.clone(),
                                         instance_id: instance_id_notif.clone(),
                                         session_id: sid,
                                         current_mode_id,
+                                    })
+                                }
+                                MappedUpdate::AvailableCommands { commands } => {
+                                    if let Some(cache) = commands_cache.as_ref() {
+                                        match cache.write() {
+                                            Ok(mut guard) => {
+                                                debug!(
+                                                    instance = %instance_id_notif,
+                                                    count = commands.len(),
+                                                    "acp::instance: available_commands_update — refreshing autocomplete cache"
+                                                );
+                                                *guard = commands;
+                                            }
+                                            Err(err) => {
+                                                tracing::warn!(%err, "acp::instance: commands_cache lock poisoned");
+                                            }
+                                        }
                                     }
+                                    None
                                 }
                             };
-                            let _ = events_tx_notif.send(evt);
+                            if let Some(evt) = evt {
+                                let _ = events_tx_notif.send(evt);
+                            }
                         }
                         ClientEvent::PermissionRequested {
                             session_id: sid,
@@ -1821,6 +1864,7 @@ mod tests {
             dummy_permissions(),
             None,
             None,
+            None,
         );
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -1870,6 +1914,7 @@ mod tests {
             dummy_permissions(),
             None,
             None,
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1893,6 +1938,7 @@ mod tests {
             tx,
             Bootstrap::ListOnly,
             dummy_permissions(),
+            None,
             None,
             None,
         );
@@ -1993,6 +2039,7 @@ mod tests {
             tx,
             Bootstrap::Resume("00000000-0000-0000-0000-000000000000".into()),
             dummy_permissions(),
+            None,
             None,
             None,
         );
