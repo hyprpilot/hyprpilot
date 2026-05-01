@@ -57,6 +57,11 @@ pub struct AcpAdapter {
     /// `TurnStarted` adds, `TurnEnded` removes. Read by
     /// `daemon/shutdown`'s busy check.
     busy_instances: Arc<RwLock<HashSet<String>>>,
+    /// Slash-commands cache shared with the composer-autocomplete
+    /// `CommandsSource`. Daemon installs it once at boot via
+    /// [`Self::set_commands_cache`]; per-instance runtimes write to
+    /// it on every `available_commands_update` notification.
+    commands_cache: Arc<RwLock<Option<crate::completion::source::commands::CommandsCache>>>,
 }
 
 impl std::fmt::Debug for AcpAdapter {
@@ -104,7 +109,27 @@ impl AcpAdapter {
             permissions,
             mcps_overrides: Arc::new(RwLock::new(HashMap::new())),
             busy_instances: Arc::new(RwLock::new(HashSet::new())),
+            commands_cache: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Install the slash-commands cache. Called once at boot from
+    /// `daemon::run` after the completion registry is built. Subsequent
+    /// per-instance `available_commands_update` notifications populate
+    /// it directly; the autocomplete `CommandsSource` reads from the
+    /// same `Arc<RwLock<Vec<_>>>`.
+    pub fn set_commands_cache(&self, cache: crate::completion::source::commands::CommandsCache) {
+        *self.commands_cache.write().expect("commands_cache lock poisoned") = Some(cache);
+    }
+
+    /// Snapshot the configured commands cache handle (cheap Arc clone).
+    /// Returns `None` when the cache hasn't been wired yet (early-boot
+    /// race or test harness without completion registry).
+    pub(crate) fn commands_cache(&self) -> Option<crate::completion::source::commands::CommandsCache> {
+        self.commands_cache
+            .read()
+            .expect("commands_cache lock poisoned")
+            .clone()
     }
 
     /// Effective MCP enabled-list for an instance: per-instance
@@ -358,6 +383,7 @@ impl AcpAdapter {
             self.permissions.clone(),
             profile,
             mcps_override,
+            self.commands_cache(),
         );
 
         self.registry
@@ -547,6 +573,7 @@ impl AcpAdapter {
                 self.permissions.clone(),
                 profile,
                 None,
+                None,
             );
             let tx = instance.cmd_tx.clone();
             (tx, Some(instance))
@@ -697,6 +724,7 @@ impl AcpAdapter {
             self.permissions.clone(),
             profile,
             mcps_override,
+            self.commands_cache(),
         );
         self.registry
             .insert_at_slot(slot, key, Arc::new(instance))
@@ -767,20 +795,10 @@ impl AcpAdapter {
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)
     }
 
-    /// Slash-commands cache (K-267 palette leaf, K-280 wire).
-    /// `AcpInstance` will cache the `available_commands` SessionUpdate
-    /// in K-251; until then this surfaces the same `-32603` the RPC
-    /// handler does so the Tauri caller can render an empty / error
-    /// state without inventing a fake-success path.
-    pub async fn list_commands(&self, id: &str) -> Result<Vec<Value>, RpcError> {
-        let _ = self.contains_instance(id).await?;
-        Err(RpcError::internal_error("commands/list not implemented — ref K-251"))
-    }
-
-    /// Membership check used by `modes/*`, `models/*`, `commands/*`
-    /// handlers to map a wire-supplied `instance_id` onto the live
-    /// registry. `-32602` when the id is malformed or not in the
-    /// registry — same failure mode both paths get.
+    /// Membership check used by `modes/*`, `models/*` handlers to map
+    /// a wire-supplied `instance_id` onto the live registry. `-32602`
+    /// when the id is malformed or not in the registry — same failure
+    /// mode both paths get.
     pub async fn contains_instance(&self, id: &str) -> Result<InstanceKey, RpcError> {
         let key = InstanceKey::parse(id).map_err(map_adapter_error_to_rpc)?;
         match self.registry.get(key).await {
@@ -1197,16 +1215,6 @@ system_prompt = "be terse"
         assert_eq!(out[1]["id"], "strict");
         assert_eq!(out[1]["isDefault"], false);
         assert!(out[1].get("has_prompt").is_none());
-    }
-
-    #[tokio::test]
-    async fn list_commands_unknown_instance_id_is_invalid_params() {
-        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
-        let err = adapter
-            .list_commands("550e8400-e29b-41d4-a716-446655440000")
-            .await
-            .expect_err("unknown id must fail");
-        assert_eq!(err.code, -32602);
     }
 
     /// Mode threading: `spawn(SpawnSpec { mode: Some("plan"), ... })`

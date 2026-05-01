@@ -48,6 +48,14 @@ import type {
   TurnEndedEventPayload,
   TurnStartedEventPayload
 } from '@interfaces/wire/event'
+import type {
+  CompletionCancelArgs,
+  CompletionCancelResponse,
+  CompletionQueryArgs,
+  CompletionQueryResponse,
+  CompletionResolveArgs,
+  CompletionResolveResponse
+} from '@interfaces/wire/completion'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
 import type { Theme } from '@interfaces/wire/theme'
 import type { WindowState } from '@interfaces/wire/window'
@@ -56,6 +64,7 @@ export enum TauriCommand {
   GetTheme = 'get_theme',
   GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
+  WindowToggle = 'window_toggle',
   GetHomeDir = 'get_home_dir',
   SessionSubmit = 'session_submit',
   SessionCancel = 'session_cancel',
@@ -73,7 +82,11 @@ export enum TauriCommand {
   ModesSet = 'modes_set',
   InstanceMeta = 'instance_meta',
   McpsList = 'mcps_list',
-  McpsSet = 'mcps_set'
+  McpsSet = 'mcps_set',
+  CompletionQuery = 'completion_query',
+  CompletionResolve = 'completion_resolve',
+  CompletionCancel = 'completion_cancel',
+  SkillsReload = 'skills_reload'
 }
 
 export enum TauriEvent {
@@ -99,6 +112,7 @@ export interface TauriCommandArgs {
   [TauriCommand.GetTheme]: void
   [TauriCommand.GetKeymaps]: void
   [TauriCommand.GetWindowState]: void
+  [TauriCommand.WindowToggle]: void
   [TauriCommand.GetHomeDir]: void
   [TauriCommand.SessionSubmit]: SubmitArgs
   [TauriCommand.SessionCancel]: CancelArgs
@@ -117,6 +131,10 @@ export interface TauriCommandArgs {
   [TauriCommand.InstanceMeta]: InstanceMetaArgs
   [TauriCommand.McpsList]: McpsListArgs
   [TauriCommand.McpsSet]: McpsSetArgs
+  [TauriCommand.CompletionQuery]: CompletionQueryArgs
+  [TauriCommand.CompletionResolve]: CompletionResolveArgs
+  [TauriCommand.CompletionCancel]: CompletionCancelArgs
+  [TauriCommand.SkillsReload]: void
 }
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
@@ -124,6 +142,7 @@ export interface TauriCommandResult {
   [TauriCommand.GetTheme]: Theme
   [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
+  [TauriCommand.WindowToggle]: boolean
   [TauriCommand.GetHomeDir]: string
   [TauriCommand.SessionSubmit]: SubmitResult
   [TauriCommand.SessionCancel]: CancelResult
@@ -142,6 +161,10 @@ export interface TauriCommandResult {
   [TauriCommand.InstanceMeta]: InstanceMetaSnapshot
   [TauriCommand.McpsList]: MCPListResult
   [TauriCommand.McpsSet]: MCPSetResult
+  [TauriCommand.CompletionQuery]: CompletionQueryResponse
+  [TauriCommand.CompletionResolve]: CompletionResolveResponse
+  [TauriCommand.CompletionCancel]: CompletionCancelResponse
+  [TauriCommand.SkillsReload]: { count: number }
 }
 
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */

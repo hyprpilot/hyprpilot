@@ -1,4 +1,6 @@
+export * from './caret-position'
 export * from './log'
 export * from './markdown'
+export * from './parse-tokens'
 export * from './style'
 export * from './tools'

@@ -15,6 +15,7 @@ import { openModelsLeaf } from './models'
 import { openModesLeaf } from './modes'
 import { openProfilesLeaf } from './profiles'
 import { openSessionsLeaf } from './sessions'
+import { openSkillsLeaf } from './skills'
 
 /**
  * Closed set of root-palette leaf ids. Used by header-pill /
@@ -30,7 +31,8 @@ export enum PaletteLeafId {
   Cwd = 'cwd',
   Instances = 'instances',
   Permissions = 'permissions',
-  Mcps = 'mcps'
+  Mcps = 'mcps',
+  Skills = 'skills'
 }
 
 interface RootLeaf {
@@ -88,6 +90,12 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
     name: 'mcps',
     description: 'toggle MCP servers',
     followUp: 'K-TBD'
+  },
+  [PaletteLeafId.Skills]: {
+    id: PaletteLeafId.Skills,
+    name: 'skills',
+    description: 'reload skills from disk',
+    followUp: 'K-TBD'
   }
 }
 
@@ -99,7 +107,8 @@ const ROOT_LEAF_ORDER: PaletteLeafId[] = [
   PaletteLeafId.Modes,
   PaletteLeafId.Cwd,
   PaletteLeafId.Permissions,
-  PaletteLeafId.Mcps
+  PaletteLeafId.Mcps,
+  PaletteLeafId.Skills
 ]
 
 export function isPaletteLeafId(value: string): value is PaletteLeafId {
@@ -199,6 +208,9 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       open(stubLeafSpec(leaf))
       return
     }
+    case PaletteLeafId.Skills:
+      openSkillsLeaf()
+      return
   }
 }
 

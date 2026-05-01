@@ -20,10 +20,19 @@ import { faArrowTurnDown, faCircleNotch, faPaperclip, faStop } from '@fortawesom
 import { readImage } from '@tauri-apps/plugin-clipboard-manager'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
+import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
 import { ComposerPillKind, type ComposerPill } from '@components'
-import { type KeymapEntry, useAttachments, useComposer, useKeymap, useKeymaps } from '@composables'
-import { log } from '@lib'
+import {
+  type KeymapEntry,
+  useAttachments,
+  useCompletion,
+  useComposer,
+  useKeymap,
+  useKeymaps
+} from '@composables'
+import { Modifier } from '@ipc'
+import { getCaretCoordinates, log } from '@lib'
 
 
 const props = withDefaults(
@@ -104,6 +113,16 @@ function resize(): void {
   el.style.height = `${el.scrollHeight}px`
 }
 
+const completion = useCompletion()
+const completionLeft = ref(0)
+// When the popover would clip the viewport bottom, anchor from its
+// own bottom edge instead of its top — this keeps a popover with
+// fewer rows than the height estimate sitting flush against the
+// caret line, rather than floating above with a gap. Exactly one of
+// top / bottom is set per render; the other is `null`.
+const completionTop = ref<number | null>(0)
+const completionBottom = ref<number | null>(null)
+
 const { keymaps } = useKeymaps()
 useKeymap(textareaRef, (): KeymapEntry[] => {
   if (!keymaps.value) {
@@ -116,10 +135,142 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
     { binding: keymaps.value.composer.paste_image, handler: onPasteImage },
     { binding: keymaps.value.composer.tab_completion, handler: onTab },
     { binding: keymaps.value.composer.shift_tab, handler: onTab },
+    {
+      // Force-open completion (manual ripgrep / chat-buffer scan).
+      // Falls back to hardcoded Ctrl+Space when the wire-loaded
+      // keymap predates the field. Same handler as Tab — when the
+      // popover is already open, commits the active row.
+      binding: keymaps.value.composer.completion ?? { modifiers: [Modifier.Ctrl], key: 'space' },
+      handler: onTab
+    },
     { binding: keymaps.value.composer.history_up, handler: onHistoryPrev, allowRepeat: true },
     { binding: keymaps.value.composer.history_down, handler: onHistoryNext, allowRepeat: true }
   ]
 })
+
+/**
+ * Composer-level keystroke pre-filter for the completion popover.
+ * Runs BEFORE the keymap dispatcher when the popover is open so
+ * arrow / Enter / Esc / Tab route to the completion state machine
+ * instead of the existing chat / history bindings. When the popover
+ * is closed, this is a no-op and falls through to the keymap chain.
+ */
+function onTextareaKeydown(e: KeyboardEvent): void {
+  if (!completion.state.value.open) {
+    return
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    e.stopPropagation()
+    completion.selectNext()
+    return
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    e.stopPropagation()
+    completion.selectPrev()
+    return
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    applyCompletion()
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    completion.close()
+    return
+  }
+}
+
+// Estimated popover height (240px list + ~30px footer + 0px gap).
+// Used to flip above the caret when the default below-placement would
+// clip the popover off the viewport bottom. Slightly over-sized so a
+// pixel-tight viewport still flips when the popover would just barely
+// fit — the visual cost of an extra flip is zero.
+const POPOVER_HEIGHT_ESTIMATE = 280
+// VS Code-style: popover sits flush against the line below the caret.
+// Any non-zero gap reads as a visible "floating" panel rather than an
+// editor affordance.
+const POPOVER_GAP = 0
+
+/**
+ * Recompute the popover's anchor coords against the current caret.
+ * Pure layout — does NOT fire a completion query. Use on cursor-move
+ * events (click, keyup over Home/End, etc.) where we want the open
+ * popover to follow the caret without re-querying the daemon.
+ */
+function repositionPopover(): void {
+  const el = textareaRef.value
+  if (!el) {
+    return
+  }
+  const cursor = el.selectionStart ?? el.value.length
+  const coord = getCaretCoordinates(el, cursor)
+  const below = coord.top + coord.height + POPOVER_GAP
+  const wouldClipBelow = below + POPOVER_HEIGHT_ESTIMATE > window.innerHeight
+  if (wouldClipBelow) {
+    // Anchor from the bottom: popover's own bottom edge sits
+    // POPOVER_GAP above the caret line top, regardless of how many
+    // rows it ends up rendering.
+    completionTop.value = null
+    completionBottom.value = window.innerHeight - coord.top + POPOVER_GAP
+  } else {
+    completionTop.value = below
+    completionBottom.value = null
+  }
+  completionLeft.value = coord.left
+}
+
+function fireCompletionQuery(opts?: { manual?: boolean }): void {
+  const el = textareaRef.value
+  if (!el) {
+    return
+  }
+  repositionPopover()
+  const cursor = el.selectionStart ?? el.value.length
+  completion.query(el.value, cursor, { manual: opts?.manual ?? false })
+}
+
+function onTextareaInput(): void {
+  fireCompletionQuery()
+}
+
+/**
+ * Cursor-move events (click / Home / End / PageUp / PageDown). Arrow
+ * keys are intercepted by the popover's keymap when it's open, so they
+ * never reach this path. We only need to reposition when the popover
+ * is already open — closed popover doesn't render anywhere to move.
+ */
+function onTextareaCursorMove(): void {
+  if (completion.state.value.open) {
+    repositionPopover()
+  }
+}
+
+function applyCompletion(): void {
+  const item = completion.commit()
+  if (!item) {
+    return
+  }
+  const el = textareaRef.value
+  if (!el) {
+    return
+  }
+  const before = el.value.slice(0, item.replacement.range.start)
+  const after = el.value.slice(item.replacement.range.end)
+  const inserted = item.replacement.text
+  text.value = before + inserted + after
+  void nextTick(() => {
+    if (textareaRef.value) {
+      const pos = before.length + inserted.length
+      textareaRef.value.setSelectionRange(pos, pos)
+      textareaRef.value.focus()
+    }
+  })
+}
 
 onMounted(() => {
   resize()
@@ -165,8 +316,15 @@ function onEnter(e: KeyboardEvent): boolean {
 
 function onTab(): boolean {
   log.debug('composer keybind', { key: 'Tab', target: 'completion' })
-
-  return false
+  // When the popover is open, `onTextareaKeydown` already handled
+  // Tab and prevented default; the keymap chain shouldn't run. When
+  // closed, Tab here means "force-open completion" (manual ripgrep
+  // trigger). Either way we swallow the event from the keymap chain.
+  if (completion.state.value.open) {
+    return true
+  }
+  fireCompletionQuery({ manual: true })
+  return true
 }
 
 async function readClipboardImagePill(): Promise<ComposerPill | undefined> {
@@ -391,6 +549,17 @@ function onDragOver(e: DragEvent): void {
         :placeholder="placeholder"
         :disabled="disabled"
         data-testid="composer-textarea"
+        @keydown.capture="onTextareaKeydown"
+        @input="onTextareaInput"
+        @click="onTextareaCursorMove"
+        @keyup="onTextareaCursorMove"
+        @blur="completion.close()"
+      />
+      <CompletionPopover
+        :top="completionTop"
+        :bottom="completionBottom"
+        :left="completionLeft"
+        @commit="applyCompletion"
       />
       <div class="composer-actions">
         <button
@@ -473,8 +642,9 @@ function onDragOver(e: DragEvent): void {
   gap: 6px;
 }
 
-/* wireframe textarea-equivalent: bg-bg, line2 border, padding 8px 10px,
- * minHeight 68px, mono fontSize 12. */
+/* wireframe textarea-equivalent: bg-bg, line2 border, padding 8px 10px.
+ * min-height bumped past wireframe (68→96) to give the autocomplete
+ * popover a bit more vertical room before it has to flip above. */
 .composer-textarea {
   @apply w-full min-w-0 flex-1 resize-none overflow-y-auto border text-[0.75rem] leading-snug;
   font-family: var(--theme-font-mono);
@@ -483,7 +653,7 @@ function onDragOver(e: DragEvent): void {
   border-color: var(--theme-border-soft);
   border-radius: 4px;
   padding: 8px 10px;
-  min-height: 68px;
+  min-height: 96px;
   max-height: 25vh;
 }
 

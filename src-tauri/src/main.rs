@@ -1,4 +1,5 @@
 mod adapters;
+mod completion;
 mod config;
 mod ctl;
 mod daemon;

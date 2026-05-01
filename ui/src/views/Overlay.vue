@@ -80,7 +80,7 @@ import {
   type InstanceId,
   type PlanEntry
 } from '@composables'
-import { type Attachment } from '@ipc'
+import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
 import { formatToolCall, log } from '@lib'
 import { Attachments, Body as ChatBody, ChangeBanner, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
@@ -291,13 +291,69 @@ useKeymap(
           closeAllPalettes()
         }
       },
+      {
+        // Toggle the overlay's visibility — same surface as the
+        // tray's "show/hide" + the `window/toggle` RPC. While
+        // visible, hides; while hidden, this binding can't fire
+        // anyway (no webview keyboard input) so the bind is
+        // effectively show-only-from-Hyprland-bind / hide-from-here.
+        //
+        // Fallback to a hardcoded Ctrl+Q when the wire-loaded
+        // keymap doesn't carry `window.toggle` (older daemon binary
+        // without the [keymaps.window] defaults). User config can
+        // still override the default through the wire shape.
+        binding: keymaps.value.window?.toggle ?? { modifiers: [Modifier.Ctrl], key: 'q' },
+        handler: () => {
+          log.info('keybind invoked', { action: 'toggle', target: 'window' })
+          void invoke(TauriCommand.WindowToggle).catch((err: unknown) => {
+            log.warn('window_toggle failed', { err: String(err) })
+          })
+
+          return true
+        }
+      }
     ]
   }
 )
 
 let stopActiveInstanceStore: (() => void) | undefined
 
+/**
+ * Window-level capture-phase listener for the visibility toggle. Runs
+ * BEFORE every other keydown listener (textarea, document, palette);
+ * cannot be swallowed by an earlier handler's stopPropagation. The
+ * config-driven keymap entry above stays as the customisation surface
+ * for users who override the binding; this is the always-on path so
+ * `window/toggle` is reachable even when the wire-loaded keymap lacks
+ * the field, the textarea is focused, or another handler eats the
+ * bubble phase.
+ */
+function windowToggleCaptureListener(e: KeyboardEvent): void {
+  if (e.type !== 'keydown') {
+    return
+  }
+  if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) {
+    return
+  }
+  if (e.key.toLowerCase() !== 'q') {
+    return
+  }
+  e.preventDefault()
+  e.stopPropagation()
+  log.info('keybind invoked', { action: 'toggle', target: 'window', via: 'capture' })
+  pushToast(ToastTone.Ok, 'ctrl+q fired — invoking window_toggle')
+  void invoke(TauriCommand.WindowToggle)
+    .then((visible) => {
+      log.info('window_toggle ok', { visible: String(visible) })
+    })
+    .catch((err: unknown) => {
+      log.warn('window_toggle failed', { err: String(err) })
+      pushToast(ToastTone.Err, `window_toggle failed: ${String(err)}`)
+    })
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', windowToggleCaptureListener, { capture: true })
   startQueueDispatcher()
   try {
     stopActiveInstanceStore = await startActiveInstance()
@@ -314,6 +370,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', windowToggleCaptureListener, { capture: true })
   stopStream?.()
   stopStream = undefined
   stopActiveInstanceStore?.()

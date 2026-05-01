@@ -1,7 +1,10 @@
 //! Skill loader — parses `<root>/<slug>/SKILL.md` bundles across
-//! every configured root, exposes them to the daemon via
-//! `SkillsRegistry`, and keeps the set in sync with disk through a
-//! `notify`-driven watcher.
+//! every configured root and exposes them to the daemon via
+//! `SkillsRegistry`. Reload is captain-driven: the palette's
+//! "reload skills" entry calls `skills/reload` (mirrored as a Tauri
+//! command); fs-watching was dropped because edit-time noise from
+//! editors / git ops burnt through the debouncer faster than skills
+//! changed.
 //!
 //! Skill delivery onto the wire flows exclusively through the
 //! palette-driven `Attachment` shape on `UserTurnInput::Prompt` — no
@@ -10,7 +13,6 @@
 
 pub mod commands;
 mod loader;
-mod watcher;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,8 +22,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
 use tracing::{info, warn};
-
-pub use watcher::spawn_watcher;
 
 /// Directory-name slug. Constructor enforces the
 /// `[a-z0-9][a-z0-9_-]*` shape so filesystem + RPC lookups share one
@@ -166,9 +166,10 @@ impl SkillsRegistry {
         }
     }
 
-    /// Configured skills roots. Used by the watcher to attach one
-    /// `.watch()` per existing root.
+    /// Configured skills roots — exposed for diagnostics and for the
+    /// reload UI (so the palette can name the paths it'll re-scan).
     #[must_use]
+    #[allow(dead_code)]
     pub fn dirs(&self) -> &[PathBuf] {
         &self.dirs
     }

@@ -1,6 +1,7 @@
 import { computed, reactive, type Component, type ComputedRef, type VNode } from 'vue'
 
 import { ToastTone } from '@components'
+import { log } from '@lib'
 
 const DEFAULT_DURATION_MS = 3000
 const MAX_STACK = 3
@@ -58,10 +59,52 @@ const entries: ToastEntry[] = reactive([])
 let nextId = 0
 
 /**
+ * Best-effort string view of a toast body for daemon-side logging.
+ * Non-string bodies fall back to the component name (when known)
+ * or a generic placeholder — the live in-frame rendering is what
+ * the captain sees, the log line is for postmortem context.
+ */
+function toastBodyToLogString(body: ToastBody): string {
+  if (typeof body === 'string') {
+    return body
+  }
+  if (typeof body === 'function') {
+    return '<render fn>'
+  }
+  const name = (body.component as { name?: string }).name ?? '<component>'
+  return `<${name}>`
+}
+
+/**
+ * Map a toast tone onto the log level the captain would expect to
+ * find it under in the daemon log. Err goes to error, Warn to warn,
+ * everything else (Ok / Info) to info — so a `tail -f hyprpilot.log
+ * | grep error` surface their existence without searching the
+ * entire stream.
+ */
+function logToast(tone: ToastTone, body: ToastBody): void {
+  const text = toastBodyToLogString(body)
+  const fields = { source: 'toast', tone }
+  switch (tone) {
+    case ToastTone.Err:
+      log.error(text, fields)
+      break
+    case ToastTone.Warn:
+      log.warn(text, fields)
+      break
+    case ToastTone.Ok:
+    case ToastTone.Info:
+      log.info(text, fields)
+      break
+  }
+}
+
+/**
  * Push a toast onto the FIFO buffer. `body` is `string | (() =>
  * VNode) | { component, props }` per the compose-not-bag rule —
  * the chrome (tone-stripe, dismiss) is fixed; the body is whatever
- * the consumer composes.
+ * the consumer composes. Mirrored to the daemon log via `log.*` so
+ * captain-visible feedback is also captured for postmortems.
  */
 export function pushToast(tone: ToastTone, body: ToastBody, options: ToastOptions = {}): string {
   nextId += 1
@@ -74,6 +117,7 @@ export function pushToast(tone: ToastTone, body: ToastBody, options: ToastOption
   if (durationMs > 0) {
     window.setTimeout(() => dismissToast(id), durationMs)
   }
+  logToast(tone, body)
   return id
 }
 
