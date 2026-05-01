@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+use anyhow::{anyhow, Context, Result};
+use tauri::{AppHandle, LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::config::{Dimension, Edge, Window, WindowMode};
@@ -155,10 +156,24 @@ impl WindowRenderer {
     /// (the window is `hide()`d at the top of the body before the
     /// `init_layer_shell` call).
     pub fn show(&self, window: &WebviewWindow) -> Result<()> {
+        self.apply(window, true)
+    }
+
+    /// Configure the surface (layer-shell init + sizing) without
+    /// mapping it visible. Used at boot when `[daemon.window] visible
+    /// = false` so the layer-shell role is set up early — later
+    /// `overlay/present` calls `show()` to actually map the
+    /// already-roled surface, which avoids the "init_layer_shell on a
+    /// realized window" failure mode.
+    pub fn configure_hidden(&self, window: &WebviewWindow) -> Result<()> {
+        self.apply(window, false)
+    }
+
+    fn apply(&self, window: &WebviewWindow, map_visible: bool) -> Result<()> {
         let mode = self.config.mode.expect("[daemon.window] mode seeded by defaults.toml");
         match mode {
-            WindowMode::Anchor => self.apply_anchor(window),
-            WindowMode::Center => self.apply_center(window),
+            WindowMode::Anchor => self.apply_anchor(window, map_visible),
+            WindowMode::Center => self.apply_center(window, map_visible),
         }
     }
 
@@ -168,12 +183,46 @@ impl WindowRenderer {
         window.hide().context("failed to hide main window")
     }
 
+    /// Async wrapper around `show()` that marshals execution onto
+    /// Tauri's main thread. Required from any tokio worker (RPC
+    /// handlers, tray callbacks, single-instance) — gtk-layer-shell
+    /// and the GTK widget calls inside `apply_anchor` panic with
+    /// "GTK may only be used from the main thread" when invoked
+    /// off-thread. The closure runs synchronously on the main
+    /// thread; the oneshot returns its `Result` to the caller.
+    pub async fn show_on_main(&self, app: &AppHandle, window: &WebviewWindow) -> Result<()> {
+        self.run_on_main(app, window, |r, w| r.show(w)).await
+    }
+
+    /// Async wrapper around `hide()`. Same main-thread requirement
+    /// as `show_on_main` — `WebviewWindow::hide` is thread-safe in
+    /// Tauri but kept here for symmetry so the call sites pair
+    /// `show_on_main` / `hide_on_main` and never reach into the
+    /// raw renderer methods from a worker thread.
+    pub async fn hide_on_main(&self, app: &AppHandle, window: &WebviewWindow) -> Result<()> {
+        self.run_on_main(app, window, |r, w| r.hide(w)).await
+    }
+
+    async fn run_on_main<F>(&self, app: &AppHandle, window: &WebviewWindow, op: F) -> Result<()>
+    where
+        F: FnOnce(&WindowRenderer, &WebviewWindow) -> Result<()> + Send + 'static,
+    {
+        let renderer = self.clone();
+        let window = window.clone();
+        let (tx, rx) = oneshot::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(op(&renderer, &window));
+        })
+        .map_err(|err| anyhow!("run_on_main_thread dispatch failed: {err}"))?;
+        rx.await.map_err(|err| anyhow!("main-thread closure dropped: {err}"))?
+    }
+
     // -------------------------------------------------------------------------
     // Per-mode helpers — private; `apply_initial` and `show` fan out to these.
     // -------------------------------------------------------------------------
 
     #[cfg(target_os = "linux")]
-    fn apply_anchor(&self, window: &WebviewWindow) -> Result<()> {
+    fn apply_anchor(&self, window: &WebviewWindow, map_visible: bool) -> Result<()> {
         use gtk::prelude::{GtkWindowExt, WidgetExt};
         use gtk_layer_shell::{Edge as GtkEdge, KeyboardMode, Layer, LayerShell};
 
@@ -203,11 +252,24 @@ impl WindowRenderer {
         // the setup closure fires, so if `visible = true` we'd already be
         // mapped here — `tauri.conf.json` sets `visible = false` to keep the
         // window unrealized until this code maps it via `show_all` below.
+        //
+        // `init_layer_shell` is one-shot: gtk-layer-shell allows it
+        // exactly once per window. Calling it twice segfaults.
+        // Subsequent `apply_anchor` invocations (overlay/toggle from a
+        // hidden boot, monitor / size re-resolves) skip the init —
+        // `is_layer_window` reports the role committed after the first
+        // present. The other layer-config calls (`set_layer`,
+        // `set_keyboard_mode`, anchors, margins, monitor pinning,
+        // size) are idempotent under repeat and run every time so a
+        // monitor hotplug / config reload still picks up the new
+        // values.
         gtk_window.hide();
-        gtk_window.init_layer_shell();
-        gtk_window.set_layer(Layer::Overlay);
-        gtk_window.set_keyboard_mode(KeyboardMode::OnDemand);
-        gtk_window.set_namespace("hyprpilot");
+        if !gtk_window.is_layer_window() {
+            gtk_window.init_layer_shell();
+            gtk_window.set_layer(Layer::Overlay);
+            gtk_window.set_keyboard_mode(KeyboardMode::OnDemand);
+            gtk_window.set_namespace("hyprpilot");
+        }
 
         // Reset all anchors, then pin the configured edge. When height is
         // unset the surface also pins top + bottom so the compositor stretches
@@ -264,8 +326,17 @@ impl WindowRenderer {
         // keeps the GTK window unmapped until `init_layer_shell` has
         // configured the layer-shell role. `show_all` then maps it via the
         // layer-shell protocol instead of xdg_shell.
-        gtk_window.show_all();
-        gtk_window.present();
+        //
+        // `map_visible = false` (boot-hidden mode): skip the actual map.
+        // The layer-shell role is configured; later `overlay/present`
+        // calls back into `apply_anchor` with `map_visible = true` to
+        // bring the surface up. Keeping the role configured early
+        // avoids the "init_layer_shell on a realized window" failure
+        // that surfaces when the first map happens out-of-order.
+        if map_visible {
+            gtk_window.show_all();
+            gtk_window.present();
+        }
 
         // `init_layer_shell()` flips the GTK flag unconditionally; the
         // compositor only honors the role after `present()` commits the
@@ -292,11 +363,11 @@ impl WindowRenderer {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn apply_anchor(&self, _window: &WebviewWindow) -> Result<()> {
+    fn apply_anchor(&self, _window: &WebviewWindow, _map_visible: bool) -> Result<()> {
         anyhow::bail!("anchor mode requires Linux + zwlr_layer_shell_v1; set [daemon.window] mode = \"center\"")
     }
 
-    fn apply_center(&self, window: &WebviewWindow) -> Result<()> {
+    fn apply_center(&self, window: &WebviewWindow, map_visible: bool) -> Result<()> {
         // Resolve percent dimensions *and* pick the target monitor in one
         // step — the same call is made on every subsequent show transition.
         // The returned monitor is reused for positioning so a hotplug /
@@ -322,14 +393,20 @@ impl WindowRenderer {
             .set_position(PhysicalPosition::new(x, y))
             .context("failed to position window")?;
 
-        window
-            .show()
-            .context("failed to show main window after center-mode layout")?;
+        // Boot-hidden mode (`map_visible = false`): leave the window
+        // unmapped after layout — `overlay/present` re-runs this path
+        // with `map_visible = true` to bring the surface up.
+        if map_visible {
+            window
+                .show()
+                .context("failed to show main window after center-mode layout")?;
+        }
 
         info!(
             width_px = w_px,
             height_px = h_px,
             monitor = ?monitor.name(),
+            map_visible,
             "centered window configured"
         );
 

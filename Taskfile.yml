@@ -7,7 +7,7 @@ vars:
   tauri: ./node_modules/.bin/tauri
 
 env:
-  RUST_LOG: hyprpilot=debug
+  RUST_LOG: hyprpilot=trace
 
 tasks:
   install:

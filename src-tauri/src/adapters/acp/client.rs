@@ -159,7 +159,12 @@ fn extract_content_text(content: Option<&Vec<agent_client_protocol::schema::Tool
         let text = piece
             .get("text")
             .and_then(|v| v.as_str())
-            .or_else(|| piece.get("content").and_then(|c| c.get("text")).and_then(|v| v.as_str()))
+            .or_else(|| {
+                piece
+                    .get("content")
+                    .and_then(|c| c.get("text"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("");
         if !text.is_empty() {
             parts.push(text.to_string());

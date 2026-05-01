@@ -1,4 +1,5 @@
 mod agents;
+mod autostart;
 mod daemon;
 mod keymaps;
 pub(crate) mod merge_strategies;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::mcp::MCPDefinition;
 use crate::paths;
 pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
+pub use autostart::Autostart;
 #[allow(unused_imports)]
 pub use daemon::{AnchorWindow, CenterWindow, Daemon, Dimension, Edge, Window, WindowMode};
 pub use keymaps::KeymapsConfig;
@@ -43,6 +45,12 @@ pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
 pub struct Config {
     #[garde(dive)]
     pub daemon: Daemon,
+    /// `[autostart]` — top-level. Drives the boot-time reconcile
+    /// against `tauri-plugin-autostart`. Top-level (not nested under
+    /// `[daemon]`) because autostart is a property of the binary's
+    /// relationship to the OS, not of the daemon's internal config.
+    #[garde(dive)]
+    pub autostart: Autostart,
     #[garde(dive)]
     pub logging: Logging,
     #[garde(dive)]
