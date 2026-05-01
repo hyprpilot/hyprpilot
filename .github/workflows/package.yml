@@ -1,0 +1,37 @@
+---
+name: Package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packaging/aur/hyprpilot-git/**"
+  workflow_dispatch:
+
+# Captains rebuild the VCS package on demand
+# (`yay -S hyprpilot-git` after `yay -Syu --devel`, or
+# `yay -S hyprpilot-git --rebuild`); the AUR repo only needs an
+# update when the PKGBUILD itself changes (build steps, deps,
+# pkgver() function). Path-filtered trigger keeps code-only commits
+# from re-pushing identical PKGBUILDs.
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: hyprpilot-git
+          pkgbuild: packaging/aur/hyprpilot-git/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update PKGBUILD"
+          # No updpkgsums for VCS sources — git+https has no
+          # tarball checksums to refresh.
+          test: true
+          force_push: false

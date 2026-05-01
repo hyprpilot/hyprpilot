@@ -1,0 +1,112 @@
+---
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build Linux x86_64 release tarball
+    runs-on: ubuntu-latest
+    outputs:
+      pkgver: ${{ steps.ver.outputs.pkgver }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Strip leading 'v' from tag
+        id: ver
+        run: echo "pkgver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgtk-layer-shell-dev \
+            libayatana-appindicator3-dev \
+            pkg-config \
+            zstd
+
+      - name: Bootstrap toolchain via mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install workspace deps
+        run: task install
+
+      - name: Build release binary
+        run: task build:release
+
+      - name: Pack tarball
+        id: pack
+        # Tarball layout matches what `hyprpilot-bin/PKGBUILD` expects
+        # — flat `hyprpilot/` dir with the binary, license, desktop
+        # entry, systemd unit, icon, and a sample config copy. The
+        # captain installing -bin gets the same /usr layout the
+        # source-built variants produce.
+        run: |
+          ARCHIVE="hyprpilot-v${{ steps.ver.outputs.pkgver }}-x86_64-unknown-linux-gnu.tar.zst"
+          mkdir -p staging/hyprpilot
+          install -Dm755 target/release/hyprpilot staging/hyprpilot/hyprpilot
+          install -Dm644 LICENSE staging/hyprpilot/LICENSE
+          install -Dm644 README.md staging/hyprpilot/README.md
+          install -Dm644 packaging/hyprpilot.desktop staging/hyprpilot/hyprpilot.desktop
+          install -Dm644 packaging/hyprpilot.service staging/hyprpilot/hyprpilot.service
+          install -Dm644 src-tauri/src/config/defaults.toml staging/hyprpilot/config.example.toml
+          for size in 16 32 48 64 128 256 512; do
+            install -Dm644 "src-tauri/icons/${size}x${size}.png" \
+              "staging/hyprpilot/icons/${size}x${size}.png"
+          done
+          tar --zstd -cf "$ARCHIVE" -C staging hyprpilot
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        # release-please created the tag + Release; we attach
+        # artifacts to the existing Release rather than creating a
+        # new one.
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.pack.outputs.archive }}
+            ${{ steps.pack.outputs.archive }}.sha256
+
+  publish-aur-bin:
+    name: Publish hyprpilot-bin (prebuilt) to AUR
+    # Depends on build-release so the GH Release tarball exists by
+    # the time `updpkgsums` fetches it for the b2sums refresh.
+    needs:
+      - build-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: hyprpilot-bin
+          pkgbuild: packaging/aur/hyprpilot-bin/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "upgpkg: hyprpilot-bin ${{ needs.build-release.outputs.pkgver }}-1"
+          # `test: false` — the bin variant package() step would
+          # need the binary tarball already on disk inside the action
+          # container, which means a network fetch from GH Releases.
+          # Skipping the test build saves ~2min per release; the
+          # captain who installs `-bin` will surface real issues
+          # within hours of release anyway.
+          updpkgsums: true
+          test: false
+          force_push: false
