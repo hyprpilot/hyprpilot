@@ -62,6 +62,18 @@ pub enum ClientEvent {
         tool: String,
         kind: String,
         args: String,
+        /// Raw `tool_call.rawInput` JSON object — passed through verbatim
+        /// so UI consumers (the plan-file modal, the spec sheet) can
+        /// extract structured fields like `plan` for ExitPlanMode or
+        /// `command` for bash without re-parsing the collapsed `args`
+        /// summary.
+        raw_input: Option<serde_json::Value>,
+        /// Concatenated text from every text-shaped `content[]` block
+        /// on the tool call. Some agents (claude-code's `Switch mode`)
+        /// ship the markdown body here instead of on `raw_input` — UI
+        /// reads as a fallback when no `raw_input` field matches the
+        /// modal's body-shape detector.
+        content_text: Option<String>,
         options: Vec<PermissionOptionView>,
     },
 }
@@ -106,7 +118,8 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
             .clone()
             .or_else(|| title.clone())
             .unwrap_or_else(|| "tool".to_string());
-        let raw_args = update.fields.raw_input.as_ref().and_then(|raw| {
+        let raw_input = update.fields.raw_input.clone();
+        let raw_args = raw_input.as_ref().and_then(|raw| {
             if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
                 Some(cmd.to_string())
             } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
@@ -115,12 +128,47 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
                 serde_json::to_string(raw).ok()
             }
         });
+        let content_text = extract_content_text(update.fields.content.as_ref());
         ToolCallRef {
             name,
             title,
             raw_args,
+            raw_input,
             kind_wire,
+            content_text,
         }
+    }
+}
+
+/// Concatenate every text-shaped block from a `tool_call.content`
+/// array into a single string. Used for permissions whose markdown
+/// body lives on the tool's content blocks (claude-code's
+/// `Switch mode` ships the plan body here) rather than on
+/// `raw_input`. Returns `None` when the array is missing, empty,
+/// or carries only non-text blocks (diff / file / image).
+fn extract_content_text(content: Option<&Vec<agent_client_protocol::schema::ToolCallContent>>) -> Option<String> {
+    let blocks = content?;
+    let raw = serde_json::to_value(blocks).ok()?;
+    let arr = raw.as_array()?;
+    let mut parts: Vec<String> = Vec::new();
+    for piece in arr {
+        let kind = piece.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "content" && kind != "text" {
+            continue;
+        }
+        let text = piece
+            .get("text")
+            .and_then(|v| v.as_str())
+            .or_else(|| piece.get("content").and_then(|c| c.get("text")).and_then(|v| v.as_str()))
+            .unwrap_or("");
+        if !text.is_empty() {
+            parts.push(text.to_string());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
     }
 }
 
@@ -285,6 +333,8 @@ impl AcpClient {
                 let tool = tool_call.name.clone();
                 let kind = tool_call.permission_kind_wire();
                 let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
+                let raw_input = tool_call.raw_input.clone();
+                let content_text = tool_call.content_text.clone();
 
                 let rx = self.permissions.register_pending(decision_req.clone()).await;
 
@@ -294,6 +344,8 @@ impl AcpClient {
                     tool,
                     kind,
                     args,
+                    raw_input,
+                    content_text,
                     options,
                 });
                 tracing::info!(

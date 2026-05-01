@@ -1,6 +1,8 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
+import { faXmark } from '@fortawesome/free-solid-svg-icons'
+
 import KbdHint from './KbdHint.vue'
 
 describe('KbdHint.vue', () => {
@@ -14,9 +16,9 @@ describe('KbdHint.vue', () => {
     expect(wrapper.text()).toContain('palette')
   })
 
-  it('renders FontAwesome glyphs for FaIconSpec entries and text for strings', () => {
+  it('renders FontAwesome glyphs for IconDefinition entries and text for strings', () => {
     const wrapper = mount(KbdHint, {
-      props: { keys: ['Ctrl', ['fas', 'xmark']], label: 'close' }
+      props: { keys: ['Ctrl', faXmark], label: 'close' }
     })
 
     const keys = wrapper.findAll('kbd')

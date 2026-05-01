@@ -102,10 +102,15 @@ pub struct ToolCallRecord {
     pub title: String,
     /// Initial state — almost always `pending` or `running`.
     pub state: ToolCallState,
-    /// Optional UI-displayable args summary (`command` for Bash,
-    /// `path` for fs tools, JSON otherwise).
+    /// The agent's raw `tool_call.rawInput` JSON object passed
+    /// through verbatim. UI-side formatters pick the fields they
+    /// care about (`file_path`, `command`, `query`, …) — sending a
+    /// stringified summary instead would force the formatters to
+    /// re-parse JSON on every render and lose access to non-string
+    /// fields like `replace_all: true`. `None` when the agent
+    /// didn't attach a rawInput.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_args: Option<String>,
+    pub raw_input: Option<serde_json::Value>,
     /// Initial content blocks the agent attached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ToolCallContentItem>,
@@ -125,7 +130,7 @@ pub struct ToolCallUpdateRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<ToolCallState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_args: Option<String>,
+    pub raw_input: Option<serde_json::Value>,
     /// Content delta — appended to whatever the running view holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ToolCallContentItem>,
@@ -239,25 +244,46 @@ impl UserTurnInput {
     }
 }
 
-/// One palette-picked skill (today) attached to a user turn. The
-/// body is snapshotted at pick time so the user sees exactly what
-/// they chose; re-pick to refresh after edits.
+/// One palette-picked skill OR image attachment riding on a user
+/// turn. Skill attachments carry text body sourced from a file at
+/// pick time; image attachments carry base64-encoded binary data
+/// plus an explicit MIME type sourced from the OS file picker,
+/// drag-drop, or clipboard paste.
+///
+/// The UI distinguishes via the optional `data` + `mime` fields:
+/// skills leave them unset and use `body` for the text payload,
+/// images set them and leave `body` empty. The daemon's
+/// `build_prompt_blocks` dispatches accordingly to ACP
+/// `ContentBlock::Image` or `ContentBlock::Resource`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     /// Skill slug (or any future attachment-source key). Used for
     /// dedup + UI keying.
     pub slug: String,
-    /// Absolute path to the source file.
+    /// Absolute path to the source file. For UI-minted image
+    /// attachments without a real path (clipboard paste) this is
+    /// a synthetic `<uuid>.<ext>` so `mime_guess` still works on
+    /// the extension as a fallback.
     pub path: PathBuf,
-    /// Snapshot of the body at pick time. Inlined onto the
-    /// transport-specific resource block so the agent reads the
-    /// same thing the user did.
+    /// Snapshot of the body at pick time. Empty for image
+    /// attachments — those carry binary data on `data`.
+    #[serde(default)]
     pub body: String,
     /// Optional human-readable label; the UI shows it on the
     /// composer pill. Falls back to `slug` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Base64-encoded binary payload, set when the attachment is an
+    /// image / audio / non-text blob. When present, the daemon
+    /// projects to `ContentBlock::Image` (mime starts with
+    /// `image/`) instead of `ContentBlock::Resource`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// Explicit MIME type for binary attachments. Wins over the
+    /// extension-based `mime_guess` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
 }
 
 impl Attachment {
@@ -269,14 +295,17 @@ impl Attachment {
         format!("file://{}", self.path.display())
     }
 
-    /// MIME type of the attachment body. Resolved from the file's
-    /// path extension via the `mime_guess` crate; falls back to
-    /// `application/octet-stream` for paths with no extension or an
-    /// unknown extension. Every transport-side encoder uses this on
-    /// the wire so the agent can dispatch attachment handling per
-    /// content type.
+    /// MIME type of the attachment body. Explicit `mime` wins;
+    /// otherwise resolves from the file's path extension via
+    /// `mime_guess`, falling back to `application/octet-stream`.
+    /// The encoder dispatches purely on this value — no
+    /// `is_image()` shortcut, no `data.is_some()` test — so any
+    /// MIME the user attaches lands in the right ACP variant.
     #[must_use]
     pub fn mime_type(&self) -> String {
+        if let Some(m) = &self.mime {
+            return m.clone();
+        }
         mime_guess::from_path(&self.path)
             .first_or_octet_stream()
             .essence_str()
@@ -331,7 +360,7 @@ mod tests {
             tool_kind: "read".into(),
             title: "Read package.json".into(),
             state: ToolCallState::Running,
-            raw_args: Some("package.json".into()),
+            raw_input: Some(serde_json::json!({ "file_path": "package.json" })),
             content: vec![],
         };
         let item = TranscriptItem::ToolCall(record);
@@ -340,6 +369,7 @@ mod tests {
         assert_eq!(v["id"], "tc-1");
         assert_eq!(v["toolKind"], "read");
         assert_eq!(v["state"], "running");
+        assert_eq!(v["rawInput"]["file_path"], "package.json");
     }
 
     #[test]
@@ -349,8 +379,47 @@ mod tests {
             path: PathBuf::from("/tmp/skills/git-commit/SKILL.md"),
             body: "stage".into(),
             title: None,
+            data: None,
+            mime: None,
         };
         assert_eq!(a.file_uri(), "file:///tmp/skills/git-commit/SKILL.md");
         assert_eq!(a.mime_type(), "text/markdown");
+    }
+
+    #[test]
+    fn attachment_mime_type_resolves_explicit_then_extension() {
+        let img = Attachment {
+            slug: "uuid-1".into(),
+            path: PathBuf::from("uuid-1.png"),
+            body: String::new(),
+            title: Some("image/png · 4B".into()),
+            data: Some("AAAA".into()),
+            mime: Some("image/png".into()),
+        };
+        assert_eq!(img.mime_type(), "image/png", "explicit mime wins");
+
+        let skill = Attachment {
+            slug: "git-commit".into(),
+            path: PathBuf::from("/tmp/git-commit/SKILL.md"),
+            body: "stage".into(),
+            title: None,
+            data: None,
+            mime: None,
+        };
+        assert_eq!(skill.mime_type(), "text/markdown", "extension fallback");
+
+        let unknown = Attachment {
+            slug: "blob".into(),
+            path: PathBuf::from("/tmp/no-ext"),
+            body: String::new(),
+            title: None,
+            data: Some("BASE64".into()),
+            mime: None,
+        };
+        assert_eq!(
+            unknown.mime_type(),
+            "application/octet-stream",
+            "unrecognised extension falls through to octet-stream"
+        );
     }
 }

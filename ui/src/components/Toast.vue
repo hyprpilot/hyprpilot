@@ -1,56 +1,73 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { faXmark } from '@fortawesome/free-solid-svg-icons'
+import { computed, h, type VNode } from 'vue'
 
-import { ToastTone, type FaIconSpec } from './types'
+import { ToastTone } from '@components'
+import type { ToastBody } from '@composables'
 
-const props = withDefaults(
-  defineProps<{
-    tone?: ToastTone
-    message: string
-    dismissible?: boolean
-  }>(),
-  { tone: ToastTone.Ok, dismissible: true }
-)
+/**
+ * In-Frame toast card — absolute-positioned over the chat body
+ * (top: 8, left/right: 14, z-index: 10), 3px tone-stripe left
+ * border, body content in fg-ink-2, trailing line, ✕ dismiss.
+ *
+ * The `body` accepts a string (rendered in the standard message
+ * span), a render function (`() => VNode` — the consumer composes
+ * label + button + whatever inline), or `{ component, props }`
+ * (lifts a small SFC for richer toasts). No more `actionLabel` /
+ * `@action` — the consumer wires whatever interaction it needs
+ * inside the body itself.
+ *
+ * Tone is encoded **only** through the left-stripe color — no
+ * "NOTICE" / "ERROR" tag word. The color carries the level signal.
+ */
+const props = defineProps<{
+  tone: ToastTone
+  body: ToastBody
+}>()
 
-const emit = defineEmits<{
+defineEmits<{
   dismiss: []
 }>()
 
-const toneIcon = computed<FaIconSpec>(() => {
+const toneColor = computed(() => {
   switch (props.tone) {
-    case ToastTone.Ok:
-      return ['fas', 'circle-check']
-    case ToastTone.Warn:
-      return ['fas', 'triangle-exclamation']
-    case ToastTone.Err:
-      return ['fas', 'circle-xmark']
-    default:
-      return ['fas', 'circle-info']
-  }
-})
-
-const toneVar = computed(() => {
-  switch (props.tone) {
-    case ToastTone.Ok:
-      return 'var(--theme-status-ok)'
-    case ToastTone.Warn:
-      return 'var(--theme-status-warn)'
     case ToastTone.Err:
       return 'var(--theme-status-err)'
+    case ToastTone.Ok:
+      return 'var(--theme-status-ok)'
     default:
-      return 'var(--theme-fg-dim)'
+      return 'var(--theme-status-warn)'
   }
 })
 
-const ariaRole = computed(() => (props.tone === ToastTone.Err ? 'alert' : 'status'))
+/**
+ * Inline functional render for the body slot. Vue 3 picks up
+ * arrow-functions defined in `<script setup>` as functional
+ * components when used in template (`<RenderBody />`). Branches
+ * on `body`'s discriminator: string → text span, function → call
+ * it, `{ component, props }` → mount that component.
+ */
+function RenderBody(): VNode | string | null {
+  const body = props.body
+  if (typeof body === 'string') {
+    return h('span', { class: 'toast-message' }, body)
+  }
+  if (typeof body === 'function') {
+    return body()
+  }
+  if (body && typeof body === 'object' && 'component' in body) {
+    return h(body.component, body.props ?? {})
+  }
+  return null
+}
 </script>
 
 <template>
-  <div class="toast" :class="`is-${tone}`" :role="ariaRole" :style="{ '--tone': toneVar }">
-    <FaIcon :icon="toneIcon" class="toast-tone-icon" aria-hidden="true" />
-    <span class="toast-message">{{ message }}</span>
-    <button v-if="dismissible" type="button" class="toast-dismiss" aria-label="dismiss" @click="emit('dismiss')">
-      <FaIcon :icon="['fas', 'xmark']" class="toast-dismiss-icon" />
+  <div class="toast" :style="{ '--tone': toneColor }" data-testid="toast">
+    <RenderBody />
+    <span class="toast-line" />
+    <button type="button" class="toast-dismiss" aria-label="dismiss" @click="$emit('dismiss')">
+      <FaIcon :icon="faXmark" class="toast-dismiss-icon" aria-hidden="true" />
     </button>
   </div>
 </template>
@@ -58,40 +75,62 @@ const ariaRole = computed(() => (props.tone === ToastTone.Err ? 'alert' : 'statu
 <style scoped>
 @reference '../assets/styles.css';
 
+/* Wireframe spec — overlay card pinned to the top of the Frame body
+ * via absolute positioning (the parent `.frame-body` is relative). */
 .toast {
-  @apply flex items-center gap-2 border-l-[3px] px-3 py-[6px] text-[0.75rem] leading-tight;
+  position: absolute;
+  top: 8px;
+  left: 14px;
+  right: 14px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  background-color: var(--theme-surface);
+  border: 1px solid var(--theme-border-soft);
+  border-left: 3px solid var(--tone);
+  border-radius: 3px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   font-family: var(--theme-font-mono);
-  border-color: var(--tone);
+  font-size: 0.56rem;
+  color: var(--theme-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.toast :deep(.toast-message) {
   color: var(--theme-fg-ink-2);
-  background-color: var(--theme-surface-alt);
-  border-top: 1px solid var(--theme-border);
-  border-right: 1px solid var(--theme-border);
-  border-bottom: 1px solid var(--theme-border);
+  font-size: 0.66rem;
+  text-transform: none;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.toast-tone-icon {
-  @apply shrink-0;
-  width: 12px;
-  height: 12px;
-  color: var(--tone);
-}
-
-.toast-message {
-  @apply flex-1;
+.toast-line {
+  flex: 1;
+  height: 1px;
+  background-color: var(--theme-border);
+  margin-left: 4px;
 }
 
 .toast-dismiss {
-  @apply shrink-0 border-0 bg-transparent px-1 text-[0.8rem] leading-none;
+  @apply inline-flex items-center justify-center;
   color: var(--theme-fg-dim);
   cursor: pointer;
+  padding: 0 4px;
+  background: transparent;
+  border: 0;
 }
 
 .toast-dismiss-icon {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
 }
 
 .toast-dismiss:hover {
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg);
 }
 </style>

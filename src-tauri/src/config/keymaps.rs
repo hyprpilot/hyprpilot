@@ -254,6 +254,12 @@ pub struct ChatKeymaps {
     pub submit: Option<Binding>,
     #[garde(dive)]
     pub newline: Option<Binding>,
+    /// Cancel the in-flight turn. Sends ACP `CancelNotification` so
+    /// the agent stops mid-prompt, clears any pending permissions,
+    /// and the composer unlocks. Default: `Ctrl+C` (matching the
+    /// shell convention; users override per their layout).
+    #[garde(dive)]
+    pub cancel_turn: Option<Binding>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]

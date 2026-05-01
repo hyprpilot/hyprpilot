@@ -37,6 +37,16 @@ tasks:
       - pnpm --filter hyprpilot-ui build
       - pnpm --filter hyprpilot-e2e test
 
+  test:e2e:live:
+    desc: Run Playwright e2e in tauri-mode against a real daemon spawned with claude-code + haiku (tests/e2e/fixtures/live-config.toml). Network-bound — bunx fetches the ACP package on first run.
+    env:
+      HYPRPILOT_E2E_MODE: tauri
+      HYPRPILOT_E2E_CONFIG: tests/e2e/fixtures/live-config.toml
+    cmds:
+      - cargo build --manifest-path src-tauri/Cargo.toml
+      - pnpm --filter hyprpilot-ui build
+      - pnpm --filter hyprpilot-e2e test
+
   format:
     desc: Format Rust and every pnpm package.
     deps: [format:rust, format:node]

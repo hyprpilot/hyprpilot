@@ -263,42 +263,58 @@ text, attachments }`; see the **ACP bridge** section.
   Each is an object (`bg` today; `accent` / `border` / `fg` later). Do not
   name surfaces by elevation (`card_hi`, `card_alt`); name them by role.
 
-### Base font size — page zoom from GTK desktop font
+### UI scaling — `[ui] zoom` config knob
 
-The overlay inherits its base size from the user's GTK desktop font
-(`gtk-font-name` via `gtk::Settings::default()`). Daemon queries it
-once in `tauri::Builder::setup(...)` — GTK is initialized by then —
-and applies the result via **`WebviewWindow::set_zoom(f64)`**, the
-Chromium-style page zoom that wry forwards to WebKit's
-`set_zoom_level`. This scales **text + layout together** (not just
-font-size), avoiding the classic WebKitGTK font-scaling-factor bug
-where fonts grow but margins/padding don't (WebKit bug 250138).
+The overlay's "make everything bigger" knob lives in **`[ui] zoom`**
+(default `1.0`, range `[0.5, 2.0]`, override in user TOML). The
+daemon reads it after the window maps and calls
+**`WebviewWindow::set_zoom(zoom)`** — Chromium-style page zoom that
+WebKit/Chromium expose as `set_zoom_level`. This scales text +
+layout **uniformly**: paddings, widths, borders, gaps, fonts —
+everything in the rendered tree multiplies by the zoom factor.
 
-The mapping is linear with a 10pt baseline: `zoom = 1.0 + (size_pt -
-10) * 0.1`, clamped `[0.5, 2.0]`. `Segoe UI 11` → 1.1×; `DejaVu Sans
-10` → 1.0×; `Inter 12` → 1.2×. Missing settings singleton,
-unparseable font string, or `set_zoom` failure → no zoom call;
-webview stays at its 1.0× default.
+A CSS `:root { font-size }` knob would only scale `rem`-based
+primitives. The codebase mixes `rem` typography with `px` paddings
+/ widths / borders / gaps; without `set_zoom` the UI scales
+text-only and looks broken. `set_zoom` is the canonical Tauri API
+for this, mirroring how browser users hit `Ctrl++` to enlarge
+everything proportionally.
 
-`get_gtk_font` is still exposed so the webview can pick up the
-**family** (not the size) — `useTheme::applyGtkFont()` overrides
+Cross-platform — works the same on Hyprland, GNOME, KDE, macOS,
+Windows. Webview DPI scaling (`scale_factor()` per monitor) layers
+on top automatically, so `zoom = 1.0` on a 200%-scaled display
+still renders crisply.
+
+`get_gtk_font` is exposed so the webview can pick up the **family**
+(not the size) on Linux — `useTheme::applyGtkFont()` overrides
 `--theme-font-sans` with the user's GTK family so prose matches the
-desktop; `--theme-font-mono` stays on the configured stack (code
-deserves a monospace regardless of desktop font).
+desktop. Optional desktop-integration nicety; sizing is fully
+zoom-driven. `--theme-font-mono` stays on the configured stack
+(code deserves a monospace regardless of desktop font).
 
-**CSS must not set `font-size` in `px`.** Every primitive uses `rem`
-(or `em`). `text-[0.Nrem]` Tailwind arbitrary-value utility is the
-canonical way to set a font size inside a primitive; full utility
-aliases (`text-xs`, `text-sm`, …) are rem-based and fine. No literal
-`font-size: Npx` anywhere under `ui/src/`. The `set_zoom` call is
-the single scale authority; adding a second `html { font-size }`
-write on top would double-count.
+**Why not the GTK desktop font size?** Earlier scaffolds wired
+`gtk-font-name` → `set_zoom` with a 10pt baseline (`zoom = 1.0 +
+(size_pt - 10) * 0.1`). Two problems: (a) Linux-only — macOS /
+Windows users got no scaling at all; (b) the 10pt baseline assumed
+every desktop's font setting maps to the same logical size, which
+is false (`Segoe UI 11` on Windows ≠ `Inter 11` on Hyprland). A
+config knob is the common-method replacement (mirrors how VS Code,
+Zed, Discord, Obsidian all do it).
 
-**Why not `WebKitSettings::default-font-size`?** That property only
-scales the default font (unset CSS sizes); it doesn't touch explicit
-`font-size: 1rem` declarations, AND it's the exact axis WebKitGTK
-treats as "font-only, layout fixed" — same bug as manipulating
-`html { font-size }`. Page zoom is the correct knob.
+**Why not a CSS `:root { font-size }` knob?** Bumping the root
+font-size only scales primitives written in `rem` units. The
+codebase has lots of literal `px` for layout (paddings, widths,
+borders) — those wouldn't budge, and the UI would look stretched
+text in a fixed shell. `set_zoom` scales every box.
+
+**Why not `WebKitSettings::default-font-size`?** That property
+only scales the default font (unset CSS sizes); it doesn't touch
+explicit `font-size: 1rem` declarations. Wrong axis.
+
+**`text-[0.Nrem]` is still the canonical way to set a font size**
+inside a primitive — full utility aliases (`text-xs`, `text-sm`, …)
+are rem-based and fine. Avoid literal `font-size: Npx` so the rem
+baseline stays the single source of typographic scale.
 
 ## Window surface (`[daemon.window]`)
 
@@ -538,7 +554,13 @@ needs to check computed styles against a real layout engine:
 2. `mcp__mcphub__playwright__browser_navigate { url: "http://localhost:1420/" }`.
 3. `mcp__mcphub__playwright__browser_evaluate { function: "() => { ... }" }`
    for computed-style inspection, e.g. `getComputedStyle(el).height`.
-4. Kill both the Vite server and the browser process when done
+4. **Screenshot output goes to `.playwright-mcp/`** at the repo root.
+   Always pass `filename: ".playwright-mcp/<descriptive-name>.png"` to
+   `browser_take_screenshot` so artifacts stay scoped to that folder
+   (the runner respects relative paths). The folder is gitignored;
+   keep screenshots there for review and don't litter the source tree
+   with them.
+5. Kill both the Vite server and the browser process when done
    (`pkill -f 'vite.*hyprpilot-ui'`, `pkill -f brave` / `chromium`).
 
 **Caveats:**
@@ -558,6 +580,173 @@ needs to check computed styles against a real layout engine:
   belong in `tests/e2e/` under the `@srsholmes/tauri-playwright`
   harness, which runs against the real Tauri build. Playwright MCP
   is for ad-hoc inspection only.
+
+#### Visual-debug investigation flow
+
+When the user flags a "the UI doesn't look like the wireframes" gap,
+the loop is:
+
+1. **Make sure the dev server is running** in the background
+   (`pnpm --filter hyprpilot-ui dev` via `run_in_background: true`).
+   Wait ~3-4s for the Vite "ready" line, then proceed.
+2. **Navigate** with `mcp__mcphub__playwright__browser_navigate
+   { url: "http://localhost:1420/" }`.
+3. **Screenshot to `.playwright-mcp/`** — pass
+   `filename: ".playwright-mcp/<descriptive-name>.png"` to
+   `browser_take_screenshot`. Never let it default into the project
+   root.
+4. **Compare** the screenshot against the wireframe HTML / JSX in
+   the design bundle (`/tmp/wireframes/hyprpilot/project/wf-d5-fusion.jsx`).
+   Read the JSX block for the screen state you're checking; the
+   designer's spec is in inline comments ("VISUAL LAW", "FIDELITY
+   NOTE").
+5. **Iterate**: edit the relevant `.vue` file, save (Vite HMR picks
+   up automatically — no rebuild), re-screenshot, diff. Repeat
+   until visually faithful.
+6. **`browser_evaluate`** is the escape hatch for layout numbers —
+   when a screenshot diff doesn't tell you *why* something's the
+   wrong size, run a one-shot computed-style query
+   (`getComputedStyle(el).height`) to get the actual numbers.
+7. **Cleanup** when done: kill the dev-server background process
+   (the runner may surface its task ID in a notification when the
+   server crashes; otherwise `pkill -f 'vite.*hyprpilot-ui'`).
+
+The dev preview pulls a non-Tauri theme + window-state shim from
+`ui/src/assets/dev-preview.ts`, applied via dynamic import in
+`main.ts` only when `import.meta.env.DEV && !window.__TAURI_INTERNALS__`.
+Production Tauri builds tree-shake the entire module out — the real
+app keeps "Rust is the sole source" intact, with no fallback path
+for theme tokens or window state.
+
+#### Tauri ↔ Playwright wiring
+
+For wire-flow verification today, use the **Hybrid daemon-driven**
+pattern below — the WebKitGTK eval-stall blocks native-webview
+screenshots but every other Tauri-mode capability (spawning the
+daemon, driving it via `ctl`, listening on the unix socket,
+asserting log emissions) is functional. The four upstream options
+listed here matter only when full native-webview DOM assertions
+become required (visual regression on the layer-shell surface
+itself, compositor-rendered screenshots, etc.) and the eval-stall
+clears or we migrate to GTK4 + webkit2gtk-6.0 per the upstream
+runway. Until then they're catalogued for completeness:
+
+- **`@srsholmes/tauri-playwright` 0.2** (already in `tests/e2e/`).
+  Three modes: `browser` (mocked IPC, works today), `tauri` (socket
+  bridge to the real native webview, gated behind `HYPRPILOT_E2E_MODE=tauri`
+  + the `e2e-testing` Cargo feature; stalls today on webkit2gtk-4.1),
+  `cdp` (Windows-only WebView2 direct CDP). Wireframe screenshots
+  via `tauriPage.screenshot({ path: '.playwright-mcp/<name>.png' })`
+  hit the real native window (CoreGraphics on macOS, X11/Wayland on
+  Linux).
+- **`tauri-plugin-webdriver` 0.2** — full W3C WebDriver server on
+  port 4445. Drop-in for Selenium / WebdriverIO / Playwright as a
+  W3C client. Requires `withGlobalTauri: true` in `tauri.conf.json`
+  + plugin registered in `src-tauri/src/main.rs::Builder`. Cleanest
+  path if `tauri-plugin-playwright` keeps stalling.
+- **`@wdio/tauri-service`** — WebdriverIO service with `embedded`
+  driver provider (native, all platforms, no external driver). Adds
+  window management, clipboard, file ops, screenshot capture as
+  first-class commands.
+- **`tauri-driver` (official)** — the canonical W3C surface, but
+  needs an external native driver: `msedgedriver.exe` on Windows,
+  `webkit2gtk-driver` on Linux. Heaviest setup; only worth it for
+  CI parity with prod.
+
+For **scripted regression tests** in `tests/e2e/`, the hybrid
+daemon-driven pattern below is the canonical surface today. For
+**ad-hoc UI inspection via Playwright MCP** (this agent driving
+Chromium against the dev preview), the path forward is unchanged —
+browser mode + dev-preview shim — until the upstream stall clears.
+Then flip the MCP server to `mode: 'tauri'` against a running
+`cargo tauri dev --features e2e-testing` for real-app screenshots.
+
+#### Hybrid daemon-driven verification (the canonical methodology)
+
+When debugging a wire-flow bug — anything where the question is "is
+the daemon emitting / handling X correctly?" — **the WebKitGTK
+eval-stall is not a blocker.** The native-webview screenshot path
+stalls; everything else works.
+
+**Always run this verification through the Playwright e2e harness,
+not by spawning the daemon directly from the shell.** The harness
+owns the daemon's lifecycle via `tests/e2e/fixtures/global-setup.ts`
+(spawn + socket-wait) and `global-teardown.ts` (SIGTERM on exit), so
+nothing leaks past the test run and the user's `task run` flow
+stays untouched. A bare `setsid ./target/debug/hyprpilot daemon` is
+for one-off ad-hoc inspection only — never for repeatable
+verification, never inside an agent loop, never as the "default"
+diagnostic.
+
+The pattern that consistently verifies wire-side behavior under
+real ACP traffic:
+
+1. **Run the spec via `task test:e2e:live`.** The Taskfile target
+   is wired; the underlying invocation is
+
+   ```sh
+   HYPRPILOT_E2E_MODE=tauri \
+   HYPRPILOT_E2E_CONFIG=tests/e2e/fixtures/live-config.toml \
+   pnpm --filter hyprpilot-e2e test
+   ```
+
+   `live-config.toml` pins the agent to `claude-code` + `haiku`
+   model so the model / cwd / mode chips in the header have
+   deterministic values to assert against. `global-setup.ts`
+   spawns the binary with `HYPRPILOT_CONFIG` pointing at the
+   fixture, waits for the socket, and tears it down on teardown
+   — no per-spec daemon plumbing needed.
+
+2. **Drive the wire from inside the spec via `ctl`.** Each spec
+   spawns `./target/debug/hyprpilot ctl …` as a subprocess, with
+   the right `XDG_RUNTIME_DIR` / `HYPRPILOT_SOCKET` env carrying
+   over from `globalThis.__HYPRPILOT_E2E__`. Every `acp:*` event
+   the daemon emits is reachable through this path. The two most
+   useful subcommands:
+
+   ```sh
+   ctl instances spawn --agent claude-code --cwd /path/to/repo
+   ctl prompts send --instance <uuid> "<prompt>"
+   ```
+
+   `tests/e2e/specs/wire-instance-meta.spec.ts` is the reference —
+   it spawns an instance, sends a prompt, and asserts on the
+   daemon log content. Use it as a template when adding a new
+   wire-flow regression test.
+
+3. **Trace the emit path via `HYPRPILOT_LOG_LEVEL=trace`.**
+   `global-setup.ts` already routes the daemon's stdout / stderr
+   into `${runtimeDir}/daemon.log`; passing
+   `HYPRPILOT_LOG_LEVEL=trace` (or `RUST_LOG='hyprpilot::adapters=trace'`
+   on the spawned env) makes every `app.emit` call show up as a
+   `trace!` line via `emit_acp_event`. Specs read the file with
+   `fs.readFileSync(path, 'utf8')` and assert via Playwright's
+   `expect(log).toContain('acp:instance-meta')` patterns.
+
+4. **Pair with Playwright MCP (browser mode) for the visual layer.**
+   The UI rendering verifies separately against a Vite dev server
+   with the dev-preview shim — `__hyprpilot_dev` exposes
+   `pushSessionInfoUpdate`, `pushCurrentModeUpdate`,
+   `setInstanceCwd`, etc. — so a `browser_evaluate` call seeds the
+   exact state the live wire would produce, then
+   `browser_take_screenshot { filename: '.playwright-mcp/<name>.png' }`
+   captures it. **The daemon log proves the wire shape; the
+   Playwright-MCP screenshot proves the chrome renders that shape
+   correctly.** Together they cover what `tauriPage.screenshot`
+   would have given us if the eval-stall ever clears.
+
+**Force this loop whenever a chip / header / row "doesn't update".**
+The dev-preview shim alone can fake any state, but it lies — the
+Rust mapper might be dropping the wire variant into `Unknown`, or a
+new ACP enum variant might not have a Tauri event bridge. Running
+the e2e harness + reading its daemon log is the only way to know.
+
+`InstanceMeta` is the canonical example: the chip would render
+correctly under dev-preview seeding, but the live wire never carried
+mode / cwd / model because the Rust transcript-mapper dropped them
+into `Unknown` and there were no `acp:*` events to bridge them. That
+gap was invisible from browser-mode tests alone — only the
+e2e-driven daemon log surfaced it.
 
 
 
@@ -585,6 +774,22 @@ needs to check computed styles against a real layout engine:
   hand-rolled placeholder, nothing on the CLI side should dress it up as a
   real result. When K-239 lands, flip the `unimplemented!()` in one edit;
   never in two.
+- **Never fabricate static UI text.** Every visible string —
+  status chips, match badges, "first time" / "no rule" pills,
+  counter labels — must read from a real signal. If the data isn't
+  wired (no trust store yet, no telemetry yet, no rule registry),
+  do NOT type a placeholder string and ship it: the captain reads
+  it as truth, and "no rule in trust store" looks identical
+  whether the trust store is empty or whether the trust store
+  doesn't exist. Either wire the real signal, or omit the element
+  entirely until it can be backed by data. The same rule applies
+  to error toasts, tooltips, and aria-labels — fabricated copy is
+  a runtime lie. Precedent: a `first time · no rule` chip in the
+  permission stack header was deleted in the K-XXX D5 reskin
+  because it was prose-only — not a component prop bound to any
+  trust-store query. If you find yourself writing copy that
+  *describes* state instead of *reading* state, stop and either
+  surface the real signal through the wire or drop the element.
 - **Inline single-use helpers.** A function with exactly one caller should be
   folded into that caller. Prefer `fn main() -> Result<()>` over a `try_main`
   wrapper; prefer unfolding a small setup step into the body (with a short
@@ -759,7 +964,26 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
   type-lie that `?` papers over cleanly at the consumer edge. If a field
   needs to disappear entirely on `None`, add
   `#[serde(skip_serializing_if = "Option::is_none")]` on the Rust
-  struct.
+  struct. The same rule extends to function-return objects: if the API
+  exposes `{ active: ComputedRef<T | undefined> }`, drop `active` and
+  let callers compute it from a non-optional collection
+  (`entries.value[0]`); never bake `T | undefined` into a public
+  return shape. Wrap-and-thread is fine; wrap-and-bury-undefined-as-API
+  is the failure mode.
+- **Function options are an object, never an overloaded union.**
+  `pushToast(tone, message, options: ToastOptions = {})` — never
+  `pushToast(tone, message, optionsOrDuration?: number | ToastOptions)`.
+  Even when the function only has one knob today, the second knob
+  arrives as a backwards-compatible `options.something?` field rather
+  than as an overload. Reasons: (a) the first knob's positional shape
+  hard-codes call sites that all need to flip when a second knob lands;
+  (b) the union-discriminator runtime check (`typeof opts === 'number'`)
+  is exactly the kind of branching the type system already does for
+  free with a typed object; (c) the call-site ergonomics are uniform
+  (`{ durationMs: 2000 }`, `{ action: ... }`) instead of asymmetric
+  (`2000` vs `{ ... }`). Apply the same rule to internal helpers — a
+  one-knob function gets a one-field object, accepting the trivial
+  ceremony cost upfront.
 - **Closed sets use `enum`, not union string literals.** Define
   `export enum SessionState { Starting = 'starting', … }` and type
   fields as `state: SessionState`. Union string literals
@@ -872,6 +1096,56 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
     leave a `type AcpTurn = ChatTurn` shim. The no-legacy-compat
     rule applies here too.
 
+  - **Names carry no redundant context.** When the scope already
+    names the thing — a class instance, a composable's returned
+    interface, a config struct, a module — its members drop the
+    repeated noun. The scope IS the context. Specifically:
+
+    - **Composables**: always `useFoo`. Always. The returned
+      interface uses bare verbs when the noun is obvious from
+      context, or short qualifiers when there are multiple of the
+      same verb:
+      - `useToasts() → { entries, push, dismiss, clear }` —
+        not `pushToast` / `dismissToast`. The composable's name
+        already says "toast"; methods use the verb only.
+      - `useSessionInfo() → { info, setMode, setModel, setCwd }` —
+        verb + qualifier when there's more than one thing to set,
+        but **never** `setSessionInfoMode`.
+      - `useAdapter() → { submit, cancel, agentsList, profilesList }`
+        — methods name *what they do*, not *what they do FROM*.
+
+    - **Component props / events**: bare adjective when the
+      meaning is unambiguous given the component:
+      - `Modal { dismissable }` — not `dismissableOnClickOutside`.
+        If the component fires another dismissal path, that's its
+        own prop.
+      - `Toast { tone, body }` — not `toastTone`, `toastBody`.
+      - **`@dismiss`** on a Modal — not `@modalDismiss` or
+        `@onClose`. The event name is the verb.
+
+    - **Methods on a single-purpose type**: `.set` / `.get` /
+      `.list` / `.clear` when the type's job is one thing. A
+      `Trust` store has `.allow(tool)` / `.deny(tool)`; a
+      `Sandbox` has `.resolve(path)`; an `InstanceRegistry` has
+      `.insert` / `.get` / `.shutdown`. Never `.allowTool` /
+      `.resolvePath` — the parameter type already says what it
+      operates on.
+
+    - **Config structs**: field names live inside their parent's
+      scope. `[ui.theme.surface] default` reads as "surface
+      default colour". Don't write `surface_default_color` inside
+      the surface struct. Same applies in Rust: `Capabilities {
+      load_session, set_mode }` — not `Capabilities {
+      capability_load_session }`.
+
+    The smell signals: a name reads correctly in isolation but
+    repeats redundantly at the call site (`useToasts().pushToast()`,
+    `Modal.dismissableOnClickOutside`, `sandbox.resolveSandboxPath`).
+    Strip the qualifier; rely on the call site's grammar to do the
+    work the namespace already did. **Apply this rule when adding
+    every new identifier — naming is the one change with zero
+    runtime cost; bad names compound forever.**
+
 ### Style conventions
 
 - **Always brace single-statement control-flow bodies in TypeScript.** Never
@@ -897,11 +1171,15 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 - **No `__` in class names.** Use `-` as the separator — `.placeholder-header`,
   not `.placeholder__header`.
 - **No `--pilot-*` CSS variables.** All theme tokens are `--theme-*`.
-- **Custom animations go in `@theme {}` Tailwind blocks** (`--animate-<name>:
-  <keyframes>`), not `:root { --<name>-shorthand: ... }`. Consumers reach
-  them via the Tailwind utility class (`animate-<name>`), not raw
-  `animation:` declarations. Today the tree ships `animate-pulse-slow` (the
-  tool-running pulse) and `animate-blink` (palette / terminal caret).
+- **No custom animations.** Every animated primitive uses Tailwind v4's
+  built-in utilities — `animate-pulse`, `animate-spin`, `animate-bounce`,
+  `animate-ping`. Defining a new keyframe in `@theme {}` or scoped CSS
+  is forbidden; if the visual demands a non-built-in cadence, reach for
+  arbitrary-value variants (`[animation-duration:1.2s]`,
+  `motion-safe:animate-pulse`) over a fresh keyframe. Discipline:
+  custom animations metastasize — every primitive ends up wanting its
+  own pulse / blink / fade, and the resulting menagerie is harder to
+  scan than four built-ins applied uniformly.
 - **`<style scoped>` in every Vue SFC, no `lang="postcss"`.** Tailwind
   v4's vite plugin only transforms virtual modules whose query ends in
   `.css`; `lang="postcss"` emits `lang.postcss` and silently bypasses
@@ -934,6 +1212,258 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
 - **class-variance-authority** (`cva`) for typed component variant APIs.
 - **clsx + tailwind-merge** composed into `cn()` at `ui/src/lib/style.ts` —
   the canonical class-joining helper.
+
+### Components compose, they don't bag
+
+**Where consumers need rendering flexibility, accept a slot, a render
+function, or a component reference — never a structured prop bag of
+primitives the component pattern-matches over.** The smell: a prop
+typed `actions: { id, label, tone, icon, variant }[]` or a composable
+that takes `(message: string, options: { action: { label, run } })`.
+The signal: when a consumer says "I need an extra knob on this item"
+and the answer is "extend the type", the type is hiding a slot that
+wants to exist.
+
+**Apply this rule by default; don't wait for a second consumer.**
+Even at one call site, the bag is a footgun — the next ask
+("can the action button show a loading spinner?", "can the toast
+have an icon?") forces a type-widening churn that a slot would have
+absorbed for free. The trade is six lines of consumer composition for
+permanent flexibility.
+
+**Concrete shapes we use:**
+
+- **`Modal`** (`components/Modal.vue`): an `#actions` slot for the
+  header button row AND a default body slot taking the renderer SFC.
+  Consumers pick `<MarkdownBody>` / `<TextBody>` / a custom body and
+  compose `<Button>` actions:
+  ```vue
+  <Modal :title="..." :tone="...">
+    <template #actions>
+      <Button tone="err" @click="onDeny">reject</Button>
+      <Button tone="ok" variant="solid" @click="onAllow">accept</Button>
+    </template>
+    <MarkdownBody :source="plan" />
+  </Modal>
+  ```
+  Never `actions: ModalAction[]`. Never `markdown` / `text` /
+  `richText` body-shape props on the modal — the renderer IS the
+  slot content. The modal owns the chrome (backdrop, header, action
+  row); the body is a composition decision the caller makes per use.
+
+- **`pushToast`** (`composables/ui-state/use-toasts.ts`): `body` is
+  `string | (() => VNode) | { component, props }`. The toast chrome
+  (tone-stripe, dismiss button) is fixed; everything inside is the
+  consumer's call. The simple case stays one line — `pushToast(tone,
+  "session started")`. The rich case (cancel-turn toast with a delete
+  button) builds a small SFC (`CancelToastBody.vue`) and passes
+  `{ component, props }`. Never `(message, { action })`.
+
+- **`Toast.vue`**: renders the body via an inline functional component
+  in `<script setup>` (`function RenderBody(): VNode | null`). String
+  body → `<span class="toast-message">`; render-fn → call it; component
+  ref → `h(component, props)`.
+
+**Keep prop bags only for uniform lists** of identically-shaped items
+where there's no rendering decision to defer — `PlanItem[]` /
+`PermissionPrompt[]` / `QueuedMessage[]` / `BreadcrumbCount[]`. If a
+consumer wants per-item customisation, that's the slot signal.
+
+**Refactor checklist when introducing a new component / composable
+that takes user data:** before adding `actions: X[]` or `body:
+{ message, action }`, ask: "would the consumer want to render
+something I haven't typed?" If yes (or maybe), it's a slot. The
+default is composition; the bag is the exception that needs
+justification.
+
+### Source layout — `src/{components,views,composables,interfaces,constants,lib,ipc}`
+
+The top-level `ui/src/` shape is fixed:
+
+- `components/` — **reusable, scope-agnostic** Vue building blocks. A
+  component lives here when more than one feature consumes it (or
+  realistically would). Anything single-feature lives under that
+  feature's `views/` folder (see below).
+- `views/<feature>/` — feature partials. The chat surface, the
+  composer, the palette, the idle/start screen are all features —
+  each owns its own `views/<feature>/` folder containing its SFCs
+  AND the composables that exclusively serve them. Treat them as
+  page-level slices, not "shared UI".
+- `composables/` — **only** composables that more than one feature
+  reads. Cross-cutting concerns (theme, keymaps, active-instance
+  tracking, toasts/loading) live here. Per-feature composables live
+  next to the feature's SFC files.
+- `interfaces/<domain>/<sub-domain>.ts` — every TypeScript `interface`
+  / `type` in the codebase lands here, organised by domain and
+  sub-domain. **`types.ts` files are forbidden** — they're
+  dumping grounds. Mirror the source folder structure when there's
+  a natural one (e.g. `interfaces/chat/turn.ts`,
+  `interfaces/composer/queue.ts`); otherwise group by wire boundary
+  (`interfaces/ipc/transcript.ts`).
+- `constants/<domain>/<sub-domain>.ts` — every `enum` and constant
+  table. Same shape rule as `interfaces/`. **`types.ts` is not a
+  place for enums either.**
+- `lib/` — pure helpers (no Vue, no Tauri). `cn()`, markdown
+  pipeline, image encoding, MIME dispatch, anything reusable that
+  doesn't reach for reactivity.
+- `ipc/` — Tauri command + event bridge. Wire types belong under
+  `interfaces/ipc/<...>.ts`; `ipc/` is the *bridge*, not the type
+  catalog.
+
+When a `components/` SFC turns out to be single-feature only
+(zero importers outside that feature), move it under that
+feature's `views/<feature>/`. The default is "live next to your
+caller"; promotion to `components/` is earned by a second consumer.
+
+### Composables: self-contained `useX(): UseXApi` shape
+
+**Every composable returns a typed interface.** Define
+`UseFooApi` next to the composable (or in `interfaces/<domain>/`)
+and have `useFoo()` return that interface explicitly. Export the
+interface alongside the function. Example:
+
+```ts
+export interface UseAdapterApi {
+  submit: (args: SubmitArgs) => Promise<SubmitResult>
+  cancel: (args: CancelArgs) => Promise<CancelResult>
+  agentsList: () => Promise<AgentSummary[]>
+  // ...
+}
+
+export function useAdapter(): UseAdapterApi {
+  return { submit, cancel, agentsList /* ... */ }
+}
+```
+
+The shape forces every consumer-facing knob into the interface;
+internal helpers stay file-local. **No drive-by exports** — if a
+function is exported from a composable file, it MUST be in the
+interface returned by the `useX()` factory. Module-level
+`pushFoo` / `setFoo` / `lookupX` exports are the smell — those
+should be methods on the returned interface OR moved to a
+sibling helper file with no `useX` shape.
+
+**Test-only helpers** (`__resetFooForTests`, `__seedX`) belong
+in `tests/<feature>/<helper>.ts`, not the production module. The
+production composable knows nothing about test scaffolding; the
+test file imports both the composable and its test helper from
+`tests/`.
+
+### Component composition contract — caller passes the renderer
+
+**Where a component renders user-supplied content (markdown body,
+plain-text body, custom row, custom badge), the consumer passes
+the renderer in via slot or component prop — the component never
+hardcodes a "what to render" branch.**
+
+The canonical example: `Modal.vue` accepts a `body` slot AND
+exports reusable body renderers (`ModalMarkdownBody`,
+`ModalPreBody`, …) the caller can drop in. Consumers compose:
+
+```vue
+<Modal title="plan" tone="warn">
+  <ModalMarkdownBody :source="plan" />
+</Modal>
+```
+
+…or pass any other component. Same shape applies to `Toast`,
+`Modal`, list rows, banners — anywhere the chrome is fixed and
+the body is variable. The component owns layout / chrome /
+interaction state; the consumer owns the inner render. Reusable
+renderers live alongside the component (`Modal.vue` +
+`ModalMarkdownBody.vue` + `ModalPreBody.vue` in the same folder).
+
+This is a stronger statement of the **components compose, they
+don't bag** rule above: the component shouldn't even pattern-match
+on a `body` discriminator (`string | () => VNode | { component }`)
+when a slot would do. Reach for the discriminator only when the
+caller is a non-Vue composable (e.g. `pushToast` accepts a
+component ref because the toast queue isn't a template scope).
+
+### Icons — direct imports only, no `library.add(...)` registry
+
+FontAwesome (`@fortawesome/fontawesome-svg-core` `library.add(...)`)
+is **forbidden**. Never register icons centrally. Each component
+imports the specific icons it uses directly:
+
+```ts
+import { faCircle, faCheck } from '@fortawesome/free-solid-svg-icons'
+```
+
+…and binds them in the template via the explicit object form:
+
+```vue
+<FaIcon :icon="faCircle" />
+```
+
+Not `<FaIcon :icon="['fas', 'circle']" />` — the string-array
+indirection defeats Vite's tree-shaking and forces every icon
+into the boot bundle. Direct imports + direct prop binding lets
+the bundler drop unused icons per component.
+
+### `invoke()` / `listen()` typing — interface-indexed args, no `Record<string, unknown>`
+
+**Every Tauri command's argument shape is in
+`interfaces/ipc/invoke.ts` (or similar) keyed by the
+`TauriCommand` enum.** `invoke()` / `listen()` infer the args
+type from the command name; consumers pass typed objects. No
+`args?: Record<string, unknown>` on the bridge.
+
+```ts
+// in interfaces/ipc/invoke.ts
+export interface TauriCommandArgs {
+  [TauriCommand.SessionSubmit]: SessionSubmitArgs
+  [TauriCommand.SessionCancel]: SessionCancelArgs | undefined
+  // ...
+}
+
+// in ipc/bridge.ts
+export async function invoke<K extends TauriCommand>(
+  command: K,
+  args: TauriCommandArgs[K]
+): Promise<TauriCommandResult[K]> { /* ... */ }
+```
+
+Mirror the existing `TauriCommandResult` map. `undefined` for
+no-args commands — never overload the call signature with
+optional args.
+
+**No named wrapper functions** like `getProfiles()` /
+`listSessions()` / `submitTurn()`. Always
+`invoke(TauriCommand.X, args)` at the call site. Wrappers
+duplicate the type contract and drift from it; the typed
+`invoke()` IS the API.
+
+### Tool formatter registry — composable + per-adapter init
+
+The tool-formatter system (`lib/tools/registry.ts`) becomes a
+composable: `useToolRegistry()` returns the registry shape,
+adapters register their formatters at init. Per-adapter
+divergence (claude-code's `Switch mode`, codex's `bash_id`,
+opencode's `diagnostics`) lands as registration calls, not
+hand-edited lookup tables. The base set still ships with the
+adapter-agnostic formatters; adapters extend.
+
+### Dev preview shim lives in `tests/`, gated by env var
+
+`ui/src/dev.ts` (the browser-mode theme + window-state shim)
+moves to `tests/` because its consumers are **the test
+harness and the Vite dev preview only — never production**. The
+boot path in `main.ts` flips to an env-var gate:
+
+```ts
+if (import.meta.env.VITE_HYPRPILOT_DEV_PREVIEW === '1') {
+  const { applyDevPreview } = await import('../tests/dev-preview')
+  applyDevPreview()
+}
+```
+
+Not a `__TAURI_INTERNALS__` window probe (browser-detection by
+absence of a Tauri property is fragile and surprising). The dev
+script set `VITE_HYPRPILOT_DEV_PREVIEW=1` in the dev `.env`;
+production builds leave it unset. Vitest fixtures import the
+preview directly from `tests/dev-preview` when they need themed
+DOM.
 
 ## Frontend linting / formatting
 

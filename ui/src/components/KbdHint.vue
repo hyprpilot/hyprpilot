@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { isFaIcon, type KeyLabel } from './types'
+import { isFaIcon, type KeyLabel } from '@components'
 
 /**
- * Keyboard-hint chip. Keycaps are either plain text (Ctrl, Esc, Ctrl+K)
- * or `FaIconSpec` tuples rendered as FontAwesome glyphs — the latter
- * catches keys where system fonts give inconsistent unicode (↑↓ ⏎ ⎋ ⇥).
- * Port of D5's `KbdHint`. Stateless.
+ * Keyboard-hint chip. Keycaps are either plain text (Ctrl, Esc,
+ * Ctrl+K) or directly-imported FontAwesome `IconDefinition`s rendered
+ * as glyphs — the latter catches keys where system fonts give
+ * inconsistent unicode (↑↓ ⏎ ⎋ ⇥). Port of the wireframe's KbdHint.
+ * Stateless.
  */
 defineProps<{
   keys: KeyLabel[]

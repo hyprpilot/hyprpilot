@@ -91,6 +91,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         // One file, both sides.
         .plugin(tauri_plugin_log::Builder::default().skip_logger().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             info!(?argv, ?cwd, "second instance attempted — forwarding to primary");
             if let Err(err) = app.emit("single-instance", SingleInstancePayload { argv, cwd }) {
@@ -106,7 +107,6 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_theme,
             get_keymaps,
             get_window_state,
-            desktop::get_gtk_font,
             desktop::get_home_dir,
             adapter_commands::session_submit,
             adapter_commands::session_cancel,
@@ -123,6 +123,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::instance_restart,
             adapter_commands::models_set,
             adapter_commands::modes_set,
+            adapter_commands::instance_meta,
             adapter_commands::mcps_list,
             adapter_commands::mcps_set,
             crate::skills::commands::skills_list,
@@ -302,16 +303,6 @@ fn setup_app(
     app.manage(state.window_state);
     app.manage(state.renderer.clone());
 
-    // GTK is initialized by Tauri before the setup closure fires, so
-    // gtk::Settings::default() is safe to call here. Queried once at
-    // boot rather than on every `get_gtk_font` tick — the user would
-    // need to relaunch the overlay to pick up a desktop font change.
-    let gtk_font = desktop::query_gtk_font();
-    if let Some(f) = &gtk_font {
-        info!(family = %f.family, size_pt = f.size_pt, "resolved GTK font");
-    }
-    app.manage(gtk_font.clone());
-
     let main = app
         .get_webview_window("main")
         .context("main webview window missing from tauri.conf.json")?;
@@ -323,18 +314,25 @@ fn setup_app(
     // mode-specific surface and maps the window once ready.
     state.renderer.show(&main)?;
 
-    // Page zoom per the user's desktop font size. Linear ramp with
-    // 10pt as the 1.0 baseline: 11pt → 1.1×, 12pt → 1.2×. Unlike
-    // `html { font-size }`, `set_zoom` scales text + layout together
-    // (Chromium-style page zoom via WebKit's `set_zoom_level`) — no
-    // fonts-bigger-but-margins-fixed breakage that plain font-scale
-    // causes on WebKitGTK.
-    if let Some(f) = &gtk_font {
-        let zoom = (1.0_f64 + (f64::from(f.size_pt) - 10.0) * 0.1).clamp(0.5, 2.0);
-        match main.set_zoom(zoom) {
-            Ok(()) => info!(zoom, size_pt = f.size_pt, "applied GTK-font page zoom"),
-            Err(err) => warn!(?err, zoom, "failed to apply GTK-font page zoom"),
-        }
+    // Apply the configured page zoom. Chromium-style page zoom via
+    // WebKit's `set_zoom_level` — scales text + layout together,
+    // unlike a CSS root font-size knob which only scales `rem`-based
+    // primitives and leaves explicit `px` paddings untouched. The
+    // value is seeded by `[ui] zoom` in defaults.toml; user TOMLs
+    // override it. Always invoke (even at 1.0) so the log line
+    // confirms the config knob is wired and what value reached the
+    // webview — silent skip would make "still small" debugging
+    // ambiguous.
+    let zoom = state
+        .shared_config
+        .read()
+        .expect("config rwlock poisoned")
+        .ui
+        .zoom
+        .expect("ui.zoom seeded by defaults.toml");
+    match main.set_zoom(zoom) {
+        Ok(()) => info!(zoom, "applied [ui] zoom"),
+        Err(err) => warn!(?err, zoom, "failed to apply [ui] zoom"),
     }
 
     app.manage(state.acp_adapter.clone());

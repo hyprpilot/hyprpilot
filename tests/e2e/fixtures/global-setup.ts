@@ -1,5 +1,6 @@
 import type { FullConfig } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createWriteStream } from 'node:fs'
 import { access, constants, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -54,21 +55,35 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   })
 
   const logPath = path.join(runtimeDir, 'daemon.log')
-  const logLines: string[] = []
+  const logStream = createWriteStream(logPath, { flags: 'a' })
+  const buffered: string[] = []
 
-  child.stdout?.on('data', (b) => logLines.push(b.toString()))
-  child.stderr?.on('data', (b) => logLines.push(b.toString()))
+  // Live log capture — every chunk lands on disk immediately so
+  // specs can read the file mid-test (the canonical pattern under
+  // CLAUDE.md "Hybrid daemon-driven verification"). The buffered
+  // copy is kept only for the early-exit error path so the throw
+  // can include a sample without waiting on the file system.
+  child.stdout?.on('data', (b) => {
+    const s = b.toString()
+    buffered.push(s)
+    logStream.write(s)
+  })
+  child.stderr?.on('data', (b) => {
+    const s = b.toString()
+    buffered.push(s)
+    logStream.write(s)
+  })
   child.on('exit', (code, signal) => {
-    logLines.push(`[exit] code=${code} signal=${signal}\n`)
-    writeFile(logPath, logLines.join('')).catch(() => undefined)
+    logStream.write(`[exit] code=${code} signal=${signal}\n`)
+    logStream.end()
   })
 
   try {
     await waitForSocket(meta.socket, 15_000)
   } catch(err) {
     child.kill('SIGKILL')
-    await writeFile(logPath, logLines.join(''))
-    throw new Error(`daemon failed to expose ${meta.socket}; see ${logPath}\n---\n${logLines.join('')}`, { cause: err })
+    await writeFile(logPath, buffered.join(''))
+    throw new Error(`daemon failed to expose ${meta.socket}; see ${logPath}\n---\n${buffered.join('')}`, { cause: err })
   }
 
   globalThis.__HYPRPILOT_E2E__ = {

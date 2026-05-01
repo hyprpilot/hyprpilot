@@ -4,11 +4,11 @@
  * (see `App.vue`). Composes the K-250 chat primitives into the running app.
  *
  * Frame slots (see `components/Frame.vue`):
- *   default slot  — transcript body. `<ChatTurn>` blocks built from
+ *   default slot  — transcript body. `<Turn>` blocks built from
  *                   `useTranscript` + `useStream` + `useTools`, followed
- *                   by `<ChatPermissionStack>` fed from
+ *                   by `<PermissionStack>` fed from
  *                   `useAdapter().lastPermission`.
- *   #composer     — `<ChatComposer>` wired to `useAdapter().submit`.
+ *   #composer     — `<Composer>` wired to `useAdapter().submit`.
  *   #toast        — unused today; reserved for a future toast surface.
  *
  * Header rows 1 + 2 are driven by Frame props (profile, modeTag, provider,
@@ -24,21 +24,17 @@
  *   useActiveInstance   → current instance id for the transcript data-attr
  *   startSessionStream  → starts the demuxed Tauri event pump
  */
+import { faListCheck } from '@fortawesome/free-solid-svg-icons'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import { isPaletteLeafId, openRootLeaf, openRootPalette, openSkillsPalette, PaletteLeafId } from './palette-root'
 import {
   type BreadcrumbCount,
-  ChatBody,
-  ChatComposer,
-  ChatPermissionStack,
-  ChatQueueStrip,
-  ChatStreamCard,
-  ChatTerminalCard,
-  ChatToolChips,
-  ChatTurn,
-  CommandPalette,
-  Frame,
+  Button,
+  type ComposerPill,
+  ComposerPillKind,
+  Loading,
+  MarkdownBody,
+  Modal,
   Phase,
   PlanStatus,
   type QueuedMessage,
@@ -54,6 +50,7 @@ import {
   pushToQueue,
   removeFromQueue,
   startActiveInstance,
+  useStickToBottom,
   startQueueDispatcher,
   stopQueueDispatcher,
   StreamItemKind,
@@ -61,6 +58,7 @@ import {
   TurnRole,
   useActiveInstance,
   useAdapter,
+  resetPermissions,
   useAttachments,
   useHomeDir,
   useKeymap,
@@ -73,6 +71,7 @@ import {
   useSessionHistory,
   useSessionInfo,
   useStream,
+  useTimelineBlocks,
   useToasts,
   useTools,
   useTranscript,
@@ -82,12 +81,15 @@ import {
   type InstanceId,
   type PlanEntry
 } from '@composables'
-import { Modifier } from '@ipc'
+import { type Attachment, Modifier } from '@ipc'
 import { formatToolCall, log } from '@lib'
+import { Attachments, Body as ChatBody, ChangeBanner, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
+import { Composer, PermissionStack, QueueStrip } from '@views/composer'
+import { Frame } from '@views/header'
+import { CommandPalette, isPaletteLeafId, openRootLeaf, openRootPalette, PaletteLeafId } from '@views/palette'
 
 const { submit, cancel } = useAdapter()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
-const { entries: toasts, dismiss } = useToasts()
 const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
 const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
@@ -95,7 +97,29 @@ const activeAgentId = computed(() => profiles.value.find((p) => p.id === selecte
 // session picker yet — keeping the binding live so the backend stays
 // warm; the palette view (K-249) takes over this role. The list count
 // rides on the row-2 sessions breadcrumb pill.
-const { sessions: sessionList } = useSessionHistory(activeAgentId, selectedProfile)
+const { sessions: sessionList, load: restoreSession } = useSessionHistory(activeAgentId, selectedProfile)
+
+// LFG idle landing only previews the most-recent few sessions —
+// rendering the full registry inline pushes the wordmark + kbd
+// legend off-screen on small anchors. The full list lives behind
+// the sessions palette leaf (Ctrl+K → sessions). Cap matches the
+// "couple of sessions" intent — small enough to fit alongside the
+// LFG accent + kbd legend at every supported overlay width.
+const IDLE_SESSIONS_PREVIEW = 5
+const sessionListPreview = computed(() => sessionList.value.slice(0, IDLE_SESSIONS_PREVIEW))
+
+// Idle-row click → resume that session. `restoreSession` mints a
+// fresh instance UUID, fires `session_load`, and the daemon-side
+// `registry.focus(...)` flips the active instance onto the resumed
+// one so replay events paint into the visible transcript. No-op
+// when the row carries no `id` (defensive — every ACP `SessionInfo`
+// should but the type is `id?`).
+function onRestoreSessionClick(sessionId: string | undefined): void {
+  if (!sessionId) {
+    return
+  }
+  void restoreSession(sessionId)
+}
 
 const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 const { turns } = useTranscript()
@@ -106,11 +130,17 @@ const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
 const { homeDir } = useHomeDir()
 const { items: queuedItems, flush: flushActiveQueue } = useQueue()
+const { blocks: timelineBlocks } = useTimelineBlocks()
+const { entries: toastEntries, dismiss: dismissToast } = useToasts()
+const activeToast = computed(() => toastEntries.value[0])
 
 const queueRows = computed<QueuedMessage[]>(() => queuedItems.value.map((q) => ({ id: q.id, text: q.text })))
 
+const transcriptEl = ref<HTMLElement>()
+useStickToBottom(transcriptEl)
+
 const sending = ref(false)
-const composerRef = ref<InstanceType<typeof ChatComposer>>()
+const composerRef = ref<InstanceType<typeof Composer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
 
@@ -125,7 +155,6 @@ const headerCwd = computed(() => {
 
 const headerCounts = computed<BreadcrumbCount[]>(() => [
   { id: PaletteLeafId.Mcps, label: 'mcps', count: sessionInfo.value.mcpsCount },
-  { id: PaletteLeafId.Skills, label: 'skills', count: sessionInfo.value.skillsCount },
   { id: PaletteLeafId.Instances, label: 'instances', count: instancesCount.value },
   { id: PaletteLeafId.Sessions, label: 'sessions', count: sessionList.value.length }
 ])
@@ -171,104 +200,11 @@ function onToggleCwd(): void {
 // id; see `acp:turn-started` / `acp:turn-ended`). Assistant entries
 // carrying the same `turnId` collapse into one block; user turns —
 // which arrive before any `TurnStarted` for the reply — sit in their
-// own per-message block. Anchored render order within an assistant
-// block stays: thoughts + plans → tool-call grid → assistant reply
-// body.
-const KIND_ORDER = { turn: 0, stream: 1, tool: 2 } as const
-interface TimelineTurn {
-  kind: 'turn'
-  createdAt: number
-  turn: (typeof turns.value)[number]
-}
-interface TimelineStream {
-  kind: 'stream'
-  createdAt: number
-  item: (typeof streamItems.value)[number]
-}
-interface TimelineTool {
-  kind: 'tool'
-  createdAt: number
-  call: (typeof toolCalls.value)[number]
-}
-type TimelineEntry = TimelineTurn | TimelineStream | TimelineTool
-
-interface TimelineBlock {
-  role: Role
-  /// Group key — ACP turn id for assistant blocks, synthetic per-row
-  /// key for user blocks (each user message stays in its own block).
-  groupKey: string
-  /// Set when the block represents a real ACP turn; `undefined` for
-  /// user blocks and for spontaneous out-of-turn agent updates.
-  turnId?: string
-  startedAt: number
-  streamEntries: TimelineStream[]
-  toolCalls: TimelineTool[]
-  turnEntries: TimelineTurn[]
-}
-
-function entryRole(entry: TimelineEntry): Role {
-  if (entry.kind === 'turn') {
-    return entry.turn.role === TurnRole.User ? Role.User : Role.Assistant
-  }
-
-  return Role.Assistant
-}
-
-function entryTurnId(entry: TimelineEntry): string | undefined {
-  if (entry.kind === 'turn') {
-    return entry.turn.turnId
-  }
-  if (entry.kind === 'stream') {
-    return entry.item.turnId
-  }
-
-  return entry.call.turnId
-}
-
-const timelineBlocks = computed<TimelineBlock[]>(() => {
-  const entries: TimelineEntry[] = [
-    ...turns.value.map<TimelineTurn>((turn) => ({ kind: 'turn', createdAt: turn.createdAt, turn })),
-    ...streamItems.value.map<TimelineStream>((item) => ({ kind: 'stream', createdAt: item.createdAt, item })),
-    ...toolCalls.value.map<TimelineTool>((call) => ({ kind: 'tool', createdAt: call.createdAt, call }))
-  ]
-  entries.sort((a, b) => a.createdAt - b.createdAt || KIND_ORDER[a.kind] - KIND_ORDER[b.kind])
-
-  const blocks: TimelineBlock[] = []
-  for (const entry of entries) {
-    const role = entryRole(entry)
-    const turnId = entryTurnId(entry)
-    // User turns and unanchored assistant entries each get their own
-    // block (synthetic key); turn-anchored assistant entries fold into
-    // a shared block keyed by the turn id.
-    const groupKey =
-      role === Role.Assistant && turnId !== undefined ? `turn:${turnId}` : `solo:${role}:${entry.createdAt}:${entry.kind}`
-    const last = blocks[blocks.length - 1]
-    let block: TimelineBlock
-    if (last && last.groupKey === groupKey) {
-      block = last
-    } else {
-      block = {
-        role,
-        groupKey,
-        turnId: role === Role.Assistant ? turnId : undefined,
-        startedAt: entry.createdAt,
-        streamEntries: [],
-        toolCalls: [],
-        turnEntries: []
-      }
-      blocks.push(block)
-    }
-    if (entry.kind === 'stream') {
-      block.streamEntries.push(entry)
-    } else if (entry.kind === 'tool') {
-      block.toolCalls.push(entry)
-    } else {
-      block.turnEntries.push(entry)
-    }
-  }
-
-  return blocks
-})
+// own per-message block.
+//
+// Implementation lives in `composables/instance/use-timeline-blocks`
+// (S2 + S8). Overlay reads the block list as a hierarchy that
+// mirrors the user's mental model — "what happened during this turn".
 
 // The "live" block is the assistant block whose ACP turn id is still
 // open (`acp:turn-ended` hasn't landed for it). Once the matching
@@ -326,6 +262,22 @@ useKeymap(
         }
       },
       {
+        // Cancel-current-turn — Ctrl+C by default. Mirrors the
+        // composer's stop button + the shell convention. Always
+        // fires regardless of phase: after a session restore the
+        // phase resolves to Idle (no open turn), but the user may
+        // still want to send a CancelNotification to clear any
+        // server-side in-flight state inherited from the suspended
+        // session. The daemon's `session_cancel` is a soft-fail
+        // when there's nothing to cancel — no harm.
+        binding: keymaps.value.chat.cancel_turn,
+        handler: () => {
+          void onCancel()
+
+          return true
+        }
+      },
+      {
         binding: keymaps.value.palette.open,
         handler: () => {
           openRootPalette()
@@ -339,16 +291,6 @@ useKeymap(
           closeAllPalettes()
         }
       },
-      // TODO: replace with keymaps.value.palette.skills.open once the
-      // Rust-side [keymaps.palette.skills] group lands in its own issue.
-      {
-        binding: { modifiers: [Modifier.Ctrl], key: 'space' },
-        handler: () => {
-          openSkillsPalette()
-
-          return true
-        }
-      }
     ]
   }
 )
@@ -402,10 +344,63 @@ function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
 }
 
-async function onCancel(): Promise<void> {
-  log.info('terminal cancel clicked', { instanceId: activeInstanceId.value })
+// claude-code-acp serializes thinking as a `tool_call` with kind:
+// "think" rather than as `agent_thought_chunk` session-update — so
+// the thought body lives on `content[].text` (the tool-call text
+// blocks) plus the chip's `title` as a one-line summary. Stitch
+// them: title leads, content paragraphs follow.
+function thoughtText(call: {
+  title?: string
+  content: { type?: string; text?: string }[]
+  rawInput?: Record<string, unknown>
+}): string {
+  const parts: string[] = []
+  const summary = call.title?.trim()
+  if (summary && summary.length > 0) {
+    parts.push(`**${summary}**`)
+  }
+  for (const c of call.content ?? []) {
+    if (typeof c.text === 'string' && c.text.trim().length > 0) {
+      parts.push(c.text)
+    }
+  }
+  if (parts.length === 0 && call.rawInput) {
+    const raw = call.rawInput['thought'] ?? call.rawInput['text'] ?? call.rawInput['description']
+    if (typeof raw === 'string') {
+      parts.push(raw)
+    }
+  }
+
+  return parts.join('\n\n')
+}
+
+async function onAttachmentOpen(att: Attachment): Promise<void> {
+  if (!att.path) {
+    return
+  }
   try {
-    await cancel({ instanceId: activeInstanceId.value })
+    const { open } = await import('@tauri-apps/plugin-shell')
+    await open(att.path)
+  } catch (err) {
+    log.warn('attachments: open failed', { path: att.path, err: String(err) })
+    pushToast(ToastTone.Err, `couldn't open ${att.path}`)
+  }
+}
+
+async function onCancel(): Promise<void> {
+  const instanceId = activeInstanceId.value
+  log.info('cancel turn requested', { instanceId })
+  // Clear local permission state immediately so the user gets
+  // instant feedback. The daemon `session_cancel` sends an ACP
+  // CancelNotification, but the agent's response (or lack thereof)
+  // can lag; without a local clear, a stuck permission stack from
+  // a restored session would stay visible until the agent obliged.
+  if (instanceId) {
+    resetPermissions(instanceId)
+  }
+  pushToast(ToastTone.Warn, 'cancel sent')
+  try {
+    await cancel({ instanceId })
   } catch (err) {
     log.error('invoke failed', { command: 'session_cancel' }, err)
     pushToast(ToastTone.Err, `cancel failed: ${String(err)}`)
@@ -426,6 +421,63 @@ function mapPlanStatus(raw?: string): PlanStatus {
 function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
   return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
 }
+
+/// Plan-modal trigger: ANY permission whose `rawInput` carries a
+/// markdown-shaped body lands in the full-screen `Modal`, not the
+/// inline permission stack. Driving off the *payload shape* (a
+/// non-empty string under one of the known plan-keys) instead of a
+/// tool-name allowlist means we catch claude-code's `Switch mode`
+/// (the ACP `ToolKind` enum has no `ExitPlanMode` variant so the
+/// wire `tool` collapses to the title — pinning the trigger to
+/// `'ExitPlanMode'` misses every actual instance), AND any future
+/// vendor that ships a `{ document }` / `{ content }` body in the
+/// same shape.
+const PLAN_KEYS = ['plan', 'document', 'content', 'body'] as const
+
+function pickMarkdownBody(raw: Record<string, unknown> | undefined): string | undefined {
+  if (!raw) {
+    return undefined
+  }
+  for (const key of PLAN_KEYS) {
+    const v = raw[key]
+    if (typeof v === 'string' && v.trim().length > 0) {
+      return v
+    }
+  }
+  return undefined
+}
+
+interface MarkdownModalView {
+  requestId: string
+  tool: string
+  body: string
+}
+
+function bodyOf(p: { rawInput?: Record<string, unknown>; contentText?: string }): string | undefined {
+  const fromRaw = pickMarkdownBody(p.rawInput)
+  if (fromRaw) {
+    return fromRaw
+  }
+  // Fallback: claude-code's `Switch mode` ships the plan body via
+  // tool_call.content[] blocks (joined into `contentText` Rust-side)
+  // rather than rawInput.
+  if (typeof p.contentText === 'string' && p.contentText.trim().length > 0) {
+    return p.contentText
+  }
+  return undefined
+}
+
+const markdownModalPrompt = computed<MarkdownModalView | undefined>(() => {
+  for (const p of permissionPrompts.value) {
+    const body = bodyOf(p)
+    if (body) {
+      return { requestId: p.requestId, tool: p.tool, body }
+    }
+  }
+  return undefined
+})
+
+const standardPermissionPrompts = computed(() => permissionPrompts.value.filter((p) => bodyOf(p) === undefined))
 
 async function onAllow(requestId: string): Promise<void> {
   log.info('permission click', { choice: 'allow', requestId })
@@ -455,15 +507,50 @@ function mintInstanceId(): InstanceId {
   return crypto.randomUUID()
 }
 
-function onSubmit(payload: { text: string; attachments: unknown[] }): void {
+/**
+ * Project image-attachment composer pills onto the wire
+ * `Attachment` shape so the daemon's `build_prompt_blocks` can
+ * emit `ContentBlock::Image` for each one. Skill-style pills
+ * (palette-pushed onto `useAttachments`) skip this path — they
+ * already arrive as wire `Attachment`s with `body` set.
+ *
+ * `path` is synthesized from the optional `fileName` (drag-drop /
+ * file picker) or the MIME's extension (clipboard paste) so the
+ * Rust side's `mime_guess` fallback still works on the extension
+ * if the explicit `mime` field is ever stripped en route.
+ */
+function imagePillsToAttachments(pills: ComposerPill[]): Attachment[] {
+  return pills
+    .filter((p) => p.kind === ComposerPillKind.Attachment && p.mimeType?.startsWith('image/'))
+    .map((p) => {
+      const ext = (p.mimeType ?? 'image/png').split('/')[1] ?? 'png'
+      const synthName = p.fileName && p.fileName.length > 0 ? p.fileName : `${p.id}.${ext}`
+      return {
+        slug: p.id,
+        path: synthName,
+        body: '',
+        title: p.label,
+        data: p.data,
+        mime: p.mimeType
+      }
+    })
+}
+
+function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void {
   const { text, attachments } = payload
   // Skill / resource attachments live in the `useAttachments` singleton
   // (K-268 palette pushes onto it). They snapshot at submit time so a
   // resubmit after cancel sends the same set; submit-ack clears.
   const skillAttachments = [...pendingAttachments.value]
+  // Image pills (paperclip / drag-drop / Ctrl+P) project onto the
+  // wire `Attachment` shape with `data` + `mime` set; the daemon's
+  // `build_prompt_blocks` dispatches those to ACP `ContentBlock::Image`
+  // (versus skill resources which use `body` + `ContentBlock::Resource`).
+  const imageAttachments = imagePillsToAttachments(attachments)
+  const wireAttachments = [...skillAttachments, ...imageAttachments]
   log.info('composer submit', {
     text_len: text.length,
-    image_attachments: attachments.length,
+    image_attachments: imageAttachments.length,
     skill_attachments: skillAttachments.length,
     profileId: selectedProfile.value
   })
@@ -475,12 +562,8 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
   // clears as in the dispatch path so the user can keep typing; the
   // K-260 turn-end watcher in `useQueue` drains the head when the
   // in-flight turn lands `acp:turn-ended` with stop_reason=end_turn.
-  // `attachments` (image pills) is wire-untyped today and not actually
-  // sent through `submit()`; the queued slot still snapshots them
-  // verbatim so a future composer-pill round-trip lands cleanly.
-  const composerPills = (attachments ?? []) as Parameters<typeof pushToQueue>[1]['pills']
   if (phase.value !== Phase.Idle) {
-    pushToQueue(instanceId, { text, pills: composerPills, skillAttachments })
+    pushToQueue(instanceId, { text, pills: attachments, skillAttachments })
     composerRef.value?.clear()
     clearAttachments()
 
@@ -492,7 +575,7 @@ function onSubmit(payload: { text: string; attachments: unknown[] }): void {
   // event; the demuxer in `use-session-stream` routes it through to
   // `pushTranscriptChunk`. No optimistic mirror here — daemon is the
   // single source of truth.
-  submit({ text, instanceId, profileId: selectedProfile.value, attachments: skillAttachments })
+  submit({ text, instanceId, profileId: selectedProfile.value, attachments: wireAttachments })
     .then(() => {
       composerRef.value?.clear()
       clearAttachments()
@@ -520,81 +603,163 @@ function onQueueDropAll(): void {
 
 <template>
   <Frame
-    :profile="selectedProfile ?? 'none'"
+    :profile="selectedProfile ?? sessionInfo.agent ?? 'none'"
     :phase="phase"
-    :mode-tag="sessionInfo.mode ?? 'ask'"
-    :provider="activeProfile?.agent"
+    :mode-tag="sessionInfo.mode"
+    :provider="sessionInfo.agent ?? activeProfile?.agent"
     :model="sessionInfo.model ?? activeProfile?.model"
     :title="sessionInfo.title"
     :cwd="headerCwd"
     :counts="headerCounts"
-    :restored="sessionInfo.restored"
+    :git-status="sessionInfo.gitStatus"
     @pill-click="onPillClick"
     @breadcrumb-click="onBreadcrumbClick"
     @toggle-cwd="onToggleCwd"
   >
-    <div class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
-      <ChatTurn
-        v-for="(block, blockIdx) in timelineBlocks"
-        :key="block.groupKey"
-        :role="block.role"
-        :live="blockIdx === liveBlockIdx"
-      >
-        <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
-          <ChatStreamCard
-            v-if="entry.item.kind === StreamItemKind.Thought"
-            :kind="StreamKind.Thinking"
-            :active="blockIdx === liveBlockIdx"
-            label="thought"
-            >{{ entry.item.text }}</ChatStreamCard
-          >
-          <ChatStreamCard
-            v-else-if="entry.item.kind === StreamItemKind.Plan"
-            :kind="StreamKind.Planning"
-            :active="blockIdx === liveBlockIdx"
-            label="plan"
-            :items="mapPlanItems(entry.item.entries)"
-          />
-        </template>
-
-        <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
-        <!-- `activeProfile?.agent` → `profiles_list`'s vendor once per-adapter overrides land. -->
-        <ChatToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
-
-        <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
-        <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->
-        <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
-          <ChatTerminalCard
-            v-if="terminalIdForCall(entry.call)"
-            :terminal-id="terminalIdForCall(entry.call) ?? ''"
-            :instance-id="activeInstanceId"
-            @cancel="onCancel"
-          />
-        </template>
-
-        <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-          <ChatBody
-            v-if="entry.turn.role === TurnRole.Agent"
-            :role="Role.Assistant"
-            :text="entry.turn.text"
-            markdown
-          />
-          <ChatBody v-else :role="Role.User">{{ entry.turn.text }}</ChatBody>
-        </template>
-      </ChatTurn>
-    </div>
-
-    <ChatPermissionStack :prompts="permissionPrompts" @allow="onAllow" @deny="onDeny" />
-
-    <template #toast>
-      <div v-if="toasts.length > 0" class="toast-stack">
-        <Toast v-for="t in toasts" :key="t.id" :tone="t.tone" :message="t.message" @dismiss="dismiss(t.id)" />
-      </div>
+    <template v-if="activeToast" #toast>
+      <Toast :tone="activeToast.tone" :body="activeToast.body" @dismiss="dismissToast(activeToast.id)" />
     </template>
 
+    <div ref="transcriptEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
+      <!-- Scoped <Loading> overlay during `session/load` replay.
+           `sessionInfo.restoring` flips true on user-initiated
+           `loadSession` and clears on the first TurnEnded for the
+           resumed instance (daemon auto-cancels after the load,
+           guaranteeing one). The header / composer / palette stay
+           operational behind the cover so the user can still
+           cancel, switch instance, or open Ctrl+K. Sits as a
+           sibling of `.chat-transcript-inner` so the cover spans
+           the full transcript box including the gutter padding —
+           the inner div carries the gutters. -->
+      <Loading v-if="sessionInfo.restoring" mode="scoped" status="restoring session — replaying transcript" />
+      <div class="chat-transcript-inner">
+        <!-- idle screen: empty composer, no live blocks. Centered
+           wordmark + "LFG." accent + kbd legend + live-sessions
+           mini-table. Triggers the moment the chat surface has no
+           timeline content. -->
+        <section v-if="timelineBlocks.length === 0" class="idle-screen" data-testid="idle-screen">
+          <div class="idle-wordmark">hyprpilot</div>
+          <div class="idle-accent">LFG.</div>
+          <div class="idle-kbd-legend">
+            <span class="idle-kbd">Ctrl+K</span><span class="idle-kbd-label">command palette</span> <span class="idle-kbd">@</span
+            ><span class="idle-kbd-label">reference a file or folder</span> <span class="idle-kbd">+</span><span class="idle-kbd-label">attach a skill or reference</span>
+            <span class="idle-kbd">Esc</span><span class="idle-kbd-label">close overlay</span>
+          </div>
+          <div v-if="sessionList.length > 0" class="idle-sessions">
+            <header class="idle-sessions-header">
+              <span class="idle-sessions-count">{{ sessionList.length }}</span>
+              <span class="idle-sessions-title">sessions</span>
+              <span class="idle-sessions-line" />
+            </header>
+            <div class="idle-sessions-headrow">
+              <span />
+              <span>title</span>
+              <span>cwd</span>
+              <span>doing</span>
+            </div>
+            <div
+              v-for="s in sessionListPreview"
+              :key="s.sessionId"
+              class="idle-sessions-row"
+              :role="s.sessionId ? 'button' : undefined"
+              :tabindex="s.sessionId ? 0 : undefined"
+              :aria-label="s.sessionId ? `restore session ${s.title || s.sessionId}` : undefined"
+              :data-restorable="Boolean(s.sessionId)"
+              @click="onRestoreSessionClick(s.sessionId)"
+              @keydown.enter.prevent="onRestoreSessionClick(s.sessionId)"
+              @keydown.space.prevent="onRestoreSessionClick(s.sessionId)"
+            >
+              <span class="idle-sessions-dot" aria-hidden="true">○</span>
+              <span class="idle-sessions-cell">{{ s.title || s.sessionId }}</span>
+              <span class="idle-sessions-cell idle-sessions-cwd">{{ s.cwd }}</span>
+              <span class="idle-sessions-cell idle-sessions-doing">—</span>
+            </div>
+            <div v-if="sessionList.length > sessionListPreview.length" class="idle-sessions-more">
+              +{{ sessionList.length - sessionListPreview.length }} more — Ctrl+K → sessions
+            </div>
+          </div>
+        </section>
+
+        <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx">
+          <template v-for="entry in block.thoughts" :key="`thought-${entry.call.toolCallId}`">
+            <StreamCard
+              :kind="StreamKind.Thinking"
+              :active="blockIdx === liveBlockIdx"
+              label="thought"
+              :text="thoughtText(entry.call)"
+            />
+          </template>
+          <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+            <StreamCard
+              v-if="entry.item.kind === StreamItemKind.Thought"
+              :kind="StreamKind.Thinking"
+              :active="blockIdx === liveBlockIdx"
+              label="thought"
+              :text="entry.item.text"
+            />
+            <StreamCard
+              v-else-if="entry.item.kind === StreamItemKind.Plan"
+              :kind="StreamKind.Planning"
+              :active="blockIdx === liveBlockIdx"
+              label="plan"
+              :items="mapPlanItems(entry.item.entries)"
+            />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.ModeChange"
+              kind="mode"
+              :to="entry.item.name ?? entry.item.modeId"
+              :from="entry.item.prevName ?? entry.item.prevModeId"
+            />
+          </template>
+
+          <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
+          <!-- `activeProfile?.agent` → `profiles_list`'s vendor once per-adapter overrides land. -->
+          <ToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
+
+          <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
+          <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->
+          <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
+            <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="activeInstanceId" @cancel="onCancel" />
+          </template>
+
+          <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
+            <ChatBody v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
+            <template v-else>
+              <ChatBody :role="Role.User">{{ entry.turn.text }}</ChatBody>
+              <Attachments v-if="entry.turn.attachments && entry.turn.attachments.length > 0" :attachments="entry.turn.attachments" @open="onAttachmentOpen" />
+            </template>
+          </template>
+        </Turn>
+      </div>
+
+      <!-- Permission requests whose payload deserves a full-modal
+           markdown render — claude-code's ExitPlanMode is the
+           current example. Sits as a sibling of `.chat-transcript-inner`
+           inside the `position: relative` `.chat-transcript`, so the
+           backdrop's `position: absolute; inset: 0` covers the full
+           transcript region (gutters and all) instead of stopping at
+           the inner padding edge. Action buttons land in the
+           `#actions` slot per the compose-not-bag rule (CLAUDE.md). -->
+      <Modal
+        v-if="markdownModalPrompt"
+        :title="`plan · ${markdownModalPrompt.tool}`"
+        :tone="ToastTone.Warn"
+        :icon="faListCheck"
+        :dismissable="false"
+      >
+        <template #actions>
+          <Button tone="err" @click="onDeny(markdownModalPrompt.requestId)">reject</Button>
+          <Button tone="ok" variant="solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
+        </template>
+        <MarkdownBody :source="markdownModalPrompt.body" />
+      </Modal>
+    </div>
+
+    <PermissionStack :prompts="standardPermissionPrompts" @allow="onAllow" @deny="onDeny" />
+
     <template #composer>
-      <ChatQueueStrip :messages="queueRows" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
-      <ChatComposer ref="composerRef" :sending="sending" @submit="onSubmit" />
+      <QueueStrip :messages="queueRows" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
+      <Composer ref="composerRef" :sending="sending" :can-cancel="phase !== Phase.Idle" @submit="onSubmit" @cancel="onCancel" />
     </template>
   </Frame>
 
@@ -604,11 +769,166 @@ function onQueueDropAll(): void {
 <style scoped>
 @reference '../assets/styles.css';
 
+/* No `gap` between turns — each turn's role-color left border runs
+ * the full height of its `.turn` element, so abutting turns produce
+ * one continuous color stripe that switches color at the role
+ * boundary (captain green ↔ pilot red). Visual breathing between
+ * turns comes from each turn's own `py-1` instead. */
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
+  /* Positioning context for the scoped <Loading> + Modal overlays.
+   * The wrapper itself stays padding-free so a `position: absolute;
+   * inset: 0` cover paints edge-to-edge — the gutter padding lives
+   * on `.chat-transcript-inner`. Without this split the cover stops
+   * at the padding edge and leaves visible slivers of half-rendered
+   * chat peeking through during session restore. */
+  position: relative;
 }
 
-.toast-stack {
-  @apply flex flex-col gap-1;
+.chat-transcript-inner {
+  @apply flex min-h-0 flex-1 flex-col;
+  padding: 0 14px 0 4px;
+}
+
+/* idle screen — centered wordmark + LFG accent + kbd legend +
+ * live-sessions table. Renders only when no timeline blocks exist. */
+.idle-screen {
+  @apply flex flex-col items-center justify-center;
+  flex: 1 1 auto;
+  min-height: 100%;
+  padding: 24px;
+  color: var(--theme-fg-dim);
+}
+
+.idle-wordmark {
+  font-family: var(--theme-font-mono);
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.3px;
+  color: var(--theme-fg);
+}
+
+.idle-accent {
+  margin-top: 4px;
+  font-family: var(--theme-font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--theme-accent);
+}
+
+.idle-kbd-legend {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin-top: 22px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.62rem;
+}
+
+.idle-kbd {
+  color: var(--theme-accent);
+}
+
+.idle-kbd-label {
+  color: var(--theme-fg-dim);
+}
+
+.idle-sessions {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 26px;
+}
+
+.idle-sessions-header {
+  @apply flex items-center;
+  margin-bottom: 6px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.62rem;
+  color: var(--theme-fg-ink-2);
+  gap: 6px;
+}
+
+.idle-sessions-count {
+  color: var(--theme-accent);
+  font-weight: 700;
+}
+
+.idle-sessions-title {
+  text-transform: lowercase;
+}
+
+.idle-sessions-line {
+  flex: 1;
+  height: 1px;
+  background-color: var(--theme-border);
+  margin-left: 8px;
+}
+
+.idle-sessions-headrow {
+  display: grid;
+  grid-template-columns: 14px 1fr 170px 110px;
+  column-gap: 12px;
+  padding: 4px 10px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.56rem;
+  color: var(--theme-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--theme-border);
+}
+
+.idle-sessions-row {
+  display: grid;
+  grid-template-columns: 14px 1fr 170px 110px;
+  column-gap: 12px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--theme-border);
+  border-left: 2px solid var(--theme-status-ok);
+  background-color: var(--theme-surface);
+  font-family: var(--theme-font-mono);
+  font-size: 0.7rem;
+  color: var(--theme-fg);
+  transition: background-color 0.12s ease-out;
+}
+
+.idle-sessions-row[data-restorable='true'] {
+  cursor: pointer;
+}
+
+.idle-sessions-row[data-restorable='true']:hover,
+.idle-sessions-row[data-restorable='true']:focus-visible {
+  background-color: var(--theme-surface-alt);
+  outline: 0;
+}
+
+.idle-sessions-dot {
+  color: var(--theme-status-ok);
+}
+
+.idle-sessions-more {
+  padding: 6px 10px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.62rem;
+  color: var(--theme-fg-dim);
+  border-top: 1px solid var(--theme-border-soft);
+  background-color: var(--theme-surface);
+  letter-spacing: 0.4px;
+}
+
+.idle-sessions-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-fg);
+}
+
+.idle-sessions-cwd {
+  color: var(--theme-fg-ink-2);
+}
+
+.idle-sessions-doing {
+  color: var(--theme-status-ok);
 }
 </style>

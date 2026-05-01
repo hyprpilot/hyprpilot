@@ -34,7 +34,16 @@ HYPRPILOT_E2E_MODE=tauri \
 
 - `HYPRPILOT_E2E_BINARY` — defaults to `target/debug/hyprpilot`.
 - `HYPRPILOT_E2E_SOCKET` — defaults to `/tmp/tauri-playwright.sock`.
-- `HYPRPILOT_E2E_CONFIG` — defaults to `fixtures/e2e-config.toml`.
+- `HYPRPILOT_E2E_CONFIG` — defaults to `fixtures/e2e-config.toml` (mock-agent). Swap to `fixtures/live-config.toml` to drive the real `claude-code-acp` adapter against the haiku model — `task test:e2e:live` is the wired shortcut.
+
+## Run (tauri-bridge mode against the live agent)
+
+```sh
+task test:e2e:live          # cargo build + ui build + Playwright in tauri mode
+                            # with HYPRPILOT_E2E_CONFIG=fixtures/live-config.toml
+```
+
+`live-config.toml` keys the `claude-code` agent against the haiku model and routes through `bunx --bun @agentclientprotocol/claude-agent-acp`. Network-bound (the bunx fetch hits the registry on first run); not suitable for CI without a pre-warmed cache.
 
 ## Mock agent
 

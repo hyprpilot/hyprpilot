@@ -1,12 +1,9 @@
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 import taskLists from 'markdown-it-task-lists'
-import {
-  createCssVariablesTheme,
-  createHighlighter,
-  type BundledLanguage,
-  type Highlighter
-} from 'shiki'
+import { createHighlighter, type BundledLanguage, type BundledTheme, type Highlighter } from 'shiki'
+
+import { invoke, TauriCommand } from '@ipc'
 
 import { log } from './log'
 
@@ -14,26 +11,42 @@ export interface RenderedMarkdown {
   html: string
 }
 
-const SHIKI_THEME_NAME = 'hyprpilot'
-
-const cssVarTheme = createCssVariablesTheme({
-  name: SHIKI_THEME_NAME,
-  variablePrefix: '--shiki-',
-  variableDefaults: {},
-  fontStyle: true
-})
+const DEFAULT_THEME: BundledTheme = 'one-dark-pro'
 
 let highlighterPromise: Promise<Highlighter> | undefined
+let resolvedTheme: BundledTheme = DEFAULT_THEME
 const loadedLangs = new Set<string>()
 const langLoading = new Map<string, Promise<boolean>>()
 const warnedLangs = new Set<string>()
 
+/**
+ * Resolve the Shiki theme name from the daemon's `[ui.theme] shiki`
+ * config; soft-fail to `one-dark-pro` when the IPC isn't bound (vitest
+ * jsdom). Cached across calls so the highlighter only initialises with
+ * one theme. Override at runtime by invoking `setShikiTheme`.
+ */
+async function resolveShikiTheme(): Promise<BundledTheme> {
+  try {
+    const theme = await invoke(TauriCommand.GetTheme)
+    const name = theme.shiki
+    if (typeof name === 'string' && name.length > 0) {
+      return name as BundledTheme
+    }
+  } catch {
+    // No Tauri host (vitest) — fall through to the default.
+  }
+  return DEFAULT_THEME
+}
+
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: [cssVarTheme],
-      langs: []
-    })
+    highlighterPromise = (async () => {
+      resolvedTheme = await resolveShikiTheme()
+      return createHighlighter({
+        themes: [resolvedTheme],
+        langs: []
+      })
+    })()
   }
 
   return highlighterPromise
@@ -89,7 +102,7 @@ async function highlightFence(code: string, lang: string): Promise<string> {
   try {
     const hl = await getHighlighter()
 
-    return hl.codeToHtml(code, { lang: lang as BundledLanguage, theme: SHIKI_THEME_NAME })
+    return hl.codeToHtml(code, { lang: lang as BundledLanguage, theme: resolvedTheme })
   } catch (err) {
     log.warn('shiki: codeToHtml failed; falling back', { lang, err: String(err) })
 
@@ -185,18 +198,33 @@ function injectCopyButton({ html, lang }: FenceRenderInput): string {
   const hasPre = trimmed.startsWith('<pre')
   const inner = hasPre ? trimmed : `<pre><code>${md.utils.escapeHtml(trimmed)}</code></pre>`
   const langAttr = lang ? ` data-lang="${md.utils.escapeHtml(lang)}"` : ''
+  const langLabel = lang ? `<span class="md-codeblock-lang">${md.utils.escapeHtml(lang)}</span>` : ''
 
-  return `<div class="md-codeblock"${langAttr}>${
-    lang ? `<div class="md-codeblock-lang" aria-hidden="true">${md.utils.escapeHtml(lang)}</div>` : ''
-  }<button type="button" class="md-copy" data-md-copy aria-label="copy code">copy</button>${inner}</div>`
+  // Code-block chrome: caret + lang label + copy button. Caret
+  // glyphs are unicode triangles (`▾` / `▸`) — no inlined SVG paths
+  // because the markdown pipeline emits HTML, not Vue templates, and
+  // mounting `<FaIcon>` post-`v-html` is more friction than a 1-char
+  // unicode glyph buys. Body.vue's scoped CSS picks the right caret
+  // via `[data-collapsed]`. Copy button stays a plain text label —
+  // the operator vibe (mono font, lowercase) reads better than a
+  // glyph in this context.
+  return `<div class="md-codeblock" data-collapsed="false"${langAttr}>` +
+    `<header class="md-codeblock-header" data-md-toggle role="button" tabindex="0" aria-label="toggle code block">` +
+    `<span class="md-codeblock-caret" data-md-caret-down>▾</span>` +
+    `<span class="md-codeblock-caret" data-md-caret-right>▸</span>` +
+    langLabel +
+    `<span class="md-codeblock-spacer"></span>` +
+    `<button type="button" class="md-copy" data-md-copy aria-label="copy code" title="copy">copy</button>` +
+    `</header>` +
+    `<div class="md-codeblock-body">${inner}</div>` +
+    `</div>`
 }
 
 /**
  * Renders markdown to sanitised HTML. The result is safe to drop into
- * `v-html`. Fenced code blocks pass through Shiki under a CSS-variables
- * theme so syntax tones come from `--shiki-*` tokens defined on `:root`
- * (see `useTheme::applyShikiPalette`); unknown languages fall back to
- * `<pre><code>` with the raw text.
+ * `v-html`. Fenced code blocks pass through Shiki under the bundled
+ * theme configured in Rust (`[ui.theme] shiki`); unknown languages
+ * fall back to `<pre><code>` with the raw text.
  */
 export async function renderMarkdown(src: string): Promise<RenderedMarkdown> {
   const { fences, restore } = withFencePlaceholders()

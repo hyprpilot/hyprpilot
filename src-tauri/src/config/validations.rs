@@ -7,7 +7,7 @@ use globset::Glob;
 
 use crate::mcp::MCPDefinition;
 
-use super::{AgentConfig, AgentDefaults, AgentsConfig, KeymapsConfig, Modifier, ProfileConfig};
+use super::{AgentConfig, AgentDefaults, KeymapsConfig, Modifier, ProfileConfig, ProfileDefaults};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -150,20 +150,20 @@ pub(super) fn validate_profile_tool_globs<'a>(
     }
 }
 
-/// `[agent] default_profile` (when set) must name a real
-/// `[[profiles]]` entry.
+/// `[profile] default` (when set) must name a real `[[profiles]]`
+/// entry.
 pub(super) fn validate_default_profile_id<'a>(
     profiles: &'a [ProfileConfig],
-) -> impl FnOnce(&AgentsConfig, &()) -> garde::Result + 'a {
-    move |agents, _ctx| {
-        let Some(wanted) = agents.agent.default_profile.as_deref() else {
+) -> impl FnOnce(&ProfileDefaults, &()) -> garde::Result + 'a {
+    move |defaults, _ctx| {
+        let Some(wanted) = defaults.default.as_deref() else {
             return Ok(());
         };
         if profiles.iter().any(|p| p.id == wanted) {
             return Ok(());
         }
         Err(garde::Error::new(format!(
-            "default_profile = '{wanted}' but no matching [[profiles]] entry exists. \
+            "[profile] default = '{wanted}' but no matching [[profiles]] entry exists. \
              Configured ids: [{}]",
             profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
         )))

@@ -116,6 +116,19 @@ pub enum InstanceEvent {
         tool: String,
         kind: String,
         args: String,
+        /// Raw `tool_call.rawInput` JSON (pass-through). Populated when
+        /// the agent supplied one — bash gets `{ command }`, file ops
+        /// `{ path }`, claude-code `ExitPlanMode` carries `{ plan }`.
+        /// UI consumers extract structured fields here instead of
+        /// re-parsing the collapsed `args` summary.
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "rawInput")]
+        raw_input: Option<serde_json::Value>,
+        /// Joined text from the tool-call's `content[]` blocks. Some
+        /// agents (claude-code's `Switch mode`) ship the markdown body
+        /// here instead of on `raw_input`; the UI reads as a fallback
+        /// when the rawInput shape-detector misses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_text: Option<String>,
         options: Vec<PermissionOptionView>,
     },
     /// A `session/prompt` request was accepted by the actor — the
@@ -130,6 +143,10 @@ pub enum InstanceEvent {
     /// The active `session/prompt` resolved (or errored). `stop_reason`
     /// mirrors the ACP `StopReason` wire string when the response was
     /// successful; `None` when the request errored / was cancelled.
+    /// `error` carries the ACP / transport error message so the UI
+    /// can surface it as a toast — without this any mid-prompt
+    /// failure (rate limit, agent crash, transport hiccup) is
+    /// invisible to the user.
     TurnEnded {
         agent_id: String,
         instance_id: String,
@@ -137,6 +154,8 @@ pub enum InstanceEvent {
         turn_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         stop_reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Registry membership changed — an instance spawned, shut down,
     /// or restarted. `instance_ids` is the full post-change set;
@@ -174,6 +193,76 @@ pub enum InstanceEvent {
         skills_count: usize,
         mcps_count: usize,
     },
+    /// ACP `SessionInfoUpdate` notification — title / updatedAt only,
+    /// per the schema. Carried as its own `InstanceEvent` rather than
+    /// a transcript item because session metadata isn't transcript
+    /// content. `title` and `updated_at` follow the wire shape: each
+    /// is `Some(Some(s))` for a set value, `Some(None)` to explicitly
+    /// clear, `None` to leave the previous value untouched.
+    SessionInfoUpdate {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        updated_at: Option<String>,
+    },
+    /// ACP `CurrentModeUpdate` notification — `current_mode_id` only.
+    CurrentModeUpdate {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        current_mode_id: String,
+    },
+    /// Daemon-side per-instance metadata refresh — NOT an ACP wire
+    /// notification. The daemon emits this after `session/new` resolves
+    /// (so the UI gets the resolved cwd + advertised modes/models),
+    /// after every `session/prompt` resolution (turn-end refresh), and
+    /// after a restart that swaps the cwd. claude-code-acp doesn't
+    /// emit `SessionInfoUpdate` or `CurrentModeUpdate` proactively, so
+    /// without this push the header chrome would never see cwd / mode
+    /// / model values.
+    InstanceMeta {
+        agent_id: String,
+        instance_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        cwd: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current_mode_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current_model_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        available_modes: Vec<SessionModeInfo>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        available_models: Vec<SessionModelInfo>,
+    },
+}
+
+/// Display-friendly snapshot of one ACP `SessionMode`. Mirrors
+/// `agent_client_protocol::schema::SessionMode` but drops the
+/// `_meta` field — the UI doesn't surface vendor-specific metadata
+/// today.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModeInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Display-friendly snapshot of one ACP `ModelInfo` advertised by
+/// `NewSessionResponse.models` (gated by the unstable
+/// `session_model` feature). Same shape as `SessionModeInfo`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Per-terminal payload variant. `Output` carries stdout / stderr
@@ -218,6 +307,9 @@ impl InstanceEvent {
             InstanceEvent::InstancesFocused { .. } => "instances.focused",
             InstanceEvent::Terminal { .. } => "terminal.output",
             InstanceEvent::DaemonReloaded { .. } => "daemon.reloaded",
+            InstanceEvent::SessionInfoUpdate { .. } => "instance.session_info_update",
+            InstanceEvent::CurrentModeUpdate { .. } => "instance.current_mode_update",
+            InstanceEvent::InstanceMeta { .. } => "instance.meta",
         }
     }
 }
