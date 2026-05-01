@@ -745,27 +745,6 @@ function onQueueDropAll(): void {
         </Turn>
       </div>
 
-      <!-- Permission requests whose payload deserves a full-modal
-           markdown render — claude-code's ExitPlanMode is the
-           current example. Sits as a sibling of `.chat-transcript-inner`
-           inside the `position: relative` `.chat-transcript`, so the
-           backdrop's `position: absolute; inset: 0` covers the full
-           transcript region (gutters and all) instead of stopping at
-           the inner padding edge. Action buttons land in the
-           `#actions` slot per the compose-not-bag rule (CLAUDE.md). -->
-      <Modal
-        v-if="markdownModalPrompt"
-        :title="`plan · ${markdownModalPrompt.tool}`"
-        :tone="ToastTone.Warn"
-        :icon="faListCheck"
-        :dismissable="false"
-      >
-        <template #actions>
-          <Button tone="err" @click="onDeny(markdownModalPrompt.requestId)">reject</Button>
-          <Button tone="ok" variant="solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
-        </template>
-        <MarkdownBody :source="markdownModalPrompt.body" />
-      </Modal>
     </div>
 
     <PermissionStack :prompts="standardPermissionPrompts" @allow="onAllow" @deny="onDeny" />
@@ -775,6 +754,25 @@ function onQueueDropAll(): void {
       <Composer ref="composerRef" :sending="sending" :can-cancel="phase !== Phase.Idle" @submit="onSubmit" @cancel="onCancel" />
     </template>
   </Frame>
+
+  <!-- Plan-modal — markdown body for permissions matching the
+       allowlist (`switch_mode` / `exit_plan_mode` / `plan` /
+       `plan_mode`). Top-level so the `position: fixed` backdrop
+       covers the viewport regardless of any chat-transcript scroll
+       position or stacking context inside the Frame. -->
+  <Modal
+    v-if="markdownModalPrompt"
+    :title="`plan · ${markdownModalPrompt.tool}`"
+    :tone="ToastTone.Warn"
+    :icon="faListCheck"
+    :dismissable="false"
+  >
+    <template #actions>
+      <Button tone="err" @click="onDeny(markdownModalPrompt.requestId)">reject</Button>
+      <Button tone="ok" variant="solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
+    </template>
+    <MarkdownBody :source="markdownModalPrompt.body" />
+  </Modal>
 
   <CommandPalette />
 </template>

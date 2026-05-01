@@ -91,9 +91,15 @@ const headerBg = computed(() => toneBg(props.tone))
 @reference '../assets/styles.css';
 
 .modal-backdrop {
-  position: absolute;
+  /* `fixed` so the modal always covers the viewport regardless of
+   * any scrollable / `position: relative` ancestor. Scoping the
+   * backdrop to a chat-transcript ancestor with `position: absolute`
+   * silently lost the modal whenever the transcript was scrolled —
+   * `inset: 0` paints at the top of the scroll container, not the
+   * visible viewport. Modals are a viewport concern; lock that. */
+  position: fixed;
   inset: 0;
-  z-index: 30;
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: center;
