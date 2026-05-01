@@ -73,6 +73,23 @@ watch(
   margin: 2px 0;
 }
 
+/* GFM task-list checkboxes (markdown-it-task-lists) — drop the disc
+ * bullet so the row reads as `[ ] text` instead of `• [ ]    text`.
+ * `:has()` would target the parent `<ul>` to also strip its
+ * padding-left, but webkit2gtk 4.1 (Tauri's Linux runtime) predates
+ * `:has`; we live with the inherited `<ul>` indent — `[ ]` aligned
+ * one indent in reads fine. The 0-margin checkbox + small right gap
+ * collapses the giant whitespace gap that disabled-input default
+ * sizing leaves. */
+.markdown-body :deep(li.task-list-item) {
+  list-style: none;
+}
+
+.markdown-body :deep(.task-list-item-checkbox) {
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+}
+
 .markdown-body :deep(h1),
 .markdown-body :deep(h2),
 .markdown-body :deep(h3),
