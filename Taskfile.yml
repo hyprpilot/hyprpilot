@@ -79,7 +79,12 @@ tasks:
   run:
     desc: Run the Tauri app with live-reload.
     cmds:
-      - "{{ .tauri }} dev"
+      - "{{ .tauri }} dev -- -- {{ .CLI_ARGS }}"
+
+  cli:
+    desc: Invoke the built debug binary against an already-running
+    cmds:
+      - ./target/debug/hyprpilot {{ .CLI_ARGS }}
 
   build:
     desc: Build a debug Tauri bundle.
