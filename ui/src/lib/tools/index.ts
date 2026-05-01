@@ -17,6 +17,7 @@
  * { formatters, aliases, … })`.
  */
 export { titleCaseFromCanonical } from './casing'
-export { formatToolCall, formatToolBody, shortHeader } from './format-tool-call'
+export { formatToolCall, shortHeader } from './format-tool-call'
+export { parseMcpName as parseMcpToolName } from './helpers'
 export { baseRegistry, extendRegistry, resolveRegistry } from './registry'
 export type { FormatterContext, ToolFormatter, ToolFormatterRegistry, Args } from '@interfaces/ui'

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { ToolKind, ToolState } from '@components'
-import { baseRegistry, extendRegistry, formatToolBody, formatToolCall, resolveRegistry, shortHeader } from '@lib'
+import { baseRegistry, extendRegistry, formatToolCall, resolveRegistry, shortHeader } from '@lib'
 
 import type { ToolCallView } from '@composables'
 
@@ -45,7 +45,18 @@ describe('formatToolCall — base registry', () => {
   })
 
   it('formats MultiEdit with an edit-count stat', () => {
-    const chip = formatToolCall(view({ title: 'MultiEdit', rawInput: { file_path: '/a/b.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] } }))
+    const chip = formatToolCall(
+      view({
+        title: 'MultiEdit',
+        rawInput: {
+          file_path: '/a/b.ts',
+          edits: [
+            { old_string: 'a', new_string: 'b' },
+            { old_string: 'c', new_string: 'd' }
+          ]
+        }
+      })
+    )
     expect(chip.label).toBe('Multi edit')
     expect(chip.stat).toBe('2 edits')
     expect(chip.kind).toBe(ToolKind.Write)
@@ -151,16 +162,18 @@ describe('formatToolCall — base registry', () => {
   })
 
   it('formats TodoWrite with item count and status breakdown', () => {
-    const chip = formatToolCall(view({
-      title: 'TodoWrite',
-      rawInput: {
-        todos: [
-          { content: 'a', status: 'pending' },
-          { content: 'b', status: 'completed' },
-          { content: 'c', status: 'completed' }
-        ]
-      }
-    }))
+    const chip = formatToolCall(
+      view({
+        title: 'TodoWrite',
+        rawInput: {
+          todos: [
+            { content: 'a', status: 'pending' },
+            { content: 'b', status: 'completed' },
+            { content: 'c', status: 'completed' }
+          ]
+        }
+      })
+    )
     expect(chip.label).toBe('Todo write')
     expect(chip.arg).toBe('3 items')
     expect(chip.detail).toContain('pending:1')
@@ -196,14 +209,22 @@ describe('formatToolCall — base registry', () => {
   it('falls back to a server + tool-name chip for unknown mcp__ tools', () => {
     const chip = formatToolCall(view({ title: 'mcp__playwright__browser_navigate', rawInput: { url: 'https://example.com' } }))
     expect(chip.label).toBe('playwright')
-    expect(chip.arg).toContain('browser navigate')
-    expect(chip.kind).toBe(ToolKind.Acp)
+    // Leaf name lives on `title` so the chip header reads
+    // `[icon] playwright · browser navigate`.
+    expect(chip.title).toBe('browser navigate')
+    // `arg` is intentionally NOT set for MCP — that field maps onto
+    // the spec sheet's `command` row, and "first string-valued
+    // input" → `command` is a lie for an MCP call. The structured
+    // `fields` rows below carry the real input map.
+    expect(chip.arg).toBeUndefined()
+    // Each rawInput key projects onto the structured fields rows
+    // (rendered in the expanded body's spec sheet).
+    expect(chip.fields).toEqual([{ label: 'url', value: 'https://example.com' }])
+    expect(chip.kind).toBe(ToolKind.Unknown)
   })
 
   it('falls back to a wire-kind glyph for unknown non-MCP tools (the agent title rides on `detail`)', () => {
-    const chip = formatToolCall(
-      view({ title: 'curl-something', kind: 'execute', rawInput: { command: 'curl example.com' }, status: 'completed' })
-    )
+    const chip = formatToolCall(view({ title: 'curl-something', kind: 'execute', rawInput: { command: 'curl example.com' }, status: 'completed' }))
     expect(chip.label).toBe('Bash')
     expect(chip.arg).toBe('curl example.com')
     expect(chip.detail).toBe('curl-something')
@@ -215,7 +236,7 @@ describe('formatToolCall — base registry', () => {
     const chip = formatToolCall(view({ title: 'mystery', rawInput: { query: 'hello' }, status: 'completed' }))
     expect(chip.label).toBe('·')
     expect(chip.arg).toBe('hello')
-    expect(chip.kind).toBe(ToolKind.Acp)
+    expect(chip.kind).toBe(ToolKind.Unknown)
   })
 
   it('falls back to a wire-kind word label for unknown non-MCP tools', () => {
@@ -307,11 +328,5 @@ describe('extendRegistry', () => {
     expect(custom.shortHeaders.read).toBe('Read')
     expect(custom.shortHeaders.custom_tool).toBe('★')
     expect(custom.aliases.customtool).toBe('custom_tool')
-  })
-})
-
-describe('formatToolBody', () => {
-  it('throws to surface premature integration', () => {
-    expect(() => formatToolBody(view({ title: 'Read', rawInput: { file_path: '/x' } }))).toThrow(/not implemented/)
   })
 })

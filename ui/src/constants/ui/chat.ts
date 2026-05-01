@@ -4,17 +4,7 @@
  */
 
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
-import {
-  faBrain,
-  faCube,
-  faFileLines,
-  faMagnifyingGlass,
-  faPen,
-  faPenToSquare,
-  faPlug,
-  faTerminal,
-  faUserGear
-} from '@fortawesome/free-solid-svg-icons'
+import { faBrain, faCube, faFileLines, faMagnifyingGlass, faPen, faPenToSquare, faPlug, faTerminal, faUserGear } from '@fortawesome/free-solid-svg-icons'
 
 export enum StreamKind {
   Thinking = 'thinking',
@@ -40,7 +30,7 @@ export enum ToolKind {
   Agent = 'agent',
   Think = 'think',
   Terminal = 'terminal',
-  Acp = 'acp'
+  Unknown = 'unknown'
 }
 
 /** Narrow a `KeyLabel` to its FontAwesome `IconDefinition` branch. */
@@ -65,7 +55,7 @@ const TOOL_KIND_ICONS: Record<string, IconDefinition> = {
   terminal: faTerminal,
   agent: faUserGear,
   think: faBrain,
-  acp: faPlug
+  unknown: faPlug
 }
 
 export function iconForToolKind(kind: ToolKind | string | undefined): IconDefinition {

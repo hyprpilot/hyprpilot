@@ -55,6 +55,12 @@ export function formatToolCall(call: ToolCallView, provider?: string): ToolChipI
   // matching there would always strip otherwise-useful prose
   // ("Run unit tests" canonicalises to `run_unit_tests` whose
   // unfolded form matches the title).
+  //
+  // Formatter-supplied `chip.title` wins over the rawName-derived one:
+  // the fallback's MCP path explicitly sets a humanised leaf name
+  // (`browser navigate`) that's strictly more useful than the raw
+  // `mcp__server__leaf` rawName. Only fall back to the rawName-based
+  // dedup when the formatter didn't pick a title.
   const trimmedTitle = rawName.trim()
   const labelLower = chip.label.toLowerCase()
   const titleLower = trimmedTitle.toLowerCase()
@@ -64,7 +70,8 @@ export function formatToolCall(call: ToolCallView, provider?: string): ToolChipI
     (isKnownFormatter &&
       (titleLower === formatter.canonical.toLowerCase() ||
         titleLower === formatter.canonical.replace(/_/g, ' ')))
-  const title = trimmedTitle.length > 0 && !isRedundantTitle ? trimmedTitle : undefined
+  const fallbackTitle = trimmedTitle.length > 0 && !isRedundantTitle ? trimmedTitle : undefined
+  const title = chip.title ?? fallbackTitle
 
   return {
     ...chip,

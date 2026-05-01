@@ -33,17 +33,16 @@ level = "info"
 # slug collision across roots.
 dirs = ["~/.config/hyprpilot/skills"]
 
-# `[[mcps]]` — MCP server catalogue. Empty by default; users add
-# entries naming each MCP server they want available across profiles.
-# Per-profile `mcps = [...]` selects which catalogue entries that
-# profile uses; missing names reject at config-load time.
+# `mcps` — list of JSON paths in the standard
+# `{ "mcpServers": { ... } }` shape used by Claude Code / Codex /
+# every MCP client. Drop `~/.claude.json` straight in and it works.
+# Files merge in order; later files override same-name servers.
+# hyprpilot extends each server entry with an optional `hyprpilot`
+# namespace key carrying `autoAcceptTools` / `autoRejectTools` glob
+# lists. Per-profile `mcps = [...]` wholesale-replaces this default;
+# `mcps = []` is the explicit "no MCPs" off-switch.
 #
-# [[mcps]]
-# name = "filesystem"
-# command = "uvx"
-# args = ["mcp-server-filesystem", "--root", "$HOME"]
-# [mcps.env]
-# LOG_LEVEL = "info"
+# mcps = ["~/.config/hyprpilot/mcps/base.json"]
 
 # design tokens (K-250). The Rust config layer is the single source
 # of truth — `ui/src/assets/styles.css` declares no literal theme values

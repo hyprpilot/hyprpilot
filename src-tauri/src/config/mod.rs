@@ -14,7 +14,6 @@ use garde::Validate;
 use merge::Merge;
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::MCPDefinition;
 use crate::paths;
 pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
@@ -26,16 +25,15 @@ pub use keymaps::{
     ApprovalsKeymaps, Binding, ChatKeymaps, ComposerKeymaps, Key, ModelsSubPaletteKeymaps, Modifier, NamedKey,
     PaletteKeymaps, SessionsSubPaletteKeymaps, TranscriptKeymaps,
 };
-use merge_strategies::{merge_mcps_by_name, merge_profiles_by_id, overwrite_some};
+use merge_strategies::{merge_profiles_by_id, overwrite_some};
 #[allow(unused_imports)]
 pub use theme::{
     HexColor, Theme, ThemeAccent, ThemeBorder, ThemeFg, ThemeFont, ThemeKind, ThemePermission, ThemeState, ThemeStatus,
     ThemeSurface, ThemeWindow, Ui,
 };
 use validations::{
-    validate_default_profile_id, validate_keymaps_collisions, validate_mcps_unique_name,
-    validate_profile_agent_references, validate_profile_mcps_references, validate_profile_prompt_sources,
-    validate_profiles_ids,
+    validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references,
+    validate_profile_prompt_sources, validate_profiles_ids,
 };
 
 pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
@@ -55,13 +53,15 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub skills: SkillsConfig,
-    /// `[[mcps]]` global catalog. Profiles reference entries by `name`;
-    /// runtime per-instance overrides filter the visible subset.
-    #[garde(dive)]
-    #[garde(custom(validate_mcps_unique_name))]
-    #[serde(default)]
-    #[merge(strategy = merge_mcps_by_name)]
-    pub mcps: Vec<MCPDefinition>,
+    /// `mcps` — global MCP file list. Each path points at a JSON file
+    /// in the standard `{ "mcpServers": { ... } }` shape; the loader
+    /// merges them in iteration order with later-wins on same-name.
+    /// Profile-level `mcps` wholesale-replaces this default. None
+    /// (unset) → no MCPs; `Some(vec![])` → explicit empty list.
+    /// `~` + env-var expansion at consume time, mirroring `[skills] dirs`.
+    #[garde(custom(crate::config::validations::validate_unique_nonempty))]
+    #[merge(strategy = overwrite_some)]
+    pub mcps: Option<Vec<PathBuf>>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
@@ -81,7 +81,6 @@ pub struct Config {
     #[garde(dive)]
     #[garde(custom(validate_profiles_ids))]
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
-    #[garde(custom(validate_profile_mcps_references(&self.mcps)))]
     #[garde(custom(validate_profile_prompt_sources))]
     #[serde(default)]
     #[merge(strategy = merge_profiles_by_id)]

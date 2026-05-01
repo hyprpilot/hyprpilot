@@ -49,29 +49,39 @@ export interface ExtractedContent {
 /**
  * Walk the tool call's content blocks and split into a single
  * markdown-friendly description (the first prose-shaped text block)
- * and the rest as concatenated output. Agents typically emit a
- * descriptive prose block first ("Reading the auth module to find
- * …") followed by the actual stdout / diff / etc.; this split
- * surfaces the prose distinctly.
+ * and the rest as concatenated output.
+ *
+ * Heuristic — narration is only present when the agent emitted
+ * multiple blocks: a prose preamble FIRST followed by the actual
+ * result (claude-code-acp's pattern: "Reading the auth module to
+ * find …" + the file contents). When the agent emits a single
+ * content block — the common shape for MCP tools, raw Read / Edit
+ * results, terminal stdout — that block IS the result, not
+ * narration. Splitting it would leave the output block empty and
+ * the captain has to scroll the description prose to see what came
+ * back.
+ *
+ * Rule: only treat a leading prose-shaped block as `description`
+ * when there are ≥2 non-empty blocks, AND the first block looks
+ * like prose. Otherwise everything is output.
  *
  * Each block has its wrapping markdown code fence stripped before
  * joining so the chip's output `<pre>` doesn't show literal
  * ```` ``` ```` markup.
  */
 export function extractContent(content: ToolCallView['content']): ExtractedContent {
-  let description: string | undefined
-  const outputs: string[] = []
-  for (const block of content) {
-    const t = typeof block.text === 'string' ? block.text.trim() : undefined
-    if (!t || t.length === 0) {
-      continue
-    }
-    if (description === undefined && looksLikeProse(t)) {
-      description = t
-      continue
-    }
-    outputs.push(unwrapCodeFence(t))
+  const blocks = content.map((b) => (typeof b.text === 'string' ? b.text : '')).filter((t) => t.length > 0)
+  if (blocks.length === 0) {
+    return {}
   }
+
+  let description: string | undefined
+  let outputStart = 0
+  if (blocks.length >= 2 && looksLikeProse(blocks[0])) {
+    description = blocks[0]
+    outputStart = 1
+  }
+  const outputs = blocks.slice(outputStart).map(unwrapCodeFence)
 
   return {
     description,

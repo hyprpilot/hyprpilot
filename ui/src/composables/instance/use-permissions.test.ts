@@ -87,7 +87,7 @@ describe('usePermissions', () => {
     ])
   })
 
-  it('allow() invokes permission_reply with the entry session + request + optionId=allow', async () => {
+  it('allow() invokes permission_reply with optionId=allow and no remember by default', async () => {
     pushPermissionRequest('A', 's-a', raw('req-1'))
     invoke.mockResolvedValue(undefined)
 
@@ -96,9 +96,28 @@ describe('usePermissions', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow'
+      optionId: 'allow',
+      remember: undefined,
+      instanceId: 'A',
+      tool: 'bash'
     })
     expect(usePermissions('A').pending.value).toHaveLength(0)
+  })
+
+  it('allow(true) sets remember="allow" — wires the trust-store side effect', async () => {
+    pushPermissionRequest('A', 's-a', raw('req-1'))
+    invoke.mockResolvedValue(undefined)
+
+    await usePermissions('A').allow('req-1', true)
+
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
+      sessionId: 's-a',
+      requestId: 'req-1',
+      optionId: 'allow',
+      remember: 'allow',
+      instanceId: 'A',
+      tool: 'bash'
+    })
   })
 
   it('deny() invokes permission_reply with optionId=deny and evicts on success', async () => {
@@ -110,9 +129,28 @@ describe('usePermissions', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'deny'
+      optionId: 'deny',
+      remember: undefined,
+      instanceId: 'A',
+      tool: 'bash'
     })
     expect(usePermissions('A').pending.value).toHaveLength(0)
+  })
+
+  it('deny(true) sets remember="deny"', async () => {
+    pushPermissionRequest('A', 's-a', raw('req-1'))
+    invoke.mockResolvedValue(undefined)
+
+    await usePermissions('A').deny('req-1', true)
+
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
+      sessionId: 's-a',
+      requestId: 'req-1',
+      optionId: 'deny',
+      remember: 'deny',
+      instanceId: 'A',
+      tool: 'bash'
+    })
   })
 
   it('allow() throws when invoke rejects and leaves the pending entry in place', async () => {

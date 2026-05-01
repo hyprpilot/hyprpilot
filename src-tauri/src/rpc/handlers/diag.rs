@@ -128,8 +128,6 @@ mod tests {
             model: None,
             system_prompt: Some("hello".into()),
             system_prompt_file: None,
-            auto_accept_tools: Vec::new(),
-            auto_reject_tools: Vec::new(),
             mcps: None,
             skills: None,
             mode: None,

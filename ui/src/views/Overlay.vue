@@ -586,20 +586,20 @@ const standardPermissionPrompts = computed(() =>
   permissionPrompts.value.filter((p) => modalBodyOf(p) === undefined)
 )
 
-async function onAllow(requestId: string): Promise<void> {
-  log.info('permission click', { choice: 'allow', requestId })
+async function onAllow(requestId: string, remember: boolean = false): Promise<void> {
+  log.info('permission click', { choice: 'allow', requestId, remember })
   try {
-    await allow(requestId)
+    await allow(requestId, remember)
   } catch (err) {
     log.error('invoke failed', { command: 'permission_reply', choice: 'allow', requestId }, err)
     pushToast(ToastTone.Err, `allow failed: ${String(err)}`)
   }
 }
 
-async function onDeny(requestId: string): Promise<void> {
-  log.info('permission click', { choice: 'deny', requestId })
+async function onDeny(requestId: string, remember: boolean = false): Promise<void> {
+  log.info('permission click', { choice: 'deny', requestId, remember })
   try {
-    await deny(requestId)
+    await deny(requestId, remember)
   } catch (err) {
     log.error('invoke failed', { command: 'permission_reply', choice: 'deny', requestId }, err)
     pushToast(ToastTone.Err, `deny failed: ${String(err)}`)

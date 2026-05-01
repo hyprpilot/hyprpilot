@@ -35,7 +35,7 @@ use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
-use crate::config::{AgentConfig, ProfileConfig};
+use crate::config::AgentConfig;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
 /// How long the registry waits for the actor to ack a `Shutdown`
@@ -657,8 +657,7 @@ impl AcpInstance {
         events_tx: broadcast::Sender<InstanceEvent>,
         bootstrap: Bootstrap,
         permissions: Arc<dyn PermissionController>,
-        profile: Option<ProfileConfig>,
-        mcps_override: Option<Vec<String>>,
+        mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
         commands_cache: Option<crate::completion::source::commands::CommandsCache>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
@@ -683,19 +682,6 @@ impl AcpInstance {
             );
         }
 
-        // Effective MCP list: per-instance override wins, else profile.mcps.
-        // Vendor-specific wire injection at spawn is incremental per
-        // vendor — log the intent for now (K-270).
-        let effective_mcps = mcps_override.or_else(|| profile.as_ref().and_then(|p| p.mcps.clone()));
-        if let Some(names) = &effective_mcps {
-            tracing::warn!(
-                agent = %resolved.agent.id,
-                instance = %instance_id,
-                mcps = ?names,
-                "acp::instance: MCP enabled-list resolved but vendor injection not yet wired — see K-270"
-            );
-        }
-
         let instance = AcpInstance {
             key,
             agent_id: resolved.agent.id.clone(),
@@ -714,7 +700,7 @@ impl AcpInstance {
             session_id,
             bootstrap,
             permissions,
-            profile,
+            mcps,
             commands_cache,
         ));
 
@@ -780,7 +766,7 @@ async fn run(
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
-    profile: Option<ProfileConfig>,
+    mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
     commands_cache: Option<crate::completion::source::commands::CommandsCache>,
 ) {
     let agent_id = resolved.agent.id.clone();
@@ -906,7 +892,7 @@ async fn run(
         client_events_tx,
         sandbox_root,
         permissions.clone(),
-        profile.clone(),
+        mcps.clone(),
         Some(instance_id.clone()),
     ) {
         Ok(c) => c,
@@ -1026,13 +1012,29 @@ async fn run(
         let available_models_meta: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModelInfo>>> =
             Arc::new(tokio::sync::RwLock::new(Vec::new()));
 
+        // Project the per-instance MCP catalog onto ACP's typed
+        // `McpServer` Vec for injection at `session/new` /
+        // `session/load`. Empty when no files are configured (or all
+        // entries failed projection); the agent gets an empty list and
+        // runs with whatever it discovers natively.
+        let mcp_servers: Vec<agent_client_protocol::schema::McpServer> = match &mcps {
+            Some(reg) => reg.to_acp_servers(),
+            None => Vec::new(),
+        };
+        if !mcp_servers.is_empty() {
+            info!(
+                agent = %agent_id_notif,
+                count = mcp_servers.len(),
+                "acp::instance: injecting mcp servers"
+            );
+        }
+
         let session_id: Option<SessionId> = match bootstrap {
             Bootstrap::Fresh => {
                 debug!(agent = %agent_id_notif, "acp::instance: sending session/new");
-                let new_session = connection
-                    .send_request(NewSessionRequest::new(cwd.clone()))
-                    .block_task()
-                    .await?;
+                let mut req = NewSessionRequest::new(cwd.clone());
+                req.mcp_servers = mcp_servers.clone();
+                let new_session = connection.send_request(req).block_task().await?;
                 let sid = new_session.session_id.clone();
                 info!(
                     agent = %agent_id_notif,
@@ -1118,11 +1120,9 @@ async fn run(
                     *slot = Some(sid.clone());
                 }
                 debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
-                let load_resp = match connection
-                    .send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
-                    .block_task()
-                    .await
-                {
+                let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
+                load_req.mcp_servers = mcp_servers.clone();
+                let load_resp = match connection.send_request(load_req).block_task().await {
                     Ok(resp) => resp,
                     Err(err) => {
                         warn!(agent = %agent_id_notif, %err, "acp::instance: load_session failed");
@@ -1897,7 +1897,6 @@ mod tests {
             dummy_permissions(),
             None,
             None,
-            None,
         );
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -1947,7 +1946,6 @@ mod tests {
             dummy_permissions(),
             None,
             None,
-            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1971,7 +1969,6 @@ mod tests {
             tx,
             Bootstrap::ListOnly,
             dummy_permissions(),
-            None,
             None,
             None,
         );
@@ -2072,7 +2069,6 @@ mod tests {
             tx,
             Bootstrap::Resume("00000000-0000-0000-0000-000000000000".into()),
             dummy_permissions(),
-            None,
             None,
             None,
         );

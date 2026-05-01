@@ -240,6 +240,54 @@ the inline `#{skill/<slug>}` token mechanism was deleted end-to-end.
 Picked skills attach to the user turn as `UserTurnInput::Prompt {
 text, attachments }`; see the **ACP bridge** section.
 
+### `mcps` — JSON-file MCP catalog
+
+`mcps: Option<Vec<PathBuf>>` at the TOML root lists the JSON paths
+the loader reads. Each path follows the standard `mcpServers` JSON
+shape used by Claude Code / Codex / Cursor — **drop `~/.claude.json`
+straight in and it works.** hyprpilot extends each server entry via
+an optional `hyprpilot` namespace key carrying typed extension
+fields:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "hyprpilot": {
+        "autoAcceptTools": ["mcp__filesystem__read_*"],
+        "autoRejectTools": ["mcp__filesystem__delete_*"]
+      }
+    }
+  }
+}
+```
+
+- **Merge semantics**: files iterate in order, `mcpServers` map
+  collisions → later wins. Within a file, the `hyprpilot` block is
+  pulled out + typed; everything else stays as opaque
+  `serde_json::Value` (so future spec additions ride through to the
+  agent without a daemon release).
+- **Per-profile override**: `[[profiles]] mcps = [...]` wholesale-
+  replaces the global default. `mcps = []` is the explicit "no MCPs"
+  off-switch.
+- **ACP injection**: each `session/new` and `session/load` call
+  carries the resolved set as `NewSessionRequest.mcp_servers` /
+  `LoadSessionRequest.mcp_servers`. Stdio (`command`) /
+  HTTP (`url` + optional `type: "http"`) / SSE
+  (`url` + `type: "sse"`) all project onto the typed ACP
+  `McpServer` enum at projection time.
+- **Permission integration**: `hyprpilot.autoAcceptTools` /
+  `autoRejectTools` are matched at `PermissionController::decide`
+  lane 2 via tool→server attribution by the `mcp__<server>__<tool>`
+  prefix convention. See "Permissions are the vendor's concern" in
+  the **ACP bridge** section.
+- **No reload**: MCP catalog state is static after daemon boot.
+  Restart-to-reconfigure model — captain edits the JSON file, then
+  `hyprpilot daemon` again. (ACP fixes `mcpServers` at session/new
+  anyway, so a reload would only land for new instances.)
+
 ## Theming
 
 **The palette lives in Rust, not CSS.** Flow:
@@ -1566,7 +1614,7 @@ can't block others.
 | `daemon/version` | *(none)* | `{ "version", "commit"?, "buildDate"? }` | Version string (`CARGO_PKG_VERSION`). `commit` / `buildDate` populate when `HYPRPILOT_BUILD_COMMIT` / `HYPRPILOT_BUILD_DATE` env vars are present at compile time. |
 | `daemon/reload` | *(none)* | `{ "profiles", "skillsCount", "mcpsCount" }` | Re-runs `config::load` against the original CLI overlay layers, then `SkillsRegistry::reload()`. Publishes a `DaemonReloaded` event on the registry broadcast (Tauri name: `daemon:reloaded`; topic: `daemon.reloaded`). |
 | `daemon/shutdown` | `{ "force"?: bool }` | `{ "exiting": true }` | Graceful counterpart to `daemon/kill`. Without `--force`, refuses with `-32603` when any instance has an in-flight turn (busy = an emitted `TurnStarted` without matching `TurnEnded`). The `data` payload carries `{ counts: { instances, busyInstances }, busyInstanceIds }`. |
-| `diag/snapshot` | *(none)* | `{ daemon, instances, profiles, skills, mcps, configPaths }` | Read-only structural dump for "what is this daemon doing" tickets. **Redacted**: profile `env` values + transcript bodies never appear. `mcps.count` is `0` until K-270 wires the catalogue. |
+| `diag/snapshot` | *(none)* | `{ daemon, instances, profiles, skills, mcps, configPaths }` | Read-only structural dump for "what is this daemon doing" tickets. **Redacted**: profile `env` values + transcript bodies never appear. |
 | `status/get` | *(none)* | `StatusResult` | One-shot status snapshot. |
 | `status/subscribe` | *(none)* | `StatusResult` (initial) | Registers connection as subscriber; server pushes `status/changed` notifications. |
 | `status/changed` | `StatusResult` | *(notification, no id)* | Server-push on every state transition. Clients receive this after `status/subscribe`. |
@@ -2000,11 +2048,23 @@ The daemon forwards every permission request straight to the
 webview as an `acp:permission-request` Tauri event; the user picks
 an option via the dialog and replies with `permission_reply`.
 
-Client-side auto-accept / auto-reject rules (per-tool allowlists,
-persistent trust store) are the scope of a separate future
-`PermissionController` issue, modeled on the original Python pilot's
-`auto_accept_tools` / `auto_reject_tools` configuration rather than
-a coarse policy enum. Until that lands every prompt is live-UI.
+Client-side auto-accept / auto-reject lives on the
+`PermissionController` and runs as a unified two-lane pipeline:
+
+1. **Runtime trust store** — `(instance_id, tool_name) → Allow|Deny`,
+   populated by the UI's "always allow" / "always deny" buttons via
+   `permission_reply { remember }`. Cleared on instance shutdown /
+   restart. In-memory only (no disk persistence yet).
+2. **Per-server hyprpilot extension globs** — each MCP JSON entry's
+   optional `hyprpilot.autoAcceptTools` / `autoRejectTools` glob
+   lists. Tool→server attribution by `mcp__<server>__<tool>` prefix
+   convention (shared across claude-code-acp / codex-acp /
+   opencode-acp).
+
+Reject beats accept inside each lane. Vendor-native tools (Bash, Read,
+…) carry no `mcp__` prefix and skip lane 2 entirely — they only
+short-circuit when the captain has clicked an "always" button. Misses
+on both lanes fall through to AskUser.
 
 ### Tauri commands + events (live)
 
@@ -2012,7 +2072,7 @@ a coarse policy enum. Until that lands every prompt is live-UI.
 | ------- | ------- |
 | `session_submit { text, attachments?, instance_id?, agent_id?, profile_id? }` | Webview compose-box submit. `instance_id` is a client-generated UUID the overlay mints on first turn (`crypto.randomUUID()`); subsequent submits pass the same id to continue the session. `attachments: Attachment[]` carries palette-picked skills (slug + path + body + optional title) — see "User-turn input + attachments" below. Delegates to `AcpAdapter::submit_prompt`. |
 | `session_cancel { agent_id? }` | Mid-turn cancel. Sends `CancelNotification` to the addressed session. |
-| `permission_reply { session_id, request_id, option_id }` | `unimplemented!` until `PermissionController` (K-6) lands — the runtime auto-`Cancelled`s every permission request today, so the webview never reaches this path. |
+| `permission_reply { session_id, request_id, option_id, remember?, instance_id?, tool? }` | UI replies to a pending permission. `option_id` is either an ACP option id or one of the synthetic shortcuts `'allow'` / `'deny'` resolved by `pick_*_option_id`. `remember = 'allow' \| 'deny'` (combined with `instance_id` + `tool`) writes a runtime trust-store entry so future calls of the same tool short-circuit at decide() lane 1 — that's the UI's "always allow / always deny" path. |
 | `agents_list` | Populates the agent-switcher dropdown from the `[[agents]]` registry. |
 | `profiles_list` | Populates the profile picker from `[[profiles]]`; parallels the `config/profiles` wire method. |
 | `session_list { instance_id?, agent_id, profile_id?, cwd? }` | Calls ACP `session/list` through the addressed instance when `instance_id` resolves to a live actor; otherwise resolves via `(agent, profile)` and spawns an ephemeral `Bootstrap::ListOnly` actor (initialize → list → shutdown, never registered). Returns the raw ACP `ListSessionsResponse` — agent owns storage, hyprpilot just passes through. |
@@ -2085,8 +2145,8 @@ without a second lookup.
 The following deliberately land in their own issues — do not bolt them onto
 scaffold work:
 
-- MCP server(s), skills loader, permissions store, markdown
-  rendering, profile switcher UI.
+- Persistent disk-backed trust store (today's runtime store is
+  in-memory; "always" decisions reset on instance restart).
 - Real branding icon — `src-tauri/icons/icon.png` is a generated 32×32
   placeholder.
 - Release bundling (`bundle.active = false` in `tauri.conf.json`).
