@@ -285,10 +285,10 @@ impl AcpAdapter {
     }
 
     /// Resolve a `(agent_id?, profile_id?)` pair. When both are
-    /// omitted, falls back through `[agent] default_profile` and
-    /// finally to `[agent] default`. Explicit `agent_id` overrides
-    /// whatever agent the resolved profile names (same profile, new
-    /// agent spawn).
+    /// omitted, falls back through `[profile] default` and finally
+    /// to `[agent] default`. Explicit `agent_id` overrides whatever
+    /// agent the resolved profile names (same profile, new agent
+    /// spawn).
     fn resolve(&self, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<ResolvedInstance, RpcError> {
         let cfg = self.read_config();
         let mut resolved =
@@ -528,12 +528,21 @@ impl AcpAdapter {
             let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
             let profile = self.profile_by_id(resolved.profile_id.as_deref());
             let profile_id_for_instance = resolved.profile_id.clone();
+            // Ephemeral list-only actors must NOT publish onto the
+            // registry's UI-bound broadcast — their state transitions
+            // (Starting → Running → Ended) leak as if a real session
+            // came and went. The UI's `useSessionHistory` listens for
+            // `Ended` to refresh, and refresh re-spawns an ephemeral
+            // actor — instant infinite loop. Route their events into
+            // a private sink channel that the daemon owns + drops
+            // after the list response resolves.
+            let (sink_tx, _sink_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
             // Ephemeral list-only actor never reads MCPs; pass None.
             let instance = AcpInstance::start(
                 resolved,
                 ephemeral_key,
                 profile_id_for_instance,
-                self.registry.events_tx(),
+                sink_tx,
                 Bootstrap::ListOnly,
                 self.permissions.clone(),
                 profile,
@@ -564,6 +573,13 @@ impl AcpAdapter {
     /// (or new) instance to bind the loaded session into — when
     /// omitted, mints a fresh key. Tears down the live actor at that
     /// key if present, then spawns with `Bootstrap::Resume(session_id)`.
+    /// Auto-focuses the resumed instance so the UI's transcript view +
+    /// header chrome flip onto it without the caller threading focus
+    /// separately. claude-code-acp (and any spec-compliant ACP agent)
+    /// streams `session/update` notifications WHILE servicing the
+    /// `LoadSessionRequest` to replay prior turns; those notifications
+    /// land on the resumed instance's slot and only become visible if
+    /// the user is actually watching that instance.
     pub async fn load_session(
         &self,
         instance_id: Option<&str>,
@@ -577,6 +593,7 @@ impl AcpAdapter {
         };
         let resolved = self.resolve(agent_id, profile_id)?;
         self.ensure(key, resolved, Bootstrap::Resume(session_id)).await?;
+        self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)?;
         Ok(())
     }
 
@@ -718,7 +735,7 @@ impl AcpAdapter {
     /// `model` disambiguate; `id` is the registry key.
     pub fn list_profiles(&self) -> Vec<Value> {
         let cfg = self.read_config();
-        let default_profile = cfg.agents.agent.default_profile.as_deref();
+        let default_profile = cfg.profile.default.as_deref();
         cfg.profiles
             .iter()
             .map(|p| {
@@ -774,20 +791,54 @@ impl AcpAdapter {
         }
     }
 
-    /// Switch the active model on the addressed instance. Today returns
-    /// the same `-32603` shape as the `models/set` wire handler — the
-    /// runtime actor doesn't accept a `SetModel` command yet (K-251).
-    /// Single edit when K-251 lands flips both paths at once.
-    pub async fn set_session_model(&self, instance_id: &str, _model_id: &str) -> Result<Value, RpcError> {
-        let _ = self.contains_instance(instance_id).await?;
-        Err(RpcError::internal_error("models/set not implemented — ref K-251"))
+    /// Switch the active model on the addressed instance. Routes to
+    /// the per-instance actor's `SetModel` command, which sends ACP
+    /// `session/set_model` (gated by `unstable_session_model`).
+    pub async fn set_session_model(&self, instance_id: &str, model_id: &str) -> Result<Value, RpcError> {
+        let key = self.contains_instance(instance_id).await?;
+        let handle = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        handle
+            .set_model(model_id.to_string())
+            .await
+            .map_err(RpcError::internal_error)?;
+        Ok(serde_json::json!({ "modelId": model_id }))
     }
 
-    /// Switch the active mode on the addressed instance. Mirrors
-    /// `set_session_model` — gated behind K-251.
-    pub async fn set_session_mode(&self, instance_id: &str, _mode_id: &str) -> Result<Value, RpcError> {
-        let _ = self.contains_instance(instance_id).await?;
-        Err(RpcError::internal_error("modes/set not implemented — ref K-251"))
+    /// Switch the active mode on the addressed instance. Routes to
+    /// the per-instance actor's `SetMode` command, which sends ACP
+    /// `session/set_mode`.
+    pub async fn set_session_mode(&self, instance_id: &str, mode_id: &str) -> Result<Value, RpcError> {
+        let key = self.contains_instance(instance_id).await?;
+        let handle = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        handle
+            .set_mode(mode_id.to_string())
+            .await
+            .map_err(RpcError::internal_error)?;
+        Ok(serde_json::json!({ "modeId": mode_id }))
+    }
+
+    /// Read the addressed instance's per-instance metadata cache.
+    /// The palette pickers (modes, models) call this on every open
+    /// so the listed options come straight from the daemon's
+    /// authoritative cache instead of a UI-side mirror that may lag
+    /// the latest `acp:instance-meta` event.
+    pub async fn instance_meta(&self, instance_id: &str) -> Result<Value, RpcError> {
+        let key = self.contains_instance(instance_id).await?;
+        let handle = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+        serde_json::to_value(snap).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 }
 
@@ -980,6 +1031,9 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::InstancesFocused { .. } => "acp:instances-focused",
         GenEvt::Terminal { .. } => "acp:terminal",
         GenEvt::DaemonReloaded { .. } => "daemon:reloaded",
+        GenEvt::SessionInfoUpdate { .. } => "acp:session-info-update",
+        GenEvt::CurrentModeUpdate { .. } => "acp:current-mode-update",
+        GenEvt::InstanceMeta { .. } => "acp:instance-meta",
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {
@@ -1049,7 +1103,9 @@ mod tests {
             r#"
 [agent]
 default = "claude-code"
-default_profile = "ask"
+
+[profile]
+default = "ask"
 
 [[agents]]
 id = "claude-code"
@@ -1113,8 +1169,8 @@ system_prompt = "be terse"
     async fn list_profiles_returns_configured_entries() {
         let cfg: Config = toml::from_str(
             r#"
-[agent]
-default_profile = "ask"
+[profile]
+default = "ask"
 
 [[agents]]
 id = "claude-code"

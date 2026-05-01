@@ -1,7 +1,8 @@
-//! `[agent]` + `[[agents]]` + `[[profiles]]` + `[[mcps]]`. Cross-field
-//! reference checks (`profile.agent` → agents, `profile.mcps` → mcps,
-//! `agent.default_profile` → profiles) are wired into the garde walk
-//! at the `Config` level via higher-order `custom(...)` hooks.
+//! `[agent]` + `[[agents]]` + `[profile]` + `[[profiles]]` + `[[mcps]]`.
+//! Cross-field reference checks (`profile.agent` → agents,
+//! `profile.mcps` → mcps, `[profile].default` → profiles) are wired
+//! into the garde walk at the `Config` level via higher-order
+//! `custom(...)` hooks.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -33,15 +34,26 @@ pub struct AgentsConfig {
 }
 
 /// `[agent]` — global agent-scope config. Future timeout / cwd /
-/// env knobs slot in here.
+/// env knobs slot in here. `default` is the agent id used when
+/// `submit` doesn't carry an explicit one.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]
 pub struct AgentDefaults {
     #[garde(skip)]
     pub default: Option<String>,
+}
+
+/// `[profile]` — global profile-scope config. Mirrors `[agent]`:
+/// singleton scope with `default` for "which `[[profiles]]` entry
+/// to use when the wire / palette doesn't provide one". Cross-field
+/// validation against `[[profiles]].id` lives at `Config` level.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
+pub struct ProfileDefaults {
     #[garde(skip)]
-    pub default_profile: Option<String>,
+    pub default: Option<String>,
 }
 
 /// One `[[agents]]` entry. No `permission_policy` — vendors own
@@ -364,7 +376,7 @@ args = ["--flag"]
         fs::remove_file(&p).ok();
     }
 
-    /// Defaults ship zero profiles and no `agent.default_profile` —
+    /// Defaults ship zero profiles and no `[profile] default` —
     /// profiles are user-supplied, the daemon falls back to the
     /// `[agent] default` agent when none is selected.
     #[test]
@@ -372,10 +384,7 @@ args = ["--flag"]
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
         assert!(cfg.profiles.is_empty(), "defaults must not seed any profiles");
-        assert!(
-            cfg.agents.agent.default_profile.is_none(),
-            "agent.default_profile must not be seeded"
-        );
+        assert!(cfg.profile.default.is_none(), "[profile] default must not be seeded");
 
         cfg.validate().expect("empty profile set validates");
     }
@@ -447,14 +456,14 @@ agent = "codex"
         let p = write_tmp(
             "bad-default-profile.toml",
             r#"
-[agent]
-default_profile = "ghost-profile"
+[profile]
+default = "ghost-profile"
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
-        assert!(msg.contains("default_profile = 'ghost-profile'"), "{msg}");
+        assert!(msg.contains("default = 'ghost-profile'"), "{msg}");
         assert!(msg.contains("Configured ids:"), "{msg}");
         fs::remove_file(&p).ok();
     }

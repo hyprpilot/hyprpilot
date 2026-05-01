@@ -175,7 +175,7 @@ pub async fn sessions_info(adapter: AdapterState<'_>, id: String) -> Result<Sess
             .clone()
             .or_else(|| cfg.agents.agents.first().map(|a| a.id.clone()))
             .unwrap_or_default();
-        (agent_id, cfg.agents.agent.default_profile.clone())
+        (agent_id, cfg.profile.default.clone())
     };
     Ok(SessionInfoResult {
         id: info.session_id.0.to_string(),
@@ -287,6 +287,21 @@ pub async fn modes_set(adapter: AdapterState<'_>, instance_id: String, mode_id: 
         tracing::warn!(%err, "cmd::modes_set: failed");
     }
     out
+}
+
+/// Snapshot the addressed instance's per-instance metadata
+/// (cwd, advertised modes/models, current ids). The palette pickers
+/// call this on every open instead of reading the UI-side
+/// `useSessionInfo` cache — the daemon's per-instance Arc<RwLock>
+/// is the authoritative source, refreshed on every session/new,
+/// session/load, set_mode, set_model, and turn-end. UI events
+/// (`acp:instance-meta`) keep the cache mirror in sync; this
+/// command exists for the "always re-ask the daemon" idiom the
+/// pickers want regardless.
+#[tauri::command]
+pub async fn instance_meta(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    tracing::debug!(instance_id = %instance_id, "cmd::instance_meta: entry");
+    adapter.instance_meta(&instance_id).await.map_err(|e| e.message)
 }
 
 /// Resolve a pending permission prompt. The UI sends one of:

@@ -67,6 +67,9 @@ fn main() -> Result<ExitCode> {
 
     let cli = Cli::parse();
 
+    // Bind the `WorkerGuard` to a named local so it lives until `main`
+    // returns — dropping it earlier flushes file logs and silently
+    // truncates tail events on crash.
     let _log_guard = logging::init(cli.log_level)?;
 
     let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;

@@ -60,6 +60,16 @@ impl From<String> for HexColor {
 pub struct Ui {
     #[garde(dive)]
     pub theme: Theme,
+    /// Webview page zoom multiplier applied via
+    /// `WebviewWindow::set_zoom(f64)` at boot. Scales text + layout
+    /// uniformly (Chromium-style page zoom), unlike CSS root
+    /// `font-size` which only scales `rem`-based primitives. The
+    /// canonical "make everything bigger" knob — `1.0` = native
+    /// size, `1.25` = 25% larger, `0.9` = 10% smaller. Clamped to
+    /// `[0.5, 2.0]` to avoid pathological scales.
+    #[garde(inner(range(min = 0.5, max = 2.0)))]
+    #[merge(strategy = overwrite_some)]
+    pub zoom: Option<f64>,
 }
 
 /// Palette tokens surfaced to the webview as CSS custom properties. Each
@@ -90,6 +100,18 @@ pub struct Theme {
     pub status: ThemeStatus,
     #[garde(dive)]
     pub permission: ThemePermission,
+    #[garde(dive)]
+    pub terminal: ThemeTerminal,
+    /// Shiki bundled theme name driving fenced code-block syntax
+    /// highlighting in markdown rendering. Default `one-dark-pro`.
+    /// Pick any from <https://shiki.style/themes#bundled-themes>
+    /// (e.g. `github-dark`, `material-theme-palenight`,
+    /// `vitesse-dark`). The UI's `lib/markdown.ts` passes the value
+    /// straight to Shiki's bundled-theme loader — no per-token CSS
+    /// var bridge needed.
+    #[garde(inner(length(min = 1)))]
+    #[merge(strategy = overwrite_some)]
+    pub shiki: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -115,43 +137,18 @@ pub struct ThemeWindow {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct ThemeSurface {
     #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
     pub default: Option<HexColor>,
     #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
     pub bg: Option<HexColor>,
     #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
     pub alt: Option<HexColor>,
     #[garde(dive)]
-    pub card: SurfaceCard,
-    #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
     pub compose: Option<HexColor>,
     #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
     pub text: Option<HexColor>,
-}
-
-/// Message cards, keyed by speaker.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-pub struct SurfaceCard {
-    #[garde(dive)]
-    pub user: Card,
-    #[garde(dive)]
-    pub assistant: Card,
-}
-
-/// One card's tokens. `bg` today; future accent/border/fg slot in alongside.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-#[merge(strategy = overwrite_some)]
-pub struct Card {
-    #[garde(dive)]
-    pub bg: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -166,6 +163,12 @@ pub struct ThemeFg {
     pub dim: Option<HexColor>,
     #[garde(dive)]
     pub faint: Option<HexColor>,
+    /// Dark ink for use on saturated tone-bg pills (warn / err / ok
+    /// fills). The body `default` colour is too light to read against
+    /// `--theme-status-warn` / `--theme-accent` saturated bgs; this is
+    /// the single fixed-dark constant every tone-pill consumes.
+    #[garde(dive)]
+    pub on_tone: Option<HexColor>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -249,6 +252,57 @@ pub struct ThemeStatus {
     pub err: Option<HexColor>,
 }
 
+/// xterm.js-compatible terminal palette: bg / fg / cursor / selection +
+/// the 16 ANSI colours (8 base + 8 bright). Surfaces directly to the
+/// inline terminal card. Defaults derive from the kitty default
+/// palette ("github-dark"-flavoured Onedark) so the terminal block
+/// reads consistently with the rest of the chrome.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
+pub struct ThemeTerminal {
+    #[garde(dive)]
+    pub bg: Option<HexColor>,
+    #[garde(dive)]
+    pub fg: Option<HexColor>,
+    #[garde(dive)]
+    pub cursor: Option<HexColor>,
+    #[garde(dive)]
+    pub selection: Option<HexColor>,
+    #[garde(dive)]
+    pub black: Option<HexColor>,
+    #[garde(dive)]
+    pub red: Option<HexColor>,
+    #[garde(dive)]
+    pub green: Option<HexColor>,
+    #[garde(dive)]
+    pub yellow: Option<HexColor>,
+    #[garde(dive)]
+    pub blue: Option<HexColor>,
+    #[garde(dive)]
+    pub magenta: Option<HexColor>,
+    #[garde(dive)]
+    pub cyan: Option<HexColor>,
+    #[garde(dive)]
+    pub white: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_black: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_red: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_green: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_yellow: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_blue: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_magenta: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_cyan: Option<HexColor>,
+    #[garde(dive)]
+    pub bright_white: Option<HexColor>,
+}
+
 /// Warm-brown panel fills for the permission stack.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
@@ -281,10 +335,12 @@ mod tests {
     #[test]
     fn defaults_populate_every_theme_token() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        assert!(cfg.ui.zoom.is_some(), "ui.zoom");
         let t = &cfg.ui.theme;
 
         assert!(t.font.mono.is_some(), "font.mono");
         assert!(t.font.sans.is_some(), "font.sans");
+        assert!(t.shiki.is_some(), "shiki");
 
         for (n, v) in [("window.default", &t.window.default), ("window.edge", &t.window.edge)] {
             assert!(v.is_some(), "{n}");
@@ -294,8 +350,6 @@ mod tests {
             ("surface.default", &t.surface.default),
             ("surface.bg", &t.surface.bg),
             ("surface.alt", &t.surface.alt),
-            ("surface.card.user.bg", &t.surface.card.user.bg),
-            ("surface.card.assistant.bg", &t.surface.card.assistant.bg),
             ("surface.compose", &t.surface.compose),
             ("surface.text", &t.surface.text),
         ] {
@@ -307,6 +361,7 @@ mod tests {
             ("fg.ink_2", &t.fg.ink_2),
             ("fg.dim", &t.fg.dim),
             ("fg.faint", &t.fg.faint),
+            ("fg.on_tone", &t.fg.on_tone),
         ] {
             assert!(v.is_some(), "{n}");
         }
@@ -366,6 +421,31 @@ mod tests {
         ] {
             assert!(v.is_some(), "{n}");
         }
+
+        for (n, v) in [
+            ("terminal.bg", &t.terminal.bg),
+            ("terminal.fg", &t.terminal.fg),
+            ("terminal.cursor", &t.terminal.cursor),
+            ("terminal.selection", &t.terminal.selection),
+            ("terminal.black", &t.terminal.black),
+            ("terminal.red", &t.terminal.red),
+            ("terminal.green", &t.terminal.green),
+            ("terminal.yellow", &t.terminal.yellow),
+            ("terminal.blue", &t.terminal.blue),
+            ("terminal.magenta", &t.terminal.magenta),
+            ("terminal.cyan", &t.terminal.cyan),
+            ("terminal.white", &t.terminal.white),
+            ("terminal.bright_black", &t.terminal.bright_black),
+            ("terminal.bright_red", &t.terminal.bright_red),
+            ("terminal.bright_green", &t.terminal.bright_green),
+            ("terminal.bright_yellow", &t.terminal.bright_yellow),
+            ("terminal.bright_blue", &t.terminal.bright_blue),
+            ("terminal.bright_magenta", &t.terminal.bright_magenta),
+            ("terminal.bright_cyan", &t.terminal.bright_cyan),
+            ("terminal.bright_white", &t.terminal.bright_white),
+        ] {
+            assert!(v.is_some(), "{n}");
+        }
     }
 
     #[test]
@@ -380,8 +460,8 @@ edge = "#ff00aa"
 [ui.theme.border]
 focus = "#00ff00"
 
-[ui.theme.surface.card.user]
-bg = "#ff8800"
+[ui.theme.surface]
+alt = "#ff8800"
 
 [ui.theme.kind]
 read = "#123456"
@@ -393,21 +473,20 @@ read = "#123456"
         assert_eq!(cfg.ui.theme.window.default.as_deref(), Some("#101418"));
         assert_eq!(cfg.ui.theme.window.edge.as_deref(), Some("#ff00aa"));
         assert_eq!(cfg.ui.theme.border.focus.as_deref(), Some("#00ff00"));
-        assert_eq!(cfg.ui.theme.surface.card.user.bg.as_deref(), Some("#ff8800"));
+        assert_eq!(cfg.ui.theme.surface.alt.as_deref(), Some("#ff8800"));
         assert_eq!(cfg.ui.theme.kind.read.as_deref(), Some("#123456"));
 
-        // Untouched in the same groups still fall back to defaults.
-        assert_eq!(cfg.ui.theme.border.default.as_deref(), Some("#20242e"));
-        assert_eq!(cfg.ui.theme.border.soft.as_deref(), Some("#2b2f3b"));
-        assert_eq!(cfg.ui.theme.surface.card.assistant.bg.as_deref(), Some("#12141a"));
-        assert_eq!(cfg.ui.theme.surface.compose.as_deref(), Some("#181b22"));
-        assert_eq!(cfg.ui.theme.kind.write.as_deref(), Some("#e480d4"));
+        // Untouched in the same groups still fall back to defaults (palette).
+        assert_eq!(cfg.ui.theme.border.default.as_deref(), Some("#2c333d"));
+        assert_eq!(cfg.ui.theme.border.soft.as_deref(), Some("#38404b"));
+        assert_eq!(cfg.ui.theme.surface.compose.as_deref(), Some("#1e2127"));
+        assert_eq!(cfg.ui.theme.kind.write.as_deref(), Some("#c678dd"));
 
         // Groups not mentioned at all still come from defaults.
-        assert_eq!(cfg.ui.theme.fg.default.as_deref(), Some("#d8dde5"));
-        assert_eq!(cfg.ui.theme.accent.default.as_deref(), Some("#c99bf0"));
-        assert_eq!(cfg.ui.theme.status.ok.as_deref(), Some("#7fcf8a"));
-        assert_eq!(cfg.ui.theme.permission.bg.as_deref(), Some("#18130a"));
+        assert_eq!(cfg.ui.theme.fg.default.as_deref(), Some("#abb2bf"));
+        assert_eq!(cfg.ui.theme.accent.default.as_deref(), Some("#e5c07b"));
+        assert_eq!(cfg.ui.theme.status.ok.as_deref(), Some("#98c379"));
+        assert_eq!(cfg.ui.theme.permission.bg.as_deref(), Some("#2c2009"));
 
         fs::remove_file(&p).ok();
     }
@@ -426,26 +505,23 @@ read = "#123456"
                             },
                             ..Default::default()
                         },
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
             ),
             (
-                "surface.card.user.bg",
+                "surface.alt",
                 Config {
                     ui: Ui {
                         theme: Theme {
                             surface: ThemeSurface {
-                                card: SurfaceCard {
-                                    user: Card {
-                                        bg: Some("#xyz".into()),
-                                    },
-                                    ..Default::default()
-                                },
+                                alt: Some("#xyz".into()),
                                 ..Default::default()
                             },
                             ..Default::default()
                         },
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
@@ -461,6 +537,7 @@ read = "#123456"
                             },
                             ..Default::default()
                         },
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
@@ -489,6 +566,7 @@ read = "#123456"
                     },
                     ..Default::default()
                 },
+                ..Default::default()
             },
             ..Default::default()
         };

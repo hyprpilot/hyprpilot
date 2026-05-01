@@ -29,6 +29,11 @@
       "@composables": ["./src/composables"],
       "@composables/*": ["./src/composables/*"],
       "@views": ["./src/views"],
+      "@views/*": ["./src/views/*"],
+      "@interfaces": ["./src/interfaces"],
+      "@interfaces/*": ["./src/interfaces/*"],
+      "@constants": ["./src/constants"],
+      "@constants/*": ["./src/constants/*"],
       "@assets/*": ["./src/assets/*"]
     }
   },

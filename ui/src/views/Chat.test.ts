@@ -22,16 +22,18 @@ vi.mock('@ipc/bridge', async () => ({
   loadSession: () => Promise.resolve()
 }))
 
-import { useActiveInstance } from '@composables/use-active-instance'
-import { __resetKeymapsForTests, loadKeymaps } from '@composables/use-keymaps'
-import { pushPermissionRequest, resetPermissions } from '@composables/use-permissions'
+import { useActiveInstance } from '@composables'
+import { __resetKeymapsForTests, loadKeymaps } from '@composables'
+import { pushPermissionRequest, resetPermissions } from '@composables'
+import { clearToasts, useToasts } from '@composables'
 
 import Chat from './Overlay.vue'
 
 const DEFAULT_KEYMAPS = {
   chat: {
     submit: { modifiers: [], key: 'enter' },
-    newline: { modifiers: [Modifier.Shift], key: 'enter' }
+    newline: { modifiers: [Modifier.Shift], key: 'enter' },
+    cancel_turn: { modifiers: [Modifier.Ctrl], key: 'c' }
   },
   approvals: {
     allow: { modifiers: [], key: 'a' },
@@ -94,9 +96,9 @@ describe('Chat.vue — permission wiring', () => {
     await flushMicrotasks()
 
     const stack = wrapper.get('[data-testid="permission-stack"]')
-    expect(stack.text()).toContain('1 pending')
+    expect(stack.text()).toContain('Bash')
 
-    const allowButton = stack.findAll('button').find((b) => b.text().includes('allow'))!
+    const allowButton = stack.find('button[aria-label="allow once"]')
     await allowButton.trigger('click')
     await flushMicrotasks()
 
@@ -194,14 +196,17 @@ describe('Chat.vue — permission wiring', () => {
     const wrapper = mount(Chat, { attachTo: document.body })
     await flushMicrotasks()
 
-    const allowButton = wrapper.findAll('button').find((b) => b.text().includes('allow'))!
+    const allowButton = wrapper.find('button[aria-label="allow once"]')
     await allowButton.trigger('click')
     await flushMicrotasks()
 
-    // K-254: errors route through the toast stack, not the inline chat-err band.
-    const toastStack = wrapper.find('.toast-stack')
-    expect(toastStack.exists()).toBe(true)
-    expect(toastStack.text()).toContain('allow failed')
+    // Errors route through the toast pipeline (vue-sonner) — assert via the
+    // audit-log mirror since Sonner portals out of the wrapper.
+    const messages = useToasts()
+      .entries.value.map((t) => t.body)
+      .filter((b): b is string => typeof b === 'string')
+    expect(messages.some((m) => m.includes('allow failed'))).toBe(true)
+    clearToasts()
     wrapper.unmount()
   })
 

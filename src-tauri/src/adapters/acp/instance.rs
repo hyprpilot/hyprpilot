@@ -15,9 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol::schema::{
-    CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource, EmbeddedResourceResource,
-    FileSystemCapabilities, InitializeRequest, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-    NewSessionRequest, PromptRequest, ProtocolVersion, SessionId, TextContent, TextResourceContents,
+    AudioContent, BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
+    EmbeddedResourceResource, FileSystemCapabilities, ImageContent, InitializeRequest, ListSessionsRequest,
+    ListSessionsResponse, LoadSessionRequest, ModelId, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
+    SessionModeId, SetSessionModeRequest, SetSessionModelRequest, TextContent, TextResourceContents,
 };
 use agent_client_protocol::{ByteStreams, Client};
 use anyhow::{bail, Context, Result};
@@ -71,6 +72,21 @@ pub enum InstanceCommand {
     Cancel {
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Switch the active operational mode (e.g. claude-code's
+    /// `plan` / `edit`). Sends ACP `session/set_mode` and updates the
+    /// per-instance metadata so the next `InstanceMeta` event carries
+    /// the new value.
+    SetMode {
+        mode_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Switch the active model on a live session. ACP gates this
+    /// behind the `unstable_session_model` feature; our dependency
+    /// has it enabled via `["unstable"]`.
+    SetModel {
+        model_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Ask the agent for its persisted session index. Works in any
     /// bootstrap mode — the actor is always past `initialize` by the
     /// time it processes commands.
@@ -78,11 +94,37 @@ pub enum InstanceCommand {
         cwd: Option<std::path::PathBuf>,
         reply: oneshot::Sender<Result<ListSessionsResponse, String>>,
     },
+    /// Read the actor's current cached metadata (cwd, current
+    /// mode/model id, advertised mode/model lists). Powers the
+    /// `instance_meta` Tauri command used by the palette pickers —
+    /// the palette ALWAYS routes through this snapshot rather than
+    /// reading the UI-side `useSessionInfo` cache, so a stale UI
+    /// state can't desync the picker from the daemon's authoritative
+    /// view.
+    MetaSnapshot {
+        reply: oneshot::Sender<MetaSnapshot>,
+    },
     /// Shutdown hook — stops the actor after the current prompt
     /// (or immediately if idle). Reply carries the final state.
     Shutdown {
         reply: oneshot::Sender<()>,
     },
+}
+
+/// Snapshot of the per-instance metadata the daemon caches off
+/// `NewSessionResponse` / `LoadSessionResponse` / `set_mode` /
+/// `set_model` replies. Read-only view; identical to the payload
+/// the `acp:instance-meta` Tauri event carries, minus identity
+/// fields the caller already knows.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaSnapshot {
+    pub session_id: Option<String>,
+    pub cwd: String,
+    pub current_mode_id: Option<String>,
+    pub current_model_id: Option<String>,
+    pub available_modes: Vec<crate::adapters::SessionModeInfo>,
+    pub available_models: Vec<crate::adapters::SessionModelInfo>,
 }
 
 /// Project an ACP `session/update` notification (as raw JSON, since
@@ -95,7 +137,22 @@ pub enum InstanceCommand {
 /// dispatches on `item.kind` (`unknown`) and can render a placeholder
 /// or sub-dispatch on `item.kind` from the payload. Forward-compat
 /// without bricking sessions.
-pub(crate) fn map_session_update(update: serde_json::Value) -> crate::adapters::TranscriptItem {
+/// Outcome of mapping one ACP `SessionUpdate` payload. Most variants
+/// land in the transcript; metadata updates (`session_info_update`,
+/// `current_mode_update`) are routed to dedicated `InstanceEvent`
+/// variants instead since they aren't transcript content.
+pub(crate) enum MappedUpdate {
+    Transcript(crate::adapters::TranscriptItem),
+    SessionInfo {
+        title: Option<String>,
+        updated_at: Option<String>,
+    },
+    CurrentMode {
+        current_mode_id: String,
+    },
+}
+
+pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
     use crate::adapters::{
         PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
         ToolCallUpdateRecord, TranscriptItem,
@@ -163,26 +220,26 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> crate::adapters::
             .unwrap_or_default()
     }
 
-    fn raw_args_summary(raw_input: Option<&serde_json::Value>) -> Option<String> {
-        let raw = raw_input?;
-        if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
-            return Some(cmd.to_string());
-        }
-        if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
-            return Some(path.to_string());
-        }
-        serde_json::to_string(raw).ok()
-    }
-
     match kind.as_str() {
-        "user_message_chunk" => TranscriptItem::UserText {
+        "user_message_chunk" => MappedUpdate::Transcript(TranscriptItem::UserText {
             text: chunk_text(&update),
+        }),
+        "agent_message_chunk" => MappedUpdate::Transcript(TranscriptItem::AgentText {
+            text: chunk_text(&update),
+        }),
+        "agent_thought_chunk" => MappedUpdate::Transcript(TranscriptItem::AgentThought {
+            text: chunk_text(&update),
+        }),
+        "session_info_update" => MappedUpdate::SessionInfo {
+            title: update.get("title").and_then(|v| v.as_str()).map(str::to_string),
+            updated_at: update.get("updatedAt").and_then(|v| v.as_str()).map(str::to_string),
         },
-        "agent_message_chunk" => TranscriptItem::AgentText {
-            text: chunk_text(&update),
-        },
-        "agent_thought_chunk" => TranscriptItem::AgentThought {
-            text: chunk_text(&update),
+        "current_mode_update" => MappedUpdate::CurrentMode {
+            current_mode_id: update
+                .get("currentModeId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
         "tool_call" => {
             let id = update
@@ -198,16 +255,32 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> crate::adapters::
             let title = update.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let state =
                 parse_tool_state(update.get("status").and_then(|v| v.as_str())).unwrap_or(ToolCallState::Pending);
-            let raw_args = raw_args_summary(update.get("rawInput"));
+            let raw_input = update.get("rawInput").cloned();
             let content = update.get("content").map(parse_content).unwrap_or_default();
-            TranscriptItem::ToolCall(ToolCallRecord {
+            // Surface the full tool-call payload at debug. The
+            // dedicated `acp::tool_call` target lets developers crank
+            // the level for this subsystem alone via
+            // `RUST_LOG=acp::tool_call=debug,info` when they need to
+            // see a wire shape for a new formatter without drowning
+            // in the rest of the daemon's debug stream.
+            tracing::debug!(
+                target: "acp::tool_call",
+                id = %id,
+                kind = %tool_kind,
+                title = %title,
+                state = ?state,
+                raw_input = ?raw_input,
+                content_blocks = content.len(),
+                "acp::instance: tool_call payload (formatter input)"
+            );
+            MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
                 tool_kind,
                 title,
                 state,
-                raw_args,
+                raw_input,
                 content,
-            })
+            }))
         }
         "tool_call_update" => {
             let id = update
@@ -218,16 +291,26 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> crate::adapters::
             let tool_kind = update.get("kind").and_then(|v| v.as_str()).map(str::to_ascii_lowercase);
             let title = update.get("title").and_then(|v| v.as_str()).map(str::to_string);
             let state = parse_tool_state(update.get("status").and_then(|v| v.as_str()));
-            let raw_args = raw_args_summary(update.get("rawInput"));
+            let raw_input = update.get("rawInput").cloned();
             let content = update.get("content").map(parse_content).unwrap_or_default();
-            TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
+            tracing::debug!(
+                target: "acp::tool_call",
+                id = %id,
+                kind = ?tool_kind,
+                title = ?title,
+                state = ?state,
+                raw_input = ?raw_input,
+                content_blocks = content.len(),
+                "acp::instance: tool_call_update payload (formatter input)"
+            );
+            MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
                 tool_kind,
                 title,
                 state,
-                raw_args,
+                raw_input,
                 content,
-            })
+            }))
         }
         "plan" => {
             let steps = update
@@ -243,7 +326,7 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> crate::adapters::
                         .collect()
                 })
                 .unwrap_or_default();
-            TranscriptItem::Plan(PlanRecord { steps })
+            MappedUpdate::Transcript(TranscriptItem::Plan(PlanRecord { steps }))
         }
         "permission_request" => {
             let request_id = update
@@ -258,36 +341,119 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> crate::adapters::
                 .get("options")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
-            TranscriptItem::PermissionRequest(PermissionRequestRecord {
+            MappedUpdate::Transcript(TranscriptItem::PermissionRequest(PermissionRequestRecord {
                 request_id,
                 tool,
                 tool_kind,
                 args,
                 options,
-            })
+            }))
         }
-        _ => TranscriptItem::Unknown {
+        _ => MappedUpdate::Transcript(TranscriptItem::Unknown {
             wire_kind: kind,
             payload: update,
-        },
+        }),
     }
 }
 
 /// Build the ACP `Vec<ContentBlock>` payload for one user turn.
-/// Attachments project as `EmbeddedResource` and prepend the prose
-/// text — order matters per the convention documented on
+///
+/// Attachments dispatch onto an ACP `ContentBlock` variant purely
+/// from MIME type — no per-attachment "is this an image?" flag
+/// hardcoded into the type. The caller fills in `data` (base64 for
+/// binary content) or `body` (text), tags the MIME, and the encoder
+/// picks the right wire shape:
+///
+/// - `image/*` (with base64 `data`)  → `ContentBlock::Image`
+/// - `audio/*` (with base64 `data`)  → `ContentBlock::Audio`
+/// - any text-shaped MIME            → `ContentBlock::Resource(TextResourceContents)`
+///   (text/markdown, text/plain, application/json, application/xml,
+///   application/x-yaml, etc. — anything where the body is meaningful
+///   as a UTF-8 string)
+/// - everything else (with `data`)   → `ContentBlock::Resource(BlobResourceContents)`
+///   (PDFs, archives, binaries — base64-encoded blob the agent can
+///   reference by URI)
+///
+/// Falls back to a text resource when no `data` is present and the
+/// MIME isn't image/audio — covers the legacy skill-attachment path
+/// where `body` is a markdown string and `mime` is unset.
+///
+/// Prose text always lands last per the convention documented on
 /// `UserTurnInput`: agents read context before instructions.
 pub(crate) fn build_prompt_blocks(text: &str, attachments: &[Attachment]) -> Vec<ContentBlock> {
     let mut blocks: Vec<ContentBlock> = Vec::with_capacity(attachments.len() + 1);
     for att in attachments {
-        let mut tr = TextResourceContents::new(att.body.clone(), att.file_uri());
-        tr.mime_type = Some(att.mime_type());
-        blocks.push(ContentBlock::Resource(EmbeddedResource::new(
-            EmbeddedResourceResource::TextResourceContents(tr),
-        )));
+        blocks.push(attachment_to_block(att));
     }
     blocks.push(ContentBlock::Text(TextContent::new(text.to_owned())));
     blocks
+}
+
+/// Project a single attachment onto the matching ACP wire variant
+/// based on its MIME type. Pure function — no I/O.
+fn attachment_to_block(att: &Attachment) -> ContentBlock {
+    let mime = att.mime_type();
+    match mime_category(&mime) {
+        MimeCategory::Image => {
+            let mut img = ImageContent::new(att.data.clone().unwrap_or_default(), mime);
+            img.uri = Some(att.file_uri());
+            ContentBlock::Image(img)
+        }
+        // ACP's `AudioContent` carries no `uri` field (unlike
+        // `ImageContent`), so the file_uri is intentionally dropped.
+        MimeCategory::Audio => ContentBlock::Audio(AudioContent::new(att.data.clone().unwrap_or_default(), mime)),
+        MimeCategory::Text => {
+            let mut tr = TextResourceContents::new(att.body.clone(), att.file_uri());
+            tr.mime_type = Some(mime);
+            ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(
+                tr,
+            )))
+        }
+        MimeCategory::Blob => {
+            let mut blob = BlobResourceContents::new(att.data.clone().unwrap_or_default(), att.file_uri());
+            blob.mime_type = Some(mime);
+            ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::BlobResourceContents(
+                blob,
+            )))
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MimeCategory {
+    Image,
+    Audio,
+    /// Text-shaped: encodes through `TextResourceContents` using the
+    /// attachment's `body` field. Covers `text/*` plus the structured
+    /// formats agents commonly reason over (`application/json`,
+    /// `application/xml`, `application/x-yaml`, `application/toml`).
+    Text,
+    /// Catch-all for anything binary that's not image/audio — PDFs,
+    /// archives, octets. Encodes through `BlobResourceContents` with
+    /// the base64 payload from the attachment's `data` field.
+    Blob,
+}
+
+fn mime_category(mime: &str) -> MimeCategory {
+    if mime.starts_with("image/") {
+        return MimeCategory::Image;
+    }
+    if mime.starts_with("audio/") {
+        return MimeCategory::Audio;
+    }
+    if mime.starts_with("text/")
+        || mime == "application/json"
+        || mime == "application/xml"
+        || mime == "application/x-yaml"
+        || mime == "application/yaml"
+        || mime == "application/toml"
+        || mime == "application/x-toml"
+        || mime == "application/javascript"
+        || mime == "application/typescript"
+    {
+        return MimeCategory::Text;
+    }
+    MimeCategory::Blob
 }
 
 /// Captured stdio pair for a freshly-spawned agent subprocess.
@@ -394,6 +560,43 @@ pub struct AcpInstance {
 impl AcpInstance {
     pub async fn current_session_id(&self) -> Option<String> {
         self.session_id.read().await.as_ref().map(|id| id.0.to_string())
+    }
+
+    /// Send the actor a `SetMode` command and await the agent's
+    /// `session/set_mode` reply. Surfacing errors as `String` matches
+    /// the rest of the actor's reply shape (mapped into `RpcError`
+    /// upstream by `AcpAdapter::set_session_mode`).
+    pub async fn set_mode(&self, mode_id: String) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        if self.cmd_tx.send(InstanceCommand::SetMode { mode_id, reply }).is_err() {
+            return Err("instance actor closed".into());
+        }
+        rx.await.map_err(|e| e.to_string())?
+    }
+
+    /// Send the actor a `SetModel` command and await the agent's
+    /// `session/set_model` reply. ACP gates this method behind
+    /// `unstable_session_model`; our crate enables it via the
+    /// `["unstable"]` umbrella feature on `agent-client-protocol`.
+    pub async fn set_model(&self, model_id: String) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        if self.cmd_tx.send(InstanceCommand::SetModel { model_id, reply }).is_err() {
+            return Err("instance actor closed".into());
+        }
+        rx.await.map_err(|e| e.to_string())?
+    }
+
+    /// Snapshot the actor's per-instance metadata (cwd, current
+    /// mode/model id, advertised lists). Powers the `instance_meta`
+    /// Tauri command — every palette open routes through here so
+    /// the picker reads the daemon's authoritative cache, not a
+    /// UI-side mirror of past `acp:instance-meta` events.
+    pub async fn meta_snapshot(&self) -> Result<MetaSnapshot, String> {
+        let (reply, rx) = oneshot::channel();
+        if self.cmd_tx.send(InstanceCommand::MetaSnapshot { reply }).is_err() {
+            return Err("instance actor closed".into());
+        }
+        rx.await.map_err(|e| e.to_string())
     }
 
     /// Spawn the per-instance actor task and return its handle.
@@ -538,6 +741,7 @@ async fn run(
         cfg
     };
     let system_prompt = resolved.system_prompt.clone();
+    let resolved_mode = resolved.mode.clone();
 
     let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_subprocess(&cfg, system_prompt.as_deref()) {
         Ok(spawned) => (
@@ -751,6 +955,21 @@ async fn run(
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let load_supported = init.agent_capabilities.load_session;
 
+        // Per-instance metadata snapshot. The daemon emits this on
+        // `InstanceEvent::InstanceMeta` because claude-code-acp doesn't
+        // proactively send `SessionInfoUpdate` / `CurrentModeUpdate`
+        // notifications — the UI would otherwise never see cwd / mode
+        // / model values.
+        let cwd_str = cwd.display().to_string();
+        let current_mode_meta: Arc<tokio::sync::RwLock<Option<String>>> =
+            Arc::new(tokio::sync::RwLock::new(resolved_mode.clone()));
+        let current_model_meta: Arc<tokio::sync::RwLock<Option<String>>> =
+            Arc::new(tokio::sync::RwLock::new(cfg.model.clone()));
+        let available_modes_meta: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModeInfo>>> =
+            Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let available_models_meta: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModelInfo>>> =
+            Arc::new(tokio::sync::RwLock::new(Vec::new()));
+
         let session_id: Option<SessionId> = match bootstrap {
             Bootstrap::Fresh => {
                 debug!(agent = %agent_id_notif, "acp::instance: sending session/new");
@@ -769,11 +988,56 @@ async fn run(
                     let mut slot = session_id_forward.write().await;
                     *slot = Some(sid.clone());
                 }
+                // Pull `currentModeId` + `availableModes` off the
+                // `NewSessionResponse.modes` field — ACP's only
+                // emission of this list (no streaming variant exists).
+                if let Some(modes) = &new_session.modes {
+                    let advertised: Vec<crate::adapters::SessionModeInfo> = modes
+                        .available_modes
+                        .iter()
+                        .map(|m| crate::adapters::SessionModeInfo {
+                            id: m.id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    *available_modes_meta.write().await = advertised;
+                    *current_mode_meta.write().await = Some(modes.current_mode_id.0.to_string());
+                }
+                // Same shape as modes, gated by ACP's `unstable_session_model`
+                // feature (our crate enables `["unstable"]`). claude-code-acp
+                // populates this with the agent's advertised model list +
+                // current selection; without reading it here the picker's
+                // `availableModels` stays empty even though the actor knows
+                // how to flip via `SetSessionModelRequest`.
+                if let Some(models) = &new_session.models {
+                    let advertised: Vec<crate::adapters::SessionModelInfo> = models
+                        .available_models
+                        .iter()
+                        .map(|m| crate::adapters::SessionModelInfo {
+                            id: m.model_id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    *available_models_meta.write().await = advertised;
+                    *current_model_meta.write().await = Some(models.current_model_id.0.to_string());
+                }
                 let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
                     session_id: Some(sid.0.to_string()),
                     state: InstanceState::Running,
+                });
+                let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
+                    agent_id: agent_id_notif.clone(),
+                    instance_id: instance_id_notif.clone(),
+                    session_id: Some(sid.0.to_string()),
+                    cwd: cwd_str.clone(),
+                    current_mode_id: current_mode_meta.read().await.clone(),
+                    current_model_id: current_model_meta.read().await.clone(),
+                    available_modes: available_modes_meta.read().await.clone(),
+                    available_models: available_models_meta.read().await.clone(),
                 });
                 Some(sid)
             }
@@ -798,31 +1062,94 @@ async fn run(
                     *slot = Some(sid.clone());
                 }
                 debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
-                if let Err(err) = connection
+                let load_resp = match connection
                     .send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
                     .block_task()
                     .await
                 {
-                    warn!(agent = %agent_id_notif, %err, "acp::instance: load_session failed");
-                    let _ = events_tx_notif.send(InstanceEvent::State {
-                        agent_id: agent_id_notif.clone(),
-                        instance_id: instance_id_notif.clone(),
-                        session_id: Some(sid.0.to_string()),
-                        state: InstanceState::Error,
-                    });
-                    return Err(err);
-                }
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        warn!(agent = %agent_id_notif, %err, "acp::instance: load_session failed");
+                        let _ = events_tx_notif.send(InstanceEvent::State {
+                            agent_id: agent_id_notif.clone(),
+                            instance_id: instance_id_notif.clone(),
+                            session_id: Some(sid.0.to_string()),
+                            state: InstanceState::Error,
+                        });
+                        return Err(err);
+                    }
+                };
                 info!(
                     agent = %agent_id_notif,
                     instance = %instance_id_notif,
                     session = %sid,
                     "acp::instance: session/load accepted"
                 );
+                // Mirror the Fresh path's `NewSessionResponse.modes/models`
+                // read against `LoadSessionResponse`. Without this the
+                // resumed instance's mode/model pickers stay empty —
+                // the agent advertises both lists in the load response,
+                // but we'd been discarding it. Same shapes, same logic
+                // as the Fresh arm above.
+                if let Some(modes) = &load_resp.modes {
+                    let advertised: Vec<crate::adapters::SessionModeInfo> = modes
+                        .available_modes
+                        .iter()
+                        .map(|m| crate::adapters::SessionModeInfo {
+                            id: m.id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    *available_modes_meta.write().await = advertised;
+                    *current_mode_meta.write().await = Some(modes.current_mode_id.0.to_string());
+                }
+                if let Some(models) = &load_resp.models {
+                    let advertised: Vec<crate::adapters::SessionModelInfo> = models
+                        .available_models
+                        .iter()
+                        .map(|m| crate::adapters::SessionModelInfo {
+                            id: m.model_id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    *available_models_meta.write().await = advertised;
+                    *current_model_meta.write().await = Some(models.current_model_id.0.to_string());
+                }
+                // Suspended sessions can resume with a half-finished
+                // turn — pending tool call awaiting permission, agent
+                // mid-stream, etc. The replay surfaces those states
+                // in the transcript, but the agent server-side might
+                // still treat the original turn as "in flight",
+                // refusing fresh prompts until something resolves it.
+                // Send a CancelNotification right after the load
+                // accepts so any inherited in-flight state collapses
+                // before the user types. Soft-fails: if the session
+                // is already idle, the agent treats it as a no-op.
+                if let Err(err) = connection.send_notification(CancelNotification::new(sid.clone())) {
+                    debug!(
+                        agent = %agent_id_notif,
+                        session = %sid,
+                        %err,
+                        "acp::instance: post-load cancel notification failed (non-fatal)"
+                    );
+                }
                 let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
                     session_id: Some(sid.0.to_string()),
                     state: InstanceState::Running,
+                });
+                let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
+                    agent_id: agent_id_notif.clone(),
+                    instance_id: instance_id_notif.clone(),
+                    session_id: Some(sid.0.to_string()),
+                    cwd: cwd_str.clone(),
+                    current_mode_id: current_mode_meta.read().await.clone(),
+                    current_model_id: current_model_meta.read().await.clone(),
+                    available_modes: available_modes_meta.read().await.clone(),
+                    available_models: available_models_meta.read().await.clone(),
                 });
                 Some(sid)
             }
@@ -900,12 +1227,17 @@ async fn run(
                             let agent_id_done = agent_id_notif.clone();
                             let instance_id_done = instance_id_notif.clone();
                             let turn_id_done = turn_id.clone();
+                            let cwd_done = cwd_str.clone();
+                            let current_mode_done = current_mode_meta.clone();
+                            let current_model_done = current_model_meta.clone();
+                            let available_modes_done = available_modes_meta.clone();
+                            let available_models_done = available_models_meta.clone();
                             tokio::spawn(async move {
                                 let res = conn
                                     .send_request(PromptRequest::new(sid.clone(), blocks))
                                     .block_task()
                                     .await;
-                                let (stop_reason, mapped) = match res {
+                                let (stop_reason, error_msg, mapped) = match res {
                                     Ok(resp) => {
                                         info!(
                                             agent = %agent_log,
@@ -917,7 +1249,7 @@ async fn run(
                                         let stop = serde_json::to_value(resp.stop_reason)
                                             .ok()
                                             .and_then(|v| v.as_str().map(str::to_owned));
-                                        (stop, Ok(()))
+                                        (stop, None, Ok(()))
                                     }
                                     Err(err) => {
                                         warn!(
@@ -927,7 +1259,8 @@ async fn run(
                                             %err,
                                             "acp::instance: turn ended with error"
                                         );
-                                        (None, Err(err.to_string()))
+                                        let msg = err.to_string();
+                                        (None, Some(msg.clone()), Err(msg))
                                     }
                                 };
                                 {
@@ -937,11 +1270,26 @@ async fn run(
                                     }
                                 }
                                 let _ = events_tx_done.send(InstanceEvent::TurnEnded {
-                                    agent_id: agent_id_done,
-                                    instance_id: instance_id_done,
+                                    agent_id: agent_id_done.clone(),
+                                    instance_id: instance_id_done.clone(),
                                     session_id: sid.0.to_string(),
                                     turn_id: turn_id_done,
                                     stop_reason,
+                                    error: error_msg,
+                                });
+                                // Refresh tick after every turn end so the
+                                // header chrome re-syncs even when the agent
+                                // didn't push a `current_mode_update` /
+                                // `session_info_update` notification this turn.
+                                let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
+                                    agent_id: agent_id_done,
+                                    instance_id: instance_id_done,
+                                    session_id: Some(sid.0.to_string()),
+                                    cwd: cwd_done,
+                                    current_mode_id: current_mode_done.read().await.clone(),
+                                    current_model_id: current_model_done.read().await.clone(),
+                                    available_modes: available_modes_done.read().await.clone(),
+                                    available_models: available_models_done.read().await.clone(),
                                 });
                                 let _ = reply.send(mapped);
                             });
@@ -960,6 +1308,98 @@ async fn run(
                                 .send_notification(CancelNotification::new(sid))
                                 .map_err(|e| e.to_string());
                             let _ = reply.send(res);
+                        }
+                        InstanceCommand::SetMode { mode_id, reply } => {
+                            let Some(sid) = session_id.clone() else {
+                                let _ = reply.send(Err("no live session in list-only actor".into()));
+                                continue;
+                            };
+                            info!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                mode_id,
+                                "acp::instance: session/set_mode requested"
+                            );
+                            let conn = connection.clone();
+                            let agent_log = agent_id_notif.clone();
+                            let instance_log = instance_id_notif.clone();
+                            let session_log = sid.clone();
+                            let current_mode = current_mode_meta.clone();
+                            let available_modes = available_modes_meta.clone();
+                            let current_model_done = current_model_meta.clone();
+                            let available_models_done = available_models_meta.clone();
+                            let cwd_done = cwd_str.clone();
+                            let events_tx_done = events_tx_notif.clone();
+                            tokio::spawn(async move {
+                                let req = SetSessionModeRequest::new(session_log.clone(), SessionModeId::from(std::sync::Arc::<str>::from(mode_id.clone())));
+                                let res = conn
+                                    .send_request(req)
+                                    .block_task()
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                if res.is_ok() {
+                                    *current_mode.write().await = Some(mode_id.clone());
+                                    // Refresh InstanceMeta so the header
+                                    // picks up the new mode without
+                                    // waiting for an agent-pushed
+                                    // current_mode_update.
+                                    let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
+                                        agent_id: agent_log,
+                                        instance_id: instance_log,
+                                        session_id: Some(session_log.0.to_string()),
+                                        cwd: cwd_done,
+                                        current_mode_id: Some(mode_id),
+                                        current_model_id: current_model_done.read().await.clone(),
+                                        available_modes: available_modes.read().await.clone(),
+                                        available_models: available_models_done.read().await.clone(),
+                                    });
+                                }
+                                let _ = reply.send(res.map(|_| ()));
+                            });
+                        }
+                        InstanceCommand::SetModel { model_id, reply } => {
+                            let Some(sid) = session_id.clone() else {
+                                let _ = reply.send(Err("no live session in list-only actor".into()));
+                                continue;
+                            };
+                            info!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                model_id,
+                                "acp::instance: session/set_model requested"
+                            );
+                            let conn = connection.clone();
+                            let agent_log = agent_id_notif.clone();
+                            let instance_log = instance_id_notif.clone();
+                            let session_log = sid.clone();
+                            let current_mode_done = current_mode_meta.clone();
+                            let current_model_done = current_model_meta.clone();
+                            let available_modes_done = available_modes_meta.clone();
+                            let available_models_done = available_models_meta.clone();
+                            let cwd_done = cwd_str.clone();
+                            let events_tx_done = events_tx_notif.clone();
+                            tokio::spawn(async move {
+                                let req = SetSessionModelRequest::new(session_log.clone(), ModelId::from(std::sync::Arc::<str>::from(model_id.clone())));
+                                let res = conn
+                                    .send_request(req)
+                                    .block_task()
+                                    .await
+                                    .map_err(|e| e.to_string());
+                                if res.is_ok() {
+                                    *current_model_done.write().await = Some(model_id.clone());
+                                    let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
+                                        agent_id: agent_log,
+                                        instance_id: instance_log,
+                                        session_id: Some(session_log.0.to_string()),
+                                        cwd: cwd_done,
+                                        current_mode_id: current_mode_done.read().await.clone(),
+                                        current_model_id: Some(model_id),
+                                        available_modes: available_modes_done.read().await.clone(),
+                                        available_models: available_models_done.read().await.clone(),
+                                    });
+                                }
+                                let _ = reply.send(res.map(|_| ()));
+                            });
                         }
                         // Detached for the same reason as Prompt: list_sessions can take
                         // seconds against a remote index, and blocking the select! starves
@@ -983,6 +1423,22 @@ async fn run(
                                     .map_err(|e| e.to_string());
                                 let _ = reply.send(res);
                             });
+                        }
+                        InstanceCommand::MetaSnapshot { reply } => {
+                            // Direct read of the per-instance Arc-cached
+                            // metadata. Fast — no agent roundtrip — but
+                            // returns the freshest state the daemon has
+                            // (updated on session/new, session/load,
+                            // set_mode, set_model, every TurnEnded).
+                            let snap = MetaSnapshot {
+                                session_id: session_id.as_ref().map(|s| s.0.to_string()),
+                                cwd: cwd_str.clone(),
+                                current_mode_id: current_mode_meta.read().await.clone(),
+                                current_model_id: current_model_meta.read().await.clone(),
+                                available_modes: available_modes_meta.read().await.clone(),
+                                available_models: available_models_meta.read().await.clone(),
+                            };
+                            let _ = reply.send(snap);
                         }
                         InstanceCommand::Shutdown { reply } => {
                             info!(
@@ -1031,15 +1487,34 @@ async fn run(
                                     "acp::instance: session/update received"
                                 );
                             }
-                            let item = map_session_update(update);
+                            let mapped = map_session_update(update);
                             let turn_id = current_turn_id.read().await.clone();
-                            let _ = events_tx_notif.send(InstanceEvent::Transcript {
-                                agent_id: agent_id_notif.clone(),
-                                instance_id: instance_id_notif.clone(),
-                                session_id: sid,
-                                turn_id,
-                                item,
-                            });
+                            let evt = match mapped {
+                                MappedUpdate::Transcript(item) => InstanceEvent::Transcript {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: sid,
+                                    turn_id,
+                                    item,
+                                },
+                                MappedUpdate::SessionInfo { title, updated_at } => InstanceEvent::SessionInfoUpdate {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: sid,
+                                    title,
+                                    updated_at,
+                                },
+                                MappedUpdate::CurrentMode { current_mode_id } => {
+                                    *current_mode_meta.write().await = Some(current_mode_id.clone());
+                                    InstanceEvent::CurrentModeUpdate {
+                                        agent_id: agent_id_notif.clone(),
+                                        instance_id: instance_id_notif.clone(),
+                                        session_id: sid,
+                                        current_mode_id,
+                                    }
+                                }
+                            };
+                            let _ = events_tx_notif.send(evt);
                         }
                         ClientEvent::PermissionRequested {
                             session_id: sid,
@@ -1047,6 +1522,8 @@ async fn run(
                             tool,
                             kind,
                             args,
+                            raw_input,
+                            content_text,
                             options,
                         } => {
                             debug!(
@@ -1066,6 +1543,8 @@ async fn run(
                                 tool,
                                 kind,
                                 args,
+                                raw_input,
+                                content_text,
                                 options,
                             });
                         }
@@ -1168,6 +1647,8 @@ mod tests {
             path: PathBuf::from("/tmp/skills/git-commit/SKILL.md"),
             body: "stage and commit".into(),
             title: Some("Git commit".into()),
+            data: None,
+            mime: None,
         };
         let blocks = build_prompt_blocks("please commit", std::slice::from_ref(&att));
         assert_eq!(blocks.len(), 2, "one resource + one text");
@@ -1187,18 +1668,103 @@ mod tests {
     }
 
     #[test]
+    fn build_prompt_blocks_dispatches_image_audio_blob_purely_by_mime() {
+        let img = Attachment {
+            slug: "shot".into(),
+            path: PathBuf::from("/tmp/shot.png"),
+            body: String::new(),
+            title: None,
+            data: Some("BASE64IMG".into()),
+            mime: Some("image/png".into()),
+        };
+        let audio = Attachment {
+            slug: "clip".into(),
+            path: PathBuf::from("/tmp/clip.wav"),
+            body: String::new(),
+            title: None,
+            data: Some("BASE64AUDIO".into()),
+            mime: Some("audio/wav".into()),
+        };
+        let pdf = Attachment {
+            slug: "doc".into(),
+            path: PathBuf::from("/tmp/doc.pdf"),
+            body: String::new(),
+            title: None,
+            data: Some("BASE64PDF".into()),
+            mime: Some("application/pdf".into()),
+        };
+        let yaml = Attachment {
+            slug: "cfg".into(),
+            path: PathBuf::from("/tmp/cfg.yaml"),
+            body: "name: hyprpilot".into(),
+            title: None,
+            data: None,
+            mime: Some("application/x-yaml".into()),
+        };
+        let blocks = build_prompt_blocks("text", &[img, audio, pdf, yaml]);
+        assert_eq!(blocks.len(), 5, "4 attachments + 1 text");
+        match &blocks[0] {
+            ContentBlock::Image(i) => {
+                assert_eq!(i.mime_type, "image/png");
+                assert_eq!(i.data, "BASE64IMG");
+            }
+            other => panic!("expected image, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Audio(a) => {
+                assert_eq!(a.mime_type, "audio/wav");
+                assert_eq!(a.data, "BASE64AUDIO");
+            }
+            other => panic!("expected audio, got {other:?}"),
+        }
+        let ContentBlock::Resource(pdf_res) = &blocks[2] else {
+            panic!("expected resource for PDF")
+        };
+        let EmbeddedResourceResource::BlobResourceContents(blob) = &pdf_res.resource else {
+            panic!("PDF must encode as blob, not text")
+        };
+        assert_eq!(blob.blob, "BASE64PDF");
+        assert_eq!(blob.mime_type.as_deref(), Some("application/pdf"));
+        let ContentBlock::Resource(yaml_res) = &blocks[3] else {
+            panic!("expected resource for yaml")
+        };
+        let EmbeddedResourceResource::TextResourceContents(tr) = &yaml_res.resource else {
+            panic!("yaml must encode as text resource")
+        };
+        assert_eq!(tr.text, "name: hyprpilot");
+        assert_eq!(tr.mime_type.as_deref(), Some("application/x-yaml"));
+    }
+
+    #[test]
+    fn mime_category_classifies_known_types() {
+        assert_eq!(mime_category("image/png"), MimeCategory::Image);
+        assert_eq!(mime_category("image/svg+xml"), MimeCategory::Image);
+        assert_eq!(mime_category("audio/mp3"), MimeCategory::Audio);
+        assert_eq!(mime_category("text/plain"), MimeCategory::Text);
+        assert_eq!(mime_category("text/markdown"), MimeCategory::Text);
+        assert_eq!(mime_category("application/json"), MimeCategory::Text);
+        assert_eq!(mime_category("application/x-yaml"), MimeCategory::Text);
+        assert_eq!(mime_category("application/pdf"), MimeCategory::Blob);
+        assert_eq!(mime_category("application/octet-stream"), MimeCategory::Blob);
+    }
+
+    #[test]
     fn build_prompt_blocks_preserves_attachment_order() {
         let a = Attachment {
             slug: "a".into(),
             path: PathBuf::from("/tmp/a/SKILL.md"),
             body: "A".into(),
             title: None,
+            data: None,
+            mime: None,
         };
         let b = Attachment {
             slug: "b".into(),
             path: PathBuf::from("/tmp/b/SKILL.md"),
             body: "B".into(),
             title: None,
+            data: None,
+            mime: None,
         };
         let blocks = build_prompt_blocks("text", &[a, b]);
         assert_eq!(blocks.len(), 3);

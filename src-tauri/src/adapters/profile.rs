@@ -43,13 +43,13 @@ pub struct ResolvedInstance {
 impl ResolvedInstance {
     /// Resolve the active agent + profile overlay for a submit call.
     /// `profile_id` — when `Some` — must name a real profile; when
-    /// `None`, falls back through `[agent] default_profile` and
-    /// finally to a bare-agent resolution.
+    /// `None`, falls back through `[profile] default` and finally
+    /// to a bare-agent resolution.
     pub fn from_config(config: &Config, profile_id: Option<&str>) -> Result<Self> {
         if let Some(id) = profile_id {
             return Self::from_profile(config, id);
         }
-        if let Some(id) = config.agents.agent.default_profile.as_deref() {
+        if let Some(id) = config.profile.default.as_deref() {
             return Self::from_profile(config, id);
         }
         Self::bare(config)
@@ -239,8 +239,10 @@ mod tests {
                 agents: vec![agent("cc", Some("sonnet"))],
                 agent: crate::config::AgentDefaults {
                     default: Some("cc".into()),
-                    default_profile: Some("ask".into()),
                 },
+            },
+            profile: crate::config::ProfileDefaults {
+                default: Some("ask".into()),
             },
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
@@ -249,7 +251,7 @@ mod tests {
         assert_eq!(r.profile_id.as_deref(), Some("ask"));
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
-        cfg.agents.agent.default_profile = None;
+        cfg.profile.default = None;
         let r = ResolvedInstance::from_config(&cfg, None).unwrap();
         assert!(r.profile_id.is_none());
         assert_eq!(r.agent.id, "cc");

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { ButtonTone, ButtonVariant } from './types'
+import { ButtonTone, ButtonVariant } from '@components'
 
 const props = withDefaults(
   defineProps<{
@@ -53,16 +53,17 @@ const toneVar = computed(() => {
 }
 
 .button.is-solid {
-  color: var(--theme-surface-bg);
+  color: var(--theme-fg-on-tone);
   background-color: var(--tone);
 }
 
 .button:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--tone) 18%, transparent);
+  background-color: var(--tone);
+  color: var(--theme-fg-on-tone);
 }
 
 .button.is-solid:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--tone) 80%, transparent);
+  filter: brightness(1.15);
 }
 
 .button:disabled {

@@ -46,6 +46,7 @@ tauri-plugin-single-instance = "2.4"
 uuid = { version = "1", features = ["v4"] }
 mime_guess = "2.0.5"
 merge = { version = "0.2.0", features = ["derive"] }
+tauri-plugin-shell = "2.3.5"
 
 [dev-dependencies]
 tempfile = "3"

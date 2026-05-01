@@ -1,0 +1,28 @@
+# Live-daemon Playwright fixture — pins the agent + model so tauri-mode
+# specs deterministically hit claude-code via the haiku model. Spec
+# author chooses between this and `e2e-config.toml` (mock-agent) via
+# `HYPRPILOT_E2E_CONFIG=path/to/live-config.toml HYPRPILOT_E2E_MODE=tauri`.
+#
+# `[[agents]]` is keyed by `id` — `claude-code` here replaces the
+# default daemon entry wholesale. Network-bound (bunx fetches the ACP
+# package on first run); unsuitable for CI without a pre-warmed cache.
+
+[agent]
+default = "claude-code"
+
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"
+model = "haiku"
+command = "bunx"
+args = ["--bun", "@agentclientprotocol/claude-agent-acp"]
+
+[daemon.window]
+mode = "center"
+
+[daemon.window.center]
+width = "60%"
+height = "70%"
+
+[logging]
+level = "debug"

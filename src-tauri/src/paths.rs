@@ -13,9 +13,8 @@ pub fn base() -> &'static BaseDirs {
     CACHE.get_or_init(|| BaseDirs::new().expect("unable to resolve user base directories"))
 }
 
-/// Resolved home directory. `BaseDirs::home_dir` returns a borrowed
-/// path; consumers that need an owned `PathBuf` clone at the call
-/// site.
+/// Resolved home directory. Borrowed so ctl-heavy paths don't pay an
+/// allocation per call — same reasoning as `base()` itself.
 pub fn home_dir() -> &'static Path {
     base().home_dir()
 }

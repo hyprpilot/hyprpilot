@@ -1,6 +1,6 @@
 @import 'tailwindcss';
 
-/* D5 design tokens are seeded exclusively from the Rust config layer
+/* design tokens are seeded exclusively from the Rust config layer
  * (`defaults.toml` → user → profile) and applied at boot via
  * `useTheme::applyTheme()`. CSS must not declare literal theme values
  * anywhere — not on `:root`, not as `var(--token, literal)` fallbacks.
@@ -12,33 +12,12 @@
  * Tailwind resolves the reference at compile time, the value resolves
  * at runtime. */
 
-/* Custom animations register through `@theme` (Tailwind v4) so consumers
- * reach them via utility classes — `animate-pulse-slow`, `animate-blink`. */
-@theme {
-  --animate-pulse-slow: pulse-slow 1.2s ease-in-out infinite;
-  --animate-blink: blink 1s step-end infinite;
-}
-
-@keyframes pulse-slow {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-@keyframes blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
+/* No custom animations — every primitive uses Tailwind v4's built-in
+ * utilities (`animate-pulse`, `animate-spin`, `animate-bounce`,
+ * `animate-ping`). Adding a custom keyframe / @theme entry is forbidden
+ * here; if the visual demands a non-built-in cadence, reach for
+ * `motion-safe:` modifiers + arbitrary-value variants
+ * (`[animation-duration:1.2s]`) instead of declaring new keyframes. */
 
 @theme inline {
   --font-mono: var(--theme-font-mono);
@@ -52,8 +31,6 @@
   --color-theme-surface-alt: var(--theme-surface-alt);
   --color-theme-bg: var(--theme-surface-bg);
 
-  --color-theme-card-user: var(--theme-surface-card-user);
-  --color-theme-card-assistant: var(--theme-surface-card-assistant);
   --color-theme-compose: var(--theme-surface-compose);
 
   --color-theme-fg: var(--theme-fg);
@@ -94,11 +71,11 @@
   --color-theme-permission-bg-active: var(--theme-permission-bg-active);
 }
 
-/* No literal `font-size` on html/body. The base font size is driven
- * by `useTheme::applyGtkFont()`, which invokes `get_gtk_font` at boot
- * and sets `html { font-size: <pt * 1.333>px }`. If the GTK query
- * fails, the browser default (16px) takes over — every rem/em unit
- * in the tree continues to render at a sensible size. */
+/* No `font-size` declaration on html — UI scaling lives in `[ui]
+ * zoom` (Rust-side config), applied via `WebviewWindow::set_zoom`
+ * at boot. That scales text + layout together (Chromium page zoom),
+ * which is the only way to scale our `px`-heavy primitives uniformly.
+ * Browser default 16px stays as the `rem` baseline. */
 /* The overlay ALWAYS fills its window — compositor gives us a surface of
  * a fixed size (anchor width × height, or center mode rect), and the UI
  * must lay out to match. `height: 100%` on every rung of the tree so
@@ -110,7 +87,16 @@ body {
   height: 100%;
 }
 
-#app,
+/* `#app` is the Vue mount point — kept as a plain block (not flex) so
+ * portal-style siblings like vue-sonner's `<Toaster>` section (which
+ * Sonner positions fixed internally but renders as a `<section>` in
+ * the document flow) don't share flex height with the overlay shell.
+ * `.overlay-root` carries the flex column that drives the Frame's
+ * 100vh fill. */
+#app {
+  height: 100%;
+}
+
 .overlay-root {
   height: 100%;
   display: flex;
@@ -122,38 +108,10 @@ body {
   min-height: 0;
 }
 
-/* Window-edge accent in `--theme-window-edge`, differentiated by window mode:
- *
- * - Anchor mode (`data-window-anchor="<edge>"` present): single 2px stripe on
- *   the side *opposite* the anchor — i.e. the inward edge where the overlay
- *   meets the desktop. The anchored edge itself sits flush against the screen
- *   bezel, so a border there would get clipped by the compositor.
- * - Center mode (attribute unset): full 2px perimeter on all four sides —
- *   the window floats, every edge is inward, so framing the whole instance
- *   reads cleanly.
- *
- * `box-sizing: border-box` keeps whatever border we paint inside the `100vh`
- * viewport instead of pushing content past the edge. */
-html[data-window-anchor='right'] body {
-  border-left: 2px solid var(--theme-window-edge);
-}
-
-html[data-window-anchor='left'] body {
-  border-right: 2px solid var(--theme-window-edge);
-}
-
-html[data-window-anchor='top'] body {
-  border-bottom: 2px solid var(--theme-window-edge);
-}
-
-html[data-window-anchor='bottom'] body {
-  border-top: 2px solid var(--theme-window-edge);
-}
-
-html:not([data-window-anchor]) body {
-  border: 2px solid var(--theme-window-edge);
-}
-
+/* The instance border lives on `.frame` itself (driven by the phase
+ * color — see `components/header/Frame.vue`). `box-sizing: border-box`
+ * keeps that border inside the `100vh` viewport instead of pushing
+ * content past the edge. */
 body {
   box-sizing: border-box;
 }

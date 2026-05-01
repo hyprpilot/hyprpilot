@@ -35,79 +35,131 @@ dirs = ["~/.config/hyprpilot/skills"]
 # [mcps.env]
 # LOG_LEVEL = "info"
 
-# D5 design tokens (K-250). The Rust config layer is the single source
+# design tokens (K-250). The Rust config layer is the single source
 # of truth — `ui/src/assets/styles.css` declares no literal theme values
 # on :root. `applyTheme()` runs synchronously in main.ts before the app
 # mounts, so there's no FOUC window.
 
+[ui]
+# Webview page zoom multiplier. Applied via WebviewWindow::set_zoom
+# at boot. Scales text + layout uniformly (Chromium-style page
+# zoom), so this is the canonical "make the whole UI bigger" knob —
+# unlike a CSS root font-size knob, which only scales `rem`-based
+# primitives and leaves explicit `px` paddings / widths / borders
+# untouched. 1.0 = native, 1.25 = 25% larger, 0.9 = 10% smaller.
+# Clamped to [0.5, 2.0].
+zoom = 1
+
+# Shiki bundled-theme name for markdown fenced code blocks. Override
+# with any from https://shiki.style/themes#bundled-themes
+# (`github-dark`, `material-theme-palenight`, `vitesse-dark`, …).
+[ui.theme]
+shiki = "one-dark-pro"
+
 [ui.theme.font]
-mono = "ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace"
-sans = "'Inter', ui-sans-serif, system-ui, sans-serif"
+mono = "ui-monospace, monospace"
+sans = "ui-sans-serif, system-ui, sans-serif"
+
+# palette — Onedark-derived dark mode. Captain (human) = green,
+# Pilot (LLM) = red. Phase color (idle/working/awaiting/pending) drives
+# the 3px left overlay border + profile pill bg simultaneously.
 
 [ui.theme.window]
-default = "#0b0d12"
-edge = "#c99bf0"
+default = "#17191e"
+edge = "#e5c07b"
 
 [ui.theme.surface]
-default = "#12141a"
-bg = "#0b0d12"
-alt = "#181b22"
-compose = "#181b22"
-text = "#0b0d12"
+default = "#1e2127"
+bg = "#17191e"
+alt = "#22282f"
+compose = "#1e2127"
+text = "#17191e"
 
-[ui.theme.surface.card.user]
-bg = "#12141a"
-
-[ui.theme.surface.card.assistant]
-bg = "#12141a"
+# Per-role turn-card backgrounds are no longer static tokens — Body.vue
+# composes them at render time via `color-mix(in srgb, surface-bg <a>%,
+# accent-{user,assistant} <b>%)` so the role tint always tracks the
+# accent color (which doubles as the lane stripe). Override the accent
+# under [ui.theme.accent] to retint both the stripe + the body fill in
+# lockstep.
 
 [ui.theme.fg]
-default = "#d8dde5"
-ink_2 = "#a8adb7"
-dim = "#6b7280"
-faint = "#3e4454"
+default = "#abb2bf"
+ink_2 = "#979eab"
+dim = "#7c8a9d"
+faint = "#5c6370"
+# Fixed dark ink for tone-bg pills (warn / err / ok / accent). The
+# body `default` is too light against saturated tone fills; every
+# tone-pill consumes this one constant so contrast stays AA.
+on_tone = "#121212"
 
 [ui.theme.border]
-default = "#20242e"
-soft = "#2b2f3b"
-focus = "#3e4454"
+default = "#2c333d"
+soft = "#38404b"
+focus = "#e5c07b"
 
 [ui.theme.accent]
-default = "#c99bf0"
-user = "#e8c86c"
-user_soft = "#2d2818"
-assistant = "#8ac9a0"
-assistant_soft = "#1d2822"
+default = "#e5c07b"
+user = "#98c379"
+user_soft = "#16210f"
+assistant = "#e06c75"
+assistant_soft = "#29090b"
 
 [ui.theme.state]
-idle = "#7fcf8a"
-stream = "#e8c86c"
-pending = "#e06f6f"
-awaiting = "#e0a060"
-working = "#7fb8ff"
+idle = "#98c379"
+stream = "#e5c07b"
+working = "#e5c07b"
+awaiting = "#d19a66"
+pending = "#e06c75"
 
 [ui.theme.kind]
-read = "#7fb8ff"
-write = "#e480d4"
-bash = "#e8b26c"
-search = "#5fcfd8"
-agent = "#c99bf0"
-think = "#7a8192"
-terminal = "#8ac9a0"
-acp = "#b8d4ff"
+read = "#61afef"
+write = "#c678dd"
+bash = "#d19a66"
+search = "#56b6c2"
+agent = "#c678dd"
+think = "#5c6370"
+terminal = "#98c379"
+acp = "#98caf6"
 
 [ui.theme.status]
-ok = "#7fcf8a"
-warn = "#e0a060"
-err = "#e06f6f"
+ok = "#98c379"
+warn = "#d19a66"
+err = "#e06c75"
 
 [ui.theme.permission]
-bg = "#18130a"
-bg_active = "#22180d"
+bg = "#2c2009"
+bg_active = "#3a2a0c"
+
+# Inline terminal-card palette. Mirrors the kitty default config —
+# Onedark-flavoured ANSI 16 plus bg / fg / cursor / selection.
+# Surfaces directly to the inline terminal block; future xterm.js
+# migration consumes these as `Theme` overrides at terminal init.
+[ui.theme.terminal]
+bg = "#1e2127"
+fg = "#abb2bf"
+cursor = "#e5c07b"
+selection = "#3e4451"
+black = "#22282f"
+red = "#e06c75"
+green = "#98c379"
+yellow = "#e5c07b"
+blue = "#61afef"
+magenta = "#c678dd"
+cyan = "#56b6c2"
+white = "#abb2bf"
+bright_black = "#5c6370"
+bright_red = "#e06c75"
+bright_green = "#98c379"
+bright_yellow = "#d19a66"
+bright_blue = "#61afef"
+bright_magenta = "#c678dd"
+bright_cyan = "#56b6c2"
+bright_white = "#ffffff"
 
 [keymaps.chat]
 submit = { key = "enter" }
 newline = { modifiers = ["shift"], key = "enter" }
+cancel_turn = { modifiers = ["ctrl"], key = "c" }
 
 [keymaps.approvals]
 allow = { key = "a" }
@@ -138,16 +190,14 @@ default = "claude-code"
 [[agents]]
 id = "claude-code"
 provider = "acp-claude-code"
-# TODO: temporary for testing
-model = "haiku"
 command = "bunx"
-args = ["--bun", "@agentclientprotocol/claude-agent-acp"]
+args = ["--bun", "-y", "@agentclientprotocol/claude-agent-acp@latest"]
 
 [[agents]]
 id = "codex"
 provider = "acp-codex"
 command = "bunx"
-args = ["--bun", "@zed-industries/codex-acp"]
+args = ["--bun", "-y", "@zed-industries/codex-acp@latest"]
 
 [[agents]]
 id = "opencode"

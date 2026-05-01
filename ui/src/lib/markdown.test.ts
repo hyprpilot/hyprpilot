@@ -57,10 +57,11 @@ describe('renderMarkdown', () => {
     const src = '```ts\nconst x: number = 1\n```'
     const { html } = await renderMarkdown(src)
     // Shiki emits a `<pre class="shiki ...">` wrapper plus inline-styled
-    // `<span>`s per token.
+    // `<span>`s per token. The bundled theme paints concrete `color: #...`
+    // values; the previous `--shiki-*` var-bridge is gone.
     expect(html).toContain('<pre')
     expect(html).toContain('class="shiki')
-    expect(html).toMatch(/<span style="[^"]*--shiki-/)
+    expect(html).toMatch(/<span style="[^"]*color:\s*#/)
   })
 
   it('fenced code with an unknown language falls through to <pre><code>', async () => {

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::MCPDefinition;
 use crate::paths;
-pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig};
+pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 #[allow(unused_imports)]
 pub use daemon::{AnchorWindow, CenterWindow, Daemon, Dimension, Edge, Window, WindowMode};
 pub use keymaps::KeymapsConfig;
@@ -27,8 +27,8 @@ pub use keymaps::{
 use merge_strategies::{merge_mcps_by_name, merge_profiles_by_id, overwrite_some};
 #[allow(unused_imports)]
 pub use theme::{
-    Card, HexColor, SurfaceCard, Theme, ThemeAccent, ThemeBorder, ThemeFg, ThemeFont, ThemeKind, ThemePermission,
-    ThemeState, ThemeStatus, ThemeSurface, ThemeWindow, Ui,
+    HexColor, Theme, ThemeAccent, ThemeBorder, ThemeFg, ThemeFont, ThemeKind, ThemePermission, ThemeState, ThemeStatus,
+    ThemeSurface, ThemeWindow, Ui,
 };
 use validations::{
     validate_default_profile_id, validate_keymaps_collisions, validate_mcps_unique_name,
@@ -59,9 +59,14 @@ pub struct Config {
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
     /// `AgentsConfig` stays the single Rust-side unit.
     #[garde(dive)]
-    #[garde(custom(validate_default_profile_id(&self.profiles)))]
     #[serde(flatten)]
     pub agents: AgentsConfig,
+    /// `[profile]` — global profile-scope singleton (mirrors `[agent]`).
+    /// `default` is the profile id used when `submit` doesn't carry
+    /// one and the wire / palette doesn't pre-select.
+    #[garde(dive)]
+    #[garde(custom(validate_default_profile_id(&self.profiles)))]
+    pub profile: ProfileDefaults,
     /// `[[profiles]]` at TOML root. Each profile binds an agent id to an
     /// optional model override + optional system prompt; resolved into a
     /// flat `ResolvedInstance` at `session/submit` time.
@@ -177,7 +182,7 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
         agents = cfg.agents.agents.len(),
         profiles = cfg.profiles.len(),
         default_agent = ?cfg.agents.agent.default,
-        default_profile = ?cfg.agents.agent.default_profile,
+        default_profile = ?cfg.profile.default,
         "config::load: layers merged"
     );
 

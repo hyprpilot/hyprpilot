@@ -1,14 +1,41 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event'
 
-import { TauriCommand, TauriEvent, type TauriCommandResult, type TauriEventPayload } from './commands'
-import type { ListSessionsArgs, LoadSessionArgs, ProfileSummary, SessionInfoResult, SessionSummary } from './types'
+import {
+  TauriCommand,
+  TauriEvent,
+  type TauriCommandArgs,
+  type TauriCommandResult,
+  type TauriEventPayload
+} from '@constants/wire'
 
+/**
+ * Typed `invoke` wrapper. Args are inferred from `TauriCommandArgs[K]`
+ * — no `Record<string, unknown>` escape hatch — so call sites get
+ * compile-time validation of every arg shape. Every backend rejection
+ * logs a structured `error`-level entry tagged with the command name +
+ * args BEFORE the rejection propagates — single audit trail for
+ * "what backend call failed, when, with what payload" so callers don't
+ * each need to remember to log. Callers still toast user-facing errors
+ * themselves; this is observability, not UX.
+ *
+ * Commands declared with `void` args don't take a second positional
+ * argument; commands with non-void args require the typed object.
+ * TypeScript narrows on `K`, so the right overload picks per call.
+ */
 export async function invoke<K extends TauriCommand>(
-  command: K,
-  args?: Record<string, unknown>
+  ...args: TauriCommandArgs[K] extends void ? [command: K] : [command: K, args: TauriCommandArgs[K]]
 ): Promise<TauriCommandResult[K]> {
-  return tauriInvoke<TauriCommandResult[K]>(command, args)
+  const [command, payload] = args
+  try {
+    return await tauriInvoke<TauriCommandResult[K]>(command, payload as Record<string, unknown> | undefined)
+  } catch (err) {
+    // Lazy-import to avoid an `@lib` <-> `@ipc` cyclic dep at module
+    // load time. The runtime cost is negligible — once-per-error.
+    const { log } = await import('@lib')
+    log.error('invoke failed', { command, args: payload }, err)
+    throw err
+  }
 }
 
 export async function listen<K extends TauriEvent>(
@@ -19,36 +46,3 @@ export async function listen<K extends TauriEvent>(
 }
 
 export type { EventCallback, UnlistenFn }
-
-/** Fetches the `[[profiles]]` registry. Errors propagate — `useProfiles::refresh` surfaces them via `lastErr`. */
-export async function getProfiles(): Promise<ProfileSummary[]> {
-  const r = await invoke(TauriCommand.ProfilesList)
-
-  return r.profiles
-}
-
-/** Lists resumable sessions from the agent. Backend = K-243 Tauri command `session_list`. */
-export async function listSessions(args: ListSessionsArgs): Promise<SessionSummary[]> {
-  const r = await invoke(TauriCommand.SessionList, { ...args })
-
-  return r.sessions
-}
-
-/**
- * Resumes a session. Replay events stream through the existing
- * `acp:transcript` event fanout, so this returns `void` — the
- * transcript composable picks up the historical chunks and the
- * UI renders them live.
- */
-export async function loadSession(args: LoadSessionArgs): Promise<void> {
-  await invoke(TauriCommand.SessionLoad, { ...args })
-}
-
-/**
- * Single-session lookup for palette previews — mirrors the wire
- * `sessions/info` RPC handler. List + filter through the daemon's
- * default agent/profile.
- */
-export async function getSessionInfo(id: string): Promise<SessionInfoResult> {
-  return invoke(TauriCommand.SessionsInfo, { id })
-}

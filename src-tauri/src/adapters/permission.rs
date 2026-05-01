@@ -60,6 +60,13 @@ pub struct ToolCallRef {
     /// the allowlist matcher.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_args: Option<String>,
+    /// Full structured `tool_call.rawInput` JSON object — pass-through
+    /// of the ACP wire field. Carries fields like `plan` for the
+    /// claude-code `ExitPlanMode` permission flow so the UI can render
+    /// a markdown-bodied plan modal instead of the collapsed string in
+    /// `raw_args`. Opaque to the allowlist matcher.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<serde_json::Value>,
     /// Closed-set tool kind wire string when `name` was resolved from
     /// a typed enum (ACP `ToolKind`); `None` when name fell back to
     /// the human-readable title. The UI uses this to colour the
@@ -67,6 +74,15 @@ pub struct ToolCallRef {
     /// ignores it today (future kind-scoped rules will read it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind_wire: Option<String>,
+    /// Concatenated text from every `content[]` block whose type is
+    /// `content` / `text`. Populated for permissions whose markdown
+    /// body lives on the tool-call's content array rather than its
+    /// `raw_input` (claude-code's `Switch mode` flow ships the plan
+    /// body here, not on `raw_input.plan`). The UI reads this as a
+    /// fallback markdown body for the modal when the rawInput
+    /// shape-detector misses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_text: Option<String>,
 }
 
 impl ToolCallRef {
@@ -450,7 +466,9 @@ mod tests {
                 name: tool.into(),
                 title: Some(tool.into()),
                 raw_args: None,
+                raw_input: None,
                 kind_wire: None,
+                content_text: None,
             },
             options: vec![
                 PermissionOptionView {
