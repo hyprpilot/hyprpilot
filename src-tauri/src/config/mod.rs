@@ -62,6 +62,17 @@ pub struct Config {
     #[garde(custom(crate::config::validations::validate_unique_nonempty))]
     #[merge(strategy = overwrite_some)]
     pub mcps: Option<Vec<PathBuf>>,
+    /// `system_prompt` — root-level fallback every profile uses when
+    /// neither `[[profiles]] system_prompt` nor `system_prompt_file`
+    /// is set. Mirrors the `mcps` shape: a single global default
+    /// every profile inherits unless it overrides locally. `None`
+    /// (unset) → no fallback (resolution returns `None` and the
+    /// agent runs without a system prompt). Inline string only;
+    /// the file-path variant lives per-profile (`system_prompt_file`)
+    /// where a stable file backing makes sense.
+    #[garde(inner(length(min = 1)))]
+    #[merge(strategy = overwrite_some)]
+    pub system_prompt: Option<String>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so

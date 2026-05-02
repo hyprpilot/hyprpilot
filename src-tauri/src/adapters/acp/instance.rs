@@ -922,6 +922,22 @@ async fn run(
     // crosses an `.await`; reads from the loop are non-blocking.
     let current_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
 
+    // Out-of-turn agent activity (scheduled wake-ups, side-channel
+    // updates) arrives without a `Prompt` envelope. We mint a
+    // *synthetic* turn id on the first transcript-shape notification
+    // when no real turn is open, so the chat surface still groups the
+    // resulting items into a single block. `synthetic_turn_id` tracks
+    // the live synthetic id (so the idle timer below can verify
+    // nobody else took over before firing TurnEnded); the timer
+    // handle lets each subsequent update reset the close window.
+    let synthetic_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
+    let mut synthetic_turn_idle: Option<tokio::task::JoinHandle<()>> = None;
+    /// Out-of-turn idle window — agent has 30s of silence before
+    /// the synthetic turn auto-closes. Long enough to span typical
+    /// tool call cycles, short enough the UI doesn't get stuck on
+    /// "running" for hours after a side-channel update.
+    const SYNTHETIC_TURN_IDLE_SECS: u64 = 30;
+
     // Bridge live terminal output → InstanceEvent::Terminal. The ACP
     // `terminal/output` request remains a polled snapshot path
     // (agent-side); the UI consumes this push stream so it never
@@ -1191,6 +1207,19 @@ async fn run(
                         "acp::instance: post-load cancel notification failed (non-fatal)"
                     );
                 }
+                // Resumed sessions already saw the system prompt in their
+                // original turn — re-injecting it on the first post-restore
+                // submit would duplicate it in agent context. Drop the
+                // pending injection on this path; the Fresh-bootstrap arm
+                // keeps it for first prompts on new sessions.
+                if first_message_prefix.is_some() {
+                    debug!(
+                        agent = %agent_id_notif,
+                        session = %sid,
+                        "acp::instance: dropping pending system-prompt injection (session restore)"
+                    );
+                    first_message_prefix = None;
+                }
                 let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
@@ -1240,10 +1269,44 @@ async fn run(
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
                             };
-                            let text = match first_message_prefix.take() {
-                                Some(prefix) => format!("{prefix}\n\n{text}"),
-                                None => text,
-                            };
+                            // First-prompt system-prompt injection: wrap the prompt
+                            // text in an Attachment-shaped wire resource, NOT
+                            // concatenated with the user's text. The transcript
+                            // surfaces only what the captain actually typed; the
+                            // wire ships the system prompt as a markdown resource
+                            // alongside any user attachments. Cleared after the
+                            // first submit consumes it (one-shot per spawn).
+                            let system_prompt_attachment = first_message_prefix.take().map(|prefix| Attachment {
+                                slug: "system-prompt".into(),
+                                path: std::path::PathBuf::from("system-prompt.md"),
+                                body: prefix,
+                                title: Some("system prompt".into()),
+                                data: None,
+                                mime: Some("text/markdown".into()),
+                            });
+                            // Real prompt — if a synthetic out-of-turn turn
+                            // is open, close it cleanly before starting
+                            // the real one. Cancels the pending idle timer
+                            // so it doesn't fire later against a stale id.
+                            if let Some(prev) = synthetic_turn_id.write().await.take() {
+                                if let Some(h) = synthetic_turn_idle.take() {
+                                    h.abort();
+                                }
+                                debug!(
+                                    agent = %agent_id_notif,
+                                    session = %sid,
+                                    turn = %prev,
+                                    "acp::instance: closing synthetic turn before real prompt"
+                                );
+                                let _ = events_tx_notif.send(InstanceEvent::TurnEnded {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: sid.0.to_string(),
+                                    turn_id: prev,
+                                    stop_reason: Some("superseded".into()),
+                                    error: None,
+                                });
+                            }
                             let turn_id = uuid::Uuid::new_v4().to_string();
                             info!(
                                 agent = %agent_id_notif,
@@ -1251,6 +1314,7 @@ async fn run(
                                 turn = %turn_id,
                                 text_len = text.len(),
                                 attachments = attachments.len(),
+                                system_prompt_injected = system_prompt_attachment.is_some(),
                                 "acp::instance: turn start (session/prompt)"
                             );
                             *current_turn_id.write().await = Some(turn_id.clone());
@@ -1262,8 +1326,10 @@ async fn run(
                             });
                             // Daemon-authoritative user-prompt transcript item:
                             // emitted at submit time so the UI no longer mirrors
-                            // optimistically. Single source of truth for the user
-                            // turn's text + attachments.
+                            // optimistically. The system-prompt attachment, when
+                            // present, is intentionally NOT included here — it's
+                            // a wire-side prepend the agent sees, not something
+                            // the captain typed.
                             let _ = events_tx_notif.send(InstanceEvent::Transcript {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
@@ -1274,7 +1340,14 @@ async fn run(
                                     attachments: attachments.clone(),
                                 },
                             });
-                            let blocks = build_prompt_blocks(&text, &attachments);
+                            // Wire blocks: [system_prompt?, ...user_attachments, user_text].
+                            // Per-attachment ordering preserved through the chained iterator;
+                            // `build_prompt_blocks` already lays attachments before text.
+                            let wire_attachments: Vec<Attachment> = system_prompt_attachment
+                                .into_iter()
+                                .chain(attachments.iter().cloned())
+                                .collect();
+                            let blocks = build_prompt_blocks(&text, &wire_attachments);
                             let conn = connection.clone();
                             let agent_log = agent_id_notif.clone();
                             let session_log = sid.clone();
@@ -1544,7 +1617,78 @@ async fn run(
                                 );
                             }
                             let mapped = map_session_update(update);
-                            let turn_id = current_turn_id.read().await.clone();
+                            // Out-of-turn detection: if a transcript-shape
+                            // update arrives without an open turn, mint a
+                            // synthetic id + emit TurnStarted so the chat
+                            // groups the entries instead of scattering them
+                            // into solo blocks. SessionInfo / CurrentMode /
+                            // AvailableCommands updates DO NOT trigger a
+                            // synthetic turn — they're per-session metadata.
+                            let needs_synthetic_turn = matches!(mapped, MappedUpdate::Transcript(_));
+                            let mut turn_id = current_turn_id.read().await.clone();
+                            if needs_synthetic_turn && turn_id.is_none() {
+                                let synthetic = uuid::Uuid::new_v4().to_string();
+                                info!(
+                                    agent = %agent_id_notif,
+                                    instance = %instance_id_notif,
+                                    session = %sid,
+                                    turn = %synthetic,
+                                    "acp::instance: synthetic turn start (out-of-turn agent activity)"
+                                );
+                                *current_turn_id.write().await = Some(synthetic.clone());
+                                *synthetic_turn_id.write().await = Some(synthetic.clone());
+                                let _ = events_tx_notif.send(InstanceEvent::TurnStarted {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: sid.clone(),
+                                    turn_id: synthetic.clone(),
+                                });
+                                turn_id = Some(synthetic);
+                            }
+                            // Refresh the auto-close timer if the active turn
+                            // is the synthetic one. Real turns close via the
+                            // session/prompt resolver — leave them alone.
+                            let active_synthetic = synthetic_turn_id.read().await.clone();
+                            if let (Some(active), Some(turn)) = (active_synthetic.as_deref(), turn_id.as_deref()) {
+                                if active == turn {
+                                    if let Some(h) = synthetic_turn_idle.take() {
+                                        h.abort();
+                                    }
+                                    let synth = active.to_string();
+                                    let current = current_turn_id.clone();
+                                    let synth_slot = synthetic_turn_id.clone();
+                                    let events_idle = events_tx_notif.clone();
+                                    let agent_idle = agent_id_notif.clone();
+                                    let instance_idle = instance_id_notif.clone();
+                                    let sid_idle = sid.clone();
+                                    synthetic_turn_idle = Some(tokio::spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(SYNTHETIC_TURN_IDLE_SECS)).await;
+                                        let mut current_guard = current.write().await;
+                                        if current_guard.as_deref() != Some(synth.as_str()) {
+                                            // Real prompt took over — silently bow out.
+                                            return;
+                                        }
+                                        *current_guard = None;
+                                        drop(current_guard);
+                                        *synth_slot.write().await = None;
+                                        debug!(
+                                            agent = %agent_idle,
+                                            instance = %instance_idle,
+                                            session = %sid_idle,
+                                            turn = %synth,
+                                            "acp::instance: synthetic turn auto-close (idle timeout)"
+                                        );
+                                        let _ = events_idle.send(InstanceEvent::TurnEnded {
+                                            agent_id: agent_idle,
+                                            instance_id: instance_idle,
+                                            session_id: sid_idle,
+                                            turn_id: synth,
+                                            stop_reason: Some("idle".into()),
+                                            error: None,
+                                        });
+                                    }));
+                                }
+                            }
                             let evt: Option<InstanceEvent> = match mapped {
                                 MappedUpdate::Transcript(item) => Some(InstanceEvent::Transcript {
                                     agent_id: agent_id_notif.clone(),
