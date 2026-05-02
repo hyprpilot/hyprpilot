@@ -10,6 +10,7 @@ import {
   pushSessionInfoUpdate,
   setInstanceAgent,
   setInstanceCwd,
+  setInstanceMcpsCount,
   setSessionRestoring,
   setSessionTitleIfUnset,
   lookupCurrentMode,
@@ -320,10 +321,14 @@ export async function startSessionStream(): Promise<() => void> {
       })
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
-      const { agentId, instanceId, cwd, currentModeId, currentModelId, availableModes, availableModels } = e.payload
+      const { agentId, instanceId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload
 
       setInstanceAgent(instanceId, agentId)
       setInstanceCwd(instanceId, cwd)
+
+      if (typeof mcpsCount === 'number') {
+        setInstanceMcpsCount(instanceId, mcpsCount)
+      }
       // InstanceMeta fires once per resume completion (right after
       // session/load accepts) — that's our reliable boundary to
       // tear down the chat-transcript scoped <Loading>. Clearing on

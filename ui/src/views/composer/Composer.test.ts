@@ -31,7 +31,7 @@ const DEFAULT_KEYMAPS = {
     deny: { modifiers: [], key: 'd' }
   },
   composer: {
-    paste_image: { modifiers: [Modifier.Ctrl], key: 'p' },
+    paste: { modifiers: [Modifier.Ctrl], key: 'p' },
     tab_completion: { modifiers: [], key: 'tab' },
     shift_tab: { modifiers: [Modifier.Shift], key: 'tab' },
     completion: { modifiers: [Modifier.Ctrl], key: 'space' },

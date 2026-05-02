@@ -164,19 +164,3 @@ pub(super) fn validate_unique_modifiers(mods: &Vec<Modifier>, _ctx: &()) -> gard
 pub(super) fn validate_keymaps_collisions(cfg: &KeymapsConfig, _ctx: &()) -> garde::Result {
     super::keymaps::validate_collisions(cfg).map_err(|e| garde::Error::new(format!("{e}")))
 }
-
-/// `system_prompt` ⊕ `system_prompt_file` — exclusive. Iterates the
-/// profile list at validate time; folded into the garde walk so the
-/// rule fires inside the derive tree alongside every other
-/// cross-field validator instead of as a post-walk for-loop.
-pub(super) fn validate_profile_prompt_sources(profiles: &Vec<ProfileConfig>, _ctx: &()) -> garde::Result {
-    for p in profiles {
-        if p.system_prompt.is_some() && p.system_prompt_file.is_some() {
-            return Err(garde::Error::new(format!(
-                "profile '{}' sets both system_prompt and system_prompt_file — pick one",
-                p.id
-            )));
-        }
-    }
-    Ok(())
-}

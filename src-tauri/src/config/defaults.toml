@@ -171,11 +171,11 @@ newline = { modifiers = ["shift"], key = "enter" }
 cancel_turn = { modifiers = ["ctrl"], key = "c" }
 
 [keymaps.approvals]
-allow = { key = "a" }
-deny = { key = "d" }
+allow = { modifiers = ["ctrl"], key = "g" }
+deny = { modifiers = ["ctrl"], key = "r" }
 
 [keymaps.composer]
-paste_image = { modifiers = ["ctrl"], key = "p" }
+paste = { modifiers = ["ctrl"], key = "p" }
 tab_completion = { key = "tab" }
 shift_tab = { modifiers = ["shift"], key = "tab" }
 completion = { modifiers = ["ctrl"], key = "space" }
@@ -196,6 +196,10 @@ focus = { modifiers = ["ctrl"], key = "s" }
 
 [keymaps.window]
 toggle = { modifiers = ["ctrl"], key = "q" }
+
+[keymaps.queue]
+send = { modifiers = ["ctrl"], key = "enter" }
+drop = { modifiers = ["ctrl"], key = "backspace" }
 
 [agent]
 default = "claude-code"

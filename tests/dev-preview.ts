@@ -113,7 +113,7 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
       deny: { modifiers: [], key: 'd' }
     },
     composer: {
-      paste_image: { modifiers: ['ctrl'], key: 'p' },
+      paste: { modifiers: ['ctrl'], key: 'p' },
       tab_completion: { modifiers: [], key: 'tab' },
       shift_tab: { modifiers: ['shift'], key: 'tab' },
       history_up: { modifiers: ['ctrl'], key: 'arrowup' },

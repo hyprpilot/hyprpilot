@@ -66,6 +66,8 @@ export enum TauriCommand {
   GetWindowState = 'get_window_state',
   WindowToggle = 'window_toggle',
   GetHomeDir = 'get_home_dir',
+  GetDaemonCwd = 'get_daemon_cwd',
+  ReadFileForAttachment = 'read_file_for_attachment',
   SessionSubmit = 'session_submit',
   SessionCancel = 'session_cancel',
   AgentsList = 'agents_list',
@@ -74,6 +76,8 @@ export enum TauriCommand {
   SessionLoad = 'session_load',
   SessionsInfo = 'sessions_info',
   PermissionReply = 'permission_reply',
+  PermissionsTrustSnapshot = 'permissions_trust_snapshot',
+  PermissionsTrustForget = 'permissions_trust_forget',
   InstancesList = 'instances_list',
   InstancesFocus = 'instances_focus',
   InstancesShutdown = 'instances_shutdown',
@@ -114,6 +118,8 @@ export interface TauriCommandArgs {
   [TauriCommand.GetWindowState]: void
   [TauriCommand.WindowToggle]: void
   [TauriCommand.GetHomeDir]: void
+  [TauriCommand.GetDaemonCwd]: void
+  [TauriCommand.ReadFileForAttachment]: { path: string }
   [TauriCommand.SessionSubmit]: SubmitArgs
   [TauriCommand.SessionCancel]: CancelArgs
   [TauriCommand.AgentsList]: void
@@ -122,6 +128,8 @@ export interface TauriCommandArgs {
   [TauriCommand.SessionLoad]: LoadSessionArgs
   [TauriCommand.SessionsInfo]: SessionsInfoArgs
   [TauriCommand.PermissionReply]: PermissionReplyArgs
+  [TauriCommand.PermissionsTrustSnapshot]: { instanceId: string }
+  [TauriCommand.PermissionsTrustForget]: { instanceId: string; tool: string }
   [TauriCommand.InstancesList]: void
   [TauriCommand.InstancesFocus]: InstancesFocusArgs
   [TauriCommand.InstancesShutdown]: InstancesShutdownArgs
@@ -144,6 +152,8 @@ export interface TauriCommandResult {
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.WindowToggle]: boolean
   [TauriCommand.GetHomeDir]: string
+  [TauriCommand.GetDaemonCwd]: string
+  [TauriCommand.ReadFileForAttachment]: { path: string; body: string; binary: boolean; truncated: boolean }
   [TauriCommand.SessionSubmit]: SubmitResult
   [TauriCommand.SessionCancel]: CancelResult
   [TauriCommand.AgentsList]: { agents: AgentSummary[] }
@@ -152,6 +162,8 @@ export interface TauriCommandResult {
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
+  [TauriCommand.PermissionsTrustSnapshot]: { entries: { tool: string; decision: 'allow' | 'deny' }[] }
+  [TauriCommand.PermissionsTrustForget]: void
   [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
   [TauriCommand.InstancesFocus]: { focusedId: string }
   [TauriCommand.InstancesShutdown]: { id: string }

@@ -2,12 +2,17 @@
  * Instances palette leaf (K-274). Lists every live instance the
  * adapter knows about; `Enter` focuses one, `Ctrl+D` shuts it down.
  *
- * Single column today — `CommandPalette.vue` doesn't expose a
- * preview-pane slot, so the per-row `description` carries
- * `<phase> · <cwd-short> · q<queue> · t<terminals>` so the palette's
- * fuzzy filter still matches across every signal.
+ * Row shape (captain-friendly):
+ *   - `name`: captain-set name when set, else profile id, else agent id
+ *   - `description`: `<adapter> · <model?>` plus phase / queue / terminal counts
+ *   - `kind`: short instance-id slug (acts as a quiet handle in the row)
+ *
+ * Right pane: `InstancesPreview.vue` renders the headline + the last
+ * two transcript turns so the captain can scan recent context without
+ * focusing the instance first.
  */
 
+import InstancesPreview from './InstancesPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, usePalette, useActiveInstance, type InstanceId } from '@composables'
 import { useHomeDir, usePhase, useQueue, truncateCwd, useSessionInfo, useTerminals, pushToast } from '@composables'
@@ -27,36 +32,44 @@ function rowFor(entry: InstanceListEntry, homeDir: string | undefined): Instance
   const { all: terminals } = useTerminals(entry.instanceId)
   const { phase } = usePhase(entry.instanceId)
 
-  const segments: string[] = [phase.value]
+  // Headline name: captain-renamed → profile id → adapter id.
+  const headline = entry.name ?? entry.profileId ?? entry.agentId
+
+  // Description groups: adapter / model first (the wireframe ask), then
+  // phase + cwd + counts so fuzzy filter still hits every signal.
+  const meta: string[] = [entry.agentId]
+  const model = info.value.model
+
+  if (model) {
+    meta.push(model)
+  }
+  meta.push(phase.value)
   const cwd = info.value.cwd
 
   if (cwd) {
-    segments.push(truncateCwd(cwd, 40, homeDir))
+    meta.push(truncateCwd(cwd, 32, homeDir))
   }
 
   if (info.value.mode) {
-    segments.push(info.value.mode)
+    meta.push(info.value.mode)
   }
 
   if (items.value.length > 0) {
-    segments.push(`q${items.value.length}`)
+    meta.push(`q${items.value.length}`)
   }
 
   if (terminals.value.length > 0) {
-    segments.push(`t${terminals.value.length}`)
+    meta.push(`t${terminals.value.length}`)
   }
 
   if (entry.instanceId === activeId.value) {
-    segments.unshift('active')
+    meta.unshift('active')
   }
-
-  const profileLabel = entry.profileId ?? 'no-profile'
-  const name = `${entry.agentId} · ${profileLabel}`
 
   return {
     id: entry.instanceId,
-    name,
-    description: segments.join(' · '),
+    name: headline,
+    description: meta.join(' · '),
     kind: entry.instanceId.slice(0, 8),
     raw: entry
   }
@@ -122,6 +135,10 @@ export async function openInstancesLeaf(): Promise<void> {
     mode: PaletteMode.Select,
     title: 'instances',
     entries,
+    preview: {
+      component: InstancesPreview,
+      props: { items: instances }
+    },
     onCommit(picks) {
       const pick = picks[0]
 

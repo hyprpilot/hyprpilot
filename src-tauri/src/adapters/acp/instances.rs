@@ -1103,7 +1103,12 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_honors_explicit_profile_id() {
-        let cfg: Config = toml::from_str(
+        let dir = tempfile::tempdir().unwrap();
+        let prompt_path = dir.path().join("strict.md");
+
+        std::fs::write(&prompt_path, "be terse").unwrap();
+
+        let cfg: Config = toml::from_str(&format!(
             r#"
 [agent]
 default = "claude-code"
@@ -1124,9 +1129,10 @@ agent = "claude-code"
 id = "strict"
 agent = "claude-code"
 model = "claude-opus-4-5"
-system_prompt = "be terse"
+system_prompt = ["{}"]
 "#,
-        )
+            prompt_path.display()
+        ))
         .expect("fixture parses");
         let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
 
@@ -1187,7 +1193,6 @@ agent = "claude-code"
 [[profiles]]
 id = "strict"
 agent = "claude-code"
-system_prompt = "be terse"
 "#,
         )
         .expect("parses");

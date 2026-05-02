@@ -48,9 +48,12 @@ import {
   type PlanItem
 } from '@components'
 import {
-  isEditableTarget,
   pushToast,
+  dispatchQueueHead,
+  dispatchQueueItem,
+  popQueueItem,
   pushToQueue,
+  pushToQueueAt,
   removeFromQueue,
   startActiveInstance,
   useStickToBottom,
@@ -63,6 +66,7 @@ import {
   useAdapter,
   resetPermissions,
   useAttachments,
+  useDaemonCwd,
   useHomeDir,
   useKeymap,
   useKeymaps,
@@ -80,7 +84,8 @@ import {
   type KeymapEntry,
   startSessionStream,
   type InstanceId,
-  type PlanEntry
+  type PlanEntry,
+  type WireToolCall
 } from '@composables'
 import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
 import { format, log } from '@lib'
@@ -131,6 +136,7 @@ const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, allow, d
 const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
 const { homeDir } = useHomeDir()
+const { daemonCwd } = useDaemonCwd()
 const { items: queuedItems, flush: flushActiveQueue } = useQueue()
 const { blocks: timelineBlocks } = useTimelineBlocks()
 const { entries: toastEntries, dismiss: dismissToast } = useToasts()
@@ -147,14 +153,32 @@ const composerRef = ref<InstanceType<typeof Composer>>()
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === selectedProfile.value))
 
-const headerCwd = computed(() => {
-  const raw = sessionInfo.value.cwd
+/**
+ * Header + idle-banner cwd: prefer the active session's cwd when one
+ * has reported in, fall back to the daemon's own cwd so the captain
+ * sees where the next instance will land before any session info
+ * arrives. Without the fallback the header pill renders blank for
+ * the entire pre-first-turn window — captain reads that as "no cwd
+ * configured" instead of "I'll spawn where the daemon was started".
+ */
+const headerCwd = computed<string | undefined>(() => {
+  const raw = sessionInfo.value.cwd ?? daemonCwd.value
 
   if (!raw) {
     return undefined
   }
 
   return truncateCwd(raw, 32, homeDir.value)
+})
+
+const idleCwd = computed<string | undefined>(() => {
+  const raw = sessionInfo.value.cwd ?? daemonCwd.value
+
+  if (!raw) {
+    return undefined
+  }
+
+  return truncateCwd(raw, 48, homeDir.value)
 })
 
 const headerCounts = computed<BreadcrumbCount[]>(() => [
@@ -245,9 +269,6 @@ const liveBlockIdx = computed<number>(() => {
 let stopStream: (() => void) | undefined
 
 function firePermission(action: 'allow' | 'deny'): void {
-  if (isEditableTarget(document.activeElement)) {
-    return
-  }
   // TODO(K-281 follow-up): Tab = next row cycling. Today the approval
   // keybind always addresses the oldest-active (first non-queued) prompt.
   const active =
@@ -311,12 +332,16 @@ useKeymap(
         binding: keymaps.value.approvals.allow,
         handler: () => {
           firePermission('allow')
+
+          return true
         }
       },
       {
         binding: keymaps.value.approvals.deny,
         handler: () => {
           firePermission('deny')
+
+          return true
         }
       },
       {
@@ -366,6 +391,50 @@ useKeymap(
           void invoke(TauriCommand.WindowToggle).catch((err: unknown) => {
             log.warn('window_toggle failed', { err: String(err) })
           })
+
+          return true
+        }
+      },
+      {
+        // Dispatch the head of the active instance's submit queue.
+        // Captain-only — the queue never auto-drains on turn end.
+        // Falls back to the hardcoded default when the wire-loaded
+        // keymap predates the field.
+        binding: keymaps.value.queue?.send ?? { modifiers: [Modifier.Ctrl], key: 'enter' },
+        handler: () => {
+          const instanceId = activeInstanceId.value
+
+          if (!instanceId) {
+            return true
+          }
+          log.info('keybind invoked', { action: 'send', target: 'queue' })
+          dispatchQueueHead(instanceId)
+
+          return true
+        }
+      },
+      {
+        // Drop the head of the queue without sending. Pairs with the
+        // strip's drop button; useful when typing reveals the queued
+        // entry was a misfire.
+        binding: keymaps.value.queue?.drop ?? { modifiers: [Modifier.Ctrl], key: 'backspace' },
+        handler: () => {
+          const instanceId = activeInstanceId.value
+
+          if (!instanceId) {
+            return true
+          }
+          const head = queuedItems.value[0]
+
+          if (!head) {
+            return true
+          }
+          log.info('keybind invoked', {
+            action: 'drop',
+            target: 'queue',
+            queuedItemId: head.id
+          })
+          removeFromQueue(instanceId, head.id)
 
           return true
         }
@@ -496,6 +565,50 @@ function thoughtText(call: { title?: string; content: { type?: string; text?: st
   }
 
   return parts.join('\n\n')
+}
+
+/**
+ * Merge every thought signal in a block into a single ordered string
+ * so the chat surface renders one thinking card per turn instead of
+ * stacking N. Both wire shapes feed in:
+ *
+ *   - tool-call thoughts (`block.thoughts`) — claude-code-acp emits
+ *     each thinking-block as its own `tool_call` with `kind=think`.
+ *     One turn can carry many.
+ *   - stream-side thoughts (`block.streamEntries` of kind Thought) —
+ *     `agent_thought_chunk` notifications; some agents prefer this
+ *     channel.
+ *
+ * Order by `createdAt` so the captain sees them in the order the
+ * agent emitted them. Empty result → no card rendered.
+ */
+function combinedThoughtText(block: {
+  thoughts: { createdAt: number; call: WireToolCall }[]
+  streamEntries: { createdAt: number; item: { kind: StreamItemKind; text?: string } }[]
+}): string {
+  const merged: { createdAt: number; text: string }[] = []
+
+  for (const entry of block.thoughts) {
+    const text = thoughtText(entry.call)
+
+    if (text.trim().length > 0) {
+      merged.push({ createdAt: entry.createdAt, text })
+    }
+  }
+
+  for (const entry of block.streamEntries) {
+    if (entry.item.kind !== StreamItemKind.Thought) {
+      continue
+    }
+    const text = entry.item.text ?? ''
+
+    if (text.trim().length > 0) {
+      merged.push({ createdAt: entry.createdAt, text })
+    }
+  }
+  merged.sort((a, b) => a.createdAt - b.createdAt)
+
+  return merged.map((m) => m.text).join('\n\n')
 }
 
 async function onAttachmentOpen(att: Attachment): Promise<void> {
@@ -642,6 +755,15 @@ function imagePillsToAttachments(pills: ComposerPill[]): Attachment[] {
     })
 }
 
+/**
+ * Tracks an in-flight queue-edit round-trip. Set when the captain
+ * clicks the queue strip's edit button: the entry leaves the queue,
+ * its text + pills land in the composer, and `position` remembers
+ * the original slot. On the next submit we re-insert at the same
+ * position so order is preserved.
+ */
+const editingQueueSlot = ref<{ instanceId: InstanceId; position: number } | undefined>(undefined)
+
 function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void {
   const { text, attachments } = payload
   // Skill / resource attachments live in the `useAttachments` singleton
@@ -659,17 +781,37 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
     text_len: text.length,
     image_attachments: imageAttachments.length,
     skill_attachments: skillAttachments.length,
-    profileId: selectedProfile.value
+    profileId: selectedProfile.value,
+    editing: editingQueueSlot.value !== undefined
   })
 
   const instanceId = activeInstanceId.value ?? mintInstanceId()
 
   useActiveInstance().set(instanceId)
 
-  // Submit-while-busy: queue instead of dispatching. The composer
-  // clears as in the dispatch path so the user can keep typing; the
-  // K-260 turn-end watcher in `useQueue` drains the head when the
-  // in-flight turn lands `acp:turn-ended` with stop_reason=end_turn.
+  // Edit-resubmit: a captain pulled this entry into the composer
+  // via the queue-strip edit button. Land it back in the queue at
+  // the original slot regardless of phase — the queue is captain-
+  // drained today (Ctrl+Enter or per-row send), so always
+  // re-queueing keeps the order predictable.
+  const editing = editingQueueSlot.value
+
+  if (editing && editing.instanceId === instanceId) {
+    pushToQueueAt(instanceId, editing.position, {
+      text,
+      pills: attachments,
+      skillAttachments
+    })
+    editingQueueSlot.value = undefined
+    composerRef.value?.clear()
+    clearAttachments()
+
+    return
+  }
+
+  // Submit-while-busy: queue at the tail. The queue never auto-
+  // drains today — captain dispatches via Ctrl+Enter or the per-
+  // row send button on the queue strip.
   if (phase.value !== Phase.Idle) {
     pushToQueue(instanceId, {
       text,
@@ -716,6 +858,51 @@ function onQueueDrop(id: string): void {
 function onQueueDropAll(): void {
   flushActiveQueue()
 }
+
+/**
+ * Pull a queued entry into the composer. Snapshot the slot so a
+ * subsequent submit (Enter / send button) re-inserts at the same
+ * position — order is preserved end-to-end. The composer's
+ * existing draft is replaced wholesale; users committed to a
+ * different message can drop it via the queue's drop button.
+ */
+function onQueueEdit(itemId: string): void {
+  const instanceId = activeInstanceId.value
+
+  if (!instanceId) {
+    return
+  }
+  const popped = popQueueItem(instanceId, itemId)
+
+  if (!popped) {
+    return
+  }
+  editingQueueSlot.value = { instanceId, position: popped.position }
+  composerRef.value?.setDraft({
+    text: popped.item.text,
+    pills: popped.item.pills
+  })
+  log.info('queue edit', {
+    instanceId,
+    queuedItemId: itemId,
+    slot: popped.position
+  })
+}
+
+/**
+ * Per-row "send now" — pop the specific entry out of the queue
+ * and dispatch it via the adapter. Skips the head if the captain
+ * picked a later row.
+ */
+function onQueueSend(itemId: string): void {
+  const instanceId = activeInstanceId.value
+
+  if (!instanceId) {
+    return
+  }
+  log.info('queue send-now', { instanceId, queuedItemId: itemId })
+  dispatchQueueItem(instanceId, itemId)
+}
 </script>
 
 <template>
@@ -757,6 +944,20 @@ function onQueueDropAll(): void {
         <section v-if="timelineBlocks.length === 0" class="idle-screen" data-testid="idle-screen">
           <div class="idle-wordmark">hyprpilot</div>
           <div class="idle-accent">LFG.</div>
+          <div class="idle-context" data-testid="idle-context">
+            <span v-if="selectedProfile" class="idle-context-pill">
+              <span class="idle-context-label">profile</span><span class="idle-context-value">{{ selectedProfile }}</span>
+            </span>
+            <span v-if="activeProfile?.agent || sessionInfo.agent" class="idle-context-pill">
+              <span class="idle-context-label">adapter</span><span class="idle-context-value">{{ sessionInfo.agent ?? activeProfile?.agent }}</span>
+            </span>
+            <span v-if="activeProfile?.model || sessionInfo.model" class="idle-context-pill">
+              <span class="idle-context-label">model</span><span class="idle-context-value">{{ sessionInfo.model ?? activeProfile?.model }}</span>
+            </span>
+            <span v-if="idleCwd" class="idle-context-pill">
+              <span class="idle-context-label">cwd</span><span class="idle-context-value">{{ idleCwd }}</span>
+            </span>
+          </div>
           <div class="idle-kbd-legend">
             <span class="idle-kbd">Ctrl+K</span><span class="idle-kbd-label">command palette</span> <span class="idle-kbd">@</span
             ><span class="idle-kbd-label">reference a file or folder</span> <span class="idle-kbd">+</span><span class="idle-kbd-label">attach a skill or reference</span>
@@ -798,19 +999,20 @@ function onQueueDropAll(): void {
         </section>
 
         <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx">
-          <template v-for="entry in block.thoughts" :key="`thought-${entry.call.toolCallId}`">
-            <StreamCard :kind="StreamKind.Thinking" :active="blockIdx === liveBlockIdx" label="thought" :text="thoughtText(entry.call)" />
-          </template>
+          <!-- Single thinking card per turn — thoughts (tool-call kind=think
+               + stream-side agent_thought_chunk) merge in createdAt order
+               so the captain reads one continuous reasoning trace instead
+               of N separate cards stacked in a turn. -->
+          <StreamCard
+            v-if="combinedThoughtText(block).length > 0"
+            :kind="StreamKind.Thinking"
+            :active="blockIdx === liveBlockIdx"
+            label="thought"
+            :text="combinedThoughtText(block)"
+          />
           <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
             <StreamCard
-              v-if="entry.item.kind === StreamItemKind.Thought"
-              :kind="StreamKind.Thinking"
-              :active="blockIdx === liveBlockIdx"
-              label="thought"
-              :text="entry.item.text"
-            />
-            <StreamCard
-              v-else-if="entry.item.kind === StreamItemKind.Plan"
+              v-if="entry.item.kind === StreamItemKind.Plan"
               :kind="StreamKind.Planning"
               :active="blockIdx === liveBlockIdx"
               label="plan"
@@ -848,7 +1050,7 @@ function onQueueDropAll(): void {
     <PermissionStack :views="permissionRowQueue" @reply="(requestId, optionId, remember) => (optionId === 'allow' ? onAllow(requestId, remember) : onDeny(requestId, remember))" />
 
     <template #composer>
-      <QueueStrip :messages="queueRows" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
+      <QueueStrip :messages="queueRows" @edit="onQueueEdit" @send="onQueueSend" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
       <Composer ref="composerRef" :sending="sending" :can-cancel="phase !== Phase.Idle" @submit="onSubmit" @cancel="onCancel" />
     </template>
   </Frame>
@@ -936,6 +1138,40 @@ function onQueueDropAll(): void {
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--theme-accent);
+}
+
+/* Context line below LFG — profile · adapter · model · cwd. Each
+ * pill is a label/value pair so the captain reads "what would I
+ * spawn into" at a glance. Hidden when nothing is configured (fresh
+ * daemon with no profile / no agents). */
+.idle-context {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 12px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.66rem;
+  max-width: 100%;
+}
+
+.idle-context-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.idle-context-label {
+  color: var(--theme-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.55rem;
+}
+
+.idle-context-value {
+  color: var(--theme-fg);
+  font-weight: 600;
 }
 
 .idle-kbd-legend {

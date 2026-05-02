@@ -84,6 +84,7 @@ back of a `pnpm exec` invocation.
 # long-lived Tauri + socket
 ./target/release/hyprpilot                   # shorthand for `hyprpilot daemon`
 ./target/release/hyprpilot daemon
+./target/release/hyprpilot daemon --cwd ~/projects/foo  # chdir before any setup
 
 # CLI client
 ./target/release/hyprpilot ctl submit "hello there"
@@ -256,8 +257,8 @@ fields:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       "hyprpilot": {
-        "autoAcceptTools": ["mcp__filesystem__read_*"],
-        "autoRejectTools": ["mcp__filesystem__delete_*"]
+        "autoAcceptTools": ["read_*"],
+        "autoRejectTools": ["delete_*"]
       }
     }
   }
@@ -280,9 +281,13 @@ fields:
   `McpServer` enum at projection time.
 - **Permission integration**: `hyprpilot.autoAcceptTools` /
   `autoRejectTools` are matched at `PermissionController::decide`
-  lane 2 via tool→server attribution by the `mcp__<server>__<tool>`
-  prefix convention. See "Permissions are the vendor's concern" in
-  the **ACP bridge** section.
+  lane 2. Tool→server attribution uses the
+  `mcp__<server>__<leaf>` wire convention; **globs are
+  server-relative** — captains write `read_*` / `delete_*` inside
+  the server block, the `mcp__<server>__` prefix is implicit.
+  Repeating the prefix in the glob defeats the match. See
+  "Permissions are the vendor's concern" in the **ACP bridge**
+  section.
 - **No reload**: MCP catalog state is static after daemon boot.
   Restart-to-reconfigure model — captain edits the JSON file, then
   `hyprpilot daemon` again. (ACP fixes `mcpServers` at session/new
@@ -1971,8 +1976,11 @@ args = ["--bun", "@zed-industries/claude-code-acp"]
 id = "strict"
 agent = "claude-code"            # must reference a real [[agents]] id
 model = "claude-opus-4-5"        # optional override — profile > agent > vendor
-system_prompt = "..."            # inline (mutually exclusive with system_prompt_file)
-# system_prompt_file = "~/.config/hyprpilot/prompts/strict.md"
+# Array of file paths, read + concatenated (blank-line separator) at
+# resolve time. Composes layered prompts (base persona + project
+# addendum) without an external preprocessor. `[]` is the explicit
+# off-switch; profile array wholesale-replaces the root array.
+system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/strict.md"]
 ```
 
 Singular `[agent]` parallels plural `[[agents]]` / `[[profiles]]` —
@@ -1992,8 +2000,9 @@ Cross-field rules inside the garde derive:
 - `agent.default` → `[[agents]].id` (must match).
 - `agent.default_profile` → `[[profiles]].id` (must match).
 - `profile.agent` → `[[agents]].id` (must match).
-- `profile.system_prompt` XOR `profile.system_prompt_file` — pair
-  exclusion checked post-walk in `Config::validate`.
+- `profile.system_prompt` is a single field — array of file paths,
+  no inline-string variant. Same shape at the root. Empty array
+  is the explicit "no prompt" off-switch.
 
 `AgentProvider` is a **closed enum** keyed by wire name
 (`acp-claude-code` / `acp-codex` / `acp-opencode`); adding a provider

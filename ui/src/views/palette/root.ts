@@ -11,10 +11,11 @@ import { openInstancesLeaf } from './instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './mcps'
 import { openModelsLeaf } from './models'
 import { openModesLeaf } from './modes'
+import { openPermissionsLeaf } from './permissions'
 import { openProfilesLeaf } from './profiles'
 import { openSessionsLeaf } from './sessions'
 import { openSkillsLeaf } from './skills'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
+import { type PaletteEntry, PaletteMode, useActiveInstance, usePalette } from '@composables'
 import { log } from '@lib'
 
 /**
@@ -40,7 +41,7 @@ interface RootLeaf {
   id: PaletteLeafId
   name: string
   description: string
-  followUp: string
+  followUp?: string
 }
 
 const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
@@ -89,8 +90,7 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
   [PaletteLeafId.Permissions]: {
     id: PaletteLeafId.Permissions,
     name: 'permissions',
-    description: 'review permission rules',
-    followUp: 'K-TBD'
+    description: 'review the live trust store — untick a row to drop the rule'
   },
   [PaletteLeafId.Mcps]: {
     id: PaletteLeafId.Mcps,
@@ -121,21 +121,6 @@ const ROOT_LEAF_ORDER: PaletteLeafId[] = [
 
 export function isPaletteLeafId(value: string): value is PaletteLeafId {
   return (Object.values(PaletteLeafId) as string[]).includes(value)
-}
-
-function stubLeafSpec(leaf: RootLeaf): PaletteSpec {
-  return {
-    mode: PaletteMode.Select,
-    title: leaf.name,
-    entries: [
-      {
-        id: `${leaf.id}-placeholder`,
-        name: `not yet wired — see ${leaf.followUp}`,
-        description: leaf.description
-      }
-    ],
-    onCommit: () => {}
-  }
 }
 
 export function openRootPalette(): void {
@@ -224,27 +209,29 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
     case PaletteLeafId.Mcps: {
       const { open } = usePalette()
       const leaf = ROOT_LEAVES[leafId]
+      // Resolve the addressed instance from the explicit ctx (header
+      // breadcrumb path) or fall through to the live active instance
+      // (root-palette path — `Ctrl+K → mcps` carries no ctx). Without
+      // this the root leaf always saw `ctx.mcps === undefined` and
+      // dead-ended at the empty stub even when an instance was live.
+      const resolved = ctx.mcps ?? (useActiveInstance().id.value ? { instanceId: useActiveInstance().id.value as string } : undefined)
 
-      if (!ctx.mcps) {
+      if (!resolved) {
         pushNoActiveInstanceStub(leaf, open)
 
         return
       }
-      void openMcpsLeaf(ctx.mcps).catch((err) => {
-        log.warn('openMcpsLeaf failed', { instanceId: ctx.mcps?.instanceId }, err)
+      void openMcpsLeaf(resolved).catch((err) => {
+        log.warn('openMcpsLeaf failed', { instanceId: resolved.instanceId }, err)
       })
 
       return
     }
 
-    case PaletteLeafId.Permissions: {
-      const { open } = usePalette()
-      const leaf = ROOT_LEAVES[leafId]
-
-      open(stubLeafSpec(leaf))
+    case PaletteLeafId.Permissions:
+      void openPermissionsLeaf()
 
       return
-    }
 
     case PaletteLeafId.Skills:
       openSkillsLeaf()

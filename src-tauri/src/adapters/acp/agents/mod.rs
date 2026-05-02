@@ -29,13 +29,33 @@ pub enum ModelInjection {
     Argv(&'static str),
 }
 
+/// Expand `~` and `$VAR` / `${VAR}` references against the daemon's
+/// own environment. Used for every captain-supplied path or value
+/// that reaches the spawn surface (binary path, cwd, env values) so
+/// a config like `env.PATH = "$HOME/bin:$PATH"` or `cwd = "~/projects/foo"`
+/// works the way a shell would resolve it. Failure (undefined variable,
+/// broken `~`) returns the input unchanged and logs a warn — a hard
+/// error here would refuse to spawn the agent over a typo, worse
+/// than letting the agent inherit a literal `$FOO` and fail visibly
+/// downstream.
+fn expand_value(raw: &str, ctx: &str) -> String {
+    match shellexpand::full(raw) {
+        Ok(expanded) => expanded.into_owned(),
+        Err(err) => {
+            tracing::warn!(value = raw, ctx, %err, "agent spawn: env expansion failed; using raw value");
+            raw.to_string()
+        }
+    }
+}
+
 /// Vendor-adapter trait. Implementors are unit structs — state lives
 /// on `AgentConfig`.
 pub trait AcpAgent: Send + Sync + 'static {
     fn spawn(&self, entry: &AgentConfig) -> Command {
         use std::process::Stdio;
 
-        let program = entry.command.clone().unwrap_or_else(|| self.command().to_string());
+        let program_raw = entry.command.clone().unwrap_or_else(|| self.command().to_string());
+        let program = expand_value(&program_raw, "agent.command");
 
         let mut args: Vec<String> = if entry.args.is_empty() {
             self.args().iter().map(|s| (*s).to_string()).collect()
@@ -55,7 +75,9 @@ pub trait AcpAgent: Send + Sync + 'static {
 
         let mut cmd = Command::new(&program);
         cmd.args(&args);
-        cmd.envs(entry.env.iter());
+        for (k, v) in entry.env.iter() {
+            cmd.env(k, expand_value(v, "agent.env"));
+        }
 
         // Env-style model injection — set the env var when user didn't
         // already define it. Runs after envs(entry.env) so the user's
@@ -67,7 +89,7 @@ pub trait AcpAgent: Send + Sync + 'static {
         }
 
         if let Some(cwd) = entry.cwd.as_ref() {
-            cmd.current_dir(cwd);
+            cmd.current_dir(expand_value(&cwd.to_string_lossy(), "agent.cwd"));
         }
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -166,5 +188,63 @@ mod tests {
         let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args, vec!["--bun", "@zed-industries/claude-code-acp"]);
+    }
+
+    #[test]
+    fn spawn_expands_env_values_against_process_env() {
+        // SAFETY: tests in this module run in the same process; no
+        // other test reads HYPRPILOT_TEST_ENV_EXPAND so this is safe.
+        unsafe {
+            std::env::set_var("HYPRPILOT_TEST_ENV_EXPAND", "expanded-value");
+        }
+        let mut entry = stub_entry("env-expand");
+
+        entry
+            .env
+            .insert("FOO".into(), "prefix-${HYPRPILOT_TEST_ENV_EXPAND}-suffix".into());
+        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
+        let envs: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|vv| (k.to_owned(), vv.to_owned())))
+            .collect();
+        let foo = envs.iter().find(|(k, _)| k == "FOO").expect("FOO is set");
+        assert_eq!(foo.1.to_str().unwrap(), "prefix-expanded-value-suffix");
+
+        unsafe {
+            std::env::remove_var("HYPRPILOT_TEST_ENV_EXPAND");
+        }
+    }
+
+    #[test]
+    fn spawn_expands_tilde_in_cwd() {
+        let home = std::env::var_os("HOME").expect("HOME is always set in CI/dev");
+        let mut entry = stub_entry("cwd-expand");
+
+        entry.cwd = Some(std::path::PathBuf::from("~"));
+        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
+        // tokio::process::Command exposes get_current_dir via the
+        // wrapped std::process::Command.
+        let cwd = cmd.as_std().get_current_dir().expect("cwd set");
+        assert_eq!(cwd.as_os_str(), home.as_os_str());
+    }
+
+    #[test]
+    fn spawn_leaves_undefined_var_literal_when_expansion_fails() {
+        let mut entry = stub_entry("env-undef");
+
+        entry
+            .env
+            .insert("FOO".into(), "${HYPRPILOT_NEVER_DEFINED_X1Y2Z3}".into());
+        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
+        let envs: Vec<_> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|vv| (k.to_owned(), vv.to_owned())))
+            .collect();
+        let foo = envs.iter().find(|(k, _)| k == "FOO").expect("FOO is set");
+        // Undefined var → keep the literal so the agent inherits an
+        // observable failure rather than silently dropping the value.
+        assert_eq!(foo.1.to_str().unwrap(), "${HYPRPILOT_NEVER_DEFINED_X1Y2Z3}");
     }
 }

@@ -8,9 +8,13 @@ import {
   pushInstanceState,
   usePhase,
   __resetAllQueues,
+  dispatchQueueHead,
+  dispatchQueueItem,
   flushQueue,
   popQueueHead,
+  popQueueItem,
   pushToQueue,
+  pushToQueueAt,
   resetQueue,
   startQueueDispatcher,
   stopQueueDispatcher,
@@ -154,9 +158,70 @@ describe('useQueue', () => {
   })
 })
 
-describe('startQueueDispatcher', () => {
-  it('dispatches the queue head on turn-ended with stopReason=end_turn', async() => {
-    startQueueDispatcher()
+describe('popQueueItem + pushToQueueAt (edit round-trip)', () => {
+  it('popQueueItem removes the entry and reports its slot', () => {
+    const a = pushToQueue('A', {
+      text: 'first',
+      pills: [],
+      skillAttachments: []
+    })
+    const b = pushToQueue('A', {
+      text: 'second',
+      pills: [],
+      skillAttachments: []
+    })
+    const c = pushToQueue('A', {
+      text: 'third',
+      pills: [],
+      skillAttachments: []
+    })
+
+    const popped = popQueueItem('A', b.id)
+
+    expect(popped?.position).toBe(1)
+    expect(popped?.item.text).toBe('second')
+    expect(useQueue('A').items.value.map((q) => q.id)).toEqual([a.id, c.id])
+  })
+
+  it('popQueueItem returns undefined for an unknown id', () => {
+    pushToQueue('A', {
+      text: 'only',
+      pills: [],
+      skillAttachments: []
+    })
+    expect(popQueueItem('A', 'no-such-id')).toBeUndefined()
+  })
+
+  it('pushToQueueAt inserts at the given slot, clamped to bounds', () => {
+    pushToQueue('A', {
+      text: 'first',
+      pills: [],
+      skillAttachments: []
+    })
+    pushToQueue('A', {
+      text: 'third',
+      pills: [],
+      skillAttachments: []
+    })
+
+    pushToQueueAt('A', 1, {
+      text: 'second',
+      pills: [],
+      skillAttachments: []
+    })
+    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['first', 'second', 'third'])
+
+    pushToQueueAt('A', 999, {
+      text: 'tail',
+      pills: [],
+      skillAttachments: []
+    })
+    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['first', 'second', 'third', 'tail'])
+  })
+})
+
+describe('dispatchQueueHead / dispatchQueueItem', () => {
+  it('dispatchQueueHead pops the head and submits via the adapter', async() => {
     pushToQueue('A', {
       text: 'queued one',
       pills: [],
@@ -168,14 +233,8 @@ describe('startQueueDispatcher', () => {
       skillAttachments: []
     })
 
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'end_turn'
-    })
+    dispatchQueueHead('A')
 
-    // microtask flush so the void submit() promise lands the mock call
     await Promise.resolve()
     await Promise.resolve()
 
@@ -183,9 +242,61 @@ describe('startQueueDispatcher', () => {
     const args = invoke.mock.calls[0]?.[1] as { text: string; instanceId: string }
 
     expect(args.text).toBe('queued one')
-    expect(args.instanceId).toBe('A')
-    // head popped; one queued item remains
     expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['queued two'])
+  })
+
+  it('dispatchQueueHead is a no-op when the queue is empty', () => {
+    dispatchQueueHead('A')
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('dispatchQueueItem pops a specific entry and submits it', async() => {
+    pushToQueue('A', {
+      text: 'a',
+      pills: [],
+      skillAttachments: []
+    })
+    const b = pushToQueue('A', {
+      text: 'b',
+      pills: [],
+      skillAttachments: []
+    })
+
+    dispatchQueueItem('A', b.id)
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    const args = invoke.mock.calls[0]?.[1] as { text: string; instanceId: string }
+
+    expect(args.text).toBe('b')
+    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['a'])
+  })
+})
+
+describe('startQueueDispatcher', () => {
+  it('does NOT auto-dispatch the queue head on turn-ended end_turn — captain only', async() => {
+    startQueueDispatcher()
+    pushToQueue('A', {
+      text: 'queued one',
+      pills: [],
+      skillAttachments: []
+    })
+
+    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
+    pushTurnEnded('A', {
+      turnId: 't1',
+      sessionId: 's-a',
+      stopReason: 'end_turn'
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invoke).not.toHaveBeenCalled()
+    // head still queued — captain drains via Ctrl+Enter or the strip
+    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['queued one'])
   })
 
   it('flushes the queue on stopReason=cancelled and emits a toast', () => {
@@ -253,7 +364,7 @@ describe('startQueueDispatcher', () => {
     expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['still queued'])
   })
 
-  it('isolates dispatch between instances', async() => {
+  it('cancel-flush is per-instance — sibling queues stay intact', () => {
     startQueueDispatcher()
     pushToQueue('A', {
       text: 'A item',
@@ -270,21 +381,14 @@ describe('startQueueDispatcher', () => {
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'end_turn'
+      stopReason: 'cancelled'
     })
 
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(invoke).toHaveBeenCalledTimes(1)
-    const args = invoke.mock.calls[0]?.[1] as { text: string; instanceId: string }
-
-    expect(args.instanceId).toBe('A')
-    // B's queue is untouched
+    expect(useQueue('A').items.value).toHaveLength(0)
     expect(useQueue('B').items.value).toHaveLength(1)
   })
 
-  it('stopQueueDispatcher unsubscribes — subsequent ends do nothing', async() => {
+  it('stopQueueDispatcher unsubscribes — subsequent cancels do nothing', () => {
     startQueueDispatcher()
     stopQueueDispatcher()
     pushToQueue('A', {
@@ -297,12 +401,10 @@ describe('startQueueDispatcher', () => {
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'end_turn'
+      stopReason: 'cancelled'
     })
 
-    await Promise.resolve()
-    expect(invoke).not.toHaveBeenCalled()
-    // queue intact
+    // queue intact — cancel-flush watcher is unsubscribed
     expect(useQueue('A').items.value).toHaveLength(1)
   })
 })

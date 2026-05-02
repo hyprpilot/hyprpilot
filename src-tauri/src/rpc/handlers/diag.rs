@@ -61,7 +61,7 @@ async fn snapshot(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
                     json!({
                         "id": p.id,
                         "agent": p.agent,
-                        "hasSystemPrompt": p.system_prompt.is_some() || p.system_prompt_file.is_some(),
+                        "hasSystemPrompt": p.system_prompt.is_some(),
                     })
                 })
                 .collect();
@@ -126,8 +126,7 @@ mod tests {
             id: "ask".into(),
             agent: "claude-code".into(),
             model: None,
-            system_prompt: Some("hello".into()),
-            system_prompt_file: None,
+            system_prompt: Some(vec![std::path::PathBuf::from("/tmp/hyprpilot-test-prompt.md")]),
             mcps: None,
             skills: None,
             mode: None,

@@ -2,7 +2,7 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { createApp } from 'vue'
 
 import App from './App.vue'
-import { applyTheme, applyWindowState, loadHomeDir, loadKeymaps, markBootDone, setBootStatus } from '@composables'
+import { applyTheme, applyWindowState, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus } from '@composables'
 import { log } from '@lib'
 import '@assets/styles.css'
 
@@ -96,6 +96,8 @@ async function boot(): Promise<void> {
   // mysterious dead air.
   setBootStatus('reading $HOME')
   await loadHomeDir()
+  setBootStatus('reading daemon cwd')
+  await loadDaemonCwd()
   setBootStatus('loading keymaps')
   await loadKeymaps()
 

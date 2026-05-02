@@ -32,7 +32,7 @@ function defaultKeymaps(): KeymapsConfig {
       deny: { modifiers: [], key: 'd' }
     },
     composer: {
-      paste_image: { modifiers: [Modifier.Ctrl], key: 'p' },
+      paste: { modifiers: [Modifier.Ctrl], key: 'p' },
       tab_completion: { modifiers: [], key: 'tab' },
       shift_tab: { modifiers: [Modifier.Shift], key: 'tab' },
       completion: { modifiers: [Modifier.Ctrl], key: 'space' },
@@ -48,6 +48,10 @@ function defaultKeymaps(): KeymapsConfig {
     transcript: {},
     window: {
       toggle: { modifiers: [Modifier.Ctrl], key: 'q' }
+    },
+    queue: {
+      send: { modifiers: [Modifier.Ctrl], key: 'enter' },
+      drop: { modifiers: [Modifier.Ctrl], key: 'backspace' }
     }
   }
 }

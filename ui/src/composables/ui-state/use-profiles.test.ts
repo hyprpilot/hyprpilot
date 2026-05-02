@@ -100,7 +100,11 @@ describe('useProfiles', () => {
     expect(wrapper.get('[data-testid="count"]').text()).toBe('2')
   })
 
-  it('select() persists the id to localStorage and next mount restores it', async() => {
+  it('select() persists the id, but [profile] default still wins on next mount', async() => {
+    // Config-driven default beats localStorage on startup. A captain
+    // who set `[profile] default = "ask"` expects to see ask after a
+    // restart even if they clicked into "strict" in a previous
+    // session.
     setProfiles([
       {
         id: 'ask',
@@ -121,8 +125,6 @@ describe('useProfiles', () => {
 
     expect(window.localStorage.getItem('hyprpilot:last-profile')).toBe('strict')
 
-    // Simulate a fresh process — clear the singleton state so the
-    // next mount triggers a real refresh and restores from localStorage.
     __resetUseProfilesForTests()
     setProfiles([
       {
@@ -140,7 +142,29 @@ describe('useProfiles', () => {
 
     await flushAsync()
     await next.vm.$nextTick()
-    expect(next.get('[data-testid="selected"]').text()).toBe('strict')
+    // Config default ("ask") wins over the persisted "strict".
+    expect(next.get('[data-testid="selected"]').text()).toBe('ask')
+  })
+
+  it('falls back to localStorage when no [profile] default is set', async() => {
+    setProfiles([
+      {
+        id: 'ask',
+        agent: 'claude-code',
+        isDefault: false
+      },
+      {
+        id: 'strict',
+        agent: 'claude-code',
+        isDefault: false
+      }
+    ])
+    window.localStorage.setItem('hyprpilot:last-profile', 'strict')
+    const wrapper = mount(host())
+
+    await flushAsync()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('strict')
   })
 
   it('ignores select() for ids not in the current list', async() => {

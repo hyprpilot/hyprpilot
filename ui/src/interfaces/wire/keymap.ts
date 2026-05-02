@@ -34,7 +34,7 @@ export interface ApprovalsKeymaps {
 }
 
 export interface ComposerKeymaps {
-  paste_image: Binding
+  paste: Binding
   tab_completion: Binding
   shift_tab: Binding
   completion: Binding
@@ -63,6 +63,11 @@ export interface WindowKeymaps {
   toggle: Binding
 }
 
+export interface QueueKeymaps {
+  send: Binding
+  drop: Binding
+}
+
 export interface KeymapsConfig {
   chat: ChatKeymaps
   approvals: ApprovalsKeymaps
@@ -70,4 +75,5 @@ export interface KeymapsConfig {
   palette: PaletteKeymaps
   transcript: TranscriptKeymaps
   window: WindowKeymaps
+  queue: QueueKeymaps
 }

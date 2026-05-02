@@ -42,15 +42,21 @@ function readPersisted(): string | undefined {
 }
 
 function defaultProfileId(list: ProfileSummary[]): string | undefined {
-  const persisted = readPersisted()
-
-  if (persisted && list.some((p) => p.id === persisted)) {
-    return persisted
-  }
+  // Config wins. `[profile] default = "X"` is the captain's
+  // canonical default — when set, it always picks. localStorage is
+  // a fallback for when the config doesn't dictate one. Reverse
+  // precedence (localStorage first) made `[profile] default` look
+  // ignored after a one-off pick months ago: the persisted id stuck
+  // around forever and silently shadowed every new config default.
   const flagged = list.find((p) => p.isDefault)
 
   if (flagged) {
     return flagged.id
+  }
+  const persisted = readPersisted()
+
+  if (persisted && list.some((p) => p.id === persisted)) {
+    return persisted
   }
 
   return list[0]?.id

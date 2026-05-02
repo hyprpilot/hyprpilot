@@ -125,6 +125,7 @@ pub struct MetaSnapshot {
     pub current_model_id: Option<String>,
     pub available_modes: Vec<crate::adapters::SessionModeInfo>,
     pub available_models: Vec<crate::adapters::SessionModelInfo>,
+    pub mcps_count: usize,
 }
 
 /// Project an ACP `session/update` notification (as raw JSON, since
@@ -1037,6 +1038,11 @@ async fn run(
             Some(reg) => reg.to_acp_servers(),
             None => Vec::new(),
         };
+        // Resolved MCP count for the header `+N mcps` pill — captured
+        // once at the top of the actor body and threaded through every
+        // `InstanceMeta` emit. Reads via `list().len()` because the
+        // registry's `count()` accessor is `cfg(test)` only.
+        let mcps_count = mcps.as_ref().map(|reg| reg.list().len()).unwrap_or(0);
         if !mcp_servers.is_empty() {
             info!(
                 agent = %agent_id_notif,
@@ -1094,8 +1100,51 @@ async fn run(
                             description: m.description.clone(),
                         })
                         .collect();
-                    *available_models_meta.write().await = advertised;
-                    *current_model_meta.write().await = Some(models.current_model_id.0.to_string());
+                    let current = models.current_model_id.0.to_string();
+
+                    *available_models_meta.write().await = advertised.clone();
+                    *current_model_meta.write().await = Some(current.clone());
+
+                    // Captain-configured model wins when (a) it's set, (b) the
+                    // agent advertised an available_models list (so we know
+                    // session/set_model is supported), and (c) it differs from
+                    // the agent's default selection. Spawn-time env-var
+                    // injection (claude-code's `ANTHROPIC_MODEL`,
+                    // opencode's `OPENCODE_MODEL`) is best-effort — opencode
+                    // in particular often resolves to its own default unless
+                    // a config file backs the env, and stale parent-process
+                    // env can ride through silently. set_model after
+                    // session/new is the canonical lever.
+                    if let Some(want) = cfg.model.as_deref() {
+                        if want != current && advertised.iter().any(|m| m.id == want) {
+                            tracing::info!(
+                                agent = %agent_id_notif,
+                                instance = %instance_id_notif,
+                                session = %sid,
+                                from = %current,
+                                to = %want,
+                                "acp::instance: applying configured model via session/set_model"
+                            );
+                            let req = SetSessionModelRequest::new(
+                                sid.clone(),
+                                ModelId::from(std::sync::Arc::<str>::from(want)),
+                            );
+                            match connection.send_request(req).block_task().await {
+                                Ok(_) => {
+                                    *current_model_meta.write().await = Some(want.to_string());
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        agent = %agent_id_notif,
+                                        session = %sid,
+                                        target_model = %want,
+                                        %err,
+                                        "acp::instance: session/set_model failed at spawn — keeping agent default"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 let _ = events_tx_notif.send(InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
@@ -1112,6 +1161,7 @@ async fn run(
                     current_model_id: current_model_meta.read().await.clone(),
                     available_modes: available_modes_meta.read().await.clone(),
                     available_models: available_models_meta.read().await.clone(),
+                    mcps_count,
                 });
                 Some(sid)
             }
@@ -1235,6 +1285,7 @@ async fn run(
                     current_model_id: current_model_meta.read().await.clone(),
                     available_modes: available_modes_meta.read().await.clone(),
                     available_models: available_models_meta.read().await.clone(),
+                    mcps_count,
                 });
                 Some(sid)
             }
@@ -1392,11 +1443,27 @@ async fn run(
                                         (None, Some(msg.clone()), Err(msg))
                                     }
                                 };
-                                {
+                                // Did THIS prompt task still own the open turn? Only
+                                // emit `TurnEnded` if so — otherwise the Cancel handler
+                                // already synthesized one when the captain hit Ctrl+C
+                                // and the agent's late `session/prompt` reply arrives
+                                // after-the-fact (post-cancel agents often resolve
+                                // with their own stop_reason, but we've already moved
+                                // on). The InstanceMeta refresh below piggy-backs on
+                                // the same condition so we only fire it once per
+                                // logical turn-close.
+                                let still_owned_turn = {
                                     let mut slot = current_turn_done.write().await;
                                     if slot.as_deref() == Some(turn_id_done.as_str()) {
                                         *slot = None;
+                                        true
+                                    } else {
+                                        false
                                     }
+                                };
+                                if !still_owned_turn {
+                                    let _ = reply.send(mapped);
+                                    return;
                                 }
                                 let _ = events_tx_done.send(InstanceEvent::TurnEnded {
                                     agent_id: agent_id_done.clone(),
@@ -1419,6 +1486,7 @@ async fn run(
                                     current_model_id: current_model_done.read().await.clone(),
                                     available_modes: available_modes_done.read().await.clone(),
                                     available_models: available_models_done.read().await.clone(),
+                                    mcps_count,
                                 });
                                 let _ = reply.send(mapped);
                             });
@@ -1433,9 +1501,42 @@ async fn run(
                                 session = %sid,
                                 "acp::instance: turn cancel (CancelNotification)"
                             );
+                            // Take the open turn id BEFORE sending the notification
+                            // so the prompt-future's late reply finds an empty slot
+                            // and skips its own `TurnEnded` emit (see
+                            // `still_owned_turn` above). Synthesize `TurnEnded
+                            // (cancelled)` straight away so the chat surface stops
+                            // grouping post-cancel emissions onto the cancelled
+                            // block and the next user submit lands in a fresh turn.
+                            let cancelled_turn_id = current_turn_id.write().await.take();
                             let res = connection
-                                .send_notification(CancelNotification::new(sid))
+                                .send_notification(CancelNotification::new(sid.clone()))
                                 .map_err(|e| e.to_string());
+
+                            if let Some(turn_id) = cancelled_turn_id {
+                                let _ = events_tx_notif.send(InstanceEvent::TurnEnded {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: sid.0.to_string(),
+                                    turn_id,
+                                    stop_reason: Some("cancelled".to_string()),
+                                    error: None,
+                                });
+                                // InstanceMeta refresh — same shape as the prompt-
+                                // future path, kept in sync so the header chrome
+                                // doesn't lag a stale mode / model after cancel.
+                                let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: Some(sid.0.to_string()),
+                                    cwd: cwd_str.clone(),
+                                    current_mode_id: current_mode_meta.read().await.clone(),
+                                    current_model_id: current_model_meta.read().await.clone(),
+                                    available_modes: available_modes_meta.read().await.clone(),
+                                    available_models: available_models_meta.read().await.clone(),
+                                    mcps_count,
+                                });
+                            }
                             let _ = reply.send(res);
                         }
                         InstanceCommand::SetMode { mode_id, reply } => {
@@ -1481,6 +1582,7 @@ async fn run(
                                         current_model_id: current_model_done.read().await.clone(),
                                         available_modes: available_modes.read().await.clone(),
                                         available_models: available_models_done.read().await.clone(),
+                                        mcps_count,
                                     });
                                 }
                                 let _ = reply.send(res.map(|_| ()));
@@ -1525,6 +1627,7 @@ async fn run(
                                         current_model_id: Some(model_id),
                                         available_modes: available_modes_done.read().await.clone(),
                                         available_models: available_models_done.read().await.clone(),
+                                        mcps_count,
                                     });
                                 }
                                 let _ = reply.send(res.map(|_| ()));
@@ -1566,6 +1669,7 @@ async fn run(
                                 current_model_id: current_model_meta.read().await.clone(),
                                 available_modes: available_modes_meta.read().await.clone(),
                                 available_models: available_models_meta.read().await.clone(),
+                                mcps_count,
                             };
                             let _ = reply.send(snap);
                         }

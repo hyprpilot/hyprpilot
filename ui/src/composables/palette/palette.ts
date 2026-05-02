@@ -48,6 +48,15 @@ export interface PaletteSpec {
    * when the `manual` sentinel row is the highlighted pick.
    */
   onCommit: (picks: PaletteEntry[], query?: string) => void | Promise<void>
+  /**
+   * Live-query hook — fires every time the search input changes.
+   * Receives the new query plus an `update(entries)` callback the
+   * leaf calls to swap its own entries reactively (e.g. cwd palette
+   * piping a typed path through directory autocompletion). Most
+   * leaves don't set this and the static `entries` array stays
+   * authoritative.
+   */
+  onQueryChange?: (query: string, update: (entries: PaletteEntry[]) => void) => void
   onDelete?: (entry: PaletteEntry) => void | Promise<void>
   /**
    * `true` while the spec's entries are still being fetched. The

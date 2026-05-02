@@ -9,6 +9,12 @@ import { invoke, TauriCommand } from '@ipc'
 /// as "no `~` collapse").
 const homeDir = ref<string>()
 
+/// Same shape for the daemon's working directory — drives the idle
+/// banner so the captain sees where new instances will land before
+/// they spawn. Reflects whatever `--cwd <DIR>` was passed (or the
+/// spawning shell's cwd when omitted).
+const daemonCwd = ref<string>()
+
 /**
  * One-shot fetch of the user's `$HOME` from the Rust side. Idempotent
  * — repeated calls re-resolve the same value. Soft-fails when the
@@ -23,11 +29,24 @@ export async function loadHomeDir(): Promise<void> {
   }
 }
 
+export async function loadDaemonCwd(): Promise<void> {
+  try {
+    daemonCwd.value = await invoke(TauriCommand.GetDaemonCwd)
+  } catch {
+    daemonCwd.value = undefined
+  }
+}
+
 export function useHomeDir(): { homeDir: Ref<string | undefined> } {
   return { homeDir }
+}
+
+export function useDaemonCwd(): { daemonCwd: Ref<string | undefined> } {
+  return { daemonCwd }
 }
 
 /** Test-only helper. */
 export function __resetHomeDirForTests(): void {
   homeDir.value = undefined
+  daemonCwd.value = undefined
 }
