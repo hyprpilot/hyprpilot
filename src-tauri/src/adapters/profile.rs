@@ -75,7 +75,7 @@ impl ResolvedInstance {
             })?;
 
         let model = profile.model.clone().or_else(|| agent.model.clone());
-        let system_prompt = Self::load_system_prompt(profile)?;
+        let system_prompt = Self::load_system_prompt(profile, config.system_prompt.as_deref())?;
 
         Ok(Self {
             agent: agent.clone(),
@@ -102,26 +102,30 @@ impl ResolvedInstance {
             agent: agent.clone(),
             profile_id: None,
             model: agent.model.clone(),
-            system_prompt: None,
+            system_prompt: config.system_prompt.clone(),
             mode: None,
         })
     }
 
-    fn load_system_prompt(profile: &ProfileConfig) -> Result<Option<String>> {
+    /// Resolve the system prompt for a profile. Precedence:
+    ///   1. `[[profiles]] system_prompt` (inline string)
+    ///   2. `[[profiles]] system_prompt_file` (file path read at resolve time)
+    ///   3. root `system_prompt` (global fallback, mirrors `mcps`)
+    fn load_system_prompt(profile: &ProfileConfig, root_fallback: Option<&str>) -> Result<Option<String>> {
         if let Some(text) = &profile.system_prompt {
             return Ok(Some(text.clone()));
         }
-        let Some(path) = &profile.system_prompt_file else {
-            return Ok(None);
-        };
-        let expanded = shellexpand::tilde(&path.to_string_lossy()).into_owned();
-        let contents = std::fs::read_to_string(&expanded).with_context(|| {
-            format!(
-                "profile '{}': failed to read system_prompt_file {}",
-                profile.id, expanded
-            )
-        })?;
-        Ok(Some(contents))
+        if let Some(path) = &profile.system_prompt_file {
+            let expanded = shellexpand::tilde(&path.to_string_lossy()).into_owned();
+            let contents = std::fs::read_to_string(&expanded).with_context(|| {
+                format!(
+                    "profile '{}': failed to read system_prompt_file {}",
+                    profile.id, expanded
+                )
+            })?;
+            return Ok(Some(contents));
+        }
+        Ok(root_fallback.map(str::to_owned))
     }
 }
 
@@ -269,5 +273,60 @@ mod tests {
         };
         let err = ResolvedInstance::from_config(&cfg, Some("ghost")).expect_err("unknown profile");
         assert!(err.to_string().contains("profile 'ghost' not found"));
+    }
+
+    #[test]
+    fn root_system_prompt_falls_back_when_profile_has_neither() {
+        // Profile has no inline `system_prompt` and no
+        // `system_prompt_file` — falls back to the root
+        // `system_prompt` declared at TOML root, mirroring how
+        // `mcps` works.
+        let cfg = Config {
+            system_prompt: Some("global fallback prompt".into()),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![profile("ask", "cc", None, None)],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        assert_eq!(r.system_prompt.as_deref(), Some("global fallback prompt"));
+    }
+
+    #[test]
+    fn profile_system_prompt_wins_over_root_fallback() {
+        // Per-profile inline value beats the root fallback. Same
+        // precedence as `mcps`.
+        let cfg = Config {
+            system_prompt: Some("global fallback".into()),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![profile("ask", "cc", None, Some("profile-specific"))],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        assert_eq!(r.system_prompt.as_deref(), Some("profile-specific"));
+    }
+
+    #[test]
+    fn root_system_prompt_carries_through_bare_resolution() {
+        // No profile → bare-agent path. Root system_prompt still
+        // applies so unprofiled submits get the global default.
+        let cfg = Config {
+            system_prompt: Some("bare-path fallback".into()),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                agent: crate::config::AgentDefaults {
+                    default: Some("cc".into()),
+                },
+            },
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, None).unwrap();
+        assert!(r.profile_id.is_none());
+        assert_eq!(r.system_prompt.as_deref(), Some("bare-path fallback"));
     }
 }

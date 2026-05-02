@@ -1,78 +1,171 @@
 /**
  * Singular `instance` palette leaf — actions on the *currently
  * focused* instance. Distinct from `instances` (plural) which lists
- * every live one for switching. Today the leaf has exactly one
- * entry, `rename`; future entries (per-instance restart, shutdown,
- * notes, …) land alongside as the corresponding wire surfaces are
- * ready.
+ * every live one for switching. Today the leaf carries:
  *
- * "No active instance" stub when nothing is focused — surfaces the
- * empty state instead of inventing one.
+ *  - `new` — picks a profile from the registry, mints a fresh
+ *    instance UUID, and points `useActiveInstance` at it. The wire
+ *    instance spawns lazily on the next `session/submit` (matches
+ *    the Overlay shell's `mintInstanceId()` flow); the palette
+ *    only moves the active pointer + persists the profile pick.
+ *  - `rename` — opens the rename modal for the focused instance.
+ *
+ * "No active instance" suppresses `rename` only — `new` is always
+ * available so the captain can stage an instance without typing
+ * a prompt first.
  */
 
+import { buildProfilesPaletteSpec } from './profiles'
 import { ToastTone } from '@components'
-import { type PaletteEntry, PaletteMode, useActiveInstance, usePalette, useRenameInstanceModal, useToasts } from '@composables'
+import {
+  type PaletteEntry,
+  PaletteMode,
+  type PaletteSpec,
+  useActiveInstance,
+  type InstanceId,
+  usePalette,
+  useProfiles,
+  useRenameInstanceModal,
+  useToasts
+} from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
+const ACTION_NEW = 'new'
 const ACTION_RENAME = 'rename'
 
-export async function openInstanceLeaf(): Promise<void> {
-  const { id: activeId } = useActiveInstance()
-  const focused = activeId.value
-  const { open } = usePalette()
+/// Mint a fresh instance UUID + flip `useActiveInstance` to it. The
+/// wire-side `session/new` spawns lazily on the next `session/submit`
+/// (matches the Overlay shell's `mintInstanceId()` path); we only
+/// move the active pointer here. When `profileId` is set, also
+/// persists the profile selection so the next submit routes through it.
+function startNewInstance(profileId: string | undefined, label: string | undefined): void {
+  const { set: setActive } = useActiveInstance()
+  const { select } = useProfiles()
+  const id: InstanceId = crypto.randomUUID()
 
-  if (!focused) {
-    open({
-      mode: PaletteMode.Select,
-      title: 'instance',
-      entries: [
-        {
-          id: 'instance-no-active',
-          name: 'no active instance',
-          description: 'spawn or focus an instance first'
-        }
-      ],
-      onCommit() {}
-    })
-
-    return
+  if (profileId) {
+    select(profileId)
   }
+  setActive(id)
+  log.info('palette-instance: new instance staged', { instanceId: id, profileId })
+  useToasts().push(ToastTone.Ok, label ? `new instance · ${label}` : 'new instance staged')
+}
 
-  // Pre-fetch the current name so the modal's input pre-fills.
-  // `instance_meta` is the right read surface; falls back to None on
-  // failure so the modal still opens with an empty input.
-  let currentName: string | undefined
-
-  try {
-    const meta = await invoke(TauriCommand.InstanceMeta, { instanceId: focused })
-
-    currentName = (meta as { name?: string }).name
-  } catch(err) {
-    log.debug('palette-instance: instance_meta read failed', { err: String(err) })
-  }
-
+function buildInstanceLeafSpec(args: {
+  focused?: InstanceId
+  currentName?: string
+  onPickNew: () => void
+  onPickRename: () => void
+}): PaletteSpec {
   const entries: PaletteEntry[] = [
     {
-      id: ACTION_RENAME,
-      name: 'rename',
-      description: currentName ? `current: ${currentName}` : 'set a captain-friendly name'
+      id: ACTION_NEW,
+      name: 'new',
+      description: 'pick a profile and stage a fresh instance'
     }
   ]
 
-  open({
+  if (args.focused) {
+    entries.push({
+      id: ACTION_RENAME,
+      name: 'rename',
+      description: args.currentName ? `current: ${args.currentName}` : 'set a captain-friendly name'
+    })
+  }
+
+  return {
     mode: PaletteMode.Select,
     title: 'instance',
     entries,
     onCommit(picks) {
       const pick = picks[0]
 
-      if (pick?.id !== ACTION_RENAME) {
+      if (!pick) {
+        return
+      }
+
+      if (pick.id === ACTION_NEW) {
+        args.onPickNew()
+
+        return
+      }
+
+      if (pick.id === ACTION_RENAME) {
+        args.onPickRename()
+      }
+    }
+  }
+}
+
+/// Open the profiles sub-palette under the `new` action — picking a
+/// profile here both stages a new instance UUID AND persists the
+/// profile selection. Empty registries surface a toast.
+function openNewInstanceProfilePicker(): void {
+  const { open } = usePalette()
+  const { profiles, selected, loading } = useProfiles()
+  const { id: activeInstanceId } = useActiveInstance()
+
+  if (profiles.value.length === 0) {
+    const message = loading.value
+      ? 'profiles: still loading, try again'
+      : 'profiles: none configured — add [[profiles]] to your config'
+
+    useToasts().push(ToastTone.Warn, message)
+
+    return
+  }
+
+  const spec = buildProfilesPaletteSpec({
+    list: profiles.value,
+    selected: selected.value,
+    activeInstanceId: activeInstanceId.value,
+    onSelect(profileId) {
+      const profile = profiles.value.find((p) => p.id === profileId)
+
+      startNewInstance(profileId, profile?.id)
+    }
+  })
+
+  // Override the title so the sub-palette reads as `instance · new`
+  // — captain knows they're picking a profile to spawn, not just
+  // switching the persisted selection.
+  open({ ...spec, title: 'instance · new' })
+}
+
+export async function openInstanceLeaf(): Promise<void> {
+  const { id: activeId } = useActiveInstance()
+  const focused = activeId.value
+  const { open } = usePalette()
+
+  // Pre-fetch the current name so the rename modal pre-fills. Skips
+  // the round-trip when there's no focused instance — `new` is the
+  // only action available in that branch and doesn't need it.
+  let currentName: string | undefined
+
+  if (focused) {
+    try {
+      const meta = await invoke(TauriCommand.InstanceMeta, { instanceId: focused })
+
+      currentName = (meta as { name?: string }).name
+    } catch(err) {
+      log.debug('palette-instance: instance_meta read failed', { err: String(err) })
+    }
+  }
+
+  const spec = buildInstanceLeafSpec({
+    focused,
+    currentName,
+    onPickNew: openNewInstanceProfilePicker,
+    onPickRename() {
+      if (!focused) {
         return
       }
       useRenameInstanceModal().open({ instanceId: focused, currentName })
     }
   })
+
+  open(spec)
 }
 
 /// Slug rule mirror — same regex `validate_instance_name` enforces
