@@ -47,8 +47,8 @@ export interface PaletteSpec {
    * leaves ignore it; the cwd leaf reads it as the manual-path input
    * when the `manual` sentinel row is the highlighted pick.
    */
-  onCommit(picks: PaletteEntry[], query?: string): void | Promise<void>
-  onDelete?(entry: PaletteEntry): void | Promise<void>
+  onCommit: (picks: PaletteEntry[], query?: string) => void | Promise<void>
+  onDelete?: (entry: PaletteEntry) => void | Promise<void>
   /**
    * `true` while the spec's entries are still being fetched. The
    * palette swaps the empty-state row for an inline <Loading>
@@ -71,10 +71,13 @@ let lastFocused: HTMLElement | undefined
 // clicked may have been unmounted while the palette was up.
 function restoreFocus(): void {
   const el = lastFocused
+
   lastFocused = undefined
+
   if (!el || !el.isConnected || (el as HTMLButtonElement).disabled) {
     return
   }
+
   try {
     el.focus()
   } catch {
@@ -84,15 +87,16 @@ function restoreFocus(): void {
 
 export function usePalette(): {
   stack: Ref<PaletteSpec[]>
-  open(spec: PaletteSpec): void
-  close(): void
-  closeAll(): void
+  open: (spec: PaletteSpec) => void
+  close: () => void
+  closeAll: () => void
 } {
   return {
     stack,
     open(spec: PaletteSpec): void {
       if (stack.value.length === 0) {
         const active = document.activeElement
+
         if (active instanceof HTMLElement) {
           lastFocused = active
         } else {
@@ -106,6 +110,7 @@ export function usePalette(): {
         return
       }
       stack.value.pop()
+
       if (stack.value.length === 0) {
         restoreFocus()
       }

@@ -1,42 +1,43 @@
 <script setup lang="ts">
-import { reactiveOmit } from "@vueuse/core"
-import type { ListboxRootEmits, ListboxRootProps } from "reka-ui"
-import { ListboxRoot, useFilter, useForwardPropsEmits } from "reka-ui"
-import type { HTMLAttributes } from "vue"
-import { reactive, ref, watch } from "vue"
+import { reactiveOmit } from '@vueuse/core'
+import type { ListboxRootEmits, ListboxRootProps } from 'reka-ui'
+import { ListboxRoot, useFilter, useForwardPropsEmits } from 'reka-ui'
+import type { HTMLAttributes } from 'vue'
+import { reactive, ref, watch } from 'vue'
 
-import { provideCommandContext } from "."
+import { provideCommandContext } from '.'
 import { cn } from '@components/lib/utils'
 
-const props = withDefaults(defineProps<ListboxRootProps & { class?: HTMLAttributes["class"] }>(), {
-  modelValue: "",
+const props = withDefaults(defineProps<ListboxRootProps & { class?: HTMLAttributes['class'] }>(), {
+  modelValue: ''
 })
 
 const emits = defineEmits<ListboxRootEmits>()
 
-const delegatedProps = reactiveOmit(props, "class")
+const delegatedProps = reactiveOmit(props, 'class')
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 
 const allItems = ref<Map<string, string>>(new Map())
 const allGroups = ref<Map<string, Set<string>>>(new Map())
 
-const { contains } = useFilter({ sensitivity: "base" })
+const { contains } = useFilter({ sensitivity: 'base' })
 const filterState = reactive({
-  search: "",
+  search: '',
   filtered: {
     /** The count of all visible items. */
     count: 0,
     /** Map from visible item id to its search score. */
     items: new Map() as Map<string, number>,
     /** Set of groups with at least one visible item. */
-    groups: new Set() as Set<string>,
-  },
+    groups: new Set() as Set<string>
+  }
 })
 
 function filterItems() {
   if (!filterState.search) {
     filterState.filtered.count = allItems.value.size
+
     // Do nothing, each item will know to show itself because search is empty
     return
   }
@@ -48,9 +49,12 @@ function filterItems() {
   // Check which items should be included
   for (const [id, value] of allItems.value) {
     const score = contains(value, filterState.search)
+
     filterState.filtered.items.set(id, score ? 1 : 0)
-    if (score)
+
+    if (score) {
       itemCount++
+    }
   }
 
   // Check which groups have at least 1 item shown
@@ -58,6 +62,7 @@ function filterItems() {
     for (const itemId of group) {
       if (filterState.filtered.items.get(itemId)! > 0) {
         filterState.filtered.groups.add(groupId)
+
         break
       }
     }
@@ -66,22 +71,22 @@ function filterItems() {
   filterState.filtered.count = itemCount
 }
 
-watch(() => filterState.search, () => {
-  filterItems()
-})
+watch(
+  () => filterState.search,
+  () => {
+    filterItems()
+  }
+)
 
 provideCommandContext({
   allItems,
   allGroups,
-  filterState,
+  filterState
 })
 </script>
 
 <template>
-  <ListboxRoot
-    v-bind="forwarded"
-    :class="cn('flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground', props.class)"
-  >
+  <ListboxRoot v-bind="forwarded" :class="cn('flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground', props.class)">
     <slot />
   </ListboxRoot>
 </template>

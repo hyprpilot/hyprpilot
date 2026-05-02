@@ -17,24 +17,12 @@
  * and reads from the config tree.
  */
 import { faSquare as farSquare } from '@fortawesome/free-regular-svg-icons'
-import {
-  faArrowRightToBracket,
-  faArrowTurnDown,
-  faSquareCheck,
-  faUpDown
-} from '@fortawesome/free-solid-svg-icons'
+import { faArrowRightToBracket, faArrowTurnDown, faSquareCheck, faUpDown } from '@fortawesome/free-solid-svg-icons'
 import { FocusTrap } from 'focus-trap-vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { Loading } from '@components'
-import {
-  type PaletteEntry,
-  PaletteMode,
-  type PaletteSpec,
-  useMultiSelect,
-  usePalette,
-  usePaletteFilter
-} from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, useMultiSelect, usePalette, usePaletteFilter } from '@composables'
 
 const { stack, close } = usePalette()
 
@@ -58,6 +46,7 @@ watch(
     tickedIds.value = new Set(spec?.preseedActive?.map((e) => e.id) ?? [])
     query.value = ''
     highlighted.value = 0
+
     if (spec) {
       void nextTick(() => {
         inputRef.value?.focus()
@@ -78,9 +67,11 @@ watch(visibleEntries, (rows) => {
 
     return
   }
+
   if (highlighted.value >= rows.length) {
     highlighted.value = rows.length - 1
   }
+
   if (highlighted.value < 0) {
     highlighted.value = 0
   }
@@ -88,6 +79,7 @@ watch(visibleEntries, (rows) => {
 
 function onDocumentKeyDown(e: KeyboardEvent): void {
   const spec = top.value
+
   if (!spec) {
     return
   }
@@ -116,6 +108,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'ArrowUp' || (ctrl && key.toLowerCase() === 'p')) {
     e.preventDefault()
     e.stopPropagation()
+
     if (rows.length > 0) {
       highlighted.value = (highlighted.value - 1 + rows.length) % rows.length
     }
@@ -126,6 +119,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'ArrowDown' || (ctrl && key.toLowerCase() === 'n')) {
     e.preventDefault()
     e.stopPropagation()
+
     if (rows.length > 0) {
       highlighted.value = (highlighted.value + 1) % rows.length
     }
@@ -136,6 +130,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'Tab' && spec.mode === PaletteMode.MultiSelect) {
     e.preventDefault()
     e.stopPropagation()
+
     if (current) {
       toggleTick(current.id)
     }
@@ -146,6 +141,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (ctrl && key.toLowerCase() === 'd') {
     e.preventDefault()
     e.stopPropagation()
+
     if (current && spec.onDelete) {
       void spec.onDelete(current)
     }
@@ -162,6 +158,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
 
 function commit(): void {
   const spec = top.value
+
   if (!spec) {
     return
   }
@@ -169,8 +166,10 @@ function commit(): void {
   const current = rows[highlighted.value]
 
   let picks: PaletteEntry[]
+
   if (spec.mode === PaletteMode.MultiSelect) {
     const ticked = spec.entries.filter((e) => tickedIds.value.has(e.id))
+
     if (ticked.length > 0) {
       picks = ticked
     } else if (current) {
@@ -186,17 +185,20 @@ function commit(): void {
   // callback pushes onto a clean stack rather than stacking under the
   // just-committed spec.
   const liveQuery = query.value
+
   close()
   void spec.onCommit(picks, liveQuery)
 }
 
 function onRowClick(entry: PaletteEntry): void {
   const spec = top.value
+
   if (!spec) {
     return
   }
   const rows = visibleEntries.value
   const idx = rows.findIndex((r) => r.id === entry.id)
+
   if (idx < 0) {
     return
   }
@@ -205,6 +207,7 @@ function onRowClick(entry: PaletteEntry): void {
   // callback pushes onto a clean stack rather than stacking under the
   // just-committed spec.
   const liveQuery = query.value
+
   close()
   void spec.onCommit([entry], liveQuery)
 }
@@ -261,12 +264,7 @@ onUnmounted(() => {
               @mouseenter="highlighted = idx"
               @click="onRowClick(entry)"
             >
-              <FaIcon
-                v-if="top.mode === PaletteMode.MultiSelect"
-                :icon="tickedIds.has(entry.id) ? faSquareCheck : farSquare"
-                class="palette-tick"
-                aria-hidden="true"
-              />
+              <FaIcon v-if="top.mode === PaletteMode.MultiSelect" :icon="tickedIds.has(entry.id) ? faSquareCheck : farSquare" class="palette-tick" aria-hidden="true" />
               <span class="palette-name">{{ entry.name }}</span>
               <span v-if="entry.description" class="palette-description">{{ entry.description }}</span>
               <span v-if="entry.kind" class="palette-kind">{{ entry.kind }}</span>

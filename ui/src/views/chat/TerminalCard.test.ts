@@ -1,9 +1,8 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { pushTerminalChunk, pushTerminalExit, resetTerminals } from '@composables'
-
 import ChatTerminalCard from './TerminalCard.vue'
+import { pushTerminalChunk, pushTerminalExit, resetTerminals } from '@composables'
 
 beforeEach(() => {
   resetTerminals('inst-A')
@@ -12,7 +11,11 @@ beforeEach(() => {
 
 describe('ChatTerminalCard.vue', () => {
   it('renders the bound terminal entry while running', () => {
-    pushTerminalChunk('inst-A', { terminalId: 't-1', data: 'running 12 specs...\n', command: 'pnpm test' })
+    pushTerminalChunk('inst-A', {
+      terminalId: 't-1',
+      data: 'running 12 specs...\n',
+      command: 'pnpm test'
+    })
 
     const wrapper = mount(ChatTerminalCard, {
       props: { terminalId: 't-1', instanceId: 'inst-A' }
@@ -26,7 +29,11 @@ describe('ChatTerminalCard.vue', () => {
   })
 
   it('shows exit + ok dot once the terminal completes cleanly', () => {
-    pushTerminalChunk('inst-A', { terminalId: 't-2', data: 'done.', command: 'pnpm build' })
+    pushTerminalChunk('inst-A', {
+      terminalId: 't-2',
+      data: 'done.',
+      command: 'pnpm build'
+    })
     pushTerminalExit('inst-A', { terminalId: 't-2', exitCode: 0 })
 
     const wrapper = mount(ChatTerminalCard, {
@@ -41,7 +48,11 @@ describe('ChatTerminalCard.vue', () => {
   })
 
   it('flips status dot to err on non-zero exit and surfaces signal text', () => {
-    pushTerminalChunk('inst-A', { terminalId: 't-3', data: 'oops', command: 'sh -c "exit 137"' })
+    pushTerminalChunk('inst-A', {
+      terminalId: 't-3',
+      data: 'oops',
+      command: 'sh -c "exit 137"'
+    })
     pushTerminalExit('inst-A', { terminalId: 't-3', signal: 'SIGKILL' })
 
     const wrapper = mount(ChatTerminalCard, {
@@ -52,8 +63,12 @@ describe('ChatTerminalCard.vue', () => {
     expect(wrapper.text()).toContain('signal SIGKILL')
   })
 
-  it('emits cancel on click', async () => {
-    pushTerminalChunk('inst-A', { terminalId: 't-4', data: '', command: 'sleep 5' })
+  it('emits cancel on click', async() => {
+    pushTerminalChunk('inst-A', {
+      terminalId: 't-4',
+      data: '',
+      command: 'sleep 5'
+    })
 
     const wrapper = mount(ChatTerminalCard, {
       props: { terminalId: 't-4', instanceId: 'inst-A' }

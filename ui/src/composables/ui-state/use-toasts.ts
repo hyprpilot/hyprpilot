@@ -38,10 +38,7 @@ const MAX_STACK = 3
  * smell: every new affordance (icon, badge, dual-action) would
  * have widened the type. Now consumers compose what they need.
  */
-export type ToastBody =
-  | string
-  | (() => VNode)
-  | { component: Component; props?: Record<string, unknown> }
+export type ToastBody = string | (() => VNode) | { component: Component; props?: Record<string, unknown> }
 
 export interface ToastEntry {
   id: string
@@ -68,10 +65,12 @@ function toastBodyToLogString(body: ToastBody): string {
   if (typeof body === 'string') {
     return body
   }
+
   if (typeof body === 'function') {
     return '<render fn>'
   }
   const name = (body.component as { name?: string }).name ?? '<component>'
+
   return `<${name}>`
 }
 
@@ -85,16 +84,20 @@ function toastBodyToLogString(body: ToastBody): string {
 function logToast(tone: ToastTone, body: ToastBody): void {
   const text = toastBodyToLogString(body)
   const fields = { source: 'toast', tone }
+
   switch (tone) {
     case ToastTone.Err:
       log.error(text, fields)
+
       break
     case ToastTone.Warn:
       log.warn(text, fields)
+
       break
     case ToastTone.Ok:
     case ToastTone.Info:
       log.info(text, fields)
+
       break
   }
 }
@@ -110,19 +113,29 @@ export function pushToast(tone: ToastTone, body: ToastBody, options: ToastOption
   nextId += 1
   const id = `toast-${nextId}`
   const durationMs = options.durationMs ?? DEFAULT_DURATION_MS
-  entries.push({ id, tone, body, createdAt: Date.now() })
+
+  entries.push({
+    id,
+    tone,
+    body,
+    createdAt: Date.now()
+  })
+
   while (entries.length > MAX_STACK) {
     entries.shift()
   }
+
   if (durationMs > 0) {
     window.setTimeout(() => dismissToast(id), durationMs)
   }
   logToast(tone, body)
+
   return id
 }
 
 export function dismissToast(id: string): void {
   const idx = entries.findIndex((e) => e.id === id)
+
   if (idx >= 0) {
     entries.splice(idx, 1)
   }

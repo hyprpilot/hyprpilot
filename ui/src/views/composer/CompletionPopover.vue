@@ -35,9 +35,11 @@ const state = completion.state
 // box's bottom edge lines up with the caret regardless of row count.
 const popoverStyle = computed<Record<string, string>>(() => {
   const style: Record<string, string> = { left: `${props.left}px` }
+
   if (props.top !== null) {
     style.top = `${props.top}px`
   }
+
   if (props.bottom !== null) {
     style.bottom = `${props.bottom}px`
   }
@@ -45,9 +47,7 @@ const popoverStyle = computed<Record<string, string>>(() => {
   return style
 })
 
-const showDocs = computed<boolean>(() =>
-  Boolean(state.value.documentation && state.value.documentation.trim().length > 0)
-)
+const showDocs = computed<boolean>(() => Boolean(state.value.documentation && state.value.documentation.trim().length > 0))
 
 const listRef = ref<HTMLUListElement>()
 
@@ -57,13 +57,15 @@ const listRef = ref<HTMLUListElement>()
 // scrolling lags the cursor.
 watch(
   () => state.value.selectedIndex,
-  async (idx) => {
+  async(idx) => {
     await nextTick()
     const list = listRef.value
+
     if (!list) {
       return
     }
     const row = list.children.item(idx) as HTMLElement | null
+
     row?.scrollIntoView({ block: 'nearest' })
   }
 )
@@ -71,21 +73,11 @@ watch(
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="state.open && state.items.length > 0"
-      class="completion-popover-wrap"
-      :class="{ 'completion-popover-wrap-flipped': props.bottom !== null }"
-      :style="popoverStyle"
-    >
+    <div v-if="state.open && state.items.length > 0" class="completion-popover-wrap" :class="{ 'completion-popover-wrap-flipped': props.bottom !== null }" :style="popoverStyle">
       <div class="completion-popover">
         <ul ref="listRef" class="completion-list" role="listbox" aria-label="Completion suggestions">
           <li v-for="(item, idx) in state.items" :key="`${item.kind}-${item.label}-${idx}`">
-            <CompletionRow
-              :item="item"
-              :active="idx === state.selectedIndex"
-              @hover="state.selectedIndex = idx"
-              @click="emit('commit')"
-            />
+            <CompletionRow :item="item" :active="idx === state.selectedIndex" @hover="state.selectedIndex = idx" @click="emit('commit')" />
           </li>
         </ul>
         <footer class="completion-footer">

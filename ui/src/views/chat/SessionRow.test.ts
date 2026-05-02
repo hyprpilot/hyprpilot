@@ -24,7 +24,7 @@ describe('SessionRow.vue', () => {
     expect(wrapper.text()).toContain('planning tests')
   })
 
-  it('emits focus on click with the session id', async () => {
+  it('emits focus on click with the session id', async() => {
     const wrapper = mount(SessionRow, { props: { session } })
 
     await wrapper.trigger('click')

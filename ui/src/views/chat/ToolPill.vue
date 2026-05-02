@@ -3,45 +3,35 @@ import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons
 import { computed, ref, watch } from 'vue'
 
 import ToolSpecSheet from './ToolSpecSheet.vue'
-import { iconForToolKind, ToolState, toolStateTone, type ToolChipItem } from '@components'
+import { ToolState, toolStateTone, type ToolCallView } from '@components'
 
 /**
- * Tool-call pill — collapsible row with a 4-section header:
+ * Tool-call pill — collapsible 3-section row with an expandable body.
  *
- *   [name (colored, with running pulse)] · [arg · detail …] · [stat] · [▾/▸]
+ *   [icon] [title] [stat] [▾/▸]
  *
- * Header layout: `auto minmax(0, 1fr) auto auto` CSS grid. `info`
- * ellipsizes; the rest are `flex-shrink: 0` so they never wrap.
+ * The title is composed by the formatter (`bash · npm test`, `read ·
+ * src/foo.ts (lines 10..30)`, `playwright · browser navigate`); the
+ * pill renders it as one ellipsised string. Tone (border-left + icon
+ * color) tracks `view.state` per visual law #3.
  *
- * Tone (border-left + name color) tracks the tool state per visual
- * law #3 — running/awaiting orange, done green, failed red, queued
- * gray.
- *
- * Expansion default tracks state: running / awaiting → expanded
- * (the live work is the foreground concern), pending / done /
- * failed → collapsed. The user can click the header to toggle
- * either direction; once they've toggled manually the auto-default
- * is suspended for that pill so subsequent state transitions don't
- * override the explicit choice.
- *
- * When expanded the pill spans both columns of the parent
- * `ToolChips` grid via `grid-column: 1 / -1` and renders a body
- * section underneath the header — full args + optional `output`
- * payload (terminal stdout, diff, etc.) in a `<pre>` block.
+ * Auto-expand: running / awaiting → expanded; pending / done /
+ * failed → collapsed. Manual toggle suspends auto-default for that
+ * pill so subsequent state transitions don't override.
  */
 const props = defineProps<{
-  item: ToolChipItem
+  view: ToolCallView
 }>()
 
 function autoExpand(state: ToolState): boolean {
   return state === ToolState.Running || state === ToolState.Awaiting
 }
 
-const expanded = ref(autoExpand(props.item.state))
+const expanded = ref(autoExpand(props.view.state))
 let manuallyToggled = false
 
 watch(
-  () => props.item.state,
+  () => props.view.state,
   (next) => {
     if (!manuallyToggled) {
       expanded.value = autoExpand(next)
@@ -54,33 +44,13 @@ function toggle(): void {
   expanded.value = !expanded.value
 }
 
-const stateTone = computed(() => toolStateTone(props.item.state))
-const info = computed(() => [props.item.arg, props.item.detail].filter(Boolean).join(' · '))
-const hasBody = computed(
-  () =>
-    Boolean(props.item.output) ||
-    Boolean(props.item.description) ||
-    Boolean(props.item.arg) ||
-    (props.item.fields !== undefined && props.item.fields.length > 0)
-)
+const stateTone = computed(() => toolStateTone(props.view.state))
+const hasBody = computed(() => Boolean(props.view.description) || Boolean(props.view.output) || (props.view.fields !== undefined && props.view.fields.length > 0))
 const isInteractive = computed(() => hasBody.value)
-const kindIcon = computed(() => iconForToolKind(props.item.kind))
-const headerLabel = computed(() => {
-  if (props.item.title) {
-    return `${props.item.label} · ${props.item.title}`
-  }
-
-  return props.item.label
-})
 </script>
 
 <template>
-  <span
-    class="tool-pill"
-    :data-state="item.state"
-    :data-expanded="expanded"
-    :style="{ '--tone': stateTone }"
-  >
+  <span class="tool-pill" :data-state="view.state" :data-expanded="expanded" :data-type="view.type" :style="{ '--tone': stateTone }">
     <span
       class="tool-pill-header"
       :role="isInteractive ? 'button' : undefined"
@@ -90,35 +60,17 @@ const headerLabel = computed(() => {
       @keydown.enter.prevent="isInteractive && toggle()"
       @keydown.space.prevent="isInteractive && toggle()"
     >
-      <span class="tool-pill-name" :aria-label="headerLabel">
-        <span v-if="item.state === ToolState.Running" class="tool-pill-dot" aria-hidden="true" />
-        <FaIcon :icon="kindIcon" class="tool-pill-icon" aria-hidden="true" />
-        <span class="tool-pill-label">
-          <span class="tool-pill-kind">{{ item.label }}</span>
-          <template v-if="item.title">
-            <span class="tool-pill-sep" aria-hidden="true">·</span>
-            <span class="tool-pill-title">{{ item.title }}</span>
-          </template>
-        </span>
+      <span class="tool-pill-icon-cell" :aria-label="view.title">
+        <span v-if="view.state === ToolState.Running" class="tool-pill-dot" aria-hidden="true" />
+        <FaIcon :icon="view.icon" class="tool-pill-icon" aria-hidden="true" />
       </span>
-      <span class="tool-pill-info">{{ info }}</span>
-      <span v-if="item.stat" class="tool-pill-stat">{{ item.stat }}</span>
-      <FaIcon
-        v-if="hasBody"
-        :icon="expanded ? faChevronDown : faChevronRight"
-        class="tool-pill-caret"
-        aria-hidden="true"
-      />
+      <span class="tool-pill-title">{{ view.title }}</span>
+      <span v-if="view.stat" class="tool-pill-stat">{{ view.stat }}</span>
+      <FaIcon v-if="hasBody" :icon="expanded ? faChevronDown : faChevronRight" class="tool-pill-caret" aria-hidden="true" />
     </span>
 
     <div v-if="expanded && hasBody" class="tool-pill-body">
-      <ToolSpecSheet
-        :description="item.description"
-        :command="item.arg"
-        :detail="item.detail"
-        :output="item.output"
-        :fields="item.fields"
-      />
+      <ToolSpecSheet :description="view.description" :output="view.output" :fields="view.fields" />
     </div>
   </span>
 </template>
@@ -126,9 +78,6 @@ const headerLabel = computed(() => {
 <style scoped>
 @reference '../../assets/styles.css';
 
-/* Compact (collapsed) pill — single-row grid header. Expanded pills
- * stretch across both columns of the parent `ToolChips` grid via
- * `grid-column: 1 / -1` so the body has room to lay out. */
 .tool-pill {
   @apply flex flex-col text-[0.62rem] leading-tight;
   font-family: var(--theme-font-mono);
@@ -147,18 +96,9 @@ const headerLabel = computed(() => {
   border-color: var(--theme-border-soft);
 }
 
-/* Header layout — the dot + icon + kind word are fixed-width
- * (`auto`); the name column (which contains the title) gets
- * `minmax(0, 1fr)` so the title is the FIRST thing to truncate when
- * the chip is narrow. `info` (arg + detail summary, used by Bash and
- * native tools) gets the second `1fr` and shares space with the
- * name. Stat + caret stay `auto`. The `min-width: 0` on grid
- * children is what unlocks `text-overflow: ellipsis` inside flex /
- * grid layouts — without it children push their natural width and
- * the truncation never fires. */
 .tool-pill-header {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 8px;
   padding: 3px 8px;
@@ -172,9 +112,9 @@ const headerLabel = computed(() => {
   cursor: pointer;
 }
 
-.tool-pill-name {
-  @apply flex items-center gap-[5px];
-  min-width: 0;
+.tool-pill-icon-cell {
+  @apply flex items-center gap-[4px];
+  flex-shrink: 0;
 }
 
 .tool-pill-dot {
@@ -189,36 +129,7 @@ const headerLabel = computed(() => {
   flex-shrink: 0;
 }
 
-.tool-pill-label {
-  @apply inline-flex items-baseline gap-1;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.tool-pill-kind {
-  @apply font-bold;
-  color: var(--tone);
-  flex-shrink: 0;
-}
-
-.tool-pill-sep {
-  color: var(--theme-fg-faint);
-  flex-shrink: 0;
-}
-
-/* Title truncates based on whatever space the grid column gives
- * it. Drop the hardcoded ch cap — a narrow chip should truncate
- * aggressively, a wide one should show the whole title. */
 .tool-pill-title {
-  color: var(--theme-fg-ink-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.tool-pill-info {
   color: var(--theme-fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -226,7 +137,7 @@ const headerLabel = computed(() => {
   min-width: 0;
 }
 
-.tool-pill[data-state='done'] .tool-pill-info {
+.tool-pill[data-state='done'] .tool-pill-title {
   color: var(--theme-fg-ink-2);
 }
 
@@ -242,10 +153,6 @@ const headerLabel = computed(() => {
   color: var(--theme-fg-dim);
 }
 
-/* Expanded body — wraps `ToolSpecSheet` (which carries its own
- * vocabulary). The container caps height + scrolls so a long
- * description + output doesn't push the rest of the transcript out
- * of view. */
 .tool-pill-body {
   @apply flex flex-col overflow-y-auto;
   padding: 8px 10px;

@@ -1,10 +1,4 @@
-import {
-  debug as pluginDebug,
-  error as pluginError,
-  info as pluginInfo,
-  trace as pluginTrace,
-  warn as pluginWarn
-} from '@tauri-apps/plugin-log'
+import { debug as pluginDebug, error as pluginError, info as pluginInfo, trace as pluginTrace, warn as pluginWarn } from '@tauri-apps/plugin-log'
 
 /**
  * UI-side bridge into the daemon's tracing subscriber. Every call fans
@@ -28,24 +22,30 @@ type Fields = Record<string, unknown>
 
 function callSite(): string {
   const stack = new Error().stack
+
   if (!stack) {
     return 'unknown'
   }
   const lines = stack.split('\n')
+
   for (const raw of lines) {
     const line = raw.trim()
+
     if (!line) {
       continue
     }
+
     if (line.includes('lib/log.ts') || line.includes('lib/log.js')) {
       continue
     }
     // Match "...(path:line:col)" and "... path:line:col" forms.
     const paren = /\(([^)]+)\)\s*$/.exec(line)
+
     if (paren) {
       return paren[1]
     }
     const bare = /\s([^\s]+:\d+:\d+)\s*$/.exec(line)
+
     if (bare) {
       return bare[1]
     }
@@ -56,9 +56,11 @@ function callSite(): string {
 
 function fmt(msg: string, fields?: Fields, err?: unknown): string {
   const parts = [msg]
+
   if (fields) {
     parts.push(JSON.stringify(fields))
   }
+
   if (err !== undefined) {
     if (err instanceof Error) {
       parts.push(`${err.message}\n${err.stack ?? ''}`)
@@ -76,15 +78,17 @@ function mirrorToConsole(level: 'trace' | 'debug' | 'info' | 'warn' | 'error', m
     return
   }
   const args: unknown[] = [msg]
+
   if (fields) {
     args.push(fields)
   }
+
   if (err !== undefined) {
     args.push(err)
   }
   // eslint-disable-next-line no-console
   const sink = level === 'trace' ? console.debug : console[level]
-  // eslint-disable-next-line no-console
+
   sink(...args)
 }
 

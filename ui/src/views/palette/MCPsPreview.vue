@@ -30,46 +30,57 @@ const active = computed<MCPItem | undefined>(() => {
   if (!props.entry) {
     return undefined
   }
+
   return props.items.find((m) => m.name === props.entry?.id)
 })
 
 const sourceDisplay = computed(() => {
   const src = active.value?.source
+
   if (!src) {
     return ''
   }
+
   if (homeDir.value && src.startsWith(homeDir.value)) {
     return `~${src.slice(homeDir.value.length)}`
   }
+
   return src
 })
 
 const commandStr = computed<string | undefined>(() => {
   const raw = active.value?.raw
+
   if (!raw) {
     return undefined
   }
   const cmd = typeof raw.command === 'string' ? raw.command : undefined
+
   if (!cmd) {
     return undefined
   }
   const args = Array.isArray(raw.args) ? raw.args.filter((a): a is string => typeof a === 'string') : []
+
   return [cmd, ...args].join(' ')
 })
 
 const urlStr = computed<string | undefined>(() => {
   const raw = active.value?.raw
+
   if (!raw) {
     return undefined
   }
+
   return typeof raw.url === 'string' ? raw.url : undefined
 })
 
 const envKeys = computed<string[]>(() => {
   const raw = active.value?.raw
+
   if (!raw || typeof raw.env !== 'object' || raw.env === null) {
     return []
   }
+
   return Object.keys(raw.env as Record<string, unknown>).sort()
 })
 
@@ -78,9 +89,11 @@ const rejectGlobs = computed<string[]>(() => active.value?.hyprpilot.autoRejectT
 
 const rawJson = computed(() => {
   const raw = active.value?.raw
+
   if (!raw) {
     return ''
   }
+
   return JSON.stringify(raw, null, 2)
 })
 </script>
@@ -108,9 +121,7 @@ const rawJson = computed(() => {
         <dt>env</dt>
         <dd>
           <ul class="mcp-preview-list">
-            <li v-for="k in envKeys" :key="k" class="mcp-preview-mono">
-              {{ k }} = <span class="mcp-preview-redacted">***</span>
-            </li>
+            <li v-for="k in envKeys" :key="k" class="mcp-preview-mono">{{ k }} = <span class="mcp-preview-redacted">***</span></li>
           </ul>
         </dd>
       </template>

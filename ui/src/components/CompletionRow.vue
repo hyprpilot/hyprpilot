@@ -1,13 +1,5 @@
 <script setup lang="ts">
-import {
-  faFile,
-  faFileCode,
-  faFileLines,
-  faFolder,
-  faMagnifyingGlass,
-  faStar,
-  faTerminal
-} from '@fortawesome/free-solid-svg-icons'
+import { faFile, faFileCode, faFileLines, faFolder, faMagnifyingGlass, faStar, faTerminal } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
 import { type CompletionItem, CompletionKind } from '@ipc'
@@ -39,25 +31,33 @@ const icon = computed(() => {
   switch (props.item.kind) {
     case CompletionKind.Skill:
       return faStar
+
     case CompletionKind.Path: {
       const detail = props.item.detail ?? ''
+
       if (detail === 'dir') {
         return faFolder
       }
       const label = props.item.label
+
       if (label.endsWith('.md') || label.endsWith('.txt')) {
         return faFileLines
       }
+
       if (label.match(/\.(ts|tsx|js|jsx|rs|py|go|java|rb)$/)) {
         return faFileCode
       }
+
       return faFile
     }
+
     case CompletionKind.Word:
       return faMagnifyingGlass
+
     case CompletionKind.Command:
       return faTerminal
   }
+
   return faFile
 })
 
@@ -65,25 +65,23 @@ const sourceLabel = computed<string>(() => {
   switch (props.item.kind) {
     case CompletionKind.Skill:
       return 'skill'
+
     case CompletionKind.Path:
       return 'path'
+
     case CompletionKind.Word:
       return 'ripgrep'
+
     case CompletionKind.Command:
       return 'command'
   }
+
   return ''
 })
 </script>
 
 <template>
-  <button
-    type="button"
-    class="completion-row"
-    :data-active="active"
-    @mouseenter="emit('hover')"
-    @click.prevent="emit('click')"
-  >
+  <button type="button" class="completion-row" :data-active="active" @mouseenter="emit('hover')" @click.prevent="emit('click')">
     <FaIcon :icon="icon" class="completion-row-icon" aria-hidden="true" />
     <span class="completion-row-label">{{ item.label }}</span>
     <span v-if="item.detail" class="completion-row-detail">({{ item.detail }})</span>

@@ -9,6 +9,28 @@
  */
 
 import type {
+  CompletionCancelArgs,
+  CompletionCancelResponse,
+  CompletionQueryArgs,
+  CompletionQueryResponse,
+  CompletionResolveArgs,
+  CompletionResolveResponse
+} from '@interfaces/wire/completion'
+import type {
+  CurrentModeUpdateEventPayload,
+  InstanceMetaEventPayload,
+  InstanceStateEventPayload,
+  InstancesChangedEventPayload,
+  InstancesFocusedEventPayload,
+  PermissionRequestEventPayload,
+  SessionInfoUpdateEventPayload,
+  TerminalEventPayload,
+  TranscriptEventPayload,
+  TurnEndedEventPayload,
+  TurnStartedEventPayload
+} from '@interfaces/wire/event'
+import type { KeymapsConfig } from '@interfaces/wire/keymap'
+import type {
   AgentSummary,
   CancelArgs,
   CancelResult,
@@ -35,28 +57,6 @@ import type {
   SubmitArgs,
   SubmitResult
 } from '@interfaces/wire/session'
-import type {
-  CurrentModeUpdateEventPayload,
-  InstanceMetaEventPayload,
-  InstanceStateEventPayload,
-  InstancesChangedEventPayload,
-  InstancesFocusedEventPayload,
-  PermissionRequestEventPayload,
-  SessionInfoUpdateEventPayload,
-  TerminalEventPayload,
-  TranscriptEventPayload,
-  TurnEndedEventPayload,
-  TurnStartedEventPayload
-} from '@interfaces/wire/event'
-import type {
-  CompletionCancelArgs,
-  CompletionCancelResponse,
-  CompletionQueryArgs,
-  CompletionQueryResponse,
-  CompletionResolveArgs,
-  CompletionResolveResponse
-} from '@interfaces/wire/completion'
-import type { KeymapsConfig } from '@interfaces/wire/keymap'
 import type { Theme } from '@interfaces/wire/theme'
 import type { WindowState } from '@interfaces/wire/window'
 

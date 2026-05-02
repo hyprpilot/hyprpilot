@@ -31,16 +31,18 @@ const slotEmpty = computed(() => !slots.default)
 
 watch(
   [() => props.text, useMarkdown],
-  async ([raw, on]) => {
+  async([raw, on]) => {
     if (!on || !raw) {
       renderedHtml.value = ''
 
       return
     }
+
     try {
       const out = await renderMarkdown(raw)
+
       renderedHtml.value = out.html
-    } catch (err) {
+    } catch(err) {
       log.warn('markdown render failed; falling back to plain text', { err: String(err) })
       renderedHtml.value = ''
     }
@@ -51,6 +53,7 @@ watch(
 function onCopyClick(event: MouseEvent): void {
   const target = event.target as HTMLElement | null
   const button = target?.closest('button[data-md-copy]') as HTMLButtonElement | null
+
   if (!button) {
     return
   }
@@ -59,6 +62,7 @@ function onCopyClick(event: MouseEvent): void {
   event.stopPropagation()
   const block = button.closest('.md-codeblock')
   const code = block?.querySelector('pre code')?.textContent ?? ''
+
   if (!code) {
     return
   }
@@ -92,9 +96,11 @@ function onMdRootClick(event: MouseEvent): void {
   onCopyClick(event)
   const target = event.target as HTMLElement | null
   const header = target?.closest('[data-md-toggle]') as HTMLElement | null
+
   if (!header) {
     return
   }
+
   // Skip the toggle when the click landed inside the copy button —
   // `onCopyClick` already returned and we don't want a copy click to
   // also collapse the block.
@@ -102,10 +108,12 @@ function onMdRootClick(event: MouseEvent): void {
     return
   }
   const block = header.closest('.md-codeblock') as HTMLElement | null
+
   if (!block) {
     return
   }
   const next = block.dataset.collapsed === 'true' ? 'false' : 'true'
+
   block.dataset.collapsed = next
 }
 
@@ -115,15 +123,18 @@ function onMdRootKeydown(event: KeyboardEvent): void {
   }
   const target = event.target as HTMLElement | null
   const header = target?.closest('[data-md-toggle]') as HTMLElement | null
+
   if (!header) {
     return
   }
   event.preventDefault()
   const block = header.closest('.md-codeblock') as HTMLElement | null
+
   if (!block) {
     return
   }
   const next = block.dataset.collapsed === 'true' ? 'false' : 'true'
+
   block.dataset.collapsed = next
 }
 </script>

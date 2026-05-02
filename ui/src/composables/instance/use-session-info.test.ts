@@ -53,6 +53,7 @@ describe('pushSessionInfoUpdate (ACP SessionInfoUpdate)', () => {
     pushSessionInfoUpdate('A', { title: 't', updatedAt: '2026-04-30T10:00:00Z' })
 
     const info = useSessionInfo('A').info.value
+
     expect(info.title).toBe('t')
     expect(info.updatedAt).toBe('2026-04-30T10:00:00Z')
   })
@@ -135,8 +136,16 @@ describe('setInstanceCwd / setInstanceGitStatus (daemon-side metadata)', () => {
   })
 
   it('records and clears gitStatus', () => {
-    setInstanceGitStatus('A', { branch: 'main', ahead: 2, behind: 0 })
-    expect(useSessionInfo('A').info.value.gitStatus).toEqual({ branch: 'main', ahead: 2, behind: 0 })
+    setInstanceGitStatus('A', {
+      branch: 'main',
+      ahead: 2,
+      behind: 0
+    })
+    expect(useSessionInfo('A').info.value.gitStatus).toEqual({
+      branch: 'main',
+      ahead: 2,
+      behind: 0
+    })
 
     setInstanceGitStatus('A', undefined)
     expect(useSessionInfo('A').info.value.gitStatus).toBeUndefined()
@@ -145,14 +154,28 @@ describe('setInstanceCwd / setInstanceGitStatus (daemon-side metadata)', () => {
 
 describe('useSessionInfo profile derivation', () => {
   it('derives model from the active profile when the instance has no override', () => {
-    profilesRef.value = [{ id: 'ask', agent: 'claude-code', model: 'claude-sonnet-4-5', isDefault: true }]
+    profilesRef.value = [
+      {
+        id: 'ask',
+        agent: 'claude-code',
+        model: 'claude-sonnet-4-5',
+        isDefault: true
+      }
+    ]
     selectedRef.value = 'ask'
 
     expect(useSessionInfo('A').info.value.model).toBe('claude-sonnet-4-5')
   })
 
   it('prefers the instance model over the profile model when both exist', () => {
-    profilesRef.value = [{ id: 'ask', agent: 'claude-code', model: 'claude-sonnet-4-5', isDefault: true }]
+    profilesRef.value = [
+      {
+        id: 'ask',
+        agent: 'claude-code',
+        model: 'claude-sonnet-4-5',
+        isDefault: true
+      }
+    ]
     selectedRef.value = 'ask'
     pushInstanceModelState('A', { currentModelId: 'claude-opus-4-5' })
 
@@ -160,10 +183,17 @@ describe('useSessionInfo profile derivation', () => {
   })
 
   it('always reports zero mcps and skills counts (live counts land in K-258 / K-268)', () => {
-    profilesRef.value = [{ id: 'ask', agent: 'claude-code', isDefault: true }]
+    profilesRef.value = [
+      {
+        id: 'ask',
+        agent: 'claude-code',
+        isDefault: true
+      }
+    ]
     selectedRef.value = 'ask'
 
     const info = useSessionInfo('A').info.value
+
     expect(info.mcpsCount).toBe(0)
   })
 
@@ -202,11 +232,13 @@ describe('truncateCwd', () => {
 
   it('middle-ellipsises long paths keeping the head segment + last two', () => {
     const result = truncateCwd('/home/cenk/dev/utils/hyprpilot/src-tauri/src/adapters', 32, '/home/cenk')
+
     expect(result).toBe('~/.../src/adapters')
   })
 
   it('keeps the path as-is when middle truncation would not save bytes', () => {
     const path = '/a/b/c/d'
+
     expect(truncateCwd(path, 4)).toBe('/a/b/c/d')
   })
 

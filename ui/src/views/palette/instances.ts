@@ -8,20 +8,12 @@
  * fuzzy filter still matches across every signal.
  */
 
-import { type PaletteEntry, PaletteMode, usePalette } from '@composables'
-import { useActiveInstance, type InstanceId } from '@composables'
-import { useHomeDir } from '@composables'
-import { usePhase } from '@composables'
-import { useQueue } from '@composables'
-import { truncateCwd, useSessionInfo } from '@composables'
-import { useTerminals } from '@composables'
-import { pushToast } from '@composables'
-
 import { ToastTone } from '@components'
-
-import { invoke } from '@ipc/bridge'
+import { type PaletteEntry, PaletteMode, usePalette, useActiveInstance, type InstanceId } from '@composables'
+import { useHomeDir, usePhase, useQueue, truncateCwd, useSessionInfo, useTerminals, pushToast } from '@composables'
 import { TauriCommand } from '@ipc'
 import { type InstanceListEntry } from '@ipc'
+import { invoke } from '@ipc/bridge'
 import { log } from '@lib'
 
 interface InstanceRow extends PaletteEntry {
@@ -37,18 +29,23 @@ function rowFor(entry: InstanceListEntry, homeDir: string | undefined): Instance
 
   const segments: string[] = [phase.value]
   const cwd = info.value.cwd
+
   if (cwd) {
     segments.push(truncateCwd(cwd, 40, homeDir))
   }
+
   if (info.value.mode) {
     segments.push(info.value.mode)
   }
+
   if (items.value.length > 0) {
     segments.push(`q${items.value.length}`)
   }
+
   if (terminals.value.length > 0) {
     segments.push(`t${terminals.value.length}`)
   }
+
   if (entry.instanceId === activeId.value) {
     segments.unshift('active')
   }
@@ -70,7 +67,7 @@ async function fetchInstances(): Promise<InstanceListEntry[]> {
     const r = await invoke(TauriCommand.InstancesList)
 
     return r.instances
-  } catch (err) {
+  } catch(err) {
     log.error('invoke failed', { command: TauriCommand.InstancesList }, err)
     pushToast(ToastTone.Err, `instances list failed: ${String(err)}`)
 
@@ -81,7 +78,7 @@ async function fetchInstances(): Promise<InstanceListEntry[]> {
 async function focusInstance(id: InstanceId): Promise<void> {
   try {
     await invoke(TauriCommand.InstancesFocus, { id })
-  } catch (err) {
+  } catch(err) {
     log.error('invoke failed', { command: TauriCommand.InstancesFocus, id }, err)
     pushToast(ToastTone.Err, `instances focus failed: ${String(err)}`)
   }
@@ -90,7 +87,7 @@ async function focusInstance(id: InstanceId): Promise<void> {
 async function shutdownInstance(id: InstanceId): Promise<void> {
   try {
     await invoke(TauriCommand.InstancesShutdown, { id })
-  } catch (err) {
+  } catch(err) {
     log.error('invoke failed', { command: TauriCommand.InstancesShutdown, id }, err)
     pushToast(ToastTone.Err, `instances shutdown failed: ${String(err)}`)
   }
@@ -127,6 +124,7 @@ export async function openInstancesLeaf(): Promise<void> {
     entries,
     onCommit(picks) {
       const pick = picks[0]
+
       if (!pick || pick.id === 'instances-empty') {
         return
       }

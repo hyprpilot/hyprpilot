@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { reactiveOmit } from "@vueuse/core"
-import { Search } from "lucide-vue-next"
-import type { ListboxFilterProps } from "reka-ui"
-import { ListboxFilter, useForwardProps } from "reka-ui"
-import type { HTMLAttributes } from "vue"
+import { reactiveOmit } from '@vueuse/core'
+import { Search } from 'lucide-vue-next'
+import type { ListboxFilterProps } from 'reka-ui'
+import { ListboxFilter, useForwardProps } from 'reka-ui'
+import type { HTMLAttributes } from 'vue'
 
-import { useCommand } from "."
+import { useCommand } from '.'
 import { cn } from '@components/lib/utils'
 
 defineOptions({
-  inheritAttrs: false,
+  inheritAttrs: false
 })
 
-const props = defineProps<ListboxFilterProps & {
-  class?: HTMLAttributes["class"]
-}>()
+const props = defineProps<
+  ListboxFilterProps & {
+    class?: HTMLAttributes['class']
+  }
+>()
 
-const delegatedProps = reactiveOmit(props, "class")
+const delegatedProps = reactiveOmit(props, 'class')
 
 const forwardedProps = useForwardProps(delegatedProps)
 
@@ -30,7 +32,9 @@ const { filterState } = useCommand()
       v-bind="{ ...forwardedProps, ...$attrs }"
       v-model="filterState.search"
       auto-focus
-      :class="cn('flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50', props.class)"
+      :class="
+        cn('flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50', props.class)
+      "
     />
   </div>
 </template>

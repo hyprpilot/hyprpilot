@@ -1,10 +1,9 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import type { Attachment } from '@ipc'
-
 import { nextSeq } from './sequence'
-import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { openTurnIdFor } from './use-turns'
+import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import type { Attachment } from '@ipc'
 
 export enum TurnRole {
   User = 'user',
@@ -12,9 +11,9 @@ export enum TurnRole {
 }
 
 export interface ContentBlock {
+  [k: string]: unknown
   type?: string
   text?: string
-  [k: string]: unknown
 }
 
 interface Turn {
@@ -53,6 +52,7 @@ const states = reactive(new Map<InstanceId, TranscriptState>())
 
 function slotFor(id: InstanceId): TranscriptState {
   let slot = states.get(id)
+
   if (!slot) {
     slot = { turns: [] }
     states.set(id, slot)
@@ -83,8 +83,10 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
   switch (sessionUpdate) {
     case 'user_message_chunk':
       return TurnRole.User
+
     case 'agent_message_chunk':
       return TurnRole.Agent
+
     default:
       return undefined
   }
@@ -97,6 +99,7 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
  */
 export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: ChunkUpdate): void {
   const role = roleFor(raw.sessionUpdate)
+
   if (!role) {
     return
   }
@@ -105,9 +108,11 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
   const seq = nextSeq(id)
   const hasExplicitId = typeof raw.messageId === 'string'
   const last = slot.turns[slot.turns.length - 1]
+
   if (last && last.role === role && last.sessionId === sessionId && (hasExplicitId ? last.id === raw.messageId : true)) {
     last.text += text
     last.updatedAt = seq
+
     if (raw.attachments && raw.attachments.length > 0 && last.role === TurnRole.User) {
       last.attachments = raw.attachments
     }
@@ -118,24 +123,25 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
   const turn: ChatTurnItem =
     role === TurnRole.User
       ? {
-          role,
-          id: messageId,
-          sessionId,
-          turnId: openTurnIdFor(id, sessionId),
-          createdAt: seq,
-          updatedAt: seq,
-          text,
-          attachments: raw.attachments ?? []
-        }
+        role,
+        id: messageId,
+        sessionId,
+        turnId: openTurnIdFor(id, sessionId),
+        createdAt: seq,
+        updatedAt: seq,
+        text,
+        attachments: raw.attachments ?? []
+      }
       : {
-          role,
-          id: messageId,
-          sessionId,
-          turnId: openTurnIdFor(id, sessionId),
-          createdAt: seq,
-          updatedAt: seq,
-          text
-        }
+        role,
+        id: messageId,
+        sessionId,
+        turnId: openTurnIdFor(id, sessionId),
+        createdAt: seq,
+        updatedAt: seq,
+        text
+      }
+
   slot.turns.push(turn)
 }
 
@@ -161,11 +167,14 @@ export function resetTranscript(id: InstanceId): void {
  */
 export function deleteTurnByTurnId(id: InstanceId, turnId: string): number {
   const slot = states.get(id)
+
   if (!slot) {
     return 0
   }
   const before = slot.turns.length
+
   slot.turns = slot.turns.filter((t) => t.turnId !== turnId)
+
   return before - slot.turns.length
 }
 
@@ -173,6 +182,7 @@ export function useTranscript(instanceId?: InstanceId): { turns: ComputedRef<Cha
   const { id: activeId } = useActiveInstance()
   const turns = computed<ChatTurnItem[]>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return []
     }

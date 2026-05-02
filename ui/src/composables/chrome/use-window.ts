@@ -10,6 +10,7 @@ import { invoke, TauriCommand, type WindowState } from '@ipc'
  */
 export async function applyWindowState(): Promise<void> {
   let state: WindowState
+
   try {
     state = await invoke(TauriCommand.GetWindowState)
   } catch {
@@ -17,6 +18,7 @@ export async function applyWindowState(): Promise<void> {
   }
 
   const root = document.documentElement
+
   if (state.anchorEdge) {
     root.dataset.windowAnchor = state.anchorEdge
   } else {

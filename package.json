@@ -8,19 +8,26 @@
     "lint": "pnpm -r --parallel --if-present run lint"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.0",
     "@cenk1cenk2/eslint-config": "^3.2.3",
+    "@tauri-apps/cli": "^2.11.0",
     "@types/node": "^24.12.2",
-    "@typescript-eslint/parser": "^8.59.1",
+    "@typescript-eslint/parser": "8.59.1",
+    "@vue/eslint-config-typescript": "^14.7.0",
     "eslint": "^9.39.4",
+    "eslint-plugin-vue": "^10.9.0",
+    "globals": "^16.5.0",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
-    "@vue/eslint-config-typescript": "^14.7.0",
-    "vue-eslint-parser": "^10.4.0",
-    "eslint-plugin-vue": "^10.9.0"
+    "vue-eslint-parser": "^10.4.0"
   },
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=24.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@typescript-eslint/parser": "8.59.0",
+      "@typescript-eslint/eslint-plugin": "8.59.0"
+    }
   }
 }

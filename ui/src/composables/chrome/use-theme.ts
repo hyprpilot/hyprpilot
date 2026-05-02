@@ -23,6 +23,7 @@ function cssVarName(parts: string[]): string {
  */
 export async function applyTheme(): Promise<void> {
   let theme: Theme
+
   try {
     theme = await invoke(TauriCommand.GetTheme)
   } catch {
@@ -30,8 +31,10 @@ export async function applyTheme(): Promise<void> {
   }
 
   const root = document.documentElement
+
   walk([], theme, (path, value) => {
     const name = cssVarName(path)
+
     root.style.setProperty(name, value)
     // For colour leaves, also emit an `-rgb` companion (`r, g, b`)
     // so consumers can compose `rgba(var(--theme-X-rgb), <alpha>)`
@@ -40,6 +43,7 @@ export async function applyTheme(): Promise<void> {
     // 16.2 / 2023) so any `color-mix(...)` rule silently no-ops; the
     // RGBA path has been valid since CSS3 and works everywhere.
     const rgb = parseHexRgb(value)
+
     if (rgb) {
       root.style.setProperty(`${name}-rgb`, rgb)
     }
@@ -52,6 +56,7 @@ export async function applyTheme(): Promise<void> {
 /// `applyTheme` skips the `-rgb` emission for non-colour leaves.
 function parseHexRgb(value: string): string | undefined {
   const m = /^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(value)
+
   if (!m) {
     return undefined
   }
@@ -59,6 +64,7 @@ function parseHexRgb(value: string): string | undefined {
   const r = Number.parseInt(hex.slice(0, 2), 16)
   const g = Number.parseInt(hex.slice(2, 4), 16)
   const b = Number.parseInt(hex.slice(4, 6), 16)
+
   return `${r}, ${g}, ${b}`
 }
 

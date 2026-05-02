@@ -5,9 +5,6 @@
  * the real content.
  */
 
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
-import { log } from '@lib'
-
 import { openCwdLeaf } from './cwd'
 import { openInstanceLeaf } from './instance'
 import { openInstancesLeaf } from './instances'
@@ -17,6 +14,8 @@ import { openModesLeaf } from './modes'
 import { openProfilesLeaf } from './profiles'
 import { openSessionsLeaf } from './sessions'
 import { openSkillsLeaf } from './skills'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
+import { log } from '@lib'
 
 /**
  * Closed set of root-palette leaf ids. Used by header-pill /
@@ -144,17 +143,24 @@ export function openRootPalette(): void {
   const rootEntries: PaletteEntry[] = ROOT_LEAF_ORDER.map((id) => {
     const leaf = ROOT_LEAVES[id]
 
-    return { id: leaf.id, name: leaf.name, description: leaf.description }
+    return {
+      id: leaf.id,
+      name: leaf.name,
+      description: leaf.description
+    }
   })
+
   open({
     mode: PaletteMode.Select,
     title: 'palette',
     entries: rootEntries,
     onCommit(picks) {
       const pick = picks[0]
+
       if (!pick) {
         return
       }
+
       if (!isPaletteLeafId(pick.id)) {
         return
       }
@@ -182,28 +188,43 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
   switch (leafId) {
     case PaletteLeafId.Sessions:
       void openSessionsLeaf()
+
       return
+
     case PaletteLeafId.Models:
       void openModelsLeaf()
+
       return
+
     case PaletteLeafId.Modes:
       void openModesLeaf()
+
       return
+
     case PaletteLeafId.Profiles:
       openProfilesLeaf()
+
       return
+
     case PaletteLeafId.Instance:
       void openInstanceLeaf()
+
       return
+
     case PaletteLeafId.Instances:
       void openInstancesLeaf()
+
       return
+
     case PaletteLeafId.Cwd:
       openCwdLeaf()
+
       return
+
     case PaletteLeafId.Mcps: {
       const { open } = usePalette()
       const leaf = ROOT_LEAVES[leafId]
+
       if (!ctx.mcps) {
         pushNoActiveInstanceStub(leaf, open)
 
@@ -212,16 +233,22 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       void openMcpsLeaf(ctx.mcps).catch((err) => {
         log.warn('openMcpsLeaf failed', { instanceId: ctx.mcps?.instanceId }, err)
       })
+
       return
     }
+
     case PaletteLeafId.Permissions: {
       const { open } = usePalette()
       const leaf = ROOT_LEAVES[leafId]
+
       open(stubLeafSpec(leaf))
+
       return
     }
+
     case PaletteLeafId.Skills:
       openSkillsLeaf()
+
       return
   }
 }

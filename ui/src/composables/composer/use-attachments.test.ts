@@ -16,6 +16,7 @@ afterEach(() => {
 describe('useAttachments', () => {
   it('add() appends a new attachment', () => {
     const a = useAttachments()
+
     a.add(SAMPLE)
     expect(a.pending.value).toHaveLength(1)
     expect(a.pending.value[0]?.slug).toBe('debug-rust')
@@ -23,6 +24,7 @@ describe('useAttachments', () => {
 
   it('add() dedupes on slug — second add is a no-op', () => {
     const a = useAttachments()
+
     a.add(SAMPLE)
     a.add({ ...SAMPLE, body: 'replaced body' })
     expect(a.pending.value).toHaveLength(1)
@@ -31,6 +33,7 @@ describe('useAttachments', () => {
 
   it('remove() drops the matching slug', () => {
     const a = useAttachments()
+
     a.add(SAMPLE)
     a.add({ ...SAMPLE, slug: 'other' })
     a.remove('debug-rust')
@@ -40,6 +43,7 @@ describe('useAttachments', () => {
 
   it('clear() empties the list', () => {
     const a = useAttachments()
+
     a.add(SAMPLE)
     a.add({ ...SAMPLE, slug: 'other' })
     a.clear()
@@ -48,6 +52,7 @@ describe('useAttachments', () => {
 
   it('has() reflects membership by slug', () => {
     const a = useAttachments()
+
     expect(a.has('debug-rust')).toBe(false)
     a.add(SAMPLE)
     expect(a.has('debug-rust')).toBe(true)

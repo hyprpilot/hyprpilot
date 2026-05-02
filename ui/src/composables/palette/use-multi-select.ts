@@ -17,6 +17,7 @@ export function useMultiSelect(initial?: Iterable<string>): UseMultiSelectApi {
 
   function toggle(id: string): void {
     const next = new Set(ticked.value)
+
     if (next.has(id)) {
       next.delete(id)
     } else {
@@ -33,5 +34,10 @@ export function useMultiSelect(initial?: Iterable<string>): UseMultiSelectApi {
     ticked.value = new Set()
   }
 
-  return { ticked, toggle, isTicked, reset }
+  return {
+    ticked,
+    toggle,
+    isTicked,
+    reset
+  }
 }

@@ -16,6 +16,7 @@ describe('Pill.vue', () => {
     // jsdom normalises hex to rgb() — assert both the property and the
     // equivalent rgb triple so the test is stable across jsdom versions.
     const style = wrapper.attributes('style') ?? ''
+
     expect(style).toContain('border-color')
     expect(style).toMatch(/#abcdef|rgb\(\s*171,\s*205,\s*239\s*\)/)
   })

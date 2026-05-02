@@ -14,9 +14,7 @@ const props = defineProps<{
 }>()
 
 const tone = computed(() => (props.role === Role.User ? 'var(--theme-accent-user)' : 'var(--theme-accent-assistant)'))
-const soft = computed(() =>
-  props.role === Role.User ? 'var(--theme-accent-user-soft)' : 'var(--theme-accent-assistant-soft)'
-)
+const soft = computed(() => (props.role === Role.User ? 'var(--theme-accent-user-soft)' : 'var(--theme-accent-assistant-soft)'))
 </script>
 
 <template>

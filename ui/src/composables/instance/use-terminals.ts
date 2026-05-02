@@ -41,8 +41,13 @@ const states = reactive(new Map<InstanceId, InstanceSlot>())
 
 function slotFor(id: InstanceId): InstanceSlot {
   let slot = states.get(id)
+
   if (!slot) {
-    slot = { byId: new Map(), order: [], seq: 0 }
+    slot = {
+      byId: new Map(),
+      order: [],
+      seq: 0
+    }
     states.set(id, slot)
   }
 
@@ -51,6 +56,7 @@ function slotFor(id: InstanceId): InstanceSlot {
 
 function entryFor(slot: InstanceSlot, terminalId: string): TerminalEntry {
   let entry = slot.byId.get(terminalId)
+
   if (!entry) {
     slot.seq += 1
     entry = {
@@ -71,9 +77,11 @@ function entryFor(slot: InstanceSlot, terminalId: string): TerminalEntry {
 function appendCapped(entry: TerminalEntry, data: string): void {
   entry.output += data
   const lines = entry.output.split('\n')
+
   if (lines.length > MAX_LINES + 1) {
     // +1 because trailing '' from a newline-terminated buffer counts as a "line"
     const drop = lines.length - (MAX_LINES + 1)
+
     entry.output = lines.slice(drop).join('\n')
     entry.truncated = true
   }
@@ -96,12 +104,15 @@ export interface TerminalExitInput {
 export function pushTerminalChunk(id: InstanceId, chunk: TerminalChunkInput): void {
   const slot = slotFor(id)
   const entry = entryFor(slot, chunk.terminalId)
+
   if (chunk.command !== undefined) {
     entry.command = chunk.command
   }
+
   if (chunk.cwd !== undefined) {
     entry.cwd = chunk.cwd
   }
+
   if (chunk.data) {
     appendCapped(entry, chunk.data)
   }
@@ -111,10 +122,13 @@ export function pushTerminalChunk(id: InstanceId, chunk: TerminalChunkInput): vo
 export function pushTerminalExit(id: InstanceId, exit: TerminalExitInput): void {
   const slot = slotFor(id)
   const entry = entryFor(slot, exit.terminalId)
+
   entry.running = false
+
   if (exit.exitCode !== undefined) {
     entry.exitCode = exit.exitCode
   }
+
   if (exit.signal !== undefined) {
     entry.signal = exit.signal
   }
@@ -125,7 +139,7 @@ export function resetTerminals(id: InstanceId): void {
 }
 
 export interface UseTerminals {
-  byId(terminalId: string): ComputedRef<TerminalEntry | undefined>
+  byId: (terminalId: string) => ComputedRef<TerminalEntry | undefined>
   all: ComputedRef<TerminalEntry[]>
 }
 
@@ -137,6 +151,7 @@ export function useTerminals(instanceId?: InstanceId): UseTerminals {
     byId(terminalId: string) {
       return computed(() => {
         const id = resolved()
+
         if (!id) {
           return undefined
         }
@@ -146,17 +161,17 @@ export function useTerminals(instanceId?: InstanceId): UseTerminals {
     },
     all: computed<TerminalEntry[]>(() => {
       const id = resolved()
+
       if (!id) {
         return []
       }
       const slot = states.get(id)
+
       if (!slot) {
         return []
       }
 
-      return slot.order
-        .map((tid) => slot.byId.get(tid))
-        .filter((e): e is TerminalEntry => e !== undefined)
+      return slot.order.map((tid) => slot.byId.get(tid)).filter((e): e is TerminalEntry => e !== undefined)
     })
   }
 }

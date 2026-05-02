@@ -16,10 +16,9 @@
  */
 
 import SessionsPreview from './SessionsPreview.vue'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
-import { setSessionRestored, setSessionRestoring } from '@composables'
-import { pushToast } from '@composables'
 import { ToastTone } from '@components'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
+import { setSessionRestored, setSessionRestoring, pushToast } from '@composables'
 import { invoke, TauriCommand, type SessionSummary } from '@ipc'
 import { log } from '@lib'
 
@@ -33,26 +32,32 @@ export function relativeFromNow(iso: string | undefined, now: () => number = Dat
     return ''
   }
   const ts = Date.parse(iso)
+
   if (Number.isNaN(ts)) {
     return iso
   }
   const deltaSec = Math.max(0, Math.floor((now() - ts) / 1000))
+
   if (deltaSec < 60) {
     return `${deltaSec}s ago`
   }
   const min = Math.floor(deltaSec / 60)
+
   if (min < 60) {
     return `${min}m ago`
   }
   const hr = Math.floor(min / 60)
+
   if (hr < 24) {
     return `${hr}h ago`
   }
   const days = Math.floor(hr / 24)
+
   if (days < 30) {
     return `${days}d ago`
   }
   const months = Math.floor(days / 30)
+
   if (months < 12) {
     return `${months}mo ago`
   }
@@ -64,6 +69,7 @@ function shortenCwd(raw: string): string {
   // Light shortening — the right pane shows the full path. Keep last
   // three segments and prepend an ellipsis if anything was dropped.
   const segments = raw.split('/').filter((s) => s.length > 0)
+
   if (segments.length <= 3) {
     return raw
   }
@@ -97,6 +103,7 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
     preview: { component: SessionsPreview },
     onCommit(picks) {
       const pick = picks[0] as SessionsLeafEntry | undefined
+
       if (!pick) {
         return
       }
@@ -104,6 +111,7 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
       // off the resumed handle, not whatever happens to be active when
       // the await resolves. Mirrors `useSessionHistory.load`.
       const target = crypto.randomUUID()
+
       // Same `restoring` lifecycle as `useSessionHistory.load`:
       // flip on now so the chat-transcript scoped <Loading> paints
       // immediately; cleared by use-session-stream on the first
@@ -143,9 +151,10 @@ export async function openSessionsLeaf(): Promise<void> {
     const sessions = (await invoke(TauriCommand.SessionList, {})).sessions
     const entries = buildSessionEntries(sessions)
     const title = entries.length === 0 ? 'sessions — empty' : 'sessions'
+
     palette.close()
     palette.open(buildSpec(title, entries))
-  } catch (err) {
+  } catch(err) {
     log.warn('palette-sessions: list failed', { err })
     pushToast(ToastTone.Err, `sessions/list failed: ${String(err)}`)
     // Leave the placeholder open so the user can Esc out cleanly.

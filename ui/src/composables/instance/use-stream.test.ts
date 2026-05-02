@@ -1,12 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  pushPlan,
-  pushThoughtChunk,
-  resetStream,
-  StreamItemKind,
-  useStream
-} from '@composables'
+import { pushPlan, pushThoughtChunk, resetStream, StreamItemKind, useStream } from '@composables'
 
 beforeEach(() => {
   resetStream('A')
@@ -31,10 +25,19 @@ describe('useStream', () => {
   })
 
   it('merges consecutive thought chunks with the same messageId', () => {
-    pushThoughtChunk('A', 's-a', { sessionUpdate: 'agent_thought_chunk', content: { text: 'hel' }, messageId: 't-1' })
-    pushThoughtChunk('A', 's-a', { sessionUpdate: 'agent_thought_chunk', content: { text: 'lo' }, messageId: 't-1' })
+    pushThoughtChunk('A', 's-a', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { text: 'hel' },
+      messageId: 't-1'
+    })
+    pushThoughtChunk('A', 's-a', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { text: 'lo' },
+      messageId: 't-1'
+    })
 
     const items = useStream('A').items.value
+
     expect(items).toHaveLength(1)
     expect(items[0]?.kind === StreamItemKind.Thought ? items[0].text : null).toBe('hello')
   })
@@ -44,6 +47,7 @@ describe('useStream', () => {
     pushPlan('A', 's-a', { sessionUpdate: 'plan', entries: [{ content: 'e2' }, { content: 'e3' }] })
 
     const items = useStream('A').items.value
+
     expect(items).toHaveLength(1)
     expect(items[0]?.kind === StreamItemKind.Plan ? items[0].entries.length : null).toBe(2)
   })

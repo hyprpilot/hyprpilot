@@ -1,10 +1,9 @@
 import { mount } from '@vue/test-utils'
-import { defineComponent, h, ref, type Ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
-
-import { type Binding, Modifier } from '@ipc'
+import { defineComponent, h, ref, type Ref } from 'vue'
 
 import { type KeymapEntry, useKeymap } from './use-keymaps'
+import { type Binding, Modifier } from '@ipc'
 
 interface Harness {
   wrapper: ReturnType<typeof mount>
@@ -20,6 +19,7 @@ function mountHarness(target: () => EventTarget, entries: () => KeymapEntry[]): 
   const Component = defineComponent({
     setup() {
       useKeymap(target, entries)
+
       return () => h('div')
     }
   })
@@ -64,7 +64,13 @@ describe('useKeymap', () => {
       () => [{ binding: bind([], 'a'), handler }]
     )
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'a',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
     expect(handler).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -76,7 +82,14 @@ describe('useKeymap', () => {
       () => [{ binding: bind([Modifier.Ctrl, Modifier.Shift], 'enter'), handler }]
     )
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true, bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true
+      })
+    )
     expect(handler).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
@@ -88,7 +101,13 @@ describe('useKeymap', () => {
       () => [{ binding: bind([], 'a'), handler }]
     )
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', repeat: true, bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'a',
+        repeat: true,
+        bubbles: true
+      })
+    )
     expect(handler).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -97,10 +116,23 @@ describe('useKeymap', () => {
     const handler = vi.fn()
     const { wrapper } = mountHarness(
       () => document,
-      () => [{ binding: bind([Modifier.Ctrl], 'arrowup'), handler, allowRepeat: true }]
+      () => [
+        {
+          binding: bind([Modifier.Ctrl], 'arrowup'),
+          handler,
+          allowRepeat: true
+        }
+      ]
     )
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', ctrlKey: true, repeat: true, bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        ctrlKey: true,
+        repeat: true,
+        bubbles: true
+      })
+    )
     expect(handler).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
@@ -124,7 +156,12 @@ describe('useKeymap', () => {
       () => [{ binding: bind([], 'enter'), handler }]
     )
 
-    const e = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    const e = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true
+    })
+
     document.dispatchEvent(e)
     expect(e.defaultPrevented).toBe(true)
     wrapper.unmount()
@@ -137,7 +174,12 @@ describe('useKeymap', () => {
       () => [{ binding: bind([], 'enter'), handler }]
     )
 
-    const e = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    const e = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true
+    })
+
     document.dispatchEvent(e)
     expect(e.defaultPrevented).toBe(false)
     wrapper.unmount()
@@ -162,13 +204,16 @@ describe('useKeymap', () => {
 
   it('target scoping: listener on a textarea fires only from that element', () => {
     const textarea = document.createElement('textarea')
+
     document.body.appendChild(textarea)
     const handler = vi.fn()
 
     const Component = defineComponent({
       setup() {
         const ref1: Ref<EventTarget | undefined> = ref(textarea)
+
         useKeymap(ref1, () => [{ binding: bind([], 'a'), handler }])
+
         return () => h('div')
       }
     })

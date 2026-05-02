@@ -5,8 +5,8 @@
  * switch on it and surface `Unknown` as a placeholder for forward-
  * compat with future variants.
  */
-import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
 import type { Attachment } from './session'
+import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
 
 export interface PermissionOptionView {
   optionId: string
@@ -14,10 +14,7 @@ export interface PermissionOptionView {
   kind: string
 }
 
-export type ToolCallContentItem =
-  | { kind: 'text'; text: string }
-  | { kind: 'file'; path: string; snippet?: string }
-  | { kind: 'json'; value: unknown }
+export type ToolCallContentItem = { kind: 'text'; text: string } | { kind: 'file'; path: string; snippet?: string } | { kind: 'json'; value: unknown }
 
 export interface ToolCallRecord {
   id: string

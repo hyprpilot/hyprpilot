@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { __resetHomeDirForTests, loadHomeDir, useHomeDir } from './use-home-dir'
 import { TauriCommand } from '@ipc'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
@@ -9,12 +10,10 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 // time, before vi.mock('@ipc', ...) can replace it. Targeting bridge.ts
 // is the only way the consumer's `import { invoke } from '@ipc'` picks
 // up our mock.
-vi.mock('@ipc/bridge', async () => ({
+vi.mock('@ipc/bridge', async() => ({
   ...(await vi.importActual<object>('@ipc/bridge')),
   invoke: (...args: unknown[]) => invokeMock(...args)
 }))
-
-import { __resetHomeDirForTests, loadHomeDir, useHomeDir } from './use-home-dir'
 
 beforeEach(() => {
   invokeMock.mockReset()
@@ -26,14 +25,14 @@ describe('useHomeDir', () => {
     expect(useHomeDir().homeDir.value).toBeUndefined()
   })
 
-  it('caches the resolved $HOME from get_home_dir', async () => {
+  it('caches the resolved $HOME from get_home_dir', async() => {
     invokeMock.mockResolvedValueOnce('/home/cenk')
     await loadHomeDir()
     expect(useHomeDir().homeDir.value).toBe('/home/cenk')
     expect(invokeMock).toHaveBeenCalledWith(TauriCommand.GetHomeDir)
   })
 
-  it('soft-fails to undefined when invoke throws (no Tauri host)', async () => {
+  it('soft-fails to undefined when invoke throws (no Tauri host)', async() => {
     invokeMock.mockRejectedValueOnce(new Error('host missing'))
     await loadHomeDir()
     expect(useHomeDir().homeDir.value).toBeUndefined()

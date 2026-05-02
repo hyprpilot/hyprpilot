@@ -51,13 +51,7 @@ const emit = defineEmits<{
 }>()
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
-const isPulsing = computed(
-  () =>
-    props.phase === Phase.Streaming ||
-    props.phase === Phase.Working ||
-    props.phase === Phase.Awaiting ||
-    props.phase === Phase.Pending
-)
+const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working || props.phase === Phase.Awaiting || props.phase === Phase.Pending)
 const hasGit = computed(() => Boolean(props.gitStatus))
 </script>
 
@@ -65,23 +59,11 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   <section class="frame" :style="{ '--frame-phase': phaseColor }" data-testid="frame">
     <header class="frame-header">
       <div class="frame-row frame-row-1">
-        <button
-          type="button"
-          class="frame-profile-pill"
-          :style="{ backgroundColor: phaseColor }"
-          aria-label="profile"
-          @click="emit('pillClick', 'profile')"
-        >
+        <button type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="profile" @click="emit('pillClick', 'profile')">
           <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
           {{ profile }}
         </button>
-        <button
-          v-if="provider"
-          type="button"
-          class="frame-provider-pill"
-          aria-label="provider"
-          @click="emit('pillClick', 'provider')"
-        >
+        <button v-if="provider" type="button" class="frame-provider-pill" aria-label="provider" @click="emit('pillClick', 'provider')">
           {{ provider }}<template v-if="model"> · {{ model }}</template>
         </button>
         <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
@@ -103,25 +85,15 @@ const hasGit = computed(() => Boolean(props.gitStatus))
             <span v-if="gitStatus!.ahead && gitStatus!.ahead > 0" class="frame-cwd-git-ahead">
               <FaIcon :icon="faArrowUp" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.ahead }}
             </span>
-            <span class="frame-cwd-git-behind">
-              <FaIcon :icon="faArrowDown" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.behind ?? 0 }}
-            </span>
+            <span class="frame-cwd-git-behind"> <FaIcon :icon="faArrowDown" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.behind ?? 0 }} </span>
           </span>
         </button>
         <div class="frame-counts">
-          <button
-            v-for="c in counts"
-            :key="c.label"
-            type="button"
-            class="frame-pill-button"
-            :aria-label="c.id ?? c.label"
-            @click="emit('breadcrumbClick', c.id ?? c.label)"
-          >
+          <button v-for="c in counts" :key="c.label" type="button" class="frame-pill-button" :aria-label="c.id ?? c.label" @click="emit('breadcrumbClick', c.id ?? c.label)">
             <BreadcrumbPill :color="c.color" :label="c.label" :count="c.count" />
           </button>
         </div>
       </div>
-
     </header>
 
     <div class="frame-body">

@@ -1,6 +1,8 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import Chat from './Overlay.vue'
+import { useActiveInstance, __resetKeymapsForTests, loadKeymaps, pushPermissionRequest, resetPermissions, clearToasts, useToasts } from '@composables'
 import { Modifier, TauriCommand } from '@ipc'
 
 const { invoke, listeners, unlisten } = vi.hoisted(() => ({
@@ -9,7 +11,7 @@ const { invoke, listeners, unlisten } = vi.hoisted(() => ({
   unlisten: vi.fn()
 }))
 
-vi.mock('@ipc/bridge', async () => ({
+vi.mock('@ipc/bridge', async() => ({
   ...(await vi.importActual<object>('@ipc/bridge')),
   invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
   listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
@@ -21,13 +23,6 @@ vi.mock('@ipc/bridge', async () => ({
   listSessions: () => Promise.resolve([]),
   loadSession: () => Promise.resolve()
 }))
-
-import { useActiveInstance } from '@composables'
-import { __resetKeymapsForTests, loadKeymaps } from '@composables'
-import { pushPermissionRequest, resetPermissions } from '@composables'
-import { clearToasts, useToasts } from '@composables'
-
-import Chat from './Overlay.vue'
 
 const DEFAULT_KEYMAPS = {
   chat: {
@@ -65,7 +60,7 @@ async function flushMicrotasks(): Promise<void> {
   }
 }
 
-beforeEach(async () => {
+beforeEach(async() => {
   invoke.mockReset()
   listeners.clear()
   unlisten.mockReset()
@@ -79,6 +74,7 @@ beforeEach(async () => {
     if (command === TauriCommand.GetKeymaps) {
       return Promise.resolve(DEFAULT_KEYMAPS)
     }
+
     return Promise.resolve(undefined)
   })
   await loadKeymaps()
@@ -86,46 +82,65 @@ beforeEach(async () => {
 })
 
 describe('Chat.vue — permission wiring', () => {
-  it('renders pending prompts from usePermissions and dispatches permission_reply on allow click', async () => {
+  it('renders pending prompts from usePermissions and dispatches permission_reply on allow click', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
+      options: [
+        {
+          optionId: 'allow',
+          name: 'Allow',
+          kind: 'y'
+        }
+      ]
     })
     invoke.mockResolvedValue(undefined)
 
     const wrapper = mount(Chat, { attachTo: document.body })
+
     await flushMicrotasks()
 
     const stack = wrapper.get('[data-testid="permission-stack"]')
-    expect(stack.text()).toContain('Bash')
+
+    expect(stack.text()).toContain('bash')
 
     const allowButton = stack.find('button[aria-label="allow once"]')
+
     await allowButton.trigger('click')
     await flushMicrotasks()
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow', remember: undefined, instanceId: 'A', tool: 'bash'
+      optionId: 'allow',
+      remember: undefined,
+      instanceId: 'A',
+      tool: 'bash'
     })
     expect(wrapper.find('[data-testid="permission-stack"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('dispatches deny via keyboard `d` when no input has focus', async () => {
+  it('dispatches deny via keyboard `d` when no input has focus', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'rm -rf /',
-      options: [{ optionId: 'deny', name: 'Deny', kind: 'n' }]
+      options: [
+        {
+          optionId: 'deny',
+          name: 'Deny',
+          kind: 'n'
+        }
+      ]
     })
     invoke.mockResolvedValue(undefined)
 
     const wrapper = mount(Chat, { attachTo: document.body })
+
     await flushMicrotasks()
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true }))
@@ -134,22 +149,32 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'deny', remember: undefined, instanceId: 'A', tool: 'bash'
+      optionId: 'deny',
+      remember: undefined,
+      instanceId: 'A',
+      tool: 'bash'
     })
     wrapper.unmount()
   })
 
-  it('dispatches allow via keyboard `a` when no input has focus', async () => {
+  it('dispatches allow via keyboard `a` when no input has focus', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
+      options: [
+        {
+          optionId: 'allow',
+          name: 'Allow',
+          kind: 'y'
+        }
+      ]
     })
     invoke.mockResolvedValue(undefined)
 
     const wrapper = mount(Chat, { attachTo: document.body })
+
     await flushMicrotasks()
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
@@ -158,49 +183,74 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow', remember: undefined, instanceId: 'A', tool: 'bash'
+      optionId: 'allow',
+      remember: undefined,
+      instanceId: 'A',
+      tool: 'bash'
     })
     wrapper.unmount()
   })
 
-  it('does not dispatch when the composer textarea has focus', async () => {
+  it('does not dispatch when the composer textarea has focus', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
+      options: [
+        {
+          optionId: 'allow',
+          name: 'Allow',
+          kind: 'y'
+        }
+      ]
     })
 
     const wrapper = mount(Chat, { attachTo: document.body })
+
     await flushMicrotasks()
 
     const textarea = wrapper.find('textarea')
+
     expect(textarea.exists()).toBe(true)
     textarea.element.focus()
 
     // Dispatch through the textarea so event.target points at the composer.
-    textarea.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }))
+    textarea.element.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'a',
+        bubbles: true,
+        cancelable: true
+      })
+    )
     await flushMicrotasks()
 
     expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
     wrapper.unmount()
   })
 
-  it('surfaces reply failure as an error toast', async () => {
+  it('surfaces reply failure as an error toast', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
+      options: [
+        {
+          optionId: 'allow',
+          name: 'Allow',
+          kind: 'y'
+        }
+      ]
     })
     invoke.mockRejectedValue(new Error('permission_reply not implemented (K-245)'))
 
     const wrapper = mount(Chat, { attachTo: document.body })
+
     await flushMicrotasks()
 
     const allowButton = wrapper.find('button[aria-label="allow once"]')
+
     await allowButton.trigger('click')
     await flushMicrotasks()
 
@@ -209,24 +259,38 @@ describe('Chat.vue — permission wiring', () => {
     const messages = useToasts()
       .entries.value.map((t) => t.body)
       .filter((b): b is string => typeof b === 'string')
+
     expect(messages.some((m) => m.includes('allow failed'))).toBe(true)
     clearToasts()
     wrapper.unmount()
   })
 
-  it('ignores keyboard shortcuts when modifier keys are held', async () => {
+  it('ignores keyboard shortcuts when modifier keys are held', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
+      options: [
+        {
+          optionId: 'allow',
+          name: 'Allow',
+          kind: 'y'
+        }
+      ]
     })
 
     const wrapper = mount(Chat, { attachTo: document.body })
+
     await flushMicrotasks()
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'a',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
     await flushMicrotasks()
 
     expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())

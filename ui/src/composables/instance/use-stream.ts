@@ -1,8 +1,8 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
-import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { openTurnIdFor } from './use-turns'
+import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 
 export enum StreamItemKind {
   Thought = 'thought',
@@ -70,8 +70,13 @@ const states = reactive(new Map<InstanceId, StreamState>())
 
 function slotFor(id: InstanceId): StreamState {
   let slot = states.get(id)
+
   if (!slot) {
-    slot = { items: [], openThoughtBySession: new Map(), openPlanBySession: new Map() }
+    slot = {
+      items: [],
+      openThoughtBySession: new Map(),
+      openPlanBySession: new Map()
+    }
     states.set(id, slot)
   }
 
@@ -84,6 +89,7 @@ function slotFor(id: InstanceId): StreamState {
 /// open a fresh item.
 export function closeTurn(id: InstanceId, sessionId: string): void {
   const slot = states.get(id)
+
   if (!slot) {
     return
   }
@@ -111,18 +117,18 @@ export function pushThoughtChunk(id: InstanceId, sessionId: string, raw: Thought
   const openId = explicitId ?? slot.openThoughtBySession.get(sessionId)
 
   if (openId) {
-    const target = slot.items.find(
-      (it): it is ThoughtStreamItem =>
-        it.kind === StreamItemKind.Thought && it.sessionId === sessionId && it.id === openId
-    )
+    const target = slot.items.find((it): it is ThoughtStreamItem => it.kind === StreamItemKind.Thought && it.sessionId === sessionId && it.id === openId)
+
     if (target) {
       target.text += text
       target.updatedAt = seq
+
       return
     }
   }
 
   const itemId = explicitId ?? `thought-${sessionId}-${slot.items.length}`
+
   slot.items.push({
     kind: StreamItemKind.Thought,
     id: itemId,
@@ -142,17 +148,18 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
   const openId = slot.openPlanBySession.get(sessionId)
 
   if (openId) {
-    const target = slot.items.find(
-      (it): it is PlanStreamItem => it.kind === StreamItemKind.Plan && it.sessionId === sessionId && it.id === openId
-    )
+    const target = slot.items.find((it): it is PlanStreamItem => it.kind === StreamItemKind.Plan && it.sessionId === sessionId && it.id === openId)
+
     if (target) {
       target.entries = entries
       target.updatedAt = seq
+
       return
     }
   }
 
   const itemId = `plan-${sessionId}-${slot.items.length}`
+
   slot.items.push({
     kind: StreamItemKind.Plan,
     id: itemId,
@@ -180,16 +187,14 @@ export function pushModeChange(id: InstanceId, sessionId: string, change: ModeCh
   const slot = slotFor(id)
   const seq = nextSeq(id)
   const last = slot.items[slot.items.length - 1]
-  if (
-    last &&
-    last.kind === StreamItemKind.ModeChange &&
-    last.sessionId === sessionId &&
-    last.modeId === change.modeId
-  ) {
+
+  if (last && last.kind === StreamItemKind.ModeChange && last.sessionId === sessionId && last.modeId === change.modeId) {
     last.updatedAt = seq
+
     return
   }
   const itemId = `mode-${sessionId}-${slot.items.length}`
+
   slot.items.push({
     kind: StreamItemKind.ModeChange,
     id: itemId,
@@ -213,11 +218,14 @@ export function resetStream(id: InstanceId): void {
  * cancelled / errored turn from the visible chat. */
 export function deleteStreamByTurnId(id: InstanceId, turnId: string): number {
   const slot = states.get(id)
+
   if (!slot) {
     return 0
   }
   const before = slot.items.length
+
   slot.items = slot.items.filter((item) => item.turnId !== turnId)
+
   return before - slot.items.length
 }
 
@@ -225,6 +233,7 @@ export function useStream(instanceId?: InstanceId): { items: ComputedRef<StreamI
   const { id: activeId } = useActiveInstance()
   const items = computed<StreamItem[]>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return []
     }

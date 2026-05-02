@@ -1,12 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { useActiveInstance } from '@composables'
-import {
-  pushTranscriptChunk,
-  resetTranscript,
-  TurnRole,
-  useTranscript
-} from '@composables'
+import { useActiveInstance, pushTranscriptChunk, resetTranscript, TurnRole, useTranscript } from '@composables'
 
 beforeEach(() => {
   resetTranscript('A')
@@ -15,7 +9,11 @@ beforeEach(() => {
 })
 
 function chunk(sessionUpdate: string, text: string, messageId?: string) {
-  return { sessionUpdate, content: { type: 'text', text }, messageId }
+  return {
+    sessionUpdate,
+    content: { type: 'text', text },
+    messageId
+  }
 }
 
 describe('useTranscript', () => {
@@ -52,6 +50,7 @@ describe('useTranscript', () => {
     pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', ' world'))
 
     const turns = useTranscript('A').turns.value
+
     expect(turns).toHaveLength(1)
     expect(turns[0]?.text).toBe('hello world')
   })
@@ -62,6 +61,7 @@ describe('useTranscript', () => {
     pushTranscriptChunk('B', 's-b', chunk('user_message_chunk', 'background'))
 
     const implicit = useTranscript().turns.value
+
     expect(implicit.map((t) => t.text)).toEqual(['active'])
   })
 

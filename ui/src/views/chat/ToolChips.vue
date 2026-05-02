@@ -3,25 +3,19 @@ import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons
 import { computed, ref } from 'vue'
 
 import ToolPill from './ToolPill.vue'
-import { type ToolChipItem } from '@components'
+import type { ToolCallView } from '@components'
 
 /**
  * ToolChips block — collapsible container holding ALL tool calls
- * for a turn. Header reads "▾ TOOLS · N calls · 9.6s". Body is a 2-col
- * grid of ToolPills; expanded pills span both columns inline.
- *
- * Why one block instead of one card per tool: tool calls are noise —
- * the user cares about narrative (what did the pilot decide /
- * accomplish) and only drills into individual calls when something
- * looks off. A single header lets the whole block collapse with one
- * click.
+ * for a turn. Header reads "▾ TOOLS · N calls · 9.6s". Body is a
+ * 2-col grid of ToolPills; expanded pills span both columns.
  *
  * Block elapsed: caller passes `elapsed`; otherwise we sum any
- * "1.4s"-shaped values in `items[].stat` as a fallback.
+ * "1.4s"-shaped values in `views[].stat` as a fallback.
  */
 const props = withDefaults(
   defineProps<{
-    items: ToolChipItem[]
+    views: ToolCallView[]
     label?: string
     elapsed?: string
   }>(),
@@ -29,6 +23,7 @@ const props = withDefaults(
 )
 
 const expanded = ref(true)
+
 function toggle(): void {
   expanded.value = !expanded.value
 }
@@ -37,8 +32,8 @@ const computedElapsed = computed(() => {
   if (props.elapsed) {
     return props.elapsed
   }
-  const total = props.items.reduce((acc, it) => {
-    const m = (it.stat ?? '').match(/^(\d+(?:\.\d+)?)s$/)
+  const total = props.views.reduce((acc, v) => {
+    const m = (v.stat ?? '').match(/^(\d+(?:\.\d+)?)s$/)
 
     return acc + (m ? parseFloat(m[1]) : 0)
   }, 0)
@@ -52,11 +47,11 @@ const computedElapsed = computed(() => {
     <header class="tool-chips-header" role="button" tabindex="0" @click="toggle" @keydown.enter.prevent="toggle" @keydown.space.prevent="toggle">
       <FaIcon :icon="expanded ? faChevronDown : faChevronRight" class="tool-chips-caret" aria-hidden="true" />
       <span class="tool-chips-label">{{ label }}</span>
-      <span class="tool-chips-meta">· {{ items.length }} call{{ items.length === 1 ? '' : 's' }}</span>
+      <span class="tool-chips-meta">· {{ views.length }} call{{ views.length === 1 ? '' : 's' }}</span>
       <span v-if="computedElapsed" class="tool-chips-meta">· {{ computedElapsed }}</span>
     </header>
     <div v-if="expanded" class="tool-chips-grid">
-      <ToolPill v-for="(item, i) in items" :key="i" :item="item" />
+      <ToolPill v-for="view in views" :key="view.id" :view="view" />
     </div>
   </section>
 </template>
@@ -64,7 +59,6 @@ const computedElapsed = computed(() => {
 <style scoped>
 @reference '../../assets/styles.css';
 
-/* ToolChips: line2 outer + 3px tone (blue/read) stripe. */
 .tool-chips {
   background-color: var(--theme-surface);
   border-left: 3px solid var(--theme-kind-read);
@@ -98,7 +92,6 @@ const computedElapsed = computed(() => {
   letter-spacing: normal;
 }
 
-/* Body: dashed top separator + 2-col grid. */
 .tool-chips-grid {
   margin-top: 6px;
   padding-top: 6px;

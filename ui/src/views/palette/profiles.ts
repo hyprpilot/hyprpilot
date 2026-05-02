@@ -13,11 +13,9 @@
  * over to it; until then it surfaces a toast and refuses.
  */
 
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
-import { useActiveInstance } from '@composables'
-import { useProfiles } from '@composables'
-import { pushToast } from '@composables'
 import { ToastTone } from '@components'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
+import { useActiveInstance, useProfiles, pushToast } from '@composables'
 import { log } from '@lib'
 
 interface ProfilesLeafEntries {
@@ -59,7 +57,7 @@ export interface ProfilesPaletteSpecArgs {
   list: { id: string; agent: string; model?: string; isDefault: boolean }[]
   selected?: string
   activeInstanceId?: string
-  onSelect(id: string): void
+  onSelect: (id: string) => void
 }
 
 /**
@@ -80,9 +78,11 @@ export function buildProfilesPaletteSpec(args: ProfilesPaletteSpecArgs): Palette
     entries,
     onCommit(picks) {
       const pick = picks[0]
+
       if (!pick) {
         return
       }
+
       if (pick.id === activeId) {
         return
       }
@@ -93,7 +93,7 @@ export function buildProfilesPaletteSpec(args: ProfilesPaletteSpecArgs): Palette
       // surface a toast so the keystroke is observable + refuse —
       // never fake a success.
       log.warn('palette-profiles: set-default not yet wired', { entry: entry.id })
-      pushToast(ToastTone.Warn, `set-default: not yet wired (K-280)`)
+      pushToast(ToastTone.Warn, 'set-default: not yet wired (K-280)')
     }
   }
 }
@@ -132,5 +132,6 @@ export function openProfilesLeaf(): void {
       pushToast(ToastTone.Ok, `profile: ${id}`)
     }
   })
+
   open(spec)
 }

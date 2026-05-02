@@ -1,9 +1,8 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import type { GitStatus } from '@components'
-
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useProfiles } from '../ui-state/use-profiles'
+import type { GitStatus } from '@components'
 
 /**
  * One advertised mode option. Mirrors ACP `SessionMode` —
@@ -126,8 +125,14 @@ const states = reactive(new Map<InstanceId, SessionInfoState>())
 
 function slotFor(id: InstanceId): SessionInfoState {
   let slot = states.get(id)
+
   if (!slot) {
-    slot = { availableModes: [], availableModels: [], restored: false, restoring: false }
+    slot = {
+      availableModes: [],
+      availableModels: [],
+      restored: false,
+      restoring: false
+    }
     states.set(id, slot)
   }
 
@@ -143,9 +148,11 @@ function slotFor(id: InstanceId): SessionInfoState {
  */
 export function pushSessionInfoUpdate(id: InstanceId, raw: SessionInfoUpdateRaw): void {
   const slot = slotFor(id)
+
   if (typeof raw.title === 'string') {
     slot.title = raw.title
   }
+
   if (typeof raw.updatedAt === 'string') {
     slot.updatedAt = raw.updatedAt
   }
@@ -175,6 +182,7 @@ export function pushCurrentModeUpdate(id: InstanceId, raw: CurrentModeUpdateRaw)
 export function setSessionTitleIfUnset(id: InstanceId, derived: string): void {
   const slot = slotFor(id)
   const trimmed = derived.trim()
+
   if (slot.title || !trimmed) {
     return
   }
@@ -188,9 +196,11 @@ export function setSessionTitleIfUnset(id: InstanceId, derived: string): void {
  */
 export function pushInstanceModeState(id: InstanceId, raw: InstanceModeStateRaw): void {
   const slot = slotFor(id)
+
   if (typeof raw.currentModeId === 'string') {
     slot.mode = raw.currentModeId
   }
+
   if (Array.isArray(raw.availableModes)) {
     slot.availableModes = raw.availableModes
   }
@@ -203,9 +213,11 @@ export function pushInstanceModeState(id: InstanceId, raw: InstanceModeStateRaw)
  */
 export function pushInstanceModelState(id: InstanceId, raw: InstanceModelStateRaw): void {
   const slot = slotFor(id)
+
   if (typeof raw.currentModelId === 'string') {
     slot.model = raw.currentModelId
   }
+
   if (Array.isArray(raw.availableModels)) {
     slot.availableModels = raw.availableModels
   }
@@ -239,6 +251,7 @@ export function setInstanceGitStatus(id: InstanceId, gitStatus: GitStatus | unde
 /** Toggles the restored flag for an instance — `session_load` flips this true. */
 export function setSessionRestored(id: InstanceId, restored: boolean): void {
   const slot = slotFor(id)
+
   slot.restored = restored
 }
 
@@ -265,9 +278,11 @@ export function resetSessionInfo(id: InstanceId): void {
 /// the raw id. Pure read — no reactive dep tracked.
 export function lookupModeName(id: InstanceId, modeId: string): string | undefined {
   const slot = states.get(id)
+
   if (!slot) {
     return undefined
   }
+
   return slot.availableModes.find((m) => m.id === modeId)?.name
 }
 
@@ -295,19 +310,23 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
  */
 export function truncateCwd(raw: string, max = 32, home?: string): string {
   let path = raw
+
   if (home && path.startsWith(home)) {
     path = `~${path.slice(home.length)}`
   }
+
   if (path.length <= max) {
     return path
   }
   const segments = path.split('/').filter((s) => s.length > 0)
+
   if (segments.length <= 3) {
     return path
   }
   const head = segments[0] === '~' ? '~' : `/${segments[0]}`
   const tail = segments.slice(-2).join('/')
   const middle = `${head}/.../${tail}`
+
   if (middle.length < path.length) {
     return middle
   }

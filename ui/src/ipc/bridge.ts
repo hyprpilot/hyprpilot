@@ -1,13 +1,7 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event'
 
-import {
-  TauriCommand,
-  TauriEvent,
-  type TauriCommandArgs,
-  type TauriCommandResult,
-  type TauriEventPayload
-} from '@constants/wire'
+import { TauriCommand, TauriEvent, type TauriCommandArgs, type TauriCommandResult, type TauriEventPayload } from '@constants/wire'
 
 /**
  * Typed `invoke` wrapper. Args are inferred from `TauriCommandArgs[K]`
@@ -27,21 +21,20 @@ export async function invoke<K extends TauriCommand>(
   ...args: TauriCommandArgs[K] extends void ? [command: K] : [command: K, args: TauriCommandArgs[K]]
 ): Promise<TauriCommandResult[K]> {
   const [command, payload] = args
+
   try {
     return await tauriInvoke<TauriCommandResult[K]>(command, payload as Record<string, unknown> | undefined)
-  } catch (err) {
+  } catch(err) {
     // Lazy-import to avoid an `@lib` <-> `@ipc` cyclic dep at module
     // load time. The runtime cost is negligible — once-per-error.
     const { log } = await import('@lib')
+
     log.error('invoke failed', { command, args: payload }, err)
     throw err
   }
 }
 
-export async function listen<K extends TauriEvent>(
-  event: K,
-  cb: EventCallback<TauriEventPayload[K]>
-): Promise<UnlistenFn> {
+export async function listen<K extends TauriEvent>(event: K, cb: EventCallback<TauriEventPayload[K]>): Promise<UnlistenFn> {
   return tauriListen<TauriEventPayload[K]>(event, cb)
 }
 

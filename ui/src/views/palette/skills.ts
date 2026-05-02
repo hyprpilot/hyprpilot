@@ -15,10 +15,12 @@ const RELOAD_ROW_ID = 'skills-reload'
 
 async function commitReload(): Promise<void> {
   const toasts = useToasts()
+
   try {
     const { count } = await invoke(TauriCommand.SkillsReload)
+
     toasts.push(ToastTone.Ok, `skills reloaded — ${count} loaded`)
-  } catch (err) {
+  } catch(err) {
     log.warn('palette-skills: skills_reload failed', { err: String(err) })
     toasts.push(ToastTone.Err, `skills reload failed: ${String(err)}`)
   }
@@ -26,6 +28,7 @@ async function commitReload(): Promise<void> {
 
 export function openSkillsLeaf(): void {
   const { open } = usePalette()
+
   open({
     mode: PaletteMode.Select,
     title: 'skills',
@@ -38,6 +41,7 @@ export function openSkillsLeaf(): void {
     ],
     onCommit(picks) {
       const pick = picks[0]
+
       if (pick?.id === RELOAD_ROW_ID) {
         void commitReload()
       }

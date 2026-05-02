@@ -33,8 +33,10 @@ const toneColor = computed(() => {
   switch (props.tone) {
     case ToastTone.Err:
       return 'var(--theme-status-err)'
+
     case ToastTone.Ok:
       return 'var(--theme-status-ok)'
+
     default:
       return 'var(--theme-status-warn)'
   }
@@ -49,15 +51,19 @@ const toneColor = computed(() => {
  */
 function RenderBody(): VNode | string | null {
   const body = props.body
+
   if (typeof body === 'string') {
     return h('span', { class: 'toast-message' }, body)
   }
+
   if (typeof body === 'function') {
     return body()
   }
+
   if (body && typeof body === 'object' && 'component' in body) {
     return h(body.component, body.props ?? {})
   }
+
   return null
 }
 </script>

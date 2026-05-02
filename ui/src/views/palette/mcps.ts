@@ -13,10 +13,9 @@
  * mid-session toggling would force a per-toggle restart).
  */
 
-import { invoke, TauriCommand } from '@ipc'
-
-import { type PaletteEntry, PaletteMode, usePalette } from '@composables'
 import MCPsPreview from './MCPsPreview.vue'
+import { type PaletteEntry, PaletteMode, usePalette } from '@composables'
+import { invoke, TauriCommand } from '@ipc'
 
 export interface OpenMcpsLeafOptions {
   instanceId?: string
@@ -55,11 +54,11 @@ export async function openMcpsLeaf(opts: OpenMcpsLeafOptions = {}): Promise<void
  * string when no home prefix is found.
  */
 function relativizePath(raw: string): string {
-  const home = typeof globalThis.process !== 'undefined' && typeof globalThis.process.env !== 'undefined'
-    ? globalThis.process.env.HOME
-    : undefined
+  const home = typeof globalThis.process !== 'undefined' && typeof globalThis.process.env !== 'undefined' ? globalThis.process.env.HOME : undefined
+
   if (home && raw.startsWith(home)) {
     return `~${raw.slice(home.length)}`
   }
+
   return raw
 }

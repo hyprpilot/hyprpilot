@@ -50,18 +50,21 @@ const hasSlot = computed(() => Boolean(slots.default))
 const useMarkdown = computed(() => props.kind === StreamKind.Thinking && Boolean(props.text))
 
 const renderedHtml = ref('')
+
 watch(
   [() => props.text, useMarkdown],
-  async ([raw, on]) => {
+  async([raw, on]) => {
     if (!on || !raw) {
       renderedHtml.value = ''
 
       return
     }
+
     try {
       const out = await renderMarkdown(raw)
+
       renderedHtml.value = out.html
-    } catch (err) {
+    } catch(err) {
       log.warn('stream-card: markdown render failed; falling back to plain text', { err: String(err) })
       renderedHtml.value = ''
     }
@@ -75,6 +78,7 @@ watch(
 // their click intent isn't overridden by a stream update.
 const expanded = ref(props.active)
 let manuallyToggled = false
+
 watch(
   () => props.active,
   (next) => {
@@ -83,6 +87,7 @@ watch(
     }
   }
 )
+
 function toggle(): void {
   manuallyToggled = true
   expanded.value = !expanded.value
@@ -92,8 +97,10 @@ function planIconFor(status: PlanStatus) {
   switch (status) {
     case PlanStatus.Completed:
       return faSquareCheck
+
     case PlanStatus.InProgress:
       return faCircleHalfStroke
+
     case PlanStatus.Pending:
     default:
       return farSquare

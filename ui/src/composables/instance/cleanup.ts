@@ -1,14 +1,14 @@
-import { type InstanceId } from '../chrome/use-active-instance'
-import { resetPhaseSignals } from './use-phase'
+import { resetSeq } from './sequence'
 import { resetPermissions } from './use-permissions'
+import { resetPhaseSignals } from './use-phase'
 import { resetQueue } from './use-queue'
 import { resetSessionInfo } from './use-session-info'
-import { resetSeq } from './sequence'
 import { resetStream } from './use-stream'
 import { resetTerminals } from './use-terminals'
 import { resetTools } from './use-tools'
 import { resetTranscript } from './use-transcript'
 import { resetTurns } from './use-turns'
+import { type InstanceId } from '../chrome/use-active-instance'
 
 /**
  * Drop every per-instance store entry for `id`. Wired from

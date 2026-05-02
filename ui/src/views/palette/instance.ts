@@ -11,14 +11,7 @@
  */
 
 import { ToastTone } from '@components'
-import {
-  type PaletteEntry,
-  PaletteMode,
-  useActiveInstance,
-  usePalette,
-  useRenameInstanceModal,
-  useToasts
-} from '@composables'
+import { type PaletteEntry, PaletteMode, useActiveInstance, usePalette, useRenameInstanceModal, useToasts } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -42,6 +35,7 @@ export async function openInstanceLeaf(): Promise<void> {
       ],
       onCommit() {}
     })
+
     return
   }
 
@@ -49,10 +43,12 @@ export async function openInstanceLeaf(): Promise<void> {
   // `instance_meta` is the right read surface; falls back to None on
   // failure so the modal still opens with an empty input.
   let currentName: string | undefined
+
   try {
     const meta = await invoke(TauriCommand.InstanceMeta, { instanceId: focused })
+
     currentName = (meta as { name?: string }).name
-  } catch (err) {
+  } catch(err) {
     log.debug('palette-instance: instance_meta read failed', { err: String(err) })
   }
 
@@ -70,6 +66,7 @@ export async function openInstanceLeaf(): Promise<void> {
     entries,
     onCommit(picks) {
       const pick = picks[0]
+
       if (pick?.id !== ACTION_RENAME) {
         return
       }
@@ -86,12 +83,15 @@ export function validateInstanceName(raw: string): string | null {
     // Empty = clear name. Accept here; the wire path passes None.
     return null
   }
+
   if (raw.length > 16) {
     return `must be ≤16 chars (got ${raw.length})`
   }
+
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(raw)) {
     return 'lowercase a-z, 0-9, "-", "_" only; must start with letter/digit'
   }
+
   return null
 }
 
@@ -101,16 +101,16 @@ export async function commitInstanceRename(instanceId: string, draft: string): P
   // `name: null` for clear; the trim() catches whitespace-only.
   const trimmed = draft.trim()
   const wireName = trimmed.length === 0 ? null : trimmed
+
   try {
     await invoke(TauriCommand.InstancesRename, { id: instanceId, name: wireName })
-    toasts.push(
-      ToastTone.Ok,
-      wireName === null ? 'instance name cleared' : `renamed to ${wireName}`
-    )
+    toasts.push(ToastTone.Ok, wireName === null ? 'instance name cleared' : `renamed to ${wireName}`)
+
     return true
-  } catch (err) {
+  } catch(err) {
     toasts.push(ToastTone.Err, `rename failed: ${String(err)}`)
     log.warn('palette-instance: rename failed', { instanceId, err: String(err) })
+
     return false
   }
 }

@@ -1,23 +1,103 @@
 /**
- * Tool-call → `ToolChipItem` registry. Each canonical formatter
- * lives in `formatters/<name>.ts` implementing the `ToolFormatter`
- * interface (`canonical`, `label`, `kind`, `aliases?`, `format()`)
- * and is assembled into the lookup map by `registry.ts`.
+ * Tool-call formatter facade. `format(call, adapter?)` is the single
+ * public entry — every consumer (chat pill, permission row,
+ * permission modal) calls this and reads the unified `ToolCallView`.
  *
- * Adding a new formatter:
- *   1. Drop a new file under `formatters/<canonical-name>.ts`.
- *   2. Export a `ToolFormatter` const. Use `aliases` for cross-vendor
- *      synonyms; casing-collapse aliases (`bashoutput` →
- *      `bash_output`) live in `registry.ts::CASING_COLLAPSE_ALIASES`.
- *   3. Append to the `BASE_FORMATTERS` list in `registry.ts`. The
- *      registry derives the lookup map automatically.
+ * Adding a tool:
+ *   1. Add a variant to `constants/ui/tools/type::ToolType`.
+ *   2. Drop a folder under `lib/tools/<canonical>/` with `fallback.ts`
+ *      (the shared formatter) + `index.ts` (`pickFormatter(fallback)`).
+ *   3. Register the canonical key in `formatters` below.
  *
- * Per-adapter divergence (claude-code MCP tools, codex `$bash_id`
- * semantics, opencode quirks) layers via `extendRegistry(baseRegistry,
- * { formatters, aliases, … })`.
+ * Per-adapter overrides land alongside `<canonical>/fallback.ts` as
+ * `<canonical>/claude-code.ts` / `<canonical>/codex.ts` /
+ * `<canonical>/opencode.ts`; pass them into `pickFormatter` in the
+ * folder's `index.ts`.
  */
-export { titleCaseFromCanonical } from './casing'
-export { formatToolCall, shortHeader } from './format-tool-call'
-export { parseMcpName as parseMcpToolName } from './helpers'
-export { baseRegistry, extendRegistry, resolveRegistry } from './registry'
-export type { FormatterContext, ToolFormatter, ToolFormatterRegistry, Args } from '@interfaces/ui'
+
+import bash from './bash'
+import { canonicalise } from './canonicalise'
+import editEntry from './edit'
+import fallbackFormatter from './fallback'
+import glob from './glob'
+import grep from './grep'
+import killShell from './kill-shell'
+import mcp from './mcp'
+import multiEdit from './multi-edit'
+import notebookEdit from './notebook-edit'
+import planExit from './plan-exit'
+import read from './read'
+import { isMcpName, mapState, normaliseArgs } from './shared'
+import skill from './skill'
+import task from './task'
+import terminal from './terminal'
+import think from './think'
+import todo from './todo'
+import toolSearch from './tool-search'
+import webFetch from './web-fetch'
+import webSearch from './web-search'
+import write from './write'
+import type { AdapterId } from '@constants/ui'
+import type { FormatterContext, Formatters, ToolCallView, WireToolCall } from '@interfaces/ui'
+
+/**
+ * Dispatch by canonical wire name. Includes ACP `tool_call.kind` values
+ * as aliases for the matching tool family (`execute` → bash, `search`
+ * → grep, `fetch` → web_fetch, `switch_mode` → plan_exit) so wire
+ * payloads that ship the kind verb instead of a PascalCase tool name
+ * (codex, opencode permission requests) route to the right formatter
+ * without falling through to the generic last-resort renderer.
+ */
+
+const formatters: Record<string, Formatters> = {
+  bash,
+  bash_output: bash,
+  execute: bash,
+  kill_shell: killShell,
+  terminal,
+  read,
+  write,
+  edit: editEntry,
+  multi_edit: multiEdit,
+  notebook_edit: notebookEdit,
+  grep,
+  search: grep,
+  glob,
+  tool_search: toolSearch,
+  web_fetch: webFetch,
+  fetch: webFetch,
+  web_search: webSearch,
+  plan_exit: planExit,
+  exit_plan_mode: planExit,
+  switch_mode: planExit,
+  todo_write: todo,
+  todo,
+  think,
+  skill,
+  task,
+  agent: task
+}
+
+export function format(call: WireToolCall, adapter?: AdapterId): ToolCallView {
+  const wireName = call.title ?? ''
+  const canon = canonicalise(wireName)
+  const ctx: FormatterContext = {
+    name: wireName,
+    args: normaliseArgs(call.rawInput),
+    state: mapState(call.status),
+    raw: call,
+    adapter
+  }
+
+  const entry = formatters[canon]
+
+  if (entry) {
+    return entry(adapter).format(ctx)
+  }
+
+  if (isMcpName(canon)) {
+    return mcp(adapter).format(ctx)
+  }
+
+  return fallbackFormatter.format(ctx)
+}

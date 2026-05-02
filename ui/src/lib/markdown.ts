@@ -3,9 +3,8 @@ import MarkdownIt from 'markdown-it'
 import taskLists from 'markdown-it-task-lists'
 import { createHighlighter, type BundledLanguage, type BundledTheme, type Highlighter } from 'shiki'
 
-import { invoke, TauriCommand } from '@ipc'
-
 import { log } from './log'
+import { invoke, TauriCommand } from '@ipc'
 
 export interface RenderedMarkdown {
   html: string
@@ -29,19 +28,22 @@ async function resolveShikiTheme(): Promise<BundledTheme> {
   try {
     const theme = await invoke(TauriCommand.GetTheme)
     const name = theme.shiki
+
     if (typeof name === 'string' && name.length > 0) {
       return name as BundledTheme
     }
   } catch {
     // No Tauri host (vitest) — fall through to the default.
   }
+
   return DEFAULT_THEME
 }
 
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = (async () => {
+    highlighterPromise = (async() => {
       resolvedTheme = await resolveShikiTheme()
+
       return createHighlighter({
         themes: [resolvedTheme],
         langs: []
@@ -56,22 +58,25 @@ async function ensureLanguage(lang: string): Promise<boolean> {
   if (!lang) {
     return false
   }
+
   if (loadedLangs.has(lang)) {
     return true
   }
   const pending = langLoading.get(lang)
+
   if (pending) {
     return pending
   }
 
-  const task = (async (): Promise<boolean> => {
+  const task = (async(): Promise<boolean> => {
     try {
       const hl = await getHighlighter()
+
       await hl.loadLanguage(lang as BundledLanguage)
       loadedLangs.add(lang)
 
       return true
-    } catch (err) {
+    } catch(err) {
       if (!warnedLangs.has(lang)) {
         warnedLangs.add(lang)
         log.warn('shiki: unknown language; falling back to plain code block', { lang, err: String(err) })
@@ -82,6 +87,7 @@ async function ensureLanguage(lang: string): Promise<boolean> {
       langLoading.delete(lang)
     }
   })()
+
   langLoading.set(lang, task)
 
   return task
@@ -96,14 +102,16 @@ async function highlightFence(code: string, lang: string): Promise<string> {
     return fallbackCode(code)
   }
   const ok = await ensureLanguage(lang)
+
   if (!ok) {
     return fallbackCode(code)
   }
+
   try {
     const hl = await getHighlighter()
 
     return hl.codeToHtml(code, { lang: lang as BundledLanguage, theme: resolvedTheme })
-  } catch (err) {
+  } catch(err) {
     log.warn('shiki: codeToHtml failed; falling back', { lang, err: String(err) })
 
     return fallbackCode(code)
@@ -122,12 +130,14 @@ const md = new MarkdownIt({
   linkify: true,
   breaks: true
 })
+
 md.use(taskLists, { enabled: false, label: false })
 
-const defaultLinkOpen =
-  md.renderer.rules.link_open ?? ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts))
+const defaultLinkOpen = md.renderer.rules.link_open ?? ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts))
+
 md.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
   const token = tokens[idx]
+
   token.attrSet('target', '_blank')
   token.attrSet('rel', 'noopener noreferrer')
 
@@ -143,9 +153,11 @@ md.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
 function withFencePlaceholders(): { fences: PendingFence[]; restore: () => void } {
   const fences: PendingFence[] = []
   const prevHighlight = md.options.highlight
+
   md.set({
     highlight: (code: string, lang: string): string => {
       const idx = fences.length
+
       fences.push({ code, lang: lang.trim() })
 
       // markdown-it's default fence renderer takes a `<pre`-prefixed
@@ -208,16 +220,18 @@ function injectCopyButton({ html, lang }: FenceRenderInput): string {
   // via `[data-collapsed]`. Copy button stays a plain text label —
   // the operator vibe (mono font, lowercase) reads better than a
   // glyph in this context.
-  return `<div class="md-codeblock" data-collapsed="false"${langAttr}>` +
-    `<header class="md-codeblock-header" data-md-toggle role="button" tabindex="0" aria-label="toggle code block">` +
-    `<span class="md-codeblock-caret" data-md-caret-down>▾</span>` +
-    `<span class="md-codeblock-caret" data-md-caret-right>▸</span>` +
+  return (
+    `<div class="md-codeblock" data-collapsed="false"${langAttr}>` +
+    '<header class="md-codeblock-header" data-md-toggle role="button" tabindex="0" aria-label="toggle code block">' +
+    '<span class="md-codeblock-caret" data-md-caret-down>▾</span>' +
+    '<span class="md-codeblock-caret" data-md-caret-right>▸</span>' +
     langLabel +
-    `<span class="md-codeblock-spacer"></span>` +
-    `<button type="button" class="md-copy" data-md-copy aria-label="copy code" title="copy">copy</button>` +
-    `</header>` +
+    '<span class="md-codeblock-spacer"></span>' +
+    '<button type="button" class="md-copy" data-md-copy aria-label="copy code" title="copy">copy</button>' +
+    '</header>' +
     `<div class="md-codeblock-body">${inner}</div>` +
-    `</div>`
+    '</div>'
+  )
 }
 
 /**
@@ -229,6 +243,7 @@ function injectCopyButton({ html, lang }: FenceRenderInput): string {
 export async function renderMarkdown(src: string): Promise<RenderedMarkdown> {
   const { fences, restore } = withFencePlaceholders()
   let raw: string
+
   try {
     raw = md.render(src)
   } finally {

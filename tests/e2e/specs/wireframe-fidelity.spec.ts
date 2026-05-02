@@ -16,6 +16,7 @@ import { expect, test } from '../fixtures/tauri'
 test.describe('idle screen', () => {
   test('renders the wordmark + LFG accent + 4-row kbd legend', async({ tauriPage }) => {
     const page = (tauriPage as { playwrightPage: import('@playwright/test').Page }).playwrightPage
+
     await page.waitForLoadState('networkidle')
 
     const idle = page.getByTestId('idle-screen')
@@ -28,6 +29,7 @@ test.describe('idle screen', () => {
     // a `<span class="idle-kbd-label">` description. Four pairs cover
     // the legend the wireframe specifies.
     const keycaps = idle.locator('.idle-kbd')
+
     await expect(keycaps).toHaveCount(4)
     await expect(keycaps.nth(0)).toHaveText('Ctrl+K')
     await expect(keycaps.nth(1)).toHaveText('@')
@@ -37,6 +39,7 @@ test.describe('idle screen', () => {
 
   test('phase border + profile pill share the idle color', async({ tauriPage }) => {
     const page = (tauriPage as { playwrightPage: import('@playwright/test').Page }).playwrightPage
+
     await page.waitForLoadState('networkidle')
 
     const frame = page.getByTestId('frame')
@@ -62,6 +65,7 @@ test.describe('idle screen', () => {
 test.describe('wireframe command palette', () => {
   test('Ctrl+K opens the palette with the 11 root categories', async({ tauriPage }) => {
     const page = (tauriPage as { playwrightPage: import('@playwright/test').Page }).playwrightPage
+
     await page.waitForLoadState('networkidle')
 
     // Frame must be focusable for the document keydown to route — the
@@ -71,16 +75,19 @@ test.describe('wireframe command palette', () => {
     await page.keyboard.press('Control+K')
 
     const palette = page.getByTestId('palette-frame')
+
     await expect(palette).toBeVisible()
 
     // 11 root categories per the wireframe spec (sessions, profiles,
     // models, modes, commands, cwd, instances, permissions, skills,
     // references, mcps).
     const rows = palette.locator('.palette-row')
+
     await expect(rows).toHaveCount(11)
 
     // Footer kbd hints — at least navigate / confirm / close.
     const footer = palette.locator('.palette-footer')
+
     await expect(footer).toContainText('navigate')
     await expect(footer).toContainText('confirm')
     await expect(footer).toContainText('close')
@@ -88,6 +95,7 @@ test.describe('wireframe command palette', () => {
 
   test('Escape closes the palette', async({ tauriPage }) => {
     const page = (tauriPage as { playwrightPage: import('@playwright/test').Page }).playwrightPage
+
     await page.waitForLoadState('networkidle')
 
     await page.locator('body').focus()
@@ -102,6 +110,7 @@ test.describe('wireframe command palette', () => {
 test.describe('composer', () => {
   test('renders the textarea + send + attach 44px button cluster', async({ tauriPage }) => {
     const page = (tauriPage as { playwrightPage: import('@playwright/test').Page }).playwrightPage
+
     await page.waitForLoadState('networkidle')
 
     const textarea = page.getByTestId('composer-textarea')
@@ -122,6 +131,7 @@ test.describe('composer', () => {
 
   test('send button starts ghost (empty composer), goes solid yellow on text input', async({ tauriPage }) => {
     const page = (tauriPage as { playwrightPage: import('@playwright/test').Page }).playwrightPage
+
     await page.waitForLoadState('networkidle')
 
     const submit = page.getByTestId('composer-submit')

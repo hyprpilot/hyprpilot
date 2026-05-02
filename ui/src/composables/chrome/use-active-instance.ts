@@ -24,13 +24,10 @@
  */
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
-import { listen, type UnlistenFn } from '@ipc/bridge'
-import { TauriEvent } from '@ipc'
-import { InstanceState } from '@ipc'
-
-import { ToastTone } from '@components'
-
 import { pushToast } from '../ui-state/use-toasts'
+import { ToastTone } from '@components'
+import { TauriEvent, InstanceState } from '@ipc'
+import { listen, type UnlistenFn } from '@ipc/bridge'
 
 export type InstanceId = string
 
@@ -54,10 +51,12 @@ let unlisteners: UnlistenFn[] = []
  */
 export function recordInstanceState(id: InstanceId, agentId: string | undefined, state: InstanceState): void {
   let meta = knownInstances.get(id)
+
   if (!meta) {
     meta = {}
     knownInstances.set(id, meta)
   }
+
   if (agentId !== undefined) {
     meta.agentId = agentId
   }
@@ -66,17 +65,22 @@ export function recordInstanceState(id: InstanceId, agentId: string | undefined,
 
 function applyFocus(next: InstanceId | undefined, reason: 'event' | 'manual'): void {
   const prev = activeId.value
+
   activeId.value = next
+
   if (reason !== 'event') {
     return
   }
+
   if (prev && prev !== next) {
     const meta = knownInstances.get(prev)
     const tone = meta?.lastState === InstanceState.Error ? ToastTone.Warn : ToastTone.Ok
     const agentLabel = meta?.agentId ?? prev.slice(0, 8)
+
     if (next) {
       const nextMeta = knownInstances.get(next)
       const nextLabel = nextMeta?.agentId ?? next.slice(0, 8)
+
       pushToast(tone, `instance ${agentLabel} exited — switched to ${nextLabel}`)
     } else {
       pushToast(tone, `instance ${agentLabel} exited`)
@@ -100,17 +104,20 @@ export async function startActiveInstance(): Promise<() => void> {
     }),
     await listen(TauriEvent.AcpInstancesChanged, (e) => {
       const ids = new Set(e.payload.instanceIds)
+
       for (const known of [...knownInstances.keys()]) {
         if (!ids.has(known)) {
           knownInstances.delete(known)
         }
       }
+
       for (const id of e.payload.instanceIds) {
         if (!knownInstances.has(id)) {
           knownInstances.set(id, {})
         }
       }
       instanceIds.value = [...e.payload.instanceIds]
+
       // The daemon publishes `instances/focused` separately; trust it
       // for the active id rather than guessing from the membership
       // delta. Only act here when the current active id is no longer

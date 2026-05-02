@@ -32,6 +32,7 @@ const states = reactive(new Map<InstanceId, TurnsState>())
 
 function slotFor(id: InstanceId): TurnsState {
   let slot = states.get(id)
+
   if (!slot) {
     slot = { turns: [], openBySession: new Map() }
     states.set(id, slot)
@@ -54,6 +55,7 @@ export interface TurnEndedRaw {
 export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)
+
   slot.turns.push({
     id: raw.turnId,
     instanceId: id,
@@ -75,6 +77,7 @@ const turnEndedListeners = new Set<TurnEndedListener>()
  */
 export function onTurnEnded(listener: TurnEndedListener): () => void {
   turnEndedListeners.add(listener)
+
   return () => {
     turnEndedListeners.delete(listener)
   }
@@ -88,13 +91,16 @@ export function pushTurnEnded(id: InstanceId, raw: TurnEndedRaw): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)
   const target = slot.turns.find((t) => t.id === raw.turnId)
+
   if (target) {
     target.endedAt = seq
     target.stopReason = raw.stopReason
   }
+
   if (slot.openBySession.get(raw.sessionId) === raw.turnId) {
     slot.openBySession.delete(raw.sessionId)
   }
+
   for (const listener of turnEndedListeners) {
     listener(id, raw)
   }
@@ -119,6 +125,7 @@ export function useTurns(instanceId?: InstanceId): {
   const { id: activeId } = useActiveInstance()
   const turns = computed<TurnRecord[]>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return []
     }
@@ -127,10 +134,12 @@ export function useTurns(instanceId?: InstanceId): {
   })
   const openTurnId = computed<string | undefined>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return undefined
     }
     const slot = states.get(resolved)
+
     if (!slot) {
       return undefined
     }

@@ -4,6 +4,7 @@
 export { default as Attachments } from './Attachments.vue'
 export { default as Body } from './Body.vue'
 export { default as ChangeBanner } from './ChangeBanner.vue'
+export { default as PermissionModal } from './PermissionModal.vue'
 export { default as RoleTag } from './RoleTag.vue'
 export { default as SessionRow } from './SessionRow.vue'
 export { default as StreamCard } from './StreamCard.vue'

@@ -36,18 +36,23 @@ function iconFor(mime: string | undefined): typeof faFile {
   if (!mime) {
     return faFile
   }
+
   if (mime.startsWith('image/')) {
     return faFileImage
   }
+
   if (mime.startsWith('text/markdown') || mime.startsWith('text/x-markdown')) {
     return faFileLines
   }
+
   if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml') {
     return faFileCode
   }
+
   if (mime === 'inode/directory') {
     return faFolder
   }
+
   return faFile
 }
 
@@ -55,12 +60,15 @@ function nameFor(att: Attachment): string {
   if (att.title && att.title.length > 0) {
     return att.title
   }
+
   if (att.path) {
     const seg = att.path.split('/').filter(Boolean).pop()
+
     if (seg) {
       return seg
     }
   }
+
   return att.slug || '<attachment>'
 }
 
@@ -68,9 +76,11 @@ function mimeFor(att: Attachment): string {
   if (att.mime && att.mime.length > 0) {
     return att.mime
   }
+
   if (att.body !== undefined) {
     return 'text/plain'
   }
+
   return 'unknown'
 }
 
@@ -97,14 +107,7 @@ const images = computed(() => props.attachments.filter(isImage))
 <template>
   <div v-if="views.length > 0" class="attachments">
     <div class="attachments-pills">
-      <button
-        v-for="v in views"
-        :key="v.att.slug || v.att.path || v.name"
-        type="button"
-        class="attachments-pill"
-        :title="v.att.path ?? v.name"
-        @click="emit('open', v.att)"
-      >
+      <button v-for="v in views" :key="v.att.slug || v.att.path || v.name" type="button" class="attachments-pill" :title="v.att.path ?? v.name" @click="emit('open', v.att)">
         <FaIcon :icon="v.icon" class="attachments-pill-icon" aria-hidden="true" />
         <span class="attachments-pill-name">{{ v.name }}</span>
         <span class="attachments-pill-mime">{{ v.mime }}</span>
@@ -112,13 +115,7 @@ const images = computed(() => props.attachments.filter(isImage))
       </button>
     </div>
     <div v-if="images.length > 0" class="attachments-images">
-      <img
-        v-for="(img, i) in images"
-        :key="i"
-        :src="imageSrc(img)"
-        :alt="nameFor(img)"
-        class="attachments-image"
-      />
+      <img v-for="(img, i) in images" :key="i" :src="imageSrc(img)" :alt="nameFor(img)" class="attachments-image" />
     </div>
   </div>
 </template>

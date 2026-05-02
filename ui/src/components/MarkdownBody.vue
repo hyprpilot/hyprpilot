@@ -15,16 +15,18 @@ const html = ref('')
 
 watch(
   () => props.source,
-  async (raw) => {
+  async(raw) => {
     if (!raw) {
       html.value = ''
 
       return
     }
+
     try {
       const out = await renderMarkdown(raw)
+
       html.value = out.html
-    } catch (err) {
+    } catch(err) {
       log.warn('MarkdownBody: render failed', { err: String(err) })
       html.value = ''
     }
@@ -102,9 +104,15 @@ watch(
   line-height: 1.3;
 }
 
-.markdown-body :deep(h1) { font-size: 1.15em; }
-.markdown-body :deep(h2) { font-size: 1.05em; }
-.markdown-body :deep(h3) { font-size: 1em; }
+.markdown-body :deep(h1) {
+  font-size: 1.15em;
+}
+.markdown-body :deep(h2) {
+  font-size: 1.05em;
+}
+.markdown-body :deep(h3) {
+  font-size: 1em;
+}
 
 .markdown-body :deep(code) {
   font-family: var(--theme-font-mono);

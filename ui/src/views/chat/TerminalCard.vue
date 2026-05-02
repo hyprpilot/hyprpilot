@@ -16,7 +16,6 @@ import { computed } from 'vue'
 import { stripAnsi } from './ansi'
 import { useTerminals } from '@composables'
 
-
 const props = defineProps<{
   terminalId: string
   /** Override the active instance — passes through to `useTerminals(instanceId)`. */
@@ -42,6 +41,7 @@ const exitLabel = computed(() => {
   if (signal.value) {
     return `signal ${signal.value}`
   }
+
   if (exitCode.value !== undefined) {
     return `exit ${exitCode.value}`
   }
@@ -62,9 +62,7 @@ const exitLabel = computed(() => {
       <span v-else-if="exitLabel" class="terminal-card-exit" :data-ok="exitOk">{{ exitLabel }}</span>
     </header>
 
-    <pre
-      class="terminal-card-stdout"
-    ><span v-if="truncated" class="terminal-card-truncated">… (older output dropped)
+    <pre class="terminal-card-stdout"><span v-if="truncated" class="terminal-card-truncated">… (older output dropped)
 </span><span class="terminal-card-stdout-text">{{ output }}</span><span v-if="running" class="terminal-card-cursor" aria-hidden="true">▊</span></pre>
   </section>
 </template>

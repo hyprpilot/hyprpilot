@@ -11,7 +11,7 @@ describe('Button.vue', () => {
     expect(wrapper.text()).toBe('allow')
   })
 
-  it('emits click', async () => {
+  it('emits click', async() => {
     const wrapper = mount(Button)
 
     await wrapper.trigger('click')

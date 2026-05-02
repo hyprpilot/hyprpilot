@@ -15,8 +15,7 @@ import { ref, watch } from 'vue'
 
 import { Loading } from '@components'
 import { type PaletteEntry } from '@composables'
-import { useHomeDir } from '@composables'
-import { truncateCwd } from '@composables'
+import { useHomeDir, truncateCwd } from '@composables'
 import { invoke, TauriCommand, type SessionInfoResult } from '@ipc'
 
 const props = defineProps<{
@@ -42,6 +41,7 @@ watch(
   () => props.entry?.id,
   (id) => {
     clearPending()
+
     if (!id) {
       info.value = undefined
       loading.value = false
@@ -52,6 +52,7 @@ watch(
     // Last-write-wins guard: only the latest scheduled request should
     // commit its result. Captured by id snapshot at fetch time.
     const targetId = id
+
     pendingTimer = setTimeout(() => {
       pendingTimer = undefined
       loading.value = true
@@ -85,12 +86,7 @@ function formatCwd(raw: string): string {
 <template>
   <div class="palette-sessions-preview" data-testid="palette-sessions-preview">
     <div v-if="!entry" class="palette-sessions-preview-state-msg" data-testid="palette-sessions-preview-empty">no session selected</div>
-    <Loading
-      v-else-if="loading"
-      mode="inline"
-      status="loading session info"
-      data-testid="palette-sessions-preview-loading"
-    />
+    <Loading v-else-if="loading" mode="inline" status="loading session info" data-testid="palette-sessions-preview-loading" />
     <div v-else-if="lastErr" class="palette-sessions-preview-state-msg palette-sessions-preview-err" data-testid="palette-sessions-preview-err">
       {{ lastErr }}
     </div>
@@ -163,5 +159,4 @@ function formatCwd(raw: string): string {
   @apply m-0 truncate;
   color: var(--theme-fg-ink-2);
 }
-
 </style>

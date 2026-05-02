@@ -1,11 +1,9 @@
 import { onMounted, ref, watch, type Ref } from 'vue'
 
-import { invoke, TauriCommand, type SessionSummary } from '@ipc'
-
-import { ToastTone } from '@components'
-
 import { setSessionRestored, setSessionRestoring } from './use-session-info'
 import { pushToast } from '../ui-state/use-toasts'
+import { ToastTone } from '@components'
+import { invoke, TauriCommand, type SessionSummary } from '@ipc'
 import { log } from '@lib'
 
 // Cache window — every `refresh()` call inside this many ms returns
@@ -40,33 +38,41 @@ let lastFetchAt = 0
 let lastAgentId: string | undefined
 let lastProfileId: string | undefined
 
-export function useSessionHistory(agentId: Ref<string | undefined>, profileId: Ref<string | undefined>) {
+export interface UseSessionHistoryApi {
+  sessions: Ref<SessionSummary[]>
+  loading: Ref<boolean>
+  lastErr: Ref<string | undefined>
+  refresh: (opts?: { force?: boolean }) => Promise<void>
+  load: (sessionId: string) => Promise<void>
+}
+
+export function useSessionHistory(agentId: Ref<string | undefined>, profileId: Ref<string | undefined>): UseSessionHistoryApi {
   async function refresh(opts: { force?: boolean } = {}): Promise<void> {
     const agent = agentId.value
+
     if (!agent) {
       sessions.value = []
 
       return
     }
-    const cacheStillValid =
-      !opts.force &&
-      lastAgentId === agent &&
-      lastProfileId === profileId.value &&
-      Date.now() - lastFetchAt < CACHE_TTL_MS &&
-      sessions.value.length > 0
+    const cacheStillValid = !opts.force && lastAgentId === agent && lastProfileId === profileId.value && Date.now() - lastFetchAt < CACHE_TTL_MS && sessions.value.length > 0
+
     if (cacheStillValid) {
       return
     }
     loading.value = true
     lastErr.value = undefined
+
     try {
       const r = await invoke(TauriCommand.SessionList, { agentId: agent, profileId: profileId.value })
+
       sessions.value = r.sessions
       lastFetchAt = Date.now()
       lastAgentId = agent
       lastProfileId = profileId.value
-    } catch (err) {
+    } catch(err) {
       const message = String(err)
+
       lastErr.value = message
       sessions.value = []
       // Surface the failure as a toast so the user sees why their
@@ -82,6 +88,7 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
 
   async function load(sessionId: string): Promise<void> {
     const agent = agentId.value
+
     if (!agent) {
       pushToast(ToastTone.Warn, 'no agent resolved — cannot restore session')
       log.warn('session-history: load called with no resolved agent', { sessionId })
@@ -94,7 +101,13 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     // verbatim — no race window between the daemon minting one and
     // the renderer learning it.
     const target = crypto.randomUUID()
-    log.info('session-history: loading session', { sessionId, target, agent, profile: profileId.value })
+
+    log.info('session-history: loading session', {
+      sessionId,
+      target,
+      agent,
+      profile: profileId.value
+    })
     // Flip the transient `restoring` flag BEFORE the round-trip so
     // the chat-transcript <Loading> overlay paints the moment the
     // user clicks. Cleared by use-session-stream on the first
@@ -103,12 +116,19 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     // sees the spinner and the err toast simultaneously — clearing
     // is the success path.
     setSessionRestoring(target, true)
+
     try {
-      await invoke(TauriCommand.SessionLoad, { agentId: agent, profileId: profileId.value, sessionId, instanceId: target })
+      await invoke(TauriCommand.SessionLoad, {
+        agentId: agent,
+        profileId: profileId.value,
+        sessionId,
+        instanceId: target
+      })
       setSessionRestored(target, true)
       pushToast(ToastTone.Ok, 'restoring session…')
-    } catch (err) {
+    } catch(err) {
       const message = String(err)
+
       lastErr.value = message
       log.warn('session-history: loadSession failed', { sessionId, err: message })
       pushToast(ToastTone.Err, `restore failed: ${message}`)

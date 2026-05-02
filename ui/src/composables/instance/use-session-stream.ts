@@ -1,5 +1,28 @@
 import { ref } from 'vue'
 
+import { cleanupInstance } from './cleanup'
+import { pushPermissionRequest } from './use-permissions'
+import { pushInstanceState } from './use-phase'
+import {
+  pushCurrentModeUpdate,
+  pushInstanceModeState,
+  pushInstanceModelState,
+  pushSessionInfoUpdate,
+  setInstanceAgent,
+  setInstanceCwd,
+  setSessionRestoring,
+  setSessionTitleIfUnset,
+  lookupCurrentMode,
+  lookupModeName
+} from './use-session-info'
+import { closeTurn, deleteStreamByTurnId, pushModeChange, pushPlan, pushThoughtChunk } from './use-stream'
+import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
+import { deleteToolsByTurnId, pushToolCall } from './use-tools'
+import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
+import { pushTurnEnded, pushTurnStarted } from './use-turns'
+import { recordInstanceState, useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import { pushToast } from '../ui-state/use-toasts'
+import { ToastTone, CancelToastBody } from '@components'
 import {
   InstanceState,
   listen,
@@ -12,32 +35,7 @@ import {
   type TranscriptEventPayload,
   type UnlistenFn
 } from '@ipc'
-
-import { CancelToastBody } from '@components'
-import { ToastTone } from '@components'
 import { log } from '@lib'
-
-import { cleanupInstance } from './cleanup'
-import { recordInstanceState, useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
-import { pushInstanceState } from './use-phase'
-import { pushPermissionRequest } from './use-permissions'
-import {
-  pushCurrentModeUpdate,
-  pushInstanceModeState,
-  pushInstanceModelState,
-  pushSessionInfoUpdate,
-  setInstanceAgent,
-  setInstanceCwd,
-  setSessionRestoring,
-  setSessionTitleIfUnset
-} from './use-session-info'
-import { closeTurn, deleteStreamByTurnId, pushModeChange, pushPlan, pushThoughtChunk } from './use-stream'
-import { lookupCurrentMode, lookupModeName } from './use-session-info'
-import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
-import { pushToast } from '../ui-state/use-toasts'
-import { deleteToolsByTurnId, pushToolCall } from './use-tools'
-import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
-import { pushTurnEnded, pushTurnStarted } from './use-turns'
 
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 
@@ -74,6 +72,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
  */
 function routeTranscript(payload: TranscriptEventPayload): void {
   const { instanceId, sessionId, item } = payload
+
   switch (item.kind) {
     case TranscriptItemKind.UserPrompt:
       // Daemon-authoritative user echo — replaces the old optimistic
@@ -91,31 +90,41 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       // landing later overwrites this stand-in via
       // `pushSessionInfoUpdate`.
       setSessionTitleIfUnset(instanceId, item.text)
+
       return
+
     case TranscriptItemKind.UserText:
       pushTranscriptChunk(instanceId, sessionId, {
         sessionUpdate: 'user_message_chunk',
         content: { type: 'text', text: item.text }
       } as Parameters<typeof pushTranscriptChunk>[2])
+
       return
+
     case TranscriptItemKind.AgentText:
       pushTranscriptChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: item.text }
       } as Parameters<typeof pushTranscriptChunk>[2])
+
       return
+
     case TranscriptItemKind.AgentThought:
       pushThoughtChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_thought_chunk',
         content: { type: 'text', text: item.text }
       } as Parameters<typeof pushThoughtChunk>[2])
+
       return
+
     case TranscriptItemKind.Plan:
       pushPlan(instanceId, sessionId, {
         sessionUpdate: 'plan',
         entries: item.steps
       } as Parameters<typeof pushPlan>[2])
+
       return
+
     case TranscriptItemKind.ToolCall:
       pushToolCall(instanceId, sessionId, {
         sessionUpdate: 'tool_call',
@@ -126,7 +135,9 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         rawInput: item.rawInput,
         content: item.content
       } as Parameters<typeof pushToolCall>[2])
+
       return
+
     case TranscriptItemKind.ToolCallUpdate:
       pushToolCall(instanceId, sessionId, {
         sessionUpdate: 'tool_call_update',
@@ -137,12 +148,15 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         rawInput: item.rawInput,
         content: item.content
       } as Parameters<typeof pushToolCall>[2])
+
       return
+
     case TranscriptItemKind.PermissionRequest:
       // Permission rendering rides the dedicated `acp:permission-request`
       // event channel (sticky stack today). The transcript variant
       // exists for typed completeness; UI ignores it here.
       return
+
     case TranscriptItemKind.Unknown:
       // Forward-compat catch-all. ACP session-metadata variants
       // (`session_info_update`, `current_mode_update`) ride on
@@ -156,11 +170,17 @@ function routeTranscript(payload: TranscriptEventPayload): void {
 
 function routeTerminal(payload: TerminalEventPayload): void {
   const { instanceId, terminalId, chunk } = payload
+
   if (chunk.kind === TerminalChunkKind.Output) {
     pushTerminalChunk(instanceId, { terminalId, data: chunk.data })
+
     return
   }
-  pushTerminalExit(instanceId, { terminalId, exitCode: chunk.exitCode, signal: chunk.signal })
+  pushTerminalExit(instanceId, {
+    terminalId,
+    exitCode: chunk.exitCode,
+    signal: chunk.signal
+  })
 }
 
 /**
@@ -177,12 +197,14 @@ export async function startSessionStream(): Promise<() => void> {
   const priorState = new Map<InstanceId, InstanceState>()
 
   const unlisteners: UnlistenFn[] = []
+
   unlisteners.push(
     await listen(TauriEvent.AcpTranscript, (e) => {
       routeTranscript(e.payload)
     }),
     await listen(TauriEvent.AcpInstanceState, (e) => {
       const { instanceId, agentId, state } = e.payload
+
       lastInstanceState.value = e.payload
       pushInstanceState(instanceId, state)
       recordInstanceState(instanceId, agentId, state)
@@ -201,6 +223,7 @@ export async function startSessionStream(): Promise<() => void> {
         // instance's actor logs the upstream error in detail; the
         // toast is the user-facing breadcrumb.
         const label = agentId.length > 0 ? agentId : 'session'
+
         pushToast(ToastTone.Err, `${label} failed to start — check daemon log`)
       }
 
@@ -215,6 +238,7 @@ export async function startSessionStream(): Promise<() => void> {
     }),
     await listen(TauriEvent.AcpTurnStarted, (e) => {
       const { instanceId, sessionId, turnId } = e.payload
+
       // The TurnStarted signal owns the per-turn aggregation reset.
       // Each new turn opens fresh thought / plan items so chunked
       // updates within the turn merge cleanly into one block each.
@@ -223,7 +247,12 @@ export async function startSessionStream(): Promise<() => void> {
     }),
     await listen(TauriEvent.AcpTurnEnded, (e) => {
       const { instanceId, sessionId, turnId, stopReason, error } = e.payload
-      pushTurnEnded(instanceId, { turnId, sessionId, stopReason })
+
+      pushTurnEnded(instanceId, {
+        turnId,
+        sessionId,
+        stopReason
+      })
       // First TurnEnded after `setSessionRestoring(id, true)` clears
       // the transient flag so the chat-transcript <Loading> overlay
       // tears down. Daemon's post-load `CancelNotification` triggers
@@ -238,19 +267,30 @@ export async function startSessionStream(): Promise<() => void> {
       // toast). Skip when stop_reason is `end_turn` (clean completion)
       // — those turns should stay.
       const cancelled = stopReason === 'cancelled'
+
       if (cancelled || error) {
         const removeTurn = (): void => {
           const dropped = deleteTurnByTurnId(instanceId, turnId)
+
           deleteToolsByTurnId(instanceId, turnId)
           deleteStreamByTurnId(instanceId, turnId)
-          log.info('turn deleted', { instanceId, turnId, dropped })
+          log.info('turn deleted', {
+            instanceId,
+            turnId,
+            dropped
+          })
         }
         const tone = error ? ToastTone.Err : ToastTone.Warn
         const message = error ? `turn failed: ${error}` : 'turn cancelled'
         const toneVar = error ? 'var(--theme-status-err)' : 'var(--theme-status-warn)'
+
         pushToast(tone, {
           component: CancelToastBody,
-          props: { message, tone: toneVar, onDelete: removeTurn }
+          props: {
+            message,
+            tone: toneVar,
+            onDelete: removeTurn
+          }
         })
       }
     }),
@@ -266,6 +306,7 @@ export async function startSessionStream(): Promise<() => void> {
       // it, so the chat banner can render `mode · plan → default`
       // instead of just `mode → default`.
       const prevModeId = lookupCurrentMode(instanceId)
+
       pushCurrentModeUpdate(instanceId, { currentModeId })
       // Mid-turn mode flips (claude-code's plan → default after the
       // user accepts ExitPlanMode, or codex's mode shifts) deserve a
@@ -279,8 +320,8 @@ export async function startSessionStream(): Promise<() => void> {
       })
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
-      const { agentId, instanceId, cwd, currentModeId, currentModelId, availableModes, availableModels } =
-        e.payload
+      const { agentId, instanceId, cwd, currentModeId, currentModelId, availableModes, availableModels } = e.payload
+
       setInstanceAgent(instanceId, agentId)
       setInstanceCwd(instanceId, cwd)
       // InstanceMeta fires once per resume completion (right after
@@ -292,11 +333,13 @@ export async function startSessionStream(): Promise<() => void> {
       // not produce a TurnEnded (the agent had no in-flight turn
       // to cancel), and the loader would stick forever.
       setSessionRestoring(instanceId, false)
+
       if (availableModes && availableModes.length > 0) {
         pushInstanceModeState(instanceId, { currentModeId, availableModes })
       } else if (currentModeId) {
         pushCurrentModeUpdate(instanceId, { currentModeId })
       }
+
       // Mirror the modes branch — the model list comes from
       // `NewSessionResponse.models` (gated by ACP's
       // `unstable_session_model` feature). When the agent advertises

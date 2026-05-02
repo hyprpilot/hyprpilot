@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 /**
  * Modal body primitive — single-line text input with autoselect on
@@ -27,7 +27,7 @@ const props = withDefaults(
      * error message that renders as a dim-red pill below the input.
      * Stateless — caller-owned; the input only displays the result.
      */
-    validate?: (raw: string) => string | null
+    validate?: (_raw: string) => string | null
   }>(),
   { placeholder: '', validate: undefined }
 )
@@ -47,6 +47,7 @@ onMounted(() => {
 
 function onInput(e: Event): void {
   const target = e.target as HTMLInputElement
+
   emit('update:value', target.value)
 }
 
@@ -58,6 +59,7 @@ function onKeydown(e: KeyboardEvent): void {
   // sees the pill, fixes, then commits. Parent button-click path is
   // unaffected; this gate is only for the implicit Enter shortcut.
   const err = props.validate ? props.validate(props.value) : null
+
   if (err) {
     return
   }
@@ -65,22 +67,12 @@ function onKeydown(e: KeyboardEvent): void {
   emit('submit')
 }
 
-import { computed } from 'vue'
 const errorMessage = computed<string | null>(() => (props.validate ? props.validate(props.value) : null))
 </script>
 
 <template>
   <div class="modal-input-wrap">
-    <input
-      ref="inputRef"
-      type="text"
-      class="modal-input"
-      :value="value"
-      :placeholder="placeholder"
-      :data-invalid="errorMessage !== null"
-      @input="onInput"
-      @keydown="onKeydown"
-    />
+    <input ref="inputRef" type="text" class="modal-input" :value="value" :placeholder="placeholder" :data-invalid="errorMessage !== null" @input="onInput" @keydown="onKeydown" />
     <span v-if="errorMessage" class="modal-input-error">{{ errorMessage }}</span>
   </div>
 </template>
