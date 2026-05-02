@@ -474,6 +474,48 @@ pub async fn permission_reply(
     Ok(())
 }
 
+/// Snapshot of the runtime trust store filtered to the addressed
+/// instance. Drives the permissions palette so the captain can review
+/// the live `(tool, decision)` set + prune entries that no longer fit
+/// (a tool flipped to "always allow" mid-session that should now ask
+/// again, etc.). Empty list when no rules match. Decision is the
+/// camelCase wire form (`allow` / `deny`).
+#[tauri::command]
+pub async fn permissions_trust_snapshot(
+    controller: State<'_, Arc<dyn PermissionController>>,
+    instance_id: String,
+) -> Result<Value, String> {
+    let snapshot = controller.snapshot_trust_store().await;
+    let entries: Vec<Value> = snapshot
+        .into_iter()
+        .filter(|(iid, _, _)| iid == &instance_id)
+        .map(|(_, tool, decision)| {
+            serde_json::json!({
+                "tool": tool,
+                "decision": match decision {
+                    TrustDecision::Allow => "allow",
+                    TrustDecision::Deny => "deny",
+                },
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "entries": entries }))
+}
+
+/// Drop a single trust-store entry. Captain-driven — paired with the
+/// permissions palette's multi-select toggle so unticking a row
+/// removes the rule. No-op when the entry isn't present (idempotent
+/// against double-clicks / palette reuse).
+#[tauri::command]
+pub async fn permissions_trust_forget(
+    controller: State<'_, Arc<dyn PermissionController>>,
+    instance_id: String,
+    tool: String,
+) -> Result<(), String> {
+    controller.forget_trust(&instance_id, &tool).await;
+    Ok(())
+}
+
 /// Read-only snapshot of the resolved MCP set. UI's palette `mcps`
 /// leaf binds to this. With per-instance overrides gone (S5), every
 /// server in the resolved file set is "active"; captains can't

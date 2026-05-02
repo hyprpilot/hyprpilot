@@ -59,6 +59,22 @@ watch(
   { immediate: true }
 )
 
+// Live-query hook: leaves with dynamic entries (cwd path
+// autocomplete, future ripgrep search, …) wire `onQueryChange` on
+// their spec; we forward every keystroke alongside an `update()`
+// callback that swaps the spec's `entries` ref so
+// `usePaletteFilter` re-renders without a re-open.
+watch(query, (q) => {
+  const spec = top.value
+
+  if (!spec?.onQueryChange) {
+    return
+  }
+  spec.onQueryChange(q, (next) => {
+    spec.entries = next
+  })
+})
+
 const highlightedEntry = computed<PaletteEntry | undefined>(() => visibleEntries.value[highlighted.value])
 
 watch(visibleEntries, (rows) => {

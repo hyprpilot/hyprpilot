@@ -148,4 +148,7 @@ export interface InstanceMetaEventPayload {
   currentModelId?: string
   availableModes?: { id: string; name: string; description?: string }[]
   availableModels?: { id: string; name: string; description?: string }[]
+  /// MCP server count resolved for this instance (root `mcps` overridden
+  /// by per-profile `mcps`). Drives the header `+N mcps` pill.
+  mcpsCount?: number
 }

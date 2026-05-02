@@ -31,11 +31,11 @@ const DEFAULT_KEYMAPS = {
     cancel_turn: { modifiers: [Modifier.Ctrl], key: 'c' }
   },
   approvals: {
-    allow: { modifiers: [], key: 'a' },
-    deny: { modifiers: [], key: 'd' }
+    allow: { modifiers: [Modifier.Ctrl], key: 'g' },
+    deny: { modifiers: [Modifier.Ctrl], key: 'r' }
   },
   composer: {
-    paste_image: { modifiers: [Modifier.Ctrl], key: 'p' },
+    paste: { modifiers: [Modifier.Ctrl], key: 'p' },
     tab_completion: { modifiers: [], key: 'tab' },
     shift_tab: { modifiers: [Modifier.Shift], key: 'tab' },
     completion: { modifiers: [Modifier.Ctrl], key: 'space' },
@@ -51,6 +51,10 @@ const DEFAULT_KEYMAPS = {
   transcript: {},
   window: {
     toggle: { modifiers: [Modifier.Ctrl], key: 'q' }
+  },
+  queue: {
+    send: { modifiers: [Modifier.Ctrl], key: 'enter' },
+    drop: { modifiers: [Modifier.Ctrl], key: 'backspace' }
   }
 }
 
@@ -123,7 +127,7 @@ describe('Chat.vue — permission wiring', () => {
     wrapper.unmount()
   })
 
-  it('dispatches deny via keyboard `d` when no input has focus', async() => {
+  it('dispatches deny via Ctrl+R', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
@@ -143,7 +147,13 @@ describe('Chat.vue — permission wiring', () => {
 
     await flushMicrotasks()
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'r',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
     await flushMicrotasks()
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
@@ -157,7 +167,7 @@ describe('Chat.vue — permission wiring', () => {
     wrapper.unmount()
   })
 
-  it('dispatches allow via keyboard `a` when no input has focus', async() => {
+  it('dispatches allow via Ctrl+G', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
@@ -177,7 +187,13 @@ describe('Chat.vue — permission wiring', () => {
 
     await flushMicrotasks()
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'g',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
     await flushMicrotasks()
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
@@ -191,7 +207,7 @@ describe('Chat.vue — permission wiring', () => {
     wrapper.unmount()
   })
 
-  it('does not dispatch when the composer textarea has focus', async() => {
+  it('dispatches allow via Ctrl+G even when the composer textarea has focus', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
@@ -205,6 +221,7 @@ describe('Chat.vue — permission wiring', () => {
         }
       ]
     })
+    invoke.mockResolvedValue(undefined)
 
     const wrapper = mount(Chat, { attachTo: document.body })
 
@@ -215,17 +232,24 @@ describe('Chat.vue — permission wiring', () => {
     expect(textarea.exists()).toBe(true)
     textarea.element.focus()
 
-    // Dispatch through the textarea so event.target points at the composer.
     textarea.element.dispatchEvent(
       new KeyboardEvent('keydown', {
-        key: 'a',
+        key: 'g',
+        ctrlKey: true,
         bubbles: true,
         cancelable: true
       })
     )
     await flushMicrotasks()
 
-    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
+      sessionId: 's-a',
+      requestId: 'req-1',
+      optionId: 'allow',
+      remember: undefined,
+      instanceId: 'A',
+      tool: 'bash'
+    })
     wrapper.unmount()
   })
 
@@ -265,7 +289,7 @@ describe('Chat.vue — permission wiring', () => {
     wrapper.unmount()
   })
 
-  it('ignores keyboard shortcuts when modifier keys are held', async() => {
+  it('does not fire allow when the modifier is missing — plain `g` is just typing', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
@@ -284,13 +308,7 @@ describe('Chat.vue — permission wiring', () => {
 
     await flushMicrotasks()
 
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'a',
-        ctrlKey: true,
-        bubbles: true
-      })
-    )
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', bubbles: true }))
     await flushMicrotasks()
 
     expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())

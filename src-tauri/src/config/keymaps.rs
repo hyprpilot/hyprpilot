@@ -246,6 +246,8 @@ pub struct KeymapsConfig {
     pub transcript: TranscriptKeymaps,
     #[garde(dive)]
     pub window: WindowKeymaps,
+    #[garde(dive)]
+    pub queue: QueueKeymaps,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -279,7 +281,7 @@ pub struct ApprovalsKeymaps {
 #[merge(strategy = overwrite_some)]
 pub struct ComposerKeymaps {
     #[garde(dive)]
-    pub paste_image: Option<Binding>,
+    pub paste: Option<Binding>,
     #[garde(dive)]
     pub tab_completion: Option<Binding>,
     #[garde(dive)]
@@ -333,6 +335,21 @@ pub struct TranscriptKeymaps {}
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]
+pub struct QueueKeymaps {
+    /// Dispatch the head of the composer queue as the next user
+    /// turn. Default: `Ctrl+Enter`. Captain-driven only — the queue
+    /// never auto-dispatches on turn end.
+    #[garde(dive)]
+    pub send: Option<Binding>,
+    /// Drop the head of the composer queue without sending.
+    /// Default: `Ctrl+Backspace`.
+    #[garde(dive)]
+    pub drop: Option<Binding>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
 pub struct WindowKeymaps {
     /// Toggle the overlay's visibility — same surface as the
     /// `window/toggle` RPC and the tray menu's "show/hide" entry.
@@ -368,7 +385,7 @@ pub(crate) fn collect_collision_scopes(cfg: &KeymapsConfig) -> Vec<CollisionScop
         (
             "composer",
             vec![
-                ("paste_image", cfg.composer.paste_image.as_ref()),
+                ("paste", cfg.composer.paste.as_ref()),
                 ("tab_completion", cfg.composer.tab_completion.as_ref()),
                 ("shift_tab", cfg.composer.shift_tab.as_ref()),
                 ("completion", cfg.composer.completion.as_ref()),
@@ -387,6 +404,10 @@ pub(crate) fn collect_collision_scopes(cfg: &KeymapsConfig) -> Vec<CollisionScop
         ("palette.sessions", vec![("focus", cfg.palette.sessions.focus.as_ref())]),
         ("transcript", vec![]),
         ("window", vec![("toggle", cfg.window.toggle.as_ref())]),
+        (
+            "queue",
+            vec![("send", cfg.queue.send.as_ref()), ("drop", cfg.queue.drop.as_ref())],
+        ),
     ]
 }
 

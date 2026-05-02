@@ -93,9 +93,10 @@ pub enum AgentProvider {
 }
 
 /// One `[[profiles]]` entry. Binds an agent id to an optional model
-/// override + optional system prompt. Exactly one of `system_prompt`
-/// / `system_prompt_file` may be set; the file path is read at
-/// resolve time, not at spawn time, so a missing file fails loudly.
+/// override + optional system prompt file. `system_prompt` is a path
+/// only — there's exactly one mechanism. The file is read at resolve
+/// time (not at spawn) so a missing file fails loudly on the next
+/// submit, not silently at boot.
 ///
 /// Per-server tool auto-accept / auto-reject lives inside each MCP
 /// JSON entry's `hyprpilot` extension block (see `mcp/loader.rs`),
@@ -111,15 +112,21 @@ pub struct ProfileConfig {
     pub agent: String,
     #[garde(inner(length(min = 1)))]
     pub model: Option<String>,
-    #[garde(inner(length(min = 1)))]
-    pub system_prompt: Option<String>,
-    #[garde(skip)]
-    pub system_prompt_file: Option<PathBuf>,
+    /// Paths to markdown / text files holding the system prompt.
+    /// Multiple files are concatenated with a blank-line separator
+    /// at resolve time so the captain can compose layered prompts
+    /// (e.g. base persona + project-specific addendum). Read at
+    /// submit time so edits land without a daemon restart. `~` +
+    /// env-var expansion mirrors `[skills] dirs` / `cwd`. Profile-
+    /// level array wholesale-replaces the root array; `Some([])` is
+    /// the explicit "no system prompt" off-switch.
+    #[garde(custom(validate_unique_nonempty))]
+    pub system_prompt: Option<Vec<PathBuf>>,
     /// Profile-level MCP file list. `None` (unset) → fall back to the
     /// global `mcps`. `Some(vec![path, …])` → wholesale replace the
     /// global default. `Some(vec![])` → no MCPs at all (explicit
     /// off-switch, no fallback). `~` + env-var expansion at consume
-    /// time, mirroring `[skills] dirs` / `system_prompt_file`.
+    /// time, mirroring `[skills] dirs` / `system_prompt`.
     #[garde(custom(validate_unique_nonempty))]
     pub mcps: Option<Vec<PathBuf>>,
     /// Directory paths the skill loader scans (K-268). Follows the
@@ -127,7 +134,7 @@ pub struct ProfileConfig {
     /// manually-authored skills; the loader pulls them in at instance
     /// spawn. `None` → use defaults; `Some([])` → no skills.
     /// `~` expansion happens at consume time (mirrors `cwd` /
-    /// `system_prompt_file`).
+    /// `system_prompt`).
     #[garde(custom(validate_unique_nonempty))]
     pub skills: Option<Vec<PathBuf>>,
     /// Default mode id — free string today; validation against a mode
@@ -135,7 +142,7 @@ pub struct ProfileConfig {
     #[garde(inner(length(min = 1)))]
     pub mode: Option<String>,
     /// Profile-scoped cwd for the agent process. `~` expansion happens
-    /// at consume time (mirrors `system_prompt_file`).
+    /// at consume time (mirrors `system_prompt`).
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
     /// Extra env vars the agent process inherits. `BTreeMap` for
@@ -368,29 +375,6 @@ agent = "does-not-exist"
     }
 
     #[test]
-    fn profile_rejects_both_system_prompt_fields() {
-        let p = write_tmp(
-            "both-prompts.toml",
-            r#"
-[[profiles]]
-id = "clash"
-agent = "claude-code"
-system_prompt = "inline"
-system_prompt_file = "/tmp/whatever.md"
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("system_prompt") && msg.contains("system_prompt_file"),
-            "{msg}"
-        );
-        assert!(msg.contains("pick one"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
     fn profile_ids_unique() {
         let p = write_tmp(
             "dup-profiles.toml",
@@ -437,7 +421,7 @@ default = "ghost-profile"
 id = "full"
 agent = "claude-code"
 model = "claude-opus-4-5"
-system_prompt = "be terse"
+system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/full.md"]
 skills = ["~/.claude/skills/rust", "~/.claude/skills/vue"]
 mode = "ask"
 cwd = "~/work"
@@ -450,7 +434,16 @@ BAZ = "qux"
         let cfg = load(Some(&p), None).expect("load");
         let full = cfg.profiles.iter().find(|p| p.id == "full").expect("full entry");
         assert_eq!(full.model.as_deref(), Some("claude-opus-4-5"));
-        assert_eq!(full.system_prompt.as_deref(), Some("be terse"));
+        assert_eq!(
+            full.system_prompt.as_deref().map(|paths| paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>()),
+            Some(vec![
+                "~/.config/hyprpilot/prompts/base.md".to_string(),
+                "~/.config/hyprpilot/prompts/full.md".to_string()
+            ])
+        );
         assert_eq!(full.mcps, None, "absent mcps parses as None");
         assert_eq!(
             full.skills.as_deref(),

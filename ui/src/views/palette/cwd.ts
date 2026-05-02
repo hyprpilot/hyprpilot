@@ -23,6 +23,8 @@ import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
 const MANUAL_ROW_ID = 'cwd-manual'
+const COMPLETION_ROW_PREFIX = 'cwd-complete:'
+const COMPLETION_DEBOUNCE_MS = 120
 
 function isLikelyAbsolute(path: string): boolean {
   return path.startsWith('/') || path.startsWith('~')
@@ -87,6 +89,50 @@ async function commitCwd(rawPath: string): Promise<void> {
   }
 }
 
+/**
+ * Path autocomplete via `completion_query`'s path source. Captain
+ * types `~/proj/`, `./src/`, or `/etc/` into the cwd palette; we
+ * fire a query against the daemon's path source on every keystroke
+ * (debounced) and project the directory matches as palette rows so
+ * Enter on a row commits its absolute path. Files are filtered out
+ * since cwd must be a directory.
+ */
+async function fetchPathCompletions(query: string): Promise<PaletteEntry[]> {
+  if (!query.startsWith('~') && !query.startsWith('/') && !query.startsWith('./') && !query.startsWith('../')) {
+    return []
+  }
+
+  try {
+    const r = await invoke(TauriCommand.CompletionQuery, {
+      text: query,
+      cursor: query.length,
+      manual: false
+    })
+
+    if (!r || !Array.isArray(r.items)) {
+      return []
+    }
+
+    return (
+      r.items
+        // Path source emits `detail: "dir"` for directories — cwd must
+        // be a directory so files are filtered out.
+        .filter((item) => item.kind === 'path' && item.detail === 'dir')
+        .slice(0, 30)
+        .map((item) => ({
+          id: `${COMPLETION_ROW_PREFIX}${item.replacement.text}`,
+          name: item.label,
+          description: item.replacement.text,
+          kind: 'directory'
+        }))
+    )
+  } catch(err) {
+    log.debug('palette-cwd: completion failed', { err: String(err) })
+
+    return []
+  }
+}
+
 export function openCwdLeaf(): void {
   const { open } = usePalette()
   const { history } = useCwdHistory()
@@ -98,7 +144,7 @@ export function openCwdLeaf(): void {
     description: cwd
   }))
 
-  const entries: PaletteEntry[] = [
+  const initialEntries: PaletteEntry[] = [
     ...recentEntries,
     {
       id: MANUAL_ROW_ID,
@@ -107,10 +153,39 @@ export function openCwdLeaf(): void {
     }
   ]
 
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined
+
   open({
     mode: PaletteMode.Select,
     title: 'cwd',
-    entries,
+    entries: initialEntries,
+    onQueryChange(query, update) {
+      if (debounceTimer !== undefined) {
+        clearTimeout(debounceTimer)
+      }
+      const trimmed = query.trim()
+
+      if (trimmed.length === 0) {
+        // Empty query → restore the recent + manual sentinel list.
+        update(initialEntries)
+
+        return
+      }
+      debounceTimer = setTimeout(() => {
+        void fetchPathCompletions(trimmed).then((completions) => {
+          // Always append the manual row so Enter on a non-matching
+          // directory still commits the typed path verbatim.
+          update([
+            ...completions,
+            {
+              id: MANUAL_ROW_ID,
+              name: `use "${trimmed}"`,
+              description: 'commit the typed path verbatim'
+            }
+          ])
+        })
+      }, COMPLETION_DEBOUNCE_MS)
+    },
     onCommit(picks, query) {
       const pick = picks[0]
 
@@ -120,6 +195,12 @@ export function openCwdLeaf(): void {
 
       if (pick.id === MANUAL_ROW_ID) {
         void commitCwd(query ?? '')
+
+        return
+      }
+
+      if (pick.id.startsWith(COMPLETION_ROW_PREFIX)) {
+        void commitCwd(pick.id.slice(COMPLETION_ROW_PREFIX.length))
 
         return
       }

@@ -38,6 +38,17 @@ pub struct DaemonArgs {
     /// persist to config.
     #[arg(long)]
     pub hidden: bool,
+    /// Working directory the daemon runs in. When set, the daemon
+    /// `chdir`s here before Tauri builds — every spawned agent
+    /// inherits it via the default cwd, every relative-path read
+    /// resolves against it, and `std::env::current_dir()` returns
+    /// it for the rest of the process. Without this flag the daemon
+    /// inherits the spawning shell's cwd. Useful for hyprland binds
+    /// / launcher contexts where the captain wants the daemon to
+    /// land in their project root regardless of where the launcher
+    /// was invoked from.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
 }
 
 #[tauri::command]
@@ -112,6 +123,24 @@ async fn window_toggle(
 ///    [`install_signal_handler`], [`spawn_accept_loop`].
 pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     let started_at = Instant::now();
+
+    // chdir before any further setup so spawned agents inherit the
+    // captured cwd (Command::new picks up the parent's cwd on Linux),
+    // relative-path config reads resolve against it, and
+    // `std::env::current_dir()` returns it for the rest of the
+    // process. Expand `~` / `$VAR` so a hyprland bind like
+    // `--cwd ~/projects/foo` works without a wrapper script.
+    if let Some(raw) = args.cwd.as_deref() {
+        let expanded = shellexpand::full(&raw.to_string_lossy())
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| raw.to_string_lossy().into_owned());
+        let target = PathBuf::from(&expanded);
+
+        std::env::set_current_dir(&target)
+            .with_context(|| format!("daemon: --cwd: failed to chdir to {}", target.display()))?;
+        info!(cwd = %target.display(), "daemon: --cwd applied");
+    }
+
     let socket_path = args
         .socket
         .or_else(|| cfg.daemon.socket.clone())
@@ -189,6 +218,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_window_state,
             window_toggle,
             desktop::get_home_dir,
+            desktop::get_daemon_cwd,
+            desktop::read_file_for_attachment,
             adapter_commands::session_submit,
             adapter_commands::session_cancel,
             adapter_commands::agents_list,
@@ -197,6 +228,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::session_load,
             adapter_commands::sessions_info,
             adapter_commands::permission_reply,
+            adapter_commands::permissions_trust_snapshot,
+            adapter_commands::permissions_trust_forget,
             adapter_commands::instances_list,
             adapter_commands::instances_focus,
             adapter_commands::instances_shutdown,

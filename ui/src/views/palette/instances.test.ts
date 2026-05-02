@@ -68,7 +68,7 @@ describe('openInstancesLeaf', () => {
     expect(spec?.entries[0]?.name).toBe('no live instances')
   })
 
-  it('lists every live instance with agent + profile in the row name', async() => {
+  it('lists every live instance with the headline name (profile id when no captain rename)', async() => {
     invokeMock.mockResolvedValue({
       instances: [
         {
@@ -93,8 +93,30 @@ describe('openInstancesLeaf', () => {
 
     expect(entries).toHaveLength(2)
     expect(entries[0]?.id).toBe('inst-A')
-    expect(entries[0]?.name).toBe('claude-code · ask')
-    expect(entries[1]?.name).toBe('codex · plan')
+    expect(entries[0]?.name).toBe('ask')
+    expect(entries[0]?.description).toMatch(/^claude-code/)
+    expect(entries[1]?.name).toBe('plan')
+    expect(entries[1]?.description).toMatch(/^codex/)
+  })
+
+  it('uses captain-set name as headline when present', async() => {
+    invokeMock.mockResolvedValue({
+      instances: [
+        {
+          agentId: 'claude-code',
+          profileId: 'ask',
+          instanceId: 'inst-A',
+          name: 'planning'
+        }
+      ]
+    })
+
+    await openInstancesLeaf()
+
+    const { stack } = usePalette()
+    const entry = stack.value[0]?.entries[0]
+
+    expect(entry?.name).toBe('planning')
   })
 
   it('marks the active instance in its description prefix', async() => {
@@ -117,7 +139,7 @@ describe('openInstancesLeaf', () => {
     expect(description).toMatch(/active/)
   })
 
-  it('falls back to "no-profile" when an instance has no profile id', async() => {
+  it('falls back to the agent id when an instance has no profile id', async() => {
     invokeMock.mockResolvedValue({
       instances: [{ agentId: 'claude-code', instanceId: 'inst-A' }]
     })
@@ -126,7 +148,7 @@ describe('openInstancesLeaf', () => {
 
     const { stack } = usePalette()
 
-    expect(stack.value[0]?.entries[0]?.name).toBe('claude-code · no-profile')
+    expect(stack.value[0]?.entries[0]?.name).toBe('claude-code')
   })
 
   it('onCommit dispatches instances_focus to the daemon', async() => {

@@ -32,8 +32,7 @@ pub use theme::{
     ThemeSurface, ThemeWindow, Ui,
 };
 use validations::{
-    validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references,
-    validate_profile_prompt_sources, validate_profiles_ids,
+    validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
 };
 
 pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
@@ -63,16 +62,15 @@ pub struct Config {
     #[merge(strategy = overwrite_some)]
     pub mcps: Option<Vec<PathBuf>>,
     /// `system_prompt` — root-level fallback every profile uses when
-    /// neither `[[profiles]] system_prompt` nor `system_prompt_file`
-    /// is set. Mirrors the `mcps` shape: a single global default
-    /// every profile inherits unless it overrides locally. `None`
-    /// (unset) → no fallback (resolution returns `None` and the
-    /// agent runs without a system prompt). Inline string only;
-    /// the file-path variant lives per-profile (`system_prompt_file`)
-    /// where a stable file backing makes sense.
-    #[garde(inner(length(min = 1)))]
+    /// its own `system_prompt` isn't set. Array of markdown / text
+    /// file paths; read + concatenated (blank-line separator) at
+    /// submit time so edits land without a daemon restart. `~` +
+    /// env-var expansion mirrors `mcps`. Profile-level array
+    /// wholesale-replaces this default; `Some([])` is the explicit
+    /// "no system prompt" off-switch.
+    #[garde(custom(crate::config::validations::validate_unique_nonempty))]
     #[merge(strategy = overwrite_some)]
-    pub system_prompt: Option<String>,
+    pub system_prompt: Option<Vec<PathBuf>>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
@@ -92,7 +90,6 @@ pub struct Config {
     #[garde(dive)]
     #[garde(custom(validate_profiles_ids))]
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
-    #[garde(custom(validate_profile_prompt_sources))]
     #[serde(default)]
     #[merge(strategy = merge_profiles_by_id)]
     pub profiles: Vec<ProfileConfig>,
@@ -388,9 +385,17 @@ dirs = []
             k.chat.newline,
             Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Enter)))
         );
-        assert_eq!(k.approvals.allow, Some(binding(&[], Key::Char('a'))));
-        assert_eq!(k.approvals.deny, Some(binding(&[], Key::Char('d'))));
-        assert_eq!(k.composer.paste_image, Some(binding(&[Modifier::Ctrl], Key::Char('p'))));
+        assert_eq!(k.approvals.allow, Some(binding(&[Modifier::Ctrl], Key::Char('g'))));
+        assert_eq!(k.approvals.deny, Some(binding(&[Modifier::Ctrl], Key::Char('r'))));
+        assert_eq!(
+            k.queue.send,
+            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::Enter)))
+        );
+        assert_eq!(
+            k.queue.drop,
+            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::Backspace)))
+        );
+        assert_eq!(k.composer.paste, Some(binding(&[Modifier::Ctrl], Key::Char('p'))));
         assert_eq!(k.composer.tab_completion, Some(binding(&[], Key::Named(NamedKey::Tab))));
         assert_eq!(
             k.composer.shift_tab,
@@ -421,7 +426,7 @@ dirs = []
             "keymap-collision.toml",
             r#"
 [keymaps.composer]
-paste_image = { key = "tab" }
+paste = { key = "tab" }
 tab_completion = { key = "tab" }
 "#,
         );
@@ -567,8 +572,14 @@ submit = { modifiers = ["ctrl"], key = "enter" }
             Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Enter)))
         );
         // Other groups untouched.
-        assert_eq!(cfg.keymaps.approvals.allow, Some(binding(&[], Key::Char('a'))));
-        assert_eq!(cfg.keymaps.approvals.deny, Some(binding(&[], Key::Char('d'))));
+        assert_eq!(
+            cfg.keymaps.approvals.allow,
+            Some(binding(&[Modifier::Ctrl], Key::Char('g')))
+        );
+        assert_eq!(
+            cfg.keymaps.approvals.deny,
+            Some(binding(&[Modifier::Ctrl], Key::Char('r')))
+        );
         assert_eq!(
             cfg.keymaps.palette.open,
             Some(binding(&[Modifier::Ctrl], Key::Char('k')))
@@ -578,6 +589,30 @@ submit = { modifiers = ["ctrl"], key = "enter" }
             Some(binding(&[Modifier::Ctrl], Key::Char('m')))
         );
         cfg.validate().expect("partial override validates");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn root_system_prompt_parses_as_path_array() {
+        let p = write_tmp(
+            "root-prompt.toml",
+            r#"
+system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/global.md"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+
+        cfg.validate().expect("root system_prompt path validates");
+        assert_eq!(
+            cfg.system_prompt.as_deref().map(|paths| paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>()),
+            Some(vec![
+                "~/.config/hyprpilot/prompts/base.md".to_string(),
+                "~/.config/hyprpilot/prompts/global.md".to_string()
+            ])
+        );
         fs::remove_file(&p).ok();
     }
 }

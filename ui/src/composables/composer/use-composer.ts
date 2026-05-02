@@ -33,6 +33,14 @@ export interface ComposerState {
   addPill: (pill: ComposerPill) => void
   removePill: (id: string) => void
   clear: () => void
+  /**
+   * Replace the buffer wholesale — text + pill list — and focus the
+   * textarea on the next tick. Used by the queue-edit round-trip:
+   * the captain pulls a queued entry into the composer to revise
+   * it, the existing draft is replaced (no merge) so what gets
+   * resubmitted is the edited entry.
+   */
+  setDraft: (next: { text: string; pills: ComposerPill[] }) => void
   resolvedSubmit: () => ResolvedSubmit
   insertAtCaret: (snippet: string) => void
   registerTextarea: (el: HTMLTextAreaElement | undefined) => void
@@ -57,6 +65,17 @@ function removePill(id: string): void {
 function clear(): void {
   text.value = ''
   pills.value = []
+}
+
+function setDraft(next: { text: string; pills: ComposerPill[] }): void {
+  text.value = next.text
+  pills.value = [...next.pills]
+  void nextTick(() => {
+    textareaEl?.focus()
+    const len = text.value.length
+
+    textareaEl?.setSelectionRange(len, len)
+  })
 }
 
 function resolvedSubmit(): ResolvedSubmit {
@@ -107,6 +126,7 @@ export function useComposer(): ComposerState {
     addPill,
     removePill,
     clear,
+    setDraft,
     resolvedSubmit,
     insertAtCaret,
     registerTextarea,

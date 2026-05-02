@@ -222,19 +222,20 @@ impl<'a> DecisionContext<'a> {
     }
 }
 
-/// Parse `mcp__<server>__<tool>` → `<server>`. Returns `None` for
-/// vendor-native tool names (Bash, Read, …) that don't carry the MCP
-/// prefix. Used by the per-server permission lane to attribute an
-/// incoming tool call to its origin server without a separate
-/// attribution map.
+/// Parse `mcp__<server>__<leaf>` → `(<server>, <leaf>)`. Returns `None`
+/// for vendor-native tool names (Bash, Read, …) that don't carry the
+/// MCP prefix. The leaf is what per-server auto-accept / auto-reject
+/// globs match against — captains write `read_*` / `delete_*` inside
+/// the server block; repeating the `mcp__<server>__` prefix would be
+/// redundant.
 #[must_use]
-pub fn parse_mcp_server_from_tool_name(tool: &str) -> Option<&str> {
+pub fn parse_mcp_tool_name(tool: &str) -> Option<(&str, &str)> {
     let after_prefix = tool.strip_prefix("mcp__")?;
-    let (server, _rest) = after_prefix.split_once("__")?;
-    if server.is_empty() {
+    let (server, leaf) = after_prefix.split_once("__")?;
+    if server.is_empty() || leaf.is_empty() {
         return None;
     }
-    Some(server)
+    Some((server, leaf))
 }
 
 /// The decision + waiter surface + runtime trust store. `decide` is
@@ -262,11 +263,19 @@ pub trait PermissionController: Send + Sync + 'static {
     /// exist for the instance.
     async fn clear_for_instance(&self, instance_id: &str);
 
-    /// Test/diag: snapshot the trust store as a vector of
-    /// `(instance_id, tool, decision)` triples. Stable iteration order
-    /// is not guaranteed; callers that compare in tests should sort.
-    #[cfg(test)]
+    /// Snapshot the trust store as a vector of `(instance_id, tool,
+    /// decision)` triples. Stable iteration order is not guaranteed;
+    /// callers that compare in tests should sort. Used by the
+    /// `permissions_trust_snapshot` Tauri command so the captain can
+    /// review + edit the live auto-allow / auto-deny set from the
+    /// palette without restarting the daemon.
     async fn snapshot_trust_store(&self) -> Vec<(String, String, TrustDecision)>;
+
+    /// Drop a single trust-store entry. Used by the permissions
+    /// palette's multi-select toggle path so the captain can prune
+    /// stale "always allow" / "always deny" rules per-tool. No-op when
+    /// the `(instance_id, tool)` pair isn't present.
+    async fn forget_trust(&self, instance_id: &str, tool: &str);
 
     /// Register a pending prompt. Returns the receiver the caller
     /// awaits; wrap the receive in `tokio::time::timeout(WAITER_TIMEOUT,
@@ -395,29 +404,33 @@ impl PermissionController for DefaultPermissionController {
         }
 
         // Lane 2 — per-server hyprpilot extension globs. Attribute the
-        // tool to its server via the `mcp__<server>__<tool>` prefix
-        // convention, then match against that server's accept / reject
-        // globs. Reject beats accept. Vendor-native tools (no prefix)
-        // skip this lane entirely.
+        // tool to its server via the `mcp__<server>__<leaf>` prefix
+        // convention, then match the SERVER-RELATIVE leaf against that
+        // server's accept / reject globs. Captains write `read_*` /
+        // `delete_*` under the server block; the `mcp__<server>__`
+        // prefix is implicit. Reject beats accept. Vendor-native tools
+        // (no prefix) skip this lane entirely.
         if let Some(registry) = ctx.mcps {
-            if let Some(server_name) = parse_mcp_server_from_tool_name(tool) {
+            if let Some((server_name, leaf)) = parse_mcp_tool_name(tool) {
                 if let Some(def) = registry.get(server_name) {
                     let reject_set = compile_globs(&def.hyprpilot.auto_reject_tools);
-                    if reject_set.as_ref().is_some_and(|gs| gs.is_match(tool)) {
+                    if reject_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
                             server = %server_name,
+                            leaf,
                             "permission::decide: per-server reject glob hit"
                         );
                         return Decision::Deny;
                     }
                     let accept_set = compile_globs(&def.hyprpilot.auto_accept_tools);
-                    if accept_set.as_ref().is_some_and(|gs| gs.is_match(tool)) {
+                    if accept_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
                             server = %server_name,
+                            leaf,
                             "permission::decide: per-server accept glob hit"
                         );
                         return Decision::Allow;
@@ -470,13 +483,20 @@ impl PermissionController for DefaultPermissionController {
         }
     }
 
-    #[cfg(test)]
     async fn snapshot_trust_store(&self) -> Vec<(String, String, TrustDecision)> {
         let trust = self.trust.read().expect("trust store lock poisoned");
         trust
             .iter()
             .map(|((id, tool), d)| (id.clone(), tool.clone(), *d))
             .collect()
+    }
+
+    async fn forget_trust(&self, instance_id: &str, tool: &str) {
+        let mut trust = self.trust.write().expect("trust store lock poisoned");
+        let key = (instance_id.to_string(), tool.to_string());
+        if trust.remove(&key).is_some() {
+            tracing::debug!(instance_id, tool, "permission::forget_trust");
+        }
     }
 
     async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome> {
@@ -746,11 +766,9 @@ mod tests {
     #[test]
     fn decide_per_server_reject_beats_accept() {
         let controller = DefaultPermissionController::new();
-        let registry = registry_with(
-            "filesystem",
-            &["mcp__filesystem__delete_*"],
-            &["mcp__filesystem__delete_*"],
-        );
+        // Globs are server-relative — `delete_*` matches the leaf
+        // `delete_file` on the wire-side `mcp__filesystem__delete_file`.
+        let registry = registry_with("filesystem", &["delete_*"], &["delete_*"]);
         let d = controller.decide(
             &request("r1", "mcp__filesystem__delete_file"),
             &DecisionContext {
@@ -762,7 +780,27 @@ mod tests {
     }
 
     #[test]
-    fn decide_per_server_accept_glob_matches() {
+    fn decide_per_server_accept_glob_matches_leaf() {
+        // Captain writes `read_*` inside the server block; the
+        // `mcp__filesystem__` prefix is implicit because globs are
+        // server-relative.
+        let controller = DefaultPermissionController::new();
+        let registry = registry_with("filesystem", &["read_*"], &[]);
+        let d = controller.decide(
+            &request("r1", "mcp__filesystem__read_file"),
+            &DecisionContext {
+                instance_id: Some("instance-1"),
+                mcps: Some(&registry),
+            },
+        );
+        assert_eq!(d, Decision::Allow);
+    }
+
+    #[test]
+    fn decide_per_server_full_prefix_glob_does_not_match_leaf() {
+        // Defensive: a captain who repeats the `mcp__<server>__` prefix
+        // (copy-pasted from another tool) gets a no-match — the glob
+        // is matched against the leaf, not the full wire name.
         let controller = DefaultPermissionController::new();
         let registry = registry_with("filesystem", &["mcp__filesystem__read_*"], &[]);
         let d = controller.decide(
@@ -772,7 +810,7 @@ mod tests {
                 mcps: Some(&registry),
             },
         );
-        assert_eq!(d, Decision::Allow);
+        assert_eq!(d, Decision::AskUser);
     }
 
     #[test]
@@ -798,7 +836,7 @@ mod tests {
         // carry that server → falls through to AskUser. Defensive
         // against a server being removed from the catalog mid-session.
         let controller = DefaultPermissionController::new();
-        let registry = registry_with("filesystem", &["mcp__filesystem__*"], &[]);
+        let registry = registry_with("filesystem", &["*"], &[]);
         let d = controller.decide(
             &request("r1", "mcp__ghost__some_tool"),
             &DecisionContext {
@@ -810,23 +848,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_mcp_server_from_tool_name_strips_prefix() {
+    fn parse_mcp_tool_name_strips_prefix_and_returns_leaf() {
         assert_eq!(
-            parse_mcp_server_from_tool_name("mcp__filesystem__read_file"),
-            Some("filesystem")
+            parse_mcp_tool_name("mcp__filesystem__read_file"),
+            Some(("filesystem", "read_file"))
         );
         assert_eq!(
-            parse_mcp_server_from_tool_name("mcp__github__create_pr"),
-            Some("github")
+            parse_mcp_tool_name("mcp__github__create_pr"),
+            Some(("github", "create_pr"))
         );
     }
 
     #[test]
-    fn parse_mcp_server_from_tool_name_rejects_non_mcp() {
-        assert!(parse_mcp_server_from_tool_name("Bash").is_none());
-        assert!(parse_mcp_server_from_tool_name("Read").is_none());
-        assert!(parse_mcp_server_from_tool_name("mcp__no_separator").is_none());
-        assert!(parse_mcp_server_from_tool_name("mcp____empty_server").is_none());
+    fn parse_mcp_tool_name_rejects_non_mcp_or_empty_components() {
+        assert!(parse_mcp_tool_name("Bash").is_none());
+        assert!(parse_mcp_tool_name("Read").is_none());
+        assert!(parse_mcp_tool_name("mcp__no_separator").is_none());
+        assert!(parse_mcp_tool_name("mcp____empty_server").is_none());
+        assert!(parse_mcp_tool_name("mcp__server__").is_none(), "empty leaf rejected");
     }
 
     #[tokio::test]

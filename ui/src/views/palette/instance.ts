@@ -17,17 +17,7 @@
 
 import { buildProfilesPaletteSpec } from './profiles'
 import { ToastTone } from '@components'
-import {
-  type PaletteEntry,
-  PaletteMode,
-  type PaletteSpec,
-  useActiveInstance,
-  type InstanceId,
-  usePalette,
-  useProfiles,
-  useRenameInstanceModal,
-  useToasts
-} from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, useActiveInstance, type InstanceId, usePalette, useProfiles, useRenameInstanceModal, useToasts } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -52,12 +42,7 @@ function startNewInstance(profileId: string | undefined, label: string | undefin
   useToasts().push(ToastTone.Ok, label ? `new instance · ${label}` : 'new instance staged')
 }
 
-function buildInstanceLeafSpec(args: {
-  focused?: InstanceId
-  currentName?: string
-  onPickNew: () => void
-  onPickRename: () => void
-}): PaletteSpec {
+function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: string; onPickNew: () => void; onPickRename: () => void }): PaletteSpec {
   const entries: PaletteEntry[] = [
     {
       id: ACTION_NEW,
@@ -107,9 +92,7 @@ function openNewInstanceProfilePicker(): void {
   const { id: activeInstanceId } = useActiveInstance()
 
   if (profiles.value.length === 0) {
-    const message = loading.value
-      ? 'profiles: still loading, try again'
-      : 'profiles: none configured — add [[profiles]] to your config'
+    const message = loading.value ? 'profiles: still loading, try again' : 'profiles: none configured — add [[profiles]] to your config'
 
     useToasts().push(ToastTone.Warn, message)
 
@@ -120,6 +103,10 @@ function openNewInstanceProfilePicker(): void {
     list: profiles.value,
     selected: selected.value,
     activeInstanceId: activeInstanceId.value,
+    // Picking the currently-active profile is the common path for
+    // "stage another instance under the same profile" — fire onSelect
+    // unconditionally instead of the profiles-leaf default skip.
+    fireOnActive: true,
     onSelect(profileId) {
       const profile = profiles.value.find((p) => p.id === profileId)
 

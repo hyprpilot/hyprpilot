@@ -82,6 +82,10 @@ export interface SessionInfoState {
   model?: string
   availableModes: SessionModeOption[]
   availableModels: SessionModelOption[]
+  /// MCP servers wired to this instance. Pushed by the daemon on
+  /// every `acp:instance-meta` event. `undefined` until the first
+  /// InstanceMeta lands; `useSessionInfo` falls back to 0 then.
+  mcpsCount?: number
   restored: boolean
   restoring: boolean
   gitStatus?: GitStatus
@@ -233,6 +237,17 @@ export function setInstanceCwd(id: InstanceId, cwd: string): void {
   slotFor(id).cwd = cwd
 }
 
+/**
+ * Set the per-instance MCP server count. Daemon-side resolution
+ * (root `mcps` overridden by profile `mcps`) computes the count
+ * once at spawn and rides on every `acp:instance-meta` event. The
+ * captain reads this through the header `+N mcps` pill — anything
+ * else (palette mcps leaf, diag snapshot) reads its own source.
+ */
+export function setInstanceMcpsCount(id: InstanceId, count: number): void {
+  slotFor(id).mcpsCount = count
+}
+
 /** Set the per-instance agent id. Mirrors `InstanceInfo.agent_id`. */
 export function setInstanceAgent(id: InstanceId, agent: string): void {
   slotFor(id).agent = agent
@@ -361,7 +376,7 @@ export function useSessionInfo(instanceId?: InstanceId): {
       model: slot?.model ?? activeProfile?.model,
       availableModes: slot?.availableModes ?? [],
       availableModels: slot?.availableModels ?? [],
-      mcpsCount: 0,
+      mcpsCount: slot?.mcpsCount ?? 0,
       restored: slot?.restored ?? false,
       restoring: slot?.restoring ?? false,
       gitStatus: slot?.gitStatus

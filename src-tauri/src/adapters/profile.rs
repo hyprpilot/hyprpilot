@@ -75,7 +75,7 @@ impl ResolvedInstance {
             })?;
 
         let model = profile.model.clone().or_else(|| agent.model.clone());
-        let system_prompt = Self::load_system_prompt(profile, config.system_prompt.as_deref())?;
+        let system_prompt = Self::load_system_prompt(profile, config)?;
 
         Ok(Self {
             agent: agent.clone(),
@@ -102,31 +102,53 @@ impl ResolvedInstance {
             agent: agent.clone(),
             profile_id: None,
             model: agent.model.clone(),
-            system_prompt: config.system_prompt.clone(),
+            system_prompt: load_root_system_prompt(config)?,
             mode: None,
         })
     }
 
-    /// Resolve the system prompt for a profile. Precedence:
-    ///   1. `[[profiles]] system_prompt` (inline string)
-    ///   2. `[[profiles]] system_prompt_file` (file path read at resolve time)
-    ///   3. root `system_prompt` (global fallback, mirrors `mcps`)
-    fn load_system_prompt(profile: &ProfileConfig, root_fallback: Option<&str>) -> Result<Option<String>> {
-        if let Some(text) = &profile.system_prompt {
-            return Ok(Some(text.clone()));
+    /// Resolve the system prompt for a profile. Profile-level
+    /// `system_prompt` (array of paths) wholesale-replaces the root
+    /// `system_prompt`; both `None` means no prompt. Files are read
+    /// in array order and concatenated with a blank-line separator
+    /// — captains compose layered prompts (base persona +
+    /// project-specific addendum) without an external preprocessor.
+    /// `Some([])` is the explicit off-switch and resolves to None.
+    fn load_system_prompt(profile: &ProfileConfig, config: &Config) -> Result<Option<String>> {
+        if let Some(paths) = &profile.system_prompt {
+            return read_prompt_files(paths, &format!("profile '{}'", profile.id));
         }
-        if let Some(path) = &profile.system_prompt_file {
-            let expanded = shellexpand::tilde(&path.to_string_lossy()).into_owned();
-            let contents = std::fs::read_to_string(&expanded).with_context(|| {
-                format!(
-                    "profile '{}': failed to read system_prompt_file {}",
-                    profile.id, expanded
-                )
-            })?;
-            return Ok(Some(contents));
-        }
-        Ok(root_fallback.map(str::to_owned))
+        load_root_system_prompt(config)
     }
+}
+
+fn load_root_system_prompt(config: &Config) -> Result<Option<String>> {
+    match &config.system_prompt {
+        Some(paths) => read_prompt_files(paths, "root"),
+        None => Ok(None),
+    }
+}
+
+/// Concatenate every readable file in `paths` with a blank-line
+/// separator. Empty list returns `None` (the explicit off-switch
+/// shape). Each path is `~`/env-expanded; missing files surface as
+/// readable errors stamped with `ctx_label`.
+fn read_prompt_files(paths: &[std::path::PathBuf], ctx_label: &str) -> Result<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut out = String::new();
+
+    for path in paths {
+        let expanded = shellexpand::tilde(&path.to_string_lossy()).into_owned();
+        let body = std::fs::read_to_string(&expanded)
+            .with_context(|| format!("{ctx_label}: failed to read system_prompt {expanded}"))?;
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&body);
+    }
+    Ok(Some(out))
 }
 
 #[cfg(test)]
@@ -149,19 +171,26 @@ mod tests {
         }
     }
 
-    fn profile(id: &str, agent: &str, model: Option<&str>, prompt: Option<&str>) -> ProfileConfig {
+    fn profile(id: &str, agent: &str, model: Option<&str>, prompt_files: Option<Vec<PathBuf>>) -> ProfileConfig {
         ProfileConfig {
             id: id.into(),
             agent: agent.into(),
             model: model.map(|s| s.to_string()),
-            system_prompt: prompt.map(|s| s.to_string()),
-            system_prompt_file: None,
+            system_prompt: prompt_files,
             mcps: None,
             skills: None,
             mode: None,
             cwd: None,
             env: Default::default(),
         }
+    }
+
+    fn write_prompt(dir: &tempfile::TempDir, name: &str, body: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+
+        write!(f, "{body}").unwrap();
+        path
     }
 
     #[test]
@@ -194,21 +223,16 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_file_read_at_resolve_time() {
+    fn profile_system_prompt_read_at_resolve_time() {
         let dir = tempfile::tempdir().unwrap();
-        let prompt_path = dir.path().join("plan.md");
-        let mut f = std::fs::File::create(&prompt_path).unwrap();
-        write!(f, "You are a planner.").unwrap();
-
-        let mut p = profile("plan", "cc", None, None);
-        p.system_prompt_file = Some(prompt_path.clone());
+        let prompt_path = write_prompt(&dir, "plan.md", "You are a planner.");
 
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
             },
-            profiles: vec![p],
+            profiles: vec![profile("plan", "cc", None, Some(vec![prompt_path]))],
             ..Default::default()
         };
 
@@ -217,9 +241,53 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_file_missing_errors() {
-        let mut p = profile("plan", "cc", None, None);
-        p.system_prompt_file = Some(PathBuf::from("/nonexistent/hyprpilot-test-never.md"));
+    fn profile_system_prompt_concatenates_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = write_prompt(&dir, "base.md", "You are an agent.");
+        let project = write_prompt(&dir, "project.md", "Working on hyprpilot.");
+
+        let cfg = Config {
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![profile("layered", "cc", None, Some(vec![base, project]))],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("layered")).unwrap();
+        assert_eq!(
+            r.system_prompt.as_deref(),
+            Some("You are an agent.\n\nWorking on hyprpilot.")
+        );
+    }
+
+    #[test]
+    fn profile_system_prompt_empty_array_is_explicit_off_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = write_prompt(&dir, "root.md", "should not apply");
+
+        let cfg = Config {
+            system_prompt: Some(vec![root_path]),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            // Empty Vec wholesale-replaces root with "no prompt".
+            profiles: vec![profile("silent", "cc", None, Some(vec![]))],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("silent")).unwrap();
+        assert!(r.system_prompt.is_none());
+    }
+
+    #[test]
+    fn profile_system_prompt_missing_file_errors() {
+        let p = profile(
+            "plan",
+            "cc",
+            None,
+            Some(vec![PathBuf::from("/nonexistent/hyprpilot-test-never.md")]),
+        );
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
@@ -231,7 +299,7 @@ mod tests {
         let err = ResolvedInstance::from_config(&cfg, Some("plan")).expect_err("missing file fails");
         let msg = format!("{err:#}");
         assert!(msg.contains("plan"), "{msg}");
-        assert!(msg.contains("system_prompt_file"), "{msg}");
+        assert!(msg.contains("system_prompt"), "{msg}");
     }
 
     #[test]
@@ -276,13 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn root_system_prompt_falls_back_when_profile_has_neither() {
-        // Profile has no inline `system_prompt` and no
-        // `system_prompt_file` — falls back to the root
-        // `system_prompt` declared at TOML root, mirroring how
-        // `mcps` works.
+    fn root_system_prompt_falls_back_when_profile_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = write_prompt(&dir, "root.md", "global fallback prompt");
+
         let cfg = Config {
-            system_prompt: Some("global fallback prompt".into()),
+            system_prompt: Some(vec![root_path]),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
@@ -295,16 +362,38 @@ mod tests {
     }
 
     #[test]
-    fn profile_system_prompt_wins_over_root_fallback() {
-        // Per-profile inline value beats the root fallback. Same
-        // precedence as `mcps`.
+    fn root_system_prompt_concatenates_multiple_files_with_blank_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_prompt(&dir, "a.md", "first");
+        let b = write_prompt(&dir, "b.md", "second");
+        let c = write_prompt(&dir, "c.md", "third");
+
         let cfg = Config {
-            system_prompt: Some("global fallback".into()),
+            system_prompt: Some(vec![a, b, c]),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
             },
-            profiles: vec![profile("ask", "cc", None, Some("profile-specific"))],
+            profiles: vec![profile("ask", "cc", None, None)],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        assert_eq!(r.system_prompt.as_deref(), Some("first\n\nsecond\n\nthird"));
+    }
+
+    #[test]
+    fn profile_system_prompt_wins_over_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = write_prompt(&dir, "root.md", "global fallback");
+        let profile_path = write_prompt(&dir, "profile.md", "profile-specific");
+
+        let cfg = Config {
+            system_prompt: Some(vec![root_path]),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![profile("ask", "cc", None, Some(vec![profile_path]))],
             ..Default::default()
         };
         let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
@@ -315,8 +404,11 @@ mod tests {
     fn root_system_prompt_carries_through_bare_resolution() {
         // No profile → bare-agent path. Root system_prompt still
         // applies so unprofiled submits get the global default.
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = write_prompt(&dir, "bare.md", "bare-path fallback");
+
         let cfg = Config {
-            system_prompt: Some("bare-path fallback".into()),
+            system_prompt: Some(vec![root_path]),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 agent: crate::config::AgentDefaults {
@@ -328,5 +420,22 @@ mod tests {
         let r = ResolvedInstance::from_config(&cfg, None).unwrap();
         assert!(r.profile_id.is_none());
         assert_eq!(r.system_prompt.as_deref(), Some("bare-path fallback"));
+    }
+
+    #[test]
+    fn root_system_prompt_missing_file_errors_with_root_context() {
+        let cfg = Config {
+            system_prompt: Some(vec![PathBuf::from("/nonexistent/hyprpilot-root-prompt.md")]),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![profile("ask", "cc", None, None)],
+            ..Default::default()
+        };
+        let err = ResolvedInstance::from_config(&cfg, Some("ask")).expect_err("missing root file fails");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("root"), "{msg}");
+        assert!(msg.contains("system_prompt"), "{msg}");
     }
 }

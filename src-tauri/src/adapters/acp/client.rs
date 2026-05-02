@@ -109,7 +109,7 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 /// - `kind = Other` is the catch-all — for MCP tools the agent never
 ///   classifies them, so the wire string is "other" and the actual
 ///   identity is in `title` (`mcp__filesystem__read_file`). Prefer
-///   the title in that case so `parse_mcp_server_from_tool_name`
+///   the title in that case so `parse_mcp_tool_name`
 ///   downstream can attribute the call to its server, and the UI
 ///   gets a meaningful name to render.
 /// - For every other kind we keep the wire string as `name` (Bash,
@@ -690,7 +690,7 @@ mod tests {
             name: "filesystem".into(),
             raw: json!({ "command": "echo" }),
             hyprpilot: HyprpilotExtension {
-                auto_accept_tools: vec!["mcp__filesystem__read_*".into()],
+                auto_accept_tools: vec!["read_*".into()],
                 auto_reject_tools: vec![],
             },
             source: PathBuf::from("test.json"),

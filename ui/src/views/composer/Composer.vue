@@ -8,7 +8,7 @@
  * — image pills go in the `attachments` slot, skill attachments
  * travel separately via `useAttachments().pending`.
  *
- * Ctrl+P (`composer.paste_image` binding) reads a clipboard image via
+ * Ctrl+P (`composer.paste` binding) reads a clipboard image via
  * `tauri-plugin-clipboard-manager`'s `readImage()` (RGBA pixels +
  * dimensions) → encodes as PNG via canvas → base64 dataURL.
  *
@@ -22,9 +22,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
-import { ComposerPillKind, type ComposerPill } from '@components'
-import { type KeymapEntry, useAttachments, useCompletion, useComposer, useKeymap, useKeymaps } from '@composables'
-import { Modifier } from '@ipc'
+import { ToastTone, ComposerPillKind, type ComposerPill } from '@components'
+import { type KeymapEntry, pushToast, useAttachments, useCompletion, useComposer, useKeymap, useKeymaps } from '@composables'
+import { invoke, Modifier, TauriCommand } from '@ipc'
 import { getCaretCoordinates, log } from '@lib'
 
 const props = withDefaults(
@@ -126,7 +126,7 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
   return [
     { binding: keymaps.value.chat.submit, handler: onEnter },
     { binding: keymaps.value.chat.newline, handler: () => false },
-    { binding: keymaps.value.composer.paste_image, handler: onPasteImage },
+    { binding: keymaps.value.composer.paste, handler: onPasteImage },
     { binding: keymaps.value.composer.tab_completion, handler: onTab },
     { binding: keymaps.value.composer.shift_tab, handler: onTab },
     {
@@ -277,6 +277,64 @@ function applyCompletion(): void {
   }
   const before = el.value.slice(0, item.replacement.range.start)
   const after = el.value.slice(item.replacement.range.end)
+
+  // `@./foo.ts` shape: path completion preceded by `@` (no space) →
+  // attach the file content as a wire-side `Attachment` instead of
+  // pasting the path text. Captain types `@./` to browse the cwd as
+  // a file picker; commit a leaf and the body lands as part of the
+  // next turn. Directory commits fall through to the regular insert
+  // path (paste it so the captain can pick deeper).
+  const trigger = before.endsWith('@') ? '@' : ''
+  const isFileLeaf = item.kind === 'path' && item.detail === 'file'
+
+  if (trigger && isFileLeaf) {
+    const path = item.replacement.text
+
+    // Drop the `@` along with the path token so the textarea reads
+    // clean — the attachment pill replaces it visually.
+    const cleaned = before.slice(0, before.length - 1) + after
+
+    text.value = cleaned
+    void nextTick(() => {
+      if (textareaRef.value) {
+        const pos = cleaned.length === 0 ? 0 : before.length - 1
+
+        textareaRef.value.setSelectionRange(pos, pos)
+        textareaRef.value.focus()
+      }
+    })
+    void invoke(TauriCommand.ReadFileForAttachment, { path })
+      .then((res) => {
+        const filename = (path.split('/').pop() || path).slice(0, 48)
+        const slug = `file:${path}`
+        const truncatedNote = res.truncated ? ' (truncated)' : ''
+
+        composer.addPill({
+          kind: ComposerPillKind.Resource,
+          id: slug,
+          label: `${filename}${truncatedNote}`,
+          data: slug,
+          mimeType: 'file'
+        })
+        // Also push to the skill-attachment queue so the wire layer
+        // ships the body alongside the user turn (same path skills
+        // use). `useAttachments` is instance-scoped; the composer
+        // submit consumes from there.
+        attachments.add({
+          slug,
+          path: res.path,
+          body: res.body,
+          title: filename
+        })
+      })
+      .catch((err) => {
+        log.warn('composer: attachment read failed', { path, err: String(err) })
+        pushToast(ToastTone.Err, `attach ${path}: ${String(err)}`)
+      })
+
+    return
+  }
+
   const inserted = item.replacement.text
 
   text.value = before + inserted + after
@@ -308,6 +366,10 @@ defineExpose({
   },
   addPill(pill: ComposerPill): void {
     composer.addPill(pill)
+  },
+  setDraft(next: { text: string; pills: ComposerPill[] }): void {
+    composer.setDraft(next)
+    nextTick(resize)
   }
 })
 

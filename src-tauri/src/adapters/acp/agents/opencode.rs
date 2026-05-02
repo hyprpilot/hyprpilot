@@ -23,7 +23,7 @@ impl AcpAgent for AcpAgentOpenCode {
     }
 
     fn model_injection(&self) -> ModelInjection {
-        ModelInjection::Argv("--model")
+        ModelInjection::Env("OPENCODE_MODEL")
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -68,35 +68,41 @@ mod tests {
         }
     }
 
+    fn env_value(cmd: &tokio::process::Command, key: &str) -> Option<String> {
+        cmd.as_std()
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+            .and_then(|(_, v)| v.map(|vv| vv.to_string_lossy().into_owned()))
+    }
+
     #[test]
-    fn model_appends_model_flag() {
+    fn model_sets_opencode_model_env() {
         let entry = entry_with_model(Some("claude-sonnet-4-5"));
         let cmd = AcpAgentOpenCode.spawn(&entry);
+
+        assert_eq!(env_value(&cmd, "OPENCODE_MODEL").as_deref(), Some("claude-sonnet-4-5"));
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-5"),
-            "expected --model claude-sonnet-4-5 in {args:?}"
-        );
+
+        assert!(!args.contains(&"--model"), "model goes through env, not argv: {args:?}");
     }
 
     #[test]
-    fn user_model_flag_wins_over_config() {
+    fn user_env_wins_over_config_model() {
         let mut entry = entry_with_model(Some("claude-sonnet-4-5"));
-        entry.args = vec!["acp".into(), "--model".into(), "claude-opus-4-5".into()];
+
+        entry.env.insert("OPENCODE_MODEL".into(), "claude-opus-4-5".into());
         let cmd = AcpAgentOpenCode.spawn(&entry);
-        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        let model_positions: Vec<_> = args.windows(2).filter(|w| w[0] == "--model").collect();
-        assert_eq!(model_positions.len(), 1, "expected exactly one --model in {args:?}");
-        assert_eq!(model_positions[0][1], "claude-opus-4-5");
+        // User's explicit env entry beats the config-driven model
+        // injection (the trait default's "user value wins" rule).
+        assert_eq!(env_value(&cmd, "OPENCODE_MODEL").as_deref(), Some("claude-opus-4-5"));
     }
 
     #[test]
-    fn no_model_means_no_model_flag() {
+    fn no_model_means_no_opencode_model_env() {
         let entry = entry_with_model(None);
         let cmd = AcpAgentOpenCode.spawn(&entry);
-        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.contains(&"--model"), "unexpected --model in {args:?}");
+
+        assert!(env_value(&cmd, "OPENCODE_MODEL").is_none());
     }
 
     #[test]

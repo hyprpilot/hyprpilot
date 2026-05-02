@@ -58,6 +58,14 @@ export interface ProfilesPaletteSpecArgs {
   selected?: string
   activeInstanceId?: string
   onSelect: (id: string) => void
+  /**
+   * When true, picking the currently-active profile still fires
+   * `onSelect`. The default (`false`) skips re-selection in the
+   * profiles leaf, where committing the active row is a no-op.
+   * `instance > new` flips this on so picking the active profile
+   * stages a fresh instance under it.
+   */
+  fireOnActive?: boolean
 }
 
 /**
@@ -83,7 +91,7 @@ export function buildProfilesPaletteSpec(args: ProfilesPaletteSpecArgs): Palette
         return
       }
 
-      if (pick.id === activeId) {
+      if (!args.fireOnActive && pick.id === activeId) {
         return
       }
       args.onSelect(pick.id)

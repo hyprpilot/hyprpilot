@@ -17,7 +17,7 @@
 
 import SessionsPreview from './SessionsPreview.vue'
 import { ToastTone } from '@components'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useProfiles } from '@composables'
 import { setSessionRestored, setSessionRestoring, pushToast } from '@composables'
 import { invoke, TauriCommand, type SessionSummary } from '@ipc'
 import { log } from '@lib'
@@ -147,8 +147,22 @@ export async function openSessionsLeaf(): Promise<void> {
   // round-trips. Avoids the "click → wait → palette" stall.
   palette.open(buildSpec('sessions', [], true))
 
+  // Address the active profile so the session list mirrors what the
+  // header pills + idle preview show. Without these args the daemon
+  // dispatches a list-only ACP actor against the configured default
+  // — captain switches profile, palette still shows old profile's
+  // sessions until they hit Ctrl+K twice.
+  const { profiles, selected } = useProfiles()
+  const profile = profiles.value.find((p) => p.id === selected.value)
+  const args: { agentId?: string; profileId?: string } = {}
+
+  if (profile) {
+    args.agentId = profile.agent
+    args.profileId = profile.id
+  }
+
   try {
-    const sessions = (await invoke(TauriCommand.SessionList, {})).sessions
+    const sessions = (await invoke(TauriCommand.SessionList, args)).sessions
     const entries = buildSessionEntries(sessions)
     const title = entries.length === 0 ? 'sessions — empty' : 'sessions'
 

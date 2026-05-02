@@ -245,6 +245,13 @@ pub enum InstanceEvent {
         available_modes: Vec<SessionModeInfo>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_models: Vec<SessionModelInfo>,
+        /// Number of MCP servers wired to this instance — drives the
+        /// header `+N mcps` pill. Computed from
+        /// `effective_mcp_files_for(profile)` at spawn time and
+        /// included in every InstanceMeta refresh so the UI never has
+        /// to derive it independently.
+        #[serde(default)]
+        mcps_count: usize,
     },
 }
 

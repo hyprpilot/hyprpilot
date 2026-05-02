@@ -34,8 +34,13 @@ impl AcpAgent for AcpAgentClaudeCode {
             terminals: true,
             mcps_per_instance: true,
             restart_with_cwd: true,
-            // K-251 follow-ups — flip true when the override lands.
-            session_model_switch: false,
+            // claude-code-acp ships the unstable `session_model` feature
+            // so `available_models` rides on `NewSessionResponse` and
+            // `session/set_model` flips the active model live. Both
+            // spawn-time (config-driven) + runtime (palette) flow
+            // through the same request.
+            session_model_switch: true,
+            // K-251 follow-up — flip true when the mode override lands.
             session_mode_switch: false,
         }
     }

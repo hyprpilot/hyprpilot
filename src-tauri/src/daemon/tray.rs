@@ -1,13 +1,14 @@
 //! System tray icon — the captain's "is the daemon alive?" indicator
-//! plus a minimal quick-action menu (show / hide overlay, shutdown).
+//! plus a minimal quick-action menu (toggle overlay, shutdown).
 //!
 //! Built on Tauri 2's core tray support (`tauri::tray::TrayIconBuilder`,
 //! `tauri::menu::Menu`). No separate plugin needed.
 //!
 //! Click on the tray icon → toggle overlay visibility (same path as
-//! `overlay/toggle`). Right-click → menu with explicit
-//! show / hide / shutdown items so the captain has a discoverable
-//! escape hatch even without remembering the keybind.
+//! `overlay/toggle`). Right-click → menu with toggle + shutdown.
+//! Explicit `Show overlay` / `Hide overlay` entries were dropped —
+//! `Toggle overlay` covers both directions and the captain's mental
+//! model is "click tray = flip visibility", not "two separate actions".
 
 use anyhow::{Context, Result};
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -26,19 +27,11 @@ pub fn install(app: &App) -> Result<()> {
 
     let toggle_item = MenuItem::with_id(handle, "tray:toggle", "Toggle overlay", true, None::<&str>)
         .context("tray: build toggle item")?;
-    let show_item =
-        MenuItem::with_id(handle, "tray:show", "Show overlay", true, None::<&str>).context("tray: build show item")?;
-    let hide_item =
-        MenuItem::with_id(handle, "tray:hide", "Hide overlay", true, None::<&str>).context("tray: build hide item")?;
     let separator = PredefinedMenuItem::separator(handle).context("tray: build separator")?;
     let shutdown_item = MenuItem::with_id(handle, "tray:shutdown", "Shut down", true, None::<&str>)
         .context("tray: build shutdown item")?;
 
-    let menu = Menu::with_items(
-        handle,
-        &[&toggle_item, &show_item, &hide_item, &separator, &shutdown_item],
-    )
-    .context("tray: build menu")?;
+    let menu = Menu::with_items(handle, &[&toggle_item, &separator, &shutdown_item]).context("tray: build menu")?;
 
     TrayIconBuilder::with_id("hyprpilot-tray")
         .tooltip("hyprpilot — running")
@@ -74,8 +67,6 @@ fn handle_tray_event(app: &AppHandle, event: TrayIconEvent) {
 fn handle_menu_event(app: &AppHandle, event: &MenuEvent) {
     match event.id.as_ref() {
         "tray:toggle" => spawn_toggle(app.clone()),
-        "tray:show" => spawn_present(app.clone()),
-        "tray:hide" => spawn_hide(app.clone()),
         "tray:shutdown" => spawn_shutdown(app.clone()),
         other => warn!(menu_id = other, "tray: unknown menu event"),
     }
@@ -85,22 +76,6 @@ fn spawn_toggle(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(err) = toggle(&app).await {
             warn!(%err, "tray: toggle failed");
-        }
-    });
-}
-
-fn spawn_present(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(err) = present(&app).await {
-            warn!(%err, "tray: present failed");
-        }
-    });
-}
-
-fn spawn_hide(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(err) = hide(&app).await {
-            warn!(%err, "tray: hide failed");
         }
     });
 }
@@ -150,19 +125,6 @@ pub(super) async fn present(app: &AppHandle) -> Result<()> {
         }
     }
     let _ = window.set_focus();
-    Ok(())
-}
-
-async fn hide(app: &AppHandle) -> Result<()> {
-    let renderer = renderer(app)?;
-    let window = app.get_webview_window("main").context("main window missing")?;
-    let _guard = renderer.lock_present().await;
-    if window.is_visible().context("is_visible failed")? {
-        renderer.hide_on_main(app, &window).await.context("hide failed")?;
-        if let Some(status) = app.try_state::<std::sync::Arc<crate::rpc::StatusBroadcast>>() {
-            status.set_visible(false);
-        }
-    }
     Ok(())
 }
 

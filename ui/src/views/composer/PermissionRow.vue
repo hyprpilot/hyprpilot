@@ -6,13 +6,10 @@ import type { PermissionView } from '@components'
 
 /**
  * Single permission row. Renders the unified `ToolCallView` chrome
- * (icon + composed title + structured fields) plus the four action
- * buttons (allow once / allow always / deny once / deny always).
- *
- * Uniform with `PermissionStack`'s old layout but consumes the
- * formatted view directly — no MCP parsing, no field projection,
- * no `kind`/`tool` decomposition. Each formatter has already done
- * the work.
+ * (icon + composed title + structured fields) plus three action
+ * buttons (allow once / allow always / deny). Deny is single-shot —
+ * captain never asked for "deny always", and the trust store is
+ * additive only (allow-list rather than deny-list).
  */
 const props = defineProps<{
   view: PermissionView
@@ -48,18 +45,8 @@ void props
         >
           <FaIcon :icon="faCheckDouble" class="permission-row-btn-icon" aria-hidden="true" />
         </button>
-        <button type="button" class="permission-row-btn" data-tone="err" aria-label="deny once" title="deny once" @click="emit('reply', 'deny', false)">
+        <button type="button" class="permission-row-btn" data-tone="err" aria-label="deny" title="deny" @click="emit('reply', 'deny', false)">
           <FaIcon :icon="faXmark" class="permission-row-btn-icon" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="permission-row-btn"
-          data-tone="err"
-          aria-label="deny always"
-          title="deny always — remember this tool for the rest of the session"
-          @click="emit('reply', 'deny', true)"
-        >
-          <FaIcon :icon="faXmark" class="permission-row-btn-icon permission-row-btn-icon-double" aria-hidden="true" />
         </button>
       </div>
     </header>
@@ -140,11 +127,6 @@ void props
 .permission-row-btn-icon {
   width: 11px;
   height: 11px;
-}
-
-.permission-row-btn-icon-double {
-  width: 13px;
-  height: 13px;
 }
 
 .permission-row-btn:hover {
