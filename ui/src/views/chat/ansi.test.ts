@@ -20,6 +20,7 @@ describe('stripAnsi', () => {
     // We deliberately do not handle every escape; non-color, non-clear-line
     // sequences pass through so the user can spot them and we don't lose data.
     const cursor = '\x1b[3;10H'
+
     expect(stripAnsi(`hi${cursor}there`)).toBe(`hi${cursor}there`)
   })
 

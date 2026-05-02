@@ -28,13 +28,25 @@ const phaseIcon = computed<PhaseIcon>(() => {
   switch (props.session.phase) {
     case Phase.Streaming:
     case Phase.Working:
-      return { pack: 'fas', name: 'circle', spin: false }
+      return {
+        pack: 'fas',
+        name: 'circle',
+        spin: false
+      }
     case Phase.Awaiting:
-      return { pack: 'fas', name: 'circle-half-stroke', spin: false }
+      return {
+        pack: 'fas',
+        name: 'circle-half-stroke',
+        spin: false
+      }
     case Phase.Pending:
     case Phase.Idle:
     default:
-      return { pack: 'far', name: 'circle', spin: false }
+      return {
+        pack: 'far',
+        name: 'circle',
+        spin: false
+      }
   }
 })
 </script>

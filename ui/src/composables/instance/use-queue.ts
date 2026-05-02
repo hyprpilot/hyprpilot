@@ -16,16 +16,14 @@
 
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import { ToastTone, type ComposerPill } from '@components'
-
-import { type Attachment } from '@ipc'
-import { log } from '@lib'
-
 import { nextSeq } from './sequence'
+import { onTurnEnded, type TurnEndedRaw } from './use-turns'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useAdapter } from '../chrome/use-adapter'
 import { pushToast } from '../ui-state/use-toasts'
-import { onTurnEnded, type TurnEndedRaw } from './use-turns'
+import { ToastTone, type ComposerPill } from '@components'
+import { type Attachment } from '@ipc'
+import { log } from '@lib'
 
 export interface QueuedItem {
   id: string
@@ -45,6 +43,7 @@ const states = reactive(new Map<InstanceId, QueueState>())
 
 function slotFor(id: InstanceId): QueueState {
   let slot = states.get(id)
+
   if (!slot) {
     slot = { items: [] }
     states.set(id, slot)
@@ -64,6 +63,7 @@ export function pushToQueue(id: InstanceId, item: QueuedItemInput): QueuedItem {
     skillAttachments: item.skillAttachments,
     enqueuedAt: seq
   }
+
   slot.items.push(queued)
 
   return queued
@@ -72,6 +72,7 @@ export function pushToQueue(id: InstanceId, item: QueuedItemInput): QueuedItem {
 /** Pop the head; returns the popped entry or `undefined` when empty. */
 export function popQueueHead(id: InstanceId): QueuedItem | undefined {
   const slot = states.get(id)
+
   if (!slot || slot.items.length === 0) {
     return undefined
   }
@@ -82,6 +83,7 @@ export function popQueueHead(id: InstanceId): QueuedItem | undefined {
 /** Remove a specific entry by id; no-op when not present. */
 export function removeFromQueue(id: InstanceId, itemId: string): void {
   const slot = states.get(id)
+
   if (!slot) {
     return
   }
@@ -91,6 +93,7 @@ export function removeFromQueue(id: InstanceId, itemId: string): void {
 /** Cancel-flush: drop every queued item for this instance. */
 export function flushQueue(id: InstanceId): void {
   const slot = states.get(id)
+
   if (!slot) {
     return
   }
@@ -116,6 +119,7 @@ export function useQueue(instanceId?: InstanceId): {
 
   const items = computed<QueuedItem[]>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return []
     }
@@ -125,6 +129,7 @@ export function useQueue(instanceId?: InstanceId): {
 
   function enqueue(item: QueuedItemInput): QueuedItem | undefined {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return undefined
     }
@@ -134,13 +139,18 @@ export function useQueue(instanceId?: InstanceId): {
 
   function flush(): void {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return
     }
     flushQueue(resolved)
   }
 
-  return { items, enqueue, flush }
+  return {
+    items,
+    enqueue,
+    flush
+  }
 }
 
 /**
@@ -154,7 +164,9 @@ function onTurnEndedRoute(id: InstanceId, raw: TurnEndedRaw): void {
   if (raw.stopReason === FLUSH_STOP_REASON) {
     const slot = states.get(id)
     const dropped = slot?.items.length ?? 0
+
     flushQueue(id)
+
     if (dropped > 0) {
       log.info('queue flushed on cancel', { instanceId: id, dropped })
       pushToast(ToastTone.Warn, 'queue cleared')
@@ -162,15 +174,22 @@ function onTurnEndedRoute(id: InstanceId, raw: TurnEndedRaw): void {
 
     return
   }
+
   if (raw.stopReason !== DISPATCH_STOP_REASON) {
     return
   }
   const head = popQueueHead(id)
+
   if (!head) {
     return
   }
   const { submit } = useAdapter()
-  log.info('queue dispatch', { instanceId: id, queuedItemId: head.id, textLen: head.text.length })
+
+  log.info('queue dispatch', {
+    instanceId: id,
+    queuedItemId: head.id,
+    textLen: head.text.length
+  })
   void submit({
     text: head.text,
     instanceId: id,
@@ -199,4 +218,3 @@ export function stopQueueDispatcher(): void {
   queueDispatcherStop?.()
   queueDispatcherStop = undefined
 }
-

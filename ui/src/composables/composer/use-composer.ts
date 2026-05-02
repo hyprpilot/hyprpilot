@@ -80,6 +80,7 @@ function focus(): void {
  */
 function insertAtCaret(snippet: string): void {
   const el = textareaEl
+
   if (!el) {
     text.value = `${text.value}${snippet}`
 
@@ -89,8 +90,10 @@ function insertAtCaret(snippet: string): void {
   const end = el.selectionEnd ?? text.value.length
   const before = text.value.slice(0, start)
   const after = text.value.slice(end)
+
   text.value = `${before}${snippet}${after}`
   const caret = before.length + snippet.length
+
   void nextTick(() => {
     el.focus()
     el.setSelectionRange(caret, caret)

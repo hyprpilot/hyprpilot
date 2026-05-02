@@ -57,31 +57,41 @@ export interface CaretCoordinates {
 export function getCaretCoordinates(textarea: HTMLTextAreaElement, position: number): CaretCoordinates {
   const document = textarea.ownerDocument
   const win = document.defaultView
+
   if (!win) {
-    return { top: 0, left: 0, height: 16 }
+    return {
+      top: 0,
+      left: 0,
+      height: 16
+    }
   }
   const mirror = document.createElement('div')
+
   mirror.id = 'hyprpilot-caret-mirror'
   document.body.appendChild(mirror)
 
   const style = mirror.style
   const computed = win.getComputedStyle(textarea)
+
   style.whiteSpace = 'pre-wrap'
   style.wordWrap = 'break-word'
   style.position = 'absolute'
   style.visibility = 'hidden'
   style.top = '0'
   style.left = '0'
+
   for (const prop of COPIED_PROPERTIES) {
     // Each property name is a known CSSStyleDeclaration key; copy as-is.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     ;(style as any)[prop] = (computed as any)[prop]
   }
 
   const text = textarea.value.substring(0, position)
+
   mirror.textContent = text
 
   const span = document.createElement('span')
+
   // The trailing space ensures the span has a non-zero width — empty
   // spans collapse and read offsetLeft as the line's start.
   span.textContent = textarea.value.substring(position) || '.'
@@ -97,5 +107,6 @@ export function getCaretCoordinates(textarea: HTMLTextAreaElement, position: num
   }
 
   mirror.parentNode?.removeChild(mirror)
+
   return result
 }

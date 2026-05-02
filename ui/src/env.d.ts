@@ -7,7 +7,9 @@
 // vuejs/language-tools#4120 / volarjs/volar.js#189).
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
+
   const component: DefineComponent
+
   export default component
 }
 
@@ -23,6 +25,6 @@ declare module 'markdown-it-task-lists' {
   }
 
   const plugin: PluginWithOptions<TaskListsOptions>
+
   export default plugin
 }
-

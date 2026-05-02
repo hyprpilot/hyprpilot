@@ -32,14 +32,7 @@ const emit = defineEmits<{
       <span class="queue-band-count">{{ messages.length }}</span>
       <span class="queue-band-note">queued · sent in order when pilot finishes</span>
       <span class="queue-band-line" />
-      <button
-        type="button"
-        class="queue-band-icon-btn"
-        data-tone="err"
-        title="drop all queued"
-        aria-label="drop all queued"
-        @click="emit('dropAll')"
-      >
+      <button type="button" class="queue-band-icon-btn" data-tone="err" title="drop all queued" aria-label="drop all queued" @click="emit('dropAll')">
         <FaIcon :icon="faTrash" class="queue-band-icon" aria-hidden="true" />
       </button>
     </header>
@@ -49,34 +42,13 @@ const emit = defineEmits<{
         <span class="queue-band-index">{{ idx + 1 }}</span>
         <span class="queue-band-text">{{ m.text }}</span>
         <div class="queue-band-actions">
-          <button
-            type="button"
-            class="queue-band-icon-btn"
-            data-tone="warn"
-            title="edit before sending"
-            aria-label="edit"
-            @click="emit('edit', m.id)"
-          >
+          <button type="button" class="queue-band-icon-btn" data-tone="warn" title="edit before sending" aria-label="edit" @click="emit('edit', m.id)">
             <FaIcon :icon="faPen" class="queue-band-icon" aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            class="queue-band-icon-btn"
-            data-tone="ok"
-            title="send now (skip ahead)"
-            aria-label="send now"
-            @click="emit('send', m.id)"
-          >
+          <button type="button" class="queue-band-icon-btn" data-tone="ok" title="send now (skip ahead)" aria-label="send now" @click="emit('send', m.id)">
             <FaIcon :icon="faArrowUp" class="queue-band-icon" aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            class="queue-band-icon-btn"
-            data-tone="err"
-            title="drop from queue"
-            aria-label="drop"
-            @click="emit('drop', m.id)"
-          >
+          <button type="button" class="queue-band-icon-btn" data-tone="err" title="drop from queue" aria-label="drop" @click="emit('drop', m.id)">
             <FaIcon :icon="faXmark" class="queue-band-icon" aria-hidden="true" />
           </button>
         </div>

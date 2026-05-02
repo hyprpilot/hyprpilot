@@ -13,6 +13,7 @@ const counters = new Map<InstanceId, number>()
 export function nextSeq(instanceId: InstanceId): number {
   const current = counters.get(instanceId) ?? 0
   const next = current + 1
+
   counters.set(instanceId, next)
 
   return next

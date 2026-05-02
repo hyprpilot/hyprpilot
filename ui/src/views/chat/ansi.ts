@@ -12,10 +12,13 @@
  * weigh ~50 KB and pull a brittle parser tree we don't need.
  */
 
+/* eslint-disable no-control-regex -- ANSI escape (`\x1b`) is the
+ * literal byte we're scrubbing; the rule has no escape-hatch option. */
 const COLOR_ESCAPE_RE = /\x1b\[[0-9;]*m/g
 
 /** `\x1b[2K` clears the current line (cursor stays). Drop the current logical line. */
 const CLEAR_LINE_RE = /[^\n]*\x1b\[2K/g
+/* eslint-enable no-control-regex */
 
 export function stripAnsi(input: string): string {
   if (!input) {

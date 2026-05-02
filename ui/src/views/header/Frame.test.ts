@@ -15,8 +15,16 @@ describe('Frame.vue', () => {
         title: 'utils/hyprpilot',
         cwd: '~/dev/hyprpilot',
         counts: [
-          { label: 'turns', count: 3, color: '#98c379' },
-          { label: 'tools', count: 12, color: '#61afef' }
+          {
+            label: 'turns',
+            count: 3,
+            color: '#98c379'
+          },
+          {
+            label: 'tools',
+            count: 12,
+            color: '#61afef'
+          }
         ]
       },
       slots: {
@@ -37,7 +45,7 @@ describe('Frame.vue', () => {
     expect(wrapper.find('[data-testid="composer-slot"]').exists()).toBe(true)
   })
 
-  it('emits close on the close button', async () => {
+  it('emits close on the close button', async() => {
     const wrapper = mount(Frame, { props: { profile: 'captain' } })
 
     await wrapper.find('button[aria-label="close"]').trigger('click')
@@ -45,7 +53,7 @@ describe('Frame.vue', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
-  it('emits toggleCwd on the cwd row button', async () => {
+  it('emits toggleCwd on the cwd row button', async() => {
     const wrapper = mount(Frame, { props: { profile: 'captain', cwd: '/tmp' } })
 
     await wrapper.find('button.frame-cwd').trigger('click')
@@ -59,6 +67,7 @@ describe('Frame.vue', () => {
     })
 
     const pill = wrapper.find('.frame-profile-pill').element as HTMLElement
+
     expect(pill.style.backgroundColor).toContain('var(--theme-state-stream)')
   })
 
@@ -73,9 +82,17 @@ describe('Frame.vue', () => {
   })
 
   it('renders git branch + ahead/behind chip when gitStatus is set', () => {
-    const gitStatus: GitStatus = { branch: 'feat/k-250', ahead: 2, behind: 1 }
+    const gitStatus: GitStatus = {
+      branch: 'feat/k-250',
+      ahead: 2,
+      behind: 1
+    }
     const wrapper = mount(Frame, {
-      props: { profile: 'captain', cwd: '~/dev/hyprpilot', gitStatus }
+      props: {
+        profile: 'captain',
+        cwd: '~/dev/hyprpilot',
+        gitStatus
+      }
     })
 
     expect(wrapper.find('.frame-cwd-git').exists()).toBe(true)
@@ -98,7 +115,7 @@ describe('Frame.vue', () => {
     expect(wrapper.text()).toContain('main')
   })
 
-  it('emits pillClick with target=mode when the mode pill is clicked', async () => {
+  it('emits pillClick with target=mode when the mode pill is clicked', async() => {
     const wrapper = mount(Frame, { props: { profile: 'captain', modeTag: 'plan' } })
 
     await wrapper.find('button[aria-label="mode"]').trigger('click')
@@ -106,9 +123,13 @@ describe('Frame.vue', () => {
     expect(wrapper.emitted('pillClick')).toEqual([['mode']])
   })
 
-  it('emits pillClick with target=provider when the provider pill is clicked', async () => {
+  it('emits pillClick with target=provider when the provider pill is clicked', async() => {
     const wrapper = mount(Frame, {
-      props: { profile: 'captain', provider: 'claude-code', model: 'sonnet-4.5' }
+      props: {
+        profile: 'captain',
+        provider: 'claude-code',
+        model: 'sonnet-4.5'
+      }
     })
 
     await wrapper.find('button[aria-label="provider"]').trigger('click')
@@ -116,13 +137,21 @@ describe('Frame.vue', () => {
     expect(wrapper.emitted('pillClick')).toEqual([['provider']])
   })
 
-  it('emits breadcrumbClick with the pill id when a count is clicked', async () => {
+  it('emits breadcrumbClick with the pill id when a count is clicked', async() => {
     const wrapper = mount(Frame, {
       props: {
         profile: 'captain',
         counts: [
-          { id: 'mcps', label: 'mcps', count: 3 },
-          { id: 'skills', label: 'skills', count: 7 }
+          {
+            id: 'mcps',
+            label: 'mcps',
+            count: 3
+          },
+          {
+            id: 'skills',
+            label: 'skills',
+            count: 7
+          }
         ]
       }
     })
@@ -132,7 +161,7 @@ describe('Frame.vue', () => {
     expect(wrapper.emitted('breadcrumbClick')).toEqual([['skills']])
   })
 
-  it('falls back to the label when BreadcrumbCount.id is unset', async () => {
+  it('falls back to the label when BreadcrumbCount.id is unset', async() => {
     const wrapper = mount(Frame, {
       props: { profile: 'captain', counts: [{ label: 'turns', count: 4 }] }
     })
@@ -144,9 +173,11 @@ describe('Frame.vue', () => {
 
   it('omits the mode pill when modeTag is undefined', () => {
     const empty = mount(Frame, { props: { profile: 'captain' } })
+
     expect(empty.find('button[aria-label="mode"]').exists()).toBe(false)
 
     const filled = mount(Frame, { props: { profile: 'captain', modeTag: 'plan' } })
+
     expect(filled.find('button[aria-label="mode"]').exists()).toBe(true)
     expect(filled.text()).toContain('plan')
   })

@@ -5,6 +5,7 @@ import { parseTokens } from './parse-tokens'
 describe('parseTokens', () => {
   it('parses a single token with scheme + value', () => {
     const out = parseTokens('see #{skills://git-commit} for context')
+
     expect(out).toHaveLength(1)
     expect(out[0]?.scheme).toBe('skills')
     expect(out[0]?.value).toBe('git-commit')
@@ -14,6 +15,7 @@ describe('parseTokens', () => {
 
   it('parses multiple tokens of mixed schemes', () => {
     const out = parseTokens('#{skills://a} mid #{prompt://b} end')
+
     expect(out.map((t) => `${t.scheme}://${t.value}`)).toEqual(['skills://a', 'prompt://b'])
   })
 
@@ -28,6 +30,7 @@ describe('parseTokens', () => {
 
   it('handles back-to-back tokens', () => {
     const out = parseTokens('#{skills://one}#{prompt://two}')
+
     expect(out.map((t) => t.scheme)).toEqual(['skills', 'prompt'])
   })
 })

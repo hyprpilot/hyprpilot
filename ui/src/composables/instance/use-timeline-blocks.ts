@@ -1,11 +1,10 @@
 import { computed, type ComputedRef } from 'vue'
 
-import { Role } from '@components'
-
 import { useStream, type StreamItem } from './use-stream'
-import { useTools, type ToolCallView } from './use-tools'
+import { useTools, type WireToolCall } from './use-tools'
 import { TurnRole, useTranscript, type ChatTurnItem } from './use-transcript'
 import { type InstanceId } from '../chrome/use-active-instance'
+import { Role } from '@components'
 
 /**
  * Per-turn timeline grouping (S2 + S8).
@@ -22,7 +21,11 @@ import { type InstanceId } from '../chrome/use-active-instance'
  * visible without cross-turn smearing.
  */
 
-const KIND_ORDER = { turn: 0, stream: 1, tool: 2 } as const
+const KIND_ORDER = {
+  turn: 0,
+  stream: 1,
+  tool: 2
+} as const
 
 export interface TimelineTurn {
   kind: 'turn'
@@ -39,7 +42,7 @@ export interface TimelineStream {
 export interface TimelineTool {
   kind: 'tool'
   createdAt: number
-  call: ToolCallView
+  call: WireToolCall
 }
 
 export type TimelineEntry = TimelineTurn | TimelineStream | TimelineTool
@@ -77,6 +80,7 @@ function entryTurnId(entry: TimelineEntry): string | undefined {
   if (entry.kind === 'turn') {
     return entry.turn.turnId
   }
+
   if (entry.kind === 'stream') {
     return entry.item.turnId
   }
@@ -93,22 +97,34 @@ export function useTimelineBlocks(instanceId?: InstanceId): {
 
   const blocks = computed<TimelineBlock[]>(() => {
     const entries: TimelineEntry[] = [
-      ...turns.value.map<TimelineTurn>((turn) => ({ kind: 'turn', createdAt: turn.createdAt, turn })),
-      ...streamItems.value.map<TimelineStream>((item) => ({ kind: 'stream', createdAt: item.createdAt, item })),
-      ...toolCalls.value.map<TimelineTool>((call) => ({ kind: 'tool', createdAt: call.createdAt, call }))
+      ...turns.value.map<TimelineTurn>((turn) => ({
+        kind: 'turn',
+        createdAt: turn.createdAt,
+        turn
+      })),
+      ...streamItems.value.map<TimelineStream>((item) => ({
+        kind: 'stream',
+        createdAt: item.createdAt,
+        item
+      })),
+      ...toolCalls.value.map<TimelineTool>((call) => ({
+        kind: 'tool',
+        createdAt: call.createdAt,
+        call
+      }))
     ]
+
     entries.sort((a, b) => a.createdAt - b.createdAt || KIND_ORDER[a.kind] - KIND_ORDER[b.kind])
 
     const out: TimelineBlock[] = []
+
     for (const entry of entries) {
       const role = entryRole(entry)
       const turnId = entryTurnId(entry)
-      const groupKey =
-        role === Role.Assistant && turnId !== undefined
-          ? `turn:${turnId}`
-          : `solo:${role}:${entry.createdAt}:${entry.kind}`
+      const groupKey = role === Role.Assistant && turnId !== undefined ? `turn:${turnId}` : `solo:${role}:${entry.createdAt}:${entry.kind}`
       const last = out[out.length - 1]
       let block: TimelineBlock
+
       if (last && last.groupKey === groupKey) {
         block = last
       } else {
@@ -124,6 +140,7 @@ export function useTimelineBlocks(instanceId?: InstanceId): {
         }
         out.push(block)
       }
+
       if (entry.kind === 'stream') {
         block.streamEntries.push(entry)
       } else if (entry.kind === 'tool') {

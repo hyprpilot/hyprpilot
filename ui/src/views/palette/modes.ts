@@ -14,12 +14,11 @@
  * automatically when K-251 lands.
  */
 
-import { useActiveInstance } from '@composables'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { ToastTone } from '@components'
+import { useActiveInstance, pushToast } from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
-import { pushToast } from '@composables'
 
 const EMPTY_ROW_ID = '__no-modes__'
 const PLACEHOLDER_ROW_ID = '__no-instance__'
@@ -74,6 +73,7 @@ export async function openModesLeaf(): Promise<void> {
   const { open } = usePalette()
   const { id } = useActiveInstance()
   const instanceId = id.value
+
   if (!instanceId) {
     open(noInstanceSpec())
 
@@ -81,10 +81,12 @@ export async function openModesLeaf(): Promise<void> {
   }
 
   let snapshot
+
   try {
     snapshot = await invoke(TauriCommand.InstanceMeta, { instanceId })
-  } catch (err) {
+  } catch(err) {
     const message = String(err)
+
     log.warn('instance_meta failed (modes leaf)', { instanceId, err: message })
     open(errorSpec(message))
 
@@ -92,6 +94,7 @@ export async function openModesLeaf(): Promise<void> {
   }
 
   const options = snapshot.availableModes
+
   if (options.length === 0) {
     open(noOptionsSpec('no current_mode_update advertised yet for this instance'))
 
@@ -105,7 +108,13 @@ export async function openModesLeaf(): Promise<void> {
   }))
   const active = options.find((m) => m.id === snapshot.currentModeId)
   const preseed: PaletteEntry[] = active
-    ? [{ id: active.id, name: active.name, description: active.description }]
+    ? [
+      {
+        id: active.id,
+        name: active.name,
+        description: active.description
+      }
+    ]
     : []
 
   open({
@@ -115,15 +124,22 @@ export async function openModesLeaf(): Promise<void> {
     preseedActive: preseed,
     async onCommit(picks) {
       const pick = picks[0]
+
       if (!pick) {
         return
       }
+
       try {
         await invoke(TauriCommand.ModesSet, { instanceId, modeId: pick.id })
         pushToast(ToastTone.Ok, `mode → ${pick.name}`)
-      } catch (err) {
+      } catch(err) {
         const message = String(err)
-        log.warn('modes_set failed', { instanceId, modeId: pick.id, err: message })
+
+        log.warn('modes_set failed', {
+          instanceId,
+          modeId: pick.id,
+          err: message
+        })
         pushToast(ToastTone.Err, message)
       }
     }

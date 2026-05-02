@@ -5,6 +5,7 @@ import ChatBody from './Body.vue'
 import { Role } from '@components'
 
 const writeClipboardText = vi.fn().mockResolvedValue(undefined)
+
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({
   writeText: (...args: unknown[]) => writeClipboardText(...args)
 }))
@@ -42,45 +43,69 @@ describe('ChatBody.vue', () => {
     expect(wrapper.find('.chat-body-md').exists()).toBe(false)
   })
 
-  it('renders sanitised markdown HTML for assistant role with :markdown + :text', async () => {
+  it('renders sanitised markdown HTML for assistant role with :markdown + :text', async() => {
     const wrapper = mount(ChatBody, {
-      props: { role: Role.Assistant, text: '**bold** and *italic*', markdown: true }
+      props: {
+        role: Role.Assistant,
+        text: '**bold** and *italic*',
+        markdown: true
+      }
     })
+
     await flush()
 
     const md = wrapper.find('.chat-body-md')
+
     expect(md.exists()).toBe(true)
     expect(md.html()).toContain('<strong>bold</strong>')
     expect(md.html()).toContain('<em>italic</em>')
   })
 
-  it('keeps user-role text raw even when markdown=true is set on the prop', async () => {
+  it('keeps user-role text raw even when markdown=true is set on the prop', async() => {
     const wrapper = mount(ChatBody, {
-      props: { role: Role.User, text: '**bold**', markdown: true }
+      props: {
+        role: Role.User,
+        text: '**bold**',
+        markdown: true
+      }
     })
+
     await flush()
 
     expect(wrapper.find('.chat-body-md').exists()).toBe(false)
     expect(wrapper.text()).toContain('**bold**')
   })
 
-  it('mounts a copy button per fenced code block', async () => {
+  it('mounts a copy button per fenced code block', async() => {
     const src = '```ts\nconst x = 1\n```\n\n```sh\necho hi\n```'
-    const wrapper = mount(ChatBody, { props: { role: Role.Assistant, text: src, markdown: true } })
+    const wrapper = mount(ChatBody, {
+      props: {
+        role: Role.Assistant,
+        text: src,
+        markdown: true
+      }
+    })
+
     await flush()
 
     expect(wrapper.findAll('button[data-md-copy]')).toHaveLength(2)
     expect(wrapper.findAll('.md-codeblock')).toHaveLength(2)
   })
 
-  it('copy button writes the code text to the clipboard via the Tauri plugin', async () => {
+  it('copy button writes the code text to the clipboard via the Tauri plugin', async() => {
     writeClipboardText.mockClear()
     const wrapper = mount(ChatBody, {
-      props: { role: Role.Assistant, text: '```ts\nconst y = 2\n```', markdown: true }
+      props: {
+        role: Role.Assistant,
+        text: '```ts\nconst y = 2\n```',
+        markdown: true
+      }
     })
+
     await flush()
 
     const button = wrapper.find('button[data-md-copy]')
+
     expect(button.exists()).toBe(true)
     await button.trigger('click')
     await flushPromises()

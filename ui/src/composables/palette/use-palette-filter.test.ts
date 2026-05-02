@@ -25,6 +25,7 @@ describe('usePaletteFilter', () => {
     const query = ref('')
     const ticked = ref<Set<string>>(new Set())
     const { visible } = usePaletteFilter(spec, query, ticked)
+
     expect(visible.value.map((e) => e.id)).toEqual(entries.map((e) => e.id))
   })
 
@@ -34,6 +35,7 @@ describe('usePaletteFilter', () => {
     const ticked = ref<Set<string>>(new Set())
     const { visible } = usePaletteFilter(spec, query, ticked)
     const ids = visible.value.map((e) => e.id)
+
     expect(ids).toContain('git-status')
     expect(ids).toContain('git-stash')
     expect(ids).not.toContain('help')
@@ -44,6 +46,7 @@ describe('usePaletteFilter', () => {
     const query = ref('')
     const ticked = ref<Set<string>>(new Set(['help']))
     const { visible } = usePaletteFilter(spec, query, ticked)
+
     expect(visible.value[0]?.id).toBe('help')
   })
 
@@ -52,6 +55,7 @@ describe('usePaletteFilter', () => {
     const query = ref('')
     const ticked = ref<Set<string>>(new Set())
     const { visible } = usePaletteFilter(spec, query, ticked)
+
     expect(visible.value).toEqual([])
   })
 })

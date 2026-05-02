@@ -1,4 +1,3 @@
-import '@testing-library/vue'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { cleanup } from '@testing-library/vue'
 import { config, enableAutoUnmount } from '@vue/test-utils'

@@ -3,9 +3,9 @@
  * Each payload mirrors the Rust `adapters::InstanceEvent` variant
  * that emits onto the matching event name.
  */
-import type { TerminalChunkKind, TerminalStream } from '@constants/wire/transcript'
-import type { InstanceState } from '@constants/wire/instance'
 import type { PermissionOptionView, TranscriptItem } from './transcript'
+import type { InstanceState } from '@constants/wire/instance'
+import type { TerminalChunkKind, TerminalStream } from '@constants/wire/transcript'
 
 export interface TranscriptEventPayload {
   agentId: string

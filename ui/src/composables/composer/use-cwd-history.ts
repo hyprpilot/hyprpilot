@@ -18,10 +18,12 @@ const MAX_HISTORY = 10
 function safeLoad(): string[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
+
     if (!raw) {
       return []
     }
     const parsed = JSON.parse(raw) as unknown
+
     if (!Array.isArray(parsed)) {
       return []
     }
@@ -44,10 +46,12 @@ const history = ref<string[]>(safeLoad())
 
 export function pushCwd(cwd: string): void {
   const trimmed = cwd.trim()
+
   if (!trimmed) {
     return
   }
   const next = [trimmed, ...history.value.filter((entry) => entry !== trimmed)].slice(0, MAX_HISTORY)
+
   history.value = next
   safeSave(next)
 }
@@ -62,12 +66,17 @@ export function useCwdHistory(): {
   push: typeof pushCwd
   clear: typeof clearCwdHistory
 } {
-  return { history, push: pushCwd, clear: clearCwdHistory }
+  return {
+    history,
+    push: pushCwd,
+    clear: clearCwdHistory
+  }
 }
 
 /** Test-only: reset module state + clear localStorage. */
 export function __resetCwdHistoryForTests(): void {
   history.value = []
+
   try {
     window.localStorage.removeItem(STORAGE_KEY)
   } catch {

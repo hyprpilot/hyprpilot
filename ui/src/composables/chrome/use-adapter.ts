@@ -1,16 +1,6 @@
-import {
-  invoke,
-  TauriCommand,
-  type AgentSummary,
-  type Attachment,
-  type CancelResult,
-  type ProfileSummary,
-  type SubmitResult
-} from '@ipc'
-
-import { ToastTone } from '@components'
-
 import { pushToast } from '../ui-state/use-toasts'
+import { ToastTone } from '@components'
+import { invoke, TauriCommand, type AgentSummary, type Attachment, type CancelResult, type ProfileSummary, type SubmitResult } from '@ipc'
 
 export interface SubmitOptions {
   text: string
@@ -43,7 +33,14 @@ export interface CancelOptions {
  * `useSessionStream` into `usePermissions`; transcript + state via
  * `useTranscript` / `useSessionStream`.
  */
-export function useAdapter() {
+export interface UseAdapterApi {
+  submit: (options: SubmitOptions) => Promise<SubmitResult>
+  cancel: (options?: CancelOptions) => Promise<CancelResult>
+  agentsList: () => Promise<AgentSummary[]>
+  profilesList: () => Promise<ProfileSummary[]>
+}
+
+export function useAdapter(): UseAdapterApi {
   async function submit(options: SubmitOptions): Promise<SubmitResult> {
     return invoke(TauriCommand.SessionSubmit, {
       text: options.text,
@@ -59,9 +56,11 @@ export function useAdapter() {
       instanceId: options.instanceId,
       agentId: options.agentId
     })
+
     if (result.cancelled) {
       pushToast(ToastTone.Warn, 'turn cancelled')
     }
+
     return result
   }
 

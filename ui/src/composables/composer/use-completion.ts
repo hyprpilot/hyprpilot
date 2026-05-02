@@ -1,12 +1,6 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
-import {
-  type CompletionItem,
-  type CompletionQueryResponse,
-  type CompletionResolveResponse,
-  invoke,
-  TauriCommand
-} from '@ipc'
+import { type CompletionItem, type CompletionQueryResponse, type CompletionResolveResponse, invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
 /**
@@ -87,12 +81,9 @@ export function useCompletion(): UseCompletionApi {
     }, QUERY_DEBOUNCE_MS)
   }
 
-  async function runQuery(
-    text: string,
-    cursor: number,
-    opts?: { manual?: boolean; cwd?: string; instanceId?: string }
-  ): Promise<void> {
+  async function runQuery(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string }): Promise<void> {
     let response: CompletionQueryResponse
+
     try {
       response = await invoke(TauriCommand.CompletionQuery, {
         text,
@@ -101,8 +92,9 @@ export function useCompletion(): UseCompletionApi {
         cwd: opts?.cwd,
         instanceId: opts?.instanceId
       })
-    } catch (err) {
+    } catch(err) {
       log.warn('completion/query failed', { err: String(err) })
+
       return
     }
 
@@ -118,6 +110,7 @@ export function useCompletion(): UseCompletionApi {
       state.value.selectedIndex = 0
       state.value.sourceId = null
       state.value.documentation = null
+
       return
     }
 
@@ -134,12 +127,15 @@ export function useCompletion(): UseCompletionApi {
       clearTimeout(queryDebounce)
       queryDebounce = undefined
     }
+
     if (resolveDebounce) {
       clearTimeout(resolveDebounce)
       resolveDebounce = undefined
     }
+
     if (state.value.latestQueryId) {
       const requestId = state.value.latestQueryId
+
       void invoke(TauriCommand.CompletionCancel, { requestId }).catch((err: unknown) => {
         log.trace('completion/cancel rejected', { err: String(err) })
       })
@@ -167,17 +163,18 @@ export function useCompletion(): UseCompletionApi {
     if (state.value.items.length === 0) {
       return
     }
-    state.value.selectedIndex =
-      (state.value.selectedIndex - 1 + state.value.items.length) % state.value.items.length
+    state.value.selectedIndex = (state.value.selectedIndex - 1 + state.value.items.length) % state.value.items.length
     state.value.documentation = null
     scheduleResolve()
   }
 
   function commit(): CompletionItem | undefined {
     const item = selected.value
+
     if (item) {
       close()
     }
+
     return item
   }
 
@@ -186,11 +183,13 @@ export function useCompletion(): UseCompletionApi {
       clearTimeout(resolveDebounce)
     }
     const item = selected.value
+
     if (!item || !item.resolveId || !state.value.sourceId) {
       return
     }
     const sourceId = state.value.sourceId
     const resolveId = item.resolveId
+
     state.value.latestResolveId = resolveId
     state.value.resolving = true
     resolveDebounce = setTimeout(() => {
@@ -200,16 +199,19 @@ export function useCompletion(): UseCompletionApi {
 
   async function runResolve(sourceId: string, resolveId: string): Promise<void> {
     let response: CompletionResolveResponse
+
     try {
       response = await invoke(TauriCommand.CompletionResolve, {
         resolveId,
         sourceId: sourceId as 'skills' | 'path' | 'ripgrep' | 'commands'
       })
-    } catch (err) {
+    } catch(err) {
       log.warn('completion/resolve failed', { err: String(err) })
       state.value.resolving = false
+
       return
     }
+
     // Drop stale resolves — selection may have advanced past the
     // item we requested docs for.
     if (state.value.latestResolveId !== resolveId) {
@@ -219,7 +221,16 @@ export function useCompletion(): UseCompletionApi {
     state.value.resolving = false
   }
 
-  singleton = { state, selected, query, close, selectNext, selectPrev, commit }
+  singleton = {
+    state,
+    selected,
+    query,
+    close,
+    selectNext,
+    selectPrev,
+    commit
+  }
+
   return singleton
 }
 

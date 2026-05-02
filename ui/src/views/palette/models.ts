@@ -13,12 +13,11 @@
  * the leaf lights up automatically.
  */
 
-import { useActiveInstance } from '@composables'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { ToastTone } from '@components'
+import { useActiveInstance, pushToast } from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
-import { pushToast } from '@composables'
 
 const EMPTY_ROW_ID = '__no-models__'
 const PLACEHOLDER_ROW_ID = '__no-instance__'
@@ -73,6 +72,7 @@ export async function openModelsLeaf(): Promise<void> {
   const { open } = usePalette()
   const { id } = useActiveInstance()
   const instanceId = id.value
+
   if (!instanceId) {
     open(noInstanceSpec())
 
@@ -80,10 +80,12 @@ export async function openModelsLeaf(): Promise<void> {
   }
 
   let snapshot
+
   try {
     snapshot = await invoke(TauriCommand.InstanceMeta, { instanceId })
-  } catch (err) {
+  } catch(err) {
     const message = String(err)
+
     log.warn('instance_meta failed (models leaf)', { instanceId, err: message })
     open(errorSpec(message))
 
@@ -91,6 +93,7 @@ export async function openModelsLeaf(): Promise<void> {
   }
 
   const options = snapshot.availableModels
+
   if (options.length === 0) {
     open(noOptionsSpec('no current_model_update advertised yet for this instance'))
 
@@ -104,7 +107,13 @@ export async function openModelsLeaf(): Promise<void> {
   }))
   const active = options.find((m) => m.id === snapshot.currentModelId)
   const preseed: PaletteEntry[] = active
-    ? [{ id: active.id, name: active.name, description: active.description }]
+    ? [
+      {
+        id: active.id,
+        name: active.name,
+        description: active.description
+      }
+    ]
     : []
 
   open({
@@ -114,15 +123,22 @@ export async function openModelsLeaf(): Promise<void> {
     preseedActive: preseed,
     async onCommit(picks) {
       const pick = picks[0]
+
       if (!pick) {
         return
       }
+
       try {
         await invoke(TauriCommand.ModelsSet, { instanceId, modelId: pick.id })
         pushToast(ToastTone.Ok, `model → ${pick.name}`)
-      } catch (err) {
+      } catch(err) {
         const message = String(err)
-        log.warn('models_set failed', { instanceId, modelId: pick.id, err: message })
+
+        log.warn('models_set failed', {
+          instanceId,
+          modelId: pick.id,
+          err: message
+        })
         pushToast(ToastTone.Err, message)
       }
     }

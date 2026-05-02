@@ -65,11 +65,13 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // can include a sample without waiting on the file system.
   child.stdout?.on('data', (b) => {
     const s = b.toString()
+
     buffered.push(s)
     logStream.write(s)
   })
   child.stderr?.on('data', (b) => {
     const s = b.toString()
+
     buffered.push(s)
     logStream.write(s)
   })

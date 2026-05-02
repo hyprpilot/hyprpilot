@@ -24,7 +24,7 @@
  *   useActiveInstance   → current instance id for the transcript data-attr
  *   startSessionStream  → starts the demuxed Tauri event pump
  */
-import { faListCheck, faPenToSquare } from '@fortawesome/free-solid-svg-icons'
+import { faPenToSquare } from '@fortawesome/free-solid-svg-icons'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import {
@@ -35,7 +35,6 @@ import {
   type ComposerPill,
   ComposerPillKind,
   Loading,
-  MarkdownBody,
   Modal,
   ModalDescription,
   ModalInput,
@@ -84,19 +83,11 @@ import {
   type PlanEntry
 } from '@composables'
 import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
-import { formatToolCall, log } from '@lib'
-import { Attachments, Body as ChatBody, ChangeBanner, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
+import { format, log } from '@lib'
+import { Attachments, Body as ChatBody, ChangeBanner, PermissionModal, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
 import { Frame } from '@views/header'
-import {
-  CommandPalette,
-  commitInstanceRename,
-  isPaletteLeafId,
-  openRootLeaf,
-  openRootPalette,
-  PaletteLeafId,
-  validateInstanceName
-} from '@views/palette'
+import { CommandPalette, commitInstanceRename, isPaletteLeafId, openRootLeaf, openRootPalette, PaletteLeafId, validateInstanceName } from '@views/palette'
 
 const { submit, cancel } = useAdapter()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
@@ -136,7 +127,7 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 // — accessing them here would just allocate redundant computeds. The
 // idle-screen branch reads `timelineBlocks.length === 0` for the
 // no-content gate.
-const { pending: permissionPrompts, allow, deny } = usePermissions()
+const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, allow, deny } = usePermissions()
 const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
 const { homeDir } = useHomeDir()
@@ -148,6 +139,7 @@ const activeToast = computed(() => toastEntries.value[0])
 const queueRows = computed<QueuedMessage[]>(() => queuedItems.value.map((q) => ({ id: q.id, text: q.text })))
 
 const transcriptEl = ref<HTMLElement>()
+
 useStickToBottom(transcriptEl)
 
 const sending = ref(false)
@@ -157,6 +149,7 @@ const activeProfile = computed(() => profiles.value.find((p) => p.id === selecte
 
 const headerCwd = computed(() => {
   const raw = sessionInfo.value.cwd
+
   if (!raw) {
     return undefined
   }
@@ -165,21 +158,38 @@ const headerCwd = computed(() => {
 })
 
 const headerCounts = computed<BreadcrumbCount[]>(() => [
-  { id: PaletteLeafId.Mcps, label: 'mcps', count: sessionInfo.value.mcpsCount },
-  { id: PaletteLeafId.Instances, label: 'instances', count: instancesCount.value },
-  { id: PaletteLeafId.Sessions, label: 'sessions', count: sessionList.value.length }
+  {
+    id: PaletteLeafId.Mcps,
+    label: 'mcps',
+    count: sessionInfo.value.mcpsCount
+  },
+  {
+    id: PaletteLeafId.Instances,
+    label: 'instances',
+    count: instancesCount.value
+  },
+  {
+    id: PaletteLeafId.Sessions,
+    label: 'sessions',
+    count: sessionList.value.length
+  }
 ])
 
 function onPillClick(target: 'profile' | 'mode' | 'provider'): void {
   switch (target) {
     case 'profile':
       openRootLeaf(PaletteLeafId.Profiles)
+
       return
+
     case 'mode':
       openRootLeaf(PaletteLeafId.Modes)
+
       return
+
     case 'provider':
       openRootLeaf(PaletteLeafId.Models)
+
       return
   }
 }
@@ -188,14 +198,16 @@ function onBreadcrumbClick(id: string): void {
   if (!isPaletteLeafId(id)) {
     return
   }
+
   if (id === PaletteLeafId.Mcps) {
     const instanceId = activeInstanceId.value
+
     if (!instanceId) {
       openRootLeaf(id)
 
       return
     }
-    openRootLeaf(id, { mcps: { instanceId, agentLabel: activeAgentId.value ?? 'agent' } })
+    openRootLeaf(id, { mcps: { instanceId } })
 
     return
   }
@@ -222,6 +234,7 @@ function onToggleCwd(): void {
 // TurnEnded arrives, `openTurnId` clears and the pulse stops.
 const liveBlockIdx = computed<number>(() => {
   const open = openTurnId.value
+
   if (!open) {
     return -1
   }
@@ -237,15 +250,18 @@ function firePermission(action: 'allow' | 'deny'): void {
   }
   // TODO(K-281 follow-up): Tab = next row cycling. Today the approval
   // keybind always addresses the oldest-active (first non-queued) prompt.
-  const active = permissionPrompts.value.find((p) => !p.queued) ?? permissionPrompts.value[0]
+  const active =
+    permissionRowQueue.value.find((v) => !v.queued) ?? permissionRowQueue.value[0] ?? permissionModalQueue.value.find((v) => !v.queued) ?? permissionModalQueue.value[0]
+
   if (!active) {
     return
   }
   log.info('keybind invoked', { action, target: 'permission' })
+
   if (action === 'allow') {
-    void onAllow(active.requestId)
+    void onAllow(active.request.requestId)
   } else {
-    void onDeny(active.requestId)
+    void onDeny(active.request.requestId)
   }
 }
 
@@ -257,6 +273,7 @@ const { closeAll: closeAllPalettes } = usePalette()
 // off it. Save / cancel reset to undefined → modal unmounts.
 const renameModal = useRenameInstanceModal()
 const renameDraft = ref('')
+
 watch(
   () => renameModal.target.value,
   (next) => {
@@ -264,16 +281,20 @@ watch(
   },
   { immediate: true }
 )
+
 async function onRenameAccept(): Promise<void> {
   const target = renameModal.target.value
+
   if (!target) {
     return
   }
   const ok = await commitInstanceRename(target.instanceId, renameDraft.value)
+
   if (ok) {
     renameModal.close()
   }
 }
+
 function onRenameCancel(): void {
   renameModal.close()
 }
@@ -369,15 +390,21 @@ function windowToggleCaptureListener(e: KeyboardEvent): void {
   if (e.type !== 'keydown') {
     return
   }
+
   if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) {
     return
   }
+
   if (e.key.toLowerCase() !== 'q') {
     return
   }
   e.preventDefault()
   e.stopPropagation()
-  log.info('keybind invoked', { action: 'toggle', target: 'window', via: 'capture' })
+  log.info('keybind invoked', {
+    action: 'toggle',
+    target: 'window',
+    via: 'capture'
+  })
   pushToast(ToastTone.Ok, 'ctrl+q fired — invoking window_toggle')
   void invoke(TauriCommand.WindowToggle)
     .then((visible) => {
@@ -389,18 +416,20 @@ function windowToggleCaptureListener(e: KeyboardEvent): void {
     })
 }
 
-onMounted(async () => {
+onMounted(async() => {
   window.addEventListener('keydown', windowToggleCaptureListener, { capture: true })
   startQueueDispatcher()
+
   try {
     stopActiveInstanceStore = await startActiveInstance()
-  } catch (err) {
+  } catch(err) {
     log.error('invoke failed', { command: 'startActiveInstance' }, err)
     pushToast(ToastTone.Err, `active-instance bind failed: ${String(err)}`)
   }
+
   try {
     stopStream = await startSessionStream()
-  } catch (err) {
+  } catch(err) {
     log.error('invoke failed', { command: 'startSessionStream' }, err)
     pushToast(ToastTone.Err, `stream bind failed: ${String(err)}`)
   }
@@ -430,10 +459,11 @@ watch(activeInstanceId, (next, prev) => {
 // when the agent allocates one.
 function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string | undefined {
   const raw = call.rawInput
+
   if (!raw) {
     return undefined
   }
-  const candidate = raw['terminal_id'] ?? raw['terminalId']
+  const candidate = raw.terminal_id ?? raw.terminalId
 
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
 }
@@ -443,23 +473,23 @@ function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string
 // the thought body lives on `content[].text` (the tool-call text
 // blocks) plus the chip's `title` as a one-line summary. Stitch
 // them: title leads, content paragraphs follow.
-function thoughtText(call: {
-  title?: string
-  content: { type?: string; text?: string }[]
-  rawInput?: Record<string, unknown>
-}): string {
+function thoughtText(call: { title?: string; content: { type?: string; text?: string }[]; rawInput?: Record<string, unknown> }): string {
   const parts: string[] = []
   const summary = call.title?.trim()
+
   if (summary && summary.length > 0) {
     parts.push(`**${summary}**`)
   }
+
   for (const c of call.content ?? []) {
     if (typeof c.text === 'string' && c.text.trim().length > 0) {
       parts.push(c.text)
     }
   }
+
   if (parts.length === 0 && call.rawInput) {
-    const raw = call.rawInput['thought'] ?? call.rawInput['text'] ?? call.rawInput['description']
+    const raw = call.rawInput.thought ?? call.rawInput.text ?? call.rawInput.description
+
     if (typeof raw === 'string') {
       parts.push(raw)
     }
@@ -472,10 +502,12 @@ async function onAttachmentOpen(att: Attachment): Promise<void> {
   if (!att.path) {
     return
   }
+
   try {
     const { open } = await import('@tauri-apps/plugin-shell')
+
     await open(att.path)
-  } catch (err) {
+  } catch(err) {
     log.warn('attachments: open failed', { path: att.path, err: String(err) })
     pushToast(ToastTone.Err, `couldn't open ${att.path}`)
   }
@@ -483,7 +515,9 @@ async function onAttachmentOpen(att: Attachment): Promise<void> {
 
 async function onCancel(): Promise<void> {
   const instanceId = activeInstanceId.value
+
   log.info('cancel turn requested', { instanceId })
+
   // Clear local permission state immediately so the user gets
   // instant feedback. The daemon `session_cancel` sends an ACP
   // CancelNotification, but the agent's response (or lack thereof)
@@ -493,9 +527,10 @@ async function onCancel(): Promise<void> {
     resetPermissions(instanceId)
   }
   pushToast(ToastTone.Warn, 'cancel sent')
+
   try {
     await cancel({ instanceId })
-  } catch (err) {
+  } catch(err) {
     log.error('invoke failed', { command: 'session_cancel' }, err)
     pushToast(ToastTone.Err, `cancel failed: ${String(err)}`)
   }
@@ -505,8 +540,10 @@ function mapPlanStatus(raw?: string): PlanStatus {
   switch (raw) {
     case 'completed':
       return PlanStatus.Completed
+
     case 'in_progress':
       return PlanStatus.InProgress
+
     default:
       return PlanStatus.Pending
   }
@@ -516,92 +553,53 @@ function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
   return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
 }
 
-/// Plan-modal trigger: a small allowlist of plan / mode-switch tool
-/// names PLUS a payload-shape fallback for vendors that ship a
-/// markdown body without identifying the tool. Tool-name match is
-/// case-insensitive AND collapses whitespace + non-letters
-/// (`Switch mode` / `switch_mode` / `SwitchMode` all match).
-const MARKDOWN_MODAL_TOOLS = new Set(['switchmode', 'exitplanmode', 'plan', 'planmode'])
-
-function normalizeToolName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]/g, '')
-}
-
-function pickMarkdownBody(raw: Record<string, unknown> | undefined): string | undefined {
-  if (!raw) {
-    return undefined
-  }
-  for (const key of ['plan', 'document'] as const) {
-    const v = raw[key]
-    if (typeof v === 'string' && v.trim().length > 0) {
-      return v
-    }
-  }
-  return undefined
-}
-
-interface MarkdownModalView {
-  requestId: string
-  tool: string
-  body: string
-}
-
-function modalBodyOf(p: {
-  tool: string
-  rawInput?: Record<string, unknown>
-  contentText?: string
-}): string | undefined {
-  // Tool-name allowlist routes the prompt to the modal regardless of
-  // payload shape; rawInput.plan / rawInput.document wins, otherwise
-  // contentText, otherwise a synthetic placeholder so the modal
-  // still surfaces (the captain needs to accept / reject the mode
-  // change even when the plan body doesn't ride along).
-  if (MARKDOWN_MODAL_TOOLS.has(normalizeToolName(p.tool))) {
-    const fromRaw = pickMarkdownBody(p.rawInput)
-    if (fromRaw) {
-      return fromRaw
-    }
-    if (typeof p.contentText === 'string' && p.contentText.trim().length > 0) {
-      return p.contentText
-    }
-    return '_no plan body supplied_'
-  }
-  // Tools outside the allowlist: only route to modal when rawInput
-  // explicitly carries a plan-shape key. Tools with content blocks
-  // (descriptions, captions) stay in the inline permission stack.
-  return pickMarkdownBody(p.rawInput)
-}
-
-const markdownModalPrompt = computed<MarkdownModalView | undefined>(() => {
-  for (const p of permissionPrompts.value) {
-    const body = modalBodyOf(p)
-    if (body) {
-      return { requestId: p.requestId, tool: p.tool, body }
-    }
-  }
-  return undefined
-})
-
-const standardPermissionPrompts = computed(() =>
-  permissionPrompts.value.filter((p) => modalBodyOf(p) === undefined)
-)
+/// One modal at a time — permission UI is blocking by nature, so
+/// stacking doesn't add value. Subsequent modal-class prompts wait
+/// behind this one in `permissionModalQueue`.
+const activeModalView = computed(() => permissionModalQueue.value[0])
 
 async function onAllow(requestId: string, remember: boolean = false): Promise<void> {
-  log.info('permission click', { choice: 'allow', requestId, remember })
+  log.info('permission click', {
+    choice: 'allow',
+    requestId,
+    remember
+  })
+
   try {
     await allow(requestId, remember)
-  } catch (err) {
-    log.error('invoke failed', { command: 'permission_reply', choice: 'allow', requestId }, err)
+  } catch(err) {
+    log.error(
+      'invoke failed',
+      {
+        command: 'permission_reply',
+        choice: 'allow',
+        requestId
+      },
+      err
+    )
     pushToast(ToastTone.Err, `allow failed: ${String(err)}`)
   }
 }
 
 async function onDeny(requestId: string, remember: boolean = false): Promise<void> {
-  log.info('permission click', { choice: 'deny', requestId, remember })
+  log.info('permission click', {
+    choice: 'deny',
+    requestId,
+    remember
+  })
+
   try {
     await deny(requestId, remember)
-  } catch (err) {
-    log.error('invoke failed', { command: 'permission_reply', choice: 'deny', requestId }, err)
+  } catch(err) {
+    log.error(
+      'invoke failed',
+      {
+        command: 'permission_reply',
+        choice: 'deny',
+        requestId
+      },
+      err
+    )
     pushToast(ToastTone.Err, `deny failed: ${String(err)}`)
   }
 }
@@ -632,6 +630,7 @@ function imagePillsToAttachments(pills: ComposerPill[]): Attachment[] {
     .map((p) => {
       const ext = (p.mimeType ?? 'image/png').split('/')[1] ?? 'png'
       const synthName = p.fileName && p.fileName.length > 0 ? p.fileName : `${p.id}.${ext}`
+
       return {
         slug: p.id,
         path: synthName,
@@ -655,6 +654,7 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   // (versus skill resources which use `body` + `ContentBlock::Resource`).
   const imageAttachments = imagePillsToAttachments(attachments)
   const wireAttachments = [...skillAttachments, ...imageAttachments]
+
   log.info('composer submit', {
     text_len: text.length,
     image_attachments: imageAttachments.length,
@@ -663,6 +663,7 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   })
 
   const instanceId = activeInstanceId.value ?? mintInstanceId()
+
   useActiveInstance().set(instanceId)
 
   // Submit-while-busy: queue instead of dispatching. The composer
@@ -670,7 +671,11 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   // K-260 turn-end watcher in `useQueue` drains the head when the
   // in-flight turn lands `acp:turn-ended` with stop_reason=end_turn.
   if (phase.value !== Phase.Idle) {
-    pushToQueue(instanceId, { text, pills: attachments, skillAttachments })
+    pushToQueue(instanceId, {
+      text,
+      pills: attachments,
+      skillAttachments
+    })
     composerRef.value?.clear()
     clearAttachments()
 
@@ -682,7 +687,12 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   // event; the demuxer in `use-session-stream` routes it through to
   // `pushTranscriptChunk`. No optimistic mirror here — daemon is the
   // single source of truth.
-  submit({ text, instanceId, profileId: selectedProfile.value, attachments: wireAttachments })
+  submit({
+    text,
+    instanceId,
+    profileId: selectedProfile.value,
+    attachments: wireAttachments
+  })
     .then(() => {
       composerRef.value?.clear()
       clearAttachments()
@@ -789,12 +799,7 @@ function onQueueDropAll(): void {
 
         <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx">
           <template v-for="entry in block.thoughts" :key="`thought-${entry.call.toolCallId}`">
-            <StreamCard
-              :kind="StreamKind.Thinking"
-              :active="blockIdx === liveBlockIdx"
-              label="thought"
-              :text="thoughtText(entry.call)"
-            />
+            <StreamCard :kind="StreamKind.Thinking" :active="blockIdx === liveBlockIdx" label="thought" :text="thoughtText(entry.call)" />
           </template>
           <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
             <StreamCard
@@ -819,9 +824,9 @@ function onQueueDropAll(): void {
             />
           </template>
 
-          <!-- provider passed `undefined` for now: resolves to baseRegistry. Plumb -->
-          <!-- `activeProfile?.agent` → `profiles_list`'s vendor once per-adapter overrides land. -->
-          <ToolChips v-if="block.toolCalls.length > 0" :items="block.toolCalls.map((t) => formatToolCall(t.call))" grouped />
+          <!-- adapter not threaded today (every formatter falls through to its shared `fallback`). -->
+          <!-- Plumb the resolved `AgentProvider` here once the first per-adapter override appears. -->
+          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call))" grouped />
 
           <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
           <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->
@@ -838,10 +843,9 @@ function onQueueDropAll(): void {
           </template>
         </Turn>
       </div>
-
     </div>
 
-    <PermissionStack :prompts="standardPermissionPrompts" @allow="onAllow" @deny="onDeny" />
+    <PermissionStack :views="permissionRowQueue" @reply="(requestId, optionId, remember) => (optionId === 'allow' ? onAllow(requestId, remember) : onDeny(requestId, remember))" />
 
     <template #composer>
       <QueueStrip :messages="queueRows" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
@@ -849,24 +853,16 @@ function onQueueDropAll(): void {
     </template>
   </Frame>
 
-  <!-- Plan-modal — markdown body for permissions matching the
-       allowlist (`switch_mode` / `exit_plan_mode` / `plan` /
-       `plan_mode`). Top-level so the `position: fixed` backdrop
-       covers the viewport regardless of any chat-transcript scroll
-       position or stacking context inside the Frame. -->
-  <Modal
-    v-if="markdownModalPrompt"
-    :title="`plan · ${markdownModalPrompt.tool}`"
-    :tone="ToastTone.Warn"
-    :icon="faListCheck"
-    :dismissable="false"
-  >
-    <template #actions>
-      <Button :tone="ButtonTone.Err" @click="onDeny(markdownModalPrompt.requestId)">reject</Button>
-      <Button :tone="ButtonTone.Ok" :variant="ButtonVariant.Solid" @click="onAllow(markdownModalPrompt.requestId)">accept</Button>
-    </template>
-    <MarkdownBody :source="markdownModalPrompt.body" />
-  </Modal>
+  <!-- Modal-class permission UI — driven by `view.call.permissionUi
+       === Modal` from the formatter. Today only `plan-exit` declares
+       Modal; future heavy-confirm flows opt in by setting the same
+       discriminator. Top-level so the backdrop covers the viewport
+       regardless of any chat-transcript scroll position. -->
+  <PermissionModal
+    v-if="activeModalView"
+    :view="activeModalView"
+    @reply="(optionId) => (optionId === 'allow' ? onAllow(activeModalView!.request.requestId) : onDeny(activeModalView!.request.requestId))"
+  />
 
   <!-- Rename-instance modal — singleton driven by
        `useRenameInstanceModal()`. Body composes `<ModalDescription>`
@@ -884,15 +880,8 @@ function onQueueDropAll(): void {
       <Button :tone="ButtonTone.Neutral" @click="onRenameCancel">cancel</Button>
       <Button :tone="ButtonTone.Ok" :variant="ButtonVariant.Solid" @click="onRenameAccept">save</Button>
     </template>
-    <ModalDescription>
-      Lowercase letters, digits, <code>_</code>, <code>-</code>. Up to 16 chars. Empty clears the name.
-    </ModalDescription>
-    <ModalInput
-      v-model:value="renameDraft"
-      placeholder="ask, plan, review…"
-      :validate="validateInstanceName"
-      @submit="onRenameAccept"
-    />
+    <ModalDescription> Lowercase letters, digits, <code>_</code>, <code>-</code>. Up to 16 chars. Empty clears the name. </ModalDescription>
+    <ModalInput v-model:value="renameDraft" placeholder="ask, plan, review…" :validate="validateInstanceName" @submit="onRenameAccept" />
   </Modal>
 
   <CommandPalette />

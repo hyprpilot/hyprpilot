@@ -2,59 +2,47 @@
 import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons'
 import { ref, watch } from 'vue'
 
+import type { ToolField } from '@components'
 import { log, renderMarkdown } from '@lib'
 
 /**
- * Shared spec-sheet body — used by both `ToolPill` (when expanded)
- * and `PermissionStack` to render the structured fields of a tool
- * call. Three focal sections, each independent:
+ * Shared spec-sheet body — used by `ToolPill` (when expanded), the
+ * permission row, and the permission modal. Three independent
+ * sections:
  *
- *  1. Description (markdown prose) — what the tool is doing.
- *  2. Spec rows (command / flags / detail) — structured args.
- *     `kind` is intentionally NOT a spec row: it's already shown
- *     in the consuming component's title (the tool pill's leading
- *     `[icon] Bash` and the permission panel's `[icon] execute · Bash`
- *     both surface kind), so duplicating it here is noise.
- *  3. Output (mono pre, collapsible header) — terminal stdout /
- *     diff / tool result. A separate focal block with its own
- *     chevron + label since it can be very long and the captain
- *     often wants to skim or hide it independently.
+ *  1. Description — markdown body (rendered through `renderMarkdown`).
+ *     ALWAYS markdown by convention (D7); formatters only set this
+ *     when the source is markdown-shaped.
+ *  2. Fields — structured key/value rows (MCP arg dumps, JSON args).
+ *  3. Output — preformatted plain text (stdout / diff / file content)
+ *     in a collapsible mono pre block.
  *
  * The container itself doesn't cap height — the consumer wraps in
- * a scrollable region (`PermissionStack` caps the whole panel at
- * 45vh; `ToolPill`'s expanded body caps at 60vh). The output
- * `<pre>` carries its own max-height so a 10k-line stream doesn't
- * push every other section off-screen.
+ * a scrollable region. The output `<pre>` caps its own max-height
+ * so a 10k-line stream doesn't push every other section off-screen.
  */
 const props = defineProps<{
   description?: string
-  command?: string
-  flags?: string[]
-  detail?: string
   output?: string
-  /**
-   * Optional structured-field rows surfaced under the hardcoded
-   * command / flags / detail block. The fallback formatter
-   * populates this for MCP tools so each input arg renders on its
-   * own labelled row instead of blob-stringified into the `arg`
-   * column.
-   */
-  fields?: { label: string; value: string }[]
+  fields?: ToolField[]
 }>()
 
 const descriptionHtml = ref('')
+
 watch(
   () => props.description,
-  async (raw) => {
+  async(raw) => {
     if (!raw) {
       descriptionHtml.value = ''
 
       return
     }
+
     try {
       const out = await renderMarkdown(raw)
+
       descriptionHtml.value = out.html
-    } catch (err) {
+    } catch(err) {
       log.warn('spec-sheet: markdown render failed; plain fallback', { err: String(err) })
       descriptionHtml.value = ''
     }
@@ -63,6 +51,7 @@ watch(
 )
 
 const outputExpanded = ref(true)
+
 function toggleOutput(): void {
   outputExpanded.value = !outputExpanded.value
 }
@@ -74,25 +63,9 @@ function toggleOutput(): void {
     <div v-if="descriptionHtml" class="spec-sheet-description prose" v-html="descriptionHtml" />
     <div v-else-if="description" class="spec-sheet-description-plain">{{ description }}</div>
 
-    <div v-if="command" class="spec-sheet-field">
-      <span class="spec-sheet-label">command</span>
-      <code class="spec-sheet-command">{{ command }}</code>
-    </div>
-    <div v-if="flags && flags.length > 0" class="spec-sheet-field">
-      <span class="spec-sheet-label">flags</span>
-      <div class="spec-sheet-kvs">
-        <span v-for="(flag, idx) in flags" :key="idx" class="spec-sheet-kv">
-          <span class="spec-sheet-kv-key">{{ flag }}</span>
-        </span>
-      </div>
-    </div>
-    <div v-if="detail" class="spec-sheet-field">
-      <span class="spec-sheet-label">detail</span>
-      <span class="spec-sheet-value">{{ detail }}</span>
-    </div>
     <div v-for="row in fields ?? []" :key="row.label" class="spec-sheet-field">
       <span class="spec-sheet-label">{{ row.label }}</span>
-      <span class="spec-sheet-value spec-sheet-value-mono">{{ row.value }}</span>
+      <code class="spec-sheet-code">{{ row.value }}</code>
     </div>
 
     <section v-if="output" class="spec-sheet-output" :data-expanded="outputExpanded">
@@ -126,9 +99,6 @@ function toggleOutput(): void {
   min-width: 0;
 }
 
-/* Description — Inter prose with markdown sanitised through the
- * shared `renderMarkdown` pipeline. Sits at the top so the captain
- * reads "what I'm doing" before the structured args. */
 .spec-sheet-description {
   @apply text-[0.7rem] leading-relaxed;
   color: var(--theme-fg);
@@ -162,12 +132,6 @@ function toggleOutput(): void {
   white-space: pre-wrap;
 }
 
-/* Two-column row: label gets `auto` width capped at a quarter of
- * the row so a long key (`applicationName`) doesn't squeeze the
- * value out of the visible region — it truncates with ellipsis at
- * the cap. The `1fr` value column expands to fill the remainder.
- * `min-width: 0` on the value cell is essential for `overflow-wrap`
- * to take effect inside the grid. */
 .spec-sheet-field {
   display: grid;
   grid-template-columns: minmax(0, max-content) 1fr;
@@ -181,8 +145,6 @@ function toggleOutput(): void {
   color: var(--theme-fg-ink-2);
   letter-spacing: 0.6px;
   font-weight: 600;
-  /* Cap the label cell so a 30-char key doesn't crowd the value;
-   * ellipsis when it does overflow so the boundary stays visible. */
   max-width: 25ch;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -194,53 +156,23 @@ function toggleOutput(): void {
   overflow-wrap: anywhere;
 }
 
-/* Mono variant for structured field rows (MCP arg map projection)
- * — paths, patterns, and JSON-stringified blobs read better in the
- * monospace stack than the default. */
-.spec-sheet-value-mono {
-  font-family: var(--theme-font-mono);
-  font-size: 0.66rem;
-  color: var(--theme-fg);
-}
-
-.spec-sheet-command {
+/* Field-value code block — every parsed primitive (command, path,
+ * query, url, …) renders here. Background + border + padding mirror
+ * the focal `command` block on the old spec sheet so the captain
+ * always reads field values in the same monospace surface. */
+.spec-sheet-code {
   display: block;
   background-color: var(--theme-surface-bg);
   border: 1px solid var(--theme-border-soft);
   border-radius: 3px;
-  padding: 5px 8px;
-  white-space: pre;
+  padding: 4px 7px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--theme-fg);
+  font-family: var(--theme-font-mono);
   font-size: 0.66rem;
-  overflow-x: auto;
 }
 
-.spec-sheet-kvs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-/* KV chip — yellow-accent flag key + line2 outline. */
-.spec-sheet-kv {
-  display: inline-flex;
-  gap: 6px;
-  align-items: baseline;
-  padding: 2px 7px;
-  background-color: var(--theme-surface-bg);
-  border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
-  font-size: 0.6rem;
-}
-
-.spec-sheet-kv-key {
-  color: var(--theme-accent);
-  font-weight: 700;
-}
-
-/* Output — its own section with collapsible header. Visually
- * distinct from the spec rows above (own border + bg) so the eye
- * lands on the focal "what came back" block. */
 .spec-sheet-output {
   border: 1px solid var(--theme-border-soft);
   border-radius: 3px;

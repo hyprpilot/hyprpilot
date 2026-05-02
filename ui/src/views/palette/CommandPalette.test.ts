@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 
+import CommandPalette from './CommandPalette.vue'
 import { __resetPaletteStackForTests, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 
 // focus-trap-vue relies on real browser focus / tabbable-node detection
@@ -17,10 +18,14 @@ vi.mock('focus-trap-vue', () => ({
   })
 }))
 
-import CommandPalette from './CommandPalette.vue'
-
 function dispatchKey(init: KeyboardEventInit): void {
-  document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      ...init
+    })
+  )
 }
 
 function makeSelectSpec(overrides: Partial<PaletteSpec> = {}): PaletteSpec {
@@ -64,8 +69,9 @@ describe('CommandPalette.vue', () => {
     expect(wrapper.find('[data-testid="palette-overlay"]').exists()).toBe(false)
   })
 
-  it('renders the top of the stack', async () => {
+  it('renders the top of the stack', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec({ title: 'root' }))
     await nextTick()
 
@@ -76,8 +82,9 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('ArrowDown advances highlight; wraps at end', async () => {
+  it('ArrowDown advances highlight; wraps at end', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec())
     await nextTick()
 
@@ -96,8 +103,9 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('ArrowUp wraps from start to end', async () => {
+  it('ArrowUp wraps from start to end', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec())
     await nextTick()
 
@@ -108,8 +116,9 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('Tab toggles ticked state on the highlighted row in multi-select; pins ticked rows to top', async () => {
+  it('Tab toggles ticked state on the highlighted row in multi-select; pins ticked rows to top', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeMultiSpec())
     await nextTick()
 
@@ -121,13 +130,15 @@ describe('CommandPalette.vue', () => {
     expect(wrapper.find('[data-testid="palette-row-b"]').attributes('data-ticked')).toBe('true')
 
     const rows = wrapper.findAll('.palette-row')
+
     expect(rows[0]?.attributes('data-testid')).toBe('palette-row-b')
 
     wrapper.unmount()
   })
 
-  it('Tab is a no-op in select mode', async () => {
+  it('Tab is a no-op in select mode', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec())
     await nextTick()
 
@@ -139,8 +150,9 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('filter query pins ticked rows at the top even when the query would exclude them', async () => {
+  it('filter query pins ticked rows at the top even when the query would exclude them', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(
       makeMultiSpec({
         preseedActive: [{ id: 'a', name: 'apple' }]
@@ -149,20 +161,23 @@ describe('CommandPalette.vue', () => {
     await nextTick()
 
     const input = wrapper.get('[data-testid="palette-input"]').element as HTMLInputElement
+
     input.value = 'cher'
     input.dispatchEvent(new Event('input'))
     await nextTick()
 
     const rows = wrapper.findAll('.palette-row')
+
     expect(rows[0]?.attributes('data-testid')).toBe('palette-row-a')
     expect(rows[1]?.attributes('data-testid')).toBe('palette-row-c')
 
     wrapper.unmount()
   })
 
-  it('Ctrl+D fires onDelete on the highlighted row and keeps the palette mounted', async () => {
+  it('Ctrl+D fires onDelete on the highlighted row and keeps the palette mounted', async() => {
     const onDelete = vi.fn()
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec({ onDelete }))
     await nextTick()
 
@@ -175,9 +190,10 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('Enter commits highlighted row in select mode and closes', async () => {
+  it('Enter commits highlighted row in select mode and closes', async() => {
     const onCommit = vi.fn()
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec({ onCommit }))
     await nextTick()
 
@@ -192,9 +208,10 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('Enter in multi-select commits every ticked entry', async () => {
+  it('Enter in multi-select commits every ticked entry', async() => {
     const onCommit = vi.fn()
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeMultiSpec({ onCommit, preseedActive: [{ id: 'a', name: 'apple' }] }))
     await nextTick()
 
@@ -210,16 +227,18 @@ describe('CommandPalette.vue', () => {
     await nextTick()
 
     expect(onCommit).toHaveBeenCalledTimes(1)
-    const arg = onCommit.mock.calls[0]?.[0] as Array<{ id: string }>
+    const arg = onCommit.mock.calls[0]?.[0] as { id: string }[]
     const ids = arg.map((e) => e.id).sort()
+
     expect(ids).toEqual(['a', 'c'])
 
     wrapper.unmount()
   })
 
-  it('Esc pops one stack level, leaving the underlying spec rendered', async () => {
+  it('Esc pops one stack level, leaving the underlying spec rendered', async() => {
     const wrapper = mount(CommandPalette)
     const { open } = usePalette()
+
     open(makeSelectSpec({ title: 'root' }))
     open(
       makeSelectSpec({
@@ -240,9 +259,10 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('recursive open: onCommit that pushes a child renders the child after commit', async () => {
+  it('recursive open: onCommit that pushes a child renders the child after commit', async() => {
     const wrapper = mount(CommandPalette)
     const { open } = usePalette()
+
     open(
       makeSelectSpec({
         title: 'root',
@@ -268,8 +288,9 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('ticked glyphs do not render in select mode', async () => {
+  it('ticked glyphs do not render in select mode', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeSelectSpec())
     await nextTick()
 
@@ -278,8 +299,9 @@ describe('CommandPalette.vue', () => {
     wrapper.unmount()
   })
 
-  it('ticked glyphs render in multi-select mode', async () => {
+  it('ticked glyphs render in multi-select mode', async() => {
     const wrapper = mount(CommandPalette)
+
     usePalette().open(makeMultiSpec())
     await nextTick()
 

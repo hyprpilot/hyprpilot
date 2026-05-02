@@ -23,17 +23,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
 import { ComposerPillKind, type ComposerPill } from '@components'
-import {
-  type KeymapEntry,
-  useAttachments,
-  useCompletion,
-  useComposer,
-  useKeymap,
-  useKeymaps
-} from '@composables'
+import { type KeymapEntry, useAttachments, useCompletion, useComposer, useKeymap, useKeymaps } from '@composables'
 import { Modifier } from '@ipc'
 import { getCaretCoordinates, log } from '@lib'
-
 
 const props = withDefaults(
   defineProps<{
@@ -106,6 +98,7 @@ const textareaRef = ref<HTMLTextAreaElement>()
 
 function resize(): void {
   const el = textareaRef.value
+
   if (!el) {
     return
   }
@@ -124,6 +117,7 @@ const completionTop = ref<number | null>(0)
 const completionBottom = ref<number | null>(null)
 
 const { keymaps } = useKeymaps()
+
 useKeymap(textareaRef, (): KeymapEntry[] => {
   if (!keymaps.value) {
     return []
@@ -143,8 +137,16 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
       binding: keymaps.value.composer.completion ?? { modifiers: [Modifier.Ctrl], key: 'space' },
       handler: onTab
     },
-    { binding: keymaps.value.composer.history_up, handler: onHistoryPrev, allowRepeat: true },
-    { binding: keymaps.value.composer.history_down, handler: onHistoryNext, allowRepeat: true }
+    {
+      binding: keymaps.value.composer.history_up,
+      handler: onHistoryPrev,
+      allowRepeat: true
+    },
+    {
+      binding: keymaps.value.composer.history_down,
+      handler: onHistoryNext,
+      allowRepeat: true
+    }
   ]
 })
 
@@ -159,28 +161,36 @@ function onTextareaKeydown(e: KeyboardEvent): void {
   if (!completion.state.value.open) {
     return
   }
+
   if (e.key === 'ArrowDown') {
     e.preventDefault()
     e.stopPropagation()
     completion.selectNext()
+
     return
   }
+
   if (e.key === 'ArrowUp') {
     e.preventDefault()
     e.stopPropagation()
     completion.selectPrev()
+
     return
   }
+
   if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault()
     e.stopPropagation()
     applyCompletion()
+
     return
   }
+
   if (e.key === 'Escape') {
     e.preventDefault()
     e.stopPropagation()
     completion.close()
+
     return
   }
 }
@@ -204,6 +214,7 @@ const POPOVER_GAP = 0
  */
 function repositionPopover(): void {
   const el = textareaRef.value
+
   if (!el) {
     return
   }
@@ -211,6 +222,7 @@ function repositionPopover(): void {
   const coord = getCaretCoordinates(el, cursor)
   const below = coord.top + coord.height + POPOVER_GAP
   const wouldClipBelow = below + POPOVER_HEIGHT_ESTIMATE > window.innerHeight
+
   if (wouldClipBelow) {
     // Anchor from the bottom: popover's own bottom edge sits
     // POPOVER_GAP above the caret line top, regardless of how many
@@ -226,11 +238,13 @@ function repositionPopover(): void {
 
 function fireCompletionQuery(opts?: { manual?: boolean }): void {
   const el = textareaRef.value
+
   if (!el) {
     return
   }
   repositionPopover()
   const cursor = el.selectionStart ?? el.value.length
+
   completion.query(el.value, cursor, { manual: opts?.manual ?? false })
 }
 
@@ -252,20 +266,24 @@ function onTextareaCursorMove(): void {
 
 function applyCompletion(): void {
   const item = completion.commit()
+
   if (!item) {
     return
   }
   const el = textareaRef.value
+
   if (!el) {
     return
   }
   const before = el.value.slice(0, item.replacement.range.start)
   const after = el.value.slice(item.replacement.range.end)
   const inserted = item.replacement.text
+
   text.value = before + inserted + after
   void nextTick(() => {
     if (textareaRef.value) {
       const pos = before.length + inserted.length
+
       textareaRef.value.setSelectionRange(pos, pos)
       textareaRef.value.focus()
     }
@@ -298,6 +316,7 @@ function trySubmit(): void {
     return
   }
   const { text, attachments } = composer.resolvedSubmit()
+
   if (!text && attachments.length === 0) {
     return
   }
@@ -316,6 +335,7 @@ function onEnter(e: KeyboardEvent): boolean {
 
 function onTab(): boolean {
   log.debug('composer keybind', { key: 'Tab', target: 'completion' })
+
   // When the popover is open, `onTextareaKeydown` already handled
   // Tab and prevented default; the keymap chain shouldn't run. When
   // closed, Tab here means "force-open completion" (manual ripgrep
@@ -324,6 +344,7 @@ function onTab(): boolean {
     return true
   }
   fireCompletionQuery({ manual: true })
+
   return true
 }
 
@@ -333,6 +354,7 @@ async function readClipboardImagePill(): Promise<ComposerPill | undefined> {
     const rgba = await image.rgba()
     const { width, height } = await image.size()
     const blob = await rgbaToPngBlob(rgba, width, height)
+
     if (!blob) {
       return undefined
     }
@@ -345,7 +367,7 @@ async function readClipboardImagePill(): Promise<ComposerPill | undefined> {
       data: dataUrl.slice(dataUrl.indexOf(',') + 1),
       mimeType: 'image/png'
     }
-  } catch (err) {
+  } catch(err) {
     log.debug('clipboard readImage failed', { err: String(err) })
 
     return undefined
@@ -356,10 +378,12 @@ function onPasteImage(e: KeyboardEvent): boolean {
   log.debug('composer keybind', { key: 'ctrl+p', target: 'paste-image' })
   e.preventDefault()
 
-  void (async () => {
+  void (async() => {
     attachmentLoading.value += 1
+
     try {
       const pill = await readClipboardImagePill()
+
       if (pill) {
         composer.addPill(pill)
       }
@@ -384,17 +408,21 @@ function onAttachClick(): void {
 async function onFileInputChange(e: Event): Promise<void> {
   const input = e.target as HTMLInputElement
   const files = input.files
+
   if (!files || files.length === 0) {
     return
   }
+
   for (const file of Array.from(files)) {
     if (!file.type.startsWith('image/')) {
       log.debug('composer attach: skipping non-image file', { name: file.name, type: file.type })
       continue
     }
     attachmentLoading.value += 1
+
     try {
       const dataUrl = await blobToDataUrl(file)
+
       composer.addPill({
         kind: ComposerPillKind.Attachment,
         id: crypto.randomUUID(),
@@ -403,7 +431,7 @@ async function onFileInputChange(e: Event): Promise<void> {
         mimeType: file.type,
         fileName: file.name || undefined
       })
-    } catch (err) {
+    } catch(err) {
       log.warn('composer attach: file read failed', { name: file.name, err: String(err) })
     } finally {
       attachmentLoading.value = Math.max(0, attachmentLoading.value - 1)
@@ -431,9 +459,11 @@ async function rgbaToPngBlob(rgba: Uint8Array, width: number, height: number): P
     return undefined
   }
   const canvas = document.createElement('canvas')
+
   canvas.width = width
   canvas.height = height
   const ctx = canvas.getContext('2d')
+
   if (!ctx) {
     return undefined
   }
@@ -443,6 +473,7 @@ async function rgbaToPngBlob(rgba: Uint8Array, width: number, height: number): P
   // the view-of-rgba.buffer reads as `ArrayBufferLike` (which the
   // SharedArrayBuffer branch rejects).
   const data = new Uint8ClampedArray(rgba.byteLength)
+
   data.set(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength))
   ctx.putImageData(new ImageData(data, width, height), 0, 0)
 
@@ -455,6 +486,7 @@ async function rgbaToPngBlob(rgba: Uint8Array, width: number, height: number): P
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader()
+
     r.onload = () => resolve(r.result as string)
     r.onerror = () => reject(r.error)
     r.readAsDataURL(blob)
@@ -465,6 +497,7 @@ function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
   }
+
   if (bytes >= 1024) {
     return `${(bytes / 1024).toFixed(1)}KB`
   }
@@ -484,9 +517,11 @@ function onRemovePill(id: string): void {
 async function onDrop(e: DragEvent): Promise<void> {
   e.preventDefault()
   const files = e.dataTransfer?.files
+
   if (!files || files.length === 0) {
     return
   }
+
   for (const file of Array.from(files)) {
     if (!file.type.startsWith('image/')) {
       // Skill / reference attachments are palette-driven (K-268); the
@@ -494,8 +529,10 @@ async function onDrop(e: DragEvent): Promise<void> {
       continue
     }
     attachmentLoading.value += 1
+
     try {
       const dataUrl = await blobToDataUrl(file)
+
       composer.addPill({
         kind: ComposerPillKind.Attachment,
         id: crypto.randomUUID(),
@@ -530,15 +567,7 @@ function onDragOver(e: DragEvent): void {
 
     <!-- Hidden file picker — `accept="image/*"` mirrors the
          drag-drop guard. Multiple to mirror the loop in onDrop. -->
-    <input
-      ref="fileInputRef"
-      type="file"
-      accept="image/*"
-      multiple
-      hidden
-      data-testid="composer-file-input"
-      @change="(e) => void onFileInputChange(e)"
-    />
+    <input ref="fileInputRef" type="file" accept="image/*" multiple hidden data-testid="composer-file-input" @change="(e) => void onFileInputChange(e)" />
 
     <div class="composer-row">
       <textarea
@@ -555,12 +584,7 @@ function onDragOver(e: DragEvent): void {
         @keyup="onTextareaCursorMove"
         @blur="completion.close()"
       />
-      <CompletionPopover
-        :top="completionTop"
-        :bottom="completionBottom"
-        :left="completionLeft"
-        @commit="applyCompletion"
-      />
+      <CompletionPopover :top="completionTop" :bottom="completionBottom" :left="completionLeft" @commit="applyCompletion" />
       <div class="composer-actions">
         <button
           type="submit"
@@ -583,14 +607,7 @@ function onDragOver(e: DragEvent): void {
         >
           <FaIcon :icon="faStop" class="composer-action-icon" aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          class="composer-attach"
-          aria-label="attach image"
-          :disabled="disabled"
-          data-testid="composer-attach"
-          @click="onAttachClick"
-        >
+        <button type="button" class="composer-attach" aria-label="attach image" :disabled="disabled" data-testid="composer-attach" @click="onAttachClick">
           <FaIcon :icon="faPaperclip" class="composer-action-icon" aria-hidden="true" />
         </button>
       </div>

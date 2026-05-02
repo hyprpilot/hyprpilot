@@ -1,9 +1,8 @@
 import { test, expect } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-
-import type { ChildProcess } from 'node:child_process'
 
 /**
  * Reference spec for the **Hybrid daemon-driven verification** pattern
@@ -39,7 +38,7 @@ interface E2EState {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
+
   var __HYPRPILOT_E2E__: E2EState | undefined
 }
 
@@ -61,17 +60,19 @@ function ctl(state: E2EState, args: string[]): string {
 test.describe('wire flow — InstanceMeta', () => {
   test.skip(!isLiveMode(), 'live-mode-only spec — run via `task test:e2e:live`')
 
-  test('session/new emits acp:instance-meta with cwd + agent + model', async () => {
+  test('session/new emits acp:instance-meta with cwd + agent + model', async() => {
     const state = globalThis.__HYPRPILOT_E2E__!
     const cwd = process.env.HYPRPILOT_E2E_TEST_CWD ?? process.cwd()
 
     const spawnRaw = ctl(state, ['instances', 'spawn', '--agent', 'claude-code', '--cwd', cwd])
     const spawnJson = JSON.parse(spawnRaw)
+
     expect(typeof spawnJson.id).toBe('string')
     expect(spawnJson.id).toMatch(/^[0-9a-f-]{36}$/)
 
     const promptRaw = ctl(state, ['prompts', 'send', '--instance', spawnJson.id, 'ping'])
     const promptJson = JSON.parse(promptRaw)
+
     expect(promptJson.accepted).toBe(true)
 
     // Daemon log captures every `app.emit` via `emit_acp_event` (and
@@ -80,6 +81,7 @@ test.describe('wire flow — InstanceMeta', () => {
     // contains every emission up through the prompt-send call above.
     const logPath = path.join(state.runtimeDir, 'daemon.log')
     const log = readFileSync(logPath, 'utf8')
+
     expect(log).toContain('session/new accepted')
     expect(log).toContain(spawnJson.id)
   })

@@ -20,13 +20,10 @@ export interface UsePaletteFilterApi {
  * available to any future palette-shaped surface (an inline picker,
  * a sheet, …) without a copy-paste.
  */
-export function usePaletteFilter(
-  spec: Ref<PaletteSpec | undefined>,
-  query: Ref<string>,
-  ticked: Ref<Set<string>>
-): UsePaletteFilterApi {
+export function usePaletteFilter(spec: Ref<PaletteSpec | undefined>, query: Ref<string>, ticked: Ref<Set<string>>): UsePaletteFilterApi {
   const visible = computed<PaletteEntry[]>(() => {
     const s = spec.value
+
     if (!s) {
       return []
     }
@@ -37,10 +34,16 @@ export function usePaletteFilter(
     const gated = rest.filter((e) => subsequenceMatch(q, e.name))
 
     let ordered: PaletteEntry[]
+
     if (!q) {
       ordered = gated
     } else {
-      const fuse = new Fuse(gated, { keys: ['name'], threshold: 0.5, ignoreLocation: true })
+      const fuse = new Fuse(gated, {
+        keys: ['name'],
+        threshold: 0.5,
+        ignoreLocation: true
+      })
+
       ordered = fuse.search(q).map((r) => r.item)
     }
 
@@ -61,8 +64,10 @@ function subsequenceMatch(q: string, name: string): boolean {
   const needle = q.toLowerCase()
   const hay = name.toLowerCase()
   let pos = 0
+
   for (const ch of needle) {
     const next = hay.indexOf(ch, pos)
+
     if (next < 0) {
       return false
     }

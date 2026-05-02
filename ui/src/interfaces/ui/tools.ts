@@ -1,74 +1,157 @@
 /**
- * Tool-formatter contract — every per-tool formatter file under
- * `lib/tools/formatters/<name>.ts` implements `ToolFormatter`. The
- * registry (`lib/tools/registry.ts`) derives the lookup tables from
- * a list of definitions.
+ * Tool-call formatter contract. `format(call, adapter?)` (entry in
+ * `lib/tools/index.ts`) routes a `WireToolCall` (the per-instance
+ * tool-call record streamed off `acp:transcript`) through the right
+ * per-tool formatter and produces a `ToolCallView` every consumer
+ * (chat pill, permission row, plan-mode modal) reads off.
  */
 
-import type { ToolKind } from '@constants/ui/chat'
-import type { ToolState } from '@constants/ui/state'
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 
-import type { ToolChipItem } from './chat'
+import type { AdapterId, PermissionUi, PillKind, ToolState, ToolType } from '@constants/ui'
 
+/** Untyped arg map flowing through formatters. */
 export type Args = Record<string, unknown>
 
-export interface FormatterContext {
-  /** Normalised canonical tool name (lowercase + dashes-to-underscores). */
-  name: string
-  /** Raw tool name as emitted by the agent, before normalisation. */
-  rawName: string
-  /**
-   * ACP wire kind from `tool_call.kind` — closed enum
-   * (`read | edit | delete | move | search | execute | think | fetch
-   * | switch_mode | other`). Empty string when the agent didn't
-   * supply one. Drives the fallback formatter's label + ToolKind so
-   * unknown tools land on the right glyph instead of the agent's
-   * prose title.
-   */
-  kind: string
-  /** Argument map with every key normalised via `normaliseKey`. */
-  args: Args
-  state: ToolState
+/** Single key/value row surfaced under the spec sheet's structured fields. */
+export interface ToolField {
+  /// Lowercase short label rendered as the row prefix
+  /// ("path" / "pattern" / "tool"). Stays uniform with the spec
+  /// sheet's hardcoded rows.
+  label: string
+  /// Free-form value. Long values wrap; mono-font.
+  value: string
 }
 
 /**
- * One tool's formatter. Each registered tool ships its own file under
- * `lib/tools/formatters/<name>.ts` implementing this shape; the
- * registry derives the lookup map from the list of definitions.
+ * Single unified result type every formatter produces. Drives every
+ * consumer:
  *
- * Authoring rules:
- *  - `canonical` is the snake_case key the registry stores under.
- *  - `aliases` covers any agent-side spelling that should resolve to
- *    this formatter without a separate alias entry.
- *  - `label` is the chip's text identifier (aria-label, screen
- *    reader, plain-text exports). OPTIONAL — the registry default
- *    is the canonical key title-cased.
- *  - `kind` selects the chip tone + FontAwesome icon via
- *    `iconForToolKind`.
- *  - `format(ctx)` produces the chip. Always honor `ctx.state` so
- *    in-flight / awaiting / done tints render correctly.
+ *  - chat pill (`views/chat/ToolPill.vue`) reads `{ icon, title,
+ *    stat, state, type, description, output, fields }`.
+ *  - permission row (`views/composer/PermissionRow.vue`) reads
+ *    `{ icon, title, fields }`.
+ *  - permission modal (`views/chat/PermissionModal.vue`) reads
+ *    `{ title, description, fields, output }`.
+ *
+ * Pill rendering is a 3-section layout: `[icon] [title] [stat]` —
+ * the formatter composes `title` from whatever pieces it has (path
+ * + range, command + descriptor, etc.). No per-section breakdown
+ * lives in this shape.
  */
-export interface ToolFormatter {
-  readonly canonical: string
-  readonly aliases?: readonly string[]
-  /** Optional override; defaults to `titleCaseFromCanonical(canonical)`. */
-  readonly label?: string
-  readonly kind: ToolKind
-  format(ctx: FormatterContext): ToolChipItem
+export interface ToolCallView {
+  /// `tool_call.id` from the wire — stable identity for the tool.
+  id: string
+  /// Formatter-output discriminator. Drives any downstream
+  /// type-aware logic; the icon is supplied directly via `icon`.
+  type: ToolType
+  /// Raw wire tool name ("Bash" / "mcp__playwright__browser_navigate").
+  /// Trust-store keying + permission glob matching read this verbatim.
+  name: string
+  /// Lifecycle state — drives the pill's tone tint.
+  state: ToolState
+
+  /// FontAwesome icon, formatter-supplied. The chat pill renders
+  /// `<FaIcon :icon="view.icon" />` directly.
+  icon: IconDefinition
+  /// Pill-style discriminator. Only one variant today; future
+  /// shapes slot in as additional members.
+  pill: PillKind
+  /// Permission-flow surface declaration. `Row` for nearly every
+  /// tool; `Modal` reserved for plan-exit and other heavy flows.
+  permissionUi: PermissionUi
+
+  /// Composed display string for the pill's center cell. The
+  /// formatter assembles "Bash · npm test", "Edit auth.ts (replace
+  /// all)", etc. — consumers don't splice fragments.
+  title: string
+  /// Optional pill-right-cell metric ("1.4s", "2 edits", "11
+  /// chars"). Short by convention.
+  stat?: string
+
+  /// Markdown body. Always rendered AS markdown by every consumer
+  /// (chat pill expanded body, modal body). Formatters only assign
+  /// when the source is markdown-shaped — when in doubt, route the
+  /// content to `output` instead.
+  description?: string
+  /// Tool execution result rendered as preformatted plain text
+  /// (stdout / diff / file content).
+  output?: string
+  /// Structured key/value rows for MCP arg dumps + arbitrary JSON.
+  fields?: ToolField[]
+
+  /// Raw `tool_call.rawInput` JSON pass-through — needed by the
+  /// permission flow for trust-store keying alongside `name`.
+  rawInput?: Record<string, unknown>
 }
 
 /**
- * Resolved registry — the lookup tables `formatToolCall` walks at
- * runtime. Built once from a list of `ToolFormatter` definitions in
- * `registry.ts`.
+ * Wire tool call as stored by `composables/instance/use-tools` after
+ * receiving `acp:transcript` events. The formatter consumes this.
  */
-export interface ToolFormatterRegistry {
-  /** Canonical name → short verb word. Surface for `aria-label` etc. */
-  shortHeaders: Record<string, string>
-  /** Wire-name → canonical formatter key. */
-  aliases: Record<string, string>
-  /** Canonical name → formatter. */
-  formatters: Record<string, ToolFormatter>
-  /** Last-resort formatter — handles MCP-style names + wire-kind fallback. */
-  fallback: ToolFormatter
+export interface WireToolCallContentBlock {
+  [k: string]: unknown
+  type?: string
+  text?: string
+}
+
+export interface WireToolCallLocation {
+  path?: string
+  line?: number
+}
+
+export interface WireToolCall {
+  id: string
+  sessionId: string
+  /// Active ACP turn id at first-sight; preserved across subsequent
+  /// `tool_call_update` chunks for the same `toolCallId`.
+  turnId?: string
+  toolCallId: string
+  title?: string
+  status?: string
+  kind?: string
+  content: WireToolCallContentBlock[]
+  rawInput?: Record<string, unknown>
+  locations?: WireToolCallLocation[]
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * Per-formatter context. The formatter has the raw wire payload
+ * available via `raw` if it needs more than the normalised fields.
+ */
+export interface FormatterContext {
+  /// Raw wire tool name.
+  name: string
+  /// Normalised arg map (every key lowercased and underscore-stripped
+  /// per `normaliseArgs`).
+  args: Args
+  /// Lifecycle state derived from `wire.status`.
+  state: ToolState
+  /// The full wire payload. Formatters that need to read content
+  /// blocks, locations, or other ancillary fields reach for this.
+  raw: WireToolCall
+  /// Adapter that emitted the call. Formatters may branch internally
+  /// when divergence is small; larger divergences live in per-adapter
+  /// override files.
+  adapter?: AdapterId
+}
+
+/** A per-tool formatter — one shared `fallback` + optional per-adapter overrides. */
+export interface Formatter {
+  type: ToolType
+  format: (ctx: FormatterContext) => ToolCallView
+}
+
+/** Resolves a `Formatter` for a given adapter. */
+export type Formatters = (adapter?: AdapterId) => Formatter
+
+/**
+ * Build a `Formatters` resolver for a tool with optional per-adapter
+ * overrides. Each per-tool `index.ts` calls this with its `fallback`
+ * formatter + a (possibly empty) overrides map.
+ */
+export function pickFormatter(fallback: Formatter, overrides: Partial<Record<AdapterId, Formatter>> = {}): Formatters {
+  return (adapter) => (adapter ? (overrides[adapter] ?? fallback) : fallback)
 }

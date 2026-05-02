@@ -1,9 +1,8 @@
-import { ref } from 'vue'
-
-import { ToastTone } from '@components'
-import { invoke, TauriCommand, type ProfileSummary } from '@ipc'
+import { ref, type Ref } from 'vue'
 
 import { pushToast } from './use-toasts'
+import { ToastTone } from '@components'
+import { invoke, TauriCommand, type ProfileSummary } from '@ipc'
 
 const STORAGE_KEY = 'hyprpilot:last-profile'
 
@@ -24,8 +23,11 @@ let initialised = false
 
 function persist(id?: string): void {
   try {
-    if (id) window.localStorage.setItem(STORAGE_KEY, id)
-    else window.localStorage.removeItem(STORAGE_KEY)
+    if (id) {
+      window.localStorage.setItem(STORAGE_KEY, id)
+    } else {
+      window.localStorage.removeItem(STORAGE_KEY)
+    }
   } catch {
     // jsdom / private mode — don't blow up
   }
@@ -41,10 +43,12 @@ function readPersisted(): string | undefined {
 
 function defaultProfileId(list: ProfileSummary[]): string | undefined {
   const persisted = readPersisted()
+
   if (persisted && list.some((p) => p.id === persisted)) {
     return persisted
   }
   const flagged = list.find((p) => p.isDefault)
+
   if (flagged) {
     return flagged.id
   }
@@ -58,16 +62,19 @@ async function refresh(): Promise<void> {
   }
   loading.value = true
   lastErr.value = undefined
-  inflight = (async () => {
+  inflight = (async() => {
     try {
       const r = await invoke(TauriCommand.ProfilesList)
       const list = r.profiles
+
       profiles.value = list
+
       if (!selected.value || !list.some((p) => p.id === selected.value)) {
         selected.value = defaultProfileId(list)
       }
-    } catch (err) {
+    } catch(err) {
       const message = String(err)
+
       lastErr.value = message
       // Surface so the user sees why the header / palette can't
       // resolve a profile — silent failure here cascades into a
@@ -104,7 +111,16 @@ function select(id: string): void {
  * from "registry fetched, zero profiles configured" — the two states
  * look identical from `profiles.value.length` alone.
  */
-export function useProfiles() {
+export interface UseProfilesApi {
+  profiles: Ref<ProfileSummary[]>
+  selected: Ref<string | undefined>
+  lastErr: Ref<string | undefined>
+  loading: Ref<boolean>
+  refresh: () => Promise<void>
+  select: (id: string) => void
+}
+
+export function useProfiles(): UseProfilesApi {
   if (!initialised) {
     initialised = true
     void refresh()

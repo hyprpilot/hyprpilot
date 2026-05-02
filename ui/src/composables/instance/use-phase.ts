@@ -1,13 +1,12 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import { Phase } from '@components'
-
-import { InstanceState } from '@ipc'
-import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { usePermissions } from './use-permissions'
 import { useTools } from './use-tools'
 import { TurnRole, useTranscript } from './use-transcript'
 import { useTurns } from './use-turns'
+import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import { Phase } from '@components'
+import { InstanceState } from '@ipc'
 
 interface PhaseSignals {
   runtimeState?: InstanceState
@@ -17,6 +16,7 @@ const signals = reactive(new Map<InstanceId, PhaseSignals>())
 
 export function pushInstanceState(id: InstanceId, state: InstanceState): void {
   let slot = signals.get(id)
+
   if (!slot) {
     slot = {}
     signals.set(id, slot)
@@ -61,22 +61,24 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
   // inside the `phase` computed body, causing N allocations per reactive
   // read. Lifted version creates them once; sub-composables track
   // active-id changes through their own internal `computed`s.
-  const { pending } = usePermissions(instanceId)
+  const { rowQueue, modalQueue } = usePermissions(instanceId)
   const { calls } = useTools(instanceId)
   const { openTurnId } = useTurns(instanceId)
   const { turns } = useTranscript(instanceId)
 
   const phase = computed<Phase>(() => {
     const id = resolved.value
+
     if (!id) {
       return Phase.Idle
     }
 
-    if (pending.value.length > 0) {
+    if (rowQueue.value.length > 0 || modalQueue.value.length > 0) {
       return Phase.Awaiting
     }
 
     const sig = signals.get(id)
+
     if (sig?.runtimeState !== InstanceState.Running || !openTurnId.value) {
       // No open turn → idle, regardless of historical tool-call state.
       return Phase.Idle
@@ -84,13 +86,16 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
 
     const hasRunningTool = calls.value.some((c) => {
       const s = (c.status ?? '').toLowerCase()
+
       return s !== 'completed' && s !== 'done' && s !== 'failed' && s !== 'error'
     })
+
     if (hasRunningTool) {
       return Phase.Pending
     }
 
     const hasAgentTurn = turns.value.some((t) => t.role === TurnRole.Agent)
+
     if (hasAgentTurn) {
       return Phase.Streaming
     }

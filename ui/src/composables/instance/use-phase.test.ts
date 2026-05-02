@@ -1,18 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { Phase } from '@components'
+import {
+  useActiveInstance,
+  resetPermissions,
+  pushPermissionRequest,
+  __resetAllPhaseSignals,
+  pushInstanceState,
+  usePhase,
+  resetTools,
+  pushToolCall,
+  pushTranscriptChunk,
+  resetTranscript,
+  pushTurnEnded,
+  pushTurnStarted,
+  resetTurns
+} from '@composables'
 import { InstanceState } from '@ipc'
 
-import { Phase } from '@components'
-
-import { useActiveInstance } from '@composables'
-import { resetPermissions, pushPermissionRequest } from '@composables'
-import { __resetAllPhaseSignals, pushInstanceState, usePhase } from '@composables'
-import { resetTools, pushToolCall } from '@composables'
-import { pushTranscriptChunk, resetTranscript } from '@composables'
-import { pushTurnEnded, pushTurnStarted, resetTurns } from '@composables'
-
-vi.mock('@ipc', async () => {
+vi.mock('@ipc', async() => {
   const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+
   return {
     ...actual,
     invoke: vi.fn(),
@@ -36,6 +44,7 @@ beforeEach(() => {
 describe('usePhase', () => {
   it('returns idle when no active instance is set', () => {
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Idle)
   })
 
@@ -45,6 +54,7 @@ describe('usePhase', () => {
     pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Working)
   })
 
@@ -58,6 +68,7 @@ describe('usePhase', () => {
     })
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Streaming)
   })
 
@@ -69,9 +80,14 @@ describe('usePhase', () => {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hello' }
     })
-    pushTurnEnded('A', { turnId: 't-1', sessionId: 's-a', stopReason: 'end_turn' })
+    pushTurnEnded('A', {
+      turnId: 't-1',
+      sessionId: 's-a',
+      stopReason: 'end_turn'
+    })
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Idle)
   })
 
@@ -92,6 +108,7 @@ describe('usePhase', () => {
     })
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Pending)
   })
 
@@ -110,10 +127,17 @@ describe('usePhase', () => {
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'y' }]
+      options: [
+        {
+          optionId: 'allow',
+          name: 'Allow',
+          kind: 'y'
+        }
+      ]
     })
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Awaiting)
   })
 
@@ -124,6 +148,7 @@ describe('usePhase', () => {
     pushInstanceState('A', InstanceState.Ended)
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Idle)
   })
 
@@ -160,6 +185,7 @@ describe('usePhase', () => {
     })
 
     const { phase } = usePhase()
+
     expect(phase.value).toBe(Phase.Idle)
   })
 
@@ -174,6 +200,7 @@ describe('usePhase', () => {
     })
 
     const { phase } = usePhase('B')
+
     expect(phase.value).toBe(Phase.Streaming)
   })
 })

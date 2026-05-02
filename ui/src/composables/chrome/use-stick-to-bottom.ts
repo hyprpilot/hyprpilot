@@ -17,10 +17,7 @@ import { onMounted, onUnmounted, ref, type Ref } from 'vue'
  * `stuck` is exposed for callers that want a "scroll to bottom"
  * affordance — `false` means the user has scrolled away.
  */
-export function useStickToBottom(
-  scrollEl: Ref<HTMLElement | undefined>,
-  options?: { threshold?: number }
-): { stuck: Ref<boolean>; scrollToBottom: () => void } {
+export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options?: { threshold?: number }): { stuck: Ref<boolean>; scrollToBottom: () => void } {
   const threshold = options?.threshold ?? 64
   const stuck = ref(true)
 
@@ -30,6 +27,7 @@ export function useStickToBottom(
 
   function scrollToBottom(): void {
     const el = scrollEl.value
+
     if (!el) {
       return
     }
@@ -38,6 +36,7 @@ export function useStickToBottom(
 
   function onScroll(): void {
     const el = scrollEl.value
+
     if (!el) {
       return
     }
@@ -49,6 +48,7 @@ export function useStickToBottom(
 
   onMounted(() => {
     const el = scrollEl.value
+
     if (!el) {
       return
     }
@@ -74,7 +74,11 @@ export function useStickToBottom(
           scrollToBottom()
         }
       })
-      mutationObs.observe(el, { childList: true, subtree: true, characterData: true })
+      mutationObs.observe(el, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      })
     }
 
     scrollToBottom()
@@ -82,6 +86,7 @@ export function useStickToBottom(
 
   onUnmounted(() => {
     const el = scrollEl.value
+
     if (el) {
       el.removeEventListener('scroll', onScroll)
     }

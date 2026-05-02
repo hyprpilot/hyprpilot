@@ -1,34 +1,30 @@
 import { computed, ref, type ComputedRef } from 'vue'
 
-import { type PermissionPrompt } from '@components'
-import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
-import { log } from '@lib'
-
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import { PermissionUi } from '@components'
+import type { PermissionView, WireToolCall } from '@interfaces/ui'
+import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
+import { format, log } from '@lib'
 
 /**
- * Stored shape — `queued` is derived at read time in `pending`
+ * Stored shape — `queued` is derived at read time on the queue
  * (oldest-by-createdAt is active, everything else queued), not
  * snapshotted at insert. Snapshotting desyncs after eviction: the
- * remaining rows keep `queued: true` and the stack's activeId
- * lookup (`prompts.find((p) => !p.queued)`) goes undefined — action
- * buttons disappear.
+ * remaining rows keep `queued: true` and the active-row lookup goes
+ * undefined.
  */
-export interface PendingPermission extends Omit<PermissionPrompt, 'queued'> {
+export interface PendingPermission {
   instanceId: InstanceId
   requestId: string
   sessionId: string
-  createdAt: number
-  options: PermissionOptionView[]
-  /// Pass-through of `tool_call.rawInput`. Consumers checking the
-  /// permission shape (e.g. the plan-file modal) read structured
-  /// fields directly here.
+  tool: string
+  kind: string
+  args: string
   rawInput?: Record<string, unknown>
-  /// Joined text from the tool-call's `content[]` blocks. Modal
-  /// reads as a fallback markdown body when no `rawInput` field
-  /// matches the body-shape detector.
   contentText?: string
+  options: PermissionOptionView[]
+  createdAt: number
 }
 
 export interface PermissionRequestRaw {
@@ -46,17 +42,6 @@ export enum PermissionDecision {
   Deny = 'deny'
 }
 
-/**
- * Per-instance pending list. Stored as a `ref` over a plain
- * `Record<InstanceId, PendingPermission[]>` rather than
- * `reactive(Map)` because every mutation REPLACES the slot's array
- * (and the outer record) so Vue's reactive tracking fires on the
- * wrapping `ref` regardless of how clever the consuming computed
- * gets. The previous `reactive(new Map())` shape would silently miss
- * updates when a second permission landed before the first was
- * resolved — the UI showed the head and never re-rendered when the
- * map's `size` changed inside a deeply-nested computed.
- */
 const states = ref<Record<InstanceId, PendingPermission[]>>({})
 
 /**
@@ -69,7 +54,6 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     instanceId: id,
     requestId: raw.requestId,
     sessionId,
-    id: raw.requestId,
     tool: raw.tool,
     kind: raw.kind ?? 'acp',
     args: raw.args ?? '',
@@ -80,6 +64,7 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
   }
   const current = states.value[id] ?? []
   const filtered = current.filter((p) => p.requestId !== raw.requestId)
+
   states.value = { ...states.value, [id]: [...filtered, next] }
   log.trace('permission pending added', {
     instanceId: id,
@@ -91,15 +76,21 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
 
 export function evictPermission(id: InstanceId, requestId: string): void {
   const current = states.value[id]
+
   if (!current) {
     return
   }
   const filtered = current.filter((p) => p.requestId !== requestId)
+
   if (filtered.length === current.length) {
     return
   }
   states.value = { ...states.value, [id]: filtered }
-  log.trace('permission pending evicted', { instanceId: id, requestId, size: filtered.length })
+  log.trace('permission pending evicted', {
+    instanceId: id,
+    requestId,
+    size: filtered.length
+  })
 }
 
 export function resetPermissions(id: InstanceId): void {
@@ -107,47 +98,95 @@ export function resetPermissions(id: InstanceId): void {
     return
   }
   const next = { ...states.value }
+
   delete next[id]
   states.value = next
 }
 
-export interface PendingPermissionView extends PendingPermission {
-  queued: boolean
+/**
+ * Synthesize a `WireToolCall` from the wire permission payload so
+ * `format()` can produce a `ToolCallView` for the row / modal
+ * renderers. The permission flow doesn't carry the full tool-call
+ * record on the wire — just the abridged request shape — so we
+ * project the available fields onto the same vocabulary.
+ */
+function synthesizeWireCall(p: PendingPermission): WireToolCall {
+  return {
+    id: p.requestId,
+    sessionId: p.sessionId,
+    toolCallId: p.requestId,
+    title: p.tool,
+    status: 'pending',
+    kind: p.kind,
+    content: p.contentText && p.contentText.length > 0 ? [{ type: 'text', text: p.contentText }] : [],
+    rawInput: p.rawInput,
+    createdAt: p.createdAt,
+    updatedAt: p.createdAt
+  }
 }
 
-export function usePermissions(instanceId?: InstanceId): {
-  pending: ComputedRef<PendingPermissionView[]>
+function buildView(p: PendingPermission, queued: boolean): PermissionView {
+  const call = format(synthesizeWireCall(p))
+
+  return {
+    request: {
+      requestId: p.requestId,
+      instanceId: p.instanceId,
+      sessionId: p.sessionId,
+      toolName: p.tool
+    },
+    call,
+    options: p.options,
+    queued
+  }
+}
+
+export interface UsePermissionsApi {
+  /** Permission requests with `permissionUi: Row` — drives the inline strip. */
+  rowQueue: ComputedRef<PermissionView[]>
+  /** Permission requests with `permissionUi: Modal` — drives the modal queue. */
+  modalQueue: ComputedRef<PermissionView[]>
   /**
    * Allow a pending permission. `remember=true` writes a runtime
    * trust-store entry for `(instance, tool)` so subsequent calls of
-   * the same tool short-circuit at decide() lane 1 — that's the UI's
+   * the same tool short-circuit at decide() lane 1 — that's the
    * "always allow" path. `remember=false` (default) is "once".
    */
   allow: (requestId: string, remember?: boolean) => Promise<void>
   deny: (requestId: string, remember?: boolean) => Promise<void>
-} {
+}
+
+export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
   const { id: activeId } = useActiveInstance()
 
-  const pending = computed<PendingPermissionView[]>(() => {
+  const allViews = computed<PermissionView[]>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return []
     }
     const list = states.value[resolved]
+
     if (!list || list.length === 0) {
       return []
     }
     const sorted = [...list].sort((a, b) => a.createdAt - b.createdAt)
 
-    return sorted.map((p, i) => ({ ...p, queued: i > 0 }))
+    return sorted.map((p, i) => buildView(p, i > 0))
   })
+
+  const rowQueue = computed<PermissionView[]>(() => allViews.value.filter((v) => v.call.permissionUi === PermissionUi.Row))
+
+  const modalQueue = computed<PermissionView[]>(() => allViews.value.filter((v) => v.call.permissionUi === PermissionUi.Modal))
 
   async function respond(requestId: string, decision: PermissionDecision, remember: boolean): Promise<void> {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       throw new Error('no active instance')
     }
     const entry = states.value[resolved]?.find((p) => p.requestId === requestId)
+
     if (!entry) {
       throw new Error(`no pending permission request ${requestId}`)
     }
@@ -163,7 +202,8 @@ export function usePermissions(instanceId?: InstanceId): {
   }
 
   return {
-    pending,
+    rowQueue,
+    modalQueue,
     allow: (requestId, remember = false) => respond(requestId, PermissionDecision.Allow, remember),
     deny: (requestId, remember = false) => respond(requestId, PermissionDecision.Deny, remember)
   }

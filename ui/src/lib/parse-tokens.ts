@@ -25,6 +25,7 @@ export interface ParsedToken {
 export function parseTokens(text: string): ParsedToken[] {
   const out: ParsedToken[] = []
   let match: RegExpExecArray | null
+
   while ((match = TOKEN_PATTERN.exec(text)) !== null) {
     out.push({
       scheme: match[1] ?? '',
@@ -33,5 +34,6 @@ export function parseTokens(text: string): ParsedToken[] {
       end: match.index + match[0].length
     })
   }
+
   return out
 }

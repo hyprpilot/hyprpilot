@@ -1,5 +1,4 @@
 <script setup lang="ts">
-
 import Loading from '@components/Loading.vue'
 import { useBootLoading } from '@composables'
 import Overlay from '@views/Overlay.vue'

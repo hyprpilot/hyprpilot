@@ -1,45 +1,23 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
-import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { openTurnIdFor } from './use-turns'
+import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation } from '@interfaces/ui'
 
-export interface ToolCallLocation {
-  path?: string
-  line?: number
-}
-
-export interface ToolCallContentBlock {
-  type?: string
-  text?: string
-  [k: string]: unknown
-}
-
-export interface ToolCallView {
-  id: string
-  sessionId: string
-  /// Active ACP turn id at first-sight; preserved across subsequent
-  /// `tool_call_update` chunks for the same `toolCallId`.
-  turnId?: string
-  toolCallId: string
-  title?: string
-  status?: string
-  kind?: string
-  content: ToolCallContentBlock[]
-  rawInput?: Record<string, unknown>
-  locations?: ToolCallLocation[]
-  createdAt: number
-  updatedAt: number
-}
+// Backwards-friendly local re-exports for files that imported the
+// wire-call types via `@composables`.
+export type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation }
 
 export interface ToolsState {
-  calls: ToolCallView[]
+  calls: WireToolCall[]
 }
 
 const states = reactive(new Map<InstanceId, ToolsState>())
 
 function slotFor(id: InstanceId): ToolsState {
   let slot = states.get(id)
+
   if (!slot) {
     slot = { calls: [] }
     states.set(id, slot)
@@ -54,9 +32,9 @@ interface ToolCallUpdate {
   title?: string
   status?: string
   kind?: string
-  content?: ToolCallContentBlock[]
+  content?: WireToolCallContentBlock[]
   rawInput?: Record<string, unknown>
-  locations?: ToolCallLocation[]
+  locations?: WireToolCallLocation[]
 }
 
 export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpdate): void {
@@ -64,26 +42,34 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
   const seq = nextSeq(id)
   const toolCallId = raw.toolCallId ?? `tc-${seq}`
   const existing = slot.calls.find((c) => c.toolCallId === toolCallId && c.sessionId === sessionId)
+
   if (existing) {
     existing.updatedAt = seq
+
     if (raw.title !== undefined) {
       existing.title = raw.title
     }
+
     if (raw.status !== undefined) {
       existing.status = raw.status
     }
+
     if (raw.kind !== undefined) {
       existing.kind = raw.kind
     }
+
     if (Array.isArray(raw.content)) {
       existing.content = raw.content
     }
+
     if (raw.rawInput !== undefined) {
       existing.rawInput = raw.rawInput
     }
+
     if (Array.isArray(raw.locations)) {
       existing.locations = raw.locations
     }
+
     return
   }
   slot.calls.push({
@@ -111,22 +97,26 @@ export function resetTools(id: InstanceId): void {
  * cancelled / errored turn from the visible chat. */
 export function deleteToolsByTurnId(id: InstanceId, turnId: string): number {
   const slot = states.get(id)
+
   if (!slot) {
     return 0
   }
   const before = slot.calls.length
+
   slot.calls = slot.calls.filter((c) => c.turnId !== turnId)
+
   return before - slot.calls.length
 }
 
-export function getToolCall(id: InstanceId, toolCallId: string): ToolCallView | undefined {
+export function getToolCall(id: InstanceId, toolCallId: string): WireToolCall | undefined {
   return states.get(id)?.calls.find((c) => c.toolCallId === toolCallId)
 }
 
-export function useTools(instanceId?: InstanceId): { calls: ComputedRef<ToolCallView[]> } {
+export function useTools(instanceId?: InstanceId): { calls: ComputedRef<WireToolCall[]> } {
   const { id: activeId } = useActiveInstance()
-  const calls = computed<ToolCallView[]>(() => {
+  const calls = computed<WireToolCall[]>(() => {
     const resolved = instanceId ?? activeId.value
+
     if (!resolved) {
       return []
     }

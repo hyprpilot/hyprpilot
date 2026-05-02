@@ -1,16 +1,9 @@
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { createApp } from 'vue'
 
-import {
-  applyTheme,
-  applyWindowState,
-  loadHomeDir,
-  loadKeymaps,
-  markBootDone,
-  setBootStatus
-} from '@composables'
-import { log } from '@lib'
 import App from './App.vue'
+import { applyTheme, applyWindowState, loadHomeDir, loadKeymaps, markBootDone, setBootStatus } from '@composables'
+import { log } from '@lib'
 import '@assets/styles.css'
 
 /**
@@ -31,7 +24,16 @@ import '@assets/styles.css'
  */
 function installGlobalErrorBridge(): void {
   window.addEventListener('error', (event) => {
-    log.error('uncaught error', { source: 'window.error', filename: event.filename, lineno: event.lineno, colno: event.colno }, event.error ?? event.message)
+    log.error(
+      'uncaught error',
+      {
+        source: 'window.error',
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno
+      },
+      event.error ?? event.message
+    )
   })
   window.addEventListener('unhandledrejection', (event) => {
     log.error('unhandled rejection', { source: 'window.unhandledrejection' }, event.reason)
@@ -60,6 +62,7 @@ async function boot(): Promise<void> {
   // for theme; this preview is browser-mode only.
   if (import.meta.env.VITE_HYPRPILOT_DEV_PREVIEW === '1') {
     const { applyDevPreview } = await import('../../tests/dev-preview')
+
     applyDevPreview()
   }
 
@@ -79,6 +82,7 @@ async function boot(): Promise<void> {
   // first paints AFTER `markBootDone()`, so `done=true` already
   // and the v-if gate evaluates false on first render.
   const app = createApp(App)
+
   app.component('FaIcon', FontAwesomeIcon)
   app.config.errorHandler = (err, _instance, info) => {
     log.error('vue error', { source: 'vue.errorHandler', info }, err)

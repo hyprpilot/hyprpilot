@@ -9,8 +9,18 @@ beforeEach(() => {
 
 describe('useTools', () => {
   it('isolates tool calls between instances', () => {
-    pushToolCall('A', 's-a', { sessionUpdate: 'tool_call', toolCallId: 'tc-1', title: 'read', status: 'completed' })
-    pushToolCall('B', 's-b', { sessionUpdate: 'tool_call', toolCallId: 'tc-2', title: 'write', status: 'pending' })
+    pushToolCall('A', 's-a', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc-1',
+      title: 'read',
+      status: 'completed'
+    })
+    pushToolCall('B', 's-b', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc-2',
+      title: 'write',
+      status: 'pending'
+    })
 
     const a = useTools('A').calls.value
     const b = useTools('B').calls.value
@@ -22,10 +32,20 @@ describe('useTools', () => {
   })
 
   it('merges tool_call_update onto the existing entry by toolCallId', () => {
-    pushToolCall('A', 's-a', { sessionUpdate: 'tool_call', toolCallId: 'tc-1', title: 'read', status: 'pending' })
-    pushToolCall('A', 's-a', { sessionUpdate: 'tool_call_update', toolCallId: 'tc-1', status: 'completed' })
+    pushToolCall('A', 's-a', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc-1',
+      title: 'read',
+      status: 'pending'
+    })
+    pushToolCall('A', 's-a', {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-1',
+      status: 'completed'
+    })
 
     const calls = useTools('A').calls.value
+
     expect(calls).toHaveLength(1)
     expect(calls[0]?.status).toBe('completed')
     expect(calls[0]?.title).toBe('read')

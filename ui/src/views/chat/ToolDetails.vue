@@ -1,35 +1,26 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { ToolState, iconForToolKind, toolStateTone, type ToolChipItem } from '@components'
+import { ToolState, toolStateTone, type ToolCallView } from '@components'
 
 /**
- * Full-bleed tool row. Used for Bash/Write/Edit/Terminal tools that the
- * grouping logic in ToolChips promotes out of the 2-col grid. Port of
- * the wireframe's BigToolRow.
- *
- * Border, label and stat all take the per-state colour; `arg` bright-fg
- * while running/awaiting, `ink-2` once done; `detail` is italic Inter as
- * a soft meta line. `kind` prop unused visually — the JSX ties everything
- * to state, not tool family.
+ * Full-bleed tool row — the wider sibling to `ToolPill`. Used for
+ * tools the chat surface wants to surface prominently. Three-section
+ * layout matching `ToolPill`: `[icon] [title] [stat]`.
  */
 const props = defineProps<{
-  item: ToolChipItem
+  view: ToolCallView
 }>()
 
-const stateTone = computed(() => toolStateTone(props.item.state))
-
-const kindIcon = computed(() => iconForToolKind(props.item.kind))
+const stateTone = computed(() => toolStateTone(props.view.state))
 </script>
 
 <template>
-  <div class="tool-details" :data-state="item.state" :style="{ '--tone': stateTone }">
-    <span v-if="item.state === ToolState.Running" class="tool-details-dot" aria-hidden="true" />
-    <FaIcon :icon="kindIcon" class="tool-details-kind" aria-hidden="true" />
-    <span class="tool-details-label">{{ item.label }}</span>
-    <span v-if="item.arg" class="tool-details-arg">{{ item.arg }}</span>
-    <span v-if="item.detail" class="tool-details-detail">{{ item.detail }}</span>
-    <span v-if="item.stat" class="tool-details-stat">{{ item.stat }}</span>
+  <div class="tool-details" :data-state="view.state" :data-type="view.type" :style="{ '--tone': stateTone }">
+    <span v-if="view.state === ToolState.Running" class="tool-details-dot" aria-hidden="true" />
+    <FaIcon :icon="view.icon" class="tool-details-kind" aria-hidden="true" />
+    <span class="tool-details-title">{{ view.title }}</span>
+    <span v-if="view.stat" class="tool-details-stat">{{ view.stat }}</span>
   </div>
 </template>
 
@@ -60,17 +51,11 @@ const kindIcon = computed(() => iconForToolKind(props.item.kind))
   color: var(--tone);
 }
 
-.tool-details-label {
-  @apply shrink-0 font-bold;
-  color: var(--tone);
-  min-width: 36px;
-}
-
-.tool-details[data-state='done'] .tool-details-arg {
+.tool-details[data-state='done'] .tool-details-title {
   color: var(--theme-fg-ink-2);
 }
 
-.tool-details-arg {
+.tool-details-title {
   @apply flex-1 truncate;
   color: var(--theme-fg);
   min-width: 0;
@@ -79,11 +64,5 @@ const kindIcon = computed(() => iconForToolKind(props.item.kind))
 .tool-details-stat {
   @apply shrink-0 text-[0.56rem];
   color: var(--tone);
-}
-
-.tool-details-detail {
-  @apply truncate text-[0.56rem] italic;
-  color: var(--theme-fg-dim);
-  font-family: var(--theme-font-sans);
 }
 </style>

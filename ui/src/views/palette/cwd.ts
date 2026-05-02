@@ -18,16 +18,7 @@
  */
 
 import { ToastTone } from '@components'
-import {
-  truncateCwd,
-  useActiveInstance,
-  useCwdHistory,
-  useHomeDir,
-  usePalette,
-  useToasts,
-  type PaletteEntry,
-  PaletteMode
-} from '@composables'
+import { truncateCwd, useActiveInstance, useCwdHistory, useHomeDir, usePalette, useToasts, type PaletteEntry, PaletteMode } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -41,9 +32,11 @@ function expandTilde(path: string, home?: string): string {
   if (!home) {
     return path
   }
+
   if (path === '~') {
     return home
   }
+
   if (path.startsWith('~/')) {
     return `${home}${path.slice(1)}`
   }
@@ -62,17 +55,20 @@ async function commitCwd(rawPath: string): Promise<void> {
   const toasts = useToasts()
 
   const trimmed = rawPath.trim()
+
   if (!trimmed) {
     toasts.push(ToastTone.Warn, 'cwd: empty path')
 
     return
   }
+
   if (!isLikelyAbsolute(trimmed)) {
     toasts.push(ToastTone.Warn, `cwd: '${trimmed}' is not an absolute path`)
 
     return
   }
   const instanceId = activeId.value
+
   if (!instanceId) {
     toasts.push(ToastTone.Err, 'cwd: no active instance to restart')
 
@@ -85,7 +81,7 @@ async function commitCwd(rawPath: string): Promise<void> {
     await invoke(TauriCommand.InstanceRestart, { instanceId, cwd: expanded })
     push(expanded)
     toasts.push(ToastTone.Ok, `cwd → ${shortenForToast(expanded, homeDir.value)}`)
-  } catch (err) {
+  } catch(err) {
     log.warn('palette-cwd: instance_restart failed', { err: String(err) })
     toasts.push(ToastTone.Err, `cwd failed: ${String(err)}`)
   }
@@ -117,14 +113,17 @@ export function openCwdLeaf(): void {
     entries,
     onCommit(picks, query) {
       const pick = picks[0]
+
       if (!pick) {
         return
       }
+
       if (pick.id === MANUAL_ROW_ID) {
         void commitCwd(query ?? '')
 
         return
       }
+
       if (pick.id.startsWith('cwd-recent:')) {
         void commitCwd(pick.id.slice('cwd-recent:'.length))
 

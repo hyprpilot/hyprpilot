@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ToastTone } from '@components'
-
 import { clearToasts, dismissToast, pushToast, useToasts } from './use-toasts'
+import { ToastTone } from '@components'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -21,6 +20,7 @@ describe('useToasts', () => {
     pushToast(ToastTone.Err, 'fourth')
 
     const { entries } = useToasts()
+
     expect(entries.value).toHaveLength(3)
     expect(entries.value.map((t) => t.body)).toEqual(['second', 'third', 'fourth'])
   })
@@ -30,17 +30,20 @@ describe('useToasts', () => {
     pushToast(ToastTone.Ok, 'queued')
 
     const { entries } = useToasts()
+
     expect(entries.value[0]?.body).toBe('now showing')
     expect(entries.value).toHaveLength(2)
   })
 
   it('dismissToast removes the entry by id', () => {
     const id = pushToast(ToastTone.Warn, 'remove me')
+
     pushToast(ToastTone.Ok, 'keep me')
 
     dismissToast(id)
 
     const { entries } = useToasts()
+
     expect(entries.value).toHaveLength(1)
     expect(entries.value[0]?.body).toBe('keep me')
   })
@@ -74,9 +77,11 @@ describe('useToasts', () => {
 
   it('accepts a component+props body for richer toast contents', () => {
     const SampleBody = { template: '<span>x</span>' }
+
     pushToast(ToastTone.Warn, { component: SampleBody, props: { foo: 1 } })
 
     const head = useToasts().entries.value[0]
+
     expect(head?.body).toEqual({ component: SampleBody, props: { foo: 1 } })
   })
 })

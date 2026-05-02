@@ -1,17 +1,14 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Modifier, TauriCommand } from '@ipc'
-
-import { __resetComposerForTests } from '@composables'
-import { __resetKeymapsForTests, useKeymaps } from '@composables'
-
 import ChatComposer from './Composer.vue'
 import { ComposerPillKind, type ComposerPill } from '@components'
+import { __resetComposerForTests, __resetKeymapsForTests, useKeymaps } from '@composables'
+import { Modifier, TauriCommand } from '@ipc'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 
-vi.mock('@ipc', async () => ({
+vi.mock('@ipc', async() => ({
   ...(await vi.importActual<typeof import('@ipc')>('@ipc')),
   invoke: (...args: unknown[]) => invokeMock(...args)
 }))
@@ -59,6 +56,7 @@ describe('ChatComposer.vue', () => {
       if (cmd === TauriCommand.GetKeymaps) {
         return Promise.resolve(DEFAULT_KEYMAPS)
       }
+
       return Promise.resolve(undefined)
     })
     // Seed the cache directly — loadKeymaps() goes through `invoke`
@@ -67,10 +65,22 @@ describe('ChatComposer.vue', () => {
     useKeymaps().keymaps.value = DEFAULT_KEYMAPS as never
   })
 
-  it('renders pills + removes them', async () => {
+  it('renders pills + removes them', async() => {
     const pills: ComposerPill[] = [
-      { kind: ComposerPillKind.Attachment, id: 'a', label: 'file://src/App.vue', data: 'AA==', mimeType: 'image/png' },
-      { kind: ComposerPillKind.Resource, id: 'b', label: 'skills/debug', data: 'debug', mimeType: 'skill' }
+      {
+        kind: ComposerPillKind.Attachment,
+        id: 'a',
+        label: 'file://src/App.vue',
+        data: 'AA==',
+        mimeType: 'image/png'
+      },
+      {
+        kind: ComposerPillKind.Resource,
+        id: 'b',
+        label: 'skills/debug',
+        data: 'debug',
+        mimeType: 'skill'
+      }
     ]
     const wrapper = mount(ChatComposer, { props: { pills } })
 
@@ -79,9 +89,10 @@ describe('ChatComposer.vue', () => {
     expect(wrapper.emitted('removePill')?.[0]).toEqual(['a'])
   })
 
-  it('exposes an addPill hook for external pill injection (Ctrl+P sink)', async () => {
+  it('exposes an addPill hook for external pill injection (Ctrl+P sink)', async() => {
     const wrapper = mount(ChatComposer)
     const vm = wrapper.vm as unknown as { addPill: (p: ComposerPill) => void }
+
     vm.addPill({
       kind: ComposerPillKind.Attachment,
       id: 'k-1',
@@ -94,7 +105,7 @@ describe('ChatComposer.vue', () => {
     expect(wrapper.findAll('.composer-pill')).toHaveLength(1)
   })
 
-  it('drag-drop of a non-image file is ignored (palette-only resources)', async () => {
+  it('drag-drop of a non-image file is ignored (palette-only resources)', async() => {
     const wrapper = mount(ChatComposer)
     const form = wrapper.get('[data-testid="composer"]')
 
@@ -102,8 +113,10 @@ describe('ChatComposer.vue', () => {
     const dataTransfer = { files: [file], dropEffect: 'copy' } as unknown as DataTransfer
 
     const dropEvent = new Event('drop', { bubbles: true }) as unknown as DragEvent
+
     Object.defineProperty(dropEvent, 'dataTransfer', { value: dataTransfer })
     form.element.dispatchEvent(dropEvent)
+
     for (let i = 0; i < 8; i++) {
       await Promise.resolve()
     }
@@ -112,7 +125,7 @@ describe('ChatComposer.vue', () => {
     expect(wrapper.findAll('.composer-pill')).toHaveLength(0)
   })
 
-  it('disables submit for empty or sending state', async () => {
+  it('disables submit for empty or sending state', async() => {
     const wrapper = mount(ChatComposer, { props: { sending: true } })
     const submit = wrapper.get('[data-testid="composer-submit"]')
 
@@ -120,18 +133,20 @@ describe('ChatComposer.vue', () => {
     expect(submit.attributes('aria-label')).toBe('sending')
   })
 
-  it('emits submit with trimmed text payload', async () => {
+  it('emits submit with trimmed text payload', async() => {
     const wrapper = mount(ChatComposer)
     const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
 
     await textarea.setValue('  hello  ')
     await wrapper.trigger('submit')
+
     for (let i = 0; i < 4; i++) {
       await Promise.resolve()
     }
     await wrapper.vm.$nextTick()
 
     const emitted = wrapper.emitted('submit')?.[0]
+
     expect(emitted).toBeDefined()
     expect((emitted as [{ text: string; attachments: unknown[] }])[0]).toMatchObject({
       text: 'hello',
@@ -139,9 +154,10 @@ describe('ChatComposer.vue', () => {
     })
   })
 
-  it('Enter submits; Shift+Enter does not', async () => {
+  it('Enter submits; Shift+Enter does not', async() => {
     const wrapper = mount(ChatComposer, { attachTo: document.body })
     const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
+
     await textarea.setValue('hi')
     textarea.element.focus()
 

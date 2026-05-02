@@ -28,11 +28,7 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
 </script>
 
 <template>
-  <div
-    class="change-banner"
-    role="note"
-    :aria-label="showFrom ? `${kind} changed from ${from} to ${to}` : `${kind} changed to ${to}`"
-  >
+  <div class="change-banner" role="note" :aria-label="showFrom ? `${kind} changed from ${from} to ${to}` : `${kind} changed to ${to}`">
     <span class="change-banner-rule" aria-hidden="true" />
     <span class="change-banner-label">
       <FaIcon :icon="faArrowRightArrowLeft" class="change-banner-icon" aria-hidden="true" />

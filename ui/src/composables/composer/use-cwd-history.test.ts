@@ -15,6 +15,7 @@ describe('useCwdHistory', () => {
 
   it('pushCwd prepends new entries (MRU)', () => {
     const { history } = useCwdHistory()
+
     pushCwd('/tmp/a')
     pushCwd('/tmp/b')
 
@@ -23,6 +24,7 @@ describe('useCwdHistory', () => {
 
   it('pushCwd deduplicates by exact match and re-promotes', () => {
     const { history } = useCwdHistory()
+
     pushCwd('/tmp/a')
     pushCwd('/tmp/b')
     pushCwd('/tmp/a')
@@ -32,6 +34,7 @@ describe('useCwdHistory', () => {
 
   it('pushCwd ignores empty / whitespace input', () => {
     const { history } = useCwdHistory()
+
     pushCwd('')
     pushCwd('   ')
 
@@ -40,6 +43,7 @@ describe('useCwdHistory', () => {
 
   it('pushCwd trims whitespace around the entry', () => {
     const { history } = useCwdHistory()
+
     pushCwd('  /tmp/a  ')
 
     expect(history.value).toEqual(['/tmp/a'])
@@ -47,6 +51,7 @@ describe('useCwdHistory', () => {
 
   it('caps history at MAX_HISTORY (10) entries — oldest drops first', () => {
     const { history } = useCwdHistory()
+
     for (let i = 0; i < 12; i++) {
       pushCwd(`/tmp/${i}`)
     }
@@ -61,13 +66,16 @@ describe('useCwdHistory', () => {
     pushCwd('/tmp/b')
 
     const raw = window.localStorage.getItem('hyprpilot.cwdHistory')
+
     expect(raw).toBeTruthy()
     const parsed = JSON.parse(raw as string) as string[]
+
     expect(parsed).toEqual(['/tmp/b', '/tmp/a'])
   })
 
   it('clear() empties history and storage', () => {
     const { history, clear } = useCwdHistory()
+
     pushCwd('/tmp/a')
     clear()
 
@@ -78,6 +86,7 @@ describe('useCwdHistory', () => {
   it('shares state across useCwdHistory calls', () => {
     const a = useCwdHistory()
     const b = useCwdHistory()
+
     a.push('/tmp/a')
 
     expect(b.history.value).toEqual(['/tmp/a'])

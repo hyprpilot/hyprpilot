@@ -18,6 +18,7 @@ beforeEach(() => {
 describe('usePalette', () => {
   it('open() pushes onto the stack', () => {
     const { stack, open } = usePalette()
+
     open(makeSpec('root'))
     open(makeSpec('child'))
 
@@ -28,6 +29,7 @@ describe('usePalette', () => {
 
   it('close() pops one level', () => {
     const { stack, open, close } = usePalette()
+
     open(makeSpec('root'))
     open(makeSpec('child'))
     close()
@@ -38,6 +40,7 @@ describe('usePalette', () => {
 
   it('closeAll() empties the stack', () => {
     const { stack, open, closeAll } = usePalette()
+
     open(makeSpec('a'))
     open(makeSpec('b'))
     open(makeSpec('c'))
@@ -48,6 +51,7 @@ describe('usePalette', () => {
 
   it('close() on an empty stack is a no-op', () => {
     const { stack, close } = usePalette()
+
     close()
 
     expect(stack.value).toHaveLength(0)
@@ -56,6 +60,7 @@ describe('usePalette', () => {
   it('stack reactivity — mutations reflect across usePalette() callers', () => {
     const a = usePalette()
     const b = usePalette()
+
     a.open(makeSpec('x'))
 
     expect(b.stack.value).toHaveLength(1)

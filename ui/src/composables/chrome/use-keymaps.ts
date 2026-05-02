@@ -15,7 +15,7 @@ const cache = ref<KeymapsConfig>()
 export async function loadKeymaps(): Promise<void> {
   try {
     cache.value = await invoke(TauriCommand.GetKeymaps)
-  } catch (err) {
+  } catch(err) {
     log.warn('get_keymaps invoke failed; keybindings will not register', undefined, err)
   }
 }
@@ -34,9 +34,11 @@ export function isEditableTarget(target: EventTarget | null): boolean {
     return false
   }
   const tag = target.tagName
+
   if (tag === 'INPUT' || tag === 'TEXTAREA') {
     return true
   }
+
   // `isContentEditable` isn't reliably implemented in jsdom; fall back
   // to the attribute for test coverage parity with real browsers.
   if (target.isContentEditable) {
@@ -72,6 +74,7 @@ export function useKeymap(target: MaybeRefOrGetter<EventTarget | null | undefine
     if (!(e instanceof KeyboardEvent) || e.type !== 'keydown') {
       return
     }
+
     for (const entry of entries()) {
       // Skip entries whose binding is missing — happens when a wire
       // field is renamed without updating its TS counterpart, or when
@@ -83,17 +86,21 @@ export function useKeymap(target: MaybeRefOrGetter<EventTarget | null | undefine
       if (!entry.binding) {
         continue
       }
+
       if (matchesBinding(e, entry.binding, entry.allowRepeat ?? false)) {
         const preventDefault = entry.handler(e)
+
         if (preventDefault) {
           e.preventDefault()
         }
+
         break
       }
     }
   }
 
   let attached: EventTarget | undefined
+
   onMounted(() => {
     attached = resolve()
     attached.addEventListener('keydown', listener)
@@ -108,15 +115,19 @@ function matchesBinding(e: KeyboardEvent, binding: Binding, allowRepeat: boolean
   if (e.repeat && !allowRepeat) {
     return false
   }
+
   if (e.ctrlKey !== binding.modifiers.includes(Modifier.Ctrl)) {
     return false
   }
+
   if (e.shiftKey !== binding.modifiers.includes(Modifier.Shift)) {
     return false
   }
+
   if (e.altKey !== binding.modifiers.includes(Modifier.Alt)) {
     return false
   }
+
   if (e.metaKey !== binding.modifiers.includes(Modifier.Meta)) {
     return false
   }

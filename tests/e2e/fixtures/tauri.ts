@@ -11,8 +11,8 @@ const devUrl = process.env.HYPRPILOT_E2E_DEV_URL ?? 'http://127.0.0.1:1420'
  */
 const ONEDARK_THEME = {
   font: {
-    mono: "'JetBrains Mono', ui-monospace, 'Fira Code', Menlo, Consolas, monospace",
-    sans: "'Inter', ui-sans-serif, system-ui, sans-serif"
+    mono: '\'JetBrains Mono\', ui-monospace, \'Fira Code\', Menlo, Consolas, monospace',
+    sans: '\'Inter\', ui-sans-serif, system-ui, sans-serif'
   },
   window: { default: '#17191e', edge: '#e5c07b' },
   surface: {
@@ -26,8 +26,12 @@ const ONEDARK_THEME = {
       assistant: { bg: '#29090b' }
     }
   },
-  fg: { default: '#abb2bf', ink_2: '#979eab', dim: '#7c8a9d', faint: '#5c6370' },
-  border: { default: '#2c333d', soft: '#38404b', focus: '#e5c07b' },
+  fg: {
+    default: '#abb2bf', ink_2: '#979eab', dim: '#7c8a9d', faint: '#5c6370'
+  },
+  border: {
+    default: '#2c333d', soft: '#38404b', focus: '#e5c07b'
+  },
   accent: {
     default: '#e5c07b',
     user: '#98c379',
@@ -52,7 +56,9 @@ const ONEDARK_THEME = {
     terminal: '#98c379',
     acp: '#98caf6'
   },
-  status: { ok: '#98c379', warn: '#d19a66', err: '#e06c75' },
+  status: {
+    ok: '#98c379', warn: '#d19a66', err: '#e06c75'
+  },
   permission: { bg: '#2c2009', bg_active: '#3a2a0c' }
 }
 
