@@ -13,7 +13,7 @@ importers:
   .:
     devDependencies:
       '@cenk1cenk2/eslint-config':
-        specifier: ^3.2.3
+        specifier: ^3.2.5
         version: 3.2.5(@vue/eslint-config-typescript@14.7.0(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-plugin-vue@10.9.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.4(jiti@2.6.1)))(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(vue-eslint-parser@10.4.0(eslint@9.39.4(jiti@2.6.1))))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
       '@tauri-apps/cli':
         specifier: ^2.11.0
