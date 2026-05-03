@@ -8,7 +8,7 @@
     "lint": "pnpm -r --parallel --if-present run lint"
   },
   "devDependencies": {
-    "@cenk1cenk2/eslint-config": "^3.2.3",
+    "@cenk1cenk2/eslint-config": "^3.2.5",
     "@tauri-apps/cli": "^2.11.0",
     "@types/node": "^24.12.2",
     "@typescript-eslint/parser": "8.59.1",
