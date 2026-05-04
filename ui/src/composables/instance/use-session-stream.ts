@@ -24,6 +24,7 @@ import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
 import { pushTurnEnded, pushTurnStarted } from './use-turns'
 import { recordInstanceState, useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import { useComposer } from '../composer/use-composer'
 import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone, CancelToastBody } from '@components'
 import {
@@ -410,6 +411,9 @@ export async function startSessionStream(): Promise<() => void> {
       // pill: when present it replaces the profile pill so the captain
       // reads their own slug instead of the upstream profile id.
       setInstanceName(e.payload.instanceId, e.payload.name)
+    }),
+    await listen(TauriEvent.ComposerDraftAppend, (e) => {
+      useComposer().appendDraft(e.payload.text)
     })
   )
 

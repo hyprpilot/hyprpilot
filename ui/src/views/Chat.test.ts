@@ -313,8 +313,16 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'ls',
       options: [
-        { optionId: 'allow-always-id', name: 'Allow always', kind: 'allow_always' },
-        { optionId: 'reject-always-id', name: 'Reject always', kind: 'reject_always' }
+        {
+          optionId: 'allow-always-id',
+          name: 'Allow always',
+          kind: 'allow_always'
+        },
+        {
+          optionId: 'reject-always-id',
+          name: 'Reject always',
+          kind: 'reject_always'
+        }
       ],
       formatted: FMT
     })

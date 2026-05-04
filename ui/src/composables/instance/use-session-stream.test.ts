@@ -85,7 +85,8 @@ describe('useSessionStream', () => {
         TauriEvent.AcpTerminal,
         TauriEvent.AcpTranscript,
         TauriEvent.AcpTurnEnded,
-        TauriEvent.AcpTurnStarted
+        TauriEvent.AcpTurnStarted,
+        TauriEvent.ComposerDraftAppend
       ].sort()
     )
   })
@@ -298,7 +299,7 @@ describe('useSessionStream', () => {
     const stop = await startSessionStream()
 
     stop()
-    expect(unlisten).toHaveBeenCalledTimes(10)
+    expect(unlisten).toHaveBeenCalledTimes(11)
   })
 
   it('pushes an ok toast when acp:instance-state transitions to running', async() => {

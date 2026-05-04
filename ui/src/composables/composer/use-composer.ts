@@ -41,6 +41,13 @@ export interface ComposerState {
    * resubmitted is the edited entry.
    */
   setDraft: (next: { text: string; pills: ComposerPill[] }) => void
+  /**
+   * Append `snippet` to the existing buffer with a blank-line
+   * separator when the buffer is non-empty, then focus + caret-end.
+   * Drives the `ctl prompts send --draft` event path: captain stages
+   * a prompt without dispatching, can keep typing alongside it.
+   */
+  appendDraft: (snippet: string) => void
   resolvedSubmit: () => ResolvedSubmit
   insertAtCaret: (snippet: string) => void
   registerTextarea: (el: HTMLTextAreaElement | undefined) => void
@@ -70,6 +77,22 @@ function clear(): void {
 function setDraft(next: { text: string; pills: ComposerPill[] }): void {
   text.value = next.text
   pills.value = [...next.pills]
+  void nextTick(() => {
+    textareaEl?.focus()
+    const len = text.value.length
+
+    textareaEl?.setSelectionRange(len, len)
+  })
+}
+
+function appendDraft(snippet: string): void {
+  if (snippet.length === 0) {
+    return
+  }
+  const existing = text.value
+  const separator = existing.length > 0 && !existing.endsWith('\n\n') ? (existing.endsWith('\n') ? '\n' : '\n\n') : ''
+
+  text.value = `${existing}${separator}${snippet}`
   void nextTick(() => {
     textareaEl?.focus()
     const len = text.value.length
@@ -127,6 +150,7 @@ export function useComposer(): ComposerState {
     removePill,
     clear,
     setDraft,
+    appendDraft,
     resolvedSubmit,
     insertAtCaret,
     registerTextarea,

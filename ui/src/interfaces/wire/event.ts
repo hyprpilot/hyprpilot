@@ -176,3 +176,16 @@ export interface InstanceMetaEventPayload {
   /// by per-profile `mcps`). Drives the header `+N mcps` pill.
   mcpsCount?: number
 }
+
+/**
+ * Captain-staged prompt — `composer:draft-append`. Emitted by the
+ * `prompts/send --draft` RPC path. The composer appends `text` to its
+ * existing buffer with a blank-line separator (when non-empty) and
+ * leaves dispatch to the captain. `instanceId` carries the resolved
+ * target for future per-instance composer addressing; today's
+ * single-overlay composer is module-scoped and ignores it.
+ */
+export interface ComposerDraftAppendEventPayload {
+  instanceId: string
+  text: string
+}

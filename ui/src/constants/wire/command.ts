@@ -19,6 +19,7 @@ import type {
   CompletionResolveResponse
 } from '@interfaces/wire/completion'
 import type {
+  ComposerDraftAppendEventPayload,
   CurrentModeUpdateEventPayload,
   InstanceMetaEventPayload,
   InstanceStateEventPayload,
@@ -113,7 +114,8 @@ export enum TauriEvent {
   AcpInstanceRenamed = 'acp:instance-renamed',
   AcpSessionInfoUpdate = 'acp:session-info-update',
   AcpCurrentModeUpdate = 'acp:current-mode-update',
-  AcpInstanceMeta = 'acp:instance-meta'
+  AcpInstanceMeta = 'acp:instance-meta',
+  ComposerDraftAppend = 'composer:draft-append'
 }
 
 /**
@@ -239,4 +241,5 @@ export interface TauriEventPayload {
   [TauriEvent.AcpSessionInfoUpdate]: SessionInfoUpdateEventPayload
   [TauriEvent.AcpCurrentModeUpdate]: CurrentModeUpdateEventPayload
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
+  [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
 }
