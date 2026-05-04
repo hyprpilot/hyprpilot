@@ -86,15 +86,14 @@ pub struct ToolCallRef {
     /// ignores it today (future kind-scoped rules will read it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind_wire: Option<String>,
-    /// Concatenated text from every `content[]` block whose type is
-    /// `content` / `text`. Populated for permissions whose markdown
-    /// body lives on the tool-call's content array rather than its
-    /// `raw_input` (claude-code's `Switch mode` flow ships the plan
-    /// body here, not on `raw_input.plan`). The UI reads this as a
-    /// fallback markdown body for the modal when the rawInput
-    /// shape-detector misses.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_text: Option<String>,
+    /// Raw `tool_call.content[]` array — pass-through of the ACP wire
+    /// shape (`{ type: 'content' | 'diff' | 'terminal', ... }`).
+    /// Populated for permissions whose markdown body lives on the
+    /// tool-call's content array (claude-code's `Switch mode` flow
+    /// ships the plan body here, not on `raw_input.plan`). UI walks
+    /// the array directly — no server-side joining.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<serde_json::Value>,
 }
 
 impl ToolCallRef {
@@ -311,6 +310,27 @@ pub trait PermissionController: Send + Sync + 'static {
     ///   stored options list; nothing fired.
     /// - `Some(true)` — waiter resolved with `Selected(option_id)`.
     async fn resolve_if_pending(&self, request_id: &str, option_id: &str) -> Option<bool>;
+
+    /// Resolve a pending request with kind-aware trust-store side effect.
+    /// Pops the waiter atomically, looks up the picked option's kind,
+    /// and BEFORE signaling:
+    ///
+    /// - `kind == "allow_always"` → writes `(instance_id, tool) → Allow`
+    ///   to the trust store via [`Self::remember`].
+    /// - `kind == "reject_always"` → writes `(instance_id, tool) → Deny`.
+    /// - Any other kind (`_once` variants, unknown future kinds) → no
+    ///   trust-store write.
+    ///
+    /// Then signals the waiter with `Selected(option_id)`. The kind is
+    /// the single signal that drives "captain wants this remembered" —
+    /// callers don't need a separate `remember` flag on the wire.
+    ///
+    /// Same return semantics as [`Self::resolve_if_pending`]:
+    /// - `None` — no waiter.
+    /// - `Some(false)` — option_id not in offered set.
+    /// - `Some(true)` — resolved (and trust store updated when the kind
+    ///   warranted it).
+    async fn respond(&self, request_id: &str, option_id: &str) -> Option<bool>;
 
     /// Snapshot every currently-pending request as a
     /// `PermissionRequestSnapshot` vector. Powers `permissions/pending`.
@@ -574,6 +594,56 @@ impl PermissionController for DefaultPermissionController {
         Some(true)
     }
 
+    async fn respond(&self, request_id: &str, option_id: &str) -> Option<bool> {
+        // Pop the waiter under a single lock acquisition — validates
+        // option_id is in the offered set, then removes the entry. We
+        // own the snapshot + options + tx after this block; the trust
+        // write below uses a different lock (the trust map) so no
+        // deadlock.
+        let popped = {
+            let mut waiters = self.waiters.lock().await;
+            let entry = waiters.get(request_id)?;
+            if !entry.options.iter().any(|o| o.option_id == option_id) {
+                tracing::debug!(
+                    request_id,
+                    option_id,
+                    "permission::respond: option not in stored options"
+                );
+                return Some(false);
+            }
+            waiters.remove(request_id).expect("entry checked above")
+        };
+        // Kind-aware trust-store write. The agent's offered options
+        // already carry typed kinds via the schema (`allow_always` /
+        // `reject_always` etc.); we read the kind off the popped
+        // snapshot and write only for the persistent variants. Any
+        // other kind (the `_once` pair + unknown future variants)
+        // skips the write — `_once` is the agent-side default and
+        // doesn't change our local memory.
+        let kind = popped
+            .options
+            .iter()
+            .find(|o| o.option_id == option_id)
+            .map(|o| o.kind.as_str())
+            .unwrap_or_default();
+        let trust = match kind {
+            "allow_always" => Some(TrustDecision::Allow),
+            "reject_always" => Some(TrustDecision::Deny),
+            _ => None,
+        };
+        if let (Some(decision), Some(iid)) = (trust, popped.snapshot.instance_id.as_deref()) {
+            self.remember(iid, &popped.snapshot.tool, decision).await;
+        }
+        let _ = popped.tx.send(PermissionOutcome::Selected(option_id.to_string()));
+        tracing::debug!(
+            request_id,
+            option_id,
+            kind,
+            "permission::respond: waiter fired (kind-aware trust write applied if applicable)"
+        );
+        Some(true)
+    }
+
     async fn list_pending(&self) -> Vec<PermissionRequestSnapshot> {
         let waiters = self.waiters.lock().await;
         waiters.values().map(|w| w.snapshot.clone()).collect()
@@ -657,7 +727,7 @@ mod tests {
                 raw_args: None,
                 raw_input: None,
                 kind_wire: None,
-                content_text: None,
+                content: Vec::new(),
             },
             options: vec![
                 PermissionOptionView {
@@ -945,6 +1015,79 @@ mod tests {
         assert_eq!(outcome, PermissionOutcome::Selected("allow-once".into()));
         // Waiter dropped from the map.
         assert!(controller.options_for("r1").await.is_none());
+    }
+
+    /// Captain picks an `_once` kind — waiter fires, NO trust-store
+    /// write. Sanity floor for the kind-aware `respond` path.
+    #[tokio::test]
+    async fn respond_with_once_kind_does_not_write_trust_store() {
+        let controller = DefaultPermissionController::new();
+        let rx = controller.register_pending(request("r1", "Bash")).await;
+        let res = controller.respond("r1", "allow-once").await;
+        assert_eq!(res, Some(true));
+        let outcome = tokio::time::timeout(Duration::from_millis(50), rx)
+            .await
+            .expect("waiter fires")
+            .expect("receiver ok");
+        assert_eq!(outcome, PermissionOutcome::Selected("allow-once".into()));
+        let snap = controller.snapshot_trust_store().await;
+        assert!(snap.is_empty(), "expected no trust entries, got {snap:?}");
+    }
+
+    /// `allow_always` kind → trust store gets `(instance, tool) → Allow`
+    /// before the waiter fires. Mirrors the captain hitting "allow always".
+    #[tokio::test]
+    async fn respond_with_allow_always_writes_trust_allow() {
+        let controller = DefaultPermissionController::new();
+        let mut req = request("r1", "Bash");
+        req.options.push(PermissionOptionView {
+            option_id: "allow-always".into(),
+            name: "Allow always".into(),
+            kind: "allow_always".into(),
+        });
+        let rx = controller.register_pending(req).await;
+        let res = controller.respond("r1", "allow-always").await;
+        assert_eq!(res, Some(true));
+        let _ = tokio::time::timeout(Duration::from_millis(50), rx).await;
+        let snap = controller.snapshot_trust_store().await;
+        assert_eq!(snap.len(), 1);
+        let (iid, tool, decision) = &snap[0];
+        assert_eq!(iid, "instance-1");
+        assert_eq!(tool, "Bash");
+        assert!(matches!(decision, TrustDecision::Allow));
+    }
+
+    /// `reject_always` kind → trust store gets `(instance, tool) → Deny`
+    /// before the waiter fires.
+    #[tokio::test]
+    async fn respond_with_reject_always_writes_trust_deny() {
+        let controller = DefaultPermissionController::new();
+        let mut req = request("r1", "Bash");
+        req.options.push(PermissionOptionView {
+            option_id: "reject-always".into(),
+            name: "Reject always".into(),
+            kind: "reject_always".into(),
+        });
+        let rx = controller.register_pending(req).await;
+        let res = controller.respond("r1", "reject-always").await;
+        assert_eq!(res, Some(true));
+        let _ = tokio::time::timeout(Duration::from_millis(50), rx).await;
+        let snap = controller.snapshot_trust_store().await;
+        assert_eq!(snap.len(), 1);
+        let (_, _, decision) = &snap[0];
+        assert!(matches!(decision, TrustDecision::Deny));
+    }
+
+    /// Bad option_id → `Some(false)`, waiter survives, trust store
+    /// untouched (no fire-then-rollback).
+    #[tokio::test]
+    async fn respond_invalid_option_returns_some_false_and_keeps_waiter() {
+        let controller = DefaultPermissionController::new();
+        let _rx = controller.register_pending(request("r1", "Bash")).await;
+        let res = controller.respond("r1", "ghost-option").await;
+        assert_eq!(res, Some(false));
+        assert!(controller.options_for("r1").await.is_some());
+        assert!(controller.snapshot_trust_store().await.is_empty());
     }
 
     /// Timeout enforcement moved out of the controller in the K-245

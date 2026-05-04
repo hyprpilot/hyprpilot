@@ -43,7 +43,7 @@ describe('openModesLeaf', () => {
 
     expect(top?.title).toBe('modes')
     expect(top?.entries).toHaveLength(1)
-    expect(top?.entries[0]?.name).toBe('no active instance')
+    expect(top?.entries[0]?.name).toBe('no active instance.')
   })
 
   it('shows the no-options row when the instance has no advertised modes', async() => {

@@ -1,26 +1,67 @@
 <script setup lang="ts">
-import { faCheck, faCheckDouble, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { computed } from 'vue'
 
 import ToolSpecSheet from '../chat/ToolSpecSheet.vue'
 import type { PermissionView } from '@components'
 
 /**
  * Single permission row. Renders the unified `ToolCallView` chrome
- * (icon + composed title + structured fields) plus three action
- * buttons (allow once / allow always / deny). Deny is single-shot —
- * captain never asked for "deny always", and the trust store is
- * additive only (allow-list rather than deny-list).
+ * (icon + composed title + structured fields) plus a button per
+ * agent-offered `PermissionOption`. No icons on the action row —
+ * each button is a text label.
+ *
+ * The label is the agent's `name` field passed through verbatim —
+ * vendors carry meaningful information here (claude-code ships
+ * `Always allow Bash(curl -sSo /dev/null ...)` so the captain sees
+ * the literal command pattern that the persistent rule will store).
+ * Re-casing strips that detail; we keep the wire shape intact.
+ *
+ * Long names are constrained via `max-width` + `text-overflow:
+ * ellipsis` so the row doesn't wrap; hover surfaces the full string
+ * via the `title` attribute. Tone comes from the option's typed
+ * `kind`:
+ *
+ * - `allow_*` → ok tone.
+ * - `reject_*` → err tone.
+ * - anything else (forward-compat for new ACP variants) → neutral.
+ *
+ * Emits `reply` with the real `optionId` from the offered set. The
+ * captain's "remember this" intent rides on the option's `kind`
+ * (the daemon-side controller writes the trust store atomically for
+ * `_always` variants); UI doesn't carry a separate `remember` flag.
  */
 const props = defineProps<{
   view: PermissionView
 }>()
 
 const emit = defineEmits<{
-  reply: [optionId: 'allow' | 'deny', remember: boolean]
+  reply: [optionId: string]
   dismiss: []
 }>()
 
-void props
+interface ButtonView {
+  optionId: string
+  label: string
+  tone: 'ok' | 'err' | 'neutral'
+  variant: 'solid' | 'outline'
+}
+
+const buttons = computed<ButtonView[]>(() =>
+  props.view.options.map((opt) => {
+    const tone = opt.kind.startsWith('allow') ? 'ok' : opt.kind.startsWith('reject') ? 'err' : 'neutral'
+    // `allow_once` is the agent-default + the most common pick, so
+    // it gets the solid fill; every other variant renders as an
+    // outline to keep the row's primary action obvious.
+    const variant = opt.kind === 'allow_once' ? 'solid' : 'outline'
+
+    return {
+      optionId: opt.optionId,
+      label: opt.name,
+      tone,
+      variant
+    }
+  })
+)
 </script>
 
 <template>
@@ -32,21 +73,18 @@ void props
       </span>
       <span class="permission-row-spacer" />
       <div class="permission-row-actions">
-        <button type="button" class="permission-row-btn" data-tone="ok" data-variant="solid" aria-label="allow once" title="allow once" @click="emit('reply', 'allow', false)">
-          <FaIcon :icon="faCheck" class="permission-row-btn-icon" aria-hidden="true" />
-        </button>
         <button
+          v-for="b in buttons"
+          :key="b.optionId"
           type="button"
           class="permission-row-btn"
-          data-tone="ok"
-          aria-label="allow always"
-          title="allow always — remember this tool for the rest of the session"
-          @click="emit('reply', 'allow', true)"
+          :data-tone="b.tone"
+          :data-variant="b.variant"
+          :aria-label="b.label"
+          :title="b.label"
+          @click="emit('reply', b.optionId)"
         >
-          <FaIcon :icon="faCheckDouble" class="permission-row-btn-icon" aria-hidden="true" />
-        </button>
-        <button type="button" class="permission-row-btn" data-tone="err" aria-label="deny" title="deny" @click="emit('reply', 'deny', false)">
-          <FaIcon :icon="faXmark" class="permission-row-btn-icon" aria-hidden="true" />
+          {{ b.label }}
         </button>
       </div>
     </header>
@@ -96,27 +134,54 @@ void props
 }
 
 .permission-row-actions {
-  @apply flex shrink-0 items-center gap-1;
+  /* Buttons can flex-grow to share remaining row width up to the
+   * cap below; prior `shrink-0` kept them tight against the actions
+   * gutter regardless of available space. Captain wanted them to
+   * expand into that space and only truncate once they hit the
+   * shared per-button cap. */
+  @apply flex min-w-0 flex-1 items-center gap-1;
+  justify-content: flex-end;
 }
 
 .permission-row-btn {
-  @apply inline-flex items-center justify-center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+  /* Left-aligned label so a long captain-prefix ("always allow") +
+   * a vendor-supplied rule context read as one phrase running
+   * left-to-right. Centred labels collapsed the visual into a
+   * disconnected glyph block. */
+  @apply inline-flex flex-1 cursor-pointer items-center justify-start text-[0.62rem];
+  padding: 3px 8px;
   border-radius: 3px;
   background-color: transparent;
-  cursor: pointer;
+  border: 1px solid var(--theme-border);
+  color: var(--theme-fg-dim);
+  font-family: var(--theme-font-mono);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  /* Vendors stuff rule-context into the option's `name` (claude-code
+   * ships the full bash command on `allow_always`). Cap the visible
+   * width + ellipsise; the full string survives on `title` for
+   * hover. Min-width 0 lets the button shrink below intrinsic
+   * content size so flex truncation works. */
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .permission-row-btn[data-tone='ok'] {
-  border: 1px solid var(--theme-status-ok);
+  border-color: var(--theme-status-ok);
   color: var(--theme-status-ok);
 }
 
 .permission-row-btn[data-tone='err'] {
-  border: 1px solid var(--theme-status-err);
+  border-color: var(--theme-status-err);
   color: var(--theme-status-err);
+}
+
+.permission-row-btn[data-tone='neutral'] {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
 }
 
 .permission-row-btn[data-variant='solid'][data-tone='ok'] {
@@ -124,9 +189,14 @@ void props
   color: var(--theme-fg-on-tone);
 }
 
-.permission-row-btn-icon {
-  width: 11px;
-  height: 11px;
+.permission-row-btn[data-variant='solid'][data-tone='err'] {
+  background-color: var(--theme-status-err);
+  color: var(--theme-fg-on-tone);
+}
+
+.permission-row-btn[data-variant='solid'][data-tone='neutral'] {
+  background-color: var(--theme-accent);
+  color: var(--theme-fg-on-tone);
 }
 
 .permission-row-btn:hover {

@@ -10,12 +10,12 @@ import type { Formatter, ToolField } from '@interfaces/ui'
  * specific previously-spawned shell. Same icon, same tone, same
  * formatter — title disambiguates.
  *
- * `description` always projects onto `view.description` (rendered as
- * markdown by every consumer); `command` projects onto `fields` as a
- * code-formatted row. If the wire's content blocks duplicate the
- * description text (claude-agent-acp emits the description as both
- * `rawInput.description` and a Text content block), the duplicate
- * `output` is suppressed.
+ * The command body lands inside `description` as a fenced
+ * ```` ```bash ```` block so Shiki highlights it under the spec
+ * sheet's markdown render path; the natural-language `description`
+ * (when present) precedes the fence so the rendered body reads as
+ * `<prose>\n\n```bash\n<cmd>\n``` `. `output` (`textBlocks(content)`)
+ * is suppressed when it duplicates the description prose.
  */
 const bashFallback: Formatter = {
   type: ToolType.Bash,
@@ -32,9 +32,8 @@ const bashFallback: Formatter = {
 
     // Title surfaces just the leading command token (`python3` /
     // `ls` / `pnpm`) — pasting a multi-line python-script body into
-    // the title would drown the chip header in code. Full command
-    // is in the `command` field below; description (when set) lands
-    // on the markdown body.
+    // the title would drown the chip header in code. The full
+    // command rides into `description` below as a fenced bash block.
     let title: string
 
     if (command) {
@@ -49,10 +48,6 @@ const bashFallback: Formatter = {
 
     const fields: ToolField[] = []
 
-    if (command) {
-      fields.push({ label: 'command', value: command })
-    }
-
     if (id) {
       fields.push({ label: 'shell', value: id })
     }
@@ -60,6 +55,20 @@ const bashFallback: Formatter = {
     if (filter) {
       fields.push({ label: 'filter', value: filter })
     }
+
+    // Prose first, fenced bash second. Empty parts drop out so a
+    // command-only call renders as just the highlighted block, and a
+    // description-only call (rare) keeps its prose.
+    const parts: string[] = []
+
+    if (description) {
+      parts.push(description)
+    }
+
+    if (command) {
+      parts.push('```bash\n' + command + '\n```')
+    }
+    const body = parts.length > 0 ? parts.join('\n\n') : undefined
 
     const blockText = textBlocks(ctx.raw.content).trim()
     const output = blockText && blockText !== description?.trim() ? blockText : undefined
@@ -73,7 +82,7 @@ const bashFallback: Formatter = {
       pill: PillKind.Default,
       permissionUi: PermissionUi.Row,
       title,
-      ...(description ? { description } : {}),
+      ...(body ? { description: body } : {}),
       ...(fields.length > 0 ? { fields } : {}),
       ...(output ? { output } : {}),
       ...(ctx.raw.rawInput ? { rawInput: ctx.raw.rawInput } : {})

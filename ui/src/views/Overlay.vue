@@ -92,6 +92,7 @@ import { format, log } from '@lib'
 import { Attachments, Body as ChatBody, ChangeBanner, PermissionModal, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
 import { Frame } from '@views/header'
+import { IdleScreen } from '@views/idle'
 import { CommandPalette, commitInstanceRename, isPaletteLeafId, openRootLeaf, openRootPalette, PaletteLeafId, validateInstanceName } from '@views/palette'
 
 const { submit, cancel } = useAdapter()
@@ -132,7 +133,7 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 // — accessing them here would just allocate redundant computeds. The
 // idle-screen branch reads `timelineBlocks.length === 0` for the
 // no-content gate.
-const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, allow, deny } = usePermissions()
+const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
 const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
 const { homeDir } = useHomeDir()
@@ -167,8 +168,37 @@ const headerCwd = computed<string | undefined>(() => {
   if (!raw) {
     return undefined
   }
+  // Home substitution only — let the chrome's `truncate` CSS handle
+  // overflow with a single trailing ellipsis. JS-side middle
+  // truncation produced \`~/…/hyprpilot/src-tauri\` which lost the
+  // `development` segment captain wanted to read; the CSS path
+  // preserves every leading char and only elides what doesn't fit
+  // the box width.
+  const home = homeDir.value
 
-  return truncateCwd(raw, 32, homeDir.value)
+  if (home && raw.startsWith(home)) {
+    return `~${raw.slice(home.length)}`
+  }
+
+  return raw
+})
+
+// Untruncated home-shortened path for the cwd button's tooltip — the
+// captain hovers when they need the full thing the truncated label
+// elided.
+const headerCwdFull = computed<string | undefined>(() => {
+  const raw = sessionInfo.value.cwd ?? daemonCwd.value
+
+  if (!raw) {
+    return undefined
+  }
+  const home = homeDir.value
+
+  if (home && raw.startsWith(home)) {
+    return `~${raw.slice(home.length)}`
+  }
+
+  return raw
 })
 
 const idleCwd = computed<string | undefined>(() => {
@@ -186,11 +216,6 @@ const headerCounts = computed<BreadcrumbCount[]>(() => [
     id: PaletteLeafId.Mcps,
     label: 'mcps',
     count: sessionInfo.value.mcpsCount
-  },
-  {
-    id: PaletteLeafId.Instances,
-    label: 'instances',
-    count: instancesCount.value
   },
   {
     id: PaletteLeafId.Sessions,
@@ -242,6 +267,18 @@ function onToggleCwd(): void {
   openRootLeaf(PaletteLeafId.Cwd)
 }
 
+// Header X — hide the overlay, leaving the daemon + every live
+// instance running. Toggle is the only command we expose; the X is
+// only visible while the overlay is mapped, so toggling here always
+// hides.
+async function onCloseOverlay(): Promise<void> {
+  try {
+    await invoke(TauriCommand.WindowToggle)
+  } catch(err) {
+    log.warn('overlay: window_toggle failed', { err: String(err) })
+  }
+}
+
 // Block grouping is driven by ACP turn ids (Rust mints one per
 // `session/prompt` and stamps every notification it emits with that
 // id; see `acp:turn-started` / `acp:turn-ended`). Assistant entries
@@ -277,13 +314,20 @@ function firePermission(action: 'allow' | 'deny'): void {
   if (!active) {
     return
   }
-  log.info('keybind invoked', { action, target: 'permission' })
+  // Keybind maps to the typed kind: `allow` → first `allow_*` option,
+  // `deny` → first `reject_*`. Falls through to the first offered
+  // option when nothing matches (shouldn't happen with conformant
+  // ACP agents, but the guard is cheap).
+  const kindPrefix = action === 'allow' ? 'allow' : 'reject'
+  const opt = active.options.find((o) => o.kind.startsWith(kindPrefix)) ?? active.options[0]
 
-  if (action === 'allow') {
-    void onAllow(active.request.requestId)
-  } else {
-    void onDeny(active.request.requestId)
+  if (!opt) {
+    return
   }
+  log.info('keybind invoked', {
+    action, target: 'permission', optionId: opt.optionId, kind: opt.kind
+  })
+  void onPermissionReply(active.request.requestId, opt.optionId)
 }
 
 const { keymaps } = useKeymaps()
@@ -372,6 +416,18 @@ useKeymap(
         binding: keymaps.value.palette.close,
         handler: () => {
           closeAllPalettes()
+        }
+      },
+      {
+        // Direct-jump to the instances palette — captain's "what
+        // else is running / kill an instance" panel. The only
+        // sub-palette we still ship a dedicated focus bind for.
+        binding: keymaps.value.palette.instances?.focus ?? { modifiers: [Modifier.Ctrl], key: 'i' },
+        handler: () => {
+          log.info('keybind invoked', { action: 'focus', target: 'palette.instances' })
+          openRootLeaf(PaletteLeafId.Instances)
+
+          return true
         }
       },
       {
@@ -474,7 +530,6 @@ function windowToggleCaptureListener(e: KeyboardEvent): void {
     target: 'window',
     via: 'capture'
   })
-  pushToast(ToastTone.Ok, 'ctrl+q fired — invoking window_toggle')
   void invoke(TauriCommand.WindowToggle)
     .then((visible) => {
       log.info('window_toggle ok', { visible: String(visible) })
@@ -671,49 +726,22 @@ function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
 /// behind this one in `permissionModalQueue`.
 const activeModalView = computed(() => permissionModalQueue.value[0])
 
-async function onAllow(requestId: string, remember: boolean = false): Promise<void> {
-  log.info('permission click', {
-    choice: 'allow',
-    requestId,
-    remember
-  })
+async function onPermissionReply(requestId: string, optionId: string): Promise<void> {
+  log.info('permission click', { requestId, optionId })
 
   try {
-    await allow(requestId, remember)
+    await respondPermission(requestId, optionId)
   } catch(err) {
     log.error(
       'invoke failed',
       {
         command: 'permission_reply',
-        choice: 'allow',
-        requestId
+        requestId,
+        optionId
       },
       err
     )
-    pushToast(ToastTone.Err, `allow failed: ${String(err)}`)
-  }
-}
-
-async function onDeny(requestId: string, remember: boolean = false): Promise<void> {
-  log.info('permission click', {
-    choice: 'deny',
-    requestId,
-    remember
-  })
-
-  try {
-    await deny(requestId, remember)
-  } catch(err) {
-    log.error(
-      'invoke failed',
-      {
-        command: 'permission_reply',
-        choice: 'deny',
-        requestId
-      },
-      err
-    )
-    pushToast(ToastTone.Err, `deny failed: ${String(err)}`)
+    pushToast(ToastTone.Err, `permission reply failed: ${String(err)}`)
   }
 }
 
@@ -907,18 +935,22 @@ function onQueueSend(itemId: string): void {
 
 <template>
   <Frame
-    :profile="selectedProfile ?? sessionInfo.agent ?? 'none'"
+    :profile="sessionInfo.profileId ?? sessionInfo.agent ?? 'none'"
     :phase="phase"
     :mode-tag="sessionInfo.mode"
-    :provider="sessionInfo.agent ?? activeProfile?.agent"
-    :model="sessionInfo.model ?? activeProfile?.model"
+    :provider="sessionInfo.agent"
+    :model="sessionInfo.model"
     :title="sessionInfo.title"
     :cwd="headerCwd"
+    :cwd-full="headerCwdFull"
     :counts="headerCounts"
+    :instances-count="instancesCount"
     :git-status="sessionInfo.gitStatus"
     @pill-click="onPillClick"
     @breadcrumb-click="onBreadcrumbClick"
     @toggle-cwd="onToggleCwd"
+    @close="onCloseOverlay"
+    @instances-click="openRootLeaf(PaletteLeafId.Instances)"
   >
     <template v-if="activeToast" #toast>
       <Toast :tone="activeToast.tone" :body="activeToast.body" @dismiss="dismissToast(activeToast.id)" />
@@ -937,66 +969,21 @@ function onQueueSend(itemId: string): void {
            the inner div carries the gutters. -->
       <Loading v-if="sessionInfo.restoring" mode="scoped" status="restoring session — replaying transcript" />
       <div class="chat-transcript-inner">
-        <!-- idle screen: empty composer, no live blocks. Centered
-           wordmark + "LFG." accent + kbd legend + live-sessions
-           mini-table. Triggers the moment the chat surface has no
-           timeline content. -->
-        <section v-if="timelineBlocks.length === 0" class="idle-screen" data-testid="idle-screen">
-          <div class="idle-wordmark">hyprpilot</div>
-          <div class="idle-accent">LFG.</div>
-          <div class="idle-context" data-testid="idle-context">
-            <span v-if="selectedProfile" class="idle-context-pill">
-              <span class="idle-context-label">profile</span><span class="idle-context-value">{{ selectedProfile }}</span>
-            </span>
-            <span v-if="activeProfile?.agent || sessionInfo.agent" class="idle-context-pill">
-              <span class="idle-context-label">adapter</span><span class="idle-context-value">{{ sessionInfo.agent ?? activeProfile?.agent }}</span>
-            </span>
-            <span v-if="activeProfile?.model || sessionInfo.model" class="idle-context-pill">
-              <span class="idle-context-label">model</span><span class="idle-context-value">{{ sessionInfo.model ?? activeProfile?.model }}</span>
-            </span>
-            <span v-if="idleCwd" class="idle-context-pill">
-              <span class="idle-context-label">cwd</span><span class="idle-context-value">{{ idleCwd }}</span>
-            </span>
-          </div>
-          <div class="idle-kbd-legend">
-            <span class="idle-kbd">Ctrl+K</span><span class="idle-kbd-label">command palette</span> <span class="idle-kbd">@</span
-            ><span class="idle-kbd-label">reference a file or folder</span> <span class="idle-kbd">+</span><span class="idle-kbd-label">attach a skill or reference</span>
-            <span class="idle-kbd">Esc</span><span class="idle-kbd-label">close overlay</span>
-          </div>
-          <div v-if="sessionList.length > 0" class="idle-sessions">
-            <header class="idle-sessions-header">
-              <span class="idle-sessions-count">{{ sessionList.length }}</span>
-              <span class="idle-sessions-title">sessions</span>
-              <span class="idle-sessions-line" />
-            </header>
-            <div class="idle-sessions-headrow">
-              <span />
-              <span>title</span>
-              <span>cwd</span>
-              <span>doing</span>
-            </div>
-            <div
-              v-for="s in sessionListPreview"
-              :key="s.sessionId"
-              class="idle-sessions-row"
-              :role="s.sessionId ? 'button' : undefined"
-              :tabindex="s.sessionId ? 0 : undefined"
-              :aria-label="s.sessionId ? `restore session ${s.title || s.sessionId}` : undefined"
-              :data-restorable="Boolean(s.sessionId)"
-              @click="onRestoreSessionClick(s.sessionId)"
-              @keydown.enter.prevent="onRestoreSessionClick(s.sessionId)"
-              @keydown.space.prevent="onRestoreSessionClick(s.sessionId)"
-            >
-              <span class="idle-sessions-dot" aria-hidden="true">○</span>
-              <span class="idle-sessions-cell">{{ s.title || s.sessionId }}</span>
-              <span class="idle-sessions-cell idle-sessions-cwd">{{ s.cwd }}</span>
-              <span class="idle-sessions-cell idle-sessions-doing">—</span>
-            </div>
-            <div v-if="sessionList.length > sessionListPreview.length" class="idle-sessions-more">
-              +{{ sessionList.length - sessionListPreview.length }} more — Ctrl+K → sessions
-            </div>
-          </div>
-        </section>
+        <!-- idle landing — paints when the chat surface has no
+             timeline content. The view itself owns the wordmark +
+             accent + context block + sessions preview chrome; we
+             pass the captain-facing signals as props and wire the
+             restore action back through the emit. -->
+        <IdleScreen
+          v-if="timelineBlocks.length === 0"
+          :profile="selectedProfile"
+          :agent="sessionInfo.agent ?? activeProfile?.agent"
+          :model="sessionInfo.model ?? activeProfile?.model"
+          :cwd="idleCwd"
+          :sessions="sessionListPreview"
+          :total-session-count="sessionList.length"
+          @restore-session="onRestoreSessionClick"
+        />
 
         <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx">
           <!-- Single thinking card per turn — thoughts (tool-call kind=think
@@ -1047,7 +1034,7 @@ function onQueueSend(itemId: string): void {
       </div>
     </div>
 
-    <PermissionStack :views="permissionRowQueue" @reply="(requestId, optionId, remember) => (optionId === 'allow' ? onAllow(requestId, remember) : onDeny(requestId, remember))" />
+    <PermissionStack :views="permissionRowQueue" @reply="(requestId, optionId) => onPermissionReply(requestId, optionId)" />
 
     <template #composer>
       <QueueStrip :messages="queueRows" @edit="onQueueEdit" @send="onQueueSend" @drop="onQueueDrop" @drop-all="onQueueDropAll" />
@@ -1063,7 +1050,7 @@ function onQueueSend(itemId: string): void {
   <PermissionModal
     v-if="activeModalView"
     :view="activeModalView"
-    @reply="(optionId) => (optionId === 'allow' ? onAllow(activeModalView!.request.requestId) : onDeny(activeModalView!.request.requestId))"
+    @reply="(optionId) => onPermissionReply(activeModalView!.request.requestId, optionId)"
   />
 
   <!-- Rename-instance modal — singleton driven by
@@ -1115,177 +1102,4 @@ function onQueueSend(itemId: string): void {
 
 /* idle screen — centered wordmark + LFG accent + kbd legend +
  * live-sessions table. Renders only when no timeline blocks exist. */
-.idle-screen {
-  @apply flex flex-col items-center justify-center;
-  flex: 1 1 auto;
-  min-height: 100%;
-  padding: 24px;
-  color: var(--theme-fg-dim);
-}
-
-.idle-wordmark {
-  font-family: var(--theme-font-mono);
-  font-size: 26px;
-  font-weight: 500;
-  letter-spacing: -0.3px;
-  color: var(--theme-fg);
-}
-
-.idle-accent {
-  margin-top: 4px;
-  font-family: var(--theme-font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: var(--theme-accent);
-}
-
-/* Context line below LFG — profile · adapter · model · cwd. Each
- * pill is a label/value pair so the captain reads "what would I
- * spawn into" at a glance. Hidden when nothing is configured (fresh
- * daemon with no profile / no agents). */
-.idle-context {
-  margin-top: 14px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 4px 12px;
-  font-family: var(--theme-font-mono);
-  font-size: 0.66rem;
-  max-width: 100%;
-}
-
-.idle-context-pill {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.idle-context-label {
-  color: var(--theme-fg-dim);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  font-size: 0.55rem;
-}
-
-.idle-context-value {
-  color: var(--theme-fg);
-  font-weight: 600;
-}
-
-.idle-kbd-legend {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 10px;
-  margin-top: 22px;
-  font-family: var(--theme-font-mono);
-  font-size: 0.62rem;
-}
-
-.idle-kbd {
-  color: var(--theme-accent);
-}
-
-.idle-kbd-label {
-  color: var(--theme-fg-dim);
-}
-
-.idle-sessions {
-  width: 100%;
-  max-width: 640px;
-  margin-top: 26px;
-}
-
-.idle-sessions-header {
-  @apply flex items-center;
-  margin-bottom: 6px;
-  font-family: var(--theme-font-mono);
-  font-size: 0.62rem;
-  color: var(--theme-fg-ink-2);
-  gap: 6px;
-}
-
-.idle-sessions-count {
-  color: var(--theme-accent);
-  font-weight: 700;
-}
-
-.idle-sessions-title {
-  text-transform: lowercase;
-}
-
-.idle-sessions-line {
-  flex: 1;
-  height: 1px;
-  background-color: var(--theme-border);
-  margin-left: 8px;
-}
-
-.idle-sessions-headrow {
-  display: grid;
-  grid-template-columns: 14px 1fr 170px 110px;
-  column-gap: 12px;
-  padding: 4px 10px;
-  font-family: var(--theme-font-mono);
-  font-size: 0.56rem;
-  color: var(--theme-fg-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--theme-border);
-}
-
-.idle-sessions-row {
-  display: grid;
-  grid-template-columns: 14px 1fr 170px 110px;
-  column-gap: 12px;
-  align-items: center;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--theme-border);
-  border-left: 2px solid var(--theme-status-ok);
-  background-color: var(--theme-surface);
-  font-family: var(--theme-font-mono);
-  font-size: 0.7rem;
-  color: var(--theme-fg);
-  transition: background-color 0.12s ease-out;
-}
-
-.idle-sessions-row[data-restorable='true'] {
-  cursor: pointer;
-}
-
-.idle-sessions-row[data-restorable='true']:hover,
-.idle-sessions-row[data-restorable='true']:focus-visible {
-  background-color: var(--theme-surface-alt);
-  outline: 0;
-}
-
-.idle-sessions-dot {
-  color: var(--theme-status-ok);
-}
-
-.idle-sessions-more {
-  padding: 6px 10px;
-  font-family: var(--theme-font-mono);
-  font-size: 0.62rem;
-  color: var(--theme-fg-dim);
-  border-top: 1px solid var(--theme-border-soft);
-  background-color: var(--theme-surface);
-  letter-spacing: 0.4px;
-}
-
-.idle-sessions-cell {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--theme-fg);
-}
-
-.idle-sessions-cwd {
-  color: var(--theme-fg-ink-2);
-}
-
-.idle-sessions-doing {
-  color: var(--theme-status-ok);
-}
 </style>

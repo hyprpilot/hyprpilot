@@ -24,7 +24,9 @@ export interface Theme {
   }
   fg: {
     default: string
-    ink_2: string
+    /** Slightly dimmer than default — second-tier text colour for
+     * value strings beside their bright labels. */
+    subtle: string
     dim: string
     faint: string
     /** Dark ink for tone-bg pills (warn / err / ok / accent fills). */

@@ -13,40 +13,51 @@ use clap::Subcommand;
 use serde::Serialize;
 
 use crate::ctl::client::CtlClient;
-use crate::ctl::{emit, CtlDispatch};
+use crate::ctl::{emit, request_value, show_after, CtlDispatch};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum PromptsCommand {
-    /// Send a prompt. Targets `--instance` (UUID or captain-set
-    /// name) when supplied; falls back to the focused instance;
-    /// auto-spawns with the supplied flags when neither resolves.
+    /// Send a prompt. `--instance` is overloaded:
+    ///  - UUID or existing captain-set name → target that instance.
+    ///  - Slug-shaped value (lowercase, `[a-z0-9][a-z0-9_-]*`,
+    ///    ≤16 chars) that doesn't match any live instance →
+    ///    auto-spawn a new instance and rename it to that slug.
+    ///  - Anything else → error.
+    ///
+    /// When `--instance` is omitted, falls back to the focused
+    /// instance; if none, auto-spawns under `--profile` (with
+    /// optional `--cwd`) without a captain-set name.
+    ///
+    /// `--profile` carries `agent` (mandatory), `mode` (optional),
+    /// and `model` (optional) — there's no separate `--agent` /
+    /// `--mode` / `--model` here. Add a `[[profiles]]` entry instead.
+    ///
     /// Reads stdin when no positional text and stdin is not a tty.
     Send {
-        /// Target instance — UUID or captain-set name.
+        /// Target instance — UUID, existing captain-set name, or a
+        /// slug to assign to a freshly spawned instance.
         #[arg(long = "instance")]
         instance_id: Option<String>,
 
-        /// Captain-set name to apply post-resolve / post-spawn.
-        /// Validated as a slug (lowercase, ≤16 chars).
-        #[arg(long)]
-        id: Option<String>,
-
-        /// Spawn-flag bag. Used only when no instance resolves.
-        #[arg(long)]
-        agent: Option<String>,
+        /// Profile id from `[[profiles]]`. Used only when no instance
+        /// resolves; carries the agent + mode + model picks.
         #[arg(long)]
         profile: Option<String>,
+        /// Working directory for the spawned instance. Used only when
+        /// no instance resolves.
         #[arg(long)]
         cwd: Option<PathBuf>,
-        #[arg(long)]
-        mode: Option<String>,
-        #[arg(long)]
-        model: Option<String>,
 
         /// Prompt text. Optional — when omitted, reads stdin to EOF
         /// (provided stdin is not a tty). Pass `-` to force stdin.
         #[arg(trailing_var_arg = true)]
         text: Vec<String>,
+
+        /// Present the overlay focused on the resolved instance after
+        /// the send lands. Maps a single keybind to "send + show"
+        /// without chaining a second `ctl overlay show` call.
+        #[arg(long, default_value_t = false)]
+        show: bool,
     },
     /// Cancel the in-flight turn. Falls back to focused when
     /// `--instance` is omitted.
@@ -63,17 +74,9 @@ struct SendParams {
     instance_id: Option<String>,
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cwd: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -88,24 +91,18 @@ impl CtlDispatch for PromptsCommand {
         match self {
             PromptsCommand::Send {
                 instance_id,
-                id,
-                agent,
                 profile,
                 cwd,
-                mode,
-                model,
                 text,
+                show,
             } => send(
                 client,
                 SendArgs {
                     instance_id,
-                    id,
-                    agent,
                     profile,
                     cwd,
-                    mode,
-                    model,
                     text,
+                    show,
                 },
             ),
             PromptsCommand::Cancel { instance_id } => cancel(client, instance_id),
@@ -115,13 +112,10 @@ impl CtlDispatch for PromptsCommand {
 
 struct SendArgs {
     instance_id: Option<String>,
-    id: Option<String>,
-    agent: Option<String>,
     profile: Option<String>,
     cwd: Option<PathBuf>,
-    mode: Option<String>,
-    model: Option<String>,
     text: Vec<String>,
+    show: bool,
 }
 
 fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
@@ -140,20 +134,28 @@ fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
     } else {
         joined
     };
-    emit(
+    let v = request_value(
         client,
         "prompts/send",
         &SendParams {
             instance_id: args.instance_id,
             text: resolved,
-            id: args.id,
-            agent_id: args.agent,
             profile_id: args.profile,
             cwd: args.cwd,
-            mode: args.mode,
-            model: args.model,
         },
-    )
+    )?;
+    println!("{}", serde_json::to_string_pretty(&v)?);
+
+    if args.show {
+        // Server returns the resolved instance id (`instanceId`). Pass
+        // it to overlay/show so the captain lands focused on the
+        // instance their prompt just dispatched against, not whichever
+        // happens to be focused.
+        let instance_id = v.get("instanceId").and_then(|v| v.as_str()).map(str::to_string);
+
+        show_after(client, instance_id)?;
+    }
+    Ok(())
 }
 
 // Swap to the `clap-stdin` crate's `MaybeStdin<T>` value-parser if a

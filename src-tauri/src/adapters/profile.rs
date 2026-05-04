@@ -77,12 +77,23 @@ impl ResolvedInstance {
         let model = profile.model.clone().or_else(|| agent.model.clone());
         let system_prompt = Self::load_system_prompt(profile, config)?;
 
+        // Merge profile.env onto a clone of the agent so the spawn
+        // path (which iterates `entry.env`) sees both. Profile entries
+        // override agent entries on key collision — profile is the
+        // more specific scope. `${VAR}` interpolation against the
+        // daemon's process env happens later in `agents/mod.rs::expand_value`.
+        let mut agent = agent.clone();
+
+        for (k, v) in profile.env.iter() {
+            agent.env.insert(k.clone(), v.clone());
+        }
+
         Ok(Self {
-            agent: agent.clone(),
+            agent,
             profile_id: Some(profile.id.clone()),
             model,
             system_prompt,
-            mode: None,
+            mode: profile.mode.clone(),
         })
     }
 
@@ -140,9 +151,9 @@ fn read_prompt_files(paths: &[std::path::PathBuf], ctx_label: &str) -> Result<Op
     let mut out = String::new();
 
     for path in paths {
-        let expanded = shellexpand::tilde(&path.to_string_lossy()).into_owned();
+        let expanded = crate::paths::resolve_user(&path.to_string_lossy());
         let body = std::fs::read_to_string(&expanded)
-            .with_context(|| format!("{ctx_label}: failed to read system_prompt {expanded}"))?;
+            .with_context(|| format!("{ctx_label}: failed to read system_prompt {}", expanded.display()))?;
         if !out.is_empty() {
             out.push_str("\n\n");
         }
@@ -164,7 +175,7 @@ mod tests {
             id: id.into(),
             provider: AgentProvider::AcpClaudeCode,
             model: model.map(|s| s.to_string()),
-            command: Some("/bin/false".into()),
+            command: "/bin/false".into(),
             args: vec![],
             cwd: None,
             env: Default::default(),
@@ -327,6 +338,53 @@ mod tests {
         assert_eq!(r.agent.id, "cc");
         assert_eq!(r.model.as_deref(), Some("sonnet"));
         assert!(r.system_prompt.is_none());
+    }
+
+    #[test]
+    fn profile_env_merges_onto_agent_env_at_resolve() {
+        // Profile-level env entries flow through to the spawned
+        // process. Profile values override agent values on key
+        // collision (profile is the more specific scope); keys only
+        // on the agent side survive untouched.
+        let mut a = agent("cc", None);
+
+        a.env.insert("AGENT_ONLY".into(), "from-agent".into());
+        a.env.insert("OVERRIDDEN".into(), "agent-value".into());
+        let mut p = profile("ask", "cc", None, None);
+
+        p.env.insert("OVERRIDDEN".into(), "profile-value".into());
+        p.env.insert("PROFILE_ONLY".into(), "from-profile".into());
+        let cfg = Config {
+            agents: AgentsConfig {
+                agents: vec![a],
+                ..Default::default()
+            },
+            profiles: vec![p],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+
+        assert_eq!(r.agent.env.get("AGENT_ONLY").map(String::as_str), Some("from-agent"));
+        assert_eq!(r.agent.env.get("OVERRIDDEN").map(String::as_str), Some("profile-value"));
+        assert_eq!(r.agent.env.get("PROFILE_ONLY").map(String::as_str), Some("from-profile"));
+    }
+
+    #[test]
+    fn profile_mode_propagates_to_resolved_instance() {
+        let mut p = profile("ask", "cc", None, None);
+
+        p.mode = Some("plan".into());
+        let cfg = Config {
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![p],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+
+        assert_eq!(r.mode.as_deref(), Some("plan"));
     }
 
     #[test]

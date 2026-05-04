@@ -31,6 +31,14 @@ export function usePaletteFilter(spec: Ref<PaletteSpec | undefined>, query: Ref<
     const tickedSet = ticked.value
     const tickedRows = s.entries.filter((e) => tickedSet.has(e.id))
     const rest = s.entries.filter((e) => !tickedSet.has(e.id))
+
+    // Server-pre-filtered specs (cwd path-completion, future ripgrep
+    // leaves) opt out of the client-side filter — their entries are
+    // already pruned against the raw query, and Fuse on top would
+    // over-prune (basenames don't fuzzy-match a full typed path).
+    if (s.filtered) {
+      return s.mode === PaletteMode.MultiSelect ? [...tickedRows, ...rest] : rest
+    }
     const gated = rest.filter((e) => subsequenceMatch(q, e.name))
 
     let ordered: PaletteEntry[]

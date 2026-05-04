@@ -35,7 +35,7 @@ defineProps<{
 
 .kbd-hint-key {
   @apply inline-flex min-w-4 items-center justify-center border px-[4px] py-[1px] text-[0.68rem];
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-alt);
   border-color: var(--theme-border);
 }

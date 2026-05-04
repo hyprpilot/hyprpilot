@@ -6,7 +6,6 @@ mod opencode;
 
 use tokio::process::Command;
 
-use crate::adapters::Capabilities;
 use crate::config::{AgentConfig, AgentProvider};
 
 pub use self::claude_code::AcpAgentClaudeCode;
@@ -49,19 +48,16 @@ fn expand_value(raw: &str, ctx: &str) -> String {
 }
 
 /// Vendor-adapter trait. Implementors are unit structs — state lives
-/// on `AgentConfig`.
+/// on `AgentConfig`. `command` + `args` come from config (mandatory at
+/// validate time); the trait carries only the per-vendor injection
+/// knobs (`model_injection` for spawn-time model dispatch,
+/// `inject_system_prompt` for spawn-time prompt placement).
 pub trait AcpAgent: Send + Sync + 'static {
     fn spawn(&self, entry: &AgentConfig) -> Command {
         use std::process::Stdio;
 
-        let program_raw = entry.command.clone().unwrap_or_else(|| self.command().to_string());
-        let program = expand_value(&program_raw, "agent.command");
-
-        let mut args: Vec<String> = if entry.args.is_empty() {
-            self.args().iter().map(|s| (*s).to_string()).collect()
-        } else {
-            entry.args.clone()
-        };
+        let program = expand_value(&entry.command, "agent.command");
+        let mut args: Vec<String> = entry.args.clone();
 
         // Argv-style model injection — append flag + value when user
         // didn't already pass the flag explicitly. Done before
@@ -97,17 +93,6 @@ pub trait AcpAgent: Send + Sync + 'static {
         cmd
     }
 
-    fn command(&self) -> &'static str;
-
-    fn args(&self) -> &'static [&'static str];
-
-    /// Per-vendor static capability set. Drives UI gating + the
-    /// `Adapter::capabilities_for_agent` lookup. Defaults to no caps —
-    /// vendors override to declare their truthful surface.
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
-    }
-
     /// Where to splice `entry.model` into the spawn command. Default
     /// `None` means the vendor doesn't accept a model override.
     fn model_injection(&self) -> ModelInjection {
@@ -120,6 +105,15 @@ pub trait AcpAgent: Send + Sync + 'static {
         SystemPromptInjection::Handled
     }
 }
+
+/// `acp` provider — no-op vendor. User-supplied ACP binaries
+/// that don't need spawn-time model env / system-prompt injection
+/// land here. For vendors that DO need injection, copy one of the
+/// three named providers; future TOML overrides on the named
+/// providers' injection knobs are an additive follow-up.
+pub struct AcpAgentCustom;
+
+impl AcpAgent for AcpAgentCustom {}
 
 /// Outcome of pre-spawn system-prompt injection.
 #[derive(Debug, Clone, Default)]
@@ -137,6 +131,7 @@ pub fn match_provider_agent(provider: AgentProvider) -> Box<dyn AcpAgent> {
         AgentProvider::AcpClaudeCode => Box::new(AcpAgentClaudeCode),
         AgentProvider::AcpCodex => Box::new(AcpAgentCodex),
         AgentProvider::AcpOpenCode => Box::new(AcpAgentOpenCode),
+        AgentProvider::Acp => Box::new(AcpAgentCustom),
     }
 }
 
@@ -149,31 +144,17 @@ mod tests {
             id: id.into(),
             provider: AgentProvider::AcpClaudeCode,
             model: None,
-            command: None,
-            args: Vec::new(),
+            command: "bunx".into(),
+            args: vec!["--bun".into(), "@zed-industries/claude-code-acp".into()],
             cwd: None,
             env: Default::default(),
         }
     }
 
     #[test]
-    fn match_provider_agent_picks_concrete_adapter_per_provider() {
-        let entry = stub_entry("anon");
-
-        let claude_cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
-        assert_eq!(claude_cmd.as_std().get_program(), "bunx");
-
-        let codex_cmd = match_provider_agent(AgentProvider::AcpCodex).spawn(&entry);
-        assert_eq!(codex_cmd.as_std().get_program(), "bunx");
-
-        let opencode_cmd = match_provider_agent(AgentProvider::AcpOpenCode).spawn(&entry);
-        assert_eq!(opencode_cmd.as_std().get_program(), "opencode");
-    }
-
-    #[test]
-    fn spawn_command_respects_user_command_override() {
+    fn spawn_command_respects_user_command() {
         let mut entry = stub_entry("override-test");
-        entry.command = Some("my-agent".into());
+        entry.command = "my-agent".into();
         entry.args = vec!["--yolo".into()];
 
         let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
@@ -183,11 +164,16 @@ mod tests {
     }
 
     #[test]
-    fn spawn_command_uses_default_args_when_user_args_empty() {
-        let entry = stub_entry("default-args");
-        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
+    fn custom_provider_resolves_to_no_op_agent() {
+        let mut entry = stub_entry("custom");
+        entry.provider = AgentProvider::Acp;
+        entry.command = "my-acp-binary".into();
+        entry.args = vec!["--serve".into()];
+
+        let cmd = match_provider_agent(AgentProvider::Acp).spawn(&entry);
+        assert_eq!(cmd.as_std().get_program(), "my-acp-binary");
         let args: Vec<_> = cmd.as_std().get_args().collect();
-        assert_eq!(args, vec!["--bun", "@zed-industries/claude-code-acp"]);
+        assert_eq!(args, vec!["--serve"]);
     }
 
     #[test]

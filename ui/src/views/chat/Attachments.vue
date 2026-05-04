@@ -57,6 +57,15 @@ function iconFor(mime: string | undefined): typeof faFile {
 }
 
 function nameFor(att: Attachment): string {
+  // Skill bundles live at `<root>/<slug>/SKILL.md`; the path basename
+  // is always `SKILL.md`, which reads as useless. Prefix with
+  // `skills/` so the captain reads "this came from a skill, not a
+  // plain file" at a glance — `skills/code-debug` instead of
+  // `code-debug` (which could be either a skill or a directory).
+  if (att.slug && att.slug.length > 0 && att.path && att.path.endsWith('/SKILL.md')) {
+    return `skills/${att.slug}`
+  }
+
   if (att.title && att.title.length > 0) {
     return att.title
   }
@@ -141,7 +150,7 @@ const images = computed(() => props.attachments.filter(isImage))
   padding: 2px 8px;
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   cursor: pointer;
   max-width: 100%;
   min-width: 0;

@@ -2,7 +2,7 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { createApp } from 'vue'
 
 import App from './App.vue'
-import { applyTheme, applyWindowState, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus } from '@composables'
+import { applyTheme, applyWindowState, loadCompletionConfig, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus, startGitStatus } from '@composables'
 import { log } from '@lib'
 import '@assets/styles.css'
 
@@ -100,6 +100,16 @@ async function boot(): Promise<void> {
   await loadDaemonCwd()
   setBootStatus('loading keymaps')
   await loadKeymaps()
+  // Apply the captain's configured ripgrep debounce on the
+  // composer's auto-trigger path. The daemon-side ripgrep source
+  // already honours `auto` / `min_prefix`; only debounce_ms lives
+  // UI-side because that's where keystrokes happen.
+  await loadCompletionConfig()
+
+  // Watch the active instance's cwd and pull a fresh git-status
+  // snapshot on every change — drives the header `branch ↑N ↓M`
+  // pill. Idempotent.
+  startGitStatus()
 
   // Flip `bootDone` so the App root can drop the fullscreen
   // overlay. Anything that needs the keymaps (Overlay.vue's keymap

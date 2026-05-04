@@ -34,7 +34,7 @@
   --color-theme-compose: var(--theme-surface-compose);
 
   --color-theme-fg: var(--theme-fg);
-  --color-theme-fg-ink-2: var(--theme-fg-ink-2);
+  --color-theme-fg-subtle: var(--theme-fg-subtle);
   --color-theme-fg-dim: var(--theme-fg-dim);
   --color-theme-fg-faint: var(--theme-fg-faint);
 
@@ -111,7 +111,14 @@ body {
 /* The instance border lives on `.frame` itself (driven by the phase
  * color — see `components/header/Frame.vue`). `box-sizing: border-box`
  * keeps that border inside the `100vh` viewport instead of pushing
- * content past the edge. */
+ * content past the edge.
+ *
+ * Body picks up `surface-bg` so any not-explicitly-painted region
+ * (boot-time gap before applyTheme(), the strip behind the
+ * fullscreen Loading overlay, narrow letterbox bands when content
+ * doesn't fill the viewport) reads as the captain's configured
+ * background instead of the webview's native fallback. */
 body {
   box-sizing: border-box;
+  background-color: var(--theme-surface-bg);
 }

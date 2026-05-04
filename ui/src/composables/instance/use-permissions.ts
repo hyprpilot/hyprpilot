@@ -22,7 +22,7 @@ export interface PendingPermission {
   kind: string
   args: string
   rawInput?: Record<string, unknown>
-  contentText?: string
+  content: Record<string, unknown>[]
   options: PermissionOptionView[]
   createdAt: number
 }
@@ -33,13 +33,8 @@ export interface PermissionRequestRaw {
   kind?: string
   args?: string
   rawInput?: Record<string, unknown>
-  contentText?: string
+  content?: Record<string, unknown>[]
   options: PermissionOptionView[]
-}
-
-export enum PermissionDecision {
-  Allow = 'allow',
-  Deny = 'deny'
 }
 
 const states = ref<Record<InstanceId, PendingPermission[]>>({})
@@ -58,7 +53,7 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     kind: raw.kind ?? 'acp',
     args: raw.args ?? '',
     rawInput: raw.rawInput,
-    contentText: raw.contentText,
+    content: raw.content ?? [],
     createdAt: seq,
     options: raw.options
   }
@@ -118,7 +113,7 @@ function synthesizeWireCall(p: PendingPermission): WireToolCall {
     title: p.tool,
     status: 'pending',
     kind: p.kind,
-    content: p.contentText && p.contentText.length > 0 ? [{ type: 'text', text: p.contentText }] : [],
+    content: p.content,
     rawInput: p.rawInput,
     createdAt: p.createdAt,
     updatedAt: p.createdAt
@@ -147,13 +142,16 @@ export interface UsePermissionsApi {
   /** Permission requests with `permissionUi: Modal` — drives the modal queue. */
   modalQueue: ComputedRef<PermissionView[]>
   /**
-   * Allow a pending permission. `remember=true` writes a runtime
-   * trust-store entry for `(instance, tool)` so subsequent calls of
-   * the same tool short-circuit at decide() lane 1 — that's the
-   * "always allow" path. `remember=false` (default) is "once".
+   * Resolve a pending permission with the captain's pick. `optionId`
+   * must be one of the agent-offered `optionId` values from the
+   * pending entry's `options` array. The captain's "remember this"
+   * intent is encoded in the option's typed `kind`
+   * (`allow_always` / `reject_always`) — the daemon controller reads
+   * the kind off the offered set and writes the trust store
+   * atomically before signaling the agent. No separate `remember`
+   * field on the wire.
    */
-  allow: (requestId: string, remember?: boolean) => Promise<void>
-  deny: (requestId: string, remember?: boolean) => Promise<void>
+  respond: (requestId: string, optionId: string) => Promise<void>
 }
 
 export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
@@ -179,7 +177,7 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
 
   const modalQueue = computed<PermissionView[]>(() => allViews.value.filter((v) => v.call.permissionUi === PermissionUi.Modal))
 
-  async function respond(requestId: string, decision: PermissionDecision, remember: boolean): Promise<void> {
+  async function respond(requestId: string, optionId: string): Promise<void> {
     const resolved = instanceId ?? activeId.value
 
     if (!resolved) {
@@ -193,10 +191,7 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
     await invoke(TauriCommand.PermissionReply, {
       sessionId: entry.sessionId,
       requestId: entry.requestId,
-      optionId: decision,
-      remember: remember ? decision : undefined,
-      instanceId: entry.instanceId,
-      tool: entry.tool
+      optionId
     })
     evictPermission(resolved, requestId)
   }
@@ -204,7 +199,6 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
   return {
     rowQueue,
     modalQueue,
-    allow: (requestId, remember = false) => respond(requestId, PermissionDecision.Allow, remember),
-    deny: (requestId, remember = false) => respond(requestId, PermissionDecision.Deny, remember)
+    respond
   }
 }

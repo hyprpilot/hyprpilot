@@ -45,8 +45,7 @@ function noInstanceSpec(): PaletteSpec {
     entries: [
       {
         id: PLACEHOLDER_ROW_ID,
-        name: 'no active instance',
-        description: 'submit a turn to spawn a session, then re-open the palette'
+        name: 'no active instance.'
       }
     ],
     onCommit: () => {}

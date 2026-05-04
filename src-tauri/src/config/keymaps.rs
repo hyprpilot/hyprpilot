@@ -306,24 +306,21 @@ pub struct PaletteKeymaps {
     #[garde(dive)]
     #[merge(strategy = overwrite_some)]
     pub close: Option<Binding>,
+    /// Direct-jump shortcut to the instances palette leaf — the
+    /// captain's "what else is running" panel. Default: `Ctrl+I`.
+    /// `models` / `sessions` had their own dedicated focus binds at
+    /// one point; both got dropped because the captain reaches them
+    /// through the root menu and one extra keystroke is fine for the
+    /// less-frequent surfaces. The instances panel is the load-
+    /// bearing one because it doubles as the kill-switch.
     #[garde(dive)]
-    pub models: ModelsSubPaletteKeymaps,
-    #[garde(dive)]
-    pub sessions: SessionsSubPaletteKeymaps,
+    pub instances: InstancesSubPaletteKeymaps,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]
-pub struct ModelsSubPaletteKeymaps {
-    #[garde(dive)]
-    pub focus: Option<Binding>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-#[merge(strategy = overwrite_some)]
-pub struct SessionsSubPaletteKeymaps {
+pub struct InstancesSubPaletteKeymaps {
     #[garde(dive)]
     pub focus: Option<Binding>,
 }
@@ -400,8 +397,7 @@ pub(crate) fn collect_collision_scopes(cfg: &KeymapsConfig) -> Vec<CollisionScop
                 ("close", cfg.palette.close.as_ref()),
             ],
         ),
-        ("palette.models", vec![("focus", cfg.palette.models.focus.as_ref())]),
-        ("palette.sessions", vec![("focus", cfg.palette.sessions.focus.as_ref())]),
+        ("palette.instances", vec![("focus", cfg.palette.instances.focus.as_ref())]),
         ("transcript", vec![]),
         ("window", vec![("toggle", cfg.window.toggle.as_ref())]),
         (

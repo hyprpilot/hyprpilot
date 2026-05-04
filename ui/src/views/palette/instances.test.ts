@@ -65,7 +65,7 @@ describe('openInstancesLeaf', () => {
     expect(spec?.title).toBe('instances')
     expect(spec?.entries).toHaveLength(1)
     expect(spec?.entries[0]?.id).toBe('instances-empty')
-    expect(spec?.entries[0]?.name).toBe('no live instances')
+    expect(spec?.entries[0]?.name).toBe('no live instances.')
   })
 
   it('lists every live instance with the headline name (profile id when no captain rename)', async() => {
@@ -187,7 +187,7 @@ describe('openInstancesLeaf', () => {
     const { stack } = usePalette()
     const spec = stack.value[0]
 
-    spec?.onCommit([{ id: 'instances-empty', name: 'no live instances' }])
+    spec?.onCommit([{ id: 'instances-empty', name: 'no live instances.' }])
     await Promise.resolve()
 
     const focusCalls = invokeMock.mock.calls.filter((c) => c[0] === 'instances_focus')
@@ -231,7 +231,7 @@ describe('openInstancesLeaf', () => {
     const { stack } = usePalette()
     const spec = stack.value[0]
 
-    spec?.onDelete?.({ id: 'instances-empty', name: 'no live instances' })
+    spec?.onDelete?.({ id: 'instances-empty', name: 'no live instances.' })
     await Promise.resolve()
 
     const shutdownCalls = invokeMock.mock.calls.filter((c) => c[0] === 'instances_shutdown')

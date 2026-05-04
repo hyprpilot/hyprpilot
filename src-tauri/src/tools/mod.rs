@@ -6,6 +6,7 @@
 //! `agent_client_protocol::Error`.
 
 pub mod fs;
+pub mod git;
 pub mod sandbox;
 pub mod terminal;
 

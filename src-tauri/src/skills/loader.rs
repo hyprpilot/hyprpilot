@@ -89,7 +89,7 @@ fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
     let title = frontmatter_str(&frontmatter, "title")
         .map(str::to_owned)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| extract_first_h1(&body).unwrap_or_default());
+        .unwrap_or_default();
     let description = frontmatter_str(&frontmatter, "description")
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Guidance for {}", slug.as_str()));
@@ -148,22 +148,6 @@ fn frontmatter_str<'a>(fm: &'a YamlValue, key: &str) -> Option<&'a str> {
     fm.get(key).and_then(YamlValue::as_str)
 }
 
-fn extract_first_h1(body: &str) -> Option<String> {
-    for raw in body.lines() {
-        let stripped = raw.trim();
-        if stripped.is_empty() {
-            continue;
-        }
-        if let Some(rest) = stripped.strip_prefix("# ") {
-            if !rest.starts_with('#') {
-                return Some(rest.trim().to_owned());
-            }
-        }
-        return None;
-    }
-    None
-}
-
 /// Markdown link references `[text](target)` where `target` is a
 /// relative path (no URL scheme). Mirrors the python loader's regex.
 fn extract_references(body: &str) -> Vec<String> {
@@ -220,6 +204,7 @@ mod tests {
             "git-commit",
             r#"---
 name: git-commit
+title: git-commit
 description: Stage and commit changes
 ---
 
@@ -236,6 +221,28 @@ Body. See [README](../README.md) for more.
         assert!(s.body.contains("Body."));
         assert_eq!(s.references, vec!["../README.md".to_string()]);
         assert_eq!(s.title, "git-commit");
+    }
+
+    #[test]
+    fn missing_title_field_resolves_to_empty_string() {
+        let tmp = TempDir::new().unwrap();
+        write_skill(
+            tmp.path(),
+            "no-title",
+            r#"---
+description: no title field
+---
+
+# Body Heading
+
+Body content.
+"#,
+        );
+        let skills = load_skills(tmp.path()).unwrap();
+        assert_eq!(skills.len(), 1);
+        // No `title` in frontmatter → empty string. Authors must
+        // declare `title` explicitly; the H1 fallback was deleted.
+        assert_eq!(skills[0].title, "");
     }
 
     #[test]
@@ -358,25 +365,6 @@ and [mail](mailto:a@b.com). Plus [relative](../other.md).
         assert!(!refs.iter().any(|r| r.starts_with("http")));
         assert!(!refs.iter().any(|r| r.starts_with('#')));
         assert!(!refs.iter().any(|r| r.starts_with("mailto")));
-    }
-
-    #[test]
-    fn first_h1_used_as_title_when_frontmatter_missing() {
-        let tmp = TempDir::new().unwrap();
-        write_skill(
-            tmp.path(),
-            "titled",
-            r#"---
-description: no title field
----
-
-# My Skill Title
-
-body content
-"#,
-        );
-        let skills = load_skills(tmp.path()).unwrap();
-        assert_eq!(skills[0].title, "My Skill Title");
     }
 
     #[test]

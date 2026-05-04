@@ -99,14 +99,14 @@ const wrapperClass = computed(() => `loading loading-${props.mode}`)
   color: var(--theme-accent);
 }
 
-/* Status pill — line2 outline, surface-bg fill, fg-ink-2 text. Same
+/* Status pill — line2 outline, surface-bg fill, fg-subtle text. Same
  * visual vocabulary as the breadcrumb / kbd pills so the user reads
  * it as an operator-facing tag. */
 .loading-status {
   @apply inline-flex items-center text-[0.62rem] uppercase;
   background-color: var(--theme-surface-bg);
   border: 1px solid var(--theme-border-soft);
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   padding: 3px 8px;
   border-radius: 3px;
   letter-spacing: 0.6px;

@@ -66,6 +66,12 @@ export type TranscriptItem =
   | { kind: TranscriptItemKind.UserText; text: string }
   | { kind: TranscriptItemKind.AgentText; text: string }
   | { kind: TranscriptItemKind.AgentThought; text: string }
+  /// Agent-emitted attachment — image / audio / embedded resource /
+  /// resource link. Mirrors the user-side `Attachment` shape so the
+  /// existing `Attachments` chat component renders them with no new
+  /// renderer. Maps from `AgentMessageChunk` when the chunk's
+  /// `content` block isn't text-shaped.
+  | ({ kind: TranscriptItemKind.AgentAttachment } & Attachment)
   | ({ kind: TranscriptItemKind.ToolCall } & ToolCallRecord)
   | ({ kind: TranscriptItemKind.ToolCallUpdate } & ToolCallUpdateRecord)
   | ({ kind: TranscriptItemKind.Plan } & PlanRecord)

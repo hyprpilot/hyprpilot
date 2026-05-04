@@ -25,7 +25,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  reply: [requestId: string, optionId: 'allow' | 'deny', remember: boolean]
+  reply: [requestId: string, optionId: string]
   dismiss: [requestId: string]
 }>()
 
@@ -47,7 +47,7 @@ const activeIndex = computed(() => {
     </div>
     <PermissionRow
       :view="active"
-      @reply="(optionId, remember) => emit('reply', active!.request.requestId, optionId, remember)"
+      @reply="(optionId) => emit('reply', active!.request.requestId, optionId)"
       @dismiss="emit('dismiss', active!.request.requestId)"
     />
   </section>

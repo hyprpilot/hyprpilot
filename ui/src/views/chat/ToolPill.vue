@@ -138,7 +138,7 @@ const isInteractive = computed(() => hasBody.value)
 }
 
 .tool-pill[data-state='done'] .tool-pill-title {
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 
 .tool-pill-stat {

@@ -64,9 +64,12 @@ pub struct AgentConfig {
     /// Vendor-translated at spawn time: env var or CLI flag per vendor.
     #[garde(skip)]
     pub model: Option<String>,
-    /// Missing → vendor's default command.
-    #[garde(inner(length(min = 1)))]
-    pub command: Option<String>,
+    /// Spawn binary. Mandatory — no per-provider fallback table at
+    /// the trait layer. defaults.toml supplies one for every named
+    /// provider; user `[[agents]]` entries (named or `acp`)
+    /// must declare it explicitly.
+    #[garde(length(min = 1))]
+    pub command: String,
     #[garde(skip)]
     #[serde(default)]
     pub args: Vec<String>,
@@ -78,8 +81,12 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
 }
 
-/// Closed enum — each variant maps to an `AcpAgent` impl. Wire
-/// names are explicit to avoid `acp-open-code` for `AcpOpenCode`.
+/// Closed enum — each named variant maps to an `AcpAgent` impl with
+/// hardcoded model + system-prompt injection behaviour. `Custom`
+/// opens the door to user-supplied ACP binaries that need no
+/// injection (or, in a follow-up, schema-driven injection from
+/// `[[agents]]` TOML). Wire names are explicit to avoid `acp-open-code`
+/// for `AcpOpenCode`.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AgentProvider {
@@ -90,6 +97,13 @@ pub enum AgentProvider {
     AcpCodex,
     #[serde(rename = "acp-opencode")]
     AcpOpenCode,
+    /// User-supplied ACP-speaking binary. `command` / `args` are
+    /// mandatory; injection knobs default to no-op (no model env or
+    /// argv flag, no system-prompt injection). For vendors that need
+    /// model env / system-prompt argv injection, copy one of the
+    /// three named providers.
+    #[serde(rename = "acp")]
+    Acp,
 }
 
 /// One `[[profiles]]` entry. Binds an agent id to an optional model
@@ -193,7 +207,7 @@ mod tests {
         );
 
         for a in &cfg.agents.agents {
-            assert!(a.command.is_some(), "agents[{}].command", a.id);
+            assert!(!a.command.is_empty(), "agents[{}].command", a.id);
             assert!(!a.args.is_empty(), "agents[{}].args", a.id);
         }
 
@@ -235,12 +249,12 @@ args = []
         );
 
         let cc = cfg.agents.agents.iter().find(|a| a.id == "claude-code").unwrap();
-        assert_eq!(cc.command.as_deref(), Some("my-claude"));
+        assert_eq!(cc.command, "my-claude");
         assert_eq!(cc.args, vec!["--custom".to_string()]);
 
         // Untouched defaults keep everything.
         let codex = cfg.agents.agents.iter().find(|a| a.id == "codex").unwrap();
-        assert_eq!(codex.command.as_deref(), Some("bunx"));
+        assert_eq!(codex.command, "bunx");
 
         // Appended entry survived.
         let ml = cfg.agents.agents.iter().find(|a| a.id == "my-local").unwrap();

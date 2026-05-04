@@ -123,3 +123,114 @@ export function textBlocks(content: WireToolCall['content']): string {
 
   return parts.join('\n\n')
 }
+
+/**
+ * One ACP `ToolCallContent::Diff` payload. Carries the file path
+ * plus old / new text. `oldText` is `null` for new files (per spec);
+ * the caller treats null as the empty string when computing a diff.
+ */
+export interface DiffContentBlock {
+  path: string
+  oldText: string | null
+  newText: string
+}
+
+/**
+ * Extract every `{ type: "diff", path, oldText, newText }` content
+ * block from the wire payload. Returns the empty array when none —
+ * caller falls back to plain text rendering.
+ *
+ * Edit / MultiEdit / Write tool calls all emit Diff blocks (per ACP
+ * tool-calls spec); claude-code-acp / codex-acp / opencode-acp ship
+ * the same shape. Older clients dropped these on the floor —
+ * `textBlocks(...)` only walks `text`-shaped blocks; this helper
+ * pulls the Diff variant separately.
+ */
+export function diffBlocks(content: WireToolCall['content']): DiffContentBlock[] {
+  const out: DiffContentBlock[] = []
+
+  for (const block of content ?? []) {
+    if (block.type !== 'diff') {
+      continue
+    }
+    const path = typeof block.path === 'string' ? block.path : ''
+    const newText = typeof block.newText === 'string' ? block.newText : ''
+    const oldText = typeof block.oldText === 'string' ? block.oldText : block.oldText === null ? null : ''
+
+    if (path.length === 0) {
+      continue
+    }
+    out.push({
+      path, oldText, newText
+    })
+  }
+
+  return out
+}
+
+/**
+ * Path → MIME hint for the rich diff renderer. Returns `undefined`
+ * for unrecognised extensions; `richDiffMarkdown` then falls back
+ * to plaintext / cheap unified-diff render. Agent-side Diff content
+ * blocks don't carry MIME — so file-modifying formatters infer from
+ * the path. Read / Fetch get MIME directly from the daemon.
+ */
+export function inferMimeFromPath(path: string): string | undefined {
+  const seg = path.split('/').pop() ?? ''
+  const dot = seg.lastIndexOf('.')
+
+  if (dot < 0) {
+    return undefined
+  }
+  const ext = seg.slice(dot + 1).toLowerCase()
+
+  switch (ext) {
+    case 'ts':
+    case 'tsx':
+      return 'application/typescript'
+
+    case 'js':
+    case 'jsx':
+      return 'application/javascript'
+
+    case 'json':
+      return 'application/json'
+
+    case 'md':
+      return 'text/markdown'
+
+    case 'yaml':
+    case 'yml':
+      return 'application/x-yaml'
+
+    case 'toml':
+      return 'application/toml'
+
+    case 'rs':
+      return 'text/x-rust'
+
+    case 'go':
+      return 'text/x-go'
+
+    case 'py':
+      return 'text/x-python'
+
+    case 'sh':
+      return 'application/x-sh'
+
+    case 'sql':
+      return 'application/sql'
+
+    case 'vue':
+      return 'text/x-vue'
+
+    case 'html':
+      return 'text/html'
+
+    case 'css':
+      return 'text/css'
+
+    default:
+      return undefined
+  }
+}

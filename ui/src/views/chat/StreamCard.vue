@@ -199,7 +199,7 @@ function planIconFor(status: PlanStatus) {
 /* Italic Inter recap — visually distinct from the mono header tag. */
 .stream-card-summary-inline {
   @apply ml-1 truncate text-[0.7rem] italic normal-case;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-sans);
   letter-spacing: normal;
   font-weight: normal;
@@ -241,7 +241,7 @@ function planIconFor(status: PlanStatus) {
 /* wireframe fidelity: done = dim text, NOT struck through. */
 .stream-card-text {
   @apply flex-1;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 
 .stream-card-item[data-status='completed'] .stream-card-text {
@@ -254,7 +254,7 @@ function planIconFor(status: PlanStatus) {
  * correctly without a `<pre>` shape. */
 .stream-card-plain {
   @apply text-[0.78rem] leading-relaxed;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-sans);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -266,7 +266,7 @@ function planIconFor(status: PlanStatus) {
  * prose. */
 .stream-card-prose {
   @apply text-[0.78rem] leading-relaxed;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-sans);
   overflow-wrap: anywhere;
 }

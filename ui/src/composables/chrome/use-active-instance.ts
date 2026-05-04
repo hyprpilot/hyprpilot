@@ -24,6 +24,7 @@
  */
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
+import { peekSessionInfo } from '../instance/use-session-info'
 import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone } from '@components'
 import { TauriEvent, InstanceState } from '@ipc'
@@ -75,17 +76,46 @@ function applyFocus(next: InstanceId | undefined, reason: 'event' | 'manual'): v
   if (prev && prev !== next) {
     const meta = knownInstances.get(prev)
     const tone = meta?.lastState === InstanceState.Error ? ToastTone.Warn : ToastTone.Ok
-    const agentLabel = meta?.agentId ?? prev.slice(0, 8)
+    const prevLabel = labelFor(prev, meta)
 
     if (next) {
-      const nextMeta = knownInstances.get(next)
-      const nextLabel = nextMeta?.agentId ?? next.slice(0, 8)
+      const nextLabel = labelFor(next, knownInstances.get(next))
 
-      pushToast(tone, `instance ${agentLabel} exited — switched to ${nextLabel}`)
+      pushToast(tone, `${prevLabel} exited — switched to ${nextLabel}`)
     } else {
-      pushToast(tone, `instance ${agentLabel} exited`)
+      pushToast(tone, `${prevLabel} exited`)
     }
   }
+}
+
+/**
+ * Compose a captain-readable instance label from the per-instance
+ * sessionInfo slot. Prefers profile id (the captain's named bundle);
+ * falls back through model → agent → first 8 of the UUID. The
+ * fallback chain matches what's shown in the header chips so the
+ * toast reads in the same vocabulary as the chrome.
+ */
+function labelFor(id: InstanceId, meta: InstanceMeta | undefined): string {
+  const info = peekSessionInfo(id)
+  const parts: string[] = []
+
+  if (info?.profileId) {
+    parts.push(info.profileId)
+  }
+
+  if (info?.model) {
+    parts.push(info.model)
+  } else if (info?.agent) {
+    parts.push(info.agent)
+  } else if (meta?.agentId) {
+    parts.push(meta.agentId)
+  }
+
+  if (parts.length === 0) {
+    return id.slice(0, 8)
+  }
+
+  return parts.join(' · ')
 }
 
 /**

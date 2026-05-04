@@ -45,8 +45,7 @@ const DEFAULT_KEYMAPS = {
   palette: {
     open: { modifiers: [Modifier.Ctrl], key: 'k' },
     close: { modifiers: [], key: 'escape' },
-    models: { focus: { modifiers: [Modifier.Ctrl], key: 'm' } },
-    sessions: { focus: { modifiers: [Modifier.Ctrl], key: 's' } }
+    instances: { focus: { modifiers: [Modifier.Ctrl], key: 'i' } }
   },
   transcript: {},
   window: {
@@ -85,20 +84,30 @@ beforeEach(async() => {
   invoke.mockReset()
 })
 
+// Realistic ACP option set: agent typically offers all four kinds
+// (`allow_once`, `allow_always`, `reject_once`, `reject_always`).
+// Tests use a stable subset and assert on the typed `kind` lookup
+// (keybind picks the first option matching `allow*` / `reject*`).
+const SAMPLE_OPTIONS = [
+  {
+    optionId: 'allow-once-id', name: 'Allow once', kind: 'allow_once'
+  },
+  {
+    optionId: 'allow-always-id', name: 'Allow always', kind: 'allow_always'
+  },
+  {
+    optionId: 'reject-once-id', name: 'Reject once', kind: 'reject_once'
+  }
+]
+
 describe('Chat.vue — permission wiring', () => {
-  it('renders pending prompts from usePermissions and dispatches permission_reply on allow click', async() => {
+  it('renders pending prompts from usePermissions and dispatches permission_reply on a button click', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: [
-        {
-          optionId: 'allow',
-          name: 'Allow',
-          kind: 'y'
-        }
-      ]
+      options: SAMPLE_OPTIONS
     })
     invoke.mockResolvedValue(undefined)
 
@@ -110,7 +119,9 @@ describe('Chat.vue — permission wiring', () => {
 
     expect(stack.text()).toContain('bash')
 
-    const allowButton = stack.find('button[aria-label="allow once"]')
+    // Button labels go through `change-case::sentenceCase` on the
+    // agent-supplied `name` field. `'Allow once'` round-trips as-is.
+    const allowButton = stack.find('button[aria-label="Allow once"]')
 
     await allowButton.trigger('click')
     await flushMicrotasks()
@@ -118,28 +129,19 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow',
-      remember: undefined,
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'allow-once-id'
     })
     expect(wrapper.find('[data-testid="permission-stack"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('dispatches deny via Ctrl+R', async() => {
+  it('dispatches the first reject_* option via Ctrl+R', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'rm -rf /',
-      options: [
-        {
-          optionId: 'deny',
-          name: 'Deny',
-          kind: 'n'
-        }
-      ]
+      options: SAMPLE_OPTIONS
     })
     invoke.mockResolvedValue(undefined)
 
@@ -159,27 +161,18 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'deny',
-      remember: undefined,
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'reject-once-id'
     })
     wrapper.unmount()
   })
 
-  it('dispatches allow via Ctrl+G', async() => {
+  it('dispatches the first allow_* option via Ctrl+G', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [
-        {
-          optionId: 'allow',
-          name: 'Allow',
-          kind: 'y'
-        }
-      ]
+      options: SAMPLE_OPTIONS
     })
     invoke.mockResolvedValue(undefined)
 
@@ -199,27 +192,18 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow',
-      remember: undefined,
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'allow-once-id'
     })
     wrapper.unmount()
   })
 
-  it('dispatches allow via Ctrl+G even when the composer textarea has focus', async() => {
+  it('dispatches Ctrl+G even when the composer textarea has focus', async() => {
     pushPermissionRequest('A', 's-a', {
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [
-        {
-          optionId: 'allow',
-          name: 'Allow',
-          kind: 'y'
-        }
-      ]
+      options: SAMPLE_OPTIONS
     })
     invoke.mockResolvedValue(undefined)
 
@@ -245,10 +229,7 @@ describe('Chat.vue — permission wiring', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow',
-      remember: undefined,
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'allow-once-id'
     })
     wrapper.unmount()
   })
@@ -259,13 +240,7 @@ describe('Chat.vue — permission wiring', () => {
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [
-        {
-          optionId: 'allow',
-          name: 'Allow',
-          kind: 'y'
-        }
-      ]
+      options: SAMPLE_OPTIONS
     })
     invoke.mockRejectedValue(new Error('permission_reply not implemented (K-245)'))
 
@@ -273,7 +248,7 @@ describe('Chat.vue — permission wiring', () => {
 
     await flushMicrotasks()
 
-    const allowButton = wrapper.find('button[aria-label="allow once"]')
+    const allowButton = wrapper.find('button[aria-label="Allow once"]')
 
     await allowButton.trigger('click')
     await flushMicrotasks()
@@ -284,7 +259,7 @@ describe('Chat.vue — permission wiring', () => {
       .entries.value.map((t) => t.body)
       .filter((b): b is string => typeof b === 'string')
 
-    expect(messages.some((m) => m.includes('allow failed'))).toBe(true)
+    expect(messages.some((m) => m.includes('permission reply failed'))).toBe(true)
     clearToasts()
     wrapper.unmount()
   })
@@ -295,13 +270,7 @@ describe('Chat.vue — permission wiring', () => {
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: [
-        {
-          optionId: 'allow',
-          name: 'Allow',
-          kind: 'y'
-        }
-      ]
+      options: SAMPLE_OPTIONS
     })
 
     const wrapper = mount(Chat, { attachTo: document.body })

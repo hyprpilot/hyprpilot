@@ -15,7 +15,7 @@ withDefaults(
     label?: string
     count?: number
   }>(),
-  { color: 'var(--theme-fg-ink-2)' }
+  { color: 'var(--theme-fg-subtle)' }
 )
 </script>
 

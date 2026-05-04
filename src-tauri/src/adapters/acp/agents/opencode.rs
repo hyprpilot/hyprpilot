@@ -7,37 +7,13 @@
 
 use tokio::process::Command;
 
-use crate::adapters::Capabilities;
-
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
 
 pub struct AcpAgentOpenCode;
 
 impl AcpAgent for AcpAgentOpenCode {
-    fn command(&self) -> &'static str {
-        "opencode"
-    }
-
-    fn args(&self) -> &'static [&'static str] {
-        &["acp"]
-    }
-
     fn model_injection(&self) -> ModelInjection {
         ModelInjection::Env("OPENCODE_MODEL")
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            load_session: true,
-            list_sessions: true,
-            permissions: true,
-            terminals: true,
-            mcps_per_instance: true,
-            restart_with_cwd: true,
-            // K-251 follow-ups — flip true when the override lands.
-            session_model_switch: false,
-            session_mode_switch: false,
-        }
     }
 
     /// opencode has no launch-time hook; the runtime prepends the
@@ -61,8 +37,8 @@ mod tests {
             id: "opencode".into(),
             provider: AgentProvider::AcpOpenCode,
             model: model.map(|s| s.to_string()),
-            command: None,
-            args: Vec::new(),
+            command: "opencode".into(),
+            args: vec!["acp".into()],
             cwd: None,
             env: BTreeMap::new(),
         }

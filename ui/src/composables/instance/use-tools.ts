@@ -48,6 +48,15 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
 
     if (raw.title !== undefined) {
       existing.title = raw.title
+
+      // wireName freezes at the FIRST title we see — opencode
+      // overwrites `title` with a prose state-title on every update
+      // (e.g. start title `task` → update title `Find files matching
+      // pattern`), which destroys formatter routing. Keep the
+      // first-observed string as the dispatch key forever.
+      if (!existing.wireName) {
+        existing.wireName = raw.title
+      }
     }
 
     if (raw.status !== undefined) {
@@ -77,6 +86,7 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
     sessionId,
     turnId: openTurnIdFor(id, sessionId),
     toolCallId,
+    wireName: raw.title,
     title: raw.title,
     status: raw.status,
     kind: raw.kind,

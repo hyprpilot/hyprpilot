@@ -172,7 +172,6 @@ impl MCPsRegistry {
         order.iter().filter_map(|name| catalog.get(name).cloned()).collect()
     }
 
-    #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<MCPDefinition> {
         let catalog = self.catalog.read().expect("mcps catalog lock poisoned");

@@ -42,6 +42,112 @@ use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 /// command before dropping the handle.
 const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// RAII handle for one open `session/prompt` turn. Constructor emits
+/// `TurnStarted` + claims the `current_turn_id` slot; `complete(...)`
+/// emits `TurnEnded` with the agent-supplied stop reason / error;
+/// `Drop` is the leak fallback — when the spawned prompt task panics,
+/// the transport closes mid-turn, or the actor unwinds before
+/// `complete` runs, the guard synthesises `TurnEnded { stop_reason:
+/// "cancelled" }` and frees the slot.
+///
+/// The slot still mediates ownership across the actor + the spawn
+/// future: a concurrent `Cancel` handler atomically takes the slot
+/// and emits its own `TurnEnded { stop_reason: "cancelled" }`.
+/// `complete` (and `Drop`) re-check ownership before emitting, so a
+/// raced cancel doesn't double-fire.
+struct TurnGuard {
+    turn_id: String,
+    instance_id: String,
+    agent_id: String,
+    session_id: String,
+    events_tx: broadcast::Sender<InstanceEvent>,
+    current_turn_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    completed: bool,
+}
+
+impl TurnGuard {
+    async fn new(
+        turn_id: String,
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        events_tx: broadcast::Sender<InstanceEvent>,
+        current_turn_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    ) -> Self {
+        *current_turn_id.write().await = Some(turn_id.clone());
+        let _ = events_tx.send(InstanceEvent::TurnStarted {
+            agent_id: agent_id.clone(),
+            instance_id: instance_id.clone(),
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+        });
+        Self {
+            turn_id,
+            instance_id,
+            agent_id,
+            session_id,
+            events_tx,
+            current_turn_id,
+            completed: false,
+        }
+    }
+
+    /// Returns true when this guard still owned the slot at emit time
+    /// (so the caller knows whether to follow up with the per-turn
+    /// `InstanceMeta` refresh — only fires alongside an emit).
+    async fn complete(mut self, stop_reason: Option<String>, error: Option<String>) -> bool {
+        self.completed = true;
+        let still_owned = {
+            let mut slot = self.current_turn_id.write().await;
+            if slot.as_deref() == Some(self.turn_id.as_str()) {
+                *slot = None;
+                true
+            } else {
+                false
+            }
+        };
+        if !still_owned {
+            return false;
+        }
+        let _ = self.events_tx.send(InstanceEvent::TurnEnded {
+            agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            stop_reason,
+            error,
+        });
+        true
+    }
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        // Best-effort: if a concurrent task holds the slot we let it
+        // win (it'll synthesise its own TurnEnded). try_write avoids
+        // blocking + the awkward "Drop in async context" trap.
+        let mut slot = match self.current_turn_id.try_write() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if slot.as_deref() != Some(self.turn_id.as_str()) {
+            return;
+        }
+        *slot = None;
+        let _ = self.events_tx.send(InstanceEvent::TurnEnded {
+            agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            stop_reason: Some("cancelled".to_string()),
+            error: None,
+        });
+    }
+}
+
 /// Register a typed `on_receive_request` handler that delegates to an
 /// async `AcpClient` method returning `Result<Response,
 /// agent_client_protocol::Error>`. One registration line per method
@@ -85,6 +191,23 @@ pub enum InstanceCommand {
     /// has it enabled via `["unstable"]`.
     SetModel {
         model_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Switch a generic session config option — ACP's
+    /// `session/set_config_option`. Carries
+    /// `thought_level` (a reserved spec category for reasoning depth),
+    /// `mode` / `model` (when the agent surfaces them via
+    /// `configOptions` instead of dedicated mode / model surfaces), AND
+    /// every vendor-specific category whose id starts with `_` (per
+    /// spec: `_*` ids are free for custom use). The captain picks one
+    /// of the offered values via the palette; this command sends the
+    /// pick to the agent + adopts the response's
+    /// `configOptions: Vec<SessionConfigOption>` as the new advertised
+    /// set. Independent of `set_mode` / `set_model`: those address the
+    /// dedicated wire methods; this one is the generic catch-all.
+    SetConfigOption {
+        config_id: String,
+        value: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// Ask the agent for its persisted session index. Works in any
@@ -156,9 +279,19 @@ pub(crate) enum MappedUpdate {
     },
 }
 
-pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
+/// Outcome of one mapper call — the typed `MappedUpdate` plus the
+/// envelope's `_meta` (vendor-specific extension data). `_meta` rides
+/// alongside on `InstanceEvent::Transcript`; today no UI consumer
+/// reads it, but the pass-through is wired so future per-vendor UI
+/// hooks plug in without a wire change.
+pub(crate) struct MappedSessionUpdate {
+    pub mapped: MappedUpdate,
+    pub meta: Option<serde_json::Value>,
+}
+
+pub(crate) fn map_session_update(update: serde_json::Value) -> MappedSessionUpdate {
     use crate::adapters::{
-        PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
+        Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
         ToolCallUpdateRecord, TranscriptItem,
     };
 
@@ -167,6 +300,7 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let meta = update.get("_meta").cloned();
 
     fn chunk_text(update: &serde_json::Value) -> String {
         update
@@ -175,6 +309,88 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string()
+    }
+
+    /// Project a single agent-emitted `ContentBlock` (the chunk's
+    /// `content` slot) into either `AgentText` or `AgentAttachment`.
+    /// Mirrors the user-side encoder in `build_prompt_blocks` —
+    /// dispatches purely on `type` and (for `resource`) the inner
+    /// resource discriminator. Unknown shapes fall through to
+    /// `Unknown` so the UI logs the gap without bricking the session.
+    fn project_agent_chunk_content(content: &serde_json::Value) -> TranscriptItem {
+        let block_type = content.get("type").and_then(|v| v.as_str()).unwrap_or("text");
+        match block_type {
+            "text" => TranscriptItem::AgentText {
+                text: content.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            },
+            "image" | "audio" => {
+                let mime = content
+                    .get("mimeType")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        if block_type == "image" {
+                            "image/png".to_string()
+                        } else {
+                            "audio/wav".to_string()
+                        }
+                    });
+                let data = content.get("data").and_then(|v| v.as_str()).map(str::to_string);
+                // Synthesise a slug from the type + size hash so the UI
+                // can dedupe; agents don't supply identifiers for
+                // streaming binaries.
+                let slug = format!("agent-{block_type}-{}", data.as_deref().map(str::len).unwrap_or(0));
+                TranscriptItem::AgentAttachment(Attachment {
+                    slug,
+                    path: std::path::PathBuf::from(format!("agent-emitted-{block_type}")),
+                    body: String::new(),
+                    title: content.get("title").and_then(|v| v.as_str()).map(str::to_string),
+                    data,
+                    mime: Some(mime),
+                })
+            }
+            "resource_link" => {
+                let uri = content.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = content
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| uri.clone());
+                let mime = content.get("mimeType").and_then(|v| v.as_str()).map(str::to_string);
+                TranscriptItem::AgentAttachment(Attachment {
+                    slug: format!("agent-link-{name}"),
+                    path: std::path::PathBuf::from(uri),
+                    body: String::new(),
+                    title: content
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or(Some(name)),
+                    data: None,
+                    mime,
+                })
+            }
+            "resource" => {
+                // `resource: { uri, text? | blob?, mimeType? }`
+                let inner = content.get("resource").cloned().unwrap_or(serde_json::Value::Null);
+                let uri = inner.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mime = inner.get("mimeType").and_then(|v| v.as_str()).map(str::to_string);
+                let text = inner.get("text").and_then(|v| v.as_str()).map(str::to_string);
+                let blob = inner.get("blob").and_then(|v| v.as_str()).map(str::to_string);
+                TranscriptItem::AgentAttachment(Attachment {
+                    slug: format!("agent-resource-{uri}"),
+                    path: std::path::PathBuf::from(&uri),
+                    body: text.unwrap_or_default(),
+                    title: Some(uri),
+                    data: blob,
+                    mime,
+                })
+            }
+            other => TranscriptItem::Unknown {
+                wire_kind: format!("agent_message_chunk:{other}"),
+                payload: content.clone(),
+            },
+        }
     }
 
     fn parse_tool_state(s: Option<&str>) -> Option<ToolCallState> {
@@ -224,13 +440,18 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
             .unwrap_or_default()
     }
 
-    match kind.as_str() {
+    let mapped = match kind.as_str() {
         "user_message_chunk" => MappedUpdate::Transcript(TranscriptItem::UserText {
             text: chunk_text(&update),
         }),
-        "agent_message_chunk" => MappedUpdate::Transcript(TranscriptItem::AgentText {
-            text: chunk_text(&update),
-        }),
+        "agent_message_chunk" => {
+            // Per ACP `agent_message_chunk` carries one ContentBlock —
+            // text in the common case, image / audio / resource /
+            // resource_link in the multimodal case. Project onto the
+            // text or attachment variants. UI demuxer routes either.
+            let content = update.get("content").cloned().unwrap_or(serde_json::Value::Null);
+            MappedUpdate::Transcript(project_agent_chunk_content(&content))
+        }
         "agent_thought_chunk" => MappedUpdate::Transcript(TranscriptItem::AgentThought {
             text: chunk_text(&update),
         }),
@@ -374,7 +595,8 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedUpdate {
             wire_kind: kind,
             payload: update,
         }),
-    }
+    };
+    MappedSessionUpdate { mapped, meta }
 }
 
 /// Build the ACP `Vec<ContentBlock>` payload for one user turn.
@@ -624,6 +846,33 @@ impl AcpInstance {
         rx.await.map_err(|e| e.to_string())?
     }
 
+    /// Send the actor a `SetConfigOption` command — ACP's
+    /// `session/set_config_option`. Generic catch-all for vendor
+    /// extension knobs the agent advertises in
+    /// `NewSessionResponse.configOptions`; spec-reserved categories
+    /// (`mode` / `model` / `thought_level`) MAY also flow through here
+    /// when the agent surfaces them on configOptions instead of the
+    /// dedicated wire methods. Captain picks one of the offered values
+    /// from the palette; the actor sends the request, captures the
+    /// response's full `configOptions` array, and refreshes the
+    /// per-instance meta cache so the next palette open sees the new
+    /// state.
+    pub async fn set_config_option(&self, config_id: String, value: String) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(InstanceCommand::SetConfigOption {
+                config_id,
+                value,
+                reply,
+            })
+            .is_err()
+        {
+            return Err("instance actor closed".into());
+        }
+        rx.await.map_err(|e| e.to_string())?
+    }
+
     /// Snapshot the actor's per-instance metadata (cwd, current
     /// mode/model id, advertised lists). Powers the `instance_meta`
     /// Tauri command — every palette open routes through here so
@@ -785,6 +1034,7 @@ async fn run(
     };
     let system_prompt = resolved.system_prompt.clone();
     let resolved_mode = resolved.mode.clone();
+    let resolved_profile_id = resolved.profile_id.clone();
 
     let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_subprocess(&cfg, system_prompt.as_deref()) {
         Ok(spawned) => (
@@ -1001,10 +1251,22 @@ async fn run(
             )
             .block_task()
             .await?;
+        // Capability probes — `agent_capabilities.session_capabilities`
+        // gates the unstable `session/resume` and `session/close`
+        // surfaces (both behind `unstable_session_*` features in the
+        // schema crate, both already enabled by the umbrella
+        // `unstable` feature on `agent-client-protocol`). Falling
+        // through to `false` when the agent doesn't advertise the
+        // capability — we silently use the legacy paths
+        // (LoadSession / CancelNotification).
+        let resume_supported = init.agent_capabilities.session_capabilities.resume.is_some();
+        let close_supported = init.agent_capabilities.session_capabilities.close.is_some();
         info!(
             agent = %agent_id_notif,
             protocol = ?init.protocol_version,
             load_session = init.agent_capabilities.load_session,
+            resume_session = resume_supported,
+            close_session = close_supported,
             "acp::instance: initialized"
         );
 
@@ -1155,6 +1417,7 @@ async fn run(
                 let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
+                    profile_id: resolved_profile_id.clone(),
                     session_id: Some(sid.0.to_string()),
                     cwd: cwd_str.clone(),
                     current_mode_id: current_mode_meta.read().await.clone(),
@@ -1167,8 +1430,16 @@ async fn run(
             }
             Bootstrap::Resume(sid) => {
                 let sid = SessionId::new(sid);
-                if !load_supported {
-                    warn!(agent = %agent_id_notif, "acp::instance: load_session not advertised by agent");
+                // Prefer the newer `session/resume` when advertised
+                // (lighter wire surface than `session/load` — agents
+                // that don't ship a full session-loader can still
+                // implement resume). Fall back to `session/load` for
+                // legacy agents that only carry `agent_capabilities.load_session`.
+                if !resume_supported && !load_supported {
+                    warn!(
+                        agent = %agent_id_notif,
+                        "acp::instance: neither session/resume nor session/load advertised by agent"
+                    );
                     let _ = events_tx_notif.send(InstanceEvent::State {
                         agent_id: agent_id_notif.clone(),
                         instance_id: instance_id_notif.clone(),
@@ -1177,7 +1448,7 @@ async fn run(
                     });
                     return Err(
                         agent_client_protocol::Error::method_not_found().data(serde_json::json!({
-                            "reason": format!("{}: load_session not supported", agent_id_notif),
+                            "reason": format!("{}: neither session/resume nor session/load supported", agent_id_notif),
                         })),
                     );
                 }
@@ -1185,35 +1456,65 @@ async fn run(
                     let mut slot = session_id_forward.write().await;
                     *slot = Some(sid.clone());
                 }
-                debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
-                let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
-                load_req.mcp_servers = mcp_servers.clone();
-                let load_resp = match connection.send_request(load_req).block_task().await {
-                    Ok(resp) => resp,
-                    Err(err) => {
-                        warn!(agent = %agent_id_notif, %err, "acp::instance: load_session failed");
-                        let _ = events_tx_notif.send(InstanceEvent::State {
-                            agent_id: agent_id_notif.clone(),
-                            instance_id: instance_id_notif.clone(),
-                            session_id: Some(sid.0.to_string()),
-                            state: InstanceState::Error,
-                        });
-                        return Err(err);
-                    }
+                // Read mode + model state off whichever response we
+                // got. Resume + Load share the same `modes` / `models`
+                // shape; collapse both branches via a tiny tuple to
+                // avoid duplicating the projection logic.
+                let (modes_state, models_state) = if resume_supported {
+                    use agent_client_protocol::schema::ResumeSessionRequest;
+                    debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/resume");
+                    let mut req = ResumeSessionRequest::new(sid.clone(), cwd.clone());
+                    req.mcp_servers = mcp_servers.clone();
+                    let resp = match connection.send_request(req).block_task().await {
+                        Ok(resp) => resp,
+                        Err(err) => {
+                            warn!(agent = %agent_id_notif, %err, "acp::instance: session/resume failed");
+                            let _ = events_tx_notif.send(InstanceEvent::State {
+                                agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
+                                session_id: Some(sid.0.to_string()),
+                                state: InstanceState::Error,
+                            });
+                            return Err(err);
+                        }
+                    };
+                    info!(
+                        agent = %agent_id_notif,
+                        instance = %instance_id_notif,
+                        session = %sid,
+                        "acp::instance: session/resume accepted"
+                    );
+                    (resp.modes, resp.models)
+                } else {
+                    debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
+                    let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
+                    load_req.mcp_servers = mcp_servers.clone();
+                    let load_resp = match connection.send_request(load_req).block_task().await {
+                        Ok(resp) => resp,
+                        Err(err) => {
+                            warn!(agent = %agent_id_notif, %err, "acp::instance: session/load failed");
+                            let _ = events_tx_notif.send(InstanceEvent::State {
+                                agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
+                                session_id: Some(sid.0.to_string()),
+                                state: InstanceState::Error,
+                            });
+                            return Err(err);
+                        }
+                    };
+                    info!(
+                        agent = %agent_id_notif,
+                        instance = %instance_id_notif,
+                        session = %sid,
+                        "acp::instance: session/load accepted"
+                    );
+                    (load_resp.modes, load_resp.models)
                 };
-                info!(
-                    agent = %agent_id_notif,
-                    instance = %instance_id_notif,
-                    session = %sid,
-                    "acp::instance: session/load accepted"
-                );
                 // Mirror the Fresh path's `NewSessionResponse.modes/models`
-                // read against `LoadSessionResponse`. Without this the
-                // resumed instance's mode/model pickers stay empty —
-                // the agent advertises both lists in the load response,
-                // but we'd been discarding it. Same shapes, same logic
-                // as the Fresh arm above.
-                if let Some(modes) = &load_resp.modes {
+                // read against `(Resume|Load)SessionResponse`. Both
+                // share the same `modes` / `models` shape — collapsing
+                // here keeps the projection in one spot.
+                if let Some(modes) = &modes_state {
                     let advertised: Vec<crate::adapters::SessionModeInfo> = modes
                         .available_modes
                         .iter()
@@ -1226,7 +1527,7 @@ async fn run(
                     *available_modes_meta.write().await = advertised;
                     *current_mode_meta.write().await = Some(modes.current_mode_id.0.to_string());
                 }
-                if let Some(models) = &load_resp.models {
+                if let Some(models) = &models_state {
                     let advertised: Vec<crate::adapters::SessionModelInfo> = models
                         .available_models
                         .iter()
@@ -1279,6 +1580,7 @@ async fn run(
                 let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
+                    profile_id: resolved_profile_id.clone(),
                     session_id: Some(sid.0.to_string()),
                     cwd: cwd_str.clone(),
                     current_mode_id: current_mode_meta.read().await.clone(),
@@ -1368,13 +1670,15 @@ async fn run(
                                 system_prompt_injected = system_prompt_attachment.is_some(),
                                 "acp::instance: turn start (session/prompt)"
                             );
-                            *current_turn_id.write().await = Some(turn_id.clone());
-                            let _ = events_tx_notif.send(InstanceEvent::TurnStarted {
-                                agent_id: agent_id_notif.clone(),
-                                instance_id: instance_id_notif.clone(),
-                                session_id: sid.0.to_string(),
-                                turn_id: turn_id.clone(),
-                            });
+                            let guard = TurnGuard::new(
+                                turn_id.clone(),
+                                agent_id_notif.clone(),
+                                instance_id_notif.clone(),
+                                sid.0.to_string(),
+                                events_tx_notif.clone(),
+                                current_turn_id.clone(),
+                            )
+                            .await;
                             // Daemon-authoritative user-prompt transcript item:
                             // emitted at submit time so the UI no longer mirrors
                             // optimistically. The system-prompt attachment, when
@@ -1390,6 +1694,11 @@ async fn run(
                                     text: text.clone(),
                                     attachments: attachments.clone(),
                                 },
+                                // User-prompt items are minted daemon-side
+                                // from the captain's submit, not from a
+                                // session/update notification — no `_meta`
+                                // envelope to forward.
+                                meta: None,
                             });
                             // Wire blocks: [system_prompt?, ...user_attachments, user_text].
                             // Per-attachment ordering preserved through the chained iterator;
@@ -1403,9 +1712,9 @@ async fn run(
                             let agent_log = agent_id_notif.clone();
                             let session_log = sid.clone();
                             let events_tx_done = events_tx_notif.clone();
-                            let current_turn_done = current_turn_id.clone();
                             let agent_id_done = agent_id_notif.clone();
                             let instance_id_done = instance_id_notif.clone();
+                            let profile_id_done = resolved_profile_id.clone();
                             let turn_id_done = turn_id.clone();
                             let cwd_done = cwd_str.clone();
                             let current_mode_done = current_mode_meta.clone();
@@ -1413,6 +1722,11 @@ async fn run(
                             let available_modes_done = available_modes_meta.clone();
                             let available_models_done = available_models_meta.clone();
                             tokio::spawn(async move {
+                                // `guard` owns the open-turn slot for the lifetime of
+                                // this future. On panic / drop / unwind it synthesises
+                                // `TurnEnded { stop_reason: "cancelled" }` so the UI
+                                // never gets stuck on a phantom in-flight turn.
+                                let guard = guard;
                                 let res = conn
                                     .send_request(PromptRequest::new(sid.clone(), blocks))
                                     .block_task()
@@ -1443,36 +1757,15 @@ async fn run(
                                         (None, Some(msg.clone()), Err(msg))
                                     }
                                 };
-                                // Did THIS prompt task still own the open turn? Only
-                                // emit `TurnEnded` if so — otherwise the Cancel handler
-                                // already synthesized one when the captain hit Ctrl+C
-                                // and the agent's late `session/prompt` reply arrives
-                                // after-the-fact (post-cancel agents often resolve
-                                // with their own stop_reason, but we've already moved
-                                // on). The InstanceMeta refresh below piggy-backs on
-                                // the same condition so we only fire it once per
-                                // logical turn-close.
-                                let still_owned_turn = {
-                                    let mut slot = current_turn_done.write().await;
-                                    if slot.as_deref() == Some(turn_id_done.as_str()) {
-                                        *slot = None;
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                };
-                                if !still_owned_turn {
+                                // Guard's `complete` returns true when this future
+                                // still owned the slot. False = a concurrent Cancel
+                                // already synthesised TurnEnded, so we skip the
+                                // InstanceMeta refresh too (it piggy-backs on the
+                                // emit and only fires once per logical close).
+                                if !guard.complete(stop_reason, error_msg).await {
                                     let _ = reply.send(mapped);
                                     return;
                                 }
-                                let _ = events_tx_done.send(InstanceEvent::TurnEnded {
-                                    agent_id: agent_id_done.clone(),
-                                    instance_id: instance_id_done.clone(),
-                                    session_id: sid.0.to_string(),
-                                    turn_id: turn_id_done,
-                                    stop_reason,
-                                    error: error_msg,
-                                });
                                 // Refresh tick after every turn end so the
                                 // header chrome re-syncs even when the agent
                                 // didn't push a `current_mode_update` /
@@ -1480,6 +1773,7 @@ async fn run(
                                 let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
                                     agent_id: agent_id_done,
                                     instance_id: instance_id_done,
+                                    profile_id: profile_id_done,
                                     session_id: Some(sid.0.to_string()),
                                     cwd: cwd_done,
                                     current_mode_id: current_mode_done.read().await.clone(),
@@ -1528,6 +1822,7 @@ async fn run(
                                 let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
+                                    profile_id: resolved_profile_id.clone(),
                                     session_id: Some(sid.0.to_string()),
                                     cwd: cwd_str.clone(),
                                     current_mode_id: current_mode_meta.read().await.clone(),
@@ -1553,6 +1848,7 @@ async fn run(
                             let conn = connection.clone();
                             let agent_log = agent_id_notif.clone();
                             let instance_log = instance_id_notif.clone();
+                            let profile_log = resolved_profile_id.clone();
                             let session_log = sid.clone();
                             let current_mode = current_mode_meta.clone();
                             let available_modes = available_modes_meta.clone();
@@ -1576,6 +1872,7 @@ async fn run(
                                     let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
                                         agent_id: agent_log,
                                         instance_id: instance_log,
+                                        profile_id: profile_log,
                                         session_id: Some(session_log.0.to_string()),
                                         cwd: cwd_done,
                                         current_mode_id: Some(mode_id),
@@ -1585,6 +1882,30 @@ async fn run(
                                         mcps_count,
                                     });
                                 }
+                                let _ = reply.send(res.map(|_| ()));
+                            });
+                        }
+                        InstanceCommand::SetConfigOption { config_id, value, reply } => {
+                            let Some(sid) = session_id.clone() else {
+                                let _ = reply.send(Err("no live session in list-only actor".into()));
+                                continue;
+                            };
+                            info!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                config_id,
+                                value,
+                                "acp::instance: session/set_config_option requested"
+                            );
+                            let conn = connection.clone();
+                            tokio::spawn(async move {
+                                use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
+                                let req = SetSessionConfigOptionRequest::new(
+                                    sid.clone(),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
+                                );
+                                let res = conn.send_request(req).block_task().await.map_err(|e| e.to_string());
                                 let _ = reply.send(res.map(|_| ()));
                             });
                         }
@@ -1602,6 +1923,7 @@ async fn run(
                             let conn = connection.clone();
                             let agent_log = agent_id_notif.clone();
                             let instance_log = instance_id_notif.clone();
+                            let profile_log = resolved_profile_id.clone();
                             let session_log = sid.clone();
                             let current_mode_done = current_mode_meta.clone();
                             let current_model_done = current_model_meta.clone();
@@ -1621,6 +1943,7 @@ async fn run(
                                     let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
                                         agent_id: agent_log,
                                         instance_id: instance_log,
+                                        profile_id: profile_log,
                                         session_id: Some(session_log.0.to_string()),
                                         cwd: cwd_done,
                                         current_mode_id: current_mode_done.read().await.clone(),
@@ -1678,11 +2001,55 @@ async fn run(
                                 agent = %agent_id_notif,
                                 instance = %instance_id_notif,
                                 has_session = session_id.is_some(),
+                                close_supported,
                                 reason = "shutdown command received",
                                 "acp::instance: shutting down instance"
                             );
                             if let Some(sid) = session_id.clone() {
-                                let _ = connection.send_notification(CancelNotification::new(sid));
+                                if close_supported {
+                                    // Graceful path: send `session/close`
+                                    // and give the agent up to 500ms to
+                                    // flush. The kill_on_drop fallback
+                                    // (subprocess Drop) still fires
+                                    // afterward for hard cleanup. ACP
+                                    // gates this behind unstable_session_close
+                                    // — fall through to the legacy cancel
+                                    // path when the agent doesn't advertise
+                                    // it.
+                                    use agent_client_protocol::schema::CloseSessionRequest;
+                                    let close_fut = connection.send_request(CloseSessionRequest::new(sid.clone())).block_task();
+                                    match tokio::time::timeout(std::time::Duration::from_millis(500), close_fut).await {
+                                        Ok(Ok(_)) => {
+                                            debug!(
+                                                agent = %agent_id_notif,
+                                                session = %sid,
+                                                "acp::instance: session/close acked"
+                                            );
+                                        }
+                                        Ok(Err(err)) => {
+                                            warn!(
+                                                agent = %agent_id_notif,
+                                                session = %sid,
+                                                %err,
+                                                "acp::instance: session/close failed; falling through to subprocess kill"
+                                            );
+                                        }
+                                        Err(_elapsed) => {
+                                            warn!(
+                                                agent = %agent_id_notif,
+                                                session = %sid,
+                                                "acp::instance: session/close timed out (500ms); falling through to subprocess kill"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Legacy path: agents without
+                                    // `session_capabilities.close` only
+                                    // know `cancel` to flush in-flight
+                                    // turns. The kill_on_drop fallback
+                                    // takes over from here.
+                                    let _ = connection.send_notification(CancelNotification::new(sid));
+                                }
                             }
                             let _ = reply.send(());
                             break;
@@ -1720,7 +2087,7 @@ async fn run(
                                     "acp::instance: session/update received"
                                 );
                             }
-                            let mapped = map_session_update(update);
+                            let MappedSessionUpdate { mapped, meta } = map_session_update(update);
                             // Out-of-turn detection: if a transcript-shape
                             // update arrives without an open turn, mint a
                             // synthetic id + emit TurnStarted so the chat
@@ -1800,6 +2167,7 @@ async fn run(
                                     session_id: sid,
                                     turn_id,
                                     item,
+                                    meta,
                                 }),
                                 MappedUpdate::SessionInfo { title, updated_at } => Some(InstanceEvent::SessionInfoUpdate {
                                     agent_id: agent_id_notif.clone(),
@@ -1847,7 +2215,7 @@ async fn run(
                             kind,
                             args,
                             raw_input,
-                            content_text,
+                            content,
                             options,
                         } => {
                             debug!(
@@ -1868,7 +2236,7 @@ async fn run(
                                 kind,
                                 args,
                                 raw_input,
-                                content_text,
+                                content,
                                 options,
                             });
                         }
@@ -2113,7 +2481,7 @@ mod tests {
             agent: AgentConfig {
                 id: id.into(),
                 provider: AgentProvider::AcpClaudeCode,
-                command: Some("/bin/false".into()),
+                command: "/bin/false".into(),
                 args: Vec::new(),
                 cwd: None,
                 env: Default::default(),

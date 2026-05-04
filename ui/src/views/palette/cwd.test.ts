@@ -3,7 +3,7 @@ import { nextTick } from 'vue'
 
 import { openCwdLeaf } from './cwd'
 import { useActiveInstance, __resetCwdHistoryForTests, useCwdHistory, __resetHomeDirForTests, useHomeDir } from '@composables'
-import { __resetPaletteStackForTests, type PaletteEntry, usePalette } from '@composables'
+import { __resetPaletteStackForTests, type PaletteEntry, usePalette, PaletteMode } from '@composables'
 import { TauriCommand } from '@ipc'
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
@@ -27,17 +27,19 @@ afterEach(() => {
 })
 
 describe('openCwdLeaf', () => {
-  it('opens a single palette layer titled "cwd" with one manual sentinel by default', () => {
+  it('opens an Input-mode palette layer titled "cwd" with no rows by default', () => {
     openCwdLeaf()
     const { stack } = usePalette()
 
     expect(stack.value).toHaveLength(1)
     expect(stack.value[0]?.title).toBe('cwd')
-    expect(stack.value[0]?.entries).toHaveLength(1)
-    expect(stack.value[0]?.entries[0]?.id).toBe('cwd-manual')
+    expect(stack.value[0]?.mode).toBe(PaletteMode.Input)
+    // No history → no rows. Input mode hides the "no matches"
+    // empty-state, captain just sees the bare input.
+    expect(stack.value[0]?.entries).toHaveLength(0)
   })
 
-  it('lists recent history entries followed by the manual sentinel', () => {
+  it('lists recent history entries when history is non-empty', () => {
     const { push } = useCwdHistory()
 
     push('/tmp/a')
@@ -47,7 +49,8 @@ describe('openCwdLeaf', () => {
     const entries = usePalette().stack.value[0]?.entries ?? []
     const ids = entries.map((e: PaletteEntry) => e.id)
 
-    expect(ids).toEqual(['cwd-recent:/tmp/b', 'cwd-recent:/tmp/a', 'cwd-manual'])
+    // MRU order — last-pushed first; no manual-sentinel row anymore.
+    expect(ids).toEqual(['cwd-recent:/tmp/b', 'cwd-recent:/tmp/a'])
   })
 
   it('committing a recent row invokes instance_restart with that path', async() => {
@@ -72,17 +75,14 @@ describe('openCwdLeaf', () => {
     })
   })
 
-  it('committing the manual row uses the live query as the path', async() => {
+  it('committing with no highlighted row uses the live query as the path', async() => {
     useActiveInstance().set('inst-1')
     invoke.mockResolvedValue({ id: 'inst-1' })
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    expect(manual).toBeTruthy()
-
-    await spec?.onCommit([manual as PaletteEntry], '/srv/projects/x')
+    await spec?.onCommit([], '/srv/projects/x')
     await nextTick()
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
@@ -98,9 +98,8 @@ describe('openCwdLeaf', () => {
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    await spec?.onCommit([manual as PaletteEntry], '~/dev/x')
+    await spec?.onCommit([], '~/dev/x')
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
       instanceId: 'inst-1',
@@ -108,26 +107,24 @@ describe('openCwdLeaf', () => {
     })
   })
 
-  it('rejects non-absolute paths client-side without invoking restart', async() => {
+  it('rejects relative paths when there is no active-instance cwd to resolve against', async() => {
     useActiveInstance().set('inst-1')
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    await spec?.onCommit([manual as PaletteEntry], 'relative/path')
+    await spec?.onCommit([], 'relative/path')
 
     expect(invoke).not.toHaveBeenCalled()
   })
 
-  it('rejects empty manual input without invoking restart', async() => {
+  it('rejects empty input without invoking restart', async() => {
     useActiveInstance().set('inst-1')
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    await spec?.onCommit([manual as PaletteEntry], '   ')
+    await spec?.onCommit([], '   ')
 
     expect(invoke).not.toHaveBeenCalled()
   })
@@ -135,11 +132,29 @@ describe('openCwdLeaf', () => {
   it('refuses to commit when no active instance exists', async() => {
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    await spec?.onCommit([manual as PaletteEntry], '/tmp/x')
+    await spec?.onCommit([], '/tmp/x')
 
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('resolves a relative path against the active instance cwd before invoking restart', async() => {
+    const { setInstanceCwd } = await import('@composables')
+
+    useActiveInstance().set('inst-1')
+    setInstanceCwd('inst-1', '/home/cenk/project')
+    invoke.mockResolvedValue({ id: 'inst-1' })
+
+    openCwdLeaf()
+    const spec = usePalette().stack.value[0]
+
+    await spec?.onCommit([], 'src/components')
+    await nextTick()
+
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
+      instanceId: 'inst-1',
+      cwd: '/home/cenk/project/src/components'
+    })
   })
 
   it('successful commit pushes the (expanded) cwd onto history', async() => {
@@ -148,9 +163,8 @@ describe('openCwdLeaf', () => {
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    await spec?.onCommit([manual as PaletteEntry], '/var/log')
+    await spec?.onCommit([], '/var/log')
     await nextTick()
 
     expect(useCwdHistory().history.value[0]).toBe('/var/log')
@@ -162,9 +176,8 @@ describe('openCwdLeaf', () => {
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
-    const manual = spec?.entries.find((e: PaletteEntry) => e.id === 'cwd-manual')
 
-    await spec?.onCommit([manual as PaletteEntry], '/nonexistent')
+    await spec?.onCommit([], '/nonexistent')
     await nextTick()
 
     expect(useCwdHistory().history.value).toEqual([])

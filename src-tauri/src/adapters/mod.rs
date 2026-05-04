@@ -24,15 +24,14 @@ pub mod instance;
 pub mod permission;
 pub mod profile;
 pub mod registry;
-pub mod tokens;
 pub mod transcript;
 
 use async_trait::async_trait;
 
 #[allow(unused_imports)]
 pub use instance::{
-    InstanceActor, InstanceEvent, InstanceEventStream, InstanceHandle, InstanceInfo, InstanceKey, InstanceState,
-    SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk, TerminalStream,
+    validate_instance_name, InstanceActor, InstanceEvent, InstanceEventStream, InstanceHandle, InstanceInfo,
+    InstanceKey, InstanceState, SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk, TerminalStream,
 };
 #[allow(unused_imports)]
 pub use permission::{
@@ -70,39 +69,6 @@ impl AdapterId {
     }
 }
 
-/// Static capability bits each agent advertises. Used by UI pickers to
-/// gate features against agents that don't advertise the underlying
-/// hook (e.g. "resume session" is greyed out for an agent whose
-/// `load_session` is `false`). Bool rather than `Option<…>` because
-/// every field is a yes/no feature flag.
-///
-/// Capabilities are static per-agent (declared on the `AcpAgent` trait
-/// in the ACP layer; future HTTP impls expose their own per-agent
-/// declarations). Vendors are version-pinned through the package
-/// manager — hyprpilot's static cap declaration tracks the pinned
-/// version. Vendor lies surface as `AdapterError::Backend`, not as
-/// runtime capability negotiation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Capabilities {
-    /// `session/load` — resume a persisted session.
-    pub load_session: bool,
-    /// `session/list` — enumerate persisted sessions.
-    pub list_sessions: bool,
-    /// `request_permission` flow + `permissions/*` RPC surface.
-    pub permissions: bool,
-    /// `terminal/*` tool requests (ACP terminal extension).
-    pub terminals: bool,
-    /// `models/set` — switch the active model on a live session.
-    pub session_model_switch: bool,
-    /// `modes/set` — switch the active operational mode on a live session.
-    pub session_mode_switch: bool,
-    /// `mcps/set` per-instance MCP enabled-list overrides.
-    pub mcps_per_instance: bool,
-    /// `instances/restart` accepts a `cwd` overlay (palette cwd swap).
-    pub restart_with_cwd: bool,
-}
-
 /// Structured adapter-level error. Every adapter impl maps its
 /// transport-specific error variants onto these. `rpc::` / `ctl::` /
 /// Tauri commands only ever see this enum.
@@ -120,8 +86,8 @@ pub enum AdapterError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     /// Feature not supported by this adapter (e.g. `load_session`
-    /// against an adapter whose `Capabilities::load_session` is
-    /// `false`). Maps to `-32601` at the JSON-RPC boundary.
+    /// against an adapter whose vendor doesn't advertise it). Maps
+    /// to `-32601` at the JSON-RPC boundary.
     #[error("unsupported: {0}")]
     Unsupported(String),
 }
@@ -155,11 +121,6 @@ pub enum Bootstrap {
 #[async_trait]
 pub trait Adapter: Send + Sync + 'static {
     fn id(&self) -> AdapterId;
-
-    /// Per-agent static capability set. UI gates buttons on this
-    /// lookup; daemon enforces by checking caps before dispatching
-    /// gated trait methods.
-    async fn capabilities_for_agent(&self, agent_id: &str) -> AdapterResult<Capabilities>;
 
     // ── generic registry ops ──────────────────────────────────────────
     async fn list(&self) -> Vec<InstanceInfo>;
@@ -230,19 +191,16 @@ pub trait Adapter: Send + Sync + 'static {
         None
     }
 
-    // ── wire-method dispatch surface (S3 expansion) ───────────────────
+    // ── wire-method dispatch surface ─────────────────────────────────
     //
-    // Each method has a `Capabilities`-gated default that returns
-    // `AdapterError::Unsupported`. Concrete adapters override only the
-    // methods their capability bit advertises true. A future HTTP
-    // adapter slots in clean — implement what you support, leave the
-    // rest at the default. Callers (RPC + Tauri handlers) dispatch
-    // through `dyn Adapter`; capability-gating happens here so wire
-    // surfaces stay symmetric across adapters.
+    // Each method has a default that returns `AdapterError::Unsupported`.
+    // Concrete adapters override only the methods their vendor advertises
+    // truthful support for at handshake. A future HTTP adapter slots in
+    // clean — implement what you support, leave the rest at the default.
+    // Callers (RPC + Tauri handlers) dispatch through `dyn Adapter`.
 
-    /// `agents/list` — every configured agent + its static
-    /// `Capabilities`. Default returns an empty list (adapters with
-    /// no agent registry).
+    /// `agents/list` — every configured agent. Default returns an
+    /// empty list (adapters with no agent registry).
     async fn list_agents(&self) -> AdapterResult<Vec<serde_json::Value>> {
         Ok(Vec::new())
     }
@@ -254,7 +212,7 @@ pub trait Adapter: Send + Sync + 'static {
     }
 
     /// `session/list` — persisted session index for the addressed
-    /// agent. Gated by `Capabilities::list_sessions`.
+    /// agent.
     async fn list_sessions(
         &self,
         _instance_id: Option<&str>,
@@ -267,8 +225,7 @@ pub trait Adapter: Send + Sync + 'static {
         ))
     }
 
-    /// `session/load` — resume a persisted session. Gated by
-    /// `Capabilities::load_session`.
+    /// `session/load` — resume a persisted session.
     async fn load_session(
         &self,
         _instance_id: Option<&str>,
@@ -281,8 +238,7 @@ pub trait Adapter: Send + Sync + 'static {
         ))
     }
 
-    /// `models/set` — switch active model on a live session. Gated by
-    /// `Capabilities::session_model_switch`.
+    /// `models/set` — switch active model on a live session.
     async fn set_session_model(&self, _instance_id: &str, _model_id: &str) -> AdapterResult<serde_json::Value> {
         Err(AdapterError::Unsupported(
             "models/set not supported by this adapter".into(),
@@ -290,16 +246,27 @@ pub trait Adapter: Send + Sync + 'static {
     }
 
     /// `modes/set` — switch active operational mode on a live session.
-    /// Gated by `Capabilities::session_mode_switch`.
     async fn set_session_mode(&self, _instance_id: &str, _mode_id: &str) -> AdapterResult<serde_json::Value> {
         Err(AdapterError::Unsupported(
             "modes/set not supported by this adapter".into(),
         ))
     }
 
+    /// `session/set_config_option` — generic config knob. See
+    /// `AcpAdapter::set_session_config_option` for usage notes.
+    async fn set_session_config_option(
+        &self,
+        _instance_id: &str,
+        _config_id: &str,
+        _value: &str,
+    ) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "session/set_config_option not supported by this adapter".into(),
+        ))
+    }
+
     /// `mcps/set` — install per-instance MCP enabled-list override.
-    /// Gated by `Capabilities::mcps_per_instance`. Returns the previous
-    /// override if any.
+    /// Returns the previous override if any.
     async fn set_mcps_override(&self, _key: InstanceKey, _enabled: Vec<String>) -> AdapterResult<Option<Vec<String>>> {
         Err(AdapterError::Unsupported(
             "mcps/set not supported by this adapter".into(),
@@ -308,8 +275,7 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// Effective MCP enabled-list for an instance. Per-instance
     /// override wins; otherwise the resolved profile's `mcps` field;
-    /// otherwise `None` ("all enabled" semantics). Gated by
-    /// `Capabilities::mcps_per_instance`.
+    /// otherwise `None` ("all enabled" semantics).
     async fn mcps_list_for(&self, _key: InstanceKey) -> AdapterResult<Option<Vec<String>>> {
         Err(AdapterError::Unsupported(
             "mcps/list not supported by this adapter".into(),
@@ -346,10 +312,6 @@ mod tests {
     impl Adapter for EchoAdapter {
         fn id(&self) -> AdapterId {
             AdapterId::Acp
-        }
-
-        async fn capabilities_for_agent(&self, _agent_id: &str) -> AdapterResult<Capabilities> {
-            Ok(Capabilities::default())
         }
 
         async fn list(&self) -> Vec<InstanceInfo> {

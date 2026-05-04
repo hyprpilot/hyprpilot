@@ -21,6 +21,8 @@ use agent_client_protocol::JsonRpcNotification;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use agent_client_protocol::schema::{PermissionOptionKind, ToolKind};
+
 use crate::adapters::permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
     PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
@@ -68,32 +70,22 @@ pub enum ClientEvent {
         /// `command` for bash without re-parsing the collapsed `args`
         /// summary.
         raw_input: Option<serde_json::Value>,
-        /// Concatenated text from every text-shaped `content[]` block
-        /// on the tool call. Some agents (claude-code's `Switch mode`)
-        /// ship the markdown body here instead of on `raw_input` — UI
-        /// reads as a fallback when no `raw_input` field matches the
-        /// modal's body-shape detector.
-        content_text: Option<String>,
+        /// Raw `tool_call.content[]` blocks (pass-through of the ACP
+        /// wire shape). Some agents (claude-code's `Switch mode`) ship
+        /// the markdown body here instead of on `raw_input` — UI walks
+        /// the array directly to render the right block type.
+        content: Vec<serde_json::Value>,
         options: Vec<PermissionOptionView>,
     },
 }
 
 /// Project an ACP `PermissionOption` into the generic
-/// `PermissionOptionView`. Lives here (not in `mapping.rs`) because
-/// the `From` impl reads the ACP `PermissionOptionKind` via
-/// `wire_name` which is an ACP-local helper.
+/// `PermissionOptionView`.
 pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOption) -> PermissionOptionView {
-    let kind = wire_name(&v.kind).unwrap_or_else(|| {
-        tracing::error!(
-            kind = ?v.kind,
-            "acp::client: PermissionOptionKind serialised to non-string — upstream crate shape changed"
-        );
-        "unknown".to_string()
-    });
     PermissionOptionView {
         option_id: v.option_id.0.to_string(),
         name: v.name.clone(),
-        kind,
+        kind: permission_option_kind_wire(&v.kind).to_string(),
     }
 }
 
@@ -123,7 +115,7 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
         let title = update.fields.title.clone();
-        let kind_wire = update.fields.kind.as_ref().and_then(wire_name);
+        let kind_wire = update.fields.kind.as_ref().map(|k| tool_kind_wire(k).to_string());
         let name = match kind_wire.as_deref() {
             // Kind didn't classify (catch-all "other" or unmapped
             // variant) — fall back to the title which carries the
@@ -142,63 +134,60 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
                 serde_json::to_string(raw).ok()
             }
         });
-        let content_text = extract_content_text(update.fields.content.as_ref());
+        let content = update
+            .fields
+            .content
+            .as_ref()
+            .and_then(|blocks| serde_json::to_value(blocks).ok())
+            .and_then(|v| match v {
+                serde_json::Value::Array(a) => Some(a),
+                _ => None,
+            })
+            .unwrap_or_default();
         ToolCallRef {
             name,
             title,
             raw_args,
             raw_input,
             kind_wire,
-            content_text,
+            content,
         }
     }
 }
 
-/// Concatenate every text-shaped block from a `tool_call.content`
-/// array into a single string. Used for permissions whose markdown
-/// body lives on the tool's content blocks (claude-code's
-/// `Switch mode` ships the plan body here) rather than on
-/// `raw_input`. Returns `None` when the array is missing, empty,
-/// or carries only non-text blocks (diff / file / image).
-fn extract_content_text(content: Option<&Vec<agent_client_protocol::schema::ToolCallContent>>) -> Option<String> {
-    let blocks = content?;
-    let raw = serde_json::to_value(blocks).ok()?;
-    let arr = raw.as_array()?;
-    let mut parts: Vec<String> = Vec::new();
-    for piece in arr {
-        let kind = piece.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "content" && kind != "text" {
-            continue;
-        }
-        let text = piece
-            .get("text")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                piece
-                    .get("content")
-                    .and_then(|c| c.get("text"))
-                    .and_then(|v| v.as_str())
-            })
-            .unwrap_or("");
-        if !text.is_empty() {
-            parts.push(text.to_string());
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n\n"))
+/// Wire string for `PermissionOptionKind` — mirrors the serde
+/// `rename_all = "snake_case"` shape upstream uses. Closed match;
+/// the catch-all guards against future additive variants on the
+/// `#[non_exhaustive]` upstream enum (returns `"unknown"` so the
+/// UI sees something rather than panicking).
+fn permission_option_kind_wire(k: &PermissionOptionKind) -> &'static str {
+    match k {
+        PermissionOptionKind::AllowOnce => "allow_once",
+        PermissionOptionKind::AllowAlways => "allow_always",
+        PermissionOptionKind::RejectOnce => "reject_once",
+        PermissionOptionKind::RejectAlways => "reject_always",
+        _ => "unknown",
     }
 }
 
-/// Map an SDK enum to its canonical wire string via its own serde
-/// derive. Returns `None` when the upstream shape departs from a bare
-/// JSON string (e.g. a future additive variant carrying payload) —
-/// callers choose whether to log and fall back to a sentinel.
-fn wire_name<T: Serialize>(value: &T) -> Option<String> {
-    match serde_json::to_value(value).ok()? {
-        serde_json::Value::String(s) => Some(s),
-        _ => None,
+/// Wire string for `ToolKind` — mirrors the serde
+/// `rename_all = "snake_case"` shape upstream uses. The `Other`
+/// variant is `#[serde(other)]` upstream so unknown tool kinds
+/// already collapse onto it; the catch-all arm here only fires on
+/// future additive variants.
+fn tool_kind_wire(k: &ToolKind) -> &'static str {
+    match k {
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Delete => "delete",
+        ToolKind::Move => "move",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Think => "think",
+        ToolKind::Fetch => "fetch",
+        ToolKind::SwitchMode => "switch_mode",
+        ToolKind::Other => "other",
+        _ => "other",
     }
 }
 
@@ -362,7 +351,7 @@ impl AcpClient {
                 let kind = tool_call.permission_kind_wire();
                 let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
                 let raw_input = tool_call.raw_input.clone();
-                let content_text = tool_call.content_text.clone();
+                let content = tool_call.content.clone();
 
                 let rx = self.permissions.register_pending(decision_req.clone()).await;
 
@@ -373,7 +362,7 @@ impl AcpClient {
                     kind,
                     args,
                     raw_input,
-                    content_text,
+                    content,
                     options,
                 });
                 tracing::info!(

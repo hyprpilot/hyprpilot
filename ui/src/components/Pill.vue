@@ -24,7 +24,7 @@ withDefaults(
 
 .pill {
   @apply inline-flex shrink-0 items-center gap-1 border px-2 py-[2px] text-[0.72rem] leading-tight;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-alt);
 }
 

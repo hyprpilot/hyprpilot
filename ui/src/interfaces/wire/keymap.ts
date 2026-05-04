@@ -3,7 +3,7 @@
  * (`{ modifiers, key }`) — `key` is a lowercase string matching
  * `KeyboardEvent.key.toLowerCase()` (`arrowup` for the named key,
  * `a` / `?` for single-char glyphs). Nested subgroups
- * (`palette.models`, `palette.sessions`) are their own collision scope;
+ * (`palette.instances`) are their own collision scope;
  * bindings only clash within the same parent struct. See
  * `src-tauri/src/config/keymaps.rs` for the Rust-side source of truth.
  */
@@ -42,19 +42,14 @@ export interface ComposerKeymaps {
   history_down: Binding
 }
 
-export interface ModelsSubPaletteKeymaps {
-  focus: Binding
-}
-
-export interface SessionsSubPaletteKeymaps {
+export interface InstancesSubPaletteKeymaps {
   focus: Binding
 }
 
 export interface PaletteKeymaps {
   open: Binding
   close: Binding
-  models: ModelsSubPaletteKeymaps
-  sessions: SessionsSubPaletteKeymaps
+  instances: InstancesSubPaletteKeymaps
 }
 
 export type TranscriptKeymaps = Record<string, never>

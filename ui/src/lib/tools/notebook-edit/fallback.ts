@@ -1,8 +1,9 @@
 import { faBookOpen } from '@fortawesome/free-solid-svg-icons'
 
-import { pickArgs, shortPath, textBlocks } from '../shared'
+import { diffBlocks, inferMimeFromPath, pickArgs, shortPath, textBlocks } from '../shared'
 import { PermissionUi, PillKind, ToolType } from '@constants/ui'
 import type { Formatter } from '@interfaces/ui'
+import { cheapDiffMarkdown, richDiffMarkdown } from '@lib/diff'
 
 const notebookEditFallback: Formatter = {
   type: ToolType.NotebookEdit,
@@ -25,6 +26,21 @@ const notebookEditFallback: Formatter = {
     }
     const suffix = bits.length > 0 ? ` (${bits.join(' · ')})` : ''
     const title = p ? `notebook · ${shortPath(p)}${suffix}` : `notebook${suffix}`
+
+    const diffs = diffBlocks(ctx.raw.content)
+    let description: string | undefined
+
+    if (diffs.length > 0) {
+      const isPending = ctx.state === 'awaiting'
+      const parts = diffs.map((d) => {
+        const oldText = d.oldText ?? ''
+        const mime = inferMimeFromPath(d.path)
+
+        return isPending ? richDiffMarkdown(d.path, mime, oldText, d.newText).source : cheapDiffMarkdown(d.path, oldText, d.newText)
+      })
+
+      description = parts.join('\n\n')
+    }
     const output = textBlocks(ctx.raw.content)
 
     return {
@@ -34,8 +50,9 @@ const notebookEditFallback: Formatter = {
       state: ctx.state,
       icon: faBookOpen,
       pill: PillKind.Default,
-      permissionUi: PermissionUi.Row,
+      permissionUi: PermissionUi.Modal,
       title,
+      ...(description ? { description } : {}),
       ...(output ? { output } : {}),
       ...(ctx.raw.rawInput ? { rawInput: ctx.raw.rawInput } : {})
     }

@@ -97,7 +97,7 @@ const exitLabel = computed(() => {
 
 .terminal-card-command {
   @apply min-w-0 flex-1 truncate;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
 }
 
@@ -143,7 +143,7 @@ const exitLabel = computed(() => {
 
 .terminal-card-stdout {
   @apply m-0 overflow-auto px-2 py-2 text-[0.76rem] leading-snug;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-bg);
   font-family: var(--theme-font-mono);
   white-space: pre-wrap;

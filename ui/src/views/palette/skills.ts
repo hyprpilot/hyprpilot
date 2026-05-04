@@ -35,8 +35,7 @@ export function openSkillsLeaf(): void {
     entries: [
       {
         id: RELOAD_ROW_ID,
-        name: 'reload',
-        description: 're-scan every configured skills root'
+        name: 'reload.'
       }
     ],
     onCommit(picks) {

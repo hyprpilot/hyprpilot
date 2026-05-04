@@ -36,30 +36,10 @@ export interface InstanceRestartResult {
   id: string
 }
 
-/**
- * Per-agent static capability set. Mirrors the Rust
- * `adapters::Capabilities` struct. Populated on each `AgentSummary`
- * by the `agents/list` (and Tauri `agents_list`) wire methods so the
- * UI can gate features (resume / model-switch / mcps panel / etc.)
- * per-agent without a second roundtrip.
- */
-export interface Capabilities {
-  loadSession: boolean
-  listSessions: boolean
-  permissions: boolean
-  terminals: boolean
-  sessionModelSwitch: boolean
-  sessionModeSwitch: boolean
-  mcpsPerInstance: boolean
-  listCommands: boolean
-  restartWithCwd: boolean
-}
-
 export interface AgentSummary {
   id: string
   provider: string
   isDefault: boolean
-  capabilities: Capabilities
 }
 
 export interface ProfileSummary {
@@ -216,27 +196,15 @@ export interface PermissionReplyArgs {
   sessionId: string
   requestId: string
   /**
-   * Either an ACP option id from the offered set, or one of the
-   * synthetic shortcuts `'allow'` / `'deny'` that the daemon
-   * resolves against the option list via
-   * `pick_allow_option_id` / `pick_reject_option_id`.
+   * Real ACP option id from the agent-offered set on the originating
+   * `session/request_permission` call. The captain's "remember this"
+   * intent is carried by the option's typed `kind` field
+   * (`allow_always` / `reject_always` write the trust store
+   * automatically; `_once` variants don't); the daemon controller
+   * reads the kind off the offered set when resolving. No separate
+   * `remember` / `tool` / `instanceId` fields on the wire.
    */
   optionId: string
-  /**
-   * Trust-store side effect tag. When set to `'allow'` / `'deny'`,
-   * the daemon writes a runtime entry for `(instanceId, tool)` after
-   * the wire selection lands so future calls of the same tool short-
-   * circuit at decide() lane 1 without prompting. Absent / undefined
-   * is "once" — wire selection happens, no persistence. The 4-button
-   * UI (allow once / allow always / deny once / deny always) maps:
-   * the "always" buttons set this; the "once" buttons leave it
-   * undefined.
-   */
-  remember?: 'allow' | 'deny'
-  /** Owner instance — keys the trust store alongside `tool`. */
-  instanceId?: string
-  /** Tool name from `tool_call.name`, used as the trust-store key. */
-  tool?: string
 }
 
 export interface SessionsInfoArgs {

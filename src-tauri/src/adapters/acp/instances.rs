@@ -30,8 +30,8 @@ use crate::adapters::permission::{DefaultPermissionController, PermissionControl
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::registry::AdapterRegistry;
 use crate::adapters::{
-    Adapter, AdapterError, AdapterId, AdapterResult, Bootstrap, Capabilities, InstanceEvent, InstanceEventStream,
-    InstanceInfo, InstanceKey, SpawnSpec, UserTurnInput,
+    Adapter, AdapterError, AdapterId, AdapterResult, Bootstrap, InstanceEvent, InstanceEventStream, InstanceInfo,
+    InstanceKey, SpawnSpec, UserTurnInput,
 };
 use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
@@ -716,10 +716,7 @@ impl AcpAdapter {
         Ok(key)
     }
 
-    /// Enumerate configured agents for `agents_list`. Each entry
-    /// embeds the per-vendor `Capabilities` so the UI can gate
-    /// features (resume / model-switch / mcps) per-agent without a
-    /// second roundtrip.
+    /// Enumerate configured agents for `agents_list`.
     #[must_use]
     pub fn list_agents(&self) -> Vec<Value> {
         let cfg = self.read_config();
@@ -728,13 +725,11 @@ impl AcpAdapter {
             .agents
             .iter()
             .map(|a| {
-                let caps = super::agents::match_provider_agent(a.provider).capabilities();
                 json!({
                     "id": a.id,
                     "provider": a.provider,
                     "binding": a.command,
                     "isDefault": default_agent == Some(a.id.as_str()),
-                    "capabilities": caps,
                 })
             })
             .collect()
@@ -828,6 +823,45 @@ impl AcpAdapter {
         Ok(serde_json::json!({ "modeId": mode_id }))
     }
 
+    /// Set a generic ACP `session/set_config_option`. The agent
+    /// advertises the available config options on
+    /// `NewSessionResponse.configOptions`; the captain picks one of
+    /// the offered values for a given config_id, and the agent
+    /// responds with the full updated `configOptions` array (which it
+    /// also typically pushes via a `config_option_update`
+    /// notification). This catch-all surface covers spec-reserved
+    /// categories — `mode` / `model` / `thought_level` — when the
+    /// agent surfaces them on configOptions instead of the dedicated
+    /// `set_mode` / `set_model` methods, AND every vendor-specific
+    /// `_*` category (per spec, `_*` ids are free for custom use).
+    ///
+    /// Usage example — claude-code surfaces a `thought_level` selector:
+    /// ```ignore
+    /// // session/new response carried:
+    /// // configOptions: [{ id: "thought_level", currentValue: "low",
+    /// //                    options: { type: "select", options: [
+    /// //                      { id: "low", name: "Low" }, … ] } }]
+    /// adapter.set_session_config_option(iid, "thought_level", "high").await
+    /// ```
+    pub async fn set_session_config_option(
+        &self,
+        instance_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<Value, RpcError> {
+        let key = self.contains_instance(instance_id).await?;
+        let handle = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        handle
+            .set_config_option(config_id.to_string(), value.to_string())
+            .await
+            .map_err(RpcError::internal_error)?;
+        Ok(serde_json::json!({ "configId": config_id, "value": value }))
+    }
+
     /// Read the addressed instance's per-instance metadata cache.
     /// The palette pickers (modes, models) call this on every open
     /// so the listed options come straight from the daemon's
@@ -849,21 +883,6 @@ impl AcpAdapter {
 impl Adapter for AcpAdapter {
     fn id(&self) -> AdapterId {
         AdapterId::Acp
-    }
-
-    async fn capabilities_for_agent(&self, agent_id: &str) -> AdapterResult<Capabilities> {
-        let provider = {
-            let cfg = self.read_config();
-            cfg.agents
-                .agents
-                .iter()
-                .find(|a| a.id == agent_id)
-                .ok_or_else(|| {
-                    AdapterError::InvalidRequest(format!("agent '{agent_id}' not found in [[agents]] registry"))
-                })?
-                .provider
-        };
-        Ok(super::agents::match_provider_agent(provider).capabilities())
     }
 
     async fn list(&self) -> Vec<InstanceInfo> {
@@ -1119,6 +1138,7 @@ default = "ask"
 [[agents]]
 id = "claude-code"
 provider = "acp-claude-code"
+command = "bunx"
 model = "claude-sonnet-4-5"
 
 [[profiles]]
@@ -1185,6 +1205,7 @@ default = "ask"
 [[agents]]
 id = "claude-code"
 provider = "acp-claude-code"
+command = "bunx"
 
 [[profiles]]
 id = "ask"

@@ -1,11 +1,21 @@
-//! Generic inline-token hydration for prompt text.
+//! Token hydration + completion-side resolves into wire-side
+//! attachments.
 //!
-//! Captain-typed tokens of the shape `#{<scheme>://<value>}` get
-//! projected into `Attachment` payloads at `session_submit` time.
-//! Today only `skills://<slug>` is registered; future schemes
-//! (e.g. `prompt://<id>`, `clip://<key>`) plug in by implementing
-//! [`TokenHydrator`] and pushing onto the [`TokenHydrators`]
-//! registry the daemon constructs at boot.
+//! Companion to [`crate::completion::source`] — sources DETECT
+//! captain-typed patterns at compose time (skills, paths, ripgrep);
+//! hydrators RESOLVE the picked / referenced patterns into
+//! `Attachment` payloads for the wire.
+//!
+//! Two flavours:
+//!  - inline tokens of the shape `#{<scheme>://<value>}` projected at
+//!    `session_submit` time via [`TokenHydrator`] / [`TokenHydrators`].
+//!    Today only `skills://` is registered; future schemes plug in by
+//!    pushing onto the registry the daemon constructs at boot.
+//!  - file-attachment hydration ([`file::read_file_for_attachment`])
+//!    pairs with the [`crate::completion::source::path::PathSource`]
+//!    completion source: captain picks a path completion, the
+//!    composer-commit hits this resolver to read the file body into
+//!    the attachment's wire shape.
 //!
 //! Every hydrator owns one URL scheme. Tokens whose scheme has no
 //! registered hydrator, or whose value doesn't resolve, are dropped
@@ -17,6 +27,11 @@ use std::sync::Arc;
 use regex::Regex;
 
 use crate::adapters::Attachment;
+
+pub mod file;
+pub mod skills;
+
+pub use skills::SkillTokenHydrator;
 
 /// One URL scheme's hydration logic. The trait is intentionally
 /// minimal: project the value-portion of a parsed token into an
@@ -62,8 +77,6 @@ impl TokenHydrators {
         // `#{scheme://value}` — scheme is `[a-z][a-z0-9_-]*`, value
         // captures everything up to the closing `}`. Greedy `[^}]*`
         // is safe because `}` is forbidden inside a token.
-        // Built once; the regex compile is cheap but `lazy_static`-shaped
-        // re-use isn't worth a dep here for ~one call per submit.
         let re = match Regex::new(r"#\{([a-z][a-z0-9_-]*)://([^}]*)\}") {
             Ok(r) => r,
             Err(err) => {

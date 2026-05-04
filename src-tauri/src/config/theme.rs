@@ -157,8 +157,12 @@ pub struct ThemeSurface {
 pub struct ThemeFg {
     #[garde(dive)]
     pub default: Option<HexColor>,
+    /// Slightly dimmer than `default` — the second-tier text colour
+    /// for prose / value strings beside their bright labels. Sits
+    /// between `default` (primary text) and `dim` (deemphasised) on
+    /// the brightness ladder.
     #[garde(dive)]
-    pub ink_2: Option<HexColor>,
+    pub subtle: Option<HexColor>,
     #[garde(dive)]
     pub dim: Option<HexColor>,
     #[garde(dive)]
@@ -358,7 +362,7 @@ mod tests {
 
         for (n, v) in [
             ("fg.default", &t.fg.default),
-            ("fg.ink_2", &t.fg.ink_2),
+            ("fg.subtle", &t.fg.subtle),
             ("fg.dim", &t.fg.dim),
             ("fg.faint", &t.fg.faint),
             ("fg.on_tone", &t.fg.on_tone),

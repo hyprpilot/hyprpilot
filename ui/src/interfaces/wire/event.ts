@@ -16,6 +16,12 @@ export interface TranscriptEventPayload {
   turnId?: string
   /// Typed transcript item the UI dispatches on `kind`.
   item: TranscriptItem
+  /// `_meta` envelope pass-through from the originating
+  /// `session/update` notification. Vendor-specific extension
+  /// payloads live here; observability surface today (no rendering
+  /// consumer). Future per-vendor UI hooks plug in by reading this
+  /// field without another wire change.
+  meta?: Record<string, unknown>
 }
 
 export interface InstanceStateEventPayload {
@@ -38,11 +44,12 @@ export interface PermissionRequestEventPayload {
   /// extract structured fields here — `plan` for ExitPlanMode,
   /// `command` for bash, etc. — instead of re-parsing `args`.
   rawInput?: Record<string, unknown>
-  /// Joined text from the tool-call's `content[]` blocks. Some
-  /// agents (claude-code's `Switch mode`) ship the markdown body
-  /// here instead of on `rawInput`; the modal reads as a fallback
-  /// when no `rawInput` field matches the body-shape detector.
-  contentText?: string
+  /// Raw `tool_call.content[]` blocks (ACP wire shape — `{ type:
+  /// 'content' | 'diff' | 'terminal', ... }`). Some agents
+  /// (claude-code's `Switch mode`) ship the markdown body here
+  /// instead of on `rawInput`; the modal walks the array directly
+  /// to render text / diff / terminal blocks.
+  content?: Record<string, unknown>[]
   options: PermissionOptionView[]
 }
 
@@ -142,6 +149,11 @@ export interface CurrentModeUpdateEventPayload {
 export interface InstanceMetaEventPayload {
   agentId: string
   instanceId: string
+  /// Spawning profile id, when one resolved during ensure. Drives the
+  /// header chrome's profile pill — distinct from the user's persisted
+  /// profile picker (which only changes on explicit selection, not on
+  /// focus shifts). `undefined` for bare-agent spawns.
+  profileId?: string
   sessionId?: string
   cwd: string
   currentModeId?: string

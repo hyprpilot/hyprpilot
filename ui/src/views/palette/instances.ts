@@ -14,7 +14,7 @@
 
 import InstancesPreview from './InstancesPreview.vue'
 import { ToastTone } from '@components'
-import { type PaletteEntry, PaletteMode, usePalette, useActiveInstance, type InstanceId } from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useActiveInstance, type InstanceId } from '@composables'
 import { useHomeDir, usePhase, useQueue, truncateCwd, useSessionInfo, useTerminals, pushToast } from '@composables'
 import { TauriCommand } from '@ipc'
 import { type InstanceListEntry } from '@ipc'
@@ -97,7 +97,7 @@ async function focusInstance(id: InstanceId): Promise<void> {
   }
 }
 
-async function shutdownInstance(id: InstanceId): Promise<void> {
+export async function shutdownInstance(id: InstanceId): Promise<void> {
   try {
     await invoke(TauriCommand.InstancesShutdown, { id })
   } catch(err) {
@@ -107,20 +107,19 @@ async function shutdownInstance(id: InstanceId): Promise<void> {
 }
 
 export async function openInstancesLeaf(): Promise<void> {
-  const { open } = usePalette()
+  const palette = usePalette()
   const { homeDir } = useHomeDir()
 
   const instances = await fetchInstances()
 
   if (instances.length === 0) {
-    open({
+    palette.open({
       mode: PaletteMode.Select,
       title: 'instances',
       entries: [
         {
           id: 'instances-empty',
-          name: 'no live instances',
-          description: 'submit a prompt to spawn one'
+          name: 'no live instances.'
         }
       ],
       onCommit: () => {}
@@ -129,9 +128,8 @@ export async function openInstancesLeaf(): Promise<void> {
     return
   }
 
-  const entries: InstanceRow[] = instances.map((i) => rowFor(i, homeDir.value))
-
-  open({
+  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, homeDir.value))
+  const spec = {
     mode: PaletteMode.Select,
     title: 'instances',
     entries,
@@ -139,7 +137,7 @@ export async function openInstancesLeaf(): Promise<void> {
       component: InstancesPreview,
       props: { items: instances }
     },
-    onCommit(picks) {
+    onCommit(picks: PaletteEntry[]) {
       const pick = picks[0]
 
       if (!pick || pick.id === 'instances-empty') {
@@ -147,11 +145,31 @@ export async function openInstancesLeaf(): Promise<void> {
       }
       void focusInstance(pick.id)
     },
-    onDelete(entry) {
+    async onDelete(entry: PaletteEntry) {
       if (entry.id === 'instances-empty') {
         return
       }
-      void shutdownInstance(entry.id)
+      await shutdownInstance(entry.id)
+      // Re-fetch + swap the spec's entries in place so the captain
+      // sees the updated registry without re-opening the palette.
+      // Empty result collapses to the no-live-instances row so the
+      // palette doesn't render a stale list.
+      const next = await fetchInstances()
+
+      if (next.length === 0) {
+        spec.entries = [
+          {
+            id: 'instances-empty',
+            name: 'no live instances.'
+          }
+        ]
+
+        return
+      }
+      spec.entries = next.map((i) => rowFor(i, homeDir.value))
+      spec.preview.props.items = next
     }
-  })
+  } satisfies PaletteSpec
+
+  palette.open(spec)
 }

@@ -131,10 +131,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // process. Expand `~` / `$VAR` so a hyprland bind like
     // `--cwd ~/projects/foo` works without a wrapper script.
     if let Some(raw) = args.cwd.as_deref() {
-        let expanded = shellexpand::full(&raw.to_string_lossy())
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|_| raw.to_string_lossy().into_owned());
-        let target = PathBuf::from(&expanded);
+        let target = paths::resolve_user(&raw.to_string_lossy());
 
         std::env::set_current_dir(&target)
             .with_context(|| format!("daemon: --cwd: failed to chdir to {}", target.display()))?;
@@ -219,6 +216,8 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             window_toggle,
             desktop::get_home_dir,
             desktop::get_daemon_cwd,
+            desktop::get_git_status,
+            desktop::daemon_rpc,
             desktop::read_file_for_attachment,
             adapter_commands::session_submit,
             adapter_commands::session_cancel,
@@ -237,6 +236,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::instance_restart,
             adapter_commands::models_set,
             adapter_commands::modes_set,
+            adapter_commands::config_option_set,
             adapter_commands::instance_meta,
             adapter_commands::mcps_list,
             crate::skills::commands::skills_list,
@@ -245,6 +245,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             crate::completion::commands::completion_query,
             crate::completion::commands::completion_resolve,
             crate::completion::commands::completion_cancel,
+            crate::completion::commands::get_completion_config,
         ])
         .setup(move |app| {
             setup_app(app, state, listener, started_at, socket_path)?;
@@ -490,8 +491,8 @@ fn setup_app(
     // Inline-token hydration. One scheme today (`skills://`); future
     // schemes (e.g. `prompt://`, `clip://`) plug in by pushing onto
     // this registry. session_submit pulls it from managed state.
-    let hydrators = crate::adapters::tokens::TokenHydrators::new().with(Arc::new(
-        crate::adapters::commands::SkillTokenHydrator::new(state.skills.clone()),
+    let hydrators = crate::completion::hydration::TokenHydrators::new().with(Arc::new(
+        crate::completion::hydration::SkillTokenHydrator::new(state.skills.clone()),
     ));
     app.manage(hydrators);
 
@@ -501,11 +502,24 @@ fn setup_app(
     // commands cache is handed to the ACP adapter so per-instance
     // `available_commands_update` notifications populate the slash
     // source.
-    let (completion_registry, commands_cache) = build_completion_registry(state.skills.clone());
+    let completion_config = state
+        .shared_config
+        .read()
+        .expect("config rwlock poisoned")
+        .completion
+        .clone();
+    let (completion_registry, commands_cache) = build_completion_registry(state.skills.clone(), &completion_config);
     state.acp_adapter.set_commands_cache(commands_cache);
     let completion_cancellations = Arc::new(crate::completion::CompletionCancellations::default());
     app.manage(completion_registry);
     app.manage(completion_cancellations);
+    // Shared config — Tauri commands needing live config slices
+    // (`get_completion_config`) read from this RwLock.
+    app.manage(state.shared_config.clone());
+    // Shared dispatcher — the palette's `daemon_rpc` Tauri command
+    // routes daemon-namespace methods through the same handler tree
+    // the unix socket uses.
+    app.manage(state.dispatcher.clone());
 
     // System tray icon — captain's "alive" indicator + quick-action
     // menu (toggle / show / hide / shutdown). Failures degrade to a
@@ -616,6 +630,7 @@ fn argv_is_bare(argv: &[String]) -> bool {
 /// completion list in place.
 fn build_completion_registry(
     skills: Arc<SkillsRegistry>,
+    completion_config: &crate::config::CompletionConfig,
 ) -> (
     Arc<crate::completion::CompletionRegistry>,
     crate::completion::source::commands::CommandsCache,
@@ -632,7 +647,7 @@ fn build_completion_registry(
             .with_source(Arc::new(CommandsSource::new(commands_cache.clone())))
             .with_source(Arc::new(SkillsSource::new(skills)))
             .with_source(Arc::new(PathSource::new()))
-            .with_source(Arc::new(RipgrepSource::new())),
+            .with_source(Arc::new(RipgrepSource::from_config(&completion_config.ripgrep))),
     );
     (registry, commands_cache)
 }

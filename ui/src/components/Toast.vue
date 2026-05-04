@@ -8,7 +8,7 @@ import type { ToastBody } from '@composables'
 /**
  * In-Frame toast card — absolute-positioned over the chat body
  * (top: 8, left/right: 14, z-index: 10), 3px tone-stripe left
- * border, body content in fg-ink-2, trailing line, ✕ dismiss.
+ * border, body content in fg-subtle, trailing line, ✕ dismiss.
  *
  * The `body` accepts a string (rendered in the standard message
  * span), a render function (`() => VNode` — the consumer composes
@@ -106,7 +106,7 @@ function RenderBody(): VNode | string | null {
 }
 
 .toast :deep(.toast-message) {
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-size: 0.66rem;
   text-transform: none;
   letter-spacing: 0;

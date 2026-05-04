@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons'
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 
-import type { ToolField } from '@components'
-import { log, renderMarkdown } from '@lib'
+import { MarkdownBody, type ToolField } from '@components'
 
 /**
  * Shared spec-sheet body — used by `ToolPill` (when expanded), the
  * permission row, and the permission modal. Three independent
  * sections:
  *
- *  1. Description — markdown body (rendered through `renderMarkdown`).
- *     ALWAYS markdown by convention (D7); formatters only set this
- *     when the source is markdown-shaped.
+ *  1. Description — markdown body via `<MarkdownBody>`. ALWAYS
+ *     markdown by convention (D7); formatters only set this when the
+ *     source is markdown-shaped. MarkdownBody owns the fenced-block
+ *     chrome (collapse + copy) so the captain gets working code blocks
+ *     without per-consumer wiring.
  *  2. Fields — structured key/value rows (MCP arg dumps, JSON args).
  *  3. Output — preformatted plain text (stdout / diff / file content)
  *     in a collapsible mono pre block.
@@ -21,34 +22,11 @@ import { log, renderMarkdown } from '@lib'
  * a scrollable region. The output `<pre>` caps its own max-height
  * so a 10k-line stream doesn't push every other section off-screen.
  */
-const props = defineProps<{
+defineProps<{
   description?: string
   output?: string
   fields?: ToolField[]
 }>()
-
-const descriptionHtml = ref('')
-
-watch(
-  () => props.description,
-  async(raw) => {
-    if (!raw) {
-      descriptionHtml.value = ''
-
-      return
-    }
-
-    try {
-      const out = await renderMarkdown(raw)
-
-      descriptionHtml.value = out.html
-    } catch(err) {
-      log.warn('spec-sheet: markdown render failed; plain fallback', { err: String(err) })
-      descriptionHtml.value = ''
-    }
-  },
-  { immediate: true }
-)
 
 const outputExpanded = ref(true)
 
@@ -59,9 +37,7 @@ function toggleOutput(): void {
 
 <template>
   <div class="spec-sheet">
-    <!-- eslint-disable-next-line vue/no-v-html -- HTML is sanitised by renderMarkdown -->
-    <div v-if="descriptionHtml" class="spec-sheet-description prose" v-html="descriptionHtml" />
-    <div v-else-if="description" class="spec-sheet-description-plain">{{ description }}</div>
+    <MarkdownBody v-if="description" :source="description" class="spec-sheet-description" />
 
     <div v-for="row in fields ?? []" :key="row.label" class="spec-sheet-field">
       <span class="spec-sheet-label">{{ row.label }}</span>
@@ -99,37 +75,26 @@ function toggleOutput(): void {
   min-width: 0;
 }
 
-.spec-sheet-description {
+/* Tighter prose tuning on top of MarkdownBody — spec sheets read in
+ * a denser surface than transcript bodies. Code-block chrome stays
+ * MarkdownBody's. */
+.spec-sheet :deep(.spec-sheet-description) {
   @apply text-[0.7rem] leading-relaxed;
   color: var(--theme-fg);
   font-family: var(--theme-font-sans);
   overflow-wrap: anywhere;
 }
 
-.spec-sheet-description :deep(p) {
+.spec-sheet :deep(.spec-sheet-description p) {
   @apply my-1;
 }
 
-.spec-sheet-description :deep(p:first-child) {
+.spec-sheet :deep(.spec-sheet-description p:first-child) {
   @apply mt-0;
 }
 
-.spec-sheet-description :deep(p:last-child) {
+.spec-sheet :deep(.spec-sheet-description p:last-child) {
   @apply mb-0;
-}
-
-.spec-sheet-description :deep(code) {
-  @apply rounded-sm px-1 py-[1px] text-[0.85em];
-  font-family: var(--theme-font-mono);
-  background-color: var(--theme-surface-alt);
-  color: var(--theme-fg);
-}
-
-.spec-sheet-description-plain {
-  @apply text-[0.7rem] leading-relaxed;
-  color: var(--theme-fg);
-  font-family: var(--theme-font-sans);
-  white-space: pre-wrap;
 }
 
 .spec-sheet-field {
@@ -142,7 +107,7 @@ function toggleOutput(): void {
 
 .spec-sheet-label {
   @apply text-[0.6rem] uppercase;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   letter-spacing: 0.6px;
   font-weight: 600;
   max-width: 25ch;
@@ -199,14 +164,14 @@ function toggleOutput(): void {
 
 .spec-sheet-output-label {
   @apply text-[0.6rem] uppercase font-bold;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   letter-spacing: 0.6px;
 }
 
 .spec-sheet-output-body {
   @apply m-0 text-[0.62rem] leading-snug;
   padding: 6px 8px;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   white-space: pre-wrap;
   overflow-x: auto;
   max-height: 280px;

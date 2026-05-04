@@ -165,7 +165,7 @@ function preview(text: string): string {
 
 .palette-instances-preview-meta dd {
   @apply m-0 truncate;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 
 .palette-instances-preview-id {

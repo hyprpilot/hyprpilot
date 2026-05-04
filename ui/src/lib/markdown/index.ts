@@ -1,9 +1,10 @@
+import { transformerNotationDiff } from '@shikijs/transformers'
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 import taskLists from 'markdown-it-task-lists'
 import { createHighlighter, type BundledLanguage, type BundledTheme, type Highlighter } from 'shiki'
 
-import { log } from './log'
+import { log } from '../log'
 import { invoke, TauriCommand } from '@ipc'
 
 export interface RenderedMarkdown {
@@ -110,7 +111,17 @@ async function highlightFence(code: string, lang: string): Promise<string> {
   try {
     const hl = await getHighlighter()
 
-    return hl.codeToHtml(code, { lang: lang as BundledLanguage, theme: resolvedTheme })
+    // `transformerNotationDiff` rewrites `// [!code ++]` /
+    // `// [!code --]` annotations (and the comment-style variants)
+    // into Shiki's diff-highlighting CSS classes. Costs ~zero on
+    // fences without those markers (the transformer scans + no-ops),
+    // so we apply it universally and let `lib/diff` do the marker
+    // injection upstream.
+    return hl.codeToHtml(code, {
+      lang: lang as BundledLanguage,
+      theme: resolvedTheme,
+      transformers: [transformerNotationDiff()]
+    })
   } catch(err) {
     log.warn('shiki: codeToHtml failed; falling back', { lang, err: String(err) })
 

@@ -1,13 +1,19 @@
 //! `prompts/*` namespace — `prompts/send`, `prompts/cancel`.
 //!
-//! `prompts/send` is the seamlessly-scriptable surface: instance_id
-//! is optional (falls back to focused), and when there's no focused
-//! instance the handler auto-spawns one with the supplied spawn-flag
-//! bag (`agent_id`, `profile_id`, `cwd`, `mode`, `model`) before
-//! submitting. Optional `id` renames the (newly) targeted instance
-//! after the submit lands. `prompts/cancel` is the same fallback
-//! shape minus the spawn — you can't cancel an instance that doesn't
-//! exist.
+//! `prompts/send` is the seamlessly-scriptable surface. `instance_id`
+//! is overloaded:
+//!
+//! - UUID or existing captain-set name → target that instance.
+//! - Slug-shaped value that doesn't resolve → auto-spawn under the
+//!   supplied spawn-flag bag (`agent_id`, `profile_id`, `cwd`,
+//!   `mode`, `model`) and rename the new instance to that slug.
+//! - Anything else → error.
+//!
+//! When `instance_id` is omitted, falls back to the focused instance;
+//! if none, auto-spawns unnamed under the spawn-flag bag.
+//!
+//! `prompts/cancel` is the same resolve-or-focused shape minus the
+//! spawn — you can't cancel an instance that doesn't exist.
 //!
 //! Attachment plumbing is intentionally absent from this surface;
 //! palette-picked skills attach via `session/submit` instead.
@@ -18,7 +24,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::adapters::{InstanceKey, SpawnSpec, UserTurnInput};
+use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec, UserTurnInput};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, parse_params};
 use crate::rpc::protocol::RpcError;
@@ -26,12 +32,12 @@ use crate::rpc::protocol::RpcError;
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct SendParams {
-    /// UUID or captain-set name. None → fall back to focused.
+    /// Overloaded: UUID or existing captain-set name → target that
+    /// instance; slug-shaped value that doesn't resolve → auto-spawn
+    /// and rename to that slug; None → fall back to focused, then
+    /// auto-spawn unnamed under the spawn-flag bag.
     instance_id: Option<String>,
     text: String,
-    /// Captain-set name to apply post-spawn / post-resolve. Validated
-    /// at the rename boundary; collisions error.
-    id: Option<String>,
     /// Spawn-flag bag. Used only when no instance resolves (no
     /// `instance_id` AND no focused). Mirrors `instances/spawn`.
     agent_id: Option<String>,
@@ -66,17 +72,39 @@ impl RpcHandler for PromptsHandler {
                     return Err(RpcError::invalid_params("prompts/send: text must not be empty"));
                 }
 
-                // Resolution: token → focused → spawn-fallback. The
-                // adapter's `submit` itself auto-spawns when given a
-                // None instance_id, but we want to surface the spawn
-                // flags (agent / profile / cwd / mode / model) AND
-                // apply the rename (--id) before the submit lands —
-                // both happen here, then submit gets a concrete key.
+                // Resolution: `instance_id` is overloaded.
+                //  1. If it resolves to a live instance (UUID or
+                //     existing name) → target that instance, no rename.
+                //  2. Else if it slug-validates → auto-spawn under the
+                //     supplied spawn-flag bag and rename the new
+                //     instance to that slug. Captain types `ctl prompts
+                //     send --instance feat-xyz "build it"` against an
+                //     empty daemon and the new instance lands carrying
+                //     `feat-xyz` as its addressable name.
+                //  3. Else (UUID-shaped or otherwise not resolvable
+                //     and not slug-shaped) → error.
+                // None → fall back to focused → spawn unnamed.
+                let mut spawn_name: Option<String> = None;
                 let resolved = match &p.instance_id {
-                    Some(token) => adapter
-                        .resolve_token(token)
-                        .await
-                        .ok_or_else(|| RpcError::invalid_params(format!("instance '{token}' not found")))?,
+                    Some(token) => match adapter.resolve_token(token).await {
+                        Some(k) => k,
+                        None => {
+                            let validated = validate_instance_name(token).map_err(|err| {
+                                RpcError::invalid_params(format!(
+                                    "instance '{token}' not found and not a valid name slug: {err}"
+                                ))
+                            })?;
+                            spawn_name = Some(validated);
+                            let spec = SpawnSpec {
+                                profile_id: p.profile_id.clone(),
+                                agent_id: p.agent_id.clone(),
+                                cwd: p.cwd.clone(),
+                                mode: p.mode.clone(),
+                                model: p.model.clone(),
+                            };
+                            adapter.spawn(spec).await.map_err(map_adapter_err)?
+                        }
+                    },
                     None => match adapter.focused_id().await {
                         Some(k) => k,
                         None => {
@@ -95,15 +123,10 @@ impl RpcHandler for PromptsHandler {
                     },
                 };
 
-                // Apply --id rename right after we have a key. Errors
-                // here propagate (collision / bad-slug) — the captain
-                // asked for a specific name, surfacing the failure is
-                // better than silently submitting under the auto-mint.
-                if let Some(name) = &p.id {
-                    adapter
-                        .rename(resolved, Some(name.clone()))
-                        .await
-                        .map_err(map_adapter_err)?;
+                // Apply the slug-as-name rename right after the new
+                // instance lands. Errors (collision / bad-slug) propagate.
+                if let Some(name) = spawn_name {
+                    adapter.rename(resolved, Some(name)).await.map_err(map_adapter_err)?;
                 }
 
                 let v = adapter

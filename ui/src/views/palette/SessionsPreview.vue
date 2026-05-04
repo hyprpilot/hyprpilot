@@ -157,6 +157,6 @@ function formatCwd(raw: string): string {
 
 .palette-sessions-preview-meta dd {
   @apply m-0 truncate;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 </style>

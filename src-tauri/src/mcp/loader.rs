@@ -19,20 +19,11 @@ use tracing::{debug, warn};
 
 use super::{HyprpilotExtension, MCPDefinition};
 
-/// Tilde + env-var expansion. Mirrors `[skills] dirs::resolved_dirs`
-/// — `~` resolves to `$HOME`, `$VAR` / `${VAR}` expand from the
-/// environment. Returns the original path on expansion failure
-/// (`shellexpand` only fails on undefined env vars in strict mode;
-/// we use the lossy form, so failures here are rare).
+/// Wrap `paths::resolve_user` so call sites read the same
+/// (raw-path-in / fully-resolved-out) shape and the resolution
+/// step stays consistent across mcp loader / agents / completion.
 fn expand_path(path: &Path) -> PathBuf {
-    let raw = path.to_string_lossy();
-    match shellexpand::full(raw.as_ref()) {
-        Ok(expanded) => PathBuf::from(expanded.as_ref()),
-        Err(err) => {
-            warn!(path = %raw, %err, "mcp loader: path expansion failed; using raw path");
-            path.to_path_buf()
-        }
-    }
+    crate::paths::resolve_user(&path.to_string_lossy())
 }
 
 /// Load + merge every file in `paths`. Returns the resolved

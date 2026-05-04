@@ -36,51 +36,60 @@ pub(crate) fn get_daemon_cwd() -> String {
         .unwrap_or_else(|_| "/".to_string())
 }
 
-/// Maximum bytes shipped to the webview as a file attachment body.
-/// Same cap as the path-completion preview — if a captain attaches a
-/// 1GB log file they get the head 256KB and the rest stays on disk.
-const FILE_ATTACHMENT_MAX_BYTES: usize = 256 * 1024;
-
-/// Read a file's contents for use as an `@./path` attachment payload.
-/// Captain's path-completion commit in the composer pipes through here;
-/// the file's text body becomes the attachment's `body`. Binary files
-/// resolve to a stub describing the size + path so the agent gets a
-/// pointer instead of mojibake. `~` and env-var expansion mirrors the
-/// rest of the path surfaces.
+/// Tauri shell over the file-attachment hydrator. Implementation
+/// lives at `completion::hydration::file::read_file_for_attachment` —
+/// it pairs with `completion::source::path::PathSource` (sources
+/// detect the path pattern at compose time, this hydrator resolves
+/// the picked path into the wire-side attachment body).
 #[tauri::command]
 pub(crate) async fn read_file_for_attachment(path: String) -> Result<serde_json::Value, String> {
-    let expanded = shellexpand::full(&path)
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|_| path.clone());
-    let metadata = tokio::fs::metadata(&expanded)
-        .await
-        .map_err(|err| format!("read_file_for_attachment: stat {expanded}: {err}"))?;
-    if metadata.is_dir() {
-        return Err(format!("'{expanded}' is a directory; attach a file"));
-    }
-    let bytes = tokio::fs::read(&expanded)
-        .await
-        .map_err(|err| format!("read_file_for_attachment: read {expanded}: {err}"))?;
-    let truncated = bytes.len() > FILE_ATTACHMENT_MAX_BYTES;
-    let head = if truncated {
-        &bytes[..FILE_ATTACHMENT_MAX_BYTES]
-    } else {
-        &bytes[..]
-    };
+    crate::completion::hydration::file::read_file_for_attachment(path).await
+}
 
-    if head.contains(&0) {
-        return Ok(serde_json::json!({
-            "path": expanded,
-            "body": format!("[binary file — {} bytes]", metadata.len()),
-            "binary": true,
-            "truncated": false,
-        }));
+/// Git status snapshot for an arbitrary path — drives the header
+/// `branch ↑N ↓M` pill. The webview calls this with the active
+/// instance's cwd whenever it changes (and on a coarse refresh
+/// cadence while visible). Returns `null` when the path doesn't sit
+/// inside a git repo. Implementation lives at `tools::git`.
+#[tauri::command]
+pub(crate) fn get_git_status(path: String) -> Result<Option<crate::tools::git::GitStatus>, String> {
+    crate::tools::git::snapshot(std::path::Path::new(&path)).map_err(|e| format!("git status failed: {e:#}"))
+}
+
+/// Generic daemon-RPC bridge for the command palette's daemon leaf.
+/// Dispatches `method` + `params` through the same `RpcDispatcher`
+/// the unix socket uses, so the palette and `ctl` reach exactly the
+/// same handlers. Captain-driven only — the palette ships a
+/// hardcoded list of methods (reload / shutdown / status / version
+/// / diag-snapshot / window-toggle) so this isn't an arbitrary
+/// dispatch surface for the webview.
+#[tauri::command]
+pub(crate) async fn daemon_rpc(
+    app: tauri::AppHandle,
+    dispatcher: tauri::State<'_, std::sync::Arc<crate::rpc::RpcDispatcher>>,
+    status: tauri::State<'_, std::sync::Arc<crate::rpc::StatusBroadcast>>,
+    adapter: tauri::State<'_, std::sync::Arc<dyn crate::adapters::Adapter>>,
+    config: tauri::State<'_, std::sync::Arc<std::sync::RwLock<crate::config::Config>>>,
+    method: String,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
+    use crate::rpc::protocol::RequestId;
+
+    let id = RequestId::String("ui-palette".to_string());
+    let ctx = HandlerCtx {
+        app: Some(&app),
+        status: status.inner(),
+        adapter: adapter.inner().clone(),
+        config: Some(config.inner().clone()),
+        id: &id,
+        already_subscribed: false,
+        started_at: None,
+        socket_path: None,
+    };
+    match dispatcher.dispatch(&method, params.unwrap_or(serde_json::Value::Null), ctx).await {
+        Ok(HandlerOutcome::Reply(v)) => Ok(v),
+        Ok(HandlerOutcome::StatusSubscribed(_, _)) => Err("status/subscribe not supported on the Tauri bridge".into()),
+        Err(e) => Err(format!("{}: {}", e.code, e.message)),
     }
-    let body = String::from_utf8_lossy(head).into_owned();
-    Ok(serde_json::json!({
-        "path": expanded,
-        "body": body,
-        "binary": false,
-        "truncated": truncated,
-    }))
 }

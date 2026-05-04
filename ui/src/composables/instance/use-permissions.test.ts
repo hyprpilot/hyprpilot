@@ -26,9 +26,19 @@ function raw(requestId: string, overrides: Partial<{ tool: string; args: string;
     args: overrides.args ?? 'echo hi',
     options: [
       {
-        optionId: 'allow',
-        name: 'Allow',
-        kind: 'y'
+        optionId: 'allow-once-id',
+        name: 'Allow once',
+        kind: 'allow_once'
+      },
+      {
+        optionId: 'allow-always-id',
+        name: 'Allow always',
+        kind: 'allow_always'
+      },
+      {
+        optionId: 'reject-once-id',
+        name: 'Reject once',
+        kind: 'reject_once'
       }
     ]
   }
@@ -97,13 +107,7 @@ describe('usePermissions', () => {
       kind: 'switch_mode',
       args: '',
       rawInput: { plan: '# Plan\n\n- step 1\n- step 2' },
-      options: [
-        {
-          optionId: 'allow',
-          name: 'Allow',
-          kind: 'y'
-        }
-      ]
+      options: raw('plan-1').options
     })
 
     const { rowQueue, modalQueue } = usePermissions('A')
@@ -113,88 +117,63 @@ describe('usePermissions', () => {
     expect(modalQueue.value[0]?.request.requestId).toBe('plan-1')
   })
 
-  it('allow() invokes permission_reply with optionId=allow and no remember by default', async() => {
+  it('respond() invokes permission_reply with the captain-supplied optionId and evicts on success', async() => {
     pushPermissionRequest('A', 's-a', raw('req-1'))
     invoke.mockResolvedValue(undefined)
 
-    await usePermissions('A').allow('req-1')
+    await usePermissions('A').respond('req-1', 'allow-once-id')
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow',
-      remember: undefined,
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'allow-once-id'
     })
     expect(usePermissions('A').rowQueue.value).toHaveLength(0)
   })
 
-  it('allow(true) sets remember="allow" — wires the trust-store side effect', async() => {
+  it('respond() with the allow_always option id forwards verbatim — kind-driven trust write happens daemon-side', async() => {
     pushPermissionRequest('A', 's-a', raw('req-1'))
     invoke.mockResolvedValue(undefined)
 
-    await usePermissions('A').allow('req-1', true)
+    await usePermissions('A').respond('req-1', 'allow-always-id')
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'allow',
-      remember: 'allow',
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'allow-always-id'
     })
   })
 
-  it('deny() invokes permission_reply with optionId=deny and evicts on success', async() => {
+  it('respond() with the reject option id evicts on success', async() => {
     pushPermissionRequest('A', 's-a', raw('req-1'))
     invoke.mockResolvedValue(undefined)
 
-    await usePermissions('A').deny('req-1')
+    await usePermissions('A').respond('req-1', 'reject-once-id')
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
       sessionId: 's-a',
       requestId: 'req-1',
-      optionId: 'deny',
-      remember: undefined,
-      instanceId: 'A',
-      tool: 'bash'
+      optionId: 'reject-once-id'
     })
     expect(usePermissions('A').rowQueue.value).toHaveLength(0)
   })
 
-  it('deny(true) sets remember="deny"', async() => {
-    pushPermissionRequest('A', 's-a', raw('req-1'))
-    invoke.mockResolvedValue(undefined)
-
-    await usePermissions('A').deny('req-1', true)
-
-    expect(invoke).toHaveBeenCalledWith(TauriCommand.PermissionReply, {
-      sessionId: 's-a',
-      requestId: 'req-1',
-      optionId: 'deny',
-      remember: 'deny',
-      instanceId: 'A',
-      tool: 'bash'
-    })
-  })
-
-  it('allow() throws when invoke rejects and leaves the pending entry in place', async() => {
+  it('respond() throws when invoke rejects and leaves the pending entry in place', async() => {
     pushPermissionRequest('A', 's-a', raw('req-1'))
     invoke.mockRejectedValue(new Error('permission_reply not implemented'))
 
-    await expect(usePermissions('A').allow('req-1')).rejects.toThrow('permission_reply not implemented')
+    await expect(usePermissions('A').respond('req-1', 'allow-once-id')).rejects.toThrow('permission_reply not implemented')
     expect(usePermissions('A').rowQueue.value).toHaveLength(1)
   })
 
   it('throws when the requestId has no pending entry', async() => {
-    await expect(usePermissions('A').allow('nonexistent')).rejects.toThrow('no pending permission request nonexistent')
+    await expect(usePermissions('A').respond('nonexistent', 'allow-once-id')).rejects.toThrow('no pending permission request nonexistent')
     expect(invoke).not.toHaveBeenCalled()
   })
 
   it('throws when no instance is active and no explicit id is passed', async() => {
     pushPermissionRequest('A', 's-a', raw('req-1'))
-    await expect(usePermissions().allow('req-1')).rejects.toThrow('no active instance')
+    await expect(usePermissions().respond('req-1', 'allow-once-id')).rejects.toThrow('no active instance')
   })
 
   it('resolves through useActiveInstance when no id is passed', () => {

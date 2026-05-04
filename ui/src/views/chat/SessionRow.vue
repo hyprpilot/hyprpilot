@@ -72,7 +72,7 @@ const phaseIcon = computed<PhaseIcon>(() => {
   font-family: var(--theme-font-mono);
   border-color: var(--tone);
   background-color: var(--theme-surface);
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   border-top: 1px solid var(--theme-border);
   border-right: 1px solid var(--theme-border);
   border-bottom: 1px solid var(--theme-border);
@@ -99,12 +99,12 @@ const phaseIcon = computed<PhaseIcon>(() => {
 
 .session-row-cwd {
   @apply truncate text-center;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 
 .session-row-adapter {
   @apply text-center;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 
 .session-row-doing {
