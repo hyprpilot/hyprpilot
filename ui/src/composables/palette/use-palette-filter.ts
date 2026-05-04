@@ -1,86 +1,126 @@
-import Fuse from 'fuse.js'
-import { computed, type ComputedRef, type Ref } from 'vue'
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 
 import { type PaletteEntry, PaletteMode, type PaletteSpec } from './palette'
+import { invoke, TauriCommand } from '@ipc'
+import { log } from '@lib'
+
+const RANK_DEBOUNCE_MS = 60
 
 export interface UsePaletteFilterApi {
   /// Rows to render — ticked rows pinned to the top in
-  /// multi-select mode, fuzzy-filtered remainder below.
+  /// multi-select mode, fuzzy-ranked remainder below.
   visible: ComputedRef<PaletteEntry[]>
 }
 
 /**
  * Computes the visible row set for a palette leaf given the live
- * search `query` and the multi-select `ticked` ids. Two-stage
- * filter: subsequence-prefilter (fast, eliminates obvious non-matches)
- * then Fuse fuzzy-rank for the survivors. Empty query bypasses
- * Fuse and returns the spec's entry order verbatim.
+ * search `query` and the multi-select `ticked` ids. Empty query →
+ * spec entry order verbatim; non-empty query → daemon-side
+ * `completion/rank` (nucleo matcher), debounced so each keystroke
+ * doesn't fire a new RPC. Server-pre-filtered specs (cwd
+ * path-completion) opt out via `spec.filtered`.
  *
- * Pulled out of `CommandPalette.vue` so the same filter shape is
- * available to any future palette-shaped surface (an inline picker,
- * a sheet, …) without a copy-paste.
+ * Ranking lives daemon-side so every frontend (Vue overlay, Neovim
+ * plugin, …) shares one matcher implementation.
  */
 export function usePaletteFilter(spec: Ref<PaletteSpec | undefined>, query: Ref<string>, ticked: Ref<Set<string>>): UsePaletteFilterApi {
-  const visible = computed<PaletteEntry[]>(() => {
-    const s = spec.value
+  const ranked = ref<PaletteEntry[]>([])
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined
+  let cancelToken = 0
 
-    if (!s) {
-      return []
-    }
-    const q = query.value.trim()
+  function applyIdentity(s: PaletteSpec): void {
     const tickedSet = ticked.value
     const tickedRows = s.entries.filter((e) => tickedSet.has(e.id))
     const rest = s.entries.filter((e) => !tickedSet.has(e.id))
 
-    // Server-pre-filtered specs (cwd path-completion, future ripgrep
-    // leaves) opt out of the client-side filter — their entries are
-    // already pruned against the raw query, and Fuse on top would
-    // over-prune (basenames don't fuzzy-match a full typed path).
-    if (s.filtered) {
-      return s.mode === PaletteMode.MultiSelect ? [...tickedRows, ...rest] : rest
-    }
-    const gated = rest.filter((e) => subsequenceMatch(q, e.name))
-
-    let ordered: PaletteEntry[]
-
-    if (!q) {
-      ordered = gated
-    } else {
-      const fuse = new Fuse(gated, {
-        keys: ['name'],
-        threshold: 0.5,
-        ignoreLocation: true
-      })
-
-      ordered = fuse.search(q).map((r) => r.item)
-    }
-
-    if (s.mode === PaletteMode.MultiSelect) {
-      return [...tickedRows, ...ordered]
-    }
-
-    return ordered
-  })
-
-  return { visible }
-}
-
-function subsequenceMatch(q: string, name: string): boolean {
-  if (!q) {
-    return true
-  }
-  const needle = q.toLowerCase()
-  const hay = name.toLowerCase()
-  let pos = 0
-
-  for (const ch of needle) {
-    const next = hay.indexOf(ch, pos)
-
-    if (next < 0) {
-      return false
-    }
-    pos = next + 1
+    ranked.value = s.mode === PaletteMode.MultiSelect ? [...tickedRows, ...rest] : rest
   }
 
-  return true
+  watch(
+    [spec, query, ticked],
+    () => {
+      if (debounceTimer !== undefined) {
+        clearTimeout(debounceTimer)
+      }
+      const s = spec.value
+
+      if (!s) {
+        ranked.value = []
+
+        return
+      }
+
+      // Server-pre-filtered specs (cwd path-completion) skip the
+      // ranker — their entries are already pruned against the raw
+      // query upstream.
+      if (s.filtered) {
+        applyIdentity(s)
+
+        return
+      }
+      const q = query.value.trim()
+
+      if (q.length === 0) {
+        applyIdentity(s)
+
+        return
+      }
+
+      cancelToken++
+      const myToken = cancelToken
+
+      debounceTimer = setTimeout(() => {
+        void rankAndApply(s, q, myToken)
+      }, RANK_DEBOUNCE_MS)
+    },
+    { immediate: true, deep: true }
+  )
+
+  async function rankAndApply(s: PaletteSpec, q: string, token: number): Promise<void> {
+    const tickedSet = ticked.value
+    const tickedRows = s.entries.filter((e) => tickedSet.has(e.id))
+    const remaining = s.entries.filter((e) => !tickedSet.has(e.id))
+
+    if (remaining.length === 0) {
+      if (token === cancelToken) {
+        ranked.value = tickedRows
+      }
+
+      return
+    }
+    const candidates = remaining.map((e) => ({
+      id: e.id,
+      label: e.name,
+      description: e.description
+    }))
+    const byId = new Map(s.entries.map((e) => [e.id, e]))
+
+    try {
+      const r = await invoke(TauriCommand.CompletionRank, { query: q, candidates })
+
+      if (token !== cancelToken) {
+        return
+      }
+      const ordered: PaletteEntry[] = []
+
+      for (const item of r.items) {
+        const entry = byId.get(item.replacement.text)
+
+        if (entry !== undefined) {
+          ordered.push(entry)
+        }
+      }
+      ranked.value = s.mode === PaletteMode.MultiSelect ? [...tickedRows, ...ordered] : ordered
+    } catch(err) {
+      log.debug('palette-filter: completion/rank failed', { err: String(err) })
+
+      // Fall back to identity order so the captain still sees a
+      // list (just unranked) on RPC failure.
+      if (token === cancelToken) {
+        ranked.value = s.mode === PaletteMode.MultiSelect ? [...tickedRows, ...remaining] : remaining
+      }
+    }
+  }
+
+  return { visible: computed(() => ranked.value) }
 }

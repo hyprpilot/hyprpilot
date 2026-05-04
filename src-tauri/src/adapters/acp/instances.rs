@@ -43,6 +43,9 @@ pub struct AcpAdapter {
     /// an `RwLock` so the daemon can hand the same `Arc` to `RpcState`
     /// for read-only handlers (`config/profiles`) without re-cloning.
     pub(crate) config: Arc<RwLock<Config>>,
+    /// Held only so the field appears in `Debug`. Future per-adapter
+    /// status broadcasts will read it; rustc's dead-code lint
+    /// doesn't count derived `Debug` impls as a use.
     #[allow(dead_code)]
     pub(crate) status: Arc<StatusBroadcast>,
     registry: Arc<AdapterRegistry<AcpInstance>>,
@@ -365,16 +368,16 @@ impl AcpAdapter {
         // the per-server lane short-circuits and every call falls
         // through to AskUser (or trust store).
         let mcps = self.build_mcp_registry_for(profile.as_ref());
-        let instance = AcpInstance::start(
+        let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
             profile_id,
-            self.registry.events_tx(),
+            events_tx: self.registry.events_tx(),
             bootstrap,
-            self.permissions.clone(),
+            permissions: self.permissions.clone(),
             mcps,
-            self.commands_cache(),
-        );
+            commands_cache: self.commands_cache(),
+        });
 
         self.registry
             .insert(key, Arc::new(instance))
@@ -555,16 +558,16 @@ impl AcpAdapter {
             let (sink_tx, _sink_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
             // Ephemeral list-only actor never reads MCPs; pass None.
             let _ = profile;
-            let instance = AcpInstance::start(
+            let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
                 resolved,
-                ephemeral_key,
-                profile_id_for_instance,
-                sink_tx,
-                Bootstrap::ListOnly,
-                self.permissions.clone(),
-                None,
-                None,
-            );
+                key: ephemeral_key,
+                profile_id: profile_id_for_instance,
+                events_tx: sink_tx,
+                bootstrap: Bootstrap::ListOnly,
+                permissions: self.permissions.clone(),
+                mcps: None,
+                commands_cache: None,
+            });
             let tx = instance.cmd_tx.clone();
             (tx, Some(instance))
         };
@@ -699,16 +702,16 @@ impl AcpAdapter {
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id_for_instance = resolved.profile_id.clone();
         let mcps = self.build_mcp_registry_for(profile.as_ref());
-        let instance = AcpInstance::start(
+        let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
-            profile_id_for_instance,
-            self.registry.events_tx(),
-            Bootstrap::Fresh,
-            self.permissions.clone(),
+            profile_id: profile_id_for_instance,
+            events_tx: self.registry.events_tx(),
+            bootstrap: Bootstrap::Fresh,
+            permissions: self.permissions.clone(),
             mcps,
-            self.commands_cache(),
-        );
+            commands_cache: self.commands_cache(),
+        });
         self.registry
             .insert_at_slot(slot, key, Arc::new(instance))
             .await

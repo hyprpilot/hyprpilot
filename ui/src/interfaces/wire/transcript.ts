@@ -5,6 +5,7 @@
  * switch on it and surface `Unknown` as a placeholder for forward-
  * compat with future variants.
  */
+import type { FormattedToolCall } from './formatted-tool-call'
 import type { Attachment } from './session'
 import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
 
@@ -25,12 +26,14 @@ export interface ToolCallRecord {
   title: string
   state: ToolCallState
   /// Agent's raw `tool_call.rawInput` JSON object passed through
-  /// verbatim. Formatters pick the fields they need (`file_path`,
-  /// `command`, `query`, …); the daemon does NOT pre-extract a
-  /// stringified summary because that loses access to non-string
-  /// fields and forces the UI to JSON-parse on every render.
+  /// verbatim. The daemon's formatter consumed this server-side; the
+  /// UI keeps it for the spec-sheet "raw JSON" disclosure only.
   rawInput?: Record<string, unknown>
   content: ToolCallContentItem[]
+  /// Daemon-authored presentation view. The UI renders this verbatim;
+  /// no client-side formatting fallback. See
+  /// `src-tauri/src/formatting/types::FormattedToolCall`.
+  formatted: FormattedToolCall
 }
 
 export interface ToolCallUpdateRecord {
@@ -40,6 +43,8 @@ export interface ToolCallUpdateRecord {
   state?: ToolCallState
   rawInput?: Record<string, unknown>
   content: ToolCallContentItem[]
+  /// Updated presentation view computed from merged running state.
+  formatted: FormattedToolCall
 }
 
 export interface PlanStep {

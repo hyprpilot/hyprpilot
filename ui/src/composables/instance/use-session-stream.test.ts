@@ -19,6 +19,11 @@ import {
 } from '@composables'
 import { InstanceState, TauriEvent } from '@ipc'
 
+const FMT = {
+  title: 'bash',
+  fields: []
+}
+
 type Handler = (payload: { payload: unknown }) => void
 
 const { handlers, unlisten } = vi.hoisted(() => ({
@@ -73,6 +78,7 @@ describe('useSessionStream', () => {
       [
         TauriEvent.AcpCurrentModeUpdate,
         TauriEvent.AcpInstanceMeta,
+        TauriEvent.AcpInstanceRenamed,
         TauriEvent.AcpInstanceState,
         TauriEvent.AcpPermissionRequest,
         TauriEvent.AcpSessionInfoUpdate,
@@ -101,7 +107,8 @@ describe('useSessionStream', () => {
           name: 'Allow',
           kind: 'y'
         }
-      ]
+      ],
+      formatted: FMT
     })
 
     const queue = usePermissions('A').rowQueue.value
@@ -128,7 +135,8 @@ describe('useSessionStream', () => {
           name: 'Allow',
           kind: 'y'
         }
-      ]
+      ],
+      formatted: FMT
     })
     emit(TauriEvent.AcpPermissionRequest, {
       agentId: 'a',
@@ -144,7 +152,8 @@ describe('useSessionStream', () => {
           name: 'Deny',
           kind: 'n'
         }
-      ]
+      ],
+      formatted: FMT
     })
 
     const queue = usePermissions('A').rowQueue.value
@@ -289,7 +298,7 @@ describe('useSessionStream', () => {
     const stop = await startSessionStream()
 
     stop()
-    expect(unlisten).toHaveBeenCalledTimes(9)
+    expect(unlisten).toHaveBeenCalledTimes(10)
   })
 
   it('pushes an ok toast when acp:instance-state transitions to running', async() => {

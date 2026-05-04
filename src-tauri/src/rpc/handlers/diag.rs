@@ -98,7 +98,7 @@ mod tests {
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
     use crate::rpc::handler::HandlerCtx;
-    use crate::rpc::protocol::RequestId;
+
     use crate::rpc::status::StatusBroadcast;
 
     /// `diag/snapshot` against an empty config + empty registry —
@@ -113,16 +113,16 @@ mod tests {
             "ANTHROPIC_API_KEY".to_string(),
             "sk-secret-token-DO-NOT-LEAK".to_string(),
         );
-        cfg.agents.agents.push(crate::adapters::AgentConfig {
+        cfg.agents.agents.push(crate::config::AgentConfig {
             id: "claude-code".into(),
-            provider: crate::adapters::AgentProvider::AcpClaudeCode,
+            provider: crate::config::AgentProvider::AcpClaudeCode,
             model: None,
             command: "bunx".into(),
             args: Vec::new(),
             env,
             cwd: None,
         });
-        cfg.profiles.push(crate::adapters::ProfileConfig {
+        cfg.profiles.push(crate::config::ProfileConfig {
             id: "ask".into(),
             agent: "claude-code".into(),
             model: None,
@@ -138,7 +138,6 @@ mod tests {
         let adapter: Arc<dyn Adapter> = acp.clone();
         let config = Arc::new(std::sync::RwLock::new(cfg));
         let status = StatusBroadcast::new(true);
-        let id = RequestId::Number(1);
         let socket = Path::new("/tmp/hyprpilot.sock");
         let started_at = Instant::now();
         let ctx = HandlerCtx {
@@ -146,7 +145,6 @@ mod tests {
             status: &status,
             adapter,
             config: Some(config),
-            id: &id,
             already_subscribed: false,
             started_at: Some(started_at),
             socket_path: Some(socket),
@@ -191,13 +189,11 @@ mod tests {
         let adapter: Arc<dyn Adapter> = acp.clone();
         let config = Arc::new(std::sync::RwLock::new(Config::default()));
         let status = StatusBroadcast::new(true);
-        let id = RequestId::Number(1);
         let ctx = HandlerCtx {
             app: None,
             status: &status,
             adapter,
             config: Some(config),
-            id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,

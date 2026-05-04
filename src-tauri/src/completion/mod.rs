@@ -56,7 +56,6 @@ pub enum CompletionKind {
 /// passes this back into `fetch()` so the source doesn't re-derive
 /// what it already saw.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompletionContext {
     /// Byte offset where the trigger starts in the textarea. The UI's
     /// replacement range starts here and ends at the cursor.
@@ -66,13 +65,6 @@ pub struct CompletionContext {
     /// Text from `trigger_offset` to `cursor`, minus the leading
     /// sigil if any. Sources nucleo-rank against this.
     pub query: String,
-    /// Trigger sigil — `Some('#')` for skills, `Some('/')` for
-    /// commands, etc. `None` for ripgrep (manual trigger).
-    pub sigil: Option<char>,
-    /// Set when the captain explicitly asked for completions via
-    /// Tab / Ctrl+Space. Sources that decline auto-trigger can
-    /// still detect when this is true.
-    pub manual: bool,
 }
 
 /// Where the picked item replaces text in the textarea. Byte
@@ -160,23 +152,14 @@ impl CompletionRegistry {
     }
 
     /// Walk sources in order, return `(source, ctx)` for the first
-    /// one whose detect matches.
-    pub fn detect(
-        &self,
-        text: &str,
-        cursor: usize,
-        manual: bool,
-    ) -> Option<(Arc<dyn CompletionSource>, CompletionContext)> {
-        self.detect_filtered(text, cursor, manual, None)
-    }
-
-    /// Same as [`detect`] but restricted to a whitelist of source
-    /// ids. `allow == None` is identity (every source eligible);
-    /// `allow == Some([])` returns `None` (every source filtered
-    /// out). Drives the input palette's per-spec `sources` filter
-    /// — the cwd palette wants only `path` so its query never gets
-    /// claimed by ripgrep / commands / skills even when the typed
-    /// text happens to look like a slash command or hash sigil.
+    /// one whose `detect` matches, optionally restricted to a
+    /// whitelist of source ids. `allow == None` is identity (every
+    /// source eligible); `allow == Some([])` returns `None` (every
+    /// source filtered out). Drives the input palette's per-spec
+    /// `sources` filter — cwd palette wants only `path` so its
+    /// query never gets claimed by ripgrep / commands / skills
+    /// even when the typed text happens to look like a slash
+    /// command or hash sigil.
     pub fn detect_filtered(
         &self,
         text: &str,

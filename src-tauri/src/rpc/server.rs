@@ -42,7 +42,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 
     // Set by `status/subscribe`; its presence also gates the second-
     // subscribe rejection via `HandlerCtx::already_subscribed`.
-    let mut status_rx: Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>> = None;
+    let mut status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>> = None;
 
     loop {
         tokio::select! {
@@ -62,14 +62,16 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 
                 let dispatch_result = dispatch(
                     &line,
-                    Some(&state.app),
-                    &state.status,
-                    &state.dispatcher,
-                    state.adapter.clone(),
-                    Some(state.config.clone()),
-                    status_rx.is_some(),
-                    Some(state.started_at),
-                    Some(state.socket_path.as_path()),
+                    DispatchInput {
+                        app: Some(&state.app),
+                        status: &state.status,
+                        dispatcher: &state.dispatcher,
+                        adapter: state.adapter.clone(),
+                        config: Some(state.config.clone()),
+                        connection_already_subscribed: status_rx.is_some(),
+                        started_at: Some(state.started_at),
+                        socket_path: Some(state.socket_path.as_path()),
+                    },
                 ).await;
 
                 let DispatchOutput { response, new_status_rx } = dispatch_result;
@@ -160,24 +162,27 @@ async fn write_line(writer: &mut tokio::net::unix::OwnedWriteHalf, value: &impl 
 /// fields without reflowing every match arm.
 struct DispatchOutput {
     response: Response,
-    new_status_rx: Option<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>,
+    new_status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>>,
+}
+
+/// Per-connection state the dispatcher reads. Bundles every shared
+/// reference so `dispatch` is a two-arg function: this state + the
+/// raw NDJSON line.
+pub(crate) struct DispatchInput<'a> {
+    pub app: Option<&'a tauri::AppHandle>,
+    pub status: &'a StatusBroadcast,
+    pub dispatcher: &'a RpcDispatcher,
+    pub adapter: Arc<dyn Adapter>,
+    pub config: Option<Arc<RwLock<Config>>>,
+    pub connection_already_subscribed: bool,
+    pub started_at: Option<Instant>,
+    pub socket_path: Option<&'a std::path::Path>,
 }
 
 /// Parse one NDJSON line → `RpcDispatcher` → JSON-RPC `Response`.
-/// Tests pass `None` for `app` + a stand-alone fixture so they can
-/// drive routing without a live Tauri runtime.
-#[allow(clippy::too_many_arguments)]
-async fn dispatch(
-    line: &str,
-    app: Option<&tauri::AppHandle>,
-    status: &StatusBroadcast,
-    dispatcher: &RpcDispatcher,
-    adapter: Arc<dyn Adapter>,
-    config: Option<Arc<RwLock<Config>>>,
-    connection_already_subscribed: bool,
-    started_at: Option<Instant>,
-    socket_path: Option<&std::path::Path>,
-) -> DispatchOutput {
+/// Tests pass `None` for `input.app` + a stand-alone fixture so they
+/// can drive routing without a live Tauri runtime.
+async fn dispatch(line: &str, input: DispatchInput<'_>) -> DispatchOutput {
     // Stage 1: JSON syntax. Failure here is -32700 parse error.
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -232,17 +237,16 @@ async fn dispatch(
     trace!(id = ?id, method = %method, params = %params, "rpc: dispatch params");
 
     let ctx = HandlerCtx {
-        app,
-        status,
-        adapter,
-        config,
-        id: &id,
-        already_subscribed: connection_already_subscribed,
-        started_at,
-        socket_path,
+        app: input.app,
+        status: input.status,
+        adapter: input.adapter,
+        config: input.config,
+        already_subscribed: input.connection_already_subscribed,
+        started_at: input.started_at,
+        socket_path: input.socket_path,
     };
 
-    let outcome = dispatcher.dispatch(&method, params, ctx).await;
+    let outcome = input.dispatcher.dispatch(&method, params, ctx).await;
 
     match outcome {
         Ok(HandlerOutcome::Reply(value)) => DispatchOutput {
@@ -307,14 +311,16 @@ mod tests {
         let adapter: Arc<dyn Adapter> = acp.clone();
         let out = dispatch(
             line,
-            None,
-            &status,
-            &dispatcher,
-            adapter,
-            Some(config),
-            false,
-            None,
-            None,
+            DispatchInput {
+                app: None,
+                status: &status,
+                dispatcher: &dispatcher,
+                adapter,
+                config: Some(config),
+                connection_already_subscribed: false,
+                started_at: None,
+                socket_path: None,
+            },
         )
         .await;
         serde_json::to_value(out.response).unwrap()
@@ -468,14 +474,16 @@ mod tests {
                 }
                 let out = dispatch(
                     &l,
-                    None,
-                    &status,
-                    &dispatcher,
-                    adapter.clone(),
-                    Some(config.clone()),
-                    false,
-                    None,
-                    None,
+                    DispatchInput {
+                        app: None,
+                        status: &status,
+                        dispatcher: &dispatcher,
+                        adapter: adapter.clone(),
+                        config: Some(config.clone()),
+                        connection_already_subscribed: false,
+                        started_at: None,
+                        socket_path: None,
+                    },
                 )
                 .await;
                 let mut bytes = serde_json::to_vec(&out.response).unwrap();
@@ -514,14 +522,16 @@ mod tests {
         let _ = acp;
         let out = dispatch(
             r#"{"jsonrpc":"2.0","id":1,"method":"status/subscribe"}"#,
-            None,
-            &broadcast,
-            &dispatcher,
-            adapter.clone(),
-            Some(config.clone()),
-            false,
-            None,
-            None,
+            DispatchInput {
+                app: None,
+                status: &broadcast,
+                dispatcher: &dispatcher,
+                adapter: adapter.clone(),
+                config: Some(config.clone()),
+                connection_already_subscribed: false,
+                started_at: None,
+                socket_path: None,
+            },
         )
         .await;
         let v = serde_json::to_value(&out.response).unwrap();
@@ -530,14 +540,16 @@ mod tests {
 
         let out = dispatch(
             r#"{"jsonrpc":"2.0","id":2,"method":"status/subscribe"}"#,
-            None,
-            &broadcast,
-            &dispatcher,
-            adapter,
-            Some(config),
-            true,
-            None,
-            None,
+            DispatchInput {
+                app: None,
+                status: &broadcast,
+                dispatcher: &dispatcher,
+                adapter,
+                config: Some(config),
+                connection_already_subscribed: true,
+                started_at: None,
+                socket_path: None,
+            },
         )
         .await;
         let v = serde_json::to_value(&out.response).unwrap();
@@ -617,7 +629,7 @@ mod tests {
             let config = Arc::new(RwLock::new(Config::default()));
             let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
             let adapter: Arc<dyn Adapter> = acp.clone();
-            let mut status_rx: Option<tokio::sync::broadcast::Receiver<StatusResult>> = None;
+            let mut status_rx: Option<Box<tokio::sync::broadcast::Receiver<StatusResult>>> = None;
 
             loop {
                 tokio::select! {
@@ -628,14 +640,16 @@ mod tests {
                                 let _ = &acp;
                                 let out = dispatch(
                                     &l,
-                                    None,
-                                    &broadcast_clone,
-                                    &dispatcher,
-                                    adapter.clone(),
-                                    Some(config.clone()),
-                                    status_rx.is_some(),
-                                    None,
-                                    None,
+                                    DispatchInput {
+                                        app: None,
+                                        status: &broadcast_clone,
+                                        dispatcher: &dispatcher,
+                                        adapter: adapter.clone(),
+                                        config: Some(config.clone()),
+                                        connection_already_subscribed: status_rx.is_some(),
+                                        started_at: None,
+                                        socket_path: None,
+                                    },
                                 ).await;
                                 if let Some(rx) = out.new_status_rx {
                                     status_rx = Some(rx);

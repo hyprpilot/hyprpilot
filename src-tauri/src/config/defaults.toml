@@ -168,7 +168,7 @@ bright_white = "#ffffff"
 [keymaps.chat]
 submit = { key = "enter" }
 newline = { modifiers = ["shift"], key = "enter" }
-cancel_turn = { modifiers = ["ctrl"], key = "c" }
+cancel_turn = { modifiers = ["ctrl"], key = "d" }
 
 [keymaps.approvals]
 allow = { modifiers = ["ctrl"], key = "g" }

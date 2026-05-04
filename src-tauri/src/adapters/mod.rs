@@ -28,29 +28,15 @@ pub mod transcript;
 
 use async_trait::async_trait;
 
-#[allow(unused_imports)]
-pub use instance::{
-    validate_instance_name, InstanceActor, InstanceEvent, InstanceEventStream, InstanceHandle, InstanceInfo,
-    InstanceKey, InstanceState, SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk, TerminalStream,
-};
-#[allow(unused_imports)]
-pub use permission::{
-    pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, DefaultPermissionController,
-    PermissionController, PermissionOptionView, PermissionOutcome, PermissionPrompt, PermissionReply,
-    PermissionRequest, PermissionRequestSnapshot, ToolCallRef, TrustDecision,
-};
-#[allow(unused_imports)]
-pub use profile::{AgentConfig, AgentProvider, ProfileConfig, ResolvedInstance};
-#[allow(unused_imports)]
-pub use registry::AdapterRegistry;
-#[allow(unused_imports)]
-pub use transcript::{
-    Attachment, PermissionRequestRecord, PlanRecord, PlanStep, Speaker, ToolCallContentItem, ToolCallRecord,
-    ToolCallState, ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
-};
-
-#[allow(unused_imports)]
 pub use acp::AcpAdapter;
+pub use instance::{
+    validate_instance_name, InstanceEvent, InstanceEventStream, InstanceInfo, InstanceKey, InstanceState,
+    SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk, TerminalStream,
+};
+pub use transcript::{
+    Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
+    ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
+};
 
 /// Closed set of known transport kinds. The string wire-name is stable
 /// — it appears in tracing spans and (future) config `transport =

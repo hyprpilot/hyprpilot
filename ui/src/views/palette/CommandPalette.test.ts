@@ -1,9 +1,25 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 
 import CommandPalette from './CommandPalette.vue'
 import { __resetPaletteStackForTests, PaletteMode, type PaletteSpec, usePalette } from '@composables'
+
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
+
+vi.mock('@ipc/bridge', async() => ({
+  ...(await vi.importActual<object>('@ipc/bridge')),
+  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
+  listen: vi.fn()
+}))
+
+/// Wait long enough for the palette filter's 60ms debounce + the
+/// awaited `completion/rank` invoke to settle.
+async function settleRanker(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  await flushPromises()
+  await nextTick()
+}
 
 // focus-trap-vue relies on real browser focus / tabbable-node detection
 // to guard activation; jsdom never reports any node as tabbable because
@@ -56,6 +72,7 @@ function makeMultiSpec(overrides: Partial<PaletteSpec> = {}): PaletteSpec {
 
 beforeEach(() => {
   __resetPaletteStackForTests()
+  invoke.mockReset()
 })
 
 afterEach(() => {
@@ -151,6 +168,20 @@ describe('CommandPalette.vue', () => {
   })
 
   it('filter query pins ticked rows at the top even when the query would exclude them', async() => {
+    invoke.mockImplementation(async(_command, args) => {
+      const { candidates } = args as { query: string; candidates: { id: string; label: string }[] }
+      // Match cherry only — that's the row that should appear after
+      // the pinned ticked `a`.
+      const matched = candidates.filter((c) => c.id === 'c')
+
+      return {
+        items: matched.map((c) => ({
+          label: c.label,
+          replacement: { range: { start: 0, end: 4 }, text: c.id }
+        }))
+      }
+    })
+
     const wrapper = mount(CommandPalette)
 
     usePalette().open(
@@ -164,7 +195,7 @@ describe('CommandPalette.vue', () => {
 
     input.value = 'cher'
     input.dispatchEvent(new Event('input'))
-    await nextTick()
+    await settleRanker()
 
     const rows = wrapper.findAll('.palette-row')
 
@@ -184,7 +215,7 @@ describe('CommandPalette.vue', () => {
     dispatchKey({ key: 'd', ctrlKey: true })
     await nextTick()
 
-    expect(onDelete).toHaveBeenCalledWith({ id: 'alpha', name: 'alpha' })
+    expect(onDelete).toHaveBeenCalledWith({ id: 'alpha', name: 'alpha' }, expect.any(Function))
     expect(wrapper.find('[data-testid="palette-overlay"]').exists()).toBe(true)
 
     wrapper.unmount()

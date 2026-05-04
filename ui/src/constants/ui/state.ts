@@ -1,9 +1,15 @@
 /**
  * Cross-cutting UI state enums + their tone/CSS-suffix mappers.
  * `Phase` drives the header chrome (border + profile pill bg + chat
- * indicators); `ToolState` colours tool chips. Helpers co-locate so
- * the enum and its standard rendering stay one file away.
+ * indicators); `ToolState` colours tool chips.
+ *
+ * `ToolState` is the UI's tone classification — derived from the wire
+ * `ToolCallState` (Pending / Running / Completed / Failed) plus any
+ * UI-only signal (e.g. `Awaiting` when a permission prompt is open).
+ * The wire raw state lives at `@constants/wire/transcript::ToolCallState`.
  */
+
+import { ToolCallState } from '@constants/wire/transcript'
 
 export enum Phase {
   Idle = 'idle',
@@ -21,10 +27,35 @@ export function phaseToCssSuffix(p: Phase): string {
 }
 
 export enum ToolState {
+  Pending = 'pending',
   Running = 'running',
   Done = 'done',
   Failed = 'failed',
-  Awaiting = 'awaiting'
+  Awaiting = 'awaiting',
+  Cancelled = 'cancelled'
+}
+
+/// Wire `ToolCallState` → UI tone `ToolState`. `Completed` maps to
+/// `Done`; everything else passes through. `Awaiting` is a UI-only
+/// state set externally when a permission prompt is open against the
+/// call.
+export function toolStateFromWire(state: ToolCallState | undefined): ToolState {
+  switch (state) {
+    case ToolCallState.Pending:
+      return ToolState.Pending
+
+    case ToolCallState.Running:
+      return ToolState.Running
+
+    case ToolCallState.Completed:
+      return ToolState.Done
+
+    case ToolCallState.Failed:
+      return ToolState.Failed
+
+    default:
+      return ToolState.Running
+  }
 }
 
 export function toolStateTone(state: ToolState): string {
@@ -32,11 +63,17 @@ export function toolStateTone(state: ToolState): string {
     case ToolState.Running:
       return 'var(--theme-state-stream)'
 
-    case ToolState.Failed:
-      return 'var(--theme-status-err)'
+    case ToolState.Pending:
+      return 'var(--theme-state-pending)'
 
     case ToolState.Awaiting:
       return 'var(--theme-state-awaiting)'
+
+    case ToolState.Failed:
+      return 'var(--theme-status-err)'
+
+    case ToolState.Cancelled:
+      return 'var(--theme-fg-dim)'
 
     case ToolState.Done:
       return 'var(--theme-status-ok)'

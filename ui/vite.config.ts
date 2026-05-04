@@ -11,12 +11,12 @@ export default defineConfig({
     alias: {
       '@ipc': path.resolve(__dirname, './src/ipc'),
       '@lib': path.resolve(__dirname, './src/lib'),
-      '@ui': path.resolve(__dirname, './src/components/ui'),
       '@components': path.resolve(__dirname, './src/components'),
       '@composables': path.resolve(__dirname, './src/composables'),
       '@views': path.resolve(__dirname, './src/views'),
       '@interfaces': path.resolve(__dirname, './src/interfaces'),
       '@constants': path.resolve(__dirname, './src/constants'),
+      '@adapters': path.resolve(__dirname, './src/adapters'),
       '@assets': path.resolve(__dirname, './src/assets')
     }
   },

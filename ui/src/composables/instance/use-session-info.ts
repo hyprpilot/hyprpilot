@@ -56,6 +56,12 @@ export interface SessionInfo {
   updatedAt?: string
   cwd?: string
   agent?: string
+  /// Captain-set instance name (`hyprpilot ctl instances rename`).
+  /// `undefined` when no name has been set. Drives the header's
+  /// leftmost pill — when present it replaces the profile pill so
+  /// the captain reads their own slug instead of the upstream
+  /// profile id.
+  name?: string
   /// Spawning profile id. Drives the header's profile pill —
   /// distinct from the user's persisted profile picker (which only
   /// changes on explicit selection, not on focus shifts). `undefined`
@@ -84,6 +90,7 @@ export interface SessionInfoState {
   updatedAt?: string
   cwd?: string
   agent?: string
+  name?: string
   profileId?: string
   mode?: string
   model?: string
@@ -263,6 +270,21 @@ export function setInstanceAgent(id: InstanceId, agent: string): void {
 }
 
 /**
+ * Set the captain-set instance name. `undefined` clears it. Driven by
+ * the `acp:instance-renamed` event AND the boot-time `instances/list`
+ * seed (so already-named instances surface their slug immediately).
+ */
+export function setInstanceName(id: InstanceId, name: string | undefined): void {
+  const slot = slotFor(id)
+
+  if (name === undefined || name.length === 0) {
+    delete slot.name
+  } else {
+    slot.name = name
+  }
+}
+
+/**
  * Set the per-instance spawning profile id. `undefined` clears it
  * (bare-agent spawn). Pushed by the daemon on every
  * `acp:instance-meta` event so the header chrome's profile pill
@@ -331,49 +353,6 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
 }
 
 /**
- * Shorten an absolute path for header display:
- *
- * 1. `$HOME` prefix collapses to `~`.
- * 2. If still longer than `max` chars, middle-ellipsise — keep the
- *    leading `~/<top>` segment + the trailing 2 path segments,
- *    glue with `/.../`.
- *
- * Pure helper; no reactive state. `home` is injected by callers
- * (`useHomeDir().homeDir.value`) — the renderer can't read `$HOME`
- * itself, so the value comes off the `get_home_dir` Tauri command at
- * boot.
- */
-export function truncateCwd(raw: string, max = 32, home?: string): string {
-  let path = raw
-
-  if (home && path.startsWith(home)) {
-    path = `~${path.slice(home.length)}`
-  }
-
-  if (path.length <= max) {
-    return path
-  }
-  const segments = path.split('/').filter((s) => s.length > 0)
-
-  if (segments.length <= 3) {
-    return path
-  }
-  const head = segments[0] === '~' ? '~' : `/${segments[0]}`
-  const tail = segments.slice(-2).join('/')
-  // U+2026 (single ellipsis glyph) instead of three ASCII dots —
-  // JetBrains Mono ligates `...` into a wider triple-dot glyph that
-  // reads as " ... " between slashes; one Unicode codepoint sidesteps
-  // the ligature.
-  const middle = `${head}/\u2026/${tail}`
-
-  if (middle.length < path.length) {
-    return middle
-  }
-
-  return path
-}
-
-/**
  * Reactive read-only view over the per-instance session info.
  * `mcpsCount` derives from the active profile — wired as zero
  * placeholder until K-258 surfaces the count on `ProfileSummary`.
@@ -399,6 +378,7 @@ function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: Pro
     updatedAt: slot?.updatedAt,
     cwd: slot?.cwd,
     agent: slot?.agent ?? slotProfile?.agent,
+    name: slot?.name,
     profileId: slot?.profileId,
     mode: slot?.mode,
     model: slot?.model ?? slotProfile?.model,

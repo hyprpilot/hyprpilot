@@ -30,3 +30,17 @@ pub mod instance;
 pub mod instances;
 
 pub use instances::AcpAdapter;
+
+use once_cell::sync::Lazy;
+
+use crate::tools::formatter::registry::FormatterRegistry;
+
+/// Process-wide formatter registry — shared by every ACP actor's
+/// notification task. Built once at first access; the registry is
+/// stateless after construction so a single shared `&FormatterRegistry`
+/// is safe across actors.
+static FORMATTERS: Lazy<FormatterRegistry> = Lazy::new(crate::tools::formatter::build_default_registry);
+
+pub(crate) fn formatter_registry() -> &'static FormatterRegistry {
+    &FORMATTERS
+}

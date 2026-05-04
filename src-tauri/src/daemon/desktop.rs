@@ -56,6 +56,30 @@ pub(crate) fn get_git_status(path: String) -> Result<Option<crate::tools::git::G
     crate::tools::git::snapshot(std::path::Path::new(&path)).map_err(|e| format!("git status failed: {e:#}"))
 }
 
+/// Captain-typed → absolute resolution. Returns `None` when the
+/// input is empty or relative-with-no-cwd-base. The webview can't
+/// `${VAR}`-expand without OS access, so the daemon owns the
+/// resolution path; UI-side display niceties (home → `~`
+/// substitution, CSS truncation) stay client-side.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PathsResolveArgs {
+    pub raw: String,
+    #[serde(default)]
+    pub cwd_base: Option<String>,
+}
+
+#[tauri::command]
+pub(crate) fn paths_resolve(args: PathsResolveArgs) -> Result<Option<String>, String> {
+    let home = crate::paths::home_dir();
+    let home_str = home.to_string_lossy();
+    Ok(crate::tools::path::resolve_absolute(
+        &args.raw,
+        &home_str,
+        args.cwd_base.as_deref(),
+    ))
+}
+
 /// Generic daemon-RPC bridge for the command palette's daemon leaf.
 /// Dispatches `method` + `params` through the same `RpcDispatcher`
 /// the unix socket uses, so the palette and `ctl` reach exactly the
@@ -74,20 +98,20 @@ pub(crate) async fn daemon_rpc(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
-    use crate::rpc::protocol::RequestId;
 
-    let id = RequestId::String("ui-palette".to_string());
     let ctx = HandlerCtx {
         app: Some(&app),
         status: status.inner(),
         adapter: adapter.inner().clone(),
         config: Some(config.inner().clone()),
-        id: &id,
         already_subscribed: false,
         started_at: None,
         socket_path: None,
     };
-    match dispatcher.dispatch(&method, params.unwrap_or(serde_json::Value::Null), ctx).await {
+    match dispatcher
+        .dispatch(&method, params.unwrap_or(serde_json::Value::Null), ctx)
+        .await
+    {
         Ok(HandlerOutcome::Reply(v)) => Ok(v),
         Ok(HandlerOutcome::StatusSubscribed(_, _)) => Err("status/subscribe not supported on the Tauri bridge".into()),
         Err(e) => Err(format!("{}: {}", e.code, e.message)),

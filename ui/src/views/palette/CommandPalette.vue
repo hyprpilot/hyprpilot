@@ -7,10 +7,11 @@
  * overlay.py`) — multi-select ticking, active-row pinning, and the
  * `Ctrl+D` delete hook are all preserved.
  *
- * Filter semantics: two-stage. (1) subsequence gate — every query char
- * must appear in the entry name in order, case-insensitive. (2) fuse.js
- * scores the survivors. Fuse alone is greedy enough that "gst" pulls in
- * haystacks that share only a partial substring; the gate cuts those.
+ * Filter semantics: every keystroke debounces (60ms) into a daemon-side
+ * `completion/rank` RPC. nucleo-matcher does the fuzzy ranking; the
+ * UI just renders the order it gets back. Same matcher every other
+ * surface uses (cwd recents, future Neovim plugin), so ranking stays
+ * consistent across frontends.
  *
  * Intra-palette shortcuts are hardcoded on purpose (not driven by
  * `[keymaps.palette]`); the open shortcut lives on the parent (Chat.vue)
@@ -77,6 +78,38 @@ watch(query, (q) => {
 
 const highlightedEntry = computed<PaletteEntry | undefined>(() => visibleEntries.value[highlighted.value])
 
+// Per-row template refs — `:ref` callback in the v-for slot pushes
+// each <li> into this map, keyed by entry id. Used by the watcher
+// below to scroll the highlighted row into view as the captain
+// arrows through the list. Cleared on every render via the callback's
+// `null` branch.
+const rowRefs = new Map<string, HTMLLIElement>()
+
+function bindRow(entry: PaletteEntry): (_el: unknown) => void {
+  return (el) => {
+    if (el === null) {
+      rowRefs.delete(entry.id)
+    } else {
+      rowRefs.set(entry.id, el as HTMLLIElement)
+    }
+  }
+}
+
+// Keep the highlighted row in view as the captain arrows up/down.
+// `block: 'nearest'` only scrolls when the row is actually offscreen;
+// ignores the row when it's already visible so mouse-driven hover
+// doesn't shake the scroll position.
+watch(highlighted, () => {
+  void nextTick(() => {
+    const entry = highlightedEntry.value
+
+    if (!entry) {
+      return
+    }
+    rowRefs.get(entry.id)?.scrollIntoView({ block: 'nearest' })
+  })
+})
+
 watch(visibleEntries, (rows) => {
   if (rows.length === 0) {
     highlighted.value = 0
@@ -92,6 +125,17 @@ watch(visibleEntries, (rows) => {
     highlighted.value = 0
   }
 })
+
+/// Tab in Input mode: pull the highlighted row's text into the query
+/// so the captain can keep typing past the suggestion (descend into a
+/// dir, keep refining). The row's `description` carries the canonical
+/// text the leaf wants in the buffer (cwd palette → path). Commit
+/// stays on Enter.
+function autocompleteIntoQuery(current: PaletteEntry | undefined): void {
+  if (current?.description !== undefined && current.description.length > 0) {
+    query.value = current.description
+  }
+}
 
 function onDocumentKeyDown(e: KeyboardEvent): void {
   const spec = top.value
@@ -154,12 +198,27 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
     return
   }
 
+  if (key === 'Tab' && spec.mode === PaletteMode.Input) {
+    e.preventDefault()
+    e.stopPropagation()
+    autocompleteIntoQuery(current)
+
+    return
+  }
+
   if (ctrl && key.toLowerCase() === 'd') {
     e.preventDefault()
     e.stopPropagation()
 
     if (current && spec.onDelete) {
-      void spec.onDelete(current)
+      // `update` is the only path that surfaces entry mutations
+      // through the reactive proxy on `top.value`. Capturing the
+      // raw spec literal in the leaf closure and assigning to
+      // `.entries` directly skips the proxy and leaves the palette
+      // rendering stale rows. Same pattern as onQueryChange.
+      void spec.onDelete(current, (next) => {
+        spec.entries = next
+      })
     }
 
     return
@@ -281,6 +340,7 @@ onUnmounted(() => {
           <ul class="palette-list" data-testid="palette-list">
             <li
               v-for="(entry, idx) in visibleEntries"
+              :ref="bindRow(entry)"
               :key="entry.id"
               class="palette-row"
               :data-selected="idx === highlighted"

@@ -9,7 +9,7 @@
 //! callers reach for `adapters::profile::ProfileConfig`, never
 //! `config::ProfileConfig`, when operating at the adapter layer.
 
-pub use crate::config::{AgentConfig, AgentProvider, ProfileConfig};
+pub use crate::config::{AgentConfig, ProfileConfig};
 
 use anyhow::{bail, Context, Result};
 
@@ -168,7 +168,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config::AgentsConfig;
+    use crate::config::{AgentProvider, AgentsConfig};
 
     fn agent(id: &str, model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -366,7 +366,10 @@ mod tests {
 
         assert_eq!(r.agent.env.get("AGENT_ONLY").map(String::as_str), Some("from-agent"));
         assert_eq!(r.agent.env.get("OVERRIDDEN").map(String::as_str), Some("profile-value"));
-        assert_eq!(r.agent.env.get("PROFILE_ONLY").map(String::as_str), Some("from-profile"));
+        assert_eq!(
+            r.agent.env.get("PROFILE_ONLY").map(String::as_str),
+            Some("from-profile")
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::permission::PermissionOptionView;
+use crate::tools::formatter::types::FormattedToolCall;
 
 /// One entry in an instance's transcript. Covers user-side
 /// (`UserPrompt`, `UserText`) and assistant-side
@@ -122,11 +123,20 @@ pub struct ToolCallRecord {
     /// Initial content blocks the agent attached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ToolCallContentItem>,
+    /// Pre-rendered presentation view for this tool call. Daemon-
+    /// authored from `wireName` + `kind` + `rawInput` + `content` via
+    /// the formatter registry; UI / Neovim plugin / future frontends
+    /// render this verbatim instead of re-deriving client-side.
+    pub formatted: FormattedToolCall,
 }
 
 /// Delta update to an existing tool call. Each field that's `Some`
 /// patches the previous record; `None` means "no change". UI
 /// reduces these into the running tool-call view keyed by `id`.
+///
+/// `formatted` is daemon-authored from the merged running state
+/// (cache lookup by `id` + the delta) and replaces the prior view
+/// wholesale.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallUpdateRecord {
@@ -142,6 +152,8 @@ pub struct ToolCallUpdateRecord {
     /// Content delta — appended to whatever the running view holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ToolCallContentItem>,
+    /// Updated presentation view computed from merged running state.
+    pub formatted: FormattedToolCall,
 }
 
 /// Lifecycle phase of a tool call.
@@ -370,6 +382,13 @@ mod tests {
             state: ToolCallState::Running,
             raw_input: Some(serde_json::json!({ "file_path": "package.json" })),
             content: vec![],
+            formatted: FormattedToolCall {
+                title: "read · package.json".into(),
+                stat: None,
+                description: None,
+                output: None,
+                fields: vec![],
+            },
         };
         let item = TranscriptItem::ToolCall(record);
         let v = serde_json::to_value(&item).unwrap();

@@ -10,6 +10,7 @@
 
 import type { GitStatus } from '@interfaces/ui/header'
 import type {
+  CandidateItem,
   CompletionCancelArgs,
   CompletionCancelResponse,
   CompletionQueryArgs,
@@ -23,6 +24,7 @@ import type {
   InstanceStateEventPayload,
   InstancesChangedEventPayload,
   InstancesFocusedEventPayload,
+  InstanceRenamedEventPayload,
   PermissionRequestEventPayload,
   SessionInfoUpdateEventPayload,
   TerminalEventPayload,
@@ -69,6 +71,7 @@ export enum TauriCommand {
   GetHomeDir = 'get_home_dir',
   GetDaemonCwd = 'get_daemon_cwd',
   GetGitStatus = 'get_git_status',
+  PathsResolve = 'paths_resolve',
   DaemonRpc = 'daemon_rpc',
   ReadFileForAttachment = 'read_file_for_attachment',
   SessionSubmit = 'session_submit',
@@ -93,6 +96,7 @@ export enum TauriCommand {
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
   CompletionCancel = 'completion_cancel',
+  CompletionRank = 'completion_rank',
   GetCompletionConfig = 'get_completion_config',
   SkillsReload = 'skills_reload'
 }
@@ -106,6 +110,7 @@ export enum TauriEvent {
   AcpTerminal = 'acp:terminal',
   AcpInstancesChanged = 'acp:instances-changed',
   AcpInstancesFocused = 'acp:instances-focused',
+  AcpInstanceRenamed = 'acp:instance-renamed',
   AcpSessionInfoUpdate = 'acp:session-info-update',
   AcpCurrentModeUpdate = 'acp:current-mode-update',
   AcpInstanceMeta = 'acp:instance-meta'
@@ -124,6 +129,7 @@ export interface TauriCommandArgs {
   [TauriCommand.GetHomeDir]: void
   [TauriCommand.GetDaemonCwd]: void
   [TauriCommand.GetGitStatus]: { path: string }
+  [TauriCommand.PathsResolve]: { raw: string; cwdBase?: string }
   [TauriCommand.DaemonRpc]: { method: string; params?: unknown }
   [TauriCommand.ReadFileForAttachment]: { path: string }
   [TauriCommand.SessionSubmit]: SubmitArgs
@@ -148,6 +154,13 @@ export interface TauriCommandArgs {
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
   [TauriCommand.CompletionCancel]: CompletionCancelArgs
+  /**
+   * Caller-supplied candidate ranking. Daemon ranks `candidates` against
+   * `query` using nucleo (the same matcher path/ripgrep use). Drives
+   * palette surfaces with bounded candidate sets — UI / Neovim plugin /
+   * any future frontend share one ranking implementation.
+   */
+  [TauriCommand.CompletionRank]: { query: string; candidates: CandidateItem[] }
   [TauriCommand.GetCompletionConfig]: void
   [TauriCommand.SkillsReload]: void
 }
@@ -161,6 +174,14 @@ export interface TauriCommandResult {
   [TauriCommand.GetHomeDir]: string
   [TauriCommand.GetDaemonCwd]: string
   [TauriCommand.GetGitStatus]: GitStatus | null
+  /**
+   * Captain-typed → absolute resolution. `null` when the input is empty
+   * or relative-with-no-cwd-base. The daemon owns `${VAR}` interpolation
+   * (process env), `~` expansion ($HOME), and relative→absolute join
+   * (cwd_base) so the webview doesn't re-derive logic that needs OS
+   * access.
+   */
+  [TauriCommand.PathsResolve]: string | null
   [TauriCommand.DaemonRpc]: unknown
   [TauriCommand.ReadFileForAttachment]: { path: string; body: string; binary: boolean; truncated: boolean }
   [TauriCommand.SessionSubmit]: SubmitResult
@@ -185,6 +206,7 @@ export interface TauriCommandResult {
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
   [TauriCommand.CompletionCancel]: CompletionCancelResponse
+  [TauriCommand.CompletionRank]: CompletionQueryResponse
   [TauriCommand.GetCompletionConfig]: CompletionConfigSnapshot
   [TauriCommand.SkillsReload]: { count: number }
 }
@@ -213,6 +235,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpTerminal]: TerminalEventPayload
   [TauriEvent.AcpInstancesChanged]: InstancesChangedEventPayload
   [TauriEvent.AcpInstancesFocused]: InstancesFocusedEventPayload
+  [TauriEvent.AcpInstanceRenamed]: InstanceRenamedEventPayload
   [TauriEvent.AcpSessionInfoUpdate]: SessionInfoUpdateEventPayload
   [TauriEvent.AcpCurrentModeUpdate]: CurrentModeUpdateEventPayload
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload

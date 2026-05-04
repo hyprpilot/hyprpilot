@@ -100,14 +100,21 @@ const SAMPLE_OPTIONS = [
   }
 ]
 
+const FMT = {
+  title: 'bash',
+  fields: []
+}
+
 describe('Chat.vue — permission wiring', () => {
   it('renders pending prompts from usePermissions and dispatches permission_reply on a button click', async() => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'echo hi',
-      options: SAMPLE_OPTIONS
+      options: SAMPLE_OPTIONS,
+      formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
 
@@ -137,11 +144,13 @@ describe('Chat.vue — permission wiring', () => {
 
   it('dispatches the first reject_* option via Ctrl+R', async() => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'rm -rf /',
-      options: SAMPLE_OPTIONS
+      options: SAMPLE_OPTIONS,
+      formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
 
@@ -168,11 +177,13 @@ describe('Chat.vue — permission wiring', () => {
 
   it('dispatches the first allow_* option via Ctrl+G', async() => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: SAMPLE_OPTIONS
+      options: SAMPLE_OPTIONS,
+      formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
 
@@ -199,11 +210,13 @@ describe('Chat.vue — permission wiring', () => {
 
   it('dispatches Ctrl+G even when the composer textarea has focus', async() => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: SAMPLE_OPTIONS
+      options: SAMPLE_OPTIONS,
+      formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
 
@@ -236,11 +249,13 @@ describe('Chat.vue — permission wiring', () => {
 
   it('surfaces reply failure as an error toast', async() => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: SAMPLE_OPTIONS
+      options: SAMPLE_OPTIONS,
+      formatted: FMT
     })
     invoke.mockRejectedValue(new Error('permission_reply not implemented (K-245)'))
 
@@ -266,11 +281,13 @@ describe('Chat.vue — permission wiring', () => {
 
   it('does not fire allow when the modifier is missing — plain `g` is just typing', async() => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
       args: 'ls',
-      options: SAMPLE_OPTIONS
+      options: SAMPLE_OPTIONS,
+      formatted: FMT
     })
 
     const wrapper = mount(Chat, { attachTo: document.body })

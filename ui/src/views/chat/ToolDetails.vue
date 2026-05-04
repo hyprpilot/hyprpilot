@@ -16,7 +16,7 @@ const stateTone = computed(() => toolStateTone(props.view.state))
 </script>
 
 <template>
-  <div class="tool-details" :data-state="view.state" :data-type="view.type" :style="{ '--tone': stateTone }">
+  <div class="tool-details" :data-state="view.state" :data-kind="view.kind" :style="{ '--tone': stateTone }">
     <span v-if="view.state === ToolState.Running" class="tool-details-dot" aria-hidden="true" />
     <FaIcon :icon="view.icon" class="tool-details-kind" aria-hidden="true" />
     <span class="tool-details-title">{{ view.title }}</span>

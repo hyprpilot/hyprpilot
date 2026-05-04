@@ -19,7 +19,7 @@ const daemonCwd = ref<string>()
  * One-shot fetch of the user's `$HOME` from the Rust side. Idempotent
  * — repeated calls re-resolve the same value. Soft-fails when the
  * Tauri host isn't bound (plain vite dev / vitest jsdom): the ref
- * stays `undefined` and `truncateCwd` skips the home-prefix collapse.
+ * stays `undefined` and `displayPath` skips the home-prefix collapse.
  */
 export async function loadHomeDir(): Promise<void> {
   try {
@@ -37,8 +37,32 @@ export async function loadDaemonCwd(): Promise<void> {
   }
 }
 
-export function useHomeDir(): { homeDir: Ref<string | undefined> } {
-  return { homeDir }
+export function useHomeDir(): {
+  homeDir: Ref<string | undefined>
+  /**
+   * Display-friendly path: `/home/cenk/proj/x` → `~/proj/x` when the
+   * input sits under `$HOME`, pass-through otherwise. Pure UI-side
+   * substitution — daemon owns the resolution direction
+   * (`paths_resolve`); this is the inverse for read-only display.
+   * No truncation — chrome's CSS `text-overflow: ellipsis` handles
+   * overflow.
+   */
+  displayPath: (absolute: string | undefined) => string
+} {
+  function displayPath(absolute: string | undefined): string {
+    if (!absolute) {
+      return ''
+    }
+    const home = homeDir.value
+
+    if (home && absolute.startsWith(home)) {
+      return `~${absolute.slice(home.length)}`
+    }
+
+    return absolute
+  }
+
+  return { homeDir, displayPath }
 }
 
 export function useDaemonCwd(): { daemonCwd: Ref<string | undefined> } {

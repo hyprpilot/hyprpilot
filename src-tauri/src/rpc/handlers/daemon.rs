@@ -100,7 +100,7 @@ mod tests {
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
     use crate::rpc::handler::HandlerCtx;
-    use crate::rpc::protocol::RequestId;
+
     use crate::rpc::status::StatusBroadcast;
 
     async fn run_handler(
@@ -111,7 +111,6 @@ mod tests {
         acp: Arc<AcpAdapter>,
     ) -> Result<HandlerOutcome, RpcError> {
         let status = StatusBroadcast::new(true);
-        let id = RequestId::Number(1);
         let config = Arc::new(std::sync::RwLock::new(Config::default()));
         let adapter: Arc<dyn Adapter> = acp.clone();
         let ctx = HandlerCtx {
@@ -119,7 +118,6 @@ mod tests {
             status: &status,
             adapter,
             config: Some(config),
-            id: &id,
             already_subscribed: false,
             started_at,
             socket_path,

@@ -189,23 +189,27 @@ impl Terminals {
         if let Some(stdout) = child.stdout.take() {
             spawn_buffer_reader(
                 stdout,
-                buffer.clone(),
-                limit,
-                self.events_tx.clone(),
-                session_key_str.clone(),
-                terminal_id_str.clone(),
-                TerminalToolStream::Stdout,
+                BufferReaderConfig {
+                    buffer: buffer.clone(),
+                    limit,
+                    events_tx: self.events_tx.clone(),
+                    session_key: session_key_str.clone(),
+                    terminal_id: terminal_id_str.clone(),
+                    stream: TerminalToolStream::Stdout,
+                },
             );
         }
         if let Some(stderr) = child.stderr.take() {
             spawn_buffer_reader(
                 stderr,
-                buffer.clone(),
-                limit,
-                self.events_tx.clone(),
-                session_key_str.clone(),
-                terminal_id_str.clone(),
-                TerminalToolStream::Stderr,
+                BufferReaderConfig {
+                    buffer: buffer.clone(),
+                    limit,
+                    events_tx: self.events_tx.clone(),
+                    session_key: session_key_str.clone(),
+                    terminal_id: terminal_id_str.clone(),
+                    stream: TerminalToolStream::Stderr,
+                },
             );
         }
 
@@ -339,18 +343,27 @@ impl Terminals {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_buffer_reader<R>(
-    reader: R,
+struct BufferReaderConfig {
     buffer: Arc<Mutex<OutputBuffer>>,
     limit: u64,
     events_tx: broadcast::Sender<TerminalToolEvent>,
     session_key: String,
     terminal_id: String,
     stream: TerminalToolStream,
-) where
+}
+
+fn spawn_buffer_reader<R>(reader: R, cfg: BufferReaderConfig)
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
+    let BufferReaderConfig {
+        buffer,
+        limit,
+        events_tx,
+        session_key,
+        terminal_id,
+        stream,
+    } = cfg;
     tokio::spawn(async move {
         let mut reader = reader;
         let mut chunk = [0u8; READ_CHUNK];

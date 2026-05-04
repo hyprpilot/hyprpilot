@@ -2,10 +2,14 @@ import { computed, ref, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import { useAgentRegistry } from '../chrome/use-agent-registry'
 import { PermissionUi } from '@components'
-import type { PermissionView, WireToolCall } from '@interfaces/ui'
+import { ToolKind } from '@constants/ui'
+import type { ToolCallState } from '@constants/wire/transcript'
+import type { PermissionView } from '@interfaces/ui'
+import type { FormattedToolCall } from '@interfaces/wire/formatted-tool-call'
 import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
-import { format, log } from '@lib'
+import { log, projectFormatted } from '@lib'
 
 /**
  * Stored shape — `queued` is derived at read time on the queue
@@ -16,6 +20,7 @@ import { format, log } from '@lib'
  */
 export interface PendingPermission {
   instanceId: InstanceId
+  agentId: string
   requestId: string
   sessionId: string
   tool: string
@@ -24,10 +29,12 @@ export interface PendingPermission {
   rawInput?: Record<string, unknown>
   content: Record<string, unknown>[]
   options: PermissionOptionView[]
+  formatted: FormattedToolCall
   createdAt: number
 }
 
 export interface PermissionRequestRaw {
+  agentId: string
   requestId: string
   tool: string
   kind?: string
@@ -35,6 +42,7 @@ export interface PermissionRequestRaw {
   rawInput?: Record<string, unknown>
   content?: Record<string, unknown>[]
   options: PermissionOptionView[]
+  formatted: FormattedToolCall
 }
 
 const states = ref<Record<InstanceId, PendingPermission[]>>({})
@@ -47,15 +55,17 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
   const seq = nextSeq(id)
   const next: PendingPermission = {
     instanceId: id,
+    agentId: raw.agentId,
     requestId: raw.requestId,
     sessionId,
     tool: raw.tool,
-    kind: raw.kind ?? 'acp',
+    kind: raw.kind ?? 'other',
     args: raw.args ?? '',
     rawInput: raw.rawInput,
     content: raw.content ?? [],
     createdAt: seq,
-    options: raw.options
+    options: raw.options,
+    formatted: raw.formatted
   }
   const current = states.value[id] ?? []
   const filtered = current.filter((p) => p.requestId !== raw.requestId)
@@ -98,30 +108,16 @@ export function resetPermissions(id: InstanceId): void {
   states.value = next
 }
 
-/**
- * Synthesize a `WireToolCall` from the wire permission payload so
- * `format()` can produce a `ToolCallView` for the row / modal
- * renderers. The permission flow doesn't carry the full tool-call
- * record on the wire — just the abridged request shape — so we
- * project the available fields onto the same vocabulary.
- */
-function synthesizeWireCall(p: PendingPermission): WireToolCall {
-  return {
-    id: p.requestId,
-    sessionId: p.sessionId,
-    toolCallId: p.requestId,
-    title: p.tool,
-    status: 'pending',
-    kind: p.kind,
-    content: p.content,
-    rawInput: p.rawInput,
-    createdAt: p.createdAt,
-    updatedAt: p.createdAt
-  }
-}
-
 function buildView(p: PendingPermission, queued: boolean): PermissionView {
-  const call = format(synthesizeWireCall(p))
+  const { adapterFor } = useAgentRegistry()
+  const call = projectFormatted(p.formatted, {
+    id: p.requestId,
+    wireName: p.tool,
+    kind: (p.kind as ToolKind | undefined) ?? ToolKind.Other,
+    state: 'pending' as ToolCallState,
+    adapter: adapterFor(p.agentId),
+    rawInput: p.rawInput
+  })
 
   return {
     request: {

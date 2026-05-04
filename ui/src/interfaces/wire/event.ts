@@ -51,6 +51,9 @@ export interface PermissionRequestEventPayload {
   /// to render text / diff / terminal blocks.
   content?: Record<string, unknown>[]
   options: PermissionOptionView[]
+  /// Daemon-authored presentation view. UI renders verbatim — no
+  /// client-side formatting fallback.
+  formatted: import('./formatted-tool-call').FormattedToolCall
 }
 
 export interface TurnStartedEventPayload {
@@ -115,6 +118,15 @@ export interface InstancesChangedEventPayload {
  */
 export interface InstancesFocusedEventPayload {
   instanceId?: string
+}
+
+/**
+ * Captain-set rename event. Mirrors `InstanceEvent::InstanceRenamed`.
+ * `name` is `undefined` when the captain cleared the name.
+ */
+export interface InstanceRenamedEventPayload {
+  instanceId: string
+  name?: string
 }
 
 /**

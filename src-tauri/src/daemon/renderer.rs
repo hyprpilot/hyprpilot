@@ -577,7 +577,8 @@ pub(super) fn gdk_monitor_for(target: &Monitor) -> Option<gdk::Monitor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AnchorWindow, CenterWindow, Dimension, Edge, Window, WindowMode};
+    use crate::config::daemon::{AnchorWindow, CenterWindow};
+    use crate::config::{Dimension, Edge, Window, WindowMode};
 
     /// Test-only WM stub. `focused_monitor` is never reached by the
     /// `resolve_dim` tests (pure arithmetic that doesn't touch the

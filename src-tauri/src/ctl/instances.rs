@@ -178,11 +178,7 @@ impl CtlDispatch for InstancesSubcommand {
                 Ok(())
             }
             InstancesSubcommand::Restart { id, cwd, show } => {
-                let v = request_value(
-                    client,
-                    "instances/restart",
-                    &RestartParams { id: id.clone(), cwd },
-                )?;
+                let v = request_value(client, "instances/restart", &RestartParams { id: id.clone(), cwd })?;
                 println!("{}", serde_json::to_string_pretty(&v)?);
 
                 if show {

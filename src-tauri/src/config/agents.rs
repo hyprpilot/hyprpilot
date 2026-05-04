@@ -87,6 +87,10 @@ pub struct AgentConfig {
 /// injection (or, in a follow-up, schema-driven injection from
 /// `[[agents]]` TOML). Wire names are explicit to avoid `acp-open-code`
 /// for `AcpOpenCode`.
+///
+/// `Acp*` prefix on every variant is deliberate — the protocol id is
+/// part of the identity. A future `Http*` family lands as siblings, not
+/// renames. Hence `clippy::enum_variant_names` allow.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AgentProvider {

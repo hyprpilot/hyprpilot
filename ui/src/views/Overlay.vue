@@ -60,10 +60,10 @@ import {
   startQueueDispatcher,
   stopQueueDispatcher,
   StreamItemKind,
-  truncateCwd,
   TurnRole,
   useActiveInstance,
   useAdapter,
+  useAgentRegistry,
   resetPermissions,
   useAttachments,
   useDaemonCwd,
@@ -96,6 +96,7 @@ import { IdleScreen } from '@views/idle'
 import { CommandPalette, commitInstanceRename, isPaletteLeafId, openRootLeaf, openRootPalette, PaletteLeafId, validateInstanceName } from '@views/palette'
 
 const { submit, cancel } = useAdapter()
+const { adapterFor } = useAgentRegistry()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
 const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
@@ -136,7 +137,7 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
 const { openTurnId } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
-const { homeDir } = useHomeDir()
+const { displayPath } = useHomeDir()
 const { daemonCwd } = useDaemonCwd()
 const { items: queuedItems, flush: flushActiveQueue } = useQueue()
 const { blocks: timelineBlocks } = useTimelineBlocks()
@@ -161,54 +162,31 @@ const activeProfile = computed(() => profiles.value.find((p) => p.id === selecte
  * arrives. Without the fallback the header pill renders blank for
  * the entire pre-first-turn window — captain reads that as "no cwd
  * configured" instead of "I'll spawn where the daemon was started".
+ *
+ * `displayPath` does the `home → ~` substitution (read-only inverse
+ * of the daemon's `paths_resolve`); chrome's CSS `text-overflow:
+ * ellipsis` handles overflow.
  */
 const headerCwd = computed<string | undefined>(() => {
   const raw = sessionInfo.value.cwd ?? daemonCwd.value
 
-  if (!raw) {
-    return undefined
-  }
-  // Home substitution only — let the chrome's `truncate` CSS handle
-  // overflow with a single trailing ellipsis. JS-side middle
-  // truncation produced \`~/…/hyprpilot/src-tauri\` which lost the
-  // `development` segment captain wanted to read; the CSS path
-  // preserves every leading char and only elides what doesn't fit
-  // the box width.
-  const home = homeDir.value
-
-  if (home && raw.startsWith(home)) {
-    return `~${raw.slice(home.length)}`
-  }
-
-  return raw
+  return raw ? displayPath(raw) : undefined
 })
 
-// Untruncated home-shortened path for the cwd button's tooltip — the
-// captain hovers when they need the full thing the truncated label
-// elided.
+// Untruncated home-shortened path for the cwd button's tooltip —
+// same display form as `headerCwd` since CSS already does the
+// trimming. Kept as a separate ref in case future chrome diverges
+// (e.g. tooltip wants the original absolute path).
 const headerCwdFull = computed<string | undefined>(() => {
   const raw = sessionInfo.value.cwd ?? daemonCwd.value
 
-  if (!raw) {
-    return undefined
-  }
-  const home = homeDir.value
-
-  if (home && raw.startsWith(home)) {
-    return `~${raw.slice(home.length)}`
-  }
-
-  return raw
+  return raw ? displayPath(raw) : undefined
 })
 
 const idleCwd = computed<string | undefined>(() => {
   const raw = sessionInfo.value.cwd ?? daemonCwd.value
 
-  if (!raw) {
-    return undefined
-  }
-
-  return truncateCwd(raw, 48, homeDir.value)
+  return raw ? displayPath(raw) : undefined
 })
 
 const headerCounts = computed<BreadcrumbCount[]>(() => [
@@ -936,6 +914,7 @@ function onQueueSend(itemId: string): void {
 <template>
   <Frame
     :profile="sessionInfo.profileId ?? sessionInfo.agent ?? 'none'"
+    :name="sessionInfo.name"
     :phase="phase"
     :mode-tag="sessionInfo.mode"
     :provider="sessionInfo.agent"
@@ -1013,9 +992,7 @@ function onQueueSend(itemId: string): void {
             />
           </template>
 
-          <!-- adapter not threaded today (every formatter falls through to its shared `fallback`). -->
-          <!-- Plumb the resolved `AgentProvider` here once the first per-adapter override appears. -->
-          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call))" grouped />
+          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterFor(t.call.agentId)))" grouped />
 
           <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
           <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->

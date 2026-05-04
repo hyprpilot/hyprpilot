@@ -21,7 +21,14 @@ vi.mock('@composables', async(importOriginal) => ({
     id: activeInstanceRef
   }),
   useHomeDir: () => ({
-    homeDir: ref('/home/cenk')
+    homeDir: ref('/home/cenk'),
+    displayPath: (path: string | undefined) => {
+      if (!path) {
+        return ''
+      }
+
+      return path.startsWith('/home/cenk') ? `~${path.slice('/home/cenk'.length)}` : path
+    }
   }),
   usePhase: () => ({
     phase: computed(() => 'idle')
@@ -29,7 +36,6 @@ vi.mock('@composables', async(importOriginal) => ({
   useQueue: () => ({
     items: computed(() => [])
   }),
-  truncateCwd: (raw: string) => raw,
   useSessionInfo: () => ({
     info: computed(() => ({
       mode: undefined,
@@ -213,7 +219,7 @@ describe('openInstancesLeaf', () => {
     const { stack } = usePalette()
     const spec = stack.value[0]
 
-    spec?.onDelete?.({ id: 'inst-A', name: 'claude-code · ask' })
+    spec?.onDelete?.({ id: 'inst-A', name: 'claude-code · ask' }, () => {})
     await Promise.resolve()
     await Promise.resolve()
 
@@ -231,7 +237,7 @@ describe('openInstancesLeaf', () => {
     const { stack } = usePalette()
     const spec = stack.value[0]
 
-    spec?.onDelete?.({ id: 'instances-empty', name: 'no live instances.' })
+    spec?.onDelete?.({ id: 'instances-empty', name: 'no live instances.' }, () => {})
     await Promise.resolve()
 
     const shutdownCalls = invokeMock.mock.calls.filter((c) => c[0] === 'instances_shutdown')

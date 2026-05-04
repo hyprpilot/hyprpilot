@@ -33,7 +33,7 @@ impl RpcHandler for StatusHandler {
                 }
                 let (snapshot, rx) = ctx.status.subscribe();
                 let v = serde_json::to_value(snapshot).expect("StatusResult serializes");
-                Ok(HandlerOutcome::StatusSubscribed(v, rx))
+                Ok(HandlerOutcome::StatusSubscribed(v, Box::new(rx)))
             }
             other => Err(RpcError::method_not_found(other)),
         }

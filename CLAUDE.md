@@ -1531,15 +1531,76 @@ optional args.
 duplicate the type contract and drift from it; the typed
 `invoke()` IS the API.
 
-### Tool formatter registry — composable + per-adapter init
+### Wire shapes for second frontends
 
-The tool-formatter system (`lib/tools/registry.ts`) becomes a
-composable: `useToolRegistry()` returns the registry shape,
-adapters register their formatters at init. Per-adapter
-divergence (claude-code's `Switch mode`, codex's `bash_id`,
-opencode's `diagnostics`) lands as registration calls, not
-hand-edited lookup tables. The base set still ships with the
-adapter-agnostic formatters; adapters extend.
+The Vue overlay is one consumer; a future Neovim plugin (or any
+other frontend) plugs into the same wire. Three load-bearing
+surfaces a second frontend must speak:
+
+- **Path resolution** — `paths_resolve` Tauri command +
+  `paths/resolve` JSON-RPC method. Args: `{ raw, cwdBase? }`;
+  result: absolute path string or null. The daemon owns
+  `~`-expansion, `${VAR}` interpolation, and relative→absolute
+  joining against `cwdBase` (`src-tauri/src/tools/path.rs`).
+  Frontends only do read-only `home → ~` substitution for display
+  (Vue: `useHomeDir().displayPath()`).
+- **Caller-supplied candidate ranking** —
+  `completion_rank` Tauri command (mirrors
+  `completion_query` for daemon-walked sources). Args:
+  `{ query, candidates: [{ id, label, description? }] }`; result:
+  `CompletionItem[]` ranked by nucleo. Empty query → identity
+  order (MRU); non-empty → fuzzy-ranked.
+- **Tool-call presentation** — `acp:transcript` event payload
+  carries `formatted: FormattedToolCall` on every `ToolCallRecord`
+  / `ToolCallUpdateRecord`, and `acp:permission-request` events
+  carry the same field. Wire shape mirrored in
+  `ui/src/interfaces/wire/formatted-tool-call.ts`. Frontends just
+  read it; only the icon resolution stays per-frontend.
+
+### Tool-call formatting lives on the daemon side
+
+The Vue UI is a **dumb consumer** of pre-rendered tool-call views.
+Every `acp:transcript` event (and every `acp:permission-request`)
+carries a `formatted: FormattedToolCall` field the UI renders
+verbatim — no client-side formatter registry, no per-tool TS
+modules, no `pickFormatter` indirection.
+
+Implementation lives in `src-tauri/src/formatting/`:
+
+- `types.rs` — closed-set wire enums (`ToolType`, `ToolState`,
+  `PillKind`, `PermissionUi`, `IconKey`) + `ToolField` +
+  `FormattedToolCall`. The frontend mirror is
+  `ui/src/{constants,interfaces}/wire/formatted-tool-call.ts`.
+- `canonicalise.rs` — wire-name → canonical key mapping (mirrors
+  TS `change-case::snakeCase`). MCP names bypass.
+- `registry.rs` — `FormatterRegistry` with `register` /
+  `register_override` (per-vendor) and a four-step `dispatch`
+  precedence (canonical title → canonical kind → `mcp__` prefix →
+  generic fallback).
+- `shared.rs` — cross-formatter primitives (`map_state`,
+  `normalise_args`, `pick_str` / `pick_i64` / `pick_bool` /
+  `pick_list`, `args_to_fields`, `text_blocks`, `short_path`,
+  `diff_blocks` / `diff_markdown` via `similar`, `parse_mcp` /
+  `humanise_leaf`, `lang_from_path`).
+- `formatters/<tool>/mod.rs` — per-tool module exposing
+  `pub fn register(&mut FormatterRegistry)`. Adding a new tool
+  formatter = new module + new line in `formatters/mod.rs`'s
+  `register_all`. Per-vendor overrides slot in via
+  `register_override(key, adapter, ...)` from inside the same
+  module.
+
+The per-instance ACP actor maintains a `ToolCallCache` (running
+merged state per `tool_call.id`). On every `tool_call` it formats
+from the record itself + caches; on every `tool_call_update` it
+merges the delta into the cache, re-formats, and emits the fresh
+view. The UI replaces the prior `formatted` snapshot wholesale
+keyed by id — no client-side merge.
+
+The ONE piece of presentation logic that stays UI-side is the
+`IconKey` → FontAwesome map in `ui/src/lib/tools/icon-map.ts`. A
+future Neovim plugin would carry its own version of that file
+mapping the same keys onto its icon system (ASCII glyphs / nerd
+font codepoints).
 
 ### Dev preview shim lives in `tests/`, gated by env var
 

@@ -15,14 +15,14 @@ import { ref, watch } from 'vue'
 
 import { Loading } from '@components'
 import { type PaletteEntry } from '@composables'
-import { useHomeDir, truncateCwd } from '@composables'
+import { useHomeDir } from '@composables'
 import { invoke, TauriCommand, type SessionInfoResult } from '@ipc'
 
 const props = defineProps<{
   entry?: PaletteEntry
 }>()
 
-const { homeDir } = useHomeDir()
+const { displayPath } = useHomeDir()
 
 const info = ref<SessionInfoResult>()
 const loading = ref(false)
@@ -79,7 +79,7 @@ watch(
 )
 
 function formatCwd(raw: string): string {
-  return truncateCwd(raw, 48, homeDir.value)
+  return displayPath(raw)
 }
 </script>
 

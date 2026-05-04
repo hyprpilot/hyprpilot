@@ -69,18 +69,21 @@ const wrapperClass = computed(() => `loading loading-${props.mode}`)
   position: fixed;
   inset: 0;
   z-index: 100;
-  background-color: var(--theme-surface-bg);
+  /* Use `--theme-window` (the daemon-resolved overlay backdrop):
+   * unambiguous since `surface.default` and `surface.bg` collide on
+   * `--theme-surface` after the cssVarName "default/bg drop" rule,
+   * leaving `--theme-surface-bg` itself unset. */
+  background-color: var(--theme-window);
 }
 
 .loading-scoped {
   position: absolute;
   inset: 0;
-  z-index: 5;
-  /* Fully opaque cover — behind-content bleeding through reads as
-   * "is this loading or live?" ambiguity. The whole point of a
-   * scoped loader is to insulate the section from showing stale /
-   * mid-replay state, so we paint over it completely. */
-  background-color: var(--theme-surface-bg);
+  z-index: 50;
+  /* Fully opaque cover over the parent's positioning context — bleed-
+   * through reads as "is this loading or live?" ambiguity. We paint
+   * over the parent box completely so partial state never shows. */
+  background-color: var(--theme-window);
 }
 
 .loading-inline {

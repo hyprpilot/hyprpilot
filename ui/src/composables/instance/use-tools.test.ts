@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { pushToolCall, resetTools, useTools } from '@composables'
 
+const stub = {
+  title: 'read',
+  fields: []
+}
+
 beforeEach(() => {
   resetTools('A')
   resetTools('B')
@@ -9,17 +14,19 @@ beforeEach(() => {
 
 describe('useTools', () => {
   it('isolates tool calls between instances', () => {
-    pushToolCall('A', 's-a', {
+    pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'read',
-      status: 'completed'
+      status: 'completed',
+      formatted: stub
     })
-    pushToolCall('B', 's-b', {
+    pushToolCall('B', 'agent-B', 's-b', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-2',
       title: 'write',
-      status: 'pending'
+      status: 'pending',
+      formatted: stub
     })
 
     const a = useTools('A').calls.value
@@ -32,16 +39,18 @@ describe('useTools', () => {
   })
 
   it('merges tool_call_update onto the existing entry by toolCallId', () => {
-    pushToolCall('A', 's-a', {
+    pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'read',
-      status: 'pending'
+      status: 'pending',
+      formatted: stub
     })
-    pushToolCall('A', 's-a', {
+    pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-1',
-      status: 'completed'
+      status: 'completed',
+      formatted: stub
     })
 
     const calls = useTools('A').calls.value

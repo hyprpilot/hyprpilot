@@ -14,6 +14,57 @@ vi.mock('@ipc/bridge', async() => ({
   listen: vi.fn()
 }))
 
+/**
+ * Default mock: `paths_resolve` returns its `cwdBase`-joined value
+ * (mirrors daemon-side `tools::path::resolve_absolute` behaviour
+ * for the cases tested below). `instance_restart` resolves with a
+ * stub.
+ */
+function mockResolveAndRestart(): void {
+  invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+    if (command === TauriCommand.PathsResolve) {
+      const raw = (args?.raw as string).trim()
+      const cwdBase = args?.cwdBase as string | undefined
+
+      if (!raw) {
+        return Promise.resolve(null)
+      }
+
+      if (raw.startsWith('/')) {
+        return Promise.resolve(raw)
+      }
+
+      if (raw === '~' || raw.startsWith('~/')) {
+        const home = useHomeDir().homeDir.value
+
+        if (!home) {
+          return Promise.resolve(null)
+        }
+
+        return Promise.resolve(raw === '~' ? home : `${home}${raw.slice(1)}`)
+      }
+
+      if (!cwdBase) {
+        return Promise.resolve(null)
+      }
+      const base = cwdBase.replace(/\/$/, '')
+
+      if (raw === '.') {
+        return Promise.resolve(base)
+      }
+      const stripped = raw.startsWith('./') ? raw.slice(2) : raw
+
+      return Promise.resolve(`${base}/${stripped}`)
+    }
+
+    if (command === TauriCommand.InstanceRestart) {
+      return Promise.resolve({ id: 'inst-1' })
+    }
+
+    return Promise.resolve(undefined)
+  })
+}
+
 beforeEach(() => {
   invoke.mockReset()
   __resetCwdHistoryForTests()
@@ -34,8 +85,6 @@ describe('openCwdLeaf', () => {
     expect(stack.value).toHaveLength(1)
     expect(stack.value[0]?.title).toBe('cwd')
     expect(stack.value[0]?.mode).toBe(PaletteMode.Input)
-    // No history → no rows. Input mode hides the "no matches"
-    // empty-state, captain just sees the bare input.
     expect(stack.value[0]?.entries).toHaveLength(0)
   })
 
@@ -49,7 +98,6 @@ describe('openCwdLeaf', () => {
     const entries = usePalette().stack.value[0]?.entries ?? []
     const ids = entries.map((e: PaletteEntry) => e.id)
 
-    // MRU order — last-pushed first; no manual-sentinel row anymore.
     expect(ids).toEqual(['cwd-recent:/tmp/b', 'cwd-recent:/tmp/a'])
   })
 
@@ -58,7 +106,7 @@ describe('openCwdLeaf', () => {
     const { push } = useCwdHistory()
 
     push('/home/cenk/dev')
-    invoke.mockResolvedValue({ id: 'inst-1' })
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
@@ -77,7 +125,7 @@ describe('openCwdLeaf', () => {
 
   it('committing with no highlighted row uses the live query as the path', async() => {
     useActiveInstance().set('inst-1')
-    invoke.mockResolvedValue({ id: 'inst-1' })
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
@@ -94,7 +142,7 @@ describe('openCwdLeaf', () => {
   it('expands `~/path` against the resolved home dir before submit', async() => {
     useActiveInstance().set('inst-1')
     useHomeDir().homeDir.value = '/home/cenk'
-    invoke.mockResolvedValue({ id: 'inst-1' })
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
@@ -109,33 +157,39 @@ describe('openCwdLeaf', () => {
 
   it('rejects relative paths when there is no active-instance cwd to resolve against', async() => {
     useActiveInstance().set('inst-1')
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
 
     await spec?.onCommit([], 'relative/path')
 
-    expect(invoke).not.toHaveBeenCalled()
+    // paths_resolve fires + returns null; instance_restart never reached.
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.PathsResolve, expect.any(Object))
+    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.InstanceRestart, expect.any(Object))
   })
 
   it('rejects empty input without invoking restart', async() => {
     useActiveInstance().set('inst-1')
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
 
     await spec?.onCommit([], '   ')
 
-    expect(invoke).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.InstanceRestart, expect.any(Object))
   })
 
   it('refuses to commit when no active instance exists', async() => {
+    mockResolveAndRestart()
+
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
 
     await spec?.onCommit([], '/tmp/x')
 
-    expect(invoke).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.InstanceRestart, expect.any(Object))
   })
 
   it('resolves a relative path against the active instance cwd before invoking restart', async() => {
@@ -143,7 +197,7 @@ describe('openCwdLeaf', () => {
 
     useActiveInstance().set('inst-1')
     setInstanceCwd('inst-1', '/home/cenk/project')
-    invoke.mockResolvedValue({ id: 'inst-1' })
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
@@ -159,7 +213,7 @@ describe('openCwdLeaf', () => {
 
   it('successful commit pushes the (expanded) cwd onto history', async() => {
     useActiveInstance().set('inst-1')
-    invoke.mockResolvedValue({ id: 'inst-1' })
+    mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
@@ -172,7 +226,13 @@ describe('openCwdLeaf', () => {
 
   it('failed restart does not push to history', async() => {
     useActiveInstance().set('inst-1')
-    invoke.mockRejectedValue(new Error('cwd not a directory'))
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.PathsResolve) {
+        return Promise.resolve('/nonexistent')
+      }
+
+      return Promise.reject(new Error('cwd not a directory'))
+    })
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
