@@ -18,7 +18,6 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
-import { onTurnEnded, type TurnEndedRaw } from './use-turns'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useAdapter } from '../chrome/use-adapter'
 import { pushToast } from '../ui-state/use-toasts'
@@ -200,27 +199,6 @@ export function useQueue(instanceId?: InstanceId): {
 }
 
 /**
- * Cancel-flush stop reason. ACP wire string — see
- * `agent-client-protocol`'s `StopReason` (snake_case).
- */
-const FLUSH_STOP_REASON = 'cancelled'
-
-function onTurnEndedRoute(id: InstanceId, raw: TurnEndedRaw): void {
-  if (raw.stopReason !== FLUSH_STOP_REASON) {
-    return
-  }
-  const slot = states.get(id)
-  const dropped = slot?.items.length ?? 0
-
-  flushQueue(id)
-
-  if (dropped > 0) {
-    log.info('queue flushed on cancel', { instanceId: id, dropped })
-    pushToast(ToastTone.Warn, 'queue cleared')
-  }
-}
-
-/**
  * Submit a queued item via the adapter. Shared by the keybind /
  * per-row dispatch paths so error-toast + log copy stay uniform.
  */
@@ -262,22 +240,11 @@ export function dispatchQueueItem(id: InstanceId, itemId: string): void {
   submitQueuedItem(id, popped.item)
 }
 
-let queueDispatcherStop: (() => void) | undefined
+// Queue dispatcher kept as no-op stubs for callers that still drive
+// the boot/teardown lifecycle. The cancel-flush coupling was dropped
+// — Ctrl+C only cancels the in-flight turn now, queued items
+// survive so the captain can let them dispatch on the next turn.
+// Manual drop is still available via the queue strip's trash button.
+export function startQueueDispatcher(): void {}
 
-/**
- * Wire the cancel-flush watcher to the turn-ended signal.
- * Idempotent. The queue never auto-dispatches; this subscription
- * exists purely to drop queued items when the in-flight turn was
- * cancelled by the user.
- */
-export function startQueueDispatcher(): void {
-  if (queueDispatcherStop) {
-    return
-  }
-  queueDispatcherStop = onTurnEnded(onTurnEndedRoute)
-}
-
-export function stopQueueDispatcher(): void {
-  queueDispatcherStop?.()
-  queueDispatcherStop = undefined
-}
+export function stopQueueDispatcher(): void {}

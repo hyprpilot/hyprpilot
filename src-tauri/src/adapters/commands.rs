@@ -16,14 +16,11 @@ use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
-use super::permission::{
-    pick_allow_option_id, pick_reject_option_id, PermissionController, PermissionOutcome, TrustDecision,
-};
-use super::tokens::TokenHydrators;
+use super::permission::{PermissionController, TrustDecision};
 use super::transcript::Attachment;
 use super::Adapter;
+use crate::completion::hydration::TokenHydrators;
 use crate::mcp::MCPsRegistry;
-use crate::skills::SkillsRegistry;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
 type MCPsState<'a> = State<'a, Arc<MCPsRegistry>>;
@@ -74,41 +71,6 @@ pub async fn session_submit(
         Err(err) => tracing::warn!(%err, "cmd::session_submit: failed"),
     }
     out
-}
-
-/// `skills://<slug>` token hydrator. Looks the slug up against the
-/// shared `SkillsRegistry` and projects the loaded skill into an
-/// `Attachment`. Registered into the daemon's `TokenHydrators` at
-/// boot (see `daemon::mod::setup_app`).
-pub struct SkillTokenHydrator {
-    registry: Arc<SkillsRegistry>,
-}
-
-impl SkillTokenHydrator {
-    #[must_use]
-    pub fn new(registry: Arc<SkillsRegistry>) -> Self {
-        Self { registry }
-    }
-}
-
-impl super::tokens::TokenHydrator for SkillTokenHydrator {
-    fn scheme(&self) -> &'static str {
-        "skills"
-    }
-
-    fn hydrate(&self, value: &str) -> Option<Attachment> {
-        use crate::skills::SkillSlug;
-        let slug = SkillSlug::parse(value).ok()?;
-        let skill = self.registry.get(&slug)?;
-        Some(Attachment {
-            slug: slug.as_str().to_string(),
-            path: skill.path.clone(),
-            body: skill.body.clone(),
-            title: Some(skill.title.clone()),
-            data: None,
-            mime: Some("text/markdown".to_string()),
-        })
-    }
 }
 
 #[tauri::command]
@@ -352,6 +314,52 @@ pub async fn modes_set(adapter: AdapterState<'_>, instance_id: String, mode_id: 
     out
 }
 
+/// Set a generic ACP `session/set_config_option`. Sibling to
+/// `modes_set` / `models_set` — those address the dedicated wire
+/// methods; this one is the catch-all the captain uses to flip any
+/// other config knob the agent advertises (e.g. claude-code's
+/// `thought_level`, codex's policy / `_*` extension categories,
+/// vendor-specific selectors).
+///
+/// **Usage:** the agent emits `configOptions: [{ id, name,
+/// currentValue, kind: { type: "select", options: [...] } }]` on
+/// `NewSessionResponse` (and refreshes the same shape via
+/// `config_option_update` notifications). The palette surfaces every
+/// advertised option, captain picks one, this command sends the new
+/// value. The agent's response carries the full updated configOptions
+/// array — captain's pick may have side effects on other options
+/// (e.g. switching `model` may change `thought_level`'s available
+/// values).
+///
+/// Spec note: option ids beginning with `_` are vendor-extension
+/// freeform; ids without `_` are reserved spec categories
+/// (`mode` / `model` / `thought_level`). Vendors that surface a
+/// reserved category here AND on the dedicated wire method
+/// (`set_mode` / `set_model`) — the captain picks one path; both
+/// trigger the agent's same internal config path.
+#[tauri::command]
+pub async fn config_option_set(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    config_id: String,
+    value: String,
+) -> Result<Value, String> {
+    tracing::info!(
+        instance_id = %instance_id,
+        config_id = %config_id,
+        value = %value,
+        "cmd::config_option_set: entry"
+    );
+    let out = adapter
+        .set_session_config_option(&instance_id, &config_id, &value)
+        .await
+        .map_err(|e| e.message);
+    if let Err(err) = &out {
+        tracing::warn!(%err, "cmd::config_option_set: failed");
+    }
+    out
+}
+
 /// Snapshot the addressed instance's per-instance metadata
 /// (cwd, advertised modes/models, current ids). The palette pickers
 /// call this on every open instead of reading the UI-side
@@ -367,108 +375,44 @@ pub async fn instance_meta(adapter: AdapterState<'_>, instance_id: String) -> Re
     adapter.instance_meta(&instance_id).await.map_err(|e| e.message)
 }
 
-/// Resolve a pending permission prompt. The UI sends one of:
+/// Resolve a pending permission prompt with the captain's pick.
 ///
-/// - `"allow"` — the controller picks the best allow-kind option id
-///   from the original options[] stashed at register_pending time.
-/// - `"deny"` — mapped to Cancelled (falls through to a vendor
-///   reject option when one is present; otherwise the ACP wire sees
-///   `Cancelled` directly — see pick_reject_option_id).
-/// - any other string — treated as a raw ACP option id. The
-///   PermissionController routes it verbatim; the ACP client wraps
-///   it into Selected(option_id).
+/// `option_id` MUST be one of the agent-offered option ids — the wire
+/// no longer carries synthetic `'allow'` / `'deny'` shortcuts. The
+/// captain's "remember this" intent rides on the option's typed
+/// `kind` field (`allow_always` / `reject_always`) — the controller's
+/// `respond` method reads that and writes the trust-store entry
+/// atomically before signaling the waiter.
 ///
 /// No-op when no waiter matches `request_id` (already resolved, timed
 /// out, or never registered). The command never errors on that path —
 /// the UI sees `Ok(())` regardless so a stale reply doesn't surface
 /// as a user-visible failure.
-// TODO: the bare `allow` / `deny` tokens shadow any vendor option_id
-// that happens to use those literals. Namespace as `hyp:allow` /
-// `hyp:deny` or promote to an explicit enum on the Tauri command — a
-// real fix cross-cuts !36 (UI-side senders) so this lands in a
-// follow-up.
-//
-// `remember` is the "always" half of the 4-button UI: when set,
-// after the wire selection lands, the controller writes a runtime
-// trust-store entry for `(instance_id, tool)` so the next call from
-// the same tool short-circuits at decide() lane 1 without
-// re-prompting. `None` means "once" (no persistence). The `tool`
-// field travels with `remember` because options_for doesn't carry
-// the tool name — UI sends both alongside the option_id.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn permission_reply(
     controller: State<'_, Arc<dyn PermissionController>>,
     _session_id: String,
     request_id: String,
     option_id: String,
-    remember: Option<String>,
-    instance_id: Option<String>,
-    tool: Option<String>,
 ) -> Result<(), String> {
     tracing::info!(
         request_id = %request_id,
         option_id = %option_id,
-        remember = ?remember,
         "cmd::permission_reply: entry"
     );
-    let controller = controller.inner().clone();
-    let outcome = match option_id.as_str() {
-        "allow" => {
-            let Some(options) = controller.options_for(&request_id).await else {
-                tracing::debug!(request_id, "permission_reply: no waiter (allow) — no-op");
-                return Ok(());
-            };
-            match pick_allow_option_id(&options) {
-                Some(id) => PermissionOutcome::Selected(id),
-                None => PermissionOutcome::Cancelled,
-            }
+    match controller.respond(&request_id, &option_id).await {
+        None => {
+            tracing::debug!(request_id, "permission_reply: no waiter — no-op");
         }
-        "deny" => {
-            let Some(options) = controller.options_for(&request_id).await else {
-                tracing::debug!(request_id, "permission_reply: no waiter (deny) — no-op");
-                return Ok(());
-            };
-            match pick_reject_option_id(&options) {
-                Some(id) => PermissionOutcome::Selected(id),
-                None => PermissionOutcome::Cancelled,
-            }
-        }
-        raw => PermissionOutcome::Selected(raw.to_string()),
-    };
-    tracing::info!(
-        request_id = %request_id,
-        outcome = ?outcome,
-        "cmd::permission_reply: resolved"
-    );
-    controller.resolve(&request_id, outcome).await;
-
-    // Trust-store side effect: only after the wire selection lands.
-    // If either `instance_id` or `tool` is missing we log + skip — the
-    // wire selection still went through, the captain just doesn't get
-    // persistence (a UI bug, not a daemon bug).
-    if let Some(remember_token) = remember {
-        let decision = match remember_token.as_str() {
-            "allow" => Some(TrustDecision::Allow),
-            "deny" => Some(TrustDecision::Deny),
-            other => {
-                tracing::warn!(
-                    request_id,
-                    remember = %other,
-                    "permission_reply: unknown remember token, skipping trust-store update"
-                );
-                None
-            }
-        };
-        if let (Some(decision), Some(iid), Some(tname)) = (decision, instance_id.as_ref(), tool.as_ref()) {
-            controller.remember(iid, tname, decision).await;
-        } else if decision.is_some() {
+        Some(false) => {
             tracing::warn!(
                 request_id,
-                instance_id = ?instance_id,
-                tool = ?tool,
-                "permission_reply: remember requested but instance_id / tool missing"
+                option_id,
+                "permission_reply: option_id not in offered set — no-op"
             );
+        }
+        Some(true) => {
+            tracing::info!(request_id, option_id, "cmd::permission_reply: resolved");
         }
     }
     Ok(())

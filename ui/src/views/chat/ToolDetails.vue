@@ -31,7 +31,7 @@ const stateTone = computed(() => toolStateTone(props.view.state))
   @apply flex w-full flex-wrap items-center gap-2 border-l-[3px] px-[10px] py-[4px] text-[0.62rem] leading-tight;
   font-family: var(--theme-font-mono);
   border-color: var(--tone);
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   background-color: var(--theme-surface);
   border-top: 1px solid var(--theme-border);
   border-right: 1px solid var(--theme-border);
@@ -52,7 +52,7 @@ const stateTone = computed(() => toolStateTone(props.view.state))
 }
 
 .tool-details[data-state='done'] .tool-details-title {
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
 }
 
 .tool-details-title {

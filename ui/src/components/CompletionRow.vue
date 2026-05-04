@@ -96,7 +96,7 @@ const sourceLabel = computed<string>(() => {
   @apply flex w-full items-center gap-2 border-0 bg-transparent px-3 py-1 text-left;
   font-family: var(--theme-font-mono);
   font-size: 0.78rem;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   cursor: pointer;
 }
 

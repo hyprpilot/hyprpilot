@@ -9,12 +9,18 @@
  *    the Overlay shell's `mintInstanceId()` flow); the palette
  *    only moves the active pointer + persists the profile pick.
  *  - `rename` — opens the rename modal for the focused instance.
+ *  - `shutdown` — tears down the focused instance via
+ *    `instances/shutdown`. Mirrors the `Ctrl+D` shortcut on the
+ *    plural `instances` palette so captains can wind down a
+ *    runaway instance without first switching to it via the
+ *    plural list.
  *
- * "No active instance" suppresses `rename` only — `new` is always
- * available so the captain can stage an instance without typing
- * a prompt first.
+ * "No active instance" suppresses `rename` + `shutdown` — `new` is
+ * always available so the captain can stage an instance without
+ * typing a prompt first.
  */
 
+import { shutdownInstance } from './instances'
 import { buildProfilesPaletteSpec } from './profiles'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, useActiveInstance, type InstanceId, usePalette, useProfiles, useRenameInstanceModal, useToasts } from '@composables'
@@ -23,6 +29,7 @@ import { log } from '@lib'
 
 const ACTION_NEW = 'new'
 const ACTION_RENAME = 'rename'
+const ACTION_SHUTDOWN = 'shutdown'
 
 /// Mint a fresh instance UUID + flip `useActiveInstance` to it. The
 /// wire-side `session/new` spawns lazily on the next `session/submit`
@@ -42,12 +49,18 @@ function startNewInstance(profileId: string | undefined, label: string | undefin
   useToasts().push(ToastTone.Ok, label ? `new instance · ${label}` : 'new instance staged')
 }
 
-function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: string; onPickNew: () => void; onPickRename: () => void }): PaletteSpec {
+function buildInstanceLeafSpec(args: {
+  focused?: InstanceId
+  currentName?: string
+  onPickNew: () => void
+  onPickRename: () => void
+  onPickShutdown: () => void
+}): PaletteSpec {
   const entries: PaletteEntry[] = [
     {
       id: ACTION_NEW,
       name: 'new',
-      description: 'pick a profile and stage a fresh instance'
+      description: 'spawn a fresh instance.'
     }
   ]
 
@@ -56,6 +69,14 @@ function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: strin
       id: ACTION_RENAME,
       name: 'rename',
       description: args.currentName ? `current: ${args.currentName}` : 'set a captain-friendly name'
+    })
+    entries.push({
+      id: ACTION_SHUTDOWN,
+      name: 'shutdown',
+      description: args.currentName ? `tear down ${args.currentName}` : 'tear down the focused instance',
+      // Tagged so the `instance > shutdown` row renders in the
+      // err-tone slot like other destructive palette actions.
+      kind: 'deny'
     })
   }
 
@@ -78,6 +99,12 @@ function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: strin
 
       if (pick.id === ACTION_RENAME) {
         args.onPickRename()
+
+        return
+      }
+
+      if (pick.id === ACTION_SHUTDOWN) {
+        args.onPickShutdown()
       }
     }
   }
@@ -149,6 +176,12 @@ export async function openInstanceLeaf(): Promise<void> {
         return
       }
       useRenameInstanceModal().open({ instanceId: focused, currentName })
+    },
+    onPickShutdown() {
+      if (!focused) {
+        return
+      }
+      void shutdownInstance(focused)
     }
   })
 

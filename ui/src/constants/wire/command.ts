@@ -8,6 +8,7 @@
  * event name so `invoke` / `listen` infer it automatically.
  */
 
+import type { GitStatus } from '@interfaces/ui/header'
 import type {
   CompletionCancelArgs,
   CompletionCancelResponse,
@@ -67,6 +68,8 @@ export enum TauriCommand {
   WindowToggle = 'window_toggle',
   GetHomeDir = 'get_home_dir',
   GetDaemonCwd = 'get_daemon_cwd',
+  GetGitStatus = 'get_git_status',
+  DaemonRpc = 'daemon_rpc',
   ReadFileForAttachment = 'read_file_for_attachment',
   SessionSubmit = 'session_submit',
   SessionCancel = 'session_cancel',
@@ -90,6 +93,7 @@ export enum TauriCommand {
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
   CompletionCancel = 'completion_cancel',
+  GetCompletionConfig = 'get_completion_config',
   SkillsReload = 'skills_reload'
 }
 
@@ -119,6 +123,8 @@ export interface TauriCommandArgs {
   [TauriCommand.WindowToggle]: void
   [TauriCommand.GetHomeDir]: void
   [TauriCommand.GetDaemonCwd]: void
+  [TauriCommand.GetGitStatus]: { path: string }
+  [TauriCommand.DaemonRpc]: { method: string; params?: unknown }
   [TauriCommand.ReadFileForAttachment]: { path: string }
   [TauriCommand.SessionSubmit]: SubmitArgs
   [TauriCommand.SessionCancel]: CancelArgs
@@ -142,6 +148,7 @@ export interface TauriCommandArgs {
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
   [TauriCommand.CompletionCancel]: CompletionCancelArgs
+  [TauriCommand.GetCompletionConfig]: void
   [TauriCommand.SkillsReload]: void
 }
 
@@ -153,6 +160,8 @@ export interface TauriCommandResult {
   [TauriCommand.WindowToggle]: boolean
   [TauriCommand.GetHomeDir]: string
   [TauriCommand.GetDaemonCwd]: string
+  [TauriCommand.GetGitStatus]: GitStatus | null
+  [TauriCommand.DaemonRpc]: unknown
   [TauriCommand.ReadFileForAttachment]: { path: string; body: string; binary: boolean; truncated: boolean }
   [TauriCommand.SessionSubmit]: SubmitResult
   [TauriCommand.SessionCancel]: CancelResult
@@ -176,7 +185,22 @@ export interface TauriCommandResult {
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
   [TauriCommand.CompletionCancel]: CompletionCancelResponse
+  [TauriCommand.GetCompletionConfig]: CompletionConfigSnapshot
   [TauriCommand.SkillsReload]: { count: number }
+}
+
+/**
+ * Snapshot of the daemon's `[completion]` config block. Returned by
+ * the boot-time `get_completion_config` Tauri command. UI uses
+ * `ripgrep.debounceMs` to slow auto-trigger queries since ripgrep
+ * walks the cwd's file tree per call.
+ */
+export interface CompletionConfigSnapshot {
+  ripgrep: {
+    auto: boolean
+    debounceMs: number
+    minPrefix: number
+  }
 }
 
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */

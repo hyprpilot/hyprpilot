@@ -74,27 +74,22 @@ const urlStr = computed<string | undefined>(() => {
   return typeof raw.url === 'string' ? raw.url : undefined
 })
 
-const envKeys = computed<string[]>(() => {
-  const raw = active.value?.raw
-
-  if (!raw || typeof raw.env !== 'object' || raw.env === null) {
-    return []
-  }
-
-  return Object.keys(raw.env as Record<string, unknown>).sort()
-})
-
 const acceptGlobs = computed<string[]>(() => active.value?.hyprpilot.autoAcceptTools ?? [])
 const rejectGlobs = computed<string[]>(() => active.value?.hyprpilot.autoRejectTools ?? [])
 
+// Captain's env-var values are credentials; the keys alone leak the
+// integration shape. Strip the whole `env` block from the raw JSON
+// disclosure so the captain doesn't accidentally screenshot a
+// credential surface.
 const rawJson = computed(() => {
   const raw = active.value?.raw
 
   if (!raw) {
     return ''
   }
+  const { env: _env, ...rest } = raw
 
-  return JSON.stringify(raw, null, 2)
+  return JSON.stringify(rest, null, 2)
 })
 </script>
 
@@ -115,15 +110,6 @@ const rawJson = computed(() => {
       <template v-if="urlStr">
         <dt>url</dt>
         <dd class="mcp-preview-mono">{{ urlStr }}</dd>
-      </template>
-
-      <template v-if="envKeys.length > 0">
-        <dt>env</dt>
-        <dd>
-          <ul class="mcp-preview-list">
-            <li v-for="k in envKeys" :key="k" class="mcp-preview-mono">{{ k }} = <span class="mcp-preview-redacted">***</span></li>
-          </ul>
-        </dd>
       </template>
 
       <template v-if="acceptGlobs.length > 0">
@@ -184,11 +170,6 @@ const rawJson = computed(() => {
 
 .mcp-preview-list {
   @apply flex flex-col gap-[2px];
-}
-
-.mcp-preview-redacted {
-  color: var(--theme-fg-faint);
-  font-family: var(--theme-font-mono);
 }
 
 .mcp-preview-raw {

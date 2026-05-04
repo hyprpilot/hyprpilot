@@ -30,7 +30,7 @@ const toneVar = computed(() => {
       return 'var(--theme-status-warn)'
     case ButtonTone.Neutral:
     default:
-      return 'var(--theme-fg-ink-2)'
+      return 'var(--theme-fg-subtle)'
   }
 })
 </script>

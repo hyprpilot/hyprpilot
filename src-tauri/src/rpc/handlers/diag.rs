@@ -117,7 +117,7 @@ mod tests {
             id: "claude-code".into(),
             provider: crate::adapters::AgentProvider::AcpClaudeCode,
             model: None,
-            command: None,
+            command: "bunx".into(),
             args: Vec::new(),
             env,
             cwd: None,

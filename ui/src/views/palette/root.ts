@@ -6,6 +6,7 @@
  */
 
 import { openCwdLeaf } from './cwd'
+import { openDaemonLeaf } from './daemon'
 import { openInstanceLeaf } from './instance'
 import { openInstancesLeaf } from './instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './mcps'
@@ -34,13 +35,13 @@ export enum PaletteLeafId {
   Instances = 'instances',
   Permissions = 'permissions',
   Mcps = 'mcps',
-  Skills = 'skills'
+  Skills = 'skills',
+  Daemon = 'daemon'
 }
 
 interface RootLeaf {
   id: PaletteLeafId
   name: string
-  description: string
   followUp?: string
 }
 
@@ -48,75 +49,73 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
   [PaletteLeafId.Sessions]: {
     id: PaletteLeafId.Sessions,
     name: 'sessions',
-    description: 'resume a previous session',
     followUp: 'K-264'
   },
   [PaletteLeafId.Profiles]: {
     id: PaletteLeafId.Profiles,
     name: 'profiles',
-    description: 'switch the active profile',
     followUp: 'K-TBD'
   },
   [PaletteLeafId.Models]: {
     id: PaletteLeafId.Models,
     name: 'models',
-    description: 'pick a model override',
     followUp: 'K-TBD'
   },
   [PaletteLeafId.Modes]: {
     id: PaletteLeafId.Modes,
     name: 'modes',
-    description: 'switch operational mode',
     followUp: 'K-TBD'
   },
   [PaletteLeafId.Cwd]: {
     id: PaletteLeafId.Cwd,
     name: 'cwd',
-    description: 'change the working directory',
     followUp: 'K-266'
   },
   [PaletteLeafId.Instance]: {
     id: PaletteLeafId.Instance,
     name: 'instance',
-    description: 'rename / per-action on the focused instance',
     followUp: 'K-TBD'
   },
   [PaletteLeafId.Instances]: {
     id: PaletteLeafId.Instances,
     name: 'instances',
-    description: 'switch / shut down a live instance',
     followUp: 'K-274'
   },
   [PaletteLeafId.Permissions]: {
     id: PaletteLeafId.Permissions,
-    name: 'permissions',
-    description: 'review the live trust store — untick a row to drop the rule'
+    name: 'permissions'
   },
   [PaletteLeafId.Mcps]: {
     id: PaletteLeafId.Mcps,
     name: 'mcps',
-    description: 'toggle MCP servers',
     followUp: 'K-TBD'
   },
   [PaletteLeafId.Skills]: {
     id: PaletteLeafId.Skills,
     name: 'skills',
-    description: 'reload skills from disk',
     followUp: 'K-TBD'
+  },
+  [PaletteLeafId.Daemon]: {
+    id: PaletteLeafId.Daemon,
+    name: 'daemon'
   }
 }
 
 const ROOT_LEAF_ORDER: PaletteLeafId[] = [
   PaletteLeafId.Instance,
   PaletteLeafId.Instances,
-  PaletteLeafId.Sessions,
   PaletteLeafId.Profiles,
+  PaletteLeafId.Sessions,
   PaletteLeafId.Models,
   PaletteLeafId.Modes,
   PaletteLeafId.Cwd,
   PaletteLeafId.Permissions,
   PaletteLeafId.Mcps,
-  PaletteLeafId.Skills
+  PaletteLeafId.Skills,
+  // Daemon stays last — it's the captain's wire-side surface for
+  // ops actions (reload / shutdown / status snapshot) and isn't
+  // part of the per-instance navigation flow above it.
+  PaletteLeafId.Daemon
 ]
 
 export function isPaletteLeafId(value: string): value is PaletteLeafId {
@@ -130,8 +129,7 @@ export function openRootPalette(): void {
 
     return {
       id: leaf.id,
-      name: leaf.name,
-      description: leaf.description
+      name: leaf.name
     }
   })
 
@@ -237,6 +235,11 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       openSkillsLeaf()
 
       return
+
+    case PaletteLeafId.Daemon:
+      openDaemonLeaf()
+
+      return
   }
 }
 
@@ -247,8 +250,7 @@ function pushNoActiveInstanceStub(leaf: RootLeaf, open: ReturnType<typeof usePal
     entries: [
       {
         id: `${leaf.id}-no-active-instance`,
-        name: 'no active instance',
-        description: 'spawn or focus an instance first'
+        name: 'no active instance.'
       }
     ],
     onCommit: () => {}

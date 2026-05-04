@@ -29,7 +29,7 @@ const PREVIEW_THEME_TOKENS: Record<string, string> = {
   '--theme-surface-compose': '#1e2127',
   '--theme-surface-text': '#17191e',
   '--theme-fg': '#abb2bf',
-  '--theme-fg-ink-2': '#979eab',
+  '--theme-fg-subtle': '#979eab',
   '--theme-fg-dim': '#7c8a9d',
   '--theme-fg-faint': '#5c6370',
   '--theme-fg-on-tone': '#121212',
@@ -122,8 +122,7 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
     palette: {
       open: { modifiers: ['ctrl'], key: 'k' },
       close: { modifiers: [], key: 'escape' },
-      models: { focus: { modifiers: ['ctrl'], key: 'm' } },
-      sessions: { focus: { modifiers: ['ctrl'], key: 's' } }
+      instances: { focus: { modifiers: ['ctrl'], key: 'i' } }
     },
     transcript: {}
   },

@@ -41,8 +41,7 @@ const DEFAULT_KEYMAPS = {
   palette: {
     open: { modifiers: [Modifier.Ctrl], key: 'k' },
     close: { modifiers: [], key: 'escape' },
-    models: { focus: { modifiers: [Modifier.Ctrl], key: 'm' } },
-    sessions: { focus: { modifiers: [Modifier.Ctrl], key: 's' } }
+    instances: { focus: { modifiers: [Modifier.Ctrl], key: 'i' } }
   },
   transcript: {}
 }

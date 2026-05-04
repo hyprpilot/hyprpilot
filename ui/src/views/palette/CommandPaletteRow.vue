@@ -41,7 +41,7 @@ const emit = defineEmits<{
 
 .palette-row {
   @apply flex w-full items-center gap-[10px] border-l-[3px] border-transparent bg-transparent px-[10px] py-[6px] text-[0.72rem] leading-tight;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   cursor: pointer;
 }
 
@@ -75,7 +75,7 @@ const emit = defineEmits<{
 .palette-row-label {
   @apply shrink-0 text-[0.72rem];
   width: 120px;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
 }
 
@@ -86,7 +86,7 @@ const emit = defineEmits<{
 
 .palette-row-hint {
   @apply flex-1 truncate text-[0.72rem];
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-sans);
 }
 

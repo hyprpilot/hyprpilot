@@ -37,6 +37,15 @@ export interface CompletionQueryArgs {
   cwd?: string
   manual?: boolean
   instanceId?: string
+  /**
+   * Whitelist of source ids (`'path'` / `'skills'` / `'commands'` /
+   * `'ripgrep'`) the daemon walks during detect. When omitted, every
+   * source is eligible. The cwd palette passes `['path']` so its
+   * query never gets claimed by skills / commands / ripgrep even
+   * when the typed text happens to look like a slash command or
+   * hash sigil.
+   */
+  sources?: CompletionSourceId[]
 }
 
 export interface CompletionQueryResponse {

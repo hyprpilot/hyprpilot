@@ -7,5 +7,8 @@
 export enum AdapterId {
   ClaudeCode = 'acp-claude-code',
   Codex = 'acp-codex',
-  OpenCode = 'acp-opencode'
+  OpenCode = 'acp-opencode',
+  /// User-supplied ACP-speaking binary. No per-adapter formatter
+  /// overrides — every tool lookup falls through to its fallback.
+  Acp = 'acp'
 }

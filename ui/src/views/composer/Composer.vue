@@ -382,6 +382,10 @@ function trySubmit(): void {
   if (!text && attachments.length === 0) {
     return
   }
+  // Drop any open completion before the buffer clears — without
+  // this the popover stays mounted with results computed against
+  // the just-submitted text.
+  completion.close()
   emit('submit', { text, attachments })
 }
 

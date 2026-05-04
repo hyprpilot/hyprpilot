@@ -1,8 +1,9 @@
 import { faFileLines } from '@fortawesome/free-solid-svg-icons'
 
-import { pickArgs, shortPath, textBlocks } from '../shared'
+import { inferMimeFromPath, pickArgs, shortPath, textBlocks } from '../shared'
 import { PermissionUi, PillKind, ToolType } from '@constants/ui'
 import type { Formatter } from '@interfaces/ui'
+import { resolveShikiLang } from '@lib/markdown/mime'
 
 const readFallback: Formatter = {
   type: ToolType.Read,
@@ -30,7 +31,23 @@ const readFallback: Formatter = {
       title = 'read'
     }
 
-    const output = textBlocks(ctx.raw.content)
+    // Per ACP, Read tool calls return the file body as a `text`
+    // content block. Render it as a fenced code block in
+    // `description` so the MarkdownBody chrome (collapse, copy,
+    // Shiki) takes over — captain reads file content with the
+    // file's syntax highlighting instead of an unstyled `<pre>`.
+    // Language resolves from the path extension; the daemon
+    // doesn't currently emit MIME on tool-call content, but
+    // `inferMimeFromPath` gives a useful hint.
+    const body = textBlocks(ctx.raw.content)
+    let description: string | undefined
+
+    if (body) {
+      const mime = inferMimeFromPath(p ?? '')
+      const lang = resolveShikiLang(mime, p) ?? 'plaintext'
+
+      description = '```' + lang + '\n' + body + '\n```'
+    }
 
     return {
       id: ctx.raw.id,
@@ -41,7 +58,7 @@ const readFallback: Formatter = {
       pill: PillKind.Default,
       permissionUi: PermissionUi.Row,
       title,
-      ...(output ? { output } : {}),
+      ...(description ? { description } : {}),
       ...(ctx.raw.rawInput ? { rawInput: ctx.raw.rawInput } : {})
     }
   }

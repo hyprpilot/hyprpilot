@@ -114,6 +114,29 @@ pub(super) fn emit<P: Serialize>(client: &CtlClient, method: &str, params: &P) -
     Ok(())
 }
 
+/// Fire an `overlay/show` after a state-mutating call. Threaded
+/// through the `--show` flag on `prompts send` / `instances spawn` /
+/// `instances focus` / `instances restart` so captains can map a
+/// keybind to "spawn + show" without chaining a second `ctl overlay
+/// show` call. `instance_id` is forwarded verbatim — the daemon's
+/// overlay handler accepts a UUID, captain-set name, or omits to
+/// just present without a focus change. Soft-fails: if `overlay/show`
+/// errors (no main window, e.g. headless tests), the caller's
+/// success path stays intact and the `--show` failure logs a warn.
+pub(super) fn show_after(client: &CtlClient, instance_id: Option<String>) -> Result<()> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ShowParams {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instance_id: Option<String>,
+    }
+    let params = ShowParams { instance_id };
+    if let Err(err) = request_value(client, "overlay/show", &params) {
+        tracing::warn!(%err, "ctl: --show: overlay/show after main call failed");
+    }
+    Ok(())
+}
+
 /// Connect, send `method` + `params`, return the raw `Value` from the
 /// success branch. RPC errors carry the JSON-RPC code in the error
 /// message; transport errors bubble as-is. Used by namespaces whose

@@ -93,7 +93,7 @@ describe('openSessionsLeaf', () => {
     expect(stack.value).toHaveLength(1)
     expect(stack.value[0]?.title).toBe('sessions')
     expect(stack.value[0]?.loading).toBe(true)
-    expect(stack.value[0]?.loadingStatus).toBe('fetching session list')
+    expect(stack.value[0]?.status).toBe('fetching session list')
     expect(stack.value[0]?.entries).toEqual([])
 
     await promise

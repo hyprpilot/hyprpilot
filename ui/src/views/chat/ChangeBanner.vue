@@ -71,7 +71,7 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
   gap: 6px;
   padding: 2px 8px;
   border: 1px solid var(--theme-border-soft);
-  border-radius: 2px;
+  border-radius: 3px;
   background-color: var(--theme-surface);
   color: var(--theme-fg);
 }
@@ -90,7 +90,7 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
 }
 
 .change-banner-from {
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-weight: 600;
 }
 

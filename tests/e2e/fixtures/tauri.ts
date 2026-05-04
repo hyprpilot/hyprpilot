@@ -27,7 +27,7 @@ const ONEDARK_THEME = {
     }
   },
   fg: {
-    default: '#abb2bf', ink_2: '#979eab', dim: '#7c8a9d', faint: '#5c6370'
+    default: '#abb2bf', subtle: '#979eab', dim: '#7c8a9d', faint: '#5c6370'
   },
   border: {
     default: '#2c333d', soft: '#38404b', focus: '#e5c07b'
@@ -89,8 +89,7 @@ export const { test, expect } = createTauriTest({
       palette: {
         open: { modifiers: ['ctrl'], key: 'k' },
         close: { modifiers: [], key: 'escape' },
-        models: { focus: { modifiers: ['ctrl'], key: 'm' } },
-        sessions: { focus: { modifiers: ['ctrl'], key: 's' } }
+        instances: { focus: { modifiers: ['ctrl'], key: 'i' } }
       },
       transcript: {}
     }),

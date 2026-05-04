@@ -22,8 +22,8 @@ pub use daemon::{AnchorWindow, CenterWindow, Daemon, Dimension, Edge, Window, Wi
 pub use keymaps::KeymapsConfig;
 #[allow(unused_imports)]
 pub use keymaps::{
-    ApprovalsKeymaps, Binding, ChatKeymaps, ComposerKeymaps, Key, ModelsSubPaletteKeymaps, Modifier, NamedKey,
-    PaletteKeymaps, SessionsSubPaletteKeymaps, TranscriptKeymaps,
+    ApprovalsKeymaps, Binding, ChatKeymaps, ComposerKeymaps, InstancesSubPaletteKeymaps, Key, Modifier, NamedKey,
+    PaletteKeymaps, TranscriptKeymaps,
 };
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
 #[allow(unused_imports)]
@@ -102,6 +102,41 @@ pub struct Config {
     #[garde(dive)]
     #[garde(custom(validate_keymaps_collisions))]
     pub keymaps: KeymapsConfig,
+    /// `[completion]` — composer autocomplete tuning. The `ripgrep`
+    /// subgroup controls whether the in-process ripgrep source fires
+    /// on every keystroke (auto, with debounce) or only on manual
+    /// trigger (Tab / Ctrl+Space).
+    #[garde(dive)]
+    pub completion: CompletionConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompletionConfig {
+    #[garde(dive)]
+    pub ripgrep: RipgrepCompletionConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
+pub struct RipgrepCompletionConfig {
+    /// Auto-trigger ripgrep on plain text input (no manual gate).
+    /// `true` means typing past `min_prefix` characters fires a
+    /// ripgrep query through the standard debounce; `false` keeps
+    /// ripgrep manual-only (Tab / Ctrl+Space).
+    #[garde(skip)]
+    pub auto: Option<bool>,
+    /// Debounce applied UI-side before firing the auto-trigger
+    /// query. Bumped from the global default because ripgrep walks
+    /// the cwd's file tree and is heavier than the path / skills
+    /// sources.
+    #[garde(range(min = 0, max = 5_000))]
+    pub debounce_ms: Option<u32>,
+    /// Minimum token length before ripgrep claims the query at all.
+    /// Single letters return thousands of matches and burn CPU.
+    #[garde(range(min = 1, max = 64))]
+    pub min_prefix: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -129,19 +164,13 @@ pub struct SkillsConfig {
 }
 
 impl SkillsConfig {
-    /// Resolve every `dirs` entry to an absolute path. Tilde + env
-    /// vars in each raw value expand via `shellexpand`; entries that
-    /// fail to expand fall through with their literal text.
+    /// Resolve every `dirs` entry to an absolute path via
+    /// `paths::resolve_user` (`shellexpand` for `~` / `$VAR`, then
+    /// `path-absolutize` for `./` / `../` collapse).
     pub fn resolved_dirs(&self) -> Vec<PathBuf> {
         let raw = self.dirs.as_deref().expect("[skills].dirs seeded by defaults.toml");
         raw.iter()
-            .map(|p| {
-                let raw_str = p.to_string_lossy();
-                let expanded = shellexpand::full(&raw_str)
-                    .map(|s| s.into_owned())
-                    .unwrap_or_else(|_| raw_str.into_owned());
-                PathBuf::from(expanded)
-            })
+            .map(|p| crate::paths::resolve_user(&p.to_string_lossy()))
             .collect()
     }
 }
@@ -411,10 +440,9 @@ dirs = []
         );
         assert_eq!(k.palette.open, Some(binding(&[Modifier::Ctrl], Key::Char('k'))));
         assert_eq!(k.palette.close, Some(binding(&[], Key::Named(NamedKey::Escape))));
-        assert_eq!(k.palette.models.focus, Some(binding(&[Modifier::Ctrl], Key::Char('m'))));
         assert_eq!(
-            k.palette.sessions.focus,
-            Some(binding(&[Modifier::Ctrl], Key::Char('s')))
+            k.palette.instances.focus,
+            Some(binding(&[Modifier::Ctrl], Key::Char('i')))
         );
 
         cfg.validate().expect("seeded defaults validate");
@@ -461,16 +489,16 @@ open = { key = "enter" }
         let p = write_tmp(
             "keymap-subgroup.toml",
             r#"
-[keymaps.palette.models]
-focus = { modifiers = ["ctrl"], key = "m" }
+[keymaps.palette]
+open = { modifiers = ["ctrl"], key = "i" }
 
-[keymaps.palette.sessions]
-focus = { modifiers = ["ctrl"], key = "m" }
+[keymaps.palette.instances]
+focus = { modifiers = ["ctrl"], key = "i" }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         cfg.validate()
-            .expect("palette.models vs palette.sessions is cross-scope");
+            .expect("palette vs palette.instances is cross-scope");
         fs::remove_file(&p).ok();
     }
 
@@ -585,8 +613,8 @@ submit = { modifiers = ["ctrl"], key = "enter" }
             Some(binding(&[Modifier::Ctrl], Key::Char('k')))
         );
         assert_eq!(
-            cfg.keymaps.palette.models.focus,
-            Some(binding(&[Modifier::Ctrl], Key::Char('m')))
+            cfg.keymaps.palette.instances.focus,
+            Some(binding(&[Modifier::Ctrl], Key::Char('i')))
         );
         cfg.validate().expect("partial override validates");
         fs::remove_file(&p).ok();

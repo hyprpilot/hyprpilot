@@ -13,6 +13,7 @@ export enum TranscriptItemKind {
   UserText = 'user_text',
   AgentText = 'agent_text',
   AgentThought = 'agent_thought',
+  AgentAttachment = 'agent_attachment',
   ToolCall = 'tool_call',
   ToolCallUpdate = 'tool_call_update',
   Plan = 'plan',

@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::ctl::client::CtlClient;
-use crate::ctl::{emit, request_value, CtlDispatch};
+use crate::ctl::{emit, request_value, show_after, CtlDispatch};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum InstancesSubcommand {
@@ -19,6 +19,11 @@ pub enum InstancesSubcommand {
     Focus {
         #[arg(long)]
         id: Option<String>,
+        /// Present the overlay focused on this instance after the
+        /// focus call lands. Maps a single keybind to "focus + show"
+        /// without chaining a second `ctl overlay show` call.
+        #[arg(long, default_value_t = false)]
+        show: bool,
     },
     /// Spawn a new instance against a profile / agent. Optional
     /// `--name` applies a captain-set name post-spawn.
@@ -36,6 +41,10 @@ pub enum InstancesSubcommand {
         /// Captain-set name to apply post-spawn (slug, ≤16 chars).
         #[arg(long)]
         name: Option<String>,
+        /// Present the overlay focused on the freshly-spawned instance
+        /// after spawn (and rename, when `--name` is supplied) lands.
+        #[arg(long, default_value_t = false)]
+        show: bool,
     },
     /// Restart an instance. `--id` accepts UUID or name; omitted
     /// falls back to focused.
@@ -44,6 +53,10 @@ pub enum InstancesSubcommand {
         id: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Present the overlay focused on the restarted instance
+        /// after the restart lands.
+        #[arg(long, default_value_t = false)]
+        show: bool,
     },
     /// Shut one instance down. `--id` accepts UUID or name; omitted
     /// falls back to focused.
@@ -109,7 +122,19 @@ impl CtlDispatch for InstancesSubcommand {
     fn dispatch(self, client: &CtlClient) -> Result<()> {
         match self {
             InstancesSubcommand::List => emit(client, "instances/list", &Value::Null),
-            InstancesSubcommand::Focus { id } => emit(client, "instances/focus", &IdParams { id }),
+            InstancesSubcommand::Focus { id, show } => {
+                let v = request_value(client, "instances/focus", &IdParams { id: id.clone() })?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+
+                if show {
+                    // Pass through whatever the captain typed (UUID or
+                    // captain-set name) — the overlay handler accepts
+                    // either and falls back to the now-focused
+                    // instance when omitted.
+                    show_after(client, id)?;
+                }
+                Ok(())
+            }
             InstancesSubcommand::Spawn {
                 profile_id,
                 agent_id,
@@ -117,6 +142,7 @@ impl CtlDispatch for InstancesSubcommand {
                 mode,
                 model,
                 name,
+                show,
             } => {
                 let spawn_params = SpawnParams {
                     profile_id,
@@ -125,20 +151,45 @@ impl CtlDispatch for InstancesSubcommand {
                     mode,
                     model,
                 };
+                let v = request_value(client, "instances/spawn", &spawn_params)?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                let minted = v.get("id").and_then(Value::as_str).map(str::to_string);
+
                 if let Some(n) = name {
                     // Two-step composition when --name is supplied:
-                    // spawn (capture minted id) → rename. Single-step
-                    // path stays a plain `emit` for the common case
-                    // where the captain doesn't bother with naming.
-                    let v = request_value(client, "instances/spawn", &spawn_params)?;
-                    println!("{}", serde_json::to_string_pretty(&v)?);
-                    let key = v.get("id").and_then(Value::as_str).map(str::to_string);
-                    emit(client, "instances/rename", &RenameParams { id: key, name: Some(n) })
-                } else {
-                    emit(client, "instances/spawn", &spawn_params)
+                    // spawn (capture minted id) → rename. The
+                    // single-step path stays unchanged for the common
+                    // case where the captain doesn't bother with
+                    // naming.
+                    let rv = request_value(
+                        client,
+                        "instances/rename",
+                        &RenameParams {
+                            id: minted.clone(),
+                            name: Some(n),
+                        },
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&rv)?);
                 }
+
+                if show {
+                    show_after(client, minted)?;
+                }
+                Ok(())
             }
-            InstancesSubcommand::Restart { id, cwd } => emit(client, "instances/restart", &RestartParams { id, cwd }),
+            InstancesSubcommand::Restart { id, cwd, show } => {
+                let v = request_value(
+                    client,
+                    "instances/restart",
+                    &RestartParams { id: id.clone(), cwd },
+                )?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+
+                if show {
+                    show_after(client, id)?;
+                }
+                Ok(())
+            }
             InstancesSubcommand::Shutdown { id } => emit(client, "instances/shutdown", &IdParams { id }),
             InstancesSubcommand::Info { id } => emit(client, "instances/info", &IdParams { id }),
             InstancesSubcommand::Rename { id, name } => emit(client, "instances/rename", &RenameParams { id, name }),

@@ -36,9 +36,10 @@ use crate::completion::{
     ReplacementRange,
 };
 
-/// Manual ripgrep needs a meaningful prefix — single letters return
-/// thousands of matches and burn CPU. blink-ripgrep uses 3.
-const MIN_PREFIX: usize = 3;
+/// Default minimum prefix when no config override is supplied.
+/// Single letters return thousands of matches and burn CPU.
+/// blink-ripgrep uses 3.
+const DEFAULT_MIN_PREFIX: usize = 3;
 /// Cap candidates returned to UI.
 const MAX_RESULTS: usize = 50;
 /// Ignore files larger than 1 MiB — same as blink-ripgrep's default.
@@ -49,11 +50,31 @@ const MAX_FILE_BYTES: u64 = 1_000_000;
 /// the candidate set.
 const MAX_MATCHES_PER_FILE: usize = 50;
 
-pub struct RipgrepSource;
+pub struct RipgrepSource {
+    /// Auto-trigger on plain typing (no manual sigil). When false,
+    /// ripgrep only fires when the UI ships `manual: true`
+    /// (Tab / Ctrl+Space). Captain-driven via `[completion.ripgrep] auto`.
+    auto: bool,
+    /// Per-source min token length. Captain-driven via
+    /// `[completion.ripgrep] min_prefix`; defaults to 3.
+    min_prefix: usize,
+}
 
 impl RipgrepSource {
     pub fn new() -> Self {
-        Self
+        Self {
+            auto: true,
+            min_prefix: DEFAULT_MIN_PREFIX,
+        }
+    }
+
+    /// Construct from the captain-supplied `[completion.ripgrep]`
+    /// config block. Unset fields fall through to the defaults.
+    pub fn from_config(cfg: &crate::config::RipgrepCompletionConfig) -> Self {
+        Self {
+            auto: cfg.auto.unwrap_or(true),
+            min_prefix: cfg.min_prefix.unwrap_or(DEFAULT_MIN_PREFIX),
+        }
     }
 }
 
@@ -70,11 +91,14 @@ impl CompletionSource for RipgrepSource {
     }
 
     fn detect(&self, text: &str, cursor: usize, manual: bool) -> Option<CompletionContext> {
-        if !manual {
+        // Manual fires unconditionally; auto fires only when the
+        // captain has opted in. Either path still requires a
+        // meaningful prefix.
+        if !manual && !self.auto {
             return None;
         }
         let (start, token) = token_before_cursor(text, cursor, &['_', '-']);
-        if token.len() < MIN_PREFIX {
+        if token.len() < self.min_prefix {
             return None;
         }
         Some(CompletionContext {
@@ -82,7 +106,7 @@ impl CompletionSource for RipgrepSource {
             cursor,
             query: token.to_string(),
             sigil: None,
-            manual: true,
+            manual,
         })
     }
 
@@ -250,13 +274,30 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn detect_only_on_manual_trigger() {
+    fn detect_auto_default_claims_word_without_manual() {
+        // Default config has `auto: true`, so plain typing claims the
+        // trailing word once it crosses min_prefix.
         let source = RipgrepSource::new();
         let text = "scrolling through the wires";
         let cursor = text.len();
-        // Without manual flag, ripgrep declines.
+        let ctx = source.detect(text, cursor, false).unwrap();
+        assert_eq!(ctx.query, "wires");
+    }
+
+    #[test]
+    fn detect_auto_disabled_requires_manual() {
+        // Captain opted out of auto-trigger.
+        let cfg = crate::config::RipgrepCompletionConfig {
+            auto: Some(false),
+            debounce_ms: None,
+            min_prefix: None,
+        };
+        let source = RipgrepSource::from_config(&cfg);
+        let text = "scrolling through the wires";
+        let cursor = text.len();
+        // Without manual flag, source declines.
         assert!(source.detect(text, cursor, false).is_none());
-        // With manual, it claims the trailing word.
+        // Manual still fires.
         let ctx = source.detect(text, cursor, true).unwrap();
         assert_eq!(ctx.query, "wires");
     }

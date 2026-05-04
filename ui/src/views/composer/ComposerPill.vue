@@ -31,7 +31,7 @@ defineEmits<{ remove: [id: string] }>()
 .composer-pill {
   @apply inline-flex items-center gap-1 border px-2 py-[2px] text-[0.7rem] leading-tight;
   font-family: var(--theme-font-mono);
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-alt);
   border-color: var(--theme-border);
 }

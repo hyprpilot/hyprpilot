@@ -1,5 +1,6 @@
 export * from './cleanup'
 export * from './sequence'
+export * from './use-git-status'
 export * from './use-permissions'
 export * from './use-phase'
 export * from './use-queue'

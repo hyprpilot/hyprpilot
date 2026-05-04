@@ -48,10 +48,18 @@ pub enum TranscriptItem {
     /// Streaming user echo from the agent (rare; some agents echo
     /// the user's prompt back). Maps from `UserMessageChunk`.
     UserText { text: String },
-    /// Streaming agent reply. Maps from `AgentMessageChunk`.
+    /// Streaming agent reply. Maps from `AgentMessageChunk` when the
+    /// chunk's content block is text-shaped.
     AgentText { text: String },
     /// Streaming agent reasoning. Maps from `AgentThoughtChunk`.
     AgentThought { text: String },
+    /// Agent-emitted attachment — image, audio, embedded resource, or
+    /// resource link. Mirrors the user-side `Attachment` shape so the
+    /// existing `Attachments` chat component renders agent-emitted
+    /// payloads with no new component. Maps from
+    /// `AgentMessageChunk` when the chunk's content block is one of
+    /// `image` / `audio` / `resource` / `resource_link`.
+    AgentAttachment(Attachment),
     /// Tool call initiated by the agent.
     ToolCall(ToolCallRecord),
     /// Delta update to an existing tool call (status, output, etc.).

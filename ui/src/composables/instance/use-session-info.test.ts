@@ -8,6 +8,7 @@ import {
   pushSessionInfoUpdate,
   setInstanceCwd,
   setInstanceGitStatus,
+  setInstanceProfile,
   setSessionRestored,
   truncateCwd,
   useActiveInstance,
@@ -153,7 +154,7 @@ describe('setInstanceCwd / setInstanceGitStatus (daemon-side metadata)', () => {
 })
 
 describe('useSessionInfo profile derivation', () => {
-  it('derives model from the active profile when the instance has no override', () => {
+  it('derives model from the instance profile when the instance has no override', () => {
     profilesRef.value = [
       {
         id: 'ask',
@@ -162,7 +163,10 @@ describe('useSessionInfo profile derivation', () => {
         isDefault: true
       }
     ]
-    selectedRef.value = 'ask'
+    // The header reads the FOCUSED instance's profileId, not the
+    // user's persisted profile picker. setInstanceProfile mirrors
+    // what the daemon's `acp:instance-meta` event pushes.
+    setInstanceProfile('A', 'ask')
 
     expect(useSessionInfo('A').info.value.model).toBe('claude-sonnet-4-5')
   })
@@ -176,10 +180,26 @@ describe('useSessionInfo profile derivation', () => {
         isDefault: true
       }
     ]
-    selectedRef.value = 'ask'
+    setInstanceProfile('A', 'ask')
     pushInstanceModelState('A', { currentModelId: 'claude-opus-4-5' })
 
     expect(useSessionInfo('A').info.value.model).toBe('claude-opus-4-5')
+  })
+
+  it('does not derive from the user-selected profile when the instance has no profileId', () => {
+    profilesRef.value = [
+      {
+        id: 'ask',
+        agent: 'claude-code',
+        model: 'claude-sonnet-4-5',
+        isDefault: true
+      }
+    ]
+    selectedRef.value = 'ask'
+    // No setInstanceProfile call — instance has no profileId.
+    // The user's picker selection MUST NOT bleed into the header.
+    expect(useSessionInfo('A').info.value.model).toBeUndefined()
+    expect(useSessionInfo('A').info.value.profileId).toBeUndefined()
   })
 
   it('always reports zero mcps and skills counts (live counts land in K-258 / K-268)', () => {
@@ -190,7 +210,7 @@ describe('useSessionInfo profile derivation', () => {
         isDefault: true
       }
     ]
-    selectedRef.value = 'ask'
+    setInstanceProfile('A', 'ask')
 
     const info = useSessionInfo('A').info.value
 
@@ -233,7 +253,7 @@ describe('truncateCwd', () => {
   it('middle-ellipsises long paths keeping the head segment + last two', () => {
     const result = truncateCwd('/home/cenk/dev/utils/hyprpilot/src-tauri/src/adapters', 32, '/home/cenk')
 
-    expect(result).toBe('~/.../src/adapters')
+    expect(result).toBe('~/\u2026/src/adapters')
   })
 
   it('keeps the path as-is when middle truncation would not save bytes', () => {

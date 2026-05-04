@@ -27,14 +27,19 @@ const props = withDefaults(
     model?: string
     title?: string
     cwd?: string
+    cwdFull?: string
     gitStatus?: GitStatus
     counts?: BreadcrumbCount[]
     cwdExpanded?: boolean
+    /// Total live-instance count. Renders the row-1 instances pill
+    /// when ≥ 2 (one means "just this", no extras to surface).
+    instancesCount?: number
   }>(),
   {
     phase: Phase.Idle,
     counts: () => [],
-    cwdExpanded: false
+    cwdExpanded: false,
+    instancesCount: 0
   }
 )
 
@@ -48,6 +53,9 @@ const emit = defineEmits<{
   /// parent dispatches the matching palette leaf. Pill id falls back
   /// to `label` when `BreadcrumbCount.id` is unset.
   breadcrumbClick: [id: string]
+  /// Emitted when the captain clicks the row-1 instances pill — the
+  /// parent opens the instances palette.
+  instancesClick: []
 }>()
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
@@ -63,21 +71,34 @@ const hasGit = computed(() => Boolean(props.gitStatus))
           <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
           {{ profile }}
         </button>
-        <button v-if="provider" type="button" class="frame-provider-pill" aria-label="provider" @click="emit('pillClick', 'provider')">
-          {{ provider }}<template v-if="model"> · {{ model }}</template>
+        <button v-if="provider" type="button" class="frame-adapter-pill" aria-label="adapter" @click="emit('pillClick', 'provider')">
+          {{ provider }}
+        </button>
+        <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
+          {{ model }}
         </button>
         <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
           {{ modeTag }}
         </button>
         <span v-if="title" class="frame-title">{{ title }}</span>
         <span v-else class="frame-title-spacer" />
+        <button
+          v-if="instancesCount > 1"
+          type="button"
+          class="frame-instances-pill"
+          :aria-label="`${instancesCount} instances`"
+          @click="emit('instancesClick')"
+        >
+          <span class="frame-instances-count">{{ instancesCount }}</span>
+          <span class="frame-instances-label">instances</span>
+        </button>
         <button type="button" class="frame-close" aria-label="close" @click="emit('close')">
           <FaIcon :icon="faXmark" class="frame-close-icon" />
         </button>
       </div>
 
       <div class="frame-row frame-row-2">
-        <button type="button" class="frame-cwd" :aria-expanded="cwdExpanded" @click="emit('toggleCwd')">
+        <button type="button" class="frame-cwd" :aria-expanded="cwdExpanded" :title="cwdFull ?? cwd" @click="emit('toggleCwd')">
           <span v-if="cwd" class="frame-cwd-value">{{ cwd }}</span>
           <span v-else class="frame-cwd-value frame-cwd-value-empty">—</span>
           <span v-if="hasGit" class="frame-cwd-git">
@@ -195,30 +216,36 @@ html:not([data-window-anchor]) .frame {
   background-color: var(--theme-fg-on-tone);
 }
 
-/* Provider/model pill — bg-bg fill, line2 outline, fg readable. */
-.frame-provider-pill {
-  @apply inline-flex shrink-0 items-center rounded-sm leading-tight;
-  padding: 3px 9px;
-  font-size: 0.66rem;
-  font-weight: 600;
-  color: var(--theme-fg);
-  background-color: var(--theme-surface-bg);
-  border: 1px solid var(--theme-border-soft);
-  font-family: var(--theme-font-mono);
-  cursor: pointer;
-}
-
-/* Mode pill — surface2 fill, line2 outline, accent yellow text + bold. */
+/* Adapter / model / mode pills share the same chrome — surface fill,
+ * soft border, accent-coloured text. Each one's accent is sourced
+ * from a distinct token so the captain can tell at a glance which
+ * pill they're reading without scanning the prefix:
+ *   adapter  → kind-acp (light blue, the protocol surface)
+ *   model    → kind-agent (purple, the LLM identity)
+ *   mode     → accent (yellow, the operational lever) */
+.frame-adapter-pill,
+.frame-model-pill,
 .frame-mode-pill {
   @apply inline-flex shrink-0 items-center rounded-sm leading-tight;
   padding: 3px 9px;
   font-size: 0.66rem;
   font-weight: 700;
-  color: var(--theme-accent);
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
   font-family: var(--theme-font-mono);
   cursor: pointer;
+}
+
+.frame-adapter-pill {
+  color: var(--theme-kind-acp);
+}
+
+.frame-model-pill {
+  color: var(--theme-kind-agent);
+}
+
+.frame-mode-pill {
+  color: var(--theme-accent);
 }
 
 .frame-pill-button {
@@ -232,7 +259,7 @@ html:not([data-window-anchor]) .frame {
   padding: 3px 10px;
   font-size: 0.66rem;
   min-width: 0;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-bg);
   border: 1px dashed var(--theme-border-soft);
   border-radius: 4px;
@@ -242,6 +269,35 @@ html:not([data-window-anchor]) .frame {
 
 .frame-title-spacer {
   @apply flex-1;
+}
+
+/* Row 1 instances pill — sits between the title (or spacer) and the
+ * close button; queue-style format (small accent-soft fill, accent
+ * fg) so the captain reads "+N" first. Hidden when the registry has
+ * a single instance: nothing extra to surface. */
+.frame-instances-pill {
+  @apply inline-flex shrink-0 cursor-pointer items-center gap-[5px] border-0 leading-tight;
+  padding: 2px 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--theme-accent);
+  background-color: color-mix(in srgb, var(--theme-accent) 18%, transparent);
+  border-radius: 3px;
+  font-family: var(--theme-font-mono);
+}
+
+.frame-instances-pill:hover {
+  filter: brightness(1.1);
+}
+
+.frame-instances-count {
+  font-weight: 700;
+}
+
+.frame-instances-label {
+  font-weight: 500;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
 }
 
 .frame-cwd-git-arrow {

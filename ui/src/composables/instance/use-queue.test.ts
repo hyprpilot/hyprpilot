@@ -20,7 +20,6 @@ import {
   stopQueueDispatcher,
   useQueue,
   clearToasts,
-  useToasts,
   resetTools,
   __resetTurnEndedListeners,
   pushTurnEnded,
@@ -299,7 +298,10 @@ describe('startQueueDispatcher', () => {
     expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['queued one'])
   })
 
-  it('flushes the queue on stopReason=cancelled and emits a toast', () => {
+  it('leaves the queue intact on stopReason=cancelled — captain only drains via the strip', () => {
+    // Cancel-flush coupling was dropped: Ctrl+C cancels the
+    // in-flight turn but queued items survive so the captain can
+    // let them dispatch on the next turn.
     startQueueDispatcher()
     pushToQueue('A', {
       text: 'x',
@@ -319,25 +321,8 @@ describe('startQueueDispatcher', () => {
       stopReason: 'cancelled'
     })
 
-    expect(useQueue('A').items.value).toHaveLength(0)
+    expect(useQueue('A').items.value).toHaveLength(2)
     expect(invoke).not.toHaveBeenCalled()
-    const messages = useToasts().entries.value.map((t) => t.body)
-
-    expect(messages).toContain('queue cleared')
-  })
-
-  it('does not toast on cancelled when the queue was already empty', () => {
-    startQueueDispatcher()
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'cancelled'
-    })
-
-    const messages = useToasts().entries.value.map((t) => t.body)
-
-    expect(messages).not.toContain('queue cleared')
   })
 
   it('ignores other stop reasons (max_tokens / refusal) — head stays, queue stays', () => {
@@ -364,7 +349,7 @@ describe('startQueueDispatcher', () => {
     expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['still queued'])
   })
 
-  it('cancel-flush is per-instance — sibling queues stay intact', () => {
+  it('keeps sibling queues intact regardless of stop reason', () => {
     startQueueDispatcher()
     pushToQueue('A', {
       text: 'A item',
@@ -384,28 +369,8 @@ describe('startQueueDispatcher', () => {
       stopReason: 'cancelled'
     })
 
-    expect(useQueue('A').items.value).toHaveLength(0)
-    expect(useQueue('B').items.value).toHaveLength(1)
-  })
-
-  it('stopQueueDispatcher unsubscribes — subsequent cancels do nothing', () => {
-    startQueueDispatcher()
-    stopQueueDispatcher()
-    pushToQueue('A', {
-      text: 'x',
-      pills: [],
-      skillAttachments: []
-    })
-
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'cancelled'
-    })
-
-    // queue intact — cancel-flush watcher is unsubscribed
     expect(useQueue('A').items.value).toHaveLength(1)
+    expect(useQueue('B').items.value).toHaveLength(1)
   })
 })
 

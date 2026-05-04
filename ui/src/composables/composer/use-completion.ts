@@ -1,6 +1,6 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
-import { type CompletionItem, type CompletionQueryResponse, type CompletionResolveResponse, invoke, TauriCommand } from '@ipc'
+import { type CompletionItem, type CompletionQueryResponse, type CompletionResolveResponse, type CompletionSourceId, invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
 /**
@@ -35,8 +35,13 @@ export interface CompletionState {
 export interface UseCompletionApi {
   state: Ref<CompletionState>
   selected: ComputedRef<CompletionItem | undefined>
-  /** Send a `completion/query`. Coalesces with pending debounce. */
-  query: (text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string }) => void
+  /**
+   * Send a `completion/query`. Coalesces with pending debounce.
+   * `sources` (when set) restricts which daemon-side sources fire
+   * during detect — drives palette modes that want autocomplete
+   * from a specific source only (cwd → `['path']`).
+   */
+  query: (text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }) => void
   /** Cancel the in-flight query (ripgrep specifically) and close the popover. */
   close: () => void
   /** Move selection within `items` — wraps at boundaries. */
@@ -46,10 +51,38 @@ export interface UseCompletionApi {
   commit: () => CompletionItem | undefined
 }
 
-const QUERY_DEBOUNCE_MS = 30
+const DEFAULT_QUERY_DEBOUNCE_MS = 30
 const RESOLVE_DEBOUNCE_MS = 80
 
 let singleton: UseCompletionApi | undefined
+// Captain-tunable debounce override sourced from `[completion.ripgrep]
+// debounce_ms` at boot. Auto-triggered queries (regular typing) honour
+// this; manual queries (Tab / Ctrl+Space) skip the debounce so the
+// captain's explicit ask fires immediately.
+let autoDebounceMs = DEFAULT_QUERY_DEBOUNCE_MS
+
+export function setCompletionDebounceMs(ms: number): void {
+  autoDebounceMs = Math.max(0, Math.floor(ms))
+}
+
+/**
+ * Boot-time fetch of the `[completion]` config block. Applies the
+ * captain's `ripgrep.debounceMs` to the auto-trigger pipeline so
+ * heavy ripgrep queries throttle without slowing the path / skills /
+ * commands sources. Soft-fails (logs + continues) when no Tauri
+ * host is bound — browser dev / vitest stays on the default debounce.
+ */
+export async function loadCompletionConfig(): Promise<void> {
+  try {
+    const cfg = await invoke(TauriCommand.GetCompletionConfig)
+
+    if (typeof cfg?.ripgrep?.debounceMs === 'number') {
+      setCompletionDebounceMs(cfg.ripgrep.debounceMs)
+    }
+  } catch(err) {
+    log.warn('get_completion_config invoke failed; using default debounce', undefined, err)
+  }
+}
 
 export function useCompletion(): UseCompletionApi {
   if (singleton) {
@@ -72,16 +105,33 @@ export function useCompletion(): UseCompletionApi {
   let queryDebounce: ReturnType<typeof setTimeout> | undefined
   let resolveDebounce: ReturnType<typeof setTimeout> | undefined
 
-  function query(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string }): void {
+  function query(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }): void {
     if (queryDebounce) {
       clearTimeout(queryDebounce)
     }
+
+    // Drop the open popover immediately — the items are computed
+    // against an older buffer state than what the captain just
+    // typed. Without this, the list visually lingers through the
+    // debounce window with stale rows highlighted. Re-opens once
+    // the new response lands.
+    if (state.value.open) {
+      state.value.open = false
+      state.value.items = []
+      state.value.selectedIndex = 0
+      state.value.documentation = null
+    }
+    // Manual fires immediately; auto runs through the captain's
+    // configured debounce so ripgrep-bearing queries throttle without
+    // gating cheap path / skills sources too aggressively.
+    const debounce = opts?.manual ? 0 : autoDebounceMs
+
     queryDebounce = setTimeout(() => {
       void runQuery(text, cursor, opts)
-    }, QUERY_DEBOUNCE_MS)
+    }, debounce)
   }
 
-  async function runQuery(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string }): Promise<void> {
+  async function runQuery(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }): Promise<void> {
     let response: CompletionQueryResponse
 
     try {
@@ -90,7 +140,8 @@ export function useCompletion(): UseCompletionApi {
         cursor,
         manual: opts?.manual ?? false,
         cwd: opts?.cwd,
-        instanceId: opts?.instanceId
+        instanceId: opts?.instanceId,
+        sources: opts?.sources
       })
     } catch(err) {
       log.warn('completion/query failed', { err: String(err) })

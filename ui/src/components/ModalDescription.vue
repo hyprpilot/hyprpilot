@@ -33,7 +33,7 @@
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
   padding: 1px 4px;
-  border-radius: 2px;
+  border-radius: 3px;
   font-size: 0.65rem;
 }
 </style>

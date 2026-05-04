@@ -6,37 +6,13 @@
 
 use tokio::process::Command;
 
-use crate::adapters::Capabilities;
-
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
 
 pub struct AcpAgentCodex;
 
 impl AcpAgent for AcpAgentCodex {
-    fn command(&self) -> &'static str {
-        "bunx"
-    }
-
-    fn args(&self) -> &'static [&'static str] {
-        &["--bun", "@zed-industries/codex-acp"]
-    }
-
     fn model_injection(&self) -> ModelInjection {
         ModelInjection::Argv("--model")
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            load_session: true,
-            list_sessions: true,
-            permissions: true,
-            terminals: true,
-            mcps_per_instance: true,
-            restart_with_cwd: true,
-            // K-251 follow-ups — flip true when the override lands.
-            session_model_switch: false,
-            session_mode_switch: false,
-        }
     }
 
     /// codex-acp only exposes `-c key=value` overrides; the TOML
@@ -67,8 +43,8 @@ mod tests {
             id: "codex".into(),
             provider: AgentProvider::AcpCodex,
             model: model.map(|s| s.to_string()),
-            command: None,
-            args: Vec::new(),
+            command: "bunx".into(),
+            args: vec!["--bun".into(), "@zed-industries/codex-acp".into()],
             cwd: None,
             env: BTreeMap::new(),
         }

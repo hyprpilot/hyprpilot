@@ -123,7 +123,7 @@ describe('Frame.vue', () => {
     expect(wrapper.emitted('pillClick')).toEqual([['mode']])
   })
 
-  it('emits pillClick with target=provider when the provider pill is clicked', async() => {
+  it('emits pillClick with target=provider when the adapter pill is clicked', async() => {
     const wrapper = mount(Frame, {
       props: {
         profile: 'captain',
@@ -132,7 +132,7 @@ describe('Frame.vue', () => {
       }
     })
 
-    await wrapper.find('button[aria-label="provider"]').trigger('click')
+    await wrapper.find('button[aria-label="adapter"]').trigger('click')
 
     expect(wrapper.emitted('pillClick')).toEqual([['provider']])
   })

@@ -28,8 +28,10 @@ describe('format()', () => {
 
     expect(view.type).toBe(ToolType.Bash)
     expect(view.title).toBe('bash · pnpm')
-    expect(view.description).toBe('run the suite')
-    expect(view.fields).toEqual([{ label: 'command', value: 'pnpm test' }])
+    // Description carries the prose AND the fenced bash code block
+    // so Shiki highlights the command in the spec sheet.
+    expect(view.description).toBe('run the suite\n\n```bash\npnpm test\n```')
+    expect(view.fields).toBeUndefined()
     expect(view.state).toBe(ToolState.Done)
   })
 
@@ -246,10 +248,13 @@ describe('format()', () => {
   })
 
   it('falls back to the wire name with no synthetic Other label', () => {
+    // No matching `kind` (`other` is the ACP catch-all that doesn't
+    // route to any specific formatter) → falls through to the
+    // generic `Other` formatter, which surfaces the title verbatim.
     const view = format(
       call({
         title: 'curl-something',
-        kind: 'execute',
+        kind: 'other',
         rawInput: { command: 'curl example.com' },
         status: 'completed'
       })
@@ -257,6 +262,23 @@ describe('format()', () => {
 
     expect(view.type).toBe(ToolType.Other)
     expect(view.title).toBe('curl-something')
+  })
+
+  it('routes by ACP kind when the title is descriptive (Edit /tmp/foo.txt)', () => {
+    // Real-world: claude-agent-acp ships `title: "Edit /tmp/foo.txt"`
+    // (descriptive) AND `kind: "edit"`. Title-canonicalisation
+    // doesn't match any formatter; kind-canonicalisation routes to
+    // the edit family.
+    const view = format(
+      call({
+        title: 'Edit /tmp/foo.txt',
+        kind: 'edit',
+        rawInput: { file_path: '/tmp/foo.txt' },
+        status: 'pending'
+      })
+    )
+
+    expect(view.type).toBe(ToolType.Edit)
   })
 
   it('canonicalises camelCase / snake_case wire names through the same formatter', () => {

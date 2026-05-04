@@ -107,6 +107,13 @@ export interface WireToolCall {
   /// `tool_call_update` chunks for the same `toolCallId`.
   turnId?: string
   toolCallId: string
+  /// Stable wire-name from the first `tool_call.start` notification.
+  /// Frozen across subsequent updates so the formatter dispatcher
+  /// can route reliably even when an agent (e.g. opencode) overwrites
+  /// `title` with a prose state-title on every update — the wire
+  /// name (`read` / `task` / `bash`) stays the routing key while
+  /// `title` becomes display-only.
+  wireName?: string
   title?: string
   status?: string
   kind?: string

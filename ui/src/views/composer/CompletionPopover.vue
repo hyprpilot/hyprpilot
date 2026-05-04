@@ -153,7 +153,7 @@ watch(
   padding: 0 4px;
   color: var(--theme-fg);
   background-color: var(--theme-surface-alt);
-  border-radius: 2px;
+  border-radius: 3px;
   font-weight: 600;
   font-size: 0.55rem;
 }

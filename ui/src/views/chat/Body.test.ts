@@ -30,7 +30,7 @@ describe('ChatBody.vue', () => {
     })
 
     expect(wrapper.text()).toContain('hello world')
-    expect(wrapper.find('.chat-body-md').exists()).toBe(false)
+    expect(wrapper.find('.markdown-body').exists()).toBe(false)
   })
 
   it('renders the slot for assistant role when markdown is not enabled', () => {
@@ -40,7 +40,7 @@ describe('ChatBody.vue', () => {
     })
 
     expect(wrapper.text()).toContain('hi from assistant')
-    expect(wrapper.find('.chat-body-md').exists()).toBe(false)
+    expect(wrapper.find('.markdown-body').exists()).toBe(false)
   })
 
   it('renders sanitised markdown HTML for assistant role with :markdown + :text', async() => {
@@ -54,7 +54,7 @@ describe('ChatBody.vue', () => {
 
     await flush()
 
-    const md = wrapper.find('.chat-body-md')
+    const md = wrapper.find('.markdown-body')
 
     expect(md.exists()).toBe(true)
     expect(md.html()).toContain('<strong>bold</strong>')
@@ -72,7 +72,7 @@ describe('ChatBody.vue', () => {
 
     await flush()
 
-    expect(wrapper.find('.chat-body-md').exists()).toBe(false)
+    expect(wrapper.find('.markdown-body').exists()).toBe(false)
     expect(wrapper.text()).toContain('**bold**')
   })
 

@@ -61,7 +61,7 @@ export async function openPermissionsLeaf(): Promise<void> {
         {
           id: EMPTY_ROW_ID,
           name: 'no active instance',
-          description: 'spawn an instance first; trust rules are scoped per-instance'
+          description: 'no active instance.'
         }
       ],
       onCommit: () => {}
@@ -79,8 +79,7 @@ export async function openPermissionsLeaf(): Promise<void> {
       entries: [
         {
           id: EMPTY_ROW_ID,
-          name: 'no rules yet',
-          description: 'press "always allow" / "always deny" on any tool prompt to remember it'
+          name: 'no rules.'
         }
       ],
       onCommit: () => {}

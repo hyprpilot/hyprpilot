@@ -11,8 +11,9 @@ import {
   setInstanceAgent,
   setInstanceCwd,
   setInstanceMcpsCount,
+  setInstanceProfile,
   setSessionRestoring,
-  setSessionTitleIfUnset,
+  setSessionTitleFromPrompt,
   lookupCurrentMode,
   lookupModeName
 } from './use-session-info'
@@ -46,7 +47,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
     requestId: payload.requestId,
     tool: payload.tool,
     hasRawInput: payload.rawInput !== undefined,
-    hasContentText: payload.contentText !== undefined
+    contentBlocks: payload.content?.length ?? 0
   })
   pushPermissionRequest(payload.instanceId, payload.sessionId, {
     requestId: payload.requestId,
@@ -54,7 +55,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
     kind: payload.kind,
     args: payload.args,
     rawInput: payload.rawInput,
-    contentText: payload.contentText,
+    content: payload.content,
     options: payload.options
   })
 }
@@ -85,12 +86,13 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         content: { type: 'text', text: item.text },
         attachments: item.attachments
       } as Parameters<typeof pushTranscriptChunk>[2])
-      // Derive a header title from the first user prompt when the
-      // agent hasn't pushed `session_info_update` yet (claude-code-acp
-      // never emits it). One-shot per instance — a real wire title
-      // landing later overwrites this stand-in via
+      // Re-derive the header title from each user prompt — agents
+      // like claude-code-acp never push `session_info_update`, so
+      // re-running on every prompt produces a rolling "what's the
+      // captain working on now" title that tracks the latest
+      // context. A real wire title landing later still wins via
       // `pushSessionInfoUpdate`.
-      setSessionTitleIfUnset(instanceId, item.text)
+      setSessionTitleFromPrompt(instanceId, item.text)
 
       return
 
@@ -106,6 +108,28 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       pushTranscriptChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: item.text }
+      } as Parameters<typeof pushTranscriptChunk>[2])
+
+      return
+
+    case TranscriptItemKind.AgentAttachment:
+      // Agent-emitted attachment — image / audio / embedded resource
+      // / resource_link. Reuses the user-side `Attachment` shape so
+      // the existing `Attachments` chat component renders without a
+      // new surface. The `kind` discriminator is stripped at consume
+      // time; the rest of the item is the Attachment payload.
+      pushTranscriptChunk(instanceId, sessionId, {
+        sessionUpdate: 'agent_message_chunk',
+        attachments: [
+          {
+            slug: item.slug,
+            path: item.path,
+            body: item.body,
+            title: item.title,
+            data: item.data,
+            mime: item.mime
+          }
+        ]
       } as Parameters<typeof pushTranscriptChunk>[2])
 
       return
@@ -321,9 +345,10 @@ export async function startSessionStream(): Promise<() => void> {
       })
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
-      const { agentId, instanceId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload
+      const { agentId, instanceId, profileId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload
 
       setInstanceAgent(instanceId, agentId)
+      setInstanceProfile(instanceId, profileId)
       setInstanceCwd(instanceId, cwd)
 
       if (typeof mcpsCount === 'number') {

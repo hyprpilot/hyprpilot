@@ -219,6 +219,16 @@ function onRowClick(entry: PaletteEntry): void {
     return
   }
   highlighted.value = idx
+
+  // MultiSelect: a row click toggles its tick (mirrors the Tab
+  // keybind). Closing on click would force the captain to commit
+  // every individual change to the trust store one round-trip at a
+  // time — the whole point of multi-select is batching.
+  if (spec.mode === PaletteMode.MultiSelect) {
+    toggleTick(entry.id)
+
+    return
+  }
   // Close before dispatching onCommit so a recursive `open()` in the
   // callback pushes onto a clean stack rather than stacking under the
   // just-committed spec.
@@ -258,7 +268,7 @@ onUnmounted(() => {
             v-model="query"
             type="text"
             class="palette-input"
-            placeholder=""
+            :placeholder="top.placeholder ?? ''"
             spellcheck="false"
             autocomplete="off"
             autocapitalize="off"
@@ -286,9 +296,14 @@ onUnmounted(() => {
               <span v-if="entry.kind" class="palette-kind">{{ entry.kind }}</span>
             </li>
             <li v-if="visibleEntries.length === 0 && top.loading" class="palette-empty palette-empty-loading">
-              <Loading mode="inline" :status="top.loadingStatus" />
+              <Loading mode="inline" :status="top.status" />
             </li>
-            <li v-else-if="visibleEntries.length === 0" class="palette-empty">no matches</li>
+            <!-- Input mode suppresses the "no matches" empty-state:
+                 captain types and an empty list just means "no
+                 autocomplete suggestion yet, Enter still commits the
+                 typed value". Other modes treat empty as a real
+                 zero-result signal. -->
+            <li v-else-if="visibleEntries.length === 0 && top.mode !== PaletteMode.Input" class="palette-empty">no matches</li>
           </ul>
 
           <aside v-if="top.preview" class="palette-preview" data-testid="palette-preview">
@@ -314,6 +329,10 @@ onUnmounted(() => {
               <FaIcon :icon="faArrowTurnDown" class="palette-kbd-icon" aria-hidden="true" />
             </kbd>
             <span class="palette-kbd-label">confirm</span>
+          </span>
+          <span v-if="top.onDelete" class="palette-kbd-hint">
+            <kbd class="palette-kbd palette-kbd-text">Ctrl+D</kbd>
+            <span class="palette-kbd-label">delete</span>
           </span>
           <span class="palette-kbd-hint">
             <kbd class="palette-kbd palette-kbd-text">Esc</kbd>
@@ -418,7 +437,7 @@ onUnmounted(() => {
   padding: 6px 10px;
   border-radius: 4px;
   border-left: 3px solid transparent;
-  color: var(--theme-fg-ink-2);
+  color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
   margin-bottom: 1px;
 }

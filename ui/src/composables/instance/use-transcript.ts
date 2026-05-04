@@ -40,6 +40,12 @@ export interface UserTurn extends Turn {
 export interface AgentTurn extends Turn {
   role: TurnRole.Agent
   text: string
+  /// Agent-emitted attachments — image / audio / embedded resource /
+  /// resource_link content blocks the agent streamed alongside (or
+  /// instead of) text. Mirrors the user-side `attachments` field;
+  /// the same `Attachments` chat component renders both. Empty
+  /// array when the agent didn't attach anything.
+  attachments: Attachment[]
 }
 
 export type ChatTurnItem = UserTurn | AgentTurn
@@ -113,34 +119,28 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
     last.text += text
     last.updatedAt = seq
 
-    if (raw.attachments && raw.attachments.length > 0 && last.role === TurnRole.User) {
-      last.attachments = raw.attachments
+    // Attachments append to the existing turn (instead of replacing)
+    // so an agent that streams multiple non-text content blocks lands
+    // every one in the same turn alongside the text. User-side keeps
+    // the same shape — user attachments only ride on the first chunk
+    // anyway.
+    if (raw.attachments && raw.attachments.length > 0) {
+      last.attachments = [...last.attachments, ...raw.attachments]
     }
 
     return
   }
   const messageId = hasExplicitId ? (raw.messageId as string) : `${role}-${sessionId}-${slot.turns.length}`
-  const turn: ChatTurnItem =
-    role === TurnRole.User
-      ? {
-        role,
-        id: messageId,
-        sessionId,
-        turnId: openTurnIdFor(id, sessionId),
-        createdAt: seq,
-        updatedAt: seq,
-        text,
-        attachments: raw.attachments ?? []
-      }
-      : {
-        role,
-        id: messageId,
-        sessionId,
-        turnId: openTurnIdFor(id, sessionId),
-        createdAt: seq,
-        updatedAt: seq,
-        text
-      }
+  const turn: ChatTurnItem = {
+    role,
+    id: messageId,
+    sessionId,
+    turnId: openTurnIdFor(id, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    text,
+    attachments: raw.attachments ?? []
+  }
 
   slot.turns.push(turn)
 }

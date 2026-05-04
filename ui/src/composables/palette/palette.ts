@@ -12,7 +12,16 @@ import { ref, type Component, type Ref } from 'vue'
 
 export enum PaletteMode {
   Select = 'select',
-  MultiSelect = 'multi-select'
+  MultiSelect = 'multi-select',
+  /**
+   * Input + autocomplete shape — the captain types a value into the
+   * search input, autocomplete suggestions render below as
+   * picker rows, and Enter commits either the highlighted suggestion
+   * or the typed value verbatim. Empty query hides the suggestion
+   * list entirely (no static entries shown). Used by the cwd
+   * palette and any future "type a path / value" surface.
+   */
+  Input = 'input'
 }
 
 export interface PaletteEntry {
@@ -43,6 +52,12 @@ export interface PaletteSpec {
   preseedActive?: PaletteEntry[]
   preview?: PalettePreview
   /**
+   * Placeholder text rendered inside the palette's search input.
+   * Useful for `Input` mode where the input IS the primary surface
+   * (other modes leave it blank). Static leaves omit.
+   */
+  placeholder?: string
+  /**
    * `query` is the live search-input value at commit time. Most
    * leaves ignore it; the cwd leaf reads it as the manual-path input
    * when the `manual` sentinel row is the highlighted pick.
@@ -68,7 +83,15 @@ export interface PaletteSpec {
    */
   loading?: boolean
   /** Status text rendered next to the inline spinner. */
-  loadingStatus?: string
+  status?: string
+  /**
+   * Skip the client-side Fuse filter — the spec's entries are already
+   * server-pre-filtered against the typed query (cwd path completion,
+   * future ripgrep/grep-like leaves) and re-filtering against the
+   * raw query string would over-prune. Static leaves leave this
+   * unset.
+   */
+  filtered?: boolean
 }
 
 const stack = ref<PaletteSpec[]>([])

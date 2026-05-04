@@ -99,7 +99,7 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
     title,
     entries,
     loading,
-    loadingStatus: loading ? 'fetching session list' : undefined,
+    status: loading ? 'fetching session list' : undefined,
     preview: { component: SessionsPreview },
     onCommit(picks) {
       const pick = picks[0] as SessionsLeafEntry | undefined

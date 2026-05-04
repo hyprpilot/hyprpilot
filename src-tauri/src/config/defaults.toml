@@ -93,7 +93,7 @@ text = "#17191e"
 
 [ui.theme.fg]
 default = "#abb2bf"
-ink_2 = "#979eab"
+subtle = "#979eab"
 dim = "#7c8a9d"
 faint = "#5c6370"
 # Fixed dark ink for tone-bg pills (warn / err / ok / accent). The
@@ -186,11 +186,18 @@ history_down = { modifiers = ["ctrl"], key = "arrowdown" }
 open = { modifiers = ["ctrl"], key = "k" }
 close = { key = "escape" }
 
-[keymaps.palette.models]
-focus = { modifiers = ["ctrl"], key = "m" }
+[keymaps.palette.instances]
+focus = { modifiers = ["ctrl"], key = "i" }
 
-[keymaps.palette.sessions]
-focus = { modifiers = ["ctrl"], key = "s" }
+# Composer autocomplete tuning. The path / skills / commands sources
+# always fire on type-ahead — they're cheap and predictable. Ripgrep
+# walks the cwd's file tree per query, so it's gated behind a knob:
+# auto-trigger when the captain wants type-ahead suggestions across
+# their codebase, manual-only (Tab / Ctrl+Space) when they don't.
+[completion.ripgrep]
+auto = true
+debounce_ms = 250
+min_prefix = 3
 
 [keymaps.transcript]
 

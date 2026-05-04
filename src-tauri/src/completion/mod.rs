@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 mod cancellations;
 pub mod commands;
+pub mod hydration;
 pub mod source;
 
 pub use cancellations::CompletionCancellations;
@@ -166,7 +167,29 @@ impl CompletionRegistry {
         cursor: usize,
         manual: bool,
     ) -> Option<(Arc<dyn CompletionSource>, CompletionContext)> {
+        self.detect_filtered(text, cursor, manual, None)
+    }
+
+    /// Same as [`detect`] but restricted to a whitelist of source
+    /// ids. `allow == None` is identity (every source eligible);
+    /// `allow == Some([])` returns `None` (every source filtered
+    /// out). Drives the input palette's per-spec `sources` filter
+    /// — the cwd palette wants only `path` so its query never gets
+    /// claimed by ripgrep / commands / skills even when the typed
+    /// text happens to look like a slash command or hash sigil.
+    pub fn detect_filtered(
+        &self,
+        text: &str,
+        cursor: usize,
+        manual: bool,
+        allow: Option<&[String]>,
+    ) -> Option<(Arc<dyn CompletionSource>, CompletionContext)> {
         for source in &self.sources {
+            if let Some(allowed) = allow {
+                if !allowed.iter().any(|a| a == source.id()) {
+                    continue;
+                }
+            }
             if let Some(ctx) = source.detect(text, cursor, manual) {
                 return Some((Arc::clone(source), ctx));
             }

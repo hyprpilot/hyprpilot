@@ -7,42 +7,13 @@
 
 use tokio::process::Command;
 
-use crate::adapters::Capabilities;
-
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
 
 pub struct AcpAgentClaudeCode;
 
 impl AcpAgent for AcpAgentClaudeCode {
-    fn command(&self) -> &'static str {
-        "bunx"
-    }
-
-    fn args(&self) -> &'static [&'static str] {
-        &["--bun", "@zed-industries/claude-code-acp"]
-    }
-
     fn model_injection(&self) -> ModelInjection {
         ModelInjection::Env("ANTHROPIC_MODEL")
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            load_session: true,
-            list_sessions: true,
-            permissions: true,
-            terminals: true,
-            mcps_per_instance: true,
-            restart_with_cwd: true,
-            // claude-code-acp ships the unstable `session_model` feature
-            // so `available_models` rides on `NewSessionResponse` and
-            // `session/set_model` flips the active model live. Both
-            // spawn-time (config-driven) + runtime (palette) flow
-            // through the same request.
-            session_model_switch: true,
-            // K-251 follow-up — flip true when the mode override lands.
-            session_mode_switch: false,
-        }
     }
 
     /// `@zed-industries/claude-code-acp` never reads `process.argv`;
@@ -71,8 +42,8 @@ mod tests {
             id: "claude-code".into(),
             provider: AgentProvider::AcpClaudeCode,
             model: model.map(|s| s.to_string()),
-            command: None,
-            args: Vec::new(),
+            command: "bunx".into(),
+            args: vec!["--bun".into(), "@zed-industries/claude-code-acp".into()],
             cwd: None,
             env: BTreeMap::new(),
         }

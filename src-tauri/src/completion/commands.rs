@@ -5,12 +5,13 @@
 //! `CompletionCancellations` from managed state.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde_json::{json, Value};
 use tauri::State;
 
 use crate::completion::{CompletionCancellations, CompletionRegistry, ReplacementRange};
+use crate::config::Config;
 
 type RegistryState<'a> = State<'a, Arc<CompletionRegistry>>;
 type CancellationsState<'a> = State<'a, Arc<CompletionCancellations>>;
@@ -24,11 +25,18 @@ pub async fn completion_query(
     cwd: Option<PathBuf>,
     manual: Option<bool>,
     #[allow(non_snake_case)] _instanceId: Option<String>,
+    // `sources` — whitelist of source ids (e.g. `["path"]`) to
+    // consider. When `Some`, sources whose id isn't in the list
+    // are skipped during detect. `None` (or omitted) leaves the
+    // full registry walk intact. Drives palette modes that want
+    // autocomplete from a specific source only — e.g. cwd palette
+    // → `["path"]`.
+    sources: Option<Vec<String>>,
 ) -> Result<Value, String> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let manual = manual.unwrap_or(false);
 
-    let detected = registry.detect(&text, cursor, manual);
+    let detected = registry.detect_filtered(&text, cursor, manual, sources.as_deref());
     let (source, ctx) = match detected {
         Some(d) => d,
         None => {
@@ -84,4 +92,22 @@ pub async fn completion_cancel(
 ) -> Result<Value, String> {
     let cancelled = cancellations.cancel(&requestId);
     Ok(json!({ "cancelled": cancelled }))
+}
+
+/// Snapshot of the captain's `[completion]` config block. UI reads
+/// this at boot to apply the ripgrep auto-trigger debounce — the
+/// daemon-side source already honours `auto` / `min_prefix`, but
+/// debounce lives client-side because that's where keystrokes
+/// happen.
+#[tauri::command]
+pub async fn get_completion_config(config: State<'_, Arc<RwLock<Config>>>) -> Result<Value, String> {
+    let cfg = config.read().map_err(|e| format!("config rwlock poisoned: {e}"))?;
+    let rg = &cfg.completion.ripgrep;
+    Ok(json!({
+        "ripgrep": {
+            "auto": rg.auto.unwrap_or(true),
+            "debounceMs": rg.debounce_ms.unwrap_or(250),
+            "minPrefix": rg.min_prefix.unwrap_or(3),
+        }
+    }))
 }

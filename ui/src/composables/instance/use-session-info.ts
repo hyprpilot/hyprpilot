@@ -3,6 +3,7 @@ import { computed, reactive, type ComputedRef } from 'vue'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useProfiles } from '../ui-state/use-profiles'
 import type { GitStatus } from '@components'
+import type { ProfileSummary } from '@ipc'
 
 /**
  * One advertised mode option. Mirrors ACP `SessionMode` —
@@ -55,6 +56,11 @@ export interface SessionInfo {
   updatedAt?: string
   cwd?: string
   agent?: string
+  /// Spawning profile id. Drives the header's profile pill —
+  /// distinct from the user's persisted profile picker (which only
+  /// changes on explicit selection, not on focus shifts). `undefined`
+  /// for bare-agent spawns or before the first InstanceMeta lands.
+  profileId?: string
   mode?: string
   model?: string
   availableModes: SessionModeOption[]
@@ -78,6 +84,7 @@ export interface SessionInfoState {
   updatedAt?: string
   cwd?: string
   agent?: string
+  profileId?: string
   mode?: string
   model?: string
   availableModes: SessionModeOption[]
@@ -173,21 +180,23 @@ export function pushCurrentModeUpdate(id: InstanceId, raw: CurrentModeUpdateRaw)
 }
 
 /**
- * Set the title only if the instance doesn't already carry one —
- * fallback path for agents that never emit `session_info_update`
- * (claude-code-acp at the time of writing). Called by
- * `routeTranscript` on the first `UserPrompt` so the captain has
- * *something* identifying the session in the header before the
- * agent gets around to (or never does) advertising one.
+ * Refresh the header title from the latest user prompt.
+ * claude-code-acp never proactively sends `session_info_update`,
+ * so the only signal available client-side is the user prompt
+ * itself. Re-deriving on every prompt produces a rolling
+ * "what's the captain working on right now" header that tracks
+ * the most recent context.
  *
- * If `session_info_update` later lands with a real title, the
- * standard `pushSessionInfoUpdate` overwrites our derived stand-in.
+ * If `session_info_update` later lands with a real wire title,
+ * `pushSessionInfoUpdate` still wins via call-order — we treat the
+ * derived title as a default the wire is welcome to override at
+ * any moment.
  */
-export function setSessionTitleIfUnset(id: InstanceId, derived: string): void {
+export function setSessionTitleFromPrompt(id: InstanceId, derived: string): void {
   const slot = slotFor(id)
   const trimmed = derived.trim()
 
-  if (slot.title || !trimmed) {
+  if (!trimmed) {
     return
   }
   slot.title = trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed
@@ -251,6 +260,17 @@ export function setInstanceMcpsCount(id: InstanceId, count: number): void {
 /** Set the per-instance agent id. Mirrors `InstanceInfo.agent_id`. */
 export function setInstanceAgent(id: InstanceId, agent: string): void {
   slotFor(id).agent = agent
+}
+
+/**
+ * Set the per-instance spawning profile id. `undefined` clears it
+ * (bare-agent spawn). Pushed by the daemon on every
+ * `acp:instance-meta` event so the header chrome's profile pill
+ * tracks the FOCUSED instance, not the user's persisted profile
+ * picker (which only updates on explicit selection).
+ */
+export function setInstanceProfile(id: InstanceId, profileId: string | undefined): void {
+  slotFor(id).profileId = profileId
 }
 
 /**
@@ -340,7 +360,11 @@ export function truncateCwd(raw: string, max = 32, home?: string): string {
   }
   const head = segments[0] === '~' ? '~' : `/${segments[0]}`
   const tail = segments.slice(-2).join('/')
-  const middle = `${head}/.../${tail}`
+  // U+2026 (single ellipsis glyph) instead of three ASCII dots —
+  // JetBrains Mono ligates `...` into a wider triple-dot glyph that
+  // reads as " ... " between slashes; one Unicode codepoint sidesteps
+  // the ligature.
+  const middle = `${head}/\u2026/${tail}`
 
   if (middle.length < path.length) {
     return middle
@@ -356,31 +380,65 @@ export function truncateCwd(raw: string, max = 32, home?: string): string {
  * cwd / model fall back to the active profile when the instance
  * hasn't pushed an override yet.
  */
+/**
+ * Project a per-instance slot + the configured profile registry into
+ * the public `SessionInfo` shape. Keeps the computed body thin so the
+ * lint complexity gate stays inside the limit; lets unit tests assert
+ * directly against the projection without standing up a composable.
+ *
+ * The header reads `info.profileId` to render the profile pill for
+ * the focused instance — independent of the user's persisted picker
+ * (`useProfiles().selected`). Falling back to the picker would
+ * mis-attribute a freshly-spawned instance's profile to the last
+ * manual selection. `agent` / `model` fall back through the
+ * instance's OWN `profileId`, not the picker's selection.
+ */
+function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: ProfileSummary | undefined): SessionInfo {
+  return {
+    title: slot?.title,
+    updatedAt: slot?.updatedAt,
+    cwd: slot?.cwd,
+    agent: slot?.agent ?? slotProfile?.agent,
+    profileId: slot?.profileId,
+    mode: slot?.mode,
+    model: slot?.model ?? slotProfile?.model,
+    availableModes: slot?.availableModes ?? [],
+    availableModels: slot?.availableModels ?? [],
+    mcpsCount: slot?.mcpsCount ?? 0,
+    restored: slot?.restored ?? false,
+    restoring: slot?.restoring ?? false,
+    gitStatus: slot?.gitStatus
+  }
+}
+
+/**
+ * Non-reactive snapshot of an instance's session info. Useful in
+ * lifecycle paths (toasts, log lines) where the caller just needs
+ * the current values once and doesn't want to subscribe to a
+ * computed. Returns undefined when the instance has no slot yet.
+ */
+export function peekSessionInfo(id: InstanceId): SessionInfo | undefined {
+  const slot = states.get(id)
+
+  if (!slot) {
+    return undefined
+  }
+
+  return projectSessionInfo(slot, undefined)
+}
+
 export function useSessionInfo(instanceId?: InstanceId): {
   info: ComputedRef<SessionInfo>
 } {
   const { id: activeId } = useActiveInstance()
-  const { profiles, selected } = useProfiles()
+  const { profiles } = useProfiles()
 
   const info = computed<SessionInfo>(() => {
     const resolvedId = instanceId ?? activeId.value
     const slot = resolvedId ? states.get(resolvedId) : undefined
-    const activeProfile = profiles.value.find((p) => p.id === selected.value)
+    const slotProfile = slot?.profileId ? profiles.value.find((p) => p.id === slot.profileId) : undefined
 
-    return {
-      title: slot?.title,
-      updatedAt: slot?.updatedAt,
-      cwd: slot?.cwd,
-      agent: slot?.agent ?? activeProfile?.agent,
-      mode: slot?.mode,
-      model: slot?.model ?? activeProfile?.model,
-      availableModes: slot?.availableModes ?? [],
-      availableModels: slot?.availableModels ?? [],
-      mcpsCount: slot?.mcpsCount ?? 0,
-      restored: slot?.restored ?? false,
-      restoring: slot?.restoring ?? false,
-      gitStatus: slot?.gitStatus
-    }
+    return projectSessionInfo(slot, slotProfile)
   })
 
   return { info }

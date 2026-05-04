@@ -105,6 +105,14 @@ pub enum InstanceEvent {
         /// as `TranscriptItem::Unknown` so the wire shape stays
         /// forward-compatible without bricking sessions.
         item: TranscriptItem,
+        /// `_meta` envelope pass-through from the originating
+        /// `session/update` notification — vendor-specific extension
+        /// data that lives outside the typed protocol shapes.
+        /// Observability surface today; no UI consumer this PR. Future
+        /// per-vendor UI hooks plug in by reading this field without
+        /// another wire change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<serde_json::Value>,
     },
     PermissionRequest {
         agent_id: String,
@@ -123,12 +131,14 @@ pub enum InstanceEvent {
         /// re-parsing the collapsed `args` summary.
         #[serde(default, skip_serializing_if = "Option::is_none", rename = "rawInput")]
         raw_input: Option<serde_json::Value>,
-        /// Joined text from the tool-call's `content[]` blocks. Some
-        /// agents (claude-code's `Switch mode`) ship the markdown body
-        /// here instead of on `raw_input`; the UI reads as a fallback
-        /// when the rawInput shape-detector misses.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        content_text: Option<String>,
+        /// Raw `tool_call.content[]` blocks (pass-through of the ACP
+        /// wire shape — `{ type: 'content' | 'diff' | 'terminal', … }`).
+        /// Some agents (claude-code's `Switch mode`) ship the markdown
+        /// body here instead of on `raw_input`; the UI walks the array
+        /// directly to render text / diff / terminal blocks without
+        /// server-side joining.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<serde_json::Value>,
         options: Vec<PermissionOptionView>,
     },
     /// A `session/prompt` request was accepted by the actor — the
@@ -234,6 +244,14 @@ pub enum InstanceEvent {
     InstanceMeta {
         agent_id: String,
         instance_id: String,
+        /// Spawning profile id, when one resolved during ensure
+        /// (`Some`); `None` for bare-agent spawns. Carried on every
+        /// InstanceMeta refresh so the header chrome can render the
+        /// focused instance's profile pill — distinct from the user's
+        /// persisted profile picker (which only changes on explicit
+        /// selection, not on focus shifts).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         cwd: String,

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use directories::BaseDirs;
+use path_absolutize::Absolutize;
 
 const APP_NAME: &str = "hyprpilot";
 
@@ -59,4 +60,24 @@ pub fn socket_path() -> PathBuf {
 
 pub fn log_dir() -> PathBuf {
     state_dir().join("logs")
+}
+
+/// Captain-supplied path → fully resolved `PathBuf`. Two passes:
+/// (1) `shellexpand::full` for `~` + `$VAR` / `${VAR}` substitution,
+/// (2) `path-absolutize` for `./` / `../` collapse + cwd-relative
+/// resolution. Order matters — absolutize doesn't know `~` is special,
+/// so shellexpand has to substitute first.
+///
+/// Both passes are best-effort: a failed `shellexpand` (undefined var,
+/// broken `~`) keeps the raw string, and a failed absolutize keeps
+/// whatever shellexpand produced. Captains see the bad path land
+/// downstream as a "no such file" rather than spawn-time refusal.
+pub fn resolve_user(s: &str) -> PathBuf {
+    let expanded = shellexpand::full(s)
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| s.to_owned());
+    Path::new(&expanded)
+        .absolutize()
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| PathBuf::from(expanded))
 }

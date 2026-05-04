@@ -79,8 +79,22 @@ const formatters: Record<string, Formatters> = {
 }
 
 export function format(call: WireToolCall, adapter?: AdapterId): ToolCallView {
-  const wireName = call.title ?? ''
-  const canon = canonicalise(wireName)
+  // Routing key — prefer the frozen `wireName` (set on the first
+  // `tool_call.start` and never overwritten) over `title`. opencode
+  // rewrites `title` to a prose state-title on every update (e.g.
+  // `task` → `Find files matching pattern`), which would otherwise
+  // collapse the formatter dispatch to the generic fallback.
+  const wireName = call.wireName ?? call.title ?? ''
+  // Two dispatch passes: (1) the ACP `kind` discriminator
+  // (`read`/`edit`/`execute`/…) routes to the canonical family
+  // formatter — works even when the agent ships a long descriptive
+  // title like `"Write /tmp/foo.txt"` that snakeCase would mangle
+  // into a non-matching `write_tmp_foo_txt`. (2) Title-based
+  // canonicalisation as fallback for vendor-native PascalCase names
+  // (`MultiEdit` / `WebFetch`) that don't have a matching ACP kind
+  // keyword.
+  const titleCanon = canonicalise(wireName)
+  const kindCanon = canonicalise(call.kind)
   const ctx: FormatterContext = {
     name: wireName,
     args: normaliseArgs(call.rawInput),
@@ -89,13 +103,13 @@ export function format(call: WireToolCall, adapter?: AdapterId): ToolCallView {
     adapter
   }
 
-  const entry = formatters[canon]
+  const entry = formatters[titleCanon] ?? formatters[kindCanon]
 
   if (entry) {
     return entry(adapter).format(ctx)
   }
 
-  if (isMcpName(canon)) {
+  if (isMcpName(titleCanon) || isMcpName(kindCanon)) {
     return mcp(adapter).format(ctx)
   }
 
