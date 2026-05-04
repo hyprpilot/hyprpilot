@@ -65,8 +65,6 @@ impl CompletionSource for SkillsSource {
             trigger_offset: sigil_idx,
             cursor,
             query: token.to_string(),
-            sigil: Some('#'),
-            manual: false,
         })
     }
 
@@ -185,7 +183,6 @@ mod tests {
         assert_eq!(ctx.trigger_offset, 6);
         assert_eq!(ctx.cursor, cursor);
         assert_eq!(ctx.query, "git");
-        assert_eq!(ctx.sigil, Some('#'));
     }
 
     #[test]
@@ -224,8 +221,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 4,
             query: "git".into(),
-            sigil: Some('#'),
-            manual: false,
         };
         let items = source.fetch(ctx, None, Arc::new(AtomicBool::new(false))).await.unwrap();
         // Both git-* skills match; docker-up doesn't.

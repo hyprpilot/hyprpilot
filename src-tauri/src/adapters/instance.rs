@@ -140,6 +140,11 @@ pub enum InstanceEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<serde_json::Value>,
         options: Vec<PermissionOptionView>,
+        /// Daemon-authored presentation view, formatted from `tool` +
+        /// `kind` + `raw_input` + `content` via the formatter
+        /// registry. The UI renders this verbatim on the permission
+        /// row / modal — no client-side formatting fallback.
+        formatted: crate::tools::formatter::types::FormattedToolCall,
     },
     /// A `session/prompt` request was accepted by the actor — the
     /// frontend uses `turn_id` to group every subsequent `Transcript`

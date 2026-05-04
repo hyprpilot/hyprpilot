@@ -18,6 +18,11 @@ import {
 } from '@composables'
 import { InstanceState } from '@ipc'
 
+const fmt = {
+  title: 'bash',
+  fields: []
+}
+
 vi.mock('@ipc', async() => {
   const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
 
@@ -99,12 +104,13 @@ describe('usePhase', () => {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hi' }
     })
-    pushToolCall('A', 's-a', {
+    pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'bash',
       kind: 'bash',
-      status: 'running'
+      status: 'running',
+      formatted: fmt
     })
 
     const { phase } = usePhase()
@@ -116,13 +122,15 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
-    pushToolCall('A', 's-a', {
+    pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'bash',
-      status: 'running'
+      status: 'running',
+      formatted: fmt
     })
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
       kind: 'bash',
@@ -133,7 +141,8 @@ describe('usePhase', () => {
           name: 'Allow',
           kind: 'y'
         }
-      ]
+      ],
+      formatted: fmt
     })
 
     const { phase } = usePhase()
@@ -176,12 +185,13 @@ describe('usePhase', () => {
     // locks forever on the resumed session.
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushToolCall('A', 's-a', {
+    pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-replayed',
       title: 'bash',
       kind: 'bash',
-      status: 'in_progress'
+      status: 'in_progress',
+      formatted: fmt
     })
 
     const { phase } = usePhase()

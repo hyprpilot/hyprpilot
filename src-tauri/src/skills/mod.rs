@@ -166,14 +166,6 @@ impl SkillsRegistry {
         }
     }
 
-    /// Configured skills roots — exposed for diagnostics and for the
-    /// reload UI (so the palette can name the paths it'll re-scan).
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn dirs(&self) -> &[PathBuf] {
-        &self.dirs
-    }
-
     /// Rescan the on-disk layout; replace the in-memory table on
     /// success. Roots are processed in `dirs` order — earlier roots
     /// win on slug collision.

@@ -217,6 +217,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             desktop::get_home_dir,
             desktop::get_daemon_cwd,
             desktop::get_git_status,
+            desktop::paths_resolve,
             desktop::daemon_rpc,
             desktop::read_file_for_attachment,
             adapter_commands::session_submit,
@@ -245,6 +246,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             crate::completion::commands::completion_query,
             crate::completion::commands::completion_resolve,
             crate::completion::commands::completion_cancel,
+            crate::completion::commands::completion_rank,
             crate::completion::commands::get_completion_config,
         ])
         .setup(move |app| {
@@ -654,15 +656,34 @@ fn build_completion_registry(
 
 /// Resolve the skills roots, honouring `HYPRPILOT_SKILLS_DIR` first
 /// so manual smoke tests can point at a throwaway directory without
-/// editing `config.toml`. Falls back to `[skills] dirs` (each entry
-/// tilde-expanded) — defaults seed `~/.config/hyprpilot/skills`.
+/// editing `config.toml`. Then unions `[skills] dirs` (root-level)
+/// with every `[[profiles]] skills` path so captains who only
+/// configure skills per-profile still see them in the composer's
+/// `#` autocomplete. Per-profile skills the agent receives at session
+/// spawn are unaffected — this just widens the *display catalog* the
+/// global `SkillsRegistry` walks, not the profile→agent injection
+/// path.
 fn resolve_skills_dirs(cfg: &Config) -> Vec<PathBuf> {
     if let Ok(raw) = std::env::var("HYPRPILOT_SKILLS_DIR") {
         if !raw.is_empty() {
             return vec![PathBuf::from(raw)];
         }
     }
-    cfg.skills.resolved_dirs()
+    let mut dirs = cfg.skills.resolved_dirs();
+    for profile in &cfg.profiles {
+        let Some(profile_skills) = &profile.skills else {
+            continue;
+        };
+        for path in profile_skills {
+            let expanded = shellexpand::full(&path.to_string_lossy())
+                .map(|s| PathBuf::from(s.into_owned()))
+                .unwrap_or_else(|_| path.clone());
+            if !dirs.contains(&expanded) {
+                dirs.push(expanded);
+            }
+        }
+    }
+    dirs
 }
 
 /// Drain adapter instances, then kick Tauri's teardown. Called by

@@ -397,7 +397,10 @@ pub(crate) fn collect_collision_scopes(cfg: &KeymapsConfig) -> Vec<CollisionScop
                 ("close", cfg.palette.close.as_ref()),
             ],
         ),
-        ("palette.instances", vec![("focus", cfg.palette.instances.focus.as_ref())]),
+        (
+            "palette.instances",
+            vec![("focus", cfg.palette.instances.focus.as_ref())],
+        ),
         ("transcript", vec![]),
         ("window", vec![("toggle", cfg.window.toggle.as_ref())]),
         (

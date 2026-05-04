@@ -11,6 +11,7 @@ import {
   setInstanceAgent,
   setInstanceCwd,
   setInstanceMcpsCount,
+  setInstanceName,
   setInstanceProfile,
   setSessionRestoring,
   setSessionTitleFromPrompt,
@@ -27,7 +28,9 @@ import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone, CancelToastBody } from '@components'
 import {
   InstanceState,
+  invoke,
   listen,
+  TauriCommand,
   TauriEvent,
   TerminalChunkKind,
   TranscriptItemKind,
@@ -38,6 +41,20 @@ import {
   type UnlistenFn
 } from '@ipc'
 import { log } from '@lib'
+
+async function seedInstanceNames(): Promise<void> {
+  try {
+    const r = await invoke(TauriCommand.InstancesList)
+
+    for (const entry of r.instances) {
+      if (entry.name !== undefined && entry.name.length > 0) {
+        setInstanceName(entry.instanceId, entry.name)
+      }
+    }
+  } catch(err) {
+    log.warn('instance-name seed: instances_list failed', { err: String(err) })
+  }
+}
 
 export const lastInstanceState = ref<InstanceStateEventPayload>()
 
@@ -50,13 +67,15 @@ function routePermission(payload: PermissionRequestEventPayload): void {
     contentBlocks: payload.content?.length ?? 0
   })
   pushPermissionRequest(payload.instanceId, payload.sessionId, {
+    agentId: payload.agentId,
     requestId: payload.requestId,
     tool: payload.tool,
     kind: payload.kind,
     args: payload.args,
     rawInput: payload.rawInput,
     content: payload.content,
-    options: payload.options
+    options: payload.options,
+    formatted: payload.formatted
   })
 }
 
@@ -73,7 +92,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
  * variants on `TranscriptItem` today.
  */
 function routeTranscript(payload: TranscriptEventPayload): void {
-  const { instanceId, sessionId, item } = payload
+  const { agentId, instanceId, sessionId, item } = payload
 
   switch (item.kind) {
     case TranscriptItemKind.UserPrompt:
@@ -151,28 +170,30 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       return
 
     case TranscriptItemKind.ToolCall:
-      pushToolCall(instanceId, sessionId, {
+      pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call',
         toolCallId: item.id,
         kind: item.toolKind,
         title: item.title,
         status: item.state,
         rawInput: item.rawInput,
-        content: item.content
-      } as Parameters<typeof pushToolCall>[2])
+        content: item.content,
+        formatted: item.formatted
+      } as Parameters<typeof pushToolCall>[3])
 
       return
 
     case TranscriptItemKind.ToolCallUpdate:
-      pushToolCall(instanceId, sessionId, {
+      pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call_update',
         toolCallId: item.id,
         kind: item.toolKind,
         title: item.title,
         status: item.state,
         rawInput: item.rawInput,
-        content: item.content
-      } as Parameters<typeof pushToolCall>[2])
+        content: item.content,
+        formatted: item.formatted
+      } as Parameters<typeof pushToolCall>[3])
 
       return
 
@@ -382,8 +403,21 @@ export async function startSessionStream(): Promise<() => void> {
       } else if (currentModelId) {
         pushInstanceModelState(instanceId, { currentModelId })
       }
+    }),
+    await listen(TauriEvent.AcpInstanceRenamed, (e) => {
+      // Captain-set name updates (`hyprpilot ctl instances rename`)
+      // — `name` undefined when cleared. Drives the header's leftmost
+      // pill: when present it replaces the profile pill so the captain
+      // reads their own slug instead of the upstream profile id.
+      setInstanceName(e.payload.instanceId, e.payload.name)
     })
   )
+
+  // Seed names for already-running instances on overlay open. The
+  // rename event only fires on changes — without this, an instance
+  // renamed before the overlay attached would render with no name
+  // until the captain renames it again.
+  void seedInstanceNames()
 
   return () => {
     for (const u of unlisteners) {

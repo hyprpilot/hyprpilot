@@ -306,20 +306,15 @@ function applyCompletion(): void {
     void invoke(TauriCommand.ReadFileForAttachment, { path })
       .then((res) => {
         const filename = (path.split('/').pop() || path).slice(0, 48)
-        const slug = `file:${path}`
         const truncatedNote = res.truncated ? ' (truncated)' : ''
+        const slug = `file:${path}${truncatedNote}`
 
-        composer.addPill({
-          kind: ComposerPillKind.Resource,
-          id: slug,
-          label: `${filename}${truncatedNote}`,
-          data: slug,
-          mimeType: 'file'
-        })
-        // Also push to the skill-attachment queue so the wire layer
-        // ships the body alongside the user turn (same path skills
-        // use). `useAttachments` is instance-scoped; the composer
-        // submit consumes from there.
+        // Push to the wire-side attachment queue. `attachmentPills`
+        // (computed off `attachments.pending`) projects this onto a
+        // visible pill in `pillsToRender` — calling `composer.addPill`
+        // on top would render the file twice (one for each list).
+        // `useAttachments` is the single-source-of-truth for both
+        // display and wire transmission.
         attachments.add({
           slug,
           path: res.path,

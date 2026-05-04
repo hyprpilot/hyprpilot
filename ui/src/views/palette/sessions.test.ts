@@ -173,7 +173,7 @@ describe('openSessionsLeaf', () => {
     const spec = stack.value[0]!
 
     expect(spec.onDelete).toBeDefined()
-    spec.onDelete?.(spec.entries[0]!)
+    spec.onDelete?.(spec.entries[0]!, () => {})
 
     const loadCall = invokeMock.mock.calls.find((c: unknown[]) => c[0] === TauriCommand.SessionLoad)
 

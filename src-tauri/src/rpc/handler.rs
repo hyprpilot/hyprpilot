@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 
 use crate::adapters::Adapter;
 use crate::config::Config;
-use crate::rpc::protocol::{RequestId, RpcError, StatusResult};
+use crate::rpc::protocol::{RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
 
 /// Per-connection context handed to `RpcHandler::handle`. Groups the
@@ -34,10 +34,6 @@ pub struct HandlerCtx<'a> {
     /// briefly to clone what they need. Config is static after daemon
     /// start; restart-to-change is the model.
     pub config: Option<Arc<RwLock<Config>>>,
-    /// Request id of the in-flight call. Handlers read it for logging /
-    /// tracing spans; unused by routing.
-    #[allow(dead_code)]
-    pub id: &'a RequestId,
     /// Whether this connection has already subscribed to `status/changed`.
     /// Threaded in by the server so `StatusHandler` can reject a second
     /// subscribe on the same socket with `-32600`.
@@ -53,8 +49,8 @@ pub struct HandlerCtx<'a> {
 /// Outcome returned by a handler. Most calls are a plain `Reply(Value)`;
 /// `status/subscribe` returns the snapshot + a broadcast receiver so
 /// the server can pin the receiver onto the connection task and fan
-/// `status/changed` notifications out as they arrive.
-#[allow(clippy::large_enum_variant)]
+/// `status/changed` notifications out as they arrive. The receiver
+/// boxes to keep `Reply` (the hot path) compact.
 pub enum HandlerOutcome {
     Reply(Value),
     /// `status/subscribe` — initial snapshot + a broadcast receiver
@@ -62,7 +58,7 @@ pub enum HandlerOutcome {
     /// snapshot as the call's JSON-RPC response, then drives the
     /// receiver in the connection's `select!` to push `status/changed`
     /// notifications.
-    StatusSubscribed(Value, broadcast::Receiver<StatusResult>),
+    StatusSubscribed(Value, Box<broadcast::Receiver<StatusResult>>),
 }
 
 /// A unit of RPC work, keyed by the namespace prefix of its method names.

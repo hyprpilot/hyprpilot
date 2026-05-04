@@ -1,14 +1,18 @@
 import { invoke, TauriCommand, type Theme } from '@ipc'
 
 /**
- * Builds the CSS custom property name from a token path. Segments named
- * `default` or `bg` are treated as the group's primary role and dropped
- * from the variable name — so `fg.default` → `--theme-fg`,
- * `permission.bg` → `--theme-permission`, `permission.bg_active` →
- * `--theme-permission-active`.
+ * Builds the CSS custom property name from a token path. The
+ * `default` segment is treated as a group's primary role and dropped:
+ * `fg.default` → `--theme-fg`. Every other segment (including `bg`)
+ * stays in the name so siblings under the same group don't collide
+ * — `surface.default` → `--theme-surface`, `surface.bg` →
+ * `--theme-surface-bg`, `permission.bg` → `--theme-permission-bg`.
+ * Earlier "bg drops too" shape collapsed sibling tokens onto the
+ * same name (last-write-wins) and silently broke `var(--theme-…-bg)`
+ * consumers.
  */
 function cssVarName(parts: string[]): string {
-  const kept = parts.filter((p) => p !== 'default' && p !== 'bg').map((p) => p.replaceAll('_', '-'))
+  const kept = parts.filter((p) => p !== 'default').map((p) => p.replaceAll('_', '-'))
 
   return `--theme-${kept.join('-')}`
 }

@@ -48,6 +48,19 @@ export interface CompletionQueryArgs {
   sources?: CompletionSourceId[]
 }
 
+/**
+ * One candidate row passed to `completion/rank`. The daemon ranks
+ * `label` against the typed query; on commit, the picked row's
+ * `id` lands in `CompletionItem.replacement.text` so the caller
+ * can route to its own commit handler without re-deriving identity
+ * from the rendered label.
+ */
+export interface CandidateItem {
+  id: string
+  label: string
+  description?: string
+}
+
 export interface CompletionQueryResponse {
   requestId: string
   sourceId: CompletionSourceId | null

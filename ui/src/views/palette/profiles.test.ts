@@ -162,7 +162,7 @@ describe('buildProfilesPaletteSpec', () => {
       onSelect
     })
 
-    spec.onDelete?.({ id: 'ask', name: 'ask' })
+    spec.onDelete?.({ id: 'ask', name: 'ask' }, () => {})
     expect(onSelect).not.toHaveBeenCalled()
     expect(pushToastMock).toHaveBeenCalledTimes(1)
     expect(pushToastMock.mock.calls[0]?.[1]).toMatch(/K-280/)

@@ -78,13 +78,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::adapters::{
-        AcpAdapter, Adapter, DefaultPermissionController, PermissionController, PermissionOptionView,
-        PermissionOutcome, PermissionRequest, ToolCallRef,
+    use crate::adapters::permission::{
+        DefaultPermissionController, PermissionController, PermissionOptionView, PermissionOutcome, PermissionRequest,
+        ToolCallRef,
     };
+    use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
     use crate::rpc::handler::HandlerCtx;
-    use crate::rpc::protocol::RequestId;
+
     use crate::rpc::status::StatusBroadcast;
 
     fn options() -> Vec<PermissionOptionView> {
@@ -127,14 +128,12 @@ mod tests {
             controller,
         ));
         let status = StatusBroadcast::new(true);
-        let id = RequestId::Number(1);
         let dyn_adapter: Arc<dyn Adapter> = adapter.clone();
         let ctx = HandlerCtx {
             app: None,
             status: &status,
             adapter: dyn_adapter,
             config: Some(shared),
-            id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,

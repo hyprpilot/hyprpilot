@@ -1,5 +1,6 @@
 export * from './use-active-instance'
 export * from './use-adapter'
+export * from './use-agent-registry'
 export * from './use-home-dir'
 export * from './use-keymaps'
 export * from './use-stick-to-bottom'

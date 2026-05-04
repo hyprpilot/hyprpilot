@@ -1,7 +1,7 @@
 /**
- * Future-proofed presentation hint for chat-pill rendering. One
- * variant today; future shapes (compact / banner / inline-no-chrome)
- * slot in as additional members without reshaping `ToolCallView`.
+ * Pill-style discriminator for chat-surface rendering. UI-only —
+ * presentation chrome lives on the frontend now (the daemon emits
+ * content; consumers layer presentation).
  */
 export enum PillKind {
   Default = 'default'

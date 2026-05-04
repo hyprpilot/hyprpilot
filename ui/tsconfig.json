@@ -22,8 +22,6 @@
       "@ipc/*": ["./src/ipc/*"],
       "@lib": ["./src/lib"],
       "@lib/*": ["./src/lib/*"],
-      "@ui": ["./src/components/ui"],
-      "@ui/*": ["./src/components/ui/*"],
       "@components": ["./src/components"],
       "@components/*": ["./src/components/*"],
       "@composables": ["./src/composables"],
@@ -34,6 +32,8 @@
       "@interfaces/*": ["./src/interfaces/*"],
       "@constants": ["./src/constants"],
       "@constants/*": ["./src/constants/*"],
+      "@adapters": ["./src/adapters"],
+      "@adapters/*": ["./src/adapters/*"],
       "@assets/*": ["./src/assets/*"]
     }
   },

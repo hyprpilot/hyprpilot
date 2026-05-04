@@ -72,7 +72,17 @@ export interface PaletteSpec {
    * authoritative.
    */
   onQueryChange?: (query: string, update: (entries: PaletteEntry[]) => void) => void
-  onDelete?: (entry: PaletteEntry) => void | Promise<void>
+  /**
+   * Ctrl+D handler. Receives the highlighted entry plus an
+   * `update(entries)` callback the leaf calls to swap the spec's
+   * entries reactively after a delete (e.g. instances palette
+   * dropping a shut-down row). The callback is mandatory for any
+   * leaf that mutates state — calling `spec.entries = next` on the
+   * captured local literal bypasses Vue's reactive proxy and the
+   * filter watcher never re-fires, leaving the palette showing stale
+   * rows. Same pattern as `onQueryChange`.
+   */
+  onDelete?: (entry: PaletteEntry, update: (entries: PaletteEntry[]) => void) => void | Promise<void>
   /**
    * `true` while the spec's entries are still being fetched. The
    * palette swaps the empty-state row for an inline <Loading>
@@ -85,11 +95,11 @@ export interface PaletteSpec {
   /** Status text rendered next to the inline spinner. */
   status?: string
   /**
-   * Skip the client-side Fuse filter — the spec's entries are already
-   * server-pre-filtered against the typed query (cwd path completion,
-   * future ripgrep/grep-like leaves) and re-filtering against the
-   * raw query string would over-prune. Static leaves leave this
-   * unset.
+   * Skip the daemon-side `completion/rank` call — the spec's entries
+   * are already server-pre-filtered against the typed query (cwd
+   * path completion, future ripgrep/grep-like leaves) and ranking
+   * the basenames against a full path query would over-prune.
+   * Static leaves leave this unset.
    */
   filtered?: boolean
 }

@@ -199,10 +199,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::adapters::{AcpAdapter, Adapter, DefaultPermissionController, PermissionController};
+    use crate::adapters::permission::{DefaultPermissionController, PermissionController};
+    use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
     use crate::rpc::handler::HandlerCtx;
-    use crate::rpc::protocol::RequestId;
+
     use crate::rpc::status::StatusBroadcast;
 
     async fn dispatch(method: &str, params: Value) -> Value {
@@ -213,14 +214,12 @@ mod tests {
             Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>,
         ));
         let status = StatusBroadcast::new(true);
-        let id = RequestId::Number(1);
         let dyn_adapter: Arc<dyn Adapter> = adapter.clone();
         let ctx = HandlerCtx {
             app: None,
             status: &status,
             adapter: dyn_adapter,
             config: Some(shared),
-            id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,

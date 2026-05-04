@@ -2,7 +2,7 @@
 import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons'
 import { computed, ref, watch } from 'vue'
 
-import ToolSpecSheet from './ToolSpecSheet.vue'
+import ToolBody from './ToolBody.vue'
 import { ToolState, toolStateTone, type ToolCallView } from '@components'
 
 /**
@@ -50,7 +50,7 @@ const isInteractive = computed(() => hasBody.value)
 </script>
 
 <template>
-  <span class="tool-pill" :data-state="view.state" :data-expanded="expanded" :data-type="view.type" :style="{ '--tone': stateTone }">
+  <span class="tool-pill" :data-state="view.state" :data-expanded="expanded" :data-kind="view.kind" :style="{ '--tone': stateTone }">
     <span
       class="tool-pill-header"
       :role="isInteractive ? 'button' : undefined"
@@ -70,7 +70,7 @@ const isInteractive = computed(() => hasBody.value)
     </span>
 
     <div v-if="expanded && hasBody" class="tool-pill-body">
-      <ToolSpecSheet :description="view.description" :output="view.output" :fields="view.fields" />
+      <ToolBody :view="view" />
     </div>
   </span>
 </template>

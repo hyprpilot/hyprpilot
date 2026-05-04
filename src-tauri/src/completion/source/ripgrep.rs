@@ -105,8 +105,6 @@ impl CompletionSource for RipgrepSource {
             trigger_offset: start,
             cursor,
             query: token.to_string(),
-            sigil: None,
-            manual,
         })
     }
 
@@ -326,8 +324,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 5,
             query: "hel".into(),
-            sigil: None,
-            manual: true,
         };
         let items = source
             .fetch(ctx, Some(dir.path()), Arc::new(AtomicBool::new(false)))
@@ -353,8 +349,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 5,
             query: "hel".into(),
-            sigil: None,
-            manual: true,
         };
         let items = source.fetch(ctx, Some(dir.path()), cancel).await.unwrap();
         // Cancel flag was true from the start; walker exits immediately.

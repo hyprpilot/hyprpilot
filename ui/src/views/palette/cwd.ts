@@ -12,18 +12,14 @@
  * query still commits on Enter so the captain isn't forced to
  * pick from a list.
  *
- * Validation is client-side only — the path must look absolute or
- * resolve relative to the active-instance cwd. Real existence-check
- * happens on the Rust side at restart time (`instance_restart`
- * returns `-32602` for non-existent dirs); we surface those failures
- * via a `ToastTone.Err` toast.
- *
- * The follow-up `~/.config/hyprpilot/recent-cwds.toml` config knob
- * is out of scope for this MR — see the K-266 issue for the spec.
+ * Path resolution (`~` expansion, `${VAR}` interpolation, relative→
+ * absolute against the active-instance cwd) lives daemon-side via
+ * `paths_resolve`. The frontend just reads the resolved value back
+ * and the home-substituted display form.
  */
 
 import { ToastTone } from '@components'
-import { truncateCwd, useActiveInstance, useCwdHistory, useHomeDir, usePalette, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
+import { useActiveInstance, useCwdHistory, useHomeDir, usePalette, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -31,73 +27,24 @@ const COMPLETION_ROW_PREFIX = 'cwd-complete:'
 const RECENT_ROW_PREFIX = 'cwd-recent:'
 const COMPLETION_DEBOUNCE_MS = 120
 
-function expandTilde(path: string, home?: string): string {
-  if (!home) {
-    return path
-  }
-
-  if (path === '~') {
-    return home
-  }
-
-  if (path.startsWith('~/')) {
-    return `${home}${path.slice(1)}`
-  }
-
-  return path
-}
-
-/**
- * Resolve a captain-typed path to an absolute one. `~` expands against
- * `$HOME`; relative paths (`./foo`, `../bar`, bare `foo`) resolve
- * against `cwdBase` (the active instance's cwd). Already-absolute
- * paths pass through. Returns undefined when the input can't be
- * resolved (no cwdBase + relative input, or empty after trim).
- */
-function resolveAbsolute(rawPath: string, home: string | undefined, cwdBase: string | undefined): string | undefined {
-  const trimmed = rawPath.trim()
-
-  if (!trimmed) {
-    return undefined
-  }
-
-  if (trimmed.startsWith('/')) {
-    return trimmed
-  }
-
-  if (trimmed === '~' || trimmed.startsWith('~/')) {
-    return expandTilde(trimmed, home)
-  }
-
-  if (!cwdBase) {
-    return undefined
-  }
-  const base = cwdBase.endsWith('/') ? cwdBase.slice(0, -1) : cwdBase
-
-  if (trimmed.startsWith('./')) {
-    return `${base}/${trimmed.slice(2)}`
-  }
-
-  if (trimmed === '.') {
-    return base
-  }
-
-  return `${base}/${trimmed}`
-}
-
-function shortenForToast(path: string, home?: string): string {
-  return truncateCwd(path, 40, home)
-}
-
 async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
   const { id: activeId } = useActiveInstance()
-  const { homeDir } = useHomeDir()
+  const { displayPath } = useHomeDir()
   const { push } = useCwdHistory()
   const toasts = useToasts()
 
-  const expanded = resolveAbsolute(rawPath, homeDir.value, cwdBase)
+  let absolute: string | null
 
-  if (!expanded) {
+  try {
+    absolute = await invoke(TauriCommand.PathsResolve, { raw: rawPath, cwdBase })
+  } catch(err) {
+    log.warn('palette-cwd: paths_resolve failed', { err: String(err) })
+    toasts.push(ToastTone.Err, `cwd: resolve failed: ${String(err)}`)
+
+    return
+  }
+
+  if (!absolute) {
     toasts.push(ToastTone.Warn, `cwd: '${rawPath.trim()}' could not be resolved`)
 
     return
@@ -111,9 +58,9 @@ async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
   }
 
   try {
-    await invoke(TauriCommand.InstanceRestart, { instanceId, cwd: expanded })
-    push(expanded)
-    toasts.push(ToastTone.Ok, `cwd → ${shortenForToast(expanded, homeDir.value)}`)
+    await invoke(TauriCommand.InstanceRestart, { instanceId, cwd: absolute })
+    push(absolute)
+    toasts.push(ToastTone.Ok, `cwd → ${displayPath(absolute)}`)
   } catch(err) {
     log.warn('palette-cwd: instance_restart failed', { err: String(err) })
     toasts.push(ToastTone.Err, `cwd failed: ${String(err)}`)
@@ -175,15 +122,56 @@ async function fetchPathCompletions(query: string, cwdBase?: string): Promise<Pa
   }
 }
 
+/**
+ * Fuzzy-rank the captain's recent cwds via `completion/rank`. Empty
+ * query → identity order (MRU). Non-empty query → daemon's nucleo
+ * matcher ranks recents against the typed text. Same RPC any other
+ * caller-supplied candidate list lands on; identical ranking
+ * across UI / Neovim plugin / future frontends.
+ */
+async function rankRecents(query: string, recents: string[], displayPath: (p: string | undefined) => string): Promise<PaletteEntry[]> {
+  if (recents.length === 0) {
+    return []
+  }
+  const candidates = recents.map((cwd) => ({
+    id: cwd,
+    label: displayPath(cwd),
+    description: cwd
+  }))
+
+  try {
+    const r = await invoke(TauriCommand.CompletionRank, { query, candidates })
+
+    if (!r || !Array.isArray(r.items)) {
+      return []
+    }
+
+    return r.items.map((item) => ({
+      id: `${RECENT_ROW_PREFIX}${item.replacement.text}`,
+      name: item.label,
+      description: item.detail ?? item.replacement.text,
+      kind: 'recent'
+    }))
+  } catch(err) {
+    log.debug('palette-cwd: rank failed', { err: String(err) })
+
+    return []
+  }
+}
+
 export function openCwdLeaf(): void {
   const { open } = usePalette()
   const { history } = useCwdHistory()
-  const { homeDir } = useHomeDir()
+  const { displayPath } = useHomeDir()
   const { info: sessionInfo } = useSessionInfo()
 
-  const recentEntries: PaletteEntry[] = history.value.map((cwd) => ({
+  // Initial state: recents in MRU order, projected synchronously
+  // so first paint has rows. Empty-query rank is identity, so we
+  // skip the round-trip — captain hasn't typed anything to fuzzy-
+  // match against.
+  const initialRecents: PaletteEntry[] = history.value.map((cwd) => ({
     id: `${RECENT_ROW_PREFIX}${cwd}`,
-    name: truncateCwd(cwd, 60, homeDir.value),
+    name: displayPath(cwd),
     description: cwd
   }))
 
@@ -193,10 +181,11 @@ export function openCwdLeaf(): void {
     mode: PaletteMode.Input,
     title: 'cwd',
     placeholder: 'absolute or relative path…',
-    entries: recentEntries,
-    // Server-pre-filtered: directory completions arrive already
-    // pruned against the typed query. Skip the Fuse pass that would
-    // re-filter basenames against the raw path the captain typed.
+    entries: initialRecents,
+    // Server-pre-filtered: directory completions + recents arrive
+    // already ranked against the typed query. Skip the generic
+    // `completion/rank` pass that would re-rank basenames against
+    // the raw path query.
     filtered: true,
     onQueryChange(query, update) {
       if (debounceTimer !== undefined) {
@@ -205,16 +194,22 @@ export function openCwdLeaf(): void {
       const trimmed = query.trim()
 
       if (trimmed.length === 0) {
-        // Empty query → restore the recent list. Empty list with no
-        // recents is fine: Input mode hides the "no matches"
-        // empty-state, captain just sees the bare input.
-        update(recentEntries)
+        update(initialRecents)
 
         return
       }
       debounceTimer = setTimeout(() => {
-        void fetchPathCompletions(trimmed, sessionInfo.value.cwd).then((completions) => {
-          update(completions)
+        // Path completions (live disk walk) + recents (captain
+        // history fuzzy-ranked against query) co-exist on the same
+        // typed input. Captain typing `proj` sees both "proj/ in
+        // cwd" (path source) and "/home/cenk/work/proj" from MRU
+        // (recents source). Paths render first since they're more
+        // immediately actionable.
+        const recentsP = rankRecents(trimmed, history.value, displayPath)
+        const pathsP = fetchPathCompletions(trimmed, sessionInfo.value.cwd)
+
+        void Promise.all([pathsP, recentsP]).then(([paths, recents]) => {
+          update([...paths, ...recents])
         })
       }, COMPLETION_DEBOUNCE_MS)
     },

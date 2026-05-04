@@ -86,7 +86,6 @@ mod dispatcher_tests {
     use super::*;
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
-    use crate::rpc::protocol::RequestId;
     use crate::rpc::status::StatusBroadcast;
     use serde_json::json;
 
@@ -94,7 +93,6 @@ mod dispatcher_tests {
     /// Handlers that need the Tauri app surface `-32603`; everything
     /// else drives its handler to completion.
     async fn call(dispatcher: &RpcDispatcher, broadcast: &StatusBroadcast, method: &str, params: Value) -> Value {
-        let id = RequestId::Number(1);
         let config = Arc::new(std::sync::RwLock::new(Config::default()));
         let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
         let adapter: Arc<dyn Adapter> = acp.clone();
@@ -103,7 +101,6 @@ mod dispatcher_tests {
             status: broadcast,
             adapter,
             config: Some(config),
-            id: &id,
             already_subscribed: false,
             started_at: None,
             socket_path: None,
@@ -246,7 +243,6 @@ mod dispatcher_tests {
     async fn dispatch_status_subscribe_twice_is_invalid_request() {
         let dispatcher = RpcDispatcher::with_defaults();
         let broadcast = StatusBroadcast::new(true);
-        let id = RequestId::Number(2);
         let config = Arc::new(std::sync::RwLock::new(Config::default()));
         let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
         let adapter: Arc<dyn Adapter> = acp.clone();
@@ -255,7 +251,6 @@ mod dispatcher_tests {
             status: &broadcast,
             adapter,
             config: Some(config),
-            id: &id,
             already_subscribed: true,
             started_at: None,
             socket_path: None,

@@ -21,6 +21,11 @@ import { BreadcrumbPill, Phase, phaseToCssSuffix, type BreadcrumbCount, type Git
 const props = withDefaults(
   defineProps<{
     profile: string
+    /// Captain-set instance name. When present the leftmost row-1
+    /// pill renders this (the captain's own slug); profile pill
+    /// shifts to its right. When `undefined` the profile pill stays
+    /// leftmost — same legacy shape.
+    name?: string
     phase?: Phase
     modeTag?: string
     provider?: string
@@ -67,8 +72,24 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   <section class="frame" :style="{ '--frame-phase': phaseColor }" data-testid="frame">
     <header class="frame-header">
       <div class="frame-row frame-row-1">
-        <button type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="profile" @click="emit('pillClick', 'profile')">
+        <!-- Captain-set name takes the leftmost slot when present:
+             the dot+phase color stays here (it's the active-instance
+             marker). Profile pill becomes a secondary breadcrumb to
+             its right. When no name is set, the profile pill keeps
+             the dot — legacy shape. -->
+        <button v-if="name" type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="instance name" @click="emit('pillClick', 'profile')">
           <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
+          {{ name }}
+        </button>
+        <button
+          type="button"
+          class="frame-profile-pill"
+          :style="!name ? { backgroundColor: phaseColor } : undefined"
+          :data-secondary="Boolean(name)"
+          aria-label="profile"
+          @click="emit('pillClick', 'profile')"
+        >
+          <span v-if="!name" class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
           {{ profile }}
         </button>
         <button v-if="provider" type="button" class="frame-adapter-pill" aria-label="adapter" @click="emit('pillClick', 'provider')">
@@ -209,6 +230,15 @@ html:not([data-window-anchor]) .frame {
   color: var(--theme-fg-on-tone);
   font-family: var(--theme-font-mono);
   cursor: pointer;
+}
+
+/* Secondary profile pill (rendered to the right of a captain-set
+ * name): drops the phase fill, becomes a quieter breadcrumb so the
+ * captain's slug stays the visual anchor. */
+.frame-profile-pill[data-secondary='true'] {
+  background-color: var(--theme-surface);
+  color: var(--theme-accent);
+  border: 1px solid var(--theme-border-soft);
 }
 
 .frame-profile-dot {

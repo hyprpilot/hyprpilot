@@ -17,6 +17,7 @@ type RegistryState<'a> = State<'a, Arc<CompletionRegistry>>;
 type CancellationsState<'a> = State<'a, Arc<CompletionCancellations>>;
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn completion_query(
     registry: RegistryState<'_>,
     cancellations: CancellationsState<'_>,
@@ -24,17 +25,28 @@ pub async fn completion_query(
     cursor: usize,
     cwd: Option<PathBuf>,
     manual: Option<bool>,
-    #[allow(non_snake_case)] _instanceId: Option<String>,
-    // `sources` — whitelist of source ids (e.g. `["path"]`) to
-    // consider. When `Some`, sources whose id isn't in the list
-    // are skipped during detect. `None` (or omitted) leaves the
-    // full registry walk intact. Drives palette modes that want
-    // autocomplete from a specific source only — e.g. cwd palette
-    // → `["path"]`.
+    // `_instance_id` on the wire — Tauri infers `instanceId` (camelCase)
+    // for the JS invoke shape. Currently unused on the daemon side
+    // (the registry's `detect` is instance-agnostic) but kept on the
+    // wire for forward-compat.
+    #[allow(unused_variables)] instance_id: Option<String>,
+    // Whitelist of source ids (`["path"]`) to consider. When `Some`,
+    // sources whose id isn't in the list are skipped during detect.
+    // Drives palette modes wanting a single source — cwd palette
+    // passes `["path"]`.
     sources: Option<Vec<String>>,
 ) -> Result<Value, String> {
+    let _ = instance_id;
     let request_id = uuid::Uuid::new_v4().to_string();
     let manual = manual.unwrap_or(false);
+    tracing::trace!(
+        request_id,
+        text_len = text.len(),
+        cursor,
+        manual,
+        sources = ?sources,
+        "cmd::completion_query"
+    );
 
     let detected = registry.detect_filtered(&text, cursor, manual, sources.as_deref());
     let (source, ctx) = match detected {
@@ -72,26 +84,43 @@ pub async fn completion_query(
 #[tauri::command]
 pub async fn completion_resolve(
     registry: RegistryState<'_>,
-    #[allow(non_snake_case)] resolveId: String,
-    #[allow(non_snake_case)] sourceId: String,
+    resolve_id: String,
+    source_id: String,
 ) -> Result<Value, String> {
     let source = registry
-        .source_by_id(&sourceId)
-        .ok_or_else(|| format!("unknown source_id: {sourceId}"))?;
+        .source_by_id(&source_id)
+        .ok_or_else(|| format!("unknown source_id: {source_id}"))?;
     let documentation = source
-        .resolve(&resolveId)
+        .resolve(&resolve_id)
         .await
         .map_err(|e| format!("completion/resolve: {e}"))?;
     Ok(json!({ "documentation": documentation }))
 }
 
 #[tauri::command]
-pub async fn completion_cancel(
-    cancellations: CancellationsState<'_>,
-    #[allow(non_snake_case)] requestId: String,
-) -> Result<Value, String> {
-    let cancelled = cancellations.cancel(&requestId);
+pub async fn completion_cancel(cancellations: CancellationsState<'_>, request_id: String) -> Result<Value, String> {
+    let cancelled = cancellations.cancel(&request_id);
     Ok(json!({ "cancelled": cancelled }))
+}
+
+/// Rank `candidates` against `query` via the candidates source.
+/// Distinct from `completion/query`: discovery sources walk the
+/// world to find candidates; this one ranks a caller-supplied
+/// list. Same `CompletionItem[]` output shape so the popover
+/// state machine doesn't branch.
+#[tauri::command]
+pub async fn completion_rank(
+    query: String,
+    candidates: Vec<crate::completion::source::candidates::CandidateItem>,
+) -> Result<Value, String> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let items = crate::completion::source::candidates::rank_candidates(&query, &candidates);
+    Ok(json!({
+        "requestId": request_id,
+        "sourceId": "candidates",
+        "replacementRange": null,
+        "items": items,
+    }))
 }
 
 /// Snapshot of the captain's `[completion]` config block. UI reads

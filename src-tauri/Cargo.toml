@@ -54,6 +54,7 @@ grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 path-absolutize = "3.1.1"
 git2 = { version = "0.20.4", default-features = false }
+convert_case = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

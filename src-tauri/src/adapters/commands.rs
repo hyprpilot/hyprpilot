@@ -31,7 +31,7 @@ pub async fn session_submit(
     adapter: AdapterState<'_>,
     hydrators: HydratorsState<'_>,
     text: String,
-    #[allow(non_snake_case)] attachments: Option<Vec<Attachment>>,
+    attachments: Option<Vec<Attachment>>,
     instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,

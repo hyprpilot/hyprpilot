@@ -10,7 +10,6 @@ import {
   setInstanceGitStatus,
   setInstanceProfile,
   setSessionRestored,
-  truncateCwd,
   useActiveInstance,
   useSessionInfo
 } from '@composables'
@@ -241,28 +240,3 @@ describe('setSessionRestored', () => {
   })
 })
 
-describe('truncateCwd', () => {
-  it('returns short paths unchanged', () => {
-    expect(truncateCwd('/tmp', 32)).toBe('/tmp')
-  })
-
-  it('collapses the home prefix to ~', () => {
-    expect(truncateCwd('/home/cenk/dev/x', 32, '/home/cenk')).toBe('~/dev/x')
-  })
-
-  it('middle-ellipsises long paths keeping the head segment + last two', () => {
-    const result = truncateCwd('/home/cenk/dev/utils/hyprpilot/src-tauri/src/adapters', 32, '/home/cenk')
-
-    expect(result).toBe('~/\u2026/src/adapters')
-  })
-
-  it('keeps the path as-is when middle truncation would not save bytes', () => {
-    const path = '/a/b/c/d'
-
-    expect(truncateCwd(path, 4)).toBe('/a/b/c/d')
-  })
-
-  it('does not collapse to ~ when home is the empty string', () => {
-    expect(truncateCwd('/home/cenk/dev', 32, '')).toBe('/home/cenk/dev')
-  })
-})

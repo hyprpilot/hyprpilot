@@ -1,16 +1,27 @@
 //! Per-vendor ACP adapters.
 
-mod claude_code;
-mod codex;
-mod opencode;
+pub mod claude_code;
+pub mod codex;
+pub mod opencode;
 
 use tokio::process::Command;
 
 use crate::config::{AgentConfig, AgentProvider};
+use crate::tools::formatter::registry::FormatterRegistry;
 
 pub use self::claude_code::AcpAgentClaudeCode;
 pub use self::codex::AcpAgentCodex;
 pub use self::opencode::AcpAgentOpenCode;
+
+/// Walk every vendor module and let it land its per-tool formatter
+/// overrides on the supplied registry. Called once at registry
+/// construction; idempotent (each vendor's `register_all` is keyed,
+/// last write wins).
+pub fn register_all_formatters(reg: &mut FormatterRegistry) {
+    claude_code::formatters::register_all(reg);
+    codex::formatters::register_all(reg);
+    opencode::formatters::register_all(reg);
+}
 
 /// Per-vendor pre-spawn model injection knob. Three flavors:
 /// - `None` — vendor doesn't accept a model override.

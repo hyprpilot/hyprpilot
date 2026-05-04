@@ -5,8 +5,10 @@
 //! is the adapter that owns the error mapping into
 //! `agent_client_protocol::Error`.
 
+pub mod formatter;
 pub mod fs;
 pub mod git;
+pub mod path;
 pub mod sandbox;
 pub mod terminal;
 

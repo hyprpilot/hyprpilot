@@ -79,13 +79,9 @@ function onRowClick(sessionId: string | undefined): void {
         <span class="idle-sessions-cell idle-sessions-cwd">{{ s.cwd }}</span>
         <span class="idle-sessions-cell idle-sessions-doing">—</span>
       </div>
-      <div v-if="totalSessionCount > sessions.length" class="idle-sessions-more">
-        +{{ totalSessionCount - sessions.length }} more — Ctrl+K → sessions
-      </div>
+      <div v-if="totalSessionCount > sessions.length" class="idle-sessions-more">+{{ totalSessionCount - sessions.length }} more</div>
     </div>
-    <div class="idle-kbd-hint">
-      <kbd class="idle-kbd">Ctrl+K</kbd><span class="idle-kbd-label">command palette.</span>
-    </div>
+    <div class="idle-kbd-hint"><kbd class="idle-kbd">Ctrl+K</kbd><span class="idle-kbd-label">command palette.</span></div>
   </section>
 </template>
 

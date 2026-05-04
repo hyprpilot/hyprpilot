@@ -15,7 +15,7 @@
 import InstancesPreview from './InstancesPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useActiveInstance, type InstanceId } from '@composables'
-import { useHomeDir, usePhase, useQueue, truncateCwd, useSessionInfo, useTerminals, pushToast } from '@composables'
+import { useHomeDir, usePhase, useQueue, useSessionInfo, useTerminals, pushToast } from '@composables'
 import { TauriCommand } from '@ipc'
 import { type InstanceListEntry } from '@ipc'
 import { invoke } from '@ipc/bridge'
@@ -25,7 +25,7 @@ interface InstanceRow extends PaletteEntry {
   raw: InstanceListEntry
 }
 
-function rowFor(entry: InstanceListEntry, homeDir: string | undefined): InstanceRow {
+function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined) => string): InstanceRow {
   const { id: activeId } = useActiveInstance()
   const { info } = useSessionInfo(entry.instanceId)
   const { items } = useQueue(entry.instanceId)
@@ -47,7 +47,9 @@ function rowFor(entry: InstanceListEntry, homeDir: string | undefined): Instance
   const cwd = info.value.cwd
 
   if (cwd) {
-    meta.push(truncateCwd(cwd, 32, homeDir))
+    // Display-friendly: home → ~ substitution. Chrome's CSS
+    // `text-overflow: ellipsis` handles overflow at row width.
+    meta.push(displayPath(cwd))
   }
 
   if (info.value.mode) {
@@ -108,7 +110,7 @@ export async function shutdownInstance(id: InstanceId): Promise<void> {
 
 export async function openInstancesLeaf(): Promise<void> {
   const palette = usePalette()
-  const { homeDir } = useHomeDir()
+  const { displayPath } = useHomeDir()
 
   const instances = await fetchInstances()
 
@@ -128,7 +130,7 @@ export async function openInstancesLeaf(): Promise<void> {
     return
   }
 
-  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, homeDir.value))
+  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, displayPath))
   const spec = {
     mode: PaletteMode.Select,
     title: 'instances',
@@ -145,28 +147,33 @@ export async function openInstancesLeaf(): Promise<void> {
       }
       void focusInstance(pick.id)
     },
-    async onDelete(entry: PaletteEntry) {
+    async onDelete(entry: PaletteEntry, update: (entries: PaletteEntry[]) => void) {
       if (entry.id === 'instances-empty') {
         return
       }
       await shutdownInstance(entry.id)
-      // Re-fetch + swap the spec's entries in place so the captain
-      // sees the updated registry without re-opening the palette.
-      // Empty result collapses to the no-live-instances row so the
-      // palette doesn't render a stale list.
+      // Re-fetch + push through the reactive `update` callback so
+      // the captain sees the updated registry without re-opening
+      // the palette. Mutating `spec.entries = ...` on the captured
+      // literal bypasses Vue's proxy — usePaletteFilter never re-
+      // fires and the row list goes stale.
       const next = await fetchInstances()
 
       if (next.length === 0) {
-        spec.entries = [
+        update([
           {
             id: 'instances-empty',
             name: 'no live instances.'
           }
-        ]
+        ])
 
         return
       }
-      spec.entries = next.map((i) => rowFor(i, homeDir.value))
+      update(next.map((i) => rowFor(i, displayPath)))
+      // Preview's a separate component instance bound via spec.preview;
+      // its data lands through `props` which already reads from
+      // `instances` via the InstancesPreview component. Re-binding
+      // here means the preview-pane updates alongside the row list.
       spec.preview.props.items = next
     }
   } satisfies PaletteSpec

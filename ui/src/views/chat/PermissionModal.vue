@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import ToolSpecSheet from './ToolSpecSheet.vue'
-import { Button, ButtonTone, ButtonVariant, MarkdownBody, Modal, ToastTone } from '@components'
+import ToolBody from './ToolBody.vue'
+import { Button, ButtonTone, ButtonVariant, Modal, ToastTone } from '@components'
 import type { PermissionView } from '@components'
 
 /**
@@ -37,9 +37,6 @@ const emit = defineEmits<{
   reply: [optionId: string]
   dismiss: []
 }>()
-
-const description = computed(() => props.view.call.description)
-const hasSpec = computed(() => Boolean(props.view.call.output) || (props.view.call.fields !== undefined && props.view.call.fields.length > 0))
 
 interface ButtonView {
   optionId: string
@@ -80,8 +77,7 @@ const buttons = computed<ButtonView[]>(() =>
         @click="emit('reply', b.optionId)"
       >{{ b.label }}</Button>
     </template>
-    <MarkdownBody v-if="description" :source="description" />
-    <ToolSpecSheet v-if="hasSpec" :output="view.call.output" :fields="view.call.fields" />
+    <ToolBody :view="view.call" />
   </Modal>
 </template>
 

@@ -44,9 +44,10 @@ impl StatusBroadcast {
     }
 
     /// Update the snapshot and broadcast to all subscribers.
-    /// Returns `true` if at least one subscriber received the notification.
-    /// Used in tests today; K-239's ACP bridge will drive this in production.
-    #[allow(dead_code)]
+    /// Returns `true` if at least one subscriber received the
+    /// notification. Test-only today; K-239's ACP bridge will drive
+    /// this in production via a non-test caller.
+    #[cfg(test)]
     pub fn set(&self, next: StatusResult) -> bool {
         let mut guard = self.snapshot.lock().expect("StatusBroadcast snapshot lock poisoned");
         *guard = next.clone();

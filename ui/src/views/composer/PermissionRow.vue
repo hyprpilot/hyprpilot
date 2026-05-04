@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import ToolSpecSheet from '../chat/ToolSpecSheet.vue'
+import ToolBody from '../chat/ToolBody.vue'
 import type { PermissionView } from '@components'
 
 /**
@@ -88,8 +88,8 @@ const buttons = computed<ButtonView[]>(() =>
         </button>
       </div>
     </header>
-    <div v-if="view.call.fields || view.call.description || view.call.output" class="permission-row-body">
-      <ToolSpecSheet :description="view.call.description" :output="view.call.output" :fields="view.call.fields" />
+    <div class="permission-row-body">
+      <ToolBody :view="view.call" />
     </div>
   </article>
 </template>

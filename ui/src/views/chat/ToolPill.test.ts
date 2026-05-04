@@ -3,12 +3,12 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import ToolPill from './ToolPill.vue'
-import { PermissionUi, PillKind, ToolState, ToolType, type ToolCallView } from '@components'
+import { PermissionUi, PillKind, ToolKind, ToolState, type ToolCallView } from '@components'
 
 function makeView(overrides: Partial<ToolCallView> = {}): ToolCallView {
   return {
     id: 'tc-1',
-    type: ToolType.Read,
+    kind: ToolKind.Read,
     name: 'Read',
     state: ToolState.Done,
     icon: faTerminal,
@@ -16,6 +16,7 @@ function makeView(overrides: Partial<ToolCallView> = {}): ToolCallView {
     permissionUi: PermissionUi.Row,
     title: 'read · src/App.vue',
     stat: '74 ms',
+    fields: [],
     ...overrides
   }
 }
@@ -29,7 +30,7 @@ describe('ToolPill.vue', () => {
     expect(wrapper.text()).toContain('read · src/App.vue')
     expect(wrapper.text()).toContain('74 ms')
     expect(wrapper.attributes('data-state')).toBe('done')
-    expect(wrapper.attributes('data-type')).toBe(ToolType.Read)
+    expect(wrapper.attributes('data-kind')).toBe(ToolKind.Read)
   })
 
   it('reflects state on the data attribute', () => {

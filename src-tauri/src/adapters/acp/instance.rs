@@ -265,6 +265,13 @@ pub struct MetaSnapshot {
 /// land in the transcript; metadata updates (`session_info_update`,
 /// `current_mode_update`) are routed to dedicated `InstanceEvent`
 /// variants instead since they aren't transcript content.
+/// `Transcript` carries the full `TranscriptItem` enum (~250 bytes
+/// for the largest variant: `ToolCall` with embedded `FormattedToolCall`).
+/// Sibling variants (`SessionInfo`, `CurrentMode`, `AvailableCommands`)
+/// are smaller; boxing the larger one would force a heap allocation
+/// for every transcript chunk on the hot path. The size disparity is
+/// the cost of the wire-shape simplicity.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum MappedUpdate {
     Transcript(crate::adapters::TranscriptItem),
     SessionInfo {
@@ -289,7 +296,38 @@ pub(crate) struct MappedSessionUpdate {
     pub meta: Option<serde_json::Value>,
 }
 
-pub(crate) fn map_session_update(update: serde_json::Value) -> MappedSessionUpdate {
+/// Per-id running tool-call state — feeds the formatter on every
+/// `tool_call_update` so the `formatted` snapshot reflects merged
+/// state, not just the delta. Owned by the per-instance notification
+/// task; cleared on session boundary (load_session swap, shutdown).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RunningToolCall {
+    pub wire_name: String,
+    pub tool_kind: String,
+    pub raw_input: Option<serde_json::Value>,
+    pub content: Vec<serde_json::Value>,
+}
+
+pub(crate) type ToolCallCache = std::collections::HashMap<String, RunningToolCall>;
+
+fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::formatter::types::FormattedToolCall {
+    use crate::tools::formatter::registry::FormatterContext;
+    let registry = crate::adapters::acp::formatter_registry();
+    let ctx = FormatterContext {
+        wire_name: running.wire_name.as_str(),
+        kind: running.tool_kind.as_str(),
+        raw_input: running.raw_input.as_ref(),
+        adapter: adapter_id,
+        content: &running.content,
+    };
+    registry.dispatch(&ctx)
+}
+
+pub(crate) fn map_session_update(
+    update: serde_json::Value,
+    tool_calls: &mut ToolCallCache,
+    adapter_id: &str,
+) -> MappedSessionUpdate {
     use crate::adapters::{
         Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
         ToolCallUpdateRecord, TranscriptItem,
@@ -515,6 +553,20 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedSessionUpda
                 content_blocks = content.len(),
                 "acp::instance: tool_call payload (formatter input)"
             );
+            // Update the per-id running cache so future updates
+            // re-format against merged state.
+            let running = RunningToolCall {
+                wire_name: title.clone(),
+                tool_kind: tool_kind.clone(),
+                raw_input: raw_input.clone(),
+                content: update
+                    .get("content")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            let formatted = format_running(adapter_id, &running);
+            tool_calls.insert(id.clone(), running);
             MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
                 tool_kind,
@@ -522,6 +574,7 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedSessionUpda
                 state,
                 raw_input,
                 content,
+                formatted,
             }))
         }
         "tool_call_update" => {
@@ -545,6 +598,30 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedSessionUpda
                 content_blocks = content.len(),
                 "acp::instance: tool_call_update payload (formatter input)"
             );
+            // Merge delta into the running cache — every Some-value
+            // patches; raw `content` from the wire appends. `wire_name`
+            // is captured once on the initial `tool_call` and stays
+            // frozen: the first observation is the tool's identity
+            // ("Bash", "Read", "mcp__server__leaf"), later updates
+            // re-purpose `title` as a verbose human display string
+            // ("bash · ls /tmp") that would defeat per-(adapter,
+            // wire_name) formatter dispatch if we let it through.
+            let running = tool_calls.entry(id.clone()).or_default();
+            if running.wire_name.is_empty() {
+                if let Some(t) = title.as_deref() {
+                    running.wire_name = t.to_string();
+                }
+            }
+            if let Some(k) = tool_kind.as_deref() {
+                running.tool_kind = k.to_string();
+            }
+            if let Some(rv) = raw_input.as_ref() {
+                running.raw_input = Some(rv.clone());
+            }
+            if let Some(arr) = update.get("content").and_then(|v| v.as_array()) {
+                running.content.extend(arr.iter().cloned());
+            }
+            let formatted = format_running(adapter_id, running);
             MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
                 tool_kind,
@@ -552,6 +629,7 @@ pub(crate) fn map_session_update(update: serde_json::Value) -> MappedSessionUpda
                 state,
                 raw_input,
                 content,
+                formatted,
             }))
         }
         "plan" => {
@@ -898,18 +976,18 @@ impl AcpInstance {
     /// `mcps_override` is the per-instance MCP enabled-list override;
     /// `None` falls back to `profile.mcps`. `Some(vec![])` is the
     /// explicit "no MCPs" override.
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub fn start(
-        resolved: ResolvedInstance,
-        key: InstanceKey,
-        profile_id: Option<String>,
-        events_tx: broadcast::Sender<InstanceEvent>,
-        bootstrap: Bootstrap,
-        permissions: Arc<dyn PermissionController>,
-        mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
-        commands_cache: Option<crate::completion::source::commands::CommandsCache>,
-    ) -> Self {
+    pub fn start(params: StartParams) -> Self {
+        let StartParams {
+            resolved,
+            key,
+            profile_id,
+            events_tx,
+            bootstrap,
+            permissions,
+            mcps,
+            commands_cache,
+        } = params;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
         let initial = match &bootstrap {
             Bootstrap::Resume(id) => Some(SessionId::new(id.clone())),
@@ -942,17 +1020,17 @@ impl AcpInstance {
             name: Arc::new(tokio::sync::RwLock::new(None)),
         };
 
-        tokio::spawn(run(
+        tokio::spawn(run(RunParams {
             resolved,
             instance_id,
             cmd_rx,
             events_tx,
-            session_id,
+            session_id_slot: session_id,
             bootstrap,
             permissions,
             mcps,
             commands_cache,
-        ));
+        }));
 
         instance
     }
@@ -1005,20 +1083,49 @@ impl InstanceActor for AcpInstance {
 }
 
 /// The long-lived actor body. Owns the ACP `ConnectionTo<Agent>`,
-/// the child process, the dispatch loop. Spawned by
-/// [`AcpInstance::start`].
-#[allow(clippy::too_many_arguments)]
-async fn run(
+/// Params for `AcpInstance::start`. Captures everything an instance
+/// actor needs at construction time; same shape funnels into `run`
+/// via `RunParams`.
+pub struct StartParams {
+    pub resolved: ResolvedInstance,
+    pub key: InstanceKey,
+    pub profile_id: Option<String>,
+    pub events_tx: broadcast::Sender<InstanceEvent>,
+    pub bootstrap: Bootstrap,
+    pub permissions: Arc<dyn PermissionController>,
+    pub mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
+    pub commands_cache: Option<crate::completion::source::commands::CommandsCache>,
+}
+
+/// Internal `run` actor params — superset of `StartParams` with the
+/// command-channel receiver + the shared session-id slot the registry
+/// also reads.
+struct RunParams {
     resolved: ResolvedInstance,
     instance_id: String,
-    mut cmd_rx: mpsc::UnboundedReceiver<InstanceCommand>,
+    cmd_rx: mpsc::UnboundedReceiver<InstanceCommand>,
     events_tx: broadcast::Sender<InstanceEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
     commands_cache: Option<crate::completion::source::commands::CommandsCache>,
-) {
+}
+
+/// the child process, the dispatch loop. Spawned by
+/// [`AcpInstance::start`].
+async fn run(params: RunParams) {
+    let RunParams {
+        resolved,
+        instance_id,
+        mut cmd_rx,
+        events_tx,
+        session_id_slot,
+        bootstrap,
+        permissions,
+        mcps,
+        commands_cache,
+    } = params;
     let agent_id = resolved.agent.id.clone();
     let _ = events_tx.send(InstanceEvent::State {
         agent_id: agent_id.clone(),
@@ -1165,6 +1272,21 @@ async fn run(
     let agent_id_notif = agent_id.clone();
     let instance_id_notif = instance_id.clone();
     let session_id_forward = session_id_slot.clone();
+    // Per-instance running tool-call state — feeds the formatter on
+    // every `tool_call_update` so the snapshot reflects merged state
+    // (not just the delta). Lives for the actor's lifetime; cleared
+    // implicitly when the actor task exits.
+    let mut tool_call_cache: ToolCallCache = ToolCallCache::default();
+    // Adapter id for per-vendor formatter override dispatch — the
+    // `[[agents]] provider` string (acp-claude-code / acp-codex /
+    // acp-opencode / acp).
+    let provider_id_for_fmt: String = match cfg.provider {
+        crate::config::AgentProvider::AcpClaudeCode => "acp-claude-code",
+        crate::config::AgentProvider::AcpCodex => "acp-codex",
+        crate::config::AgentProvider::AcpOpenCode => "acp-opencode",
+        crate::config::AgentProvider::Acp => "acp",
+    }
+    .to_string();
     // Tracks the in-flight turn id so the notification / permission
     // arms of the dispatch loop can stamp events with it without
     // re-coordinating with the Prompt-handling task. Set when a
@@ -1177,17 +1299,13 @@ async fn run(
     // updates) arrives without a `Prompt` envelope. We mint a
     // *synthetic* turn id on the first transcript-shape notification
     // when no real turn is open, so the chat surface still groups the
-    // resulting items into a single block. `synthetic_turn_id` tracks
-    // the live synthetic id (so the idle timer below can verify
-    // nobody else took over before firing TurnEnded); the timer
-    // handle lets each subsequent update reset the close window.
+    // resulting items into a single block. The synthetic turn closes
+    // when a real `session/prompt` arrives and supersedes it (handled
+    // at the prompt-start site). No idle auto-close — reasoning
+    // models can pause arbitrarily between updates and we'd rather
+    // leave the indicator running than fire a false TurnEnded
+    // mid-thought.
     let synthetic_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
-    let mut synthetic_turn_idle: Option<tokio::task::JoinHandle<()>> = None;
-    /// Out-of-turn idle window — agent has 30s of silence before
-    /// the synthetic turn auto-closes. Long enough to span typical
-    /// tool call cycles, short enough the UI doesn't get stuck on
-    /// "running" for hours after a side-channel update.
-    const SYNTHETIC_TURN_IDLE_SECS: u64 = 30;
 
     // Bridge live terminal output → InstanceEvent::Terminal. The ACP
     // `terminal/output` request remains a polled snapshot path
@@ -1352,6 +1470,46 @@ async fn run(
                 // current selection; without reading it here the picker's
                 // `availableModels` stays empty even though the actor knows
                 // how to flip via `SetSessionModelRequest`.
+                // Captain-configured mode (`profile.mode`) wins when the
+                // agent advertised it. Mirrors the model branch below.
+                // Without this, the session boots in the agent's default
+                // mode (`default` for claude-code) regardless of profile
+                // setting — captain has to manually flip via the mode
+                // picker on every spawn.
+                if let Some(modes) = &new_session.modes {
+                    if let Some(want) = resolved_mode.as_deref() {
+                        let current = modes.current_mode_id.0.to_string();
+                        let advertised = modes.available_modes.iter().any(|m| m.id.0.as_ref() == want);
+                        if advertised && want != current {
+                            tracing::info!(
+                                agent = %agent_id_notif,
+                                instance = %instance_id_notif,
+                                session = %sid,
+                                from = %current,
+                                to = %want,
+                                "acp::instance: applying configured mode via session/set_mode"
+                            );
+                            let req = SetSessionModeRequest::new(
+                                sid.clone(),
+                                SessionModeId::from(std::sync::Arc::<str>::from(want)),
+                            );
+                            match connection.send_request(req).block_task().await {
+                                Ok(_) => {
+                                    *current_mode_meta.write().await = Some(want.to_string());
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        agent = %agent_id_notif,
+                                        session = %sid,
+                                        target_mode = %want,
+                                        %err,
+                                        "acp::instance: session/set_mode failed at spawn — keeping agent default"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(models) = &new_session.models {
                     let advertised: Vec<crate::adapters::SessionModelInfo> = models
                         .available_models
@@ -1430,11 +1588,13 @@ async fn run(
             }
             Bootstrap::Resume(sid) => {
                 let sid = SessionId::new(sid);
-                // Prefer the newer `session/resume` when advertised
-                // (lighter wire surface than `session/load` — agents
-                // that don't ship a full session-loader can still
-                // implement resume). Fall back to `session/load` for
-                // legacy agents that only carry `agent_capabilities.load_session`.
+                // Prefer `session/load` when advertised — it's the
+                // method that actually replays prior history as
+                // `session/update` notifications. claude-code-acp
+                // advertises `session/resume` too but resume returns
+                // success without re-streaming the transcript, so
+                // restored sessions render empty. Fall back to resume
+                // only for vendors that ship resume but not load.
                 if !resume_supported && !load_supported {
                     warn!(
                         agent = %agent_id_notif,
@@ -1460,7 +1620,31 @@ async fn run(
                 // got. Resume + Load share the same `modes` / `models`
                 // shape; collapse both branches via a tiny tuple to
                 // avoid duplicating the projection logic.
-                let (modes_state, models_state) = if resume_supported {
+                let (modes_state, models_state) = if load_supported {
+                    debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
+                    let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
+                    load_req.mcp_servers = mcp_servers.clone();
+                    let load_resp = match connection.send_request(load_req).block_task().await {
+                        Ok(resp) => resp,
+                        Err(err) => {
+                            warn!(agent = %agent_id_notif, %err, "acp::instance: session/load failed");
+                            let _ = events_tx_notif.send(InstanceEvent::State {
+                                agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
+                                session_id: Some(sid.0.to_string()),
+                                state: InstanceState::Error,
+                            });
+                            return Err(err);
+                        }
+                    };
+                    info!(
+                        agent = %agent_id_notif,
+                        instance = %instance_id_notif,
+                        session = %sid,
+                        "acp::instance: session/load accepted"
+                    );
+                    (load_resp.modes, load_resp.models)
+                } else {
                     use agent_client_protocol::schema::ResumeSessionRequest;
                     debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/resume");
                     let mut req = ResumeSessionRequest::new(sid.clone(), cwd.clone());
@@ -1485,30 +1669,6 @@ async fn run(
                         "acp::instance: session/resume accepted"
                     );
                     (resp.modes, resp.models)
-                } else {
-                    debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
-                    let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
-                    load_req.mcp_servers = mcp_servers.clone();
-                    let load_resp = match connection.send_request(load_req).block_task().await {
-                        Ok(resp) => resp,
-                        Err(err) => {
-                            warn!(agent = %agent_id_notif, %err, "acp::instance: session/load failed");
-                            let _ = events_tx_notif.send(InstanceEvent::State {
-                                agent_id: agent_id_notif.clone(),
-                                instance_id: instance_id_notif.clone(),
-                                session_id: Some(sid.0.to_string()),
-                                state: InstanceState::Error,
-                            });
-                            return Err(err);
-                        }
-                    };
-                    info!(
-                        agent = %agent_id_notif,
-                        instance = %instance_id_notif,
-                        session = %sid,
-                        "acp::instance: session/load accepted"
-                    );
-                    (load_resp.modes, load_resp.models)
                 };
                 // Mirror the Fresh path's `NewSessionResponse.modes/models`
                 // read against `(Resume|Load)SessionResponse`. Both
@@ -1557,6 +1717,52 @@ async fn run(
                         %err,
                         "acp::instance: post-load cancel notification failed (non-fatal)"
                     );
+                }
+                // Replay is a snapshot, not a live turn. The dispatch
+                // loop hasn't yet drained the queued session/update
+                // notifications (it can't — we're inside the request
+                // future), so any synthetic turn the replay will mint
+                // doesn't exist YET. Spawn a deferred close that fires
+                // after a short quiet window: by the time it runs the
+                // dispatch loop has processed the queued events + the
+                // synthetic turn id is set; we then emit TurnEnded so
+                // the UI's "running" indicator clears. The close
+                // checks `current_turn_id == synthetic_id` to avoid
+                // racing a real prompt that arrived in the interim.
+                {
+                    const REPLAY_DRAIN_QUIET_MS: u64 = 1500;
+                    let synth_slot = synthetic_turn_id.clone();
+                    let current_slot = current_turn_id.clone();
+                    let events = events_tx_notif.clone();
+                    let agent_id = agent_id_notif.clone();
+                    let instance_id = instance_id_notif.clone();
+                    let session_id = sid.0.to_string();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(REPLAY_DRAIN_QUIET_MS)).await;
+                        let synth = match synth_slot.write().await.take() {
+                            Some(s) => s,
+                            None => return,
+                        };
+                        let mut current_guard = current_slot.write().await;
+                        if current_guard.as_deref() == Some(synth.as_str()) {
+                            *current_guard = None;
+                        }
+                        drop(current_guard);
+                        debug!(
+                            agent = %agent_id,
+                            session = %session_id,
+                            turn = %synth,
+                            "acp::instance: closing synthetic turn after session restore replay"
+                        );
+                        let _ = events.send(InstanceEvent::TurnEnded {
+                            agent_id,
+                            instance_id,
+                            session_id,
+                            turn_id: synth,
+                            stop_reason: Some("replay_complete".into()),
+                            error: None,
+                        });
+                    });
                 }
                 // Resumed sessions already saw the system prompt in their
                 // original turn — re-injecting it on the first post-restore
@@ -1639,12 +1845,8 @@ async fn run(
                             });
                             // Real prompt — if a synthetic out-of-turn turn
                             // is open, close it cleanly before starting
-                            // the real one. Cancels the pending idle timer
-                            // so it doesn't fire later against a stale id.
+                            // the real one.
                             if let Some(prev) = synthetic_turn_id.write().await.take() {
-                                if let Some(h) = synthetic_turn_idle.take() {
-                                    h.abort();
-                                }
                                 debug!(
                                     agent = %agent_id_notif,
                                     session = %sid,
@@ -2065,29 +2267,15 @@ async fn run(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("<unknown>")
                                 .to_string();
-                            if update_kind == "agent_message_chunk" || update_kind == "user_message_chunk" {
-                                let chunk_len = update
-                                    .get("content")
-                                    .and_then(|c| c.get("text"))
-                                    .and_then(|v| v.as_str())
-                                    .map(str::len)
-                                    .unwrap_or(0);
-                                tracing::trace!(
-                                    agent = %agent_id_notif,
-                                    session = %sid,
-                                    update_kind,
-                                    chunk_len,
-                                    "acp::instance: session/update text chunk"
-                                );
-                            } else {
-                                debug!(
-                                    agent = %agent_id_notif,
-                                    session = %sid,
-                                    update_kind,
-                                    "acp::instance: session/update received"
-                                );
-                            }
-                            let MappedSessionUpdate { mapped, meta } = map_session_update(update);
+
+                            debug!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                update_kind,
+                                "acp::instance: session/update received"
+                            );
+                            let MappedSessionUpdate { mapped, meta } =
+                                map_session_update(update, &mut tool_call_cache, provider_id_for_fmt.as_str());
                             // Out-of-turn detection: if a transcript-shape
                             // update arrives without an open turn, mint a
                             // synthetic id + emit TurnStarted so the chat
@@ -2115,50 +2303,6 @@ async fn run(
                                     turn_id: synthetic.clone(),
                                 });
                                 turn_id = Some(synthetic);
-                            }
-                            // Refresh the auto-close timer if the active turn
-                            // is the synthetic one. Real turns close via the
-                            // session/prompt resolver — leave them alone.
-                            let active_synthetic = synthetic_turn_id.read().await.clone();
-                            if let (Some(active), Some(turn)) = (active_synthetic.as_deref(), turn_id.as_deref()) {
-                                if active == turn {
-                                    if let Some(h) = synthetic_turn_idle.take() {
-                                        h.abort();
-                                    }
-                                    let synth = active.to_string();
-                                    let current = current_turn_id.clone();
-                                    let synth_slot = synthetic_turn_id.clone();
-                                    let events_idle = events_tx_notif.clone();
-                                    let agent_idle = agent_id_notif.clone();
-                                    let instance_idle = instance_id_notif.clone();
-                                    let sid_idle = sid.clone();
-                                    synthetic_turn_idle = Some(tokio::spawn(async move {
-                                        tokio::time::sleep(std::time::Duration::from_secs(SYNTHETIC_TURN_IDLE_SECS)).await;
-                                        let mut current_guard = current.write().await;
-                                        if current_guard.as_deref() != Some(synth.as_str()) {
-                                            // Real prompt took over — silently bow out.
-                                            return;
-                                        }
-                                        *current_guard = None;
-                                        drop(current_guard);
-                                        *synth_slot.write().await = None;
-                                        debug!(
-                                            agent = %agent_idle,
-                                            instance = %instance_idle,
-                                            session = %sid_idle,
-                                            turn = %synth,
-                                            "acp::instance: synthetic turn auto-close (idle timeout)"
-                                        );
-                                        let _ = events_idle.send(InstanceEvent::TurnEnded {
-                                            agent_id: agent_idle,
-                                            instance_id: instance_idle,
-                                            session_id: sid_idle,
-                                            turn_id: synth,
-                                            stop_reason: Some("idle".into()),
-                                            error: None,
-                                        });
-                                    }));
-                                }
                             }
                             let evt: Option<InstanceEvent> = match mapped {
                                 MappedUpdate::Transcript(item) => Some(InstanceEvent::Transcript {
@@ -2226,6 +2370,18 @@ async fn run(
                                 "acp::instance: fan out permission prompt to UI"
                             );
                             let turn_id = current_turn_id.read().await.clone();
+                            let formatted = {
+                                use crate::tools::formatter::registry::FormatterContext;
+                                let registry = crate::adapters::acp::formatter_registry();
+                                let ctx = FormatterContext {
+                                    wire_name: tool.as_str(),
+                                    kind: kind.as_str(),
+                                    raw_input: raw_input.as_ref(),
+                                    adapter: provider_id_for_fmt.as_str(),
+                                    content: &content,
+                                };
+                                registry.dispatch(&ctx)
+                            };
                             let _ = events_tx_notif.send(InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
@@ -2238,6 +2394,7 @@ async fn run(
                                 raw_input,
                                 content,
                                 options,
+                                formatted,
                             });
                         }
                     }
@@ -2498,22 +2655,26 @@ mod tests {
         Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>
     }
 
+    fn dummy_start_params(id: &str, events_tx: broadcast::Sender<InstanceEvent>) -> StartParams {
+        StartParams {
+            resolved: dummy_resolved(id),
+            key: crate::adapters::InstanceKey::new_v4(),
+            profile_id: None,
+            events_tx,
+            bootstrap: Bootstrap::Fresh,
+            permissions: dummy_permissions(),
+            mcps: None,
+            commands_cache: None,
+        }
+    }
+
     /// Regression: starting against a child that exits immediately
     /// pushes an `Error` lifecycle event rather than hanging forever.
     /// Smoke-tests the actor shell without depending on a real agent.
     #[tokio::test(flavor = "multi_thread")]
     async fn dead_child_yields_error_state() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = AcpInstance::start(
-            dummy_resolved("ded"),
-            crate::adapters::InstanceKey::new_v4(),
-            None,
-            tx,
-            Bootstrap::Fresh,
-            dummy_permissions(),
-            None,
-            None,
-        );
+        let handle = AcpInstance::start(dummy_start_params("ded", tx));
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
@@ -2553,16 +2714,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn cancel_against_dead_session_does_not_panic() {
         let (tx, _rx) = broadcast::channel(8);
-        let handle = AcpInstance::start(
-            dummy_resolved("ded-cancel"),
-            crate::adapters::InstanceKey::new_v4(),
-            None,
-            tx,
-            Bootstrap::Fresh,
-            dummy_permissions(),
-            None,
-            None,
-        );
+        let handle = AcpInstance::start(dummy_start_params("ded-cancel", tx));
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -2578,16 +2730,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn list_only_against_dead_child_settles() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = AcpInstance::start(
-            dummy_resolved("ded-list"),
-            crate::adapters::InstanceKey::new_v4(),
-            None,
-            tx,
-            Bootstrap::ListOnly,
-            dummy_permissions(),
-            None,
-            None,
-        );
+        let handle = AcpInstance::start(StartParams {
+            bootstrap: Bootstrap::ListOnly,
+            ..dummy_start_params("ded-list", tx)
+        });
 
         let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
@@ -2678,16 +2824,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn resume_against_dead_child_reports_error() {
         let (tx, mut rx) = broadcast::channel(8);
-        let handle = AcpInstance::start(
-            dummy_resolved("ded-resume"),
-            crate::adapters::InstanceKey::new_v4(),
-            None,
-            tx,
-            Bootstrap::Resume("00000000-0000-0000-0000-000000000000".into()),
-            dummy_permissions(),
-            None,
-            None,
-        );
+        let handle = AcpInstance::start(StartParams {
+            bootstrap: Bootstrap::Resume("00000000-0000-0000-0000-000000000000".into()),
+            ..dummy_start_params("ded-resume", tx)
+        });
 
         let settled = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {

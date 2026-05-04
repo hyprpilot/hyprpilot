@@ -3,6 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useActiveInstance, evictPermission, pushPermissionRequest, resetPermissions, usePermissions } from '@composables'
 import { TauriCommand } from '@ipc'
 
+function fmt() {
+  return {
+    title: 'bash',
+    fields: []
+  }
+}
+
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
 
 vi.mock('@ipc/bridge', async() => ({
@@ -20,9 +27,10 @@ beforeEach(() => {
 
 function raw(requestId: string, overrides: Partial<{ tool: string; args: string; kind: string }> = {}) {
   return {
+    agentId: 'agent-A',
     requestId,
     tool: overrides.tool ?? 'bash',
-    kind: overrides.kind ?? 'bash',
+    kind: overrides.kind ?? 'execute',
     args: overrides.args ?? 'echo hi',
     options: [
       {
@@ -40,7 +48,8 @@ function raw(requestId: string, overrides: Partial<{ tool: string; args: string;
         name: 'Reject once',
         kind: 'reject_once'
       }
-    ]
+    ],
+    formatted: fmt()
   }
 }
 
@@ -102,12 +111,14 @@ describe('usePermissions', () => {
 
   it('routes plan-exit prompts to the modal queue', () => {
     pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
       requestId: 'plan-1',
-      tool: 'ExitPlanMode',
-      kind: 'switch_mode',
+      tool: 'EditFile',
+      kind: 'edit',
       args: '',
       rawInput: { plan: '# Plan\n\n- step 1\n- step 2' },
-      options: raw('plan-1').options
+      options: raw('plan-1').options,
+      formatted: fmt()
     })
 
     const { rowQueue, modalQueue } = usePermissions('A')

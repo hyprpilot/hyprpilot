@@ -1,9 +1,9 @@
-mod agents;
+pub mod agents;
 mod autostart;
-mod daemon;
-mod keymaps;
+pub mod daemon;
+pub mod keymaps;
 pub(crate) mod merge_strategies;
-mod theme;
+pub mod theme;
 mod validations;
 
 use std::fs;
@@ -17,20 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::paths;
 pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
-#[allow(unused_imports)]
-pub use daemon::{AnchorWindow, CenterWindow, Daemon, Dimension, Edge, Window, WindowMode};
-pub use keymaps::KeymapsConfig;
-#[allow(unused_imports)]
-pub use keymaps::{
-    ApprovalsKeymaps, Binding, ChatKeymaps, ComposerKeymaps, InstancesSubPaletteKeymaps, Key, Modifier, NamedKey,
-    PaletteKeymaps, TranscriptKeymaps,
-};
+pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
+pub use keymaps::{KeymapsConfig, Modifier};
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
-#[allow(unused_imports)]
-pub use theme::{
-    HexColor, Theme, ThemeAccent, ThemeBorder, ThemeFg, ThemeFont, ThemeKind, ThemePermission, ThemeState, ThemeStatus,
-    ThemeSurface, ThemeWindow, Ui,
-};
+pub use theme::{Theme, Ui};
 use validations::{
     validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
 };
@@ -259,6 +249,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::config::keymaps::{Binding, Key, NamedKey};
 
     fn write_tmp(name: &str, body: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -497,8 +488,7 @@ focus = { modifiers = ["ctrl"], key = "i" }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate()
-            .expect("palette vs palette.instances is cross-scope");
+        cfg.validate().expect("palette vs palette.instances is cross-scope");
         fs::remove_file(&p).ok();
     }
 

@@ -8,7 +8,7 @@ import { log, renderMarkdown } from '@lib'
  * Renders a markdown source through the shared Shiki + DOMPurify
  * pipeline, AND owns the fenced-code-block chrome (collapse caret +
  * copy button). Every consumer (Body.vue transcript bodies,
- * ToolSpecSheet.vue tool descriptions, Modal bodies, future surfaces)
+ * ToolBody.vue tool descriptions, Modal bodies, future surfaces)
  * gets the working chrome by default — there is no opt-in. Consumers
  * layer their own prose styling on top via `:deep(.markdown-body ...)`
  * scoped rules.

@@ -71,10 +71,14 @@ impl CompletionSource for PathSource {
             return None;
         }
         // Word-boundary check: char before the token must be
-        // whitespace or start-of-text.
+        // whitespace, start-of-text, or `@` (the composer's
+        // file-attachment trigger — captain types `@./foo.ts` to
+        // pick a file as a Wire attachment instead of pasting the
+        // path text). `@` was rejected as a non-whitespace boundary
+        // before, defeating the attachment flow entirely.
         if start > 0 {
             let before = bytes[start - 1] as char;
-            if !before.is_whitespace() {
+            if !before.is_whitespace() && before != '@' {
                 return None;
             }
         }
@@ -82,8 +86,6 @@ impl CompletionSource for PathSource {
             trigger_offset: start,
             cursor,
             query: token.to_string(),
-            sigil: token.chars().next(),
-            manual: false,
         })
     }
 
@@ -288,8 +290,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 2,
             query: "./".into(),
-            sigil: Some('.'),
-            manual: false,
         };
         let items = source
             .fetch(ctx, Some(dir.path()), Arc::new(AtomicBool::new(false)))
@@ -312,8 +312,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 3,
             query: "./.".into(),
-            sigil: Some('.'),
-            manual: false,
         };
         let items = source
             .fetch(ctx, Some(dir.path()), Arc::new(AtomicBool::new(false)))

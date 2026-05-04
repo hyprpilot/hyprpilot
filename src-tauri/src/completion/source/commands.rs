@@ -84,8 +84,6 @@ impl CompletionSource for CommandsSource {
             trigger_offset: slash_idx,
             cursor,
             query: text[slash_idx + 1..cursor].to_string(),
-            sigil: Some('/'),
-            manual: false,
         })
     }
 
@@ -185,7 +183,6 @@ mod tests {
         let ctx = source.detect("/he", 3, false).unwrap();
         assert_eq!(ctx.trigger_offset, 0);
         assert_eq!(ctx.query, "he");
-        assert_eq!(ctx.sigil, Some('/'));
     }
 
     #[test]
@@ -209,8 +206,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 1,
             query: String::new(),
-            sigil: Some('/'),
-            manual: false,
         };
         let items = source.fetch(ctx, None, Arc::new(AtomicBool::new(false))).await.unwrap();
         assert!(items.is_empty());
@@ -228,8 +223,6 @@ mod tests {
             trigger_offset: 0,
             cursor: 3,
             query: "cl".into(),
-            sigil: Some('/'),
-            manual: false,
         };
         let items = source.fetch(ctx, None, Arc::new(AtomicBool::new(false))).await.unwrap();
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();

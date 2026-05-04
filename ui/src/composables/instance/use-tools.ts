@@ -4,9 +4,8 @@ import { nextSeq } from './sequence'
 import { openTurnIdFor } from './use-turns'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation } from '@interfaces/ui'
+import type { FormattedToolCall } from '@interfaces/wire/formatted-tool-call'
 
-// Backwards-friendly local re-exports for files that imported the
-// wire-call types via `@composables`.
 export type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation }
 
 export interface ToolsState {
@@ -35,9 +34,14 @@ interface ToolCallUpdate {
   content?: WireToolCallContentBlock[]
   rawInput?: Record<string, unknown>
   locations?: WireToolCallLocation[]
+  /// Daemon-authored presentation snapshot. Always present on
+  /// `tool_call` and `tool_call_update` (the daemon recomputes
+  /// against merged state per delta); UI replaces the stored value
+  /// wholesale on each push.
+  formatted: FormattedToolCall
 }
 
-export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpdate): void {
+export function pushToolCall(id: InstanceId, agentId: string, sessionId: string, raw: ToolCallUpdate): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)
   const toolCallId = raw.toolCallId ?? `tc-${seq}`
@@ -48,15 +52,6 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
 
     if (raw.title !== undefined) {
       existing.title = raw.title
-
-      // wireName freezes at the FIRST title we see — opencode
-      // overwrites `title` with a prose state-title on every update
-      // (e.g. start title `task` → update title `Find files matching
-      // pattern`), which destroys formatter routing. Keep the
-      // first-observed string as the dispatch key forever.
-      if (!existing.wireName) {
-        existing.wireName = raw.title
-      }
     }
 
     if (raw.status !== undefined) {
@@ -78,21 +73,23 @@ export function pushToolCall(id: InstanceId, sessionId: string, raw: ToolCallUpd
     if (Array.isArray(raw.locations)) {
       existing.locations = raw.locations
     }
+    existing.formatted = raw.formatted
 
     return
   }
   slot.calls.push({
     id: `tc-${toolCallId}`,
+    agentId,
     sessionId,
     turnId: openTurnIdFor(id, sessionId),
     toolCallId,
-    wireName: raw.title,
     title: raw.title,
     status: raw.status,
     kind: raw.kind,
     content: Array.isArray(raw.content) ? raw.content : [],
     rawInput: raw.rawInput,
     locations: Array.isArray(raw.locations) ? raw.locations : undefined,
+    formatted: raw.formatted,
     createdAt: seq,
     updatedAt: seq
   })

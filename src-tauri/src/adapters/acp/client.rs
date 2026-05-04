@@ -116,14 +116,15 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
         let title = update.fields.title.clone();
         let kind_wire = update.fields.kind.as_ref().map(|k| tool_kind_wire(k).to_string());
-        let name = match kind_wire.as_deref() {
-            // Kind didn't classify (catch-all "other" or unmapped
-            // variant) — fall back to the title which carries the
-            // programmatic identifier for MCP tools and similar.
-            Some("other") | None => title.clone().or_else(|| kind_wire.clone()),
-            Some(_) => kind_wire.clone().or_else(|| title.clone()),
-        }
-        .unwrap_or_else(|| "tool".to_string());
+        // Prefer the agent's `title` — that's the tool's actual identity
+        // (`Bash`, `Read`, `mcp__server__leaf`). Kind is a *classification*
+        // (`execute`, `read`); using it as the dispatch key collapses every
+        // execute-kind tool to "execute · cmd" in the formatter and breaks
+        // glob-by-name in the trust store ("Bash*" never matches "execute").
+        let name = title
+            .clone()
+            .or_else(|| kind_wire.clone())
+            .unwrap_or_else(|| "tool".to_string());
         let raw_input = update.fields.raw_input.clone();
         let raw_args = raw_input.as_ref().and_then(|raw| {
             if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
@@ -601,7 +602,7 @@ mod tests {
     }
 
     fn sample_permission_request(kind: ToolKind) -> RequestPermissionRequest {
-        let fields = ToolCallUpdateFields::new().kind(kind).title("sample tool call");
+        let fields = ToolCallUpdateFields::new().kind(kind).title("Bash");
         RequestPermissionRequest::new(
             SessionId::new("sess-1"),
             ToolCallUpdate::new(ToolCallId::new("tc-1"), fields),
@@ -650,9 +651,12 @@ mod tests {
             other => panic!("expected PermissionRequested, got {other:?}"),
         };
         assert!(!request_id.is_empty());
-        assert_eq!(tool, "execute");
+        // `tool` is the agent's title (e.g. "Bash"); kind is the
+        // ACP-spec classification (`execute`).
+        assert_eq!(tool, "Bash");
         assert_eq!(kind, "execute");
-        assert_eq!(args, "execute");
+        // `args` falls back to the tool name when raw_args is unset.
+        assert_eq!(args, "Bash");
 
         // Drop the handle; rx close resolves request_permission to Cancelled.
         client
@@ -727,19 +731,27 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_ref_classified_kind_keeps_wire_name() {
-        // For tools the agent DID classify (Bash / Read / Edit / …)
-        // the wire kind stays as `name` so registered formatters
-        // key off the canonical kind. The title rides alongside
-        // for the human-readable summary.
-        let fields = ToolCallUpdateFields::new()
-            .kind(ToolKind::Execute)
-            .title("Run unit tests");
+    fn tool_call_ref_prefers_title_over_kind_wire() {
+        // The agent's `title` is the tool's actual identity (`Bash`,
+        // `Read`, `mcp__server__leaf`); kind is just a classification
+        // (`execute`, `read`). Formatter dispatch + trust-store globs
+        // both key on `name`, so we want the identity, not the verb.
+        let fields = ToolCallUpdateFields::new().kind(ToolKind::Execute).title("Bash");
+        let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
+        let tool_ref = ToolCallRef::from(&update);
+        assert_eq!(tool_ref.name, "Bash");
+        assert_eq!(tool_ref.kind_wire.as_deref(), Some("execute"));
+        assert_eq!(tool_ref.title.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn tool_call_ref_falls_back_to_kind_wire_without_title() {
+        // No title → fall back to the kind classification so glob
+        // matching still has something to work with.
+        let fields = ToolCallUpdateFields::new().kind(ToolKind::Execute);
         let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
         let tool_ref = ToolCallRef::from(&update);
         assert_eq!(tool_ref.name, "execute");
-        assert_eq!(tool_ref.kind_wire.as_deref(), Some("execute"));
-        assert_eq!(tool_ref.title.as_deref(), Some("Run unit tests"));
     }
 
     #[test]
