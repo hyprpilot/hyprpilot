@@ -86,8 +86,9 @@ beforeEach(async() => {
 
 // Realistic ACP option set: agent typically offers all four kinds
 // (`allow_once`, `allow_always`, `reject_once`, `reject_always`).
-// Tests use a stable subset and assert on the typed `kind` lookup
-// (keybind picks the first option matching `allow*` / `reject*`).
+// Keybind only fires the basic-once variants — `allow_always` /
+// `reject_always` mutate the trust store across sessions; too
+// destructive for a single keystroke.
 const SAMPLE_OPTIONS = [
   {
     optionId: 'allow-once-id', name: 'Allow once', kind: 'allow_once'
@@ -175,7 +176,7 @@ describe('Chat.vue — permission wiring', () => {
     wrapper.unmount()
   })
 
-  it('dispatches the first allow_* option via Ctrl+G', async() => {
+  it('dispatches the allow_once option via Ctrl+G', async() => {
     pushPermissionRequest('A', 's-a', {
       agentId: 'agent-A',
       requestId: 'req-1',
@@ -298,6 +299,46 @@ describe('Chat.vue — permission wiring', () => {
     await flushMicrotasks()
 
     expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
+    wrapper.unmount()
+  })
+
+  it('refuses Ctrl+G when the agent did not offer allow_once + surfaces a warn toast', async() => {
+    // Some plan-mode prompts only offer always-shaped variants
+    // (`allow_always`, `reject_always`); the keybind must NOT fall
+    // through and silently commit a trust-store mutation.
+    pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
+      requestId: 'req-1',
+      tool: 'bash',
+      kind: 'bash',
+      args: 'ls',
+      options: [
+        { optionId: 'allow-always-id', name: 'Allow always', kind: 'allow_always' },
+        { optionId: 'reject-always-id', name: 'Reject always', kind: 'reject_always' }
+      ],
+      formatted: FMT
+    })
+
+    const wrapper = mount(Chat, { attachTo: document.body })
+
+    await flushMicrotasks()
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'g',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
+    await flushMicrotasks()
+
+    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
+    const messages = useToasts()
+      .entries.value.map((t) => t.body)
+      .filter((b): b is string => typeof b === 'string')
+
+    expect(messages.some((m) => m.includes('allow_once'))).toBe(true)
+    clearToasts()
     wrapper.unmount()
   })
 })
