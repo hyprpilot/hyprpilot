@@ -58,6 +58,14 @@ pub enum PromptsCommand {
         /// without chaining a second `ctl overlay show` call.
         #[arg(long, default_value_t = false)]
         show: bool,
+
+        /// Append the text into the resolved instance's composer
+        /// without dispatching it. The captain edits + submits at
+        /// their own pace from the overlay. Existing composer text is
+        /// preserved; a blank line separator slots between the prior
+        /// content and the appended draft.
+        #[arg(long, default_value_t = false)]
+        draft: bool,
     },
     /// Cancel the in-flight turn. Falls back to focused when
     /// `--instance` is omitted.
@@ -77,6 +85,8 @@ struct SendParams {
     profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cwd: Option<PathBuf>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    draft: bool,
 }
 
 #[derive(Serialize)]
@@ -95,6 +105,7 @@ impl CtlDispatch for PromptsCommand {
                 cwd,
                 text,
                 show,
+                draft,
             } => send(
                 client,
                 SendArgs {
@@ -103,6 +114,7 @@ impl CtlDispatch for PromptsCommand {
                     cwd,
                     text,
                     show,
+                    draft,
                 },
             ),
             PromptsCommand::Cancel { instance_id } => cancel(client, instance_id),
@@ -116,6 +128,7 @@ struct SendArgs {
     cwd: Option<PathBuf>,
     text: Vec<String>,
     show: bool,
+    draft: bool,
 }
 
 fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
@@ -142,6 +155,7 @@ fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
             text: resolved,
             profile_id: args.profile,
             cwd: args.cwd,
+            draft: args.draft,
         },
     )?;
     println!("{}", serde_json::to_string_pretty(&v)?);

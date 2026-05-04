@@ -45,6 +45,13 @@ struct SendParams {
     cwd: Option<PathBuf>,
     mode: Option<String>,
     model: Option<String>,
+    /// Append the text into the resolved instance's composer instead
+    /// of dispatching it. Captain edits + submits at their own pace.
+    /// Resolution flow is identical (instance_id → focused →
+    /// auto-spawn) so `--draft` against an empty daemon still spawns
+    /// and the new instance lands with the prompt staged in its
+    /// composer.
+    draft: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -127,6 +134,34 @@ impl RpcHandler for PromptsHandler {
                 // instance lands. Errors (collision / bad-slug) propagate.
                 if let Some(name) = spawn_name {
                     adapter.rename(resolved, Some(name)).await.map_err(map_adapter_err)?;
+                }
+
+                // Draft path: emit a `composer:draft-append` Tauri
+                // event addressed to the resolved instance and return
+                // without dispatching. UI's composer listens, appends
+                // the text with a blank-line separator if there's
+                // already content. Resolution went all the way through
+                // so `ctl prompts send --draft --instance feat-xyz` on
+                // an empty daemon spawns + names the instance, and the
+                // new overlay lands with the prompt staged.
+                if p.draft {
+                    if let Some(app) = ctx.app.as_ref() {
+                        use tauri::Emitter;
+                        let payload = json!({
+                            "instanceId": resolved.as_string(),
+                            "text": p.text,
+                        });
+                        if let Err(err) = app.emit("composer:draft-append", payload) {
+                            tracing::warn!(%err, "prompts/send: failed to emit composer:draft-append");
+                        }
+                    }
+                    return Ok(HandlerOutcome::Reply(json!({
+                        "accepted": false,
+                        "drafted": true,
+                        "instanceId": resolved.as_string(),
+                        "turnId": Value::Null,
+                        "sessionId": Value::Null,
+                    })));
                 }
 
                 let v = adapter

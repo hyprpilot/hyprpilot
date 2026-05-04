@@ -142,6 +142,45 @@ describe('useComposer', () => {
     }
   })
 
+  it('appendDraft on an empty buffer writes the snippet verbatim', () => {
+    const c = useComposer()
+
+    c.appendDraft('hello')
+    expect(c.text.value).toBe('hello')
+  })
+
+  it('appendDraft on a non-empty buffer joins with a blank-line separator', () => {
+    const c = useComposer()
+
+    c.text.value = 'first paragraph'
+    c.appendDraft('second paragraph')
+    expect(c.text.value).toBe('first paragraph\n\nsecond paragraph')
+  })
+
+  it('appendDraft preserves an existing trailing blank line instead of doubling it', () => {
+    const c = useComposer()
+
+    c.text.value = 'first paragraph\n\n'
+    c.appendDraft('second paragraph')
+    expect(c.text.value).toBe('first paragraph\n\nsecond paragraph')
+  })
+
+  it('appendDraft promotes a single trailing newline to a blank line', () => {
+    const c = useComposer()
+
+    c.text.value = 'first paragraph\n'
+    c.appendDraft('second paragraph')
+    expect(c.text.value).toBe('first paragraph\n\nsecond paragraph')
+  })
+
+  it('appendDraft with an empty snippet is a no-op', () => {
+    const c = useComposer()
+
+    c.text.value = 'unchanged'
+    c.appendDraft('')
+    expect(c.text.value).toBe('unchanged')
+  })
+
   it('insertAtCaret with a selected range replaces the selection', () => {
     const c = useComposer()
 
