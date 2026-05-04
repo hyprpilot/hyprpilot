@@ -292,14 +292,22 @@ function firePermission(action: 'allow' | 'deny'): void {
   if (!active) {
     return
   }
-  // Keybind maps to the typed kind: `allow` → first `allow_*` option,
-  // `deny` → first `reject_*`. Falls through to the first offered
-  // option when nothing matches (shouldn't happen with conformant
-  // ACP agents, but the guard is cheap).
-  const kindPrefix = action === 'allow' ? 'allow' : 'reject'
-  const opt = active.options.find((o) => o.kind.startsWith(kindPrefix)) ?? active.options[0]
+  // Keybind maps to the basic-once variant ONLY: `allow` → exact
+  // `allow_once`, `deny` → exact `reject_once`. The "always" variants
+  // mutate the trust store across sessions — too destructive to bind
+  // a single keystroke to. If the agent didn't offer the basic option
+  // (rare; some plan-mode prompts only offer `allow_once_with_*`
+  // shapes), surface a toast and refuse — typing the wrong key silently
+  // committing an "always" decision is the worst possible outcome.
+  const targetKind = action === 'allow' ? 'allow_once' : 'reject_once'
+  const opt = active.options.find((o) => o.kind === targetKind)
 
   if (!opt) {
+    log.info('keybind no-op', {
+      action, target: 'permission', reason: 'no_basic_variant', offered: active.options.map((o) => o.kind)
+    })
+    pushToast(ToastTone.Warn, `${action} keybind: agent didn't offer ${targetKind}; click an option directly`)
+
     return
   }
   log.info('keybind invoked', {
