@@ -46,20 +46,6 @@ describe('ToolPillStats.vue', () => {
     expect(w.text()).toBe('3 / 5')
   })
 
-  it('renders matches with singular / plural noun', () => {
-    const single = mount(ToolPillStats, { props: { stats: [{ kind: 'matches', count: 1 }] } })
-    const plural = mount(ToolPillStats, { props: { stats: [{ kind: 'matches', count: 7 }] } })
-
-    expect(single.text()).toBe('1 match')
-    expect(plural.text()).toBe('7 matches')
-  })
-
-  it('hides matches when count is zero', () => {
-    const w = mount(ToolPillStats, { props: { stats: [{ kind: 'matches', count: 0 }] } })
-
-    expect(w.findAll('.stat-pill')).toHaveLength(0)
-  })
-
   it('lays out multiple stats in order', () => {
     const w = mount(ToolPillStats, {
       props: {

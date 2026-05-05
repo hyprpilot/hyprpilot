@@ -542,6 +542,8 @@ fn setup_app(
         dispatcher: state.dispatcher,
         adapter: state.adapter.clone(),
         config: state.shared_config,
+        skills: state.skills,
+        mcps: state.mcps,
         started_at,
         socket_path,
     };

@@ -72,6 +72,12 @@ impl std::fmt::Debug for AcpAdapter {
 }
 
 impl AcpAdapter {
+    /// Test-only convenience: builds a fresh shared config + default
+    /// permissions controller. Production wiring goes through
+    /// `with_shared_config` so `RpcState.config` and the adapter point
+    /// at the same `Arc<RwLock<Config>>`. Narrow allow keeps this
+    /// available to test sites without spamming dead-code warnings.
+    #[allow(dead_code)]
     #[must_use]
     pub fn new(config: Config, status: Arc<StatusBroadcast>) -> Self {
         Self::with_permissions(
@@ -81,6 +87,7 @@ impl AcpAdapter {
         )
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub fn with_permissions(
         config: Config,
@@ -167,7 +174,10 @@ impl AcpAdapter {
 
     /// Handle onto the shared config. Used by the daemon wiring to
     /// hand the same lock to `RpcState` so reads + writes stay
-    /// coherent.
+    /// coherent. Test-only consumer today (real daemon constructs the
+    /// adapter via `with_shared_config` then passes the same `Arc`
+    /// straight into `RpcState`); narrow allow keeps the accessor.
+    #[allow(dead_code)]
     #[must_use]
     pub fn shared_config(&self) -> Arc<RwLock<Config>> {
         self.config.clone()
@@ -189,8 +199,10 @@ impl AcpAdapter {
     }
 
     /// Publish a `DaemonReloaded` event onto the registry's broadcast.
-    /// Invoked by the `daemon/reload` RPC handler after the config +
-    /// skills rescans complete.
+    /// Will be invoked by the `daemon/reload` RPC handler (OP1) after
+    /// the config + skills rescans complete. Narrow allow until that
+    /// handler arm lands in this same MR.
+    #[allow(dead_code)]
     pub fn publish_daemon_reloaded(&self, profiles: usize, skills_count: usize, mcps_count: usize) {
         let _ = self
             .registry
@@ -231,19 +243,10 @@ impl AcpAdapter {
     /// `spawn_tauri_event_bridge` instead. Subscribers must handle
     /// `broadcast::error::RecvError::Lagged` — the channel drops
     /// messages silently otherwise.
+    #[allow(dead_code)]
     #[must_use]
     pub fn subscribe_events(&self) -> broadcast::Receiver<crate::adapters::InstanceEvent> {
         self.registry.subscribe()
-    }
-
-    /// Test-only publish handle. Production publishers go through the
-    /// runtime → registry pipeline; integration tests reach for this
-    /// to drive deterministic events through the broadcast without
-    /// spawning a real ACP actor.
-    #[cfg(test)]
-    #[must_use]
-    pub fn test_events_tx(&self) -> broadcast::Sender<crate::adapters::InstanceEvent> {
-        self.registry.events_tx()
     }
 }
 
@@ -295,6 +298,39 @@ impl AcpAdapter {
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(n, "acp busy tracker: lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+
+        // Status bridge — drives the `StatusBroadcast` snapshot off the
+        // ACP turn lifecycle so waybar's `ctl status --watch` reflects
+        // what the agent is actually doing. TurnStarted → Streaming;
+        // PermissionRequest → Awaiting (only while a turn is open);
+        // TurnEnded → Idle (or Error when the turn carried an error).
+        let mut status_rx = self.registry.subscribe();
+        let status = self.status.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match status_rx.recv().await {
+                    Ok(InstanceEvent::TurnStarted { session_id, .. }) => {
+                        status.set_state(crate::rpc::protocol::AgentState::Streaming, Some(session_id));
+                    }
+                    Ok(InstanceEvent::PermissionRequest { session_id, .. }) => {
+                        status.set_state(crate::rpc::protocol::AgentState::Awaiting, Some(session_id));
+                    }
+                    Ok(InstanceEvent::TurnEnded { error, .. }) => {
+                        let next = if error.is_some() {
+                            crate::rpc::protocol::AgentState::Error
+                        } else {
+                            crate::rpc::protocol::AgentState::Idle
+                        };
+                        status.set_state(next, None);
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(n, "acp status bridge: lagged");
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 }
@@ -500,7 +536,8 @@ impl AcpAdapter {
 
     /// Snapshot of every live instance in the legacy `{ instances: [...] }`
     /// envelope. `Adapter::list` returns typed `InstanceInfo[]` for
-    /// programmatic consumers.
+    /// programmatic consumers. Test-only consumer today.
+    #[allow(dead_code)]
     pub async fn info_json(&self) -> Result<Value, RpcError> {
         let snapshot = self.registry.list().await;
         let instances: Vec<_> = snapshot
@@ -555,7 +592,10 @@ impl AcpAdapter {
             // actor — instant infinite loop. Route their events into
             // a private sink channel that the daemon owns + drops
             // after the list response resolves.
-            let (sink_tx, _sink_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
+            // `_unread_rx` keeps the broadcast channel open for the
+            // sender — drop it after the list resolves and the actor
+            // shuts itself down.
+            let (sink_tx, _unread_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
             // Ephemeral list-only actor never reads MCPs; pass None.
             let _ = profile;
             let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
@@ -754,6 +794,9 @@ impl AcpAdapter {
     }
 
     /// Shutdown a single instance and auto-focus the oldest survivor.
+    /// Test-only consumer today; production handlers reach for
+    /// `Adapter::shutdown_one` via the trait.
+    #[allow(dead_code)]
     pub async fn shutdown_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
         let key = self
             .registry
@@ -764,6 +807,8 @@ impl AcpAdapter {
     }
 
     /// Designate the focused instance. Unknown id → `-32602 invalid_params`.
+    /// Test-only consumer today; production reaches `Adapter::focus`.
+    #[allow(dead_code)]
     pub async fn focus_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)
     }
@@ -782,16 +827,27 @@ impl AcpAdapter {
         }
     }
 
+    /// Resolve `instance_id` to a live `Arc<AcpInstance>` in one step.
+    /// Replaces the `contains_instance(id)` + `registry.get(key)` two-step
+    /// that 4 set_* sites used: that pattern had a TOCTOU window where
+    /// the instance could be shut down between the membership check and
+    /// the handle clone, returning a `not found in registry` error from
+    /// the second call after the first said `found`. The single
+    /// `registry.get` here closes the window — the registry's RwLock
+    /// doesn't release between parse and lookup.
+    async fn require_instance(&self, instance_id: &str) -> Result<Arc<AcpInstance>, RpcError> {
+        let key = InstanceKey::parse(instance_id).map_err(map_adapter_error_to_rpc)?;
+        self.registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))
+    }
+
     /// Switch the active model on the addressed instance. Routes to
     /// the per-instance actor's `SetModel` command, which sends ACP
     /// `session/set_model` (gated by `unstable_session_model`).
     pub async fn set_session_model(&self, instance_id: &str, model_id: &str) -> Result<Value, RpcError> {
-        let key = self.contains_instance(instance_id).await?;
-        let handle = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        let handle = self.require_instance(instance_id).await?;
         handle
             .set_model(model_id.to_string())
             .await
@@ -803,12 +859,7 @@ impl AcpAdapter {
     /// the per-instance actor's `SetMode` command, which sends ACP
     /// `session/set_mode`.
     pub async fn set_session_mode(&self, instance_id: &str, mode_id: &str) -> Result<Value, RpcError> {
-        let key = self.contains_instance(instance_id).await?;
-        let handle = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        let handle = self.require_instance(instance_id).await?;
         handle
             .set_mode(mode_id.to_string())
             .await
@@ -842,12 +893,7 @@ impl AcpAdapter {
         config_id: &str,
         value: &str,
     ) -> Result<Value, RpcError> {
-        let key = self.contains_instance(instance_id).await?;
-        let handle = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        let handle = self.require_instance(instance_id).await?;
         handle
             .set_config_option(config_id.to_string(), value.to_string())
             .await
@@ -861,12 +907,7 @@ impl AcpAdapter {
     /// authoritative cache instead of a UI-side mirror that may lag
     /// the latest `acp:instance-meta` event.
     pub async fn instance_meta(&self, instance_id: &str) -> Result<Value, RpcError> {
-        let key = self.contains_instance(instance_id).await?;
-        let handle = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+        let handle = self.require_instance(instance_id).await?;
         let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
         serde_json::to_value(snap).map_err(|e| RpcError::internal_error(e.to_string()))
     }
@@ -883,7 +924,12 @@ impl AcpAdapter {
     /// starts processing after `session/new` completes — so the
     /// returned snapshot already has `availableModels` /
     /// `availableModes` populated by the agent's initialize handshake.
-    pub async fn instance_meta_or_ensure(&self, instance_id: Option<&str>, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<Value, RpcError> {
+    pub async fn instance_meta_or_ensure(
+        &self,
+        instance_id: Option<&str>,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+    ) -> Result<Value, RpcError> {
         if let Some(id) = instance_id {
             if let Ok(key) = self.contains_instance(id).await {
                 if let Some(handle) = self.registry.get(key).await {
@@ -918,7 +964,10 @@ impl AcpAdapter {
 /// id of the (possibly freshly-spawned) actor so the caller can
 /// route follow-up commands without round-tripping useActiveInstance
 /// (which updates async via the registry's auto-focus event).
-fn augment_with_instance_id(snap: crate::adapters::acp::instance::MetaSnapshot, key: &InstanceKey) -> Result<Value, RpcError> {
+fn augment_with_instance_id(
+    snap: crate::adapters::acp::instance::MetaSnapshot,
+    key: &InstanceKey,
+) -> Result<Value, RpcError> {
     let mut value = serde_json::to_value(snap).map_err(|e| RpcError::internal_error(e.to_string()))?;
     if let Value::Object(map) = &mut value {
         map.insert("instanceId".to_string(), Value::String(key.as_string()));

@@ -2,7 +2,7 @@
 //! surfaces the byte count of the new content.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{diff_line_counts, format_diff_hunk, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{format_diff_hunk, line_magnitudes, pick, short_path, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct WriteFormatter;
@@ -22,7 +22,7 @@ impl ToolFormatter for WriteFormatter {
         // char-count.
         let mut stats: Vec<Stat> = Vec::new();
         if let Some(new_text) = body.as_deref().filter(|s| !s.is_empty()) {
-            let (added, removed) = diff_line_counts("", new_text);
+            let (added, removed) = line_magnitudes("", new_text);
             stats.push(Stat::Diff { added, removed });
         }
 

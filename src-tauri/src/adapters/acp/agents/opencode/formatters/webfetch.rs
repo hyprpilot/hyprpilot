@@ -1,8 +1,8 @@
 //! opencode's `webfetch` tool. RawInput: `{ url, format?, timeout? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{duration_stat, pick, text_blocks};
-use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
+use crate::tools::formatter::shared::{duration_stats, pick, text_blocks};
+use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct WebFetchFormatter;
 
@@ -38,7 +38,7 @@ impl ToolFormatter for WebFetchFormatter {
             Some(trimmed.to_string())
         };
 
-        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+        let stats = duration_stats(ctx);
 
         FormattedToolCall {
             title,

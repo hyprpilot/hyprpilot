@@ -101,6 +101,8 @@ mod dispatcher_tests {
             status: broadcast,
             adapter,
             config: Some(config),
+            skills: None,
+            mcps: None,
             already_subscribed: false,
             started_at: None,
             socket_path: None,
@@ -145,7 +147,7 @@ mod dispatcher_tests {
             &dispatcher,
             &broadcast,
             "instances/focus",
-            json!({ "id": "550e8400-e29b-41d4-a716-446655440000" }),
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
         )
         .await;
         assert_eq!(v["code"], -32602, "unknown instance id must be invalid_params: {v}");
@@ -251,6 +253,8 @@ mod dispatcher_tests {
             status: &broadcast,
             adapter,
             config: Some(config),
+            skills: None,
+            mcps: None,
             already_subscribed: true,
             started_at: None,
             socket_path: None,

@@ -11,13 +11,6 @@
 //! import from `adapters::*`. They do not reach into `adapters::acp::*`
 //! — that's a layering violation, caught by the lint guard.
 
-// Speculative trait expansion: most wire-method dispatchers default to
-// `AdapterError::Unsupported` and only the AcpAdapter overrides the
-// methods it supports today. Until handlers fully migrate to dispatch
-// through `dyn Adapter` (and a sibling adapter lands), several trait
-// methods register as dead.
-#![allow(dead_code)]
-
 pub mod acp;
 pub mod commands;
 pub mod instance;
@@ -41,12 +34,16 @@ pub use transcript::{
 /// Closed set of known transport kinds. The string wire-name is stable
 /// — it appears in tracing spans and (future) config `transport =
 /// "acp"` fields. New adapter → new variant + new impl + new match arm.
+/// Speculative — survives lint with a narrow allow until a second
+/// transport (HTTP-based agents) lands and the variant set grows.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterId {
     Acp,
 }
 
 impl AdapterId {
+    #[allow(dead_code)]
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -104,6 +101,14 @@ pub enum Bootstrap {
 /// methods (`submit` / `cancel` / `spawn` / `shutdown`) stay on the
 /// impl. Adding an adapter means one new `impl Adapter`; the generic
 /// methods stay one-line delegations.
+///
+/// Speculative `dyn Adapter` surface — every consumer today reaches for
+/// `Arc<AcpAdapter>` directly, so the trait is "trait-by-name only" until
+/// a second adapter (HTTP-based) lands. Narrow `#[allow(dead_code)]` on
+/// the trait keeps the scaffold visible without spamming the build log;
+/// the day a sibling impl arrives, the allow comes off and live consumers
+/// migrate from `Arc<AcpAdapter>` to `Arc<dyn Adapter>`.
+#[allow(dead_code)]
 #[async_trait]
 pub trait Adapter: Send + Sync + 'static {
     fn id(&self) -> AdapterId;
@@ -373,7 +378,7 @@ mod tests {
         let a: Box<dyn Adapter> = Box::new(EchoAdapter);
         assert_eq!(a.id(), AdapterId::Acp);
         let v = a
-            .submit(UserTurnInput::text("hi"), None, None, None)
+            .submit(UserTurnInput::with_attachments("hi", Vec::new()), None, None, None)
             .await
             .expect("echo submit ok");
         assert_eq!(v["echo"], "hi");

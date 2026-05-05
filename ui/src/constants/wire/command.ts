@@ -191,8 +191,8 @@ export interface TauriCommandResult {
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
   [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
-  [TauriCommand.InstancesFocus]: { focusedId: string }
-  [TauriCommand.InstancesShutdown]: { id: string }
+  [TauriCommand.InstancesFocus]: { instanceId: string }
+  [TauriCommand.InstancesShutdown]: { instanceId: string }
   [TauriCommand.InstancesRename]: InstancesRenameResult
   [TauriCommand.InstanceRestart]: InstanceRestartResult
   [TauriCommand.ModelsSet]: unknown

@@ -3,6 +3,7 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 import { computed } from 'vue'
 
 import { ToastTone } from '@components'
+import { toneBg } from '@constants/ui'
 
 /**
  * Generic centered modal: backdrop + card + tagged header (icon + label
@@ -51,23 +52,19 @@ function onBackdropClick(): void {
   }
 }
 
-function toneBg(tone: ToastTone): string {
-  switch (tone) {
-    case ToastTone.Ok:
-      return 'var(--theme-status-ok)'
-    case ToastTone.Err:
-      return 'var(--theme-status-err)'
-    case ToastTone.Warn:
-    default:
-      return 'var(--theme-status-warn)'
-  }
-}
-
 const headerBg = computed(() => toneBg(props.tone))
 </script>
 
 <template>
-  <div class="modal-backdrop" role="dialog" aria-modal="true" :aria-label="title" @click.self="onBackdropClick">
+  <div
+    class="modal-backdrop"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    :aria-label="title"
+    @click.self="onBackdropClick"
+    @keydown.escape.stop="onBackdropClick"
+  >
     <article class="modal" :data-tone="tone">
       <header class="modal-header">
         <span class="modal-tag" :style="{ backgroundColor: headerBg }">

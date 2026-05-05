@@ -40,59 +40,19 @@ export enum PaletteLeafId {
 interface RootLeaf {
   id: PaletteLeafId
   name: string
-  followUp?: string
 }
 
 const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
-  [PaletteLeafId.Sessions]: {
-    id: PaletteLeafId.Sessions,
-    name: 'sessions',
-    followUp: 'K-264'
-  },
-  [PaletteLeafId.Profiles]: {
-    id: PaletteLeafId.Profiles,
-    name: 'profiles',
-    followUp: 'K-TBD'
-  },
-  [PaletteLeafId.Models]: {
-    id: PaletteLeafId.Models,
-    name: 'models',
-    followUp: 'K-TBD'
-  },
-  [PaletteLeafId.Modes]: {
-    id: PaletteLeafId.Modes,
-    name: 'modes',
-    followUp: 'K-TBD'
-  },
-  [PaletteLeafId.Cwd]: {
-    id: PaletteLeafId.Cwd,
-    name: 'cwd',
-    followUp: 'K-266'
-  },
-  [PaletteLeafId.Instance]: {
-    id: PaletteLeafId.Instance,
-    name: 'instance',
-    followUp: 'K-TBD'
-  },
-  [PaletteLeafId.Instances]: {
-    id: PaletteLeafId.Instances,
-    name: 'instances',
-    followUp: 'K-274'
-  },
-  [PaletteLeafId.Mcps]: {
-    id: PaletteLeafId.Mcps,
-    name: 'mcps',
-    followUp: 'K-TBD'
-  },
-  [PaletteLeafId.Skills]: {
-    id: PaletteLeafId.Skills,
-    name: 'skills',
-    followUp: 'K-TBD'
-  },
-  [PaletteLeafId.Daemon]: {
-    id: PaletteLeafId.Daemon,
-    name: 'daemon'
-  }
+  [PaletteLeafId.Sessions]: { id: PaletteLeafId.Sessions, name: 'sessions' },
+  [PaletteLeafId.Profiles]: { id: PaletteLeafId.Profiles, name: 'profiles' },
+  [PaletteLeafId.Models]: { id: PaletteLeafId.Models, name: 'models' },
+  [PaletteLeafId.Modes]: { id: PaletteLeafId.Modes, name: 'modes' },
+  [PaletteLeafId.Cwd]: { id: PaletteLeafId.Cwd, name: 'cwd' },
+  [PaletteLeafId.Instance]: { id: PaletteLeafId.Instance, name: 'instance' },
+  [PaletteLeafId.Instances]: { id: PaletteLeafId.Instances, name: 'instances' },
+  [PaletteLeafId.Mcps]: { id: PaletteLeafId.Mcps, name: 'mcps' },
+  [PaletteLeafId.Skills]: { id: PaletteLeafId.Skills, name: 'skills' },
+  [PaletteLeafId.Daemon]: { id: PaletteLeafId.Daemon, name: 'daemon' }
 }
 
 const ROOT_LEAF_ORDER: PaletteLeafId[] = [

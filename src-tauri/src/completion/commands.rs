@@ -67,11 +67,11 @@ pub async fn completion_query(
         end: ctx.cursor,
     };
     let source_id = source.id();
-    let items = source
-        .fetch(ctx, cwd.as_deref(), cancel)
-        .await
-        .map_err(|e| format!("completion/query: {e}"))?;
+    // Forget unconditionally — leaving the token in the table on error
+    // would make a follow-up `completion/cancel` look like a stale hit.
+    let result = source.fetch(ctx, cwd.as_deref(), cancel).await;
     cancellations.forget(&request_id);
+    let items = result.map_err(|e| format!("completion/query: {e}"))?;
 
     Ok(json!({
         "requestId": request_id,

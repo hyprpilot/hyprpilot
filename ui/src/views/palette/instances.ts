@@ -25,8 +25,11 @@ interface InstanceRow extends PaletteEntry {
   raw: InstanceListEntry
 }
 
-function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined) => string): InstanceRow {
-  const { id: activeId } = useActiveInstance()
+function rowFor(
+  entry: InstanceListEntry,
+  displayPath: (path: string | undefined) => string,
+  activeInstanceId: string | undefined
+): InstanceRow {
   const { info } = useSessionInfo(entry.instanceId)
   const { items } = useQueue(entry.instanceId)
   const { all: terminals } = useTerminals(entry.instanceId)
@@ -64,7 +67,7 @@ function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined
     meta.push(`t${terminals.value.length}`)
   }
 
-  if (entry.instanceId === activeId.value) {
+  if (entry.instanceId === activeInstanceId) {
     meta.unshift('active')
   }
 
@@ -73,7 +76,7 @@ function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined
     name: headline,
     description: meta.join(' · '),
     kind: entry.instanceId.slice(0, 8),
-    active: entry.instanceId === activeId.value,
+    active: entry.instanceId === activeInstanceId,
     raw: entry
   }
 }
@@ -93,7 +96,7 @@ async function fetchInstances(): Promise<InstanceListEntry[]> {
 
 async function focusInstance(id: InstanceId): Promise<void> {
   try {
-    await invoke(TauriCommand.InstancesFocus, { id })
+    await invoke(TauriCommand.InstancesFocus, { instanceId: id })
   } catch(err) {
     log.error('invoke failed', { command: TauriCommand.InstancesFocus, id }, err)
     pushToast(ToastTone.Err, `instances focus failed: ${String(err)}`)
@@ -102,7 +105,7 @@ async function focusInstance(id: InstanceId): Promise<void> {
 
 export async function shutdownInstance(id: InstanceId): Promise<void> {
   try {
-    await invoke(TauriCommand.InstancesShutdown, { id })
+    await invoke(TauriCommand.InstancesShutdown, { instanceId: id })
   } catch(err) {
     log.error('invoke failed', { command: TauriCommand.InstancesShutdown, id }, err)
     pushToast(ToastTone.Err, `instances shutdown failed: ${String(err)}`)
@@ -112,6 +115,8 @@ export async function shutdownInstance(id: InstanceId): Promise<void> {
 export async function openInstancesLeaf(): Promise<void> {
   const palette = usePalette()
   const { displayPath } = useHomeDir()
+  const { id: activeId } = useActiveInstance()
+  const activeInstanceId = activeId.value
 
   const instances = await fetchInstances()
 
@@ -131,7 +136,7 @@ export async function openInstancesLeaf(): Promise<void> {
     return
   }
 
-  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, displayPath))
+  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, displayPath, activeInstanceId))
   const spec = {
     mode: PaletteMode.Select,
     title: 'instances',
@@ -170,7 +175,7 @@ export async function openInstancesLeaf(): Promise<void> {
 
         return
       }
-      update(next.map((i) => rowFor(i, displayPath)))
+      update(next.map((i) => rowFor(i, displayPath, activeInstanceId)))
       // Preview's a separate component instance bound via spec.preview;
       // its data lands through `props` which already reads from
       // `instances` via the InstancesPreview component. Re-binding

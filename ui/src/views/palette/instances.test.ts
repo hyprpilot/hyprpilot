@@ -170,7 +170,7 @@ describe('openInstancesLeaf', () => {
 
     await openInstancesLeaf()
 
-    invokeMock.mockResolvedValueOnce({ focusedId: 'inst-A' })
+    invokeMock.mockResolvedValueOnce({ instanceId: 'inst-A' })
 
     const { stack } = usePalette()
     const spec = stack.value[0]
@@ -182,7 +182,7 @@ describe('openInstancesLeaf', () => {
     const focusCalls = invokeMock.mock.calls.filter((c) => c[0] === 'instances_focus')
 
     expect(focusCalls).toHaveLength(1)
-    expect(focusCalls[0]?.[1]).toEqual({ id: 'inst-A' })
+    expect(focusCalls[0]?.[1]).toEqual({ instanceId: 'inst-A' })
   })
 
   it('onCommit on the empty-state row is a no-op', async() => {
@@ -214,7 +214,7 @@ describe('openInstancesLeaf', () => {
 
     await openInstancesLeaf()
 
-    invokeMock.mockResolvedValueOnce({ id: 'inst-A' })
+    invokeMock.mockResolvedValueOnce({ instanceId: 'inst-A' })
 
     const { stack } = usePalette()
     const spec = stack.value[0]
@@ -226,7 +226,7 @@ describe('openInstancesLeaf', () => {
     const shutdownCalls = invokeMock.mock.calls.filter((c) => c[0] === 'instances_shutdown')
 
     expect(shutdownCalls).toHaveLength(1)
-    expect(shutdownCalls[0]?.[1]).toEqual({ id: 'inst-A' })
+    expect(shutdownCalls[0]?.[1]).toEqual({ instanceId: 'inst-A' })
   })
 
   it('onDelete on the empty-state row is a no-op', async() => {

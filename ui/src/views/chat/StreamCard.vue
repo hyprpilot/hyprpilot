@@ -4,7 +4,7 @@ import { faChevronDown, faChevronRight, faCircleHalfStroke, faSquareCheck } from
 import { computed, ref, useSlots, watch } from 'vue'
 
 import { PlanStatus, StatPill, StreamKind, type PlanItem } from '@components'
-import { log, renderMarkdown } from '@lib'
+import { log, renderMarkdown, renderMarkdownPlain } from '@lib'
 
 /**
  * stream card — thinking / planning. Two states:
@@ -57,6 +57,12 @@ const hasBody = computed(() => hasItems.value || useMarkdown.value || hasSlot.va
 
 const renderedHtml = ref('')
 
+// Two-pass render — same strategy as `<MarkdownBody>`. Plain
+// markdown-it first (synchronous, no Shiki) so the prose lands
+// instantly even on the cold path; then upgrade with the full
+// Shiki pipeline asynchronously. Without this the first turn after
+// boot renders the raw markdown source for ~200ms while Shiki's
+// WASM engine warms up.
 watch(
   [() => props.text, useMarkdown],
   async([raw, on]) => {
@@ -67,12 +73,18 @@ watch(
     }
 
     try {
+      renderedHtml.value = renderMarkdownPlain(raw)
+    } catch(err) {
+      log.warn('stream-card: plain render failed', { err: String(err) })
+      renderedHtml.value = ''
+    }
+
+    try {
       const out = await renderMarkdown(raw)
 
       renderedHtml.value = out.html
     } catch(err) {
-      log.warn('stream-card: markdown render failed; falling back to plain text', { err: String(err) })
-      renderedHtml.value = ''
+      log.warn('stream-card: shiki upgrade failed; keeping plain pass', { err: String(err) })
     }
   },
   { immediate: true }

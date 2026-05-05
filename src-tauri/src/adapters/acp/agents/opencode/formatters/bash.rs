@@ -5,8 +5,8 @@
 //! `output` (streamed; opencode dedupes via hash).
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{duration_stat, pick, text_blocks};
-use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
+use crate::tools::formatter::shared::{duration_stats, pick, text_blocks};
+use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct BashFormatter;
 
@@ -60,7 +60,7 @@ impl ToolFormatter for BashFormatter {
             Some(trimmed.to_string())
         };
 
-        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+        let stats = duration_stats(ctx);
 
         FormattedToolCall {
             title,

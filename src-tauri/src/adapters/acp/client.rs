@@ -216,15 +216,6 @@ impl std::fmt::Debug for AcpClient {
 }
 
 impl AcpClient {
-    pub fn new(
-        events: mpsc::UnboundedSender<ClientEvent>,
-        sandbox_root: PathBuf,
-        permissions: Arc<dyn PermissionController>,
-        mcps: Option<Arc<MCPsRegistry>>,
-    ) -> Result<Self, SandboxError> {
-        Self::with_instance_id(events, sandbox_root, permissions, mcps, None)
-    }
-
     pub fn with_instance_id(
         events: mpsc::UnboundedSender<ClientEvent>,
         sandbox_root: PathBuf,
@@ -271,7 +262,6 @@ impl AcpClient {
         let request_id = uuid::Uuid::new_v4().to_string();
 
         let decision_req = PermissionRequest {
-            session_id: req.session_id.0.to_string(),
             instance_id: self.instance_id.clone(),
             request_id: request_id.clone(),
             tool_call: tool_call.clone(),
@@ -564,7 +554,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let controller = Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>;
         (
-            AcpClient::new(tx, dir.to_path_buf(), controller, None).expect("sandbox constructs"),
+            AcpClient::with_instance_id(tx, dir.to_path_buf(), controller, None, None).expect("sandbox constructs"),
             rx,
         )
     }

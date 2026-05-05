@@ -10,9 +10,10 @@ use crate::rpc::protocol::RpcError;
 /// returns `{"exiting": true}`; the server inspects either marker
 /// after the response flush and runs `daemon::shutdown`.
 ///
-/// Live config reload is intentionally not exposed — MCPs, skills,
-/// and config are all restart-to-reconfigure. Edit `~/.config/hyprpilot/config.toml`,
-/// restart the daemon to pick up changes.
+/// `daemon/reload` rescans the on-disk skills catalogue and
+/// publishes a `DaemonReloaded` event so subscribers (UI palette)
+/// re-fetch their lists. Config + MCP catalogues stay static after
+/// daemon start — restart-to-reconfigure for those.
 pub struct DaemonHandler;
 
 #[async_trait]
@@ -27,9 +28,41 @@ impl RpcHandler for DaemonHandler {
             "daemon/status" => status(&ctx).await,
             "daemon/version" => Ok(HandlerOutcome::Reply(version_payload())),
             "daemon/shutdown" => shutdown(&ctx, params).await,
+            "daemon/reload" => reload(&ctx).await,
             other => Err(RpcError::method_not_found(other)),
         }
     }
+}
+
+async fn reload(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+    let skills = ctx
+        .skills
+        .as_ref()
+        .ok_or_else(|| RpcError::internal_error("skills registry unavailable"))?;
+    let mcps = ctx
+        .mcps
+        .as_ref()
+        .ok_or_else(|| RpcError::internal_error("mcps registry unavailable"))?;
+
+    skills
+        .reload()
+        .map_err(|err| RpcError::internal_error(format!("skills reload failed: {err}")))?;
+
+    let profiles = ctx
+        .config
+        .as_ref()
+        .map(|c| c.read().expect("config lock poisoned").profiles.len())
+        .unwrap_or(0);
+    let skills_count = skills.list().len();
+    let mcps_count = mcps.list().len();
+
+    ctx.adapter.publish_daemon_reloaded(profiles, skills_count, mcps_count);
+
+    Ok(HandlerOutcome::Reply(json!({
+        "profiles": profiles,
+        "skillsCount": skills_count,
+        "mcpsCount": mcps_count,
+    })))
 }
 
 async fn status(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
@@ -118,6 +151,8 @@ mod tests {
             status: &status,
             adapter,
             config: Some(config),
+            skills: None,
+            mcps: None,
             already_subscribed: false,
             started_at,
             socket_path,

@@ -34,39 +34,26 @@ import { acpOverrides } from '@adapters/acp/acp/presentation'
 import { claudeCodeOverrides } from '@adapters/acp/claude-code/presentation'
 import { codexOverrides } from '@adapters/acp/codex/presentation'
 import { opencodeOverrides } from '@adapters/acp/opencode/presentation'
-import { AdapterId, PermissionUi, PillKind, ToolKind } from '@constants/ui'
+import { AdapterId, PermissionUi, ToolKind } from '@constants/ui'
 
 export interface Presentation {
   icon: IconDefinition
-  pill: PillKind
   permissionUi: PermissionUi
 }
-
-const row = (icon: IconDefinition): Presentation => ({
-  icon,
-  pill: PillKind.Default,
-  permissionUi: PermissionUi.Row
-})
-
-const modal = (icon: IconDefinition): Presentation => ({
-  icon,
-  pill: PillKind.Default,
-  permissionUi: PermissionUi.Modal
-})
 
 /// Default presentation per ACP `tool_call.kind`. Bare-minimum tone +
 /// icon assignments — adapters extend with richer per-wireName
 /// overrides.
 const kindDefaults: Record<ToolKind, Presentation> = {
-  [ToolKind.Read]: row(faFileLines),
-  [ToolKind.Edit]: modal(faPen),
-  [ToolKind.Delete]: modal(faTrash),
-  [ToolKind.Move]: modal(faPenToSquare),
-  [ToolKind.Search]: row(faMagnifyingGlass),
-  [ToolKind.Execute]: row(faTerminal),
-  [ToolKind.Think]: row(faBrain),
-  [ToolKind.Fetch]: row(faGlobe),
-  [ToolKind.Other]: row(faPlug)
+  [ToolKind.Read]: { icon: faFileLines, permissionUi: PermissionUi.Row },
+  [ToolKind.Edit]: { icon: faPen, permissionUi: PermissionUi.Modal },
+  [ToolKind.Delete]: { icon: faTrash, permissionUi: PermissionUi.Modal },
+  [ToolKind.Move]: { icon: faPenToSquare, permissionUi: PermissionUi.Modal },
+  [ToolKind.Search]: { icon: faMagnifyingGlass, permissionUi: PermissionUi.Row },
+  [ToolKind.Execute]: { icon: faTerminal, permissionUi: PermissionUi.Row },
+  [ToolKind.Think]: { icon: faBrain, permissionUi: PermissionUi.Row },
+  [ToolKind.Fetch]: { icon: faGlobe, permissionUi: PermissionUi.Row },
+  [ToolKind.Other]: { icon: faPlug, permissionUi: PermissionUi.Row }
 }
 
 const adapterOverrides: Record<AdapterId, Record<string, Presentation>> = {

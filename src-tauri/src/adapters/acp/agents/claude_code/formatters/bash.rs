@@ -3,8 +3,8 @@
 //! `description` as a fenced bash block.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{dedupe_output, duration_stat, pick};
-use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
+use crate::tools::formatter::shared::{dedupe_output, duration_stats, pick};
+use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct BashFormatter;
 
@@ -62,7 +62,7 @@ impl ToolFormatter for BashFormatter {
 
         let output = dedupe_output(ctx.content, description.as_deref());
 
-        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+        let stats = duration_stats(ctx);
 
         FormattedToolCall {
             title,

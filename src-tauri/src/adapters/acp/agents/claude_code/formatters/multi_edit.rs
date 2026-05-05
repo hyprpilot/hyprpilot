@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{diff_line_counts, format_diff_hunk, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{format_diff_hunk, line_magnitudes, pick, short_path, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct MultiEditFormatter;
@@ -29,7 +29,7 @@ impl ToolFormatter for MultiEditFormatter {
         for edit in &edits {
             let old_text = edit.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
             let new_text = edit.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
-            let (a, r) = diff_line_counts(old_text, new_text);
+            let (a, r) = line_magnitudes(old_text, new_text);
             total_added = total_added.saturating_add(a);
             total_removed = total_removed.saturating_add(r);
             if let Some(hunk) = format_diff_hunk(path.as_deref(), old_text, new_text) {

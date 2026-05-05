@@ -216,7 +216,7 @@ export async function commitInstanceRename(instanceId: string, draft: string): P
   const wireName = trimmed.length === 0 ? null : trimmed
 
   try {
-    await invoke(TauriCommand.InstancesRename, { id: instanceId, name: wireName })
+    await invoke(TauriCommand.InstancesRename, { instanceId, name: wireName })
     toasts.push(ToastTone.Ok, wireName === null ? 'instance name cleared' : `renamed to ${wireName}`)
 
     return true

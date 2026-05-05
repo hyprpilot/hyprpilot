@@ -23,7 +23,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Mutex};
 
@@ -116,7 +115,6 @@ impl ToolCallRef {
 /// instance.
 #[derive(Debug, Clone)]
 pub struct PermissionRequest {
-    pub session_id: String,
     pub instance_id: Option<String>,
     pub request_id: String,
     pub tool_call: ToolCallRef,
@@ -136,22 +134,16 @@ pub enum Decision {
 
 /// What the UI (or the timeout) eventually decides. Mirrors the
 /// ACP `RequestPermissionOutcome` wire shape one-for-one:
-/// `Selected(option_id)` or `Cancelled`.
+/// `Selected(option_id)` or `Cancelled`. `Cancelled` is only
+/// constructed inside tests today (via `controller.resolve(_, ...)`);
+/// production paths build `Selected(option_id)` from the captain's
+/// pick. Narrow allow keeps the variant available for the test-only
+/// path without forcing a `#[cfg(test)]` split.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionOutcome {
     Selected(String),
     Cancelled,
-}
-
-/// A request the adapter fans out to the webview via
-/// `acp:permission-request`. Carries the options + the identity bits
-/// needed to route the reply back to the awaiting actor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionPrompt {
-    pub session_id: String,
-    pub request_id: String,
-    pub options: Vec<PermissionOptionView>,
 }
 
 /// Snapshot of a pending permission request returned by
@@ -169,16 +161,6 @@ pub struct PermissionRequestSnapshot {
     pub options: Vec<PermissionOptionView>,
 }
 
-/// The UI's answer back. `PermissionController` threads these
-/// through the adapter so the awaiting actor resumes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionReply {
-    pub session_id: String,
-    pub request_id: String,
-    pub option_id: String,
-}
-
 /// Everything the decision pipeline needs at call time. `mcps`
 /// provides the per-server hyprpilot-extension globs; when `None`
 /// every decision falls through to `AskUser`.
@@ -190,16 +172,6 @@ pub struct PermissionReply {
 /// entirely.
 pub struct DecisionContext<'a> {
     pub mcps: Option<&'a MCPsRegistry>,
-}
-
-impl<'a> DecisionContext<'a> {
-    /// All-misses context — every decision falls through to `AskUser`.
-    /// Used by tests and by call sites that haven't yet wired the
-    /// MCP registry.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self { mcps: None }
-    }
 }
 
 /// Parse `mcp__<server>__<leaf>` → `(<server>, <leaf>)`. Returns `None`
@@ -222,6 +194,12 @@ pub fn parse_mcp_tool_name(tool: &str) -> Option<(&str, &str)> {
 /// lookups against the per-server MCP glob config). `register_pending`
 /// + `resolve` own the oneshot map that bridges the Tauri
 /// `permission_reply` command back to the awaiting ACP handler.
+///
+/// `resolve` and `options_for` are exercised by tests but no
+/// production path calls them via `dyn PermissionController` today —
+/// the adapter goes through `respond_with` (atomic). Narrow allow
+/// keeps them visible as the documented test-touch surface.
+#[allow(dead_code)]
 #[async_trait]
 pub trait PermissionController: Send + Sync + 'static {
     /// Run the per-server MCP glob lookup; `AskUser` for everything
@@ -300,30 +278,6 @@ impl DefaultPermissionController {
 }
 
 /// Compile a list of glob patterns into a `GlobSet`. Returns `None`
-/// when the input is empty or every pattern fails to compile (logged).
-/// Used inside `decide` for per-server hyprpilot extension match.
-fn compile_globs(patterns: &[String]) -> Option<GlobSet> {
-    if patterns.is_empty() {
-        return None;
-    }
-    let mut builder = GlobSetBuilder::new();
-    let mut added = 0_usize;
-    for p in patterns {
-        match Glob::new(p) {
-            Ok(g) => {
-                builder.add(g);
-                added += 1;
-            }
-            Err(err) => {
-                tracing::warn!(pattern = %p, %err, "permission::decide: skipping invalid glob");
-            }
-        }
-    }
-    if added == 0 {
-        return None;
-    }
-    builder.build().ok()
-}
 
 #[async_trait]
 impl PermissionController for DefaultPermissionController {
@@ -339,8 +293,10 @@ impl PermissionController for DefaultPermissionController {
         // prefix) skip this lane entirely.
         if let Some(registry) = ctx.mcps {
             if let Some((server_name, leaf)) = parse_mcp_tool_name(tool) {
-                if let Some(def) = registry.get(server_name) {
-                    let reject_set = compile_globs(&def.hyprpilot.auto_reject_tools);
+                // Cached globs — built once at MCPsRegistry construction.
+                // Reject hits short-circuit before the accept set is even
+                // examined; both are precompiled so neither path allocates.
+                if let Some((reject_set, accept_set)) = registry.globs_for(server_name) {
                     if reject_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
@@ -351,7 +307,6 @@ impl PermissionController for DefaultPermissionController {
                         );
                         return Decision::Deny;
                     }
-                    let accept_set = compile_globs(&def.hyprpilot.auto_accept_tools);
                     if accept_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
@@ -523,7 +478,6 @@ mod tests {
 
     fn request(id: &str, tool: &str) -> PermissionRequest {
         PermissionRequest {
-            session_id: "sess-1".into(),
             instance_id: Some("instance-1".into()),
             request_id: id.into(),
             tool_call: ToolCallRef {
@@ -564,7 +518,7 @@ mod tests {
     #[test]
     fn decide_empty_context_asks_user() {
         let controller = DefaultPermissionController::new();
-        let d = controller.decide(&request("r1", "Read"), &DecisionContext::empty());
+        let d = controller.decide(&request("r1", "Read"), &DecisionContext { mcps: None });
         assert_eq!(d, Decision::AskUser);
     }
 
@@ -753,8 +707,8 @@ mod tests {
     #[tokio::test]
     async fn two_identical_asks_back_to_back_both_prompt() {
         let controller = DefaultPermissionController::new();
-        let d1 = controller.decide(&request("r1", "Bash"), &DecisionContext::empty());
-        let d2 = controller.decide(&request("r2", "Bash"), &DecisionContext::empty());
+        let d1 = controller.decide(&request("r1", "Bash"), &DecisionContext { mcps: None });
+        let d2 = controller.decide(&request("r2", "Bash"), &DecisionContext { mcps: None });
         assert_eq!(d1, Decision::AskUser);
         assert_eq!(d2, Decision::AskUser);
     }

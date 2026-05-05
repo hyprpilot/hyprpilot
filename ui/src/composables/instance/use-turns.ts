@@ -69,6 +69,15 @@ export interface TurnEndedRaw {
   endedAtMs: number
 }
 
+// ── Internal store-mutation surface ───────────────────────────────
+// The exports below sit outside the composable's `useTurns()` API
+// surface on purpose: they're the wire-listener-facing inputs that
+// sibling stores (use-stream, use-session-stream) push raw event
+// payloads through. Per-feature views consume `useTurns()`; the wire
+// router / sibling stores use these free fns directly.
+// See CLAUDE.md ▸ "Two-tier composables: store API vs sibling-store
+// mutation surface" for the convention.
+
 export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)

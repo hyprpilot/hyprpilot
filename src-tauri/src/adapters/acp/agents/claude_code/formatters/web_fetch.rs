@@ -1,6 +1,6 @@
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{duration_stat, pick, text_blocks};
-use crate::tools::formatter::types::{FormattedToolCall, Stat};
+use crate::tools::formatter::shared::{duration_stats, pick, text_blocks};
+use crate::tools::formatter::types::FormattedToolCall;
 
 fn host_of(url: &str) -> String {
     if let Some(after_scheme) = url.split_once("://").map(|(_, rest)| rest) {
@@ -55,7 +55,7 @@ impl ToolFormatter for WebFetchFormatter {
             (None, Some(body))
         };
 
-        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+        let stats = duration_stats(ctx);
 
         FormattedToolCall {
             title,

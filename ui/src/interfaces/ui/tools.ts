@@ -1,6 +1,6 @@
 /**
  * UI-side tool-call view. The daemon emits `FormattedToolCall`
- * (rendering content); the UI layers `Presentation` (icon + pill +
+ * (rendering content); the UI layers `Presentation` (icon +
  * permissionUi) per-(kind, adapter, wireName) via
  * `lib/tools/presentation.ts`. `ToolCallView` is the unified shape
  * every consumer (chat pill, permission row, modal) reads.
@@ -8,7 +8,7 @@
 
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 
-import type { PermissionUi, PillKind, ToolKind, ToolState } from '@constants/ui'
+import type { PermissionUi, ToolKind, ToolState } from '@constants/ui'
 import type { FormattedToolCall, Stat, ToolField as WireToolField } from '@interfaces/wire/formatted-tool-call'
 
 export type { ToolField } from '@interfaces/wire/formatted-tool-call'
@@ -26,7 +26,6 @@ export interface ToolCallView {
   /// Resolved FontAwesome icon (looked up from
   /// `(kind, adapter, wireName)` via `presentationFor`).
   icon: IconDefinition
-  pill: PillKind
   permissionUi: PermissionUi
   title: string
   stats: Stat[]
