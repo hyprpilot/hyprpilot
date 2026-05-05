@@ -39,7 +39,7 @@ async fn snapshot(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
         .into_iter()
         .map(|info| {
             json!({
-                "id": info.id,
+                "instanceId": info.id,
                 "agentId": info.agent_id,
                 "profileId": info.profile_id,
                 "sessionId": info.session_id,
@@ -145,6 +145,8 @@ mod tests {
             status: &status,
             adapter,
             config: Some(config),
+            skills: None,
+            mcps: None,
             already_subscribed: false,
             started_at: Some(started_at),
             socket_path: Some(socket),
@@ -194,6 +196,8 @@ mod tests {
             status: &status,
             adapter,
             config: Some(config),
+            skills: None,
+            mcps: None,
             already_subscribed: false,
             started_at: None,
             socket_path: None,

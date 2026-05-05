@@ -1,4 +1,3 @@
-import { ref } from 'vue'
 
 import { cleanupInstance } from './cleanup'
 import { pushPermissionRequest } from './use-permissions'
@@ -35,7 +34,6 @@ import {
   TauriEvent,
   TerminalChunkKind,
   TranscriptItemKind,
-  type InstanceStateEventPayload,
   type PermissionRequestEventPayload,
   type TerminalEventPayload,
   type TranscriptEventPayload,
@@ -56,8 +54,6 @@ async function seedInstanceNames(): Promise<void> {
     log.warn('instance-name seed: instances_list failed', { err: String(err) })
   }
 }
-
-export const lastInstanceState = ref<InstanceStateEventPayload>()
 
 function routePermission(payload: PermissionRequestEventPayload): void {
   log.debug('acp:permission-request received', {
@@ -271,7 +267,6 @@ export async function startSessionStream(): Promise<() => void> {
     await listen(TauriEvent.AcpInstanceState, (e) => {
       const { instanceId, agentId, state } = e.payload
 
-      lastInstanceState.value = e.payload
       pushInstanceState(instanceId, state)
       recordInstanceState(instanceId, agentId, state)
 

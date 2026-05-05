@@ -42,13 +42,101 @@ use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 /// command before dropping the handle.
 const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Single-lock turn-id state. Replaces two `Arc<RwLock<Option<String>>>`
+/// — `current_turn_id` (any active turn, real or synthetic) and
+/// `synthetic_turn_id` (out-of-turn-wrapper id when set) — that
+/// previously raced across six write sites and three task graphs.
+///
+/// Invariants:
+/// - When `synthetic` is `Some`, `current` MUST equal `synthetic` (a
+///   synthetic IS the current turn).
+/// - A real prompt arriving sets `current` and clears `synthetic`.
+/// - Closing the synthetic clears `current` iff they still match
+///   (a real prompt may have raced in between).
+///
+/// All mutations go through the typed methods; the field accessors
+/// stay private so the invariant can't drift through field-level
+/// writes.
+#[derive(Debug, Default)]
+struct TurnState {
+    current: Option<String>,
+    synthetic: Option<String>,
+}
+
+impl TurnState {
+    fn current(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+
+    /// Symmetric accessor for completeness; no caller today since the
+    /// synthetic-id-only flow goes through `take_synthetic`. Narrow
+    /// allow keeps it visible — the inverse of `current()`.
+    #[allow(dead_code)]
+    fn synthetic(&self) -> Option<&str> {
+        self.synthetic.as_deref()
+    }
+
+    /// Open a real (prompt-driven) turn. Clears any prior synthetic —
+    /// the real prompt supersedes whatever the actor was wrapping.
+    fn open_real(&mut self, turn_id: String) {
+        self.current = Some(turn_id);
+        self.synthetic = None;
+    }
+
+    /// Mint a synthetic turn — out-of-turn agent activity wraps under
+    /// it so the UI can group the entries instead of scattering them
+    /// into solo blocks.
+    fn open_synthetic(&mut self, turn_id: String) {
+        self.current = Some(turn_id.clone());
+        self.synthetic = Some(turn_id);
+    }
+
+    /// Close the current turn iff `turn_id` still owns the slot.
+    /// Returns true when the caller's id matched (so it can emit
+    /// `TurnEnded` exactly once). Clears synthetic too if it matched.
+    fn close_if_current(&mut self, turn_id: &str) -> bool {
+        if self.current.as_deref() != Some(turn_id) {
+            return false;
+        }
+        if self.synthetic.as_deref() == Some(turn_id) {
+            self.synthetic = None;
+        }
+        self.current = None;
+        true
+    }
+
+    /// Take and return the synthetic id; clears current too when the
+    /// two still match (the deferred replay closer + the real-prompt
+    /// supersede paths both call this — single lock means no race
+    /// between the synthetic-take and the current-conditional-clear).
+    fn take_synthetic(&mut self) -> Option<String> {
+        let synth = self.synthetic.take()?;
+        if self.current.as_deref() == Some(synth.as_str()) {
+            self.current = None;
+        }
+        Some(synth)
+    }
+
+    /// Take and return the current id (real or synthetic). Clears
+    /// synthetic too if it matched. Used by the Cancel path.
+    fn take_current(&mut self) -> Option<String> {
+        let cur = self.current.take()?;
+        if self.synthetic.as_deref() == Some(cur.as_str()) {
+            self.synthetic = None;
+        }
+        Some(cur)
+    }
+}
+
+type SharedTurnState = Arc<tokio::sync::RwLock<TurnState>>;
+
 /// RAII handle for one open `session/prompt` turn. Constructor emits
-/// `TurnStarted` + claims the `current_turn_id` slot; `complete(...)`
-/// emits `TurnEnded` with the agent-supplied stop reason / error;
-/// `Drop` is the leak fallback — when the spawned prompt task panics,
-/// the transport closes mid-turn, or the actor unwinds before
-/// `complete` runs, the guard synthesises `TurnEnded { stop_reason:
-/// "cancelled" }` and frees the slot.
+/// `TurnStarted` + claims the turn slot via `TurnState::open_real`;
+/// `complete(...)` emits `TurnEnded` with the agent-supplied stop
+/// reason / error; `Drop` is the leak fallback — when the spawned
+/// prompt task panics, the transport closes mid-turn, or the actor
+/// unwinds before `complete` runs, the guard synthesises
+/// `TurnEnded { stop_reason: "cancelled" }` and frees the slot.
 ///
 /// The slot still mediates ownership across the actor + the spawn
 /// future: a concurrent `Cancel` handler atomically takes the slot
@@ -61,7 +149,7 @@ struct TurnGuard {
     agent_id: String,
     session_id: String,
     events_tx: broadcast::Sender<InstanceEvent>,
-    current_turn_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    turn_state: SharedTurnState,
     completed: bool,
 }
 
@@ -72,9 +160,9 @@ impl TurnGuard {
         instance_id: String,
         session_id: String,
         events_tx: broadcast::Sender<InstanceEvent>,
-        current_turn_id: Arc<tokio::sync::RwLock<Option<String>>>,
+        turn_state: SharedTurnState,
     ) -> Self {
-        *current_turn_id.write().await = Some(turn_id.clone());
+        turn_state.write().await.open_real(turn_id.clone());
         let _ = events_tx.send(InstanceEvent::TurnStarted {
             agent_id: agent_id.clone(),
             instance_id: instance_id.clone(),
@@ -88,7 +176,7 @@ impl TurnGuard {
             agent_id,
             session_id,
             events_tx,
-            current_turn_id,
+            turn_state,
             completed: false,
         }
     }
@@ -98,16 +186,7 @@ impl TurnGuard {
     /// `InstanceMeta` refresh — only fires alongside an emit).
     async fn complete(mut self, stop_reason: Option<String>, error: Option<String>) -> bool {
         self.completed = true;
-        let still_owned = {
-            let mut slot = self.current_turn_id.write().await;
-            if slot.as_deref() == Some(self.turn_id.as_str()) {
-                *slot = None;
-                true
-            } else {
-                false
-            }
-        };
-        if !still_owned {
+        if !self.turn_state.write().await.close_if_current(&self.turn_id) {
             return false;
         }
         let _ = self.events_tx.send(InstanceEvent::TurnEnded {
@@ -131,14 +210,13 @@ impl Drop for TurnGuard {
         // Best-effort: if a concurrent task holds the slot we let it
         // win (it'll synthesise its own TurnEnded). try_write avoids
         // blocking + the awkward "Drop in async context" trap.
-        let mut slot = match self.current_turn_id.try_write() {
+        let mut slot = match self.turn_state.try_write() {
             Ok(g) => g,
             Err(_) => return,
         };
-        if slot.as_deref() != Some(self.turn_id.as_str()) {
+        if !slot.close_if_current(&self.turn_id) {
             return;
         }
-        *slot = None;
         let _ = self.events_tx.send(InstanceEvent::TurnEnded {
             agent_id: self.agent_id.clone(),
             instance_id: self.instance_id.clone(),
@@ -320,6 +398,48 @@ pub(crate) struct RunningToolCall {
 }
 
 pub(crate) type ToolCallCache = std::collections::HashMap<String, RunningToolCall>;
+
+/// Per-instance bag of state needed to construct an
+/// `InstanceEvent::InstanceMeta` event. Slow-changing identity bits
+/// live as cloned strings; the four `Arc<RwLock<…>>` handles share
+/// the same backing as the actor's per-instance metadata caches, so
+/// `emit()` reads the current values atomically.
+///
+/// Replaces 6 inline 10-field struct-literal builds across the actor
+/// — every site (Fresh / Resume bootstraps, prompt end, cancel end,
+/// SetMode success, SetModel success) had its own copy. A single
+/// `meta_ctx.emit(&events_tx, session_id).await` per site collapses
+/// the noise + fixes the silent stale on the `SetConfigOption` arm
+/// (which had no refresh emit at all).
+#[derive(Clone)]
+struct MetaEmitter {
+    agent_id: String,
+    instance_id: String,
+    profile_id: Option<String>,
+    cwd: String,
+    current_mode: Arc<tokio::sync::RwLock<Option<String>>>,
+    current_model: Arc<tokio::sync::RwLock<Option<String>>>,
+    available_modes: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModeInfo>>>,
+    available_models: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModelInfo>>>,
+    mcps_count: usize,
+}
+
+impl MetaEmitter {
+    async fn emit(&self, events_tx: &broadcast::Sender<InstanceEvent>, session_id: Option<String>) {
+        let _ = events_tx.send(InstanceEvent::InstanceMeta {
+            agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
+            profile_id: self.profile_id.clone(),
+            session_id,
+            cwd: self.cwd.clone(),
+            current_mode_id: self.current_mode.read().await.clone(),
+            current_model_id: self.current_model.read().await.clone(),
+            available_modes: self.available_modes.read().await.clone(),
+            available_models: self.available_models.read().await.clone(),
+            mcps_count: self.mcps_count,
+        });
+    }
+}
 
 fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::formatter::types::FormattedToolCall {
     use crate::tools::formatter::registry::FormatterContext;
@@ -1351,23 +1471,22 @@ async fn run(params: RunParams) {
     .to_string();
     // Tracks the in-flight turn id so the notification / permission
     // arms of the dispatch loop can stamp events with it without
-    // re-coordinating with the Prompt-handling task. Set when a
-    // `Prompt` is accepted, cleared when the spawned `session/prompt`
-    // task replies. `tokio::sync::RwLock` because the spawned task
-    // crosses an `.await`; reads from the loop are non-blocking.
-    let current_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
-
-    // Out-of-turn agent activity (scheduled wake-ups, side-channel
-    // updates) arrives without a `Prompt` envelope. We mint a
-    // *synthetic* turn id on the first transcript-shape notification
-    // when no real turn is open, so the chat surface still groups the
-    // resulting items into a single block. The synthetic turn closes
-    // when a real `session/prompt` arrives and supersedes it (handled
-    // at the prompt-start site). No idle auto-close — reasoning
-    // models can pause arbitrarily between updates and we'd rather
-    // leave the indicator running than fire a false TurnEnded
-    // mid-thought.
-    let synthetic_turn_id: Arc<tokio::sync::RwLock<Option<String>>> = Arc::new(tokio::sync::RwLock::new(None));
+    // Single-lock turn-id state — replaces two `Arc<RwLock<Option<String>>>`
+    // (current + synthetic) that previously raced across six write
+    // sites. `TurnState` carries both fields under one lock; the
+    // typed methods (`open_real` / `open_synthetic` / `take_*` /
+    // `close_if_current`) capture the synthetic-IS-current invariant
+    // so it can't drift. See `TurnState` declaration above for
+    // the per-method semantics.
+    //
+    // Real prompts: TurnGuard::new → open_real, complete/Drop →
+    // close_if_current. Synthetic wrappers (out-of-turn agent
+    // activity): mint via open_synthetic on the first transcript-shape
+    // notification with no open turn; closed via take_synthetic by
+    // the deferred replay-drain closer OR superseded by the next
+    // real prompt. Cancel takes the current id (real or synthetic)
+    // via take_current.
+    let turn_state: SharedTurnState = Arc::new(tokio::sync::RwLock::new(TurnState::default()));
 
     // Bridge live terminal output → InstanceEvent::Terminal. The ACP
     // `terminal/output` request remains a polled snapshot path
@@ -1379,7 +1498,7 @@ async fn run(params: RunParams) {
         let agent_id = agent_id.clone();
         let instance_id = instance_id.clone();
         let session_id_slot = session_id_slot.clone();
-        let current_turn_id = current_turn_id.clone();
+        let turn_state = turn_state.clone();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
@@ -1388,7 +1507,7 @@ async fn run(params: RunParams) {
                             Some(sid) => sid.0.to_string(),
                             None => evt.session_key.clone(),
                         };
-                        let turn_id = current_turn_id.read().await.clone();
+                        let turn_id = turn_state.read().await.current().map(str::to_string);
                         let chunk = match evt.kind {
                             TerminalToolEventKind::Output { stream, data } => TerminalChunk::Output {
                                 stream: match stream {
@@ -1485,6 +1604,21 @@ async fn run(params: RunParams) {
         // `InstanceMeta` emit. Reads via `list().len()` because the
         // registry's `count()` accessor is `cfg(test)` only.
         let mcps_count = mcps.as_ref().map(|reg| reg.list().len()).unwrap_or(0);
+
+        // Single emitter for every `InstanceMeta` refresh in this
+        // actor. Cloned into spawned tasks; reads the four `RwLock`
+        // metas atomically per emit.
+        let meta_emitter = MetaEmitter {
+            agent_id: agent_id_notif.clone(),
+            instance_id: instance_id_notif.clone(),
+            profile_id: resolved_profile_id.clone(),
+            cwd: cwd_str.clone(),
+            current_mode: current_mode_meta.clone(),
+            current_model: current_model_meta.clone(),
+            available_modes: available_modes_meta.clone(),
+            available_models: available_models_meta.clone(),
+            mcps_count,
+        };
         if !mcp_servers.is_empty() {
             info!(
                 agent = %agent_id_notif,
@@ -1634,18 +1768,7 @@ async fn run(params: RunParams) {
                     session_id: Some(sid.0.to_string()),
                     state: InstanceState::Running,
                 });
-                let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
-                    agent_id: agent_id_notif.clone(),
-                    instance_id: instance_id_notif.clone(),
-                    profile_id: resolved_profile_id.clone(),
-                    session_id: Some(sid.0.to_string()),
-                    cwd: cwd_str.clone(),
-                    current_mode_id: current_mode_meta.read().await.clone(),
-                    current_model_id: current_model_meta.read().await.clone(),
-                    available_modes: available_modes_meta.read().await.clone(),
-                    available_models: available_models_meta.read().await.clone(),
-                    mcps_count,
-                });
+                meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
                 Some(sid)
             }
             Bootstrap::Resume(sid) => {
@@ -1788,28 +1911,24 @@ async fn run(params: RunParams) {
                 // after a short quiet window: by the time it runs the
                 // dispatch loop has processed the queued events + the
                 // synthetic turn id is set; we then emit TurnEnded so
-                // the UI's "running" indicator clears. The close
-                // checks `current_turn_id == synthetic_id` to avoid
-                // racing a real prompt that arrived in the interim.
+                // the UI's "running" indicator clears. `take_synthetic`
+                // atomically takes the synthetic id and clears
+                // `current` iff they still match — single lock means
+                // no race window between the two operations a real
+                // prompt could slip into.
                 {
                     const REPLAY_DRAIN_QUIET_MS: u64 = 1500;
-                    let synth_slot = synthetic_turn_id.clone();
-                    let current_slot = current_turn_id.clone();
+                    let turn_state = turn_state.clone();
                     let events = events_tx_notif.clone();
                     let agent_id = agent_id_notif.clone();
                     let instance_id = instance_id_notif.clone();
                     let session_id = sid.0.to_string();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_millis(REPLAY_DRAIN_QUIET_MS)).await;
-                        let synth = match synth_slot.write().await.take() {
+                        let synth = match turn_state.write().await.take_synthetic() {
                             Some(s) => s,
                             None => return,
                         };
-                        let mut current_guard = current_slot.write().await;
-                        if current_guard.as_deref() == Some(synth.as_str()) {
-                            *current_guard = None;
-                        }
-                        drop(current_guard);
                         debug!(
                             agent = %agent_id,
                             session = %session_id,
@@ -1849,18 +1968,7 @@ async fn run(params: RunParams) {
                     session_id: Some(sid.0.to_string()),
                     state: InstanceState::Running,
                 });
-                let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
-                    agent_id: agent_id_notif.clone(),
-                    instance_id: instance_id_notif.clone(),
-                    profile_id: resolved_profile_id.clone(),
-                    session_id: Some(sid.0.to_string()),
-                    cwd: cwd_str.clone(),
-                    current_mode_id: current_mode_meta.read().await.clone(),
-                    current_model_id: current_model_meta.read().await.clone(),
-                    available_modes: available_modes_meta.read().await.clone(),
-                    available_models: available_models_meta.read().await.clone(),
-                    mcps_count,
-                });
+                meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
                 Some(sid)
             }
             Bootstrap::ListOnly => {
@@ -1912,7 +2020,7 @@ async fn run(params: RunParams) {
                             // Real prompt — if a synthetic out-of-turn turn
                             // is open, close it cleanly before starting
                             // the real one.
-                            if let Some(prev) = synthetic_turn_id.write().await.take() {
+                            if let Some(prev) = turn_state.write().await.take_synthetic() {
                                 debug!(
                                     agent = %agent_id_notif,
                                     session = %sid,
@@ -1947,7 +2055,7 @@ async fn run(params: RunParams) {
                                 instance_id_notif.clone(),
                                 sid.0.to_string(),
                                 events_tx_notif.clone(),
-                                current_turn_id.clone(),
+                                turn_state.clone(),
                             )
                             .await;
                             // Daemon-authoritative user-prompt transcript item:
@@ -1983,15 +2091,8 @@ async fn run(params: RunParams) {
                             let agent_log = agent_id_notif.clone();
                             let session_log = sid.clone();
                             let events_tx_done = events_tx_notif.clone();
-                            let agent_id_done = agent_id_notif.clone();
-                            let instance_id_done = instance_id_notif.clone();
-                            let profile_id_done = resolved_profile_id.clone();
                             let turn_id_done = turn_id.clone();
-                            let cwd_done = cwd_str.clone();
-                            let current_mode_done = current_mode_meta.clone();
-                            let current_model_done = current_model_meta.clone();
-                            let available_modes_done = available_modes_meta.clone();
-                            let available_models_done = available_models_meta.clone();
+                            let meta_emitter = meta_emitter.clone();
                             tokio::spawn(async move {
                                 // `guard` owns the open-turn slot for the lifetime of
                                 // this future. On panic / drop / unwind it synthesises
@@ -2041,18 +2142,7 @@ async fn run(params: RunParams) {
                                 // header chrome re-syncs even when the agent
                                 // didn't push a `current_mode_update` /
                                 // `session_info_update` notification this turn.
-                                let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
-                                    agent_id: agent_id_done,
-                                    instance_id: instance_id_done,
-                                    profile_id: profile_id_done,
-                                    session_id: Some(sid.0.to_string()),
-                                    cwd: cwd_done,
-                                    current_mode_id: current_mode_done.read().await.clone(),
-                                    current_model_id: current_model_done.read().await.clone(),
-                                    available_modes: available_modes_done.read().await.clone(),
-                                    available_models: available_models_done.read().await.clone(),
-                                    mcps_count,
-                                });
+                                meta_emitter.emit(&events_tx_done, Some(sid.0.to_string())).await;
                                 let _ = reply.send(mapped);
                             });
                         }
@@ -2073,7 +2163,7 @@ async fn run(params: RunParams) {
                             // (cancelled)` straight away so the chat surface stops
                             // grouping post-cancel emissions onto the cancelled
                             // block and the next user submit lands in a fresh turn.
-                            let cancelled_turn_id = current_turn_id.write().await.take();
+                            let cancelled_turn_id = turn_state.write().await.take_current();
                             let res = connection
                                 .send_notification(CancelNotification::new(sid.clone()))
                                 .map_err(|e| e.to_string());
@@ -2091,18 +2181,7 @@ async fn run(params: RunParams) {
                                 // InstanceMeta refresh — same shape as the prompt-
                                 // future path, kept in sync so the header chrome
                                 // doesn't lag a stale mode / model after cancel.
-                                let _ = events_tx_notif.send(InstanceEvent::InstanceMeta {
-                                    agent_id: agent_id_notif.clone(),
-                                    instance_id: instance_id_notif.clone(),
-                                    profile_id: resolved_profile_id.clone(),
-                                    session_id: Some(sid.0.to_string()),
-                                    cwd: cwd_str.clone(),
-                                    current_mode_id: current_mode_meta.read().await.clone(),
-                                    current_model_id: current_model_meta.read().await.clone(),
-                                    available_modes: available_modes_meta.read().await.clone(),
-                                    available_models: available_models_meta.read().await.clone(),
-                                    mcps_count,
-                                });
+                                meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
                             }
                             let _ = reply.send(res);
                         }
@@ -2118,16 +2197,10 @@ async fn run(params: RunParams) {
                                 "acp::instance: session/set_mode requested"
                             );
                             let conn = connection.clone();
-                            let agent_log = agent_id_notif.clone();
-                            let instance_log = instance_id_notif.clone();
-                            let profile_log = resolved_profile_id.clone();
                             let session_log = sid.clone();
                             let current_mode = current_mode_meta.clone();
-                            let available_modes = available_modes_meta.clone();
-                            let current_model_done = current_model_meta.clone();
-                            let available_models_done = available_models_meta.clone();
-                            let cwd_done = cwd_str.clone();
                             let events_tx_done = events_tx_notif.clone();
+                            let meta_emitter = meta_emitter.clone();
                             tokio::spawn(async move {
                                 let req = SetSessionModeRequest::new(session_log.clone(), SessionModeId::from(std::sync::Arc::<str>::from(mode_id.clone())));
                                 let res = conn
@@ -2141,18 +2214,7 @@ async fn run(params: RunParams) {
                                     // picks up the new mode without
                                     // waiting for an agent-pushed
                                     // current_mode_update.
-                                    let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
-                                        agent_id: agent_log,
-                                        instance_id: instance_log,
-                                        profile_id: profile_log,
-                                        session_id: Some(session_log.0.to_string()),
-                                        cwd: cwd_done,
-                                        current_mode_id: Some(mode_id),
-                                        current_model_id: current_model_done.read().await.clone(),
-                                        available_modes: available_modes.read().await.clone(),
-                                        available_models: available_models_done.read().await.clone(),
-                                        mcps_count,
-                                    });
+                                    meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
                                 }
                                 let _ = reply.send(res.map(|_| ()));
                             });
@@ -2170,6 +2232,9 @@ async fn run(params: RunParams) {
                                 "acp::instance: session/set_config_option requested"
                             );
                             let conn = connection.clone();
+                            let events_tx_done = events_tx_notif.clone();
+                            let meta_emitter = meta_emitter.clone();
+                            let session_log = sid.clone();
                             tokio::spawn(async move {
                                 use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
                                 let req = SetSessionConfigOptionRequest::new(
@@ -2178,6 +2243,17 @@ async fn run(params: RunParams) {
                                     SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
                                 );
                                 let res = conn.send_request(req).block_task().await.map_err(|e| e.to_string());
+                                if res.is_ok() {
+                                    // Refresh InstanceMeta after a successful
+                                    // config_option change — keeps the header
+                                    // chrome consistent with set_mode /
+                                    // set_model paths. The underlying mode /
+                                    // model RwLocks are updated by the
+                                    // `config_option_update` notification path,
+                                    // so this emit picks up whatever values the
+                                    // agent advertised post-change.
+                                    meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
+                                }
                                 let _ = reply.send(res.map(|_| ()));
                             });
                         }
@@ -2193,16 +2269,10 @@ async fn run(params: RunParams) {
                                 "acp::instance: session/set_model requested"
                             );
                             let conn = connection.clone();
-                            let agent_log = agent_id_notif.clone();
-                            let instance_log = instance_id_notif.clone();
-                            let profile_log = resolved_profile_id.clone();
                             let session_log = sid.clone();
-                            let current_mode_done = current_mode_meta.clone();
                             let current_model_done = current_model_meta.clone();
-                            let available_modes_done = available_modes_meta.clone();
-                            let available_models_done = available_models_meta.clone();
-                            let cwd_done = cwd_str.clone();
                             let events_tx_done = events_tx_notif.clone();
+                            let meta_emitter = meta_emitter.clone();
                             tokio::spawn(async move {
                                 let req = SetSessionModelRequest::new(session_log.clone(), ModelId::from(std::sync::Arc::<str>::from(model_id.clone())));
                                 let res = conn
@@ -2212,18 +2282,7 @@ async fn run(params: RunParams) {
                                     .map_err(|e| e.to_string());
                                 if res.is_ok() {
                                     *current_model_done.write().await = Some(model_id.clone());
-                                    let _ = events_tx_done.send(InstanceEvent::InstanceMeta {
-                                        agent_id: agent_log,
-                                        instance_id: instance_log,
-                                        profile_id: profile_log,
-                                        session_id: Some(session_log.0.to_string()),
-                                        cwd: cwd_done,
-                                        current_mode_id: current_mode_done.read().await.clone(),
-                                        current_model_id: Some(model_id),
-                                        available_modes: available_modes_done.read().await.clone(),
-                                        available_models: available_models_done.read().await.clone(),
-                                        mcps_count,
-                                    });
+                                    meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
                                 }
                                 let _ = reply.send(res.map(|_| ()));
                             });
@@ -2354,7 +2413,7 @@ async fn run(params: RunParams) {
                             // AvailableCommands updates DO NOT trigger a
                             // synthetic turn — they're per-session metadata.
                             let needs_synthetic_turn = matches!(mapped, MappedUpdate::Transcript(_));
-                            let mut turn_id = current_turn_id.read().await.clone();
+                            let mut turn_id = turn_state.read().await.current().map(str::to_string);
                             if needs_synthetic_turn && turn_id.is_none() {
                                 let synthetic = uuid::Uuid::new_v4().to_string();
                                 info!(
@@ -2364,8 +2423,7 @@ async fn run(params: RunParams) {
                                     turn = %synthetic,
                                     "acp::instance: synthetic turn start (out-of-turn agent activity)"
                                 );
-                                *current_turn_id.write().await = Some(synthetic.clone());
-                                *synthetic_turn_id.write().await = Some(synthetic.clone());
+                                turn_state.write().await.open_synthetic(synthetic.clone());
                                 // Synthetic turns wrap replay / out-of-turn agent
                                 // activity — there's no meaningful wall-clock for
                                 // them (the captain didn't kick this off, the
@@ -2447,7 +2505,7 @@ async fn run(params: RunParams) {
                                 tool = %tool,
                                 "acp::instance: fan out permission prompt to UI"
                             );
-                            let turn_id = current_turn_id.read().await.clone();
+                            let turn_id = turn_state.read().await.current().map(str::to_string);
                             let formatted = {
                                 use crate::tools::formatter::registry::FormatterContext;
                                 let registry = crate::adapters::acp::formatter_registry();

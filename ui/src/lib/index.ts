@@ -1,6 +1,6 @@
 export * from './caret-position'
 export * from './format-duration'
+export * from './image'
 export * from './log'
 export * from './markdown'
-export * from './parse-tokens'
 export * from './tools'

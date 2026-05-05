@@ -45,8 +45,9 @@ impl StatusBroadcast {
 
     /// Update the snapshot and broadcast to all subscribers.
     /// Returns `true` if at least one subscriber received the
-    /// notification. Test-only today; K-239's ACP bridge will drive
-    /// this in production via a non-test caller.
+    /// notification. Production callers use `set_state` / `set_visible`
+    /// to update one axis at a time; this whole-snapshot setter
+    /// stays for tests covering the broadcast/snapshot semantics.
     #[cfg(test)]
     pub fn set(&self, next: StatusResult) -> bool {
         let mut guard = self.snapshot.lock().expect("StatusBroadcast snapshot lock poisoned");
@@ -54,6 +55,22 @@ impl StatusBroadcast {
         let delivered = matches!(self.sender.send(next), Ok(n) if n > 0);
         drop(guard);
         delivered
+    }
+
+    /// Update only the agent-state field (`Idle` / `Streaming` /
+    /// `Awaiting` / `Error`) and the active session id, keeping
+    /// `visible` intact. Driven from the per-instance ACP turn
+    /// lifecycle bridge.
+    pub fn set_state(&self, state: AgentState, active_session: Option<String>) {
+        let next = {
+            let mut guard = self.snapshot.lock().expect("StatusBroadcast snapshot lock poisoned");
+            guard.state = state;
+            guard.active_session = active_session;
+            guard.clone()
+        };
+        if let Err(e) = self.sender.send(next) {
+            tracing::trace!(err = %e, "StatusBroadcast: no subscribers for state change");
+        }
     }
 
     /// Update only the `visible` field, keeping other state intact.
@@ -115,6 +132,19 @@ mod tests {
 
         let received = rx.recv().await.expect("should receive notification");
         assert_eq!(received, next);
+    }
+
+    #[tokio::test]
+    async fn set_state_updates_state_and_active_session_only() {
+        let broadcast = StatusBroadcast::new(true);
+        let (_initial, mut rx) = broadcast.subscribe();
+
+        broadcast.set_state(AgentState::Streaming, Some("sess-42".into()));
+
+        let received = rx.recv().await.expect("notification");
+        assert_eq!(received.state, AgentState::Streaming);
+        assert_eq!(received.active_session.as_deref(), Some("sess-42"));
+        assert!(received.visible, "set_state must preserve visible");
     }
 
     #[tokio::test]

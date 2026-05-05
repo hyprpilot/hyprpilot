@@ -61,6 +61,42 @@ pub struct MCPDefinition {
     pub source: PathBuf,
 }
 
+/// Compiled per-server glob pair: `(reject, accept)`. Built once at
+/// registry construction so the permission-decide hot path reads from
+/// the cache instead of running `GlobSetBuilder::build()` on every
+/// tool call. Reject beats accept — the per-server lane in
+/// `DefaultPermissionController::decide` checks reject first and
+/// short-circuits.
+pub type CompiledGlobs = (Option<globset::GlobSet>, Option<globset::GlobSet>);
+
+/// Compile a list of glob patterns into a `GlobSet`. `None` when the
+/// input is empty or every pattern fails to compile (logged). The
+/// per-server tool-name globs are tiny so build cost is negligible at
+/// construction; caching the result so the per-call decide path
+/// doesn't pay for it is the win.
+fn compile_glob_set(patterns: &[String]) -> Option<globset::GlobSet> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    let mut added = 0_usize;
+    for p in patterns {
+        match globset::Glob::new(p) {
+            Ok(g) => {
+                builder.add(g);
+                added += 1;
+            }
+            Err(err) => {
+                tracing::warn!(pattern = %p, %err, "mcp::compile_glob_set: skipping invalid glob");
+            }
+        }
+    }
+    if added == 0 {
+        return None;
+    }
+    builder.build().ok()
+}
+
 /// Owned MCP catalog — the resolved set after merging every file.
 /// Constructed at daemon boot from the global `mcps` paths. Profiles
 /// with their own `mcps` field build per-profile registries on
@@ -70,6 +106,11 @@ pub struct MCPsRegistry {
     /// `list()` is stable.
     catalog: RwLock<HashMap<String, MCPDefinition>>,
     order: RwLock<Vec<String>>,
+    /// Per-server compiled `(reject, accept)` `GlobSet` pair. Built
+    /// once at construction so the decide path doesn't allocate. The
+    /// patterns are immutable for the lifetime of the registry; no
+    /// reload story today (CLAUDE.md: "no reload — restart-to-reconfigure").
+    globs: HashMap<String, CompiledGlobs>,
 }
 
 /// Project an opaque `MCPDefinition.raw` JSON value onto the ACP wire
@@ -144,11 +185,14 @@ pub fn project_to_acp(def: &MCPDefinition) -> Option<agent_client_protocol::sche
 
 impl MCPsRegistry {
     /// Construct from a pre-resolved set. Caller (`loader::load_files`)
-    /// has already merged + warned on bad files.
+    /// has already merged + warned on bad files. Compiles per-server
+    /// `(reject, accept)` `GlobSet` pairs eagerly so the decide hot
+    /// path reads them without allocating.
     #[must_use]
     pub fn new(defs: Vec<MCPDefinition>) -> Self {
         let mut order = Vec::with_capacity(defs.len());
         let mut catalog = HashMap::with_capacity(defs.len());
+        let mut globs = HashMap::with_capacity(defs.len());
         for d in defs {
             // Later-wins on collision: `loader::load_files` already
             // applies the file-iteration order, so by the time we get
@@ -157,12 +201,29 @@ impl MCPsRegistry {
             // would drop the duplicate silently otherwise.
             order.retain(|n: &String| n.as_str() != d.name);
             order.push(d.name.clone());
+            globs.insert(
+                d.name.clone(),
+                (
+                    compile_glob_set(&d.hyprpilot.auto_reject_tools),
+                    compile_glob_set(&d.hyprpilot.auto_accept_tools),
+                ),
+            );
             catalog.insert(d.name.clone(), d);
         }
         Self {
             catalog: RwLock::new(catalog),
             order: RwLock::new(order),
+            globs,
         }
+    }
+
+    /// Cached `(reject, accept)` glob pair for `name`, or `None` when
+    /// the server isn't in the registry. Used by
+    /// `DefaultPermissionController::decide` to short-circuit without
+    /// rebuilding `GlobSet`s on every call.
+    #[must_use]
+    pub fn globs_for(&self, name: &str) -> Option<&CompiledGlobs> {
+        self.globs.get(name)
     }
 
     #[must_use]
@@ -172,6 +233,10 @@ impl MCPsRegistry {
         order.iter().filter_map(|name| catalog.get(name).cloned()).collect()
     }
 
+    /// Per-name lookup. The decide hot path uses `globs_for` instead;
+    /// this accessor stays for tests + future consumers (per-instance
+    /// MCP override planning).
+    #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<MCPDefinition> {
         let catalog = self.catalog.read().expect("mcps catalog lock poisoned");

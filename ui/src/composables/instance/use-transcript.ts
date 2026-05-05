@@ -98,6 +98,9 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
   }
 }
 
+// ── Internal store-mutation surface ───────────────────────────────
+// Sibling-store wire-listener inputs. CLAUDE.md "Two-tier composables".
+
 /**
  * Appends a chunk to the instance's transcript, merging consecutive
  * chunks that share `messageId` (or the same role with no explicit

@@ -26,44 +26,35 @@ import {
   faUserGear
 } from '@fortawesome/free-solid-svg-icons'
 
-import { PermissionUi, PillKind } from '@constants/ui'
+import { PermissionUi } from '@constants/ui'
 import type { Presentation } from '@lib/tools/presentation'
 
-const row = (icon: Presentation['icon']): Presentation => ({
-  icon,
-  pill: PillKind.Default,
-  permissionUi: PermissionUi.Row
-})
-
-const modal = (icon: Presentation['icon']): Presentation => ({
-  icon,
-  pill: PillKind.Default,
-  permissionUi: PermissionUi.Modal
-})
+const Row = PermissionUi.Row
+const Modal = PermissionUi.Modal
 
 export const claudeCodeOverrides: Record<string, Presentation> = {
-  bash: row(faTerminal),
-  bash_output: row(faTerminal),
-  kill_shell: row(faSkull),
-  terminal: row(faTerminal),
-  read: row(faPenToSquare),
-  write: modal(faPenToSquare),
-  edit: modal(faPen),
-  multi_edit: modal(faPen),
-  notebook_edit: modal(faBookOpen),
-  grep: row(faMagnifyingGlass),
-  glob: row(faStarOfLife),
-  tool_search: row(faMagnifyingGlassChart),
-  web_fetch: row(faPlug),
-  web_search: row(faMagnifyingGlassPlus),
-  exit_plan_mode: modal(faClipboardList),
+  bash: { icon: faTerminal, permissionUi: Row },
+  bash_output: { icon: faTerminal, permissionUi: Row },
+  kill_shell: { icon: faSkull, permissionUi: Row },
+  terminal: { icon: faTerminal, permissionUi: Row },
+  read: { icon: faPenToSquare, permissionUi: Row },
+  write: { icon: faPenToSquare, permissionUi: Modal },
+  edit: { icon: faPen, permissionUi: Modal },
+  multi_edit: { icon: faPen, permissionUi: Modal },
+  notebook_edit: { icon: faBookOpen, permissionUi: Modal },
+  grep: { icon: faMagnifyingGlass, permissionUi: Row },
+  glob: { icon: faStarOfLife, permissionUi: Row },
+  tool_search: { icon: faMagnifyingGlassChart, permissionUi: Row },
+  web_fetch: { icon: faPlug, permissionUi: Row },
+  web_search: { icon: faMagnifyingGlassPlus, permissionUi: Row },
+  exit_plan_mode: { icon: faClipboardList, permissionUi: Modal },
   // claude-code-acp ≥0.32 renamed the tool to `switch_mode`; same
   // modal-permission shape as `ExitPlanMode`.
-  switch_mode: modal(faClipboardList),
-  todo_write: row(faListCheck),
-  skill: row(faPuzzlePiece),
-  task: row(faUserGear),
+  switch_mode: { icon: faClipboardList, permissionUi: Modal },
+  todo_write: { icon: faListCheck, permissionUi: Row },
+  skill: { icon: faPuzzlePiece, permissionUi: Row },
+  task: { icon: faUserGear, permissionUi: Row },
   // Dispatch target for every dynamic `mcp__<server>__<leaf>` name —
   // central `presentationFor()` routes mcp__-prefixed wire names here.
-  mcp: row(faPlug)
+  mcp: { icon: faPlug, permissionUi: Row }
 }

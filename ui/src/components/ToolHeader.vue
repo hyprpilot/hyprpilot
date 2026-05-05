@@ -3,6 +3,7 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 import { computed } from 'vue'
 
 import { ToastTone } from '@components'
+import { toneBg } from '@constants/ui'
 
 /**
  * Shared header chrome for the three tool surfaces (ToolPill in chat,
@@ -30,18 +31,6 @@ const props = withDefaults(
     icon: undefined
   }
 )
-
-function toneBg(tone: ToastTone): string {
-  switch (tone) {
-    case ToastTone.Ok:
-      return 'var(--theme-status-ok)'
-    case ToastTone.Err:
-      return 'var(--theme-status-err)'
-    case ToastTone.Warn:
-    default:
-      return 'var(--theme-status-warn)'
-  }
-}
 
 const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(props.tone)))
 </script>

@@ -340,7 +340,10 @@ pub enum TerminalStream {
 impl InstanceEvent {
     /// Dot-separated topic name. Stable contract for subscription
     /// filtering. Colon-separated Tauri event names live only in the
-    /// bridge's mapping table.
+    /// bridge's mapping table. K-276 (ctl-side `instances/subscribe`)
+    /// will be the first consumer; until then narrow allow keeps the
+    /// scaffold visible without spamming the build.
+    #[allow(dead_code)]
     #[must_use]
     pub fn topic(&self) -> &'static str {
         match self {
@@ -359,21 +362,6 @@ impl InstanceEvent {
             InstanceEvent::InstanceMeta { .. } => "instance.meta",
         }
     }
-}
-
-/// Handle returned by `Adapter::spawn`. Holds just enough identity for
-/// callers to address follow-up submits + cancels against; the
-/// concrete channels live inside the adapter's own registry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstanceHandle {
-    pub agent_id: String,
-    pub instance_id: String,
-    /// Populated once the wire-session lands (e.g. `session/new`
-    /// resolves on ACP). `None` while the instance is still
-    /// bootstrapping.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
 }
 
 /// Flat snapshot of one live instance. Adapters surface the same

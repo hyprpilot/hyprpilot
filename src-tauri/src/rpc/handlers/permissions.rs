@@ -103,7 +103,6 @@ mod tests {
 
     fn make_request(request_id: &str, instance_id: Option<&str>, tool: &str) -> PermissionRequest {
         PermissionRequest {
-            session_id: "sess-1".into(),
             instance_id: instance_id.map(str::to_string),
             request_id: request_id.into(),
             tool_call: ToolCallRef {
@@ -132,6 +131,8 @@ mod tests {
             status: &status,
             adapter: dyn_adapter,
             config: Some(shared),
+            skills: None,
+            mcps: None,
             already_subscribed: false,
             started_at: None,
             socket_path: None,

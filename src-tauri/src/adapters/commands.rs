@@ -106,7 +106,7 @@ pub async fn instance_restart(
         Ok(_) => tracing::info!("cmd::instance_restart: accepted"),
         Err(err) => tracing::warn!(%err, "cmd::instance_restart: failed"),
     }
-    out.map(|key| serde_json::json!({ "id": key.as_string() }))
+    out.map(|key| serde_json::json!({ "instanceId": key.as_string() }))
 }
 
 #[tauri::command]
@@ -251,29 +251,33 @@ pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> 
 }
 
 #[tauri::command]
-pub async fn instances_focus(adapter: AdapterState<'_>, id: String) -> Result<Value, String> {
-    let key = InstanceKey::parse(&id).map_err(|e| e.to_string())?;
+pub async fn instances_focus(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
     let key = adapter.focus(key).await.map_err(|e| e.to_string())?;
-    Ok(json!({ "focusedId": key.as_string() }))
+    Ok(json!({ "instanceId": key.as_string() }))
 }
 
 #[tauri::command]
-pub async fn instances_shutdown(adapter: AdapterState<'_>, id: String) -> Result<Value, String> {
-    let key = InstanceKey::parse(&id).map_err(|e| e.to_string())?;
+pub async fn instances_shutdown(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
     let key = adapter.shutdown_one(key).await.map_err(|e| e.to_string())?;
-    Ok(json!({ "id": key.as_string() }))
+    Ok(json!({ "instanceId": key.as_string() }))
 }
 
-/// Rename a live instance. `id` accepts UUID or current name; `name`
-/// is `None` (clear) or a slug-validated string. The actual slug
-/// validation runs inside `Adapter::rename` so the wire shape stays
-/// consistent with the RPC handler.
+/// Rename a live instance. `instanceId` accepts UUID or current
+/// name; `name` is `None` (clear) or a slug-validated string. The
+/// actual slug validation runs inside `Adapter::rename` so the wire
+/// shape stays consistent with the RPC handler.
 #[tauri::command]
-pub async fn instances_rename(adapter: AdapterState<'_>, id: String, name: Option<String>) -> Result<Value, String> {
+pub async fn instances_rename(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    name: Option<String>,
+) -> Result<Value, String> {
     let key = adapter
-        .resolve_token(&id)
+        .resolve_token(&instance_id)
         .await
-        .ok_or_else(|| format!("instance '{id}' not found"))?;
+        .ok_or_else(|| format!("instance '{instance_id}' not found"))?;
     adapter.rename(key, name.clone()).await.map_err(|e| e.to_string())?;
     Ok(json!({
         "instanceId": key.as_string(),

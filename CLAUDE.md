@@ -1446,6 +1446,33 @@ production composable knows nothing about test scaffolding; the
 test file imports both the composable and its test helper from
 `tests/`.
 
+#### Two-tier composables: store API vs sibling-store mutation surface
+
+The "no drive-by exports" rule has one explicit exception: the
+**instance-keyed store composables** under
+`ui/src/composables/instance/` — `use-tools`, `use-transcript`,
+`use-stream`, `use-turns`, `use-permissions`, `use-queue`,
+`use-terminals`, `use-session-info`, `use-phase`. These are
+two-tier:
+
+- **Store API** — `useFoo(instanceId?): UseFooApi`. Per-feature
+  views (chat transcript, palette, idle screen) consume this
+  interface as documented above.
+- **Internal store-mutation surface** — free fns (`pushFooStarted`,
+  `resetFoo`, `markX`, …) the wire-listener routers call to push
+  raw `acp:transcript` / `acp:permission-request` event payloads
+  into the store. Sibling stores import them directly.
+
+The mutation-surface fns are NOT a casual escape hatch — every
+caller is one of `use-session-stream` (the wire router) or another
+instance store. New consumers of the mutation surface must come
+through that router OR be a sibling store transitioning state on a
+related event.
+
+Each instance composable carries a comment header above its
+mutation-surface block (`// ── Internal store-mutation surface ───`)
+to make the boundary visible at the file level.
+
 ### Component composition contract — caller passes the renderer
 
 **Where a component renders user-supplied content (markdown body,

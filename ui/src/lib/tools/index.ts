@@ -50,7 +50,6 @@ export function projectFormatted(formatted: FormattedToolCall, meta: ProjectionM
     name: meta.wireName,
     state: toolStateFromWire(meta.state),
     icon: presentation.icon,
-    pill: presentation.pill,
     permissionUi: presentation.permissionUi,
     title: formatted.title,
     stats: formatted.stats,

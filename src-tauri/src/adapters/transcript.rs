@@ -86,13 +86,6 @@ pub enum TranscriptItem {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Speaker {
-    User,
-    Assistant,
-}
-
 /// One tool-call as the agent first announced it. `id` ties together
 /// later `ToolCallUpdate` records. `tool_kind` is the wire string
 /// (`read` / `edit` / `execute` / `terminal` / etc.); the UI uses
@@ -264,15 +257,6 @@ pub enum UserTurnInput {
 }
 
 impl UserTurnInput {
-    /// Convenience for the bare-text path (no attachments).
-    #[must_use]
-    pub fn text(s: impl Into<String>) -> Self {
-        Self::Prompt {
-            text: s.into(),
-            attachments: Vec::new(),
-        }
-    }
-
     #[must_use]
     pub fn with_attachments(text: impl Into<String>, attachments: Vec<Attachment>) -> Self {
         Self::Prompt {

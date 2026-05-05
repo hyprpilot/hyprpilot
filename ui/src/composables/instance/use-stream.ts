@@ -127,6 +127,9 @@ interface PlanUpdate {
   entries?: PlanEntry[]
 }
 
+// ── Internal store-mutation surface ───────────────────────────────
+// Sibling-store wire-listener inputs. CLAUDE.md "Two-tier composables".
+
 export function pushThoughtChunk(id: InstanceId, sessionId: string, raw: ThoughtUpdate): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)

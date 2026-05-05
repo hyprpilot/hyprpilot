@@ -25,7 +25,6 @@ export type Stat =
   | { kind: 'text'; value: string }
   | { kind: 'diff'; added: number; removed: number }
   | { kind: 'duration'; ms: number }
-  | { kind: 'matches'; count: number }
 
 export interface FormattedToolCall {
   title: string

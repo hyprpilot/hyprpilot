@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef } from 'vue'
+import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
@@ -45,7 +45,12 @@ export interface PermissionRequestRaw {
   formatted: FormattedToolCall
 }
 
-const states = ref<Record<InstanceId, PendingPermission[]>>({})
+// Per-instance pending permissions. `reactive(Map)` matches sibling
+// instance-keyed stores (use-queue, use-terminals, use-tools); the
+// prior `ref<Record>` + spread-replace pattern allocated a new top-
+// level object on every push/evict and required spread-keying every
+// inner array too.
+const states = reactive(new Map<InstanceId, PendingPermission[]>())
 
 /**
  * Accumulates a pending permission prompt for the given instance.
@@ -67,20 +72,21 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     options: raw.options,
     formatted: raw.formatted
   }
-  const current = states.value[id] ?? []
+  const current = states.get(id) ?? []
   const filtered = current.filter((p) => p.requestId !== raw.requestId)
 
-  states.value = { ...states.value, [id]: [...filtered, next] }
+  filtered.push(next)
+  states.set(id, filtered)
   log.trace('permission pending added', {
     instanceId: id,
     requestId: raw.requestId,
     tool: raw.tool,
-    size: states.value[id].length
+    size: filtered.length
   })
 }
 
 export function evictPermission(id: InstanceId, requestId: string): void {
-  const current = states.value[id]
+  const current = states.get(id)
 
   if (!current) {
     return
@@ -90,7 +96,7 @@ export function evictPermission(id: InstanceId, requestId: string): void {
   if (filtered.length === current.length) {
     return
   }
-  states.value = { ...states.value, [id]: filtered }
+  states.set(id, filtered)
   log.trace('permission pending evicted', {
     instanceId: id,
     requestId,
@@ -99,13 +105,7 @@ export function evictPermission(id: InstanceId, requestId: string): void {
 }
 
 export function resetPermissions(id: InstanceId): void {
-  if (!(id in states.value)) {
-    return
-  }
-  const next = { ...states.value }
-
-  delete next[id]
-  states.value = next
+  states.delete(id)
 }
 
 function buildView(p: PendingPermission, queued: boolean): PermissionView {
@@ -156,7 +156,7 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
     if (!resolved) {
       return []
     }
-    const list = states.value[resolved]
+    const list = states.get(resolved)
 
     if (!list || list.length === 0) {
       return []
@@ -176,7 +176,7 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
     if (!resolved) {
       throw new Error('no active instance')
     }
-    const entry = states.value[resolved]?.find((p) => p.requestId === requestId)
+    const entry = states.get(resolved)?.find((p) => p.requestId === requestId)
 
     if (!entry) {
       throw new Error(`no pending permission request ${requestId}`)

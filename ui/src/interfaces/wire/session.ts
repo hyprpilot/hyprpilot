@@ -31,9 +31,9 @@ export interface CancelResult {
   reason?: string
 }
 
-/** Wire shape for the `instance_restart` Tauri command. `id` is the (preserved) instance UUID. */
+/** Wire shape for the `instance_restart` Tauri command. `instanceId` is the (preserved) instance UUID. */
 export interface InstanceRestartResult {
-  id: string
+  instanceId: string
 }
 
 export interface AgentSummary {
@@ -150,20 +150,19 @@ export interface InstanceRestartArgs {
 }
 
 export interface InstancesFocusArgs {
-  /// Tauri Rust side names this `id` (matches the JSON-RPC wire);
-  /// keep the field name aligned so serde's camelCase pipeline picks
-  /// it up unchanged.
-  id: string
+  /// UUID or captain-set name. Matches the JSON-RPC wire shape
+  /// (`instanceId` after Tauri's camelCase pipeline).
+  instanceId: string
 }
 
 export interface InstancesShutdownArgs {
-  id: string
+  instanceId: string
 }
 
 export interface InstancesRenameArgs {
   /// UUID or current captain-set name. Daemon resolves either via
   /// `Adapter::resolve_token`.
-  id: string
+  instanceId: string
   /// New name. `null` clears the name; otherwise validated as a slug
   /// (lowercase, ≤16 chars) inside `AdapterRegistry::rename`.
   name: string | null

@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import ToolDetails from './ToolDetails.vue'
-import { PermissionUi, PillKind, ToolKind, ToolState, type ToolCallView } from '@components'
+import { PermissionUi, ToolKind, ToolState, type ToolCallView } from '@components'
 
 describe('ToolDetails.vue', () => {
   it('renders title and duration stat', () => {
@@ -13,7 +13,6 @@ describe('ToolDetails.vue', () => {
       name: 'Bash',
       state: ToolState.Done,
       icon: faTerminal,
-      pill: PillKind.Default,
       permissionUi: PermissionUi.Row,
       title: 'bash · pnpm test',
       stats: [{ kind: 'duration', ms: 1400 }],

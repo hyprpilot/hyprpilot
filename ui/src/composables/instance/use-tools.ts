@@ -47,6 +47,11 @@ interface ToolCallUpdate {
   completedAtMs?: number
 }
 
+// ── Internal store-mutation surface ───────────────────────────────
+// Sibling-store wire-listener inputs. Per-feature views read via
+// `useTools()`; the wire router pushes through these free fns
+// directly. CLAUDE.md "Two-tier composables" documents the convention.
+
 export function pushToolCall(id: InstanceId, agentId: string, sessionId: string, raw: ToolCallUpdate): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)

@@ -183,27 +183,14 @@ const activeProfile = computed(() => profiles.value.find((p) => p.id === selecte
  * of the daemon's `paths_resolve`); chrome's CSS `text-overflow:
  * ellipsis` handles overflow.
  */
-const headerCwd = computed<string | undefined>(() => {
+const cwdDisplay = computed<string | undefined>(() => {
   const raw = sessionInfo.value.cwd ?? daemonCwd.value
 
   return raw ? displayPath(raw) : undefined
 })
-
-// Untruncated home-shortened path for the cwd button's tooltip —
-// same display form as `headerCwd` since CSS already does the
-// trimming. Kept as a separate ref in case future chrome diverges
-// (e.g. tooltip wants the original absolute path).
-const headerCwdFull = computed<string | undefined>(() => {
-  const raw = sessionInfo.value.cwd ?? daemonCwd.value
-
-  return raw ? displayPath(raw) : undefined
-})
-
-const idleCwd = computed<string | undefined>(() => {
-  const raw = sessionInfo.value.cwd ?? daemonCwd.value
-
-  return raw ? displayPath(raw) : undefined
-})
+const headerCwd = cwdDisplay
+const headerCwdFull = cwdDisplay
+const idleCwd = cwdDisplay
 
 const headerCounts = computed<BreadcrumbCount[]>(() => [
   {
@@ -1165,7 +1152,7 @@ function onQueueSend(itemId: string): void {
             />
           </template>
 
-          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterFor(t.call.agentId)))" grouped />
+          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterFor(t.call.agentId)))" />
 
           <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
           <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->

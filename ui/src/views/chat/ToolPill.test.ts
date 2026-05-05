@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import ToolPill from './ToolPill.vue'
-import { PermissionUi, PillKind, ToolKind, ToolState, type ToolCallView } from '@components'
+import { PermissionUi, ToolKind, ToolState, type ToolCallView } from '@components'
 
 function makeView(overrides: Partial<ToolCallView> = {}): ToolCallView {
   return {
@@ -12,7 +12,6 @@ function makeView(overrides: Partial<ToolCallView> = {}): ToolCallView {
     name: 'Read',
     state: ToolState.Done,
     icon: faTerminal,
-    pill: PillKind.Default,
     permissionUi: PermissionUi.Row,
     title: 'read · src/App.vue',
     stats: [{ kind: 'duration', ms: 74 }],

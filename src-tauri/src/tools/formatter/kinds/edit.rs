@@ -7,7 +7,7 @@
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
 use crate::tools::formatter::shared::{
-    args_to_fields, dedupe_output, diff_line_counts, format_diff_hunk, pick, wire_title_or_fallback,
+    args_to_fields, dedupe_output, format_diff_hunk, line_magnitudes, pick, wire_title_or_fallback,
 };
 use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
@@ -59,7 +59,7 @@ impl ToolFormatter for EditFormatter {
         // opencode) override this; the kind default catches every
         // other vendor that lands here (codex's ApplyPatch shape, any
         // future vendor without a per-tool override).
-        let (added, removed) = diff_line_counts(&raw_old, &raw_new);
+        let (added, removed) = line_magnitudes(&raw_old, &raw_new);
         let stats = if added == 0 && removed == 0 {
             Vec::new()
         } else {

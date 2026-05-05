@@ -60,12 +60,6 @@ const renderables = computed<PillView[]>(() => {
       out.push({
         key: `${base}:dur`, label: formatDuration(stat.ms), tone: 'neutral'
       })
-    } else if (stat.kind === 'matches' && stat.count > 0) {
-      const noun = stat.count === 1 ? 'match' : 'matches'
-
-      out.push({
-        key: `${base}:m`, label: `${stat.count} ${noun}`, tone: 'neutral'
-      })
     }
   }
 

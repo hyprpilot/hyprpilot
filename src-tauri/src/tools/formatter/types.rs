@@ -40,10 +40,6 @@ pub enum Stat {
     /// Wall-clock duration in milliseconds. UI formats via
     /// `formatDuration(ms)` → `"850ms"` / `"3s"` / `"1m 3s"`.
     Duration { ms: u64 },
-    /// Match count for grep / glob / search-style tools. Defined
-    /// for forward-compat; no formatter currently emits it
-    /// (extraction from agent prose proved fragile).
-    Matches { count: u32 },
 }
 
 /// Daemon-authored tool-call presentation content. Every consumer
@@ -96,7 +92,6 @@ mod tests {
                 r#"{"kind":"diff","added":12,"removed":3}"#,
             ),
             (Stat::Duration { ms: 12345 }, r#"{"kind":"duration","ms":12345}"#),
-            (Stat::Matches { count: 42 }, r#"{"kind":"matches","count":42}"#),
         ];
         for (stat, expected) in cases {
             let json = serde_json::to_string(&stat).expect("serialise");

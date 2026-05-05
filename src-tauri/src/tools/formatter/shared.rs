@@ -146,6 +146,14 @@ pub fn duration_stat(ctx: &FormatterContext) -> Option<Stat> {
     Some(Stat::Duration { ms })
 }
 
+/// `duration_stat(ctx)` projected onto a `Vec<Stat>` ready to drop
+/// onto `FormattedToolCall.stats`. Empty when the tool's still
+/// mid-flight. Folds the `Option → Vec` boilerplate from the dozen
+/// per-vendor formatters that all want exactly one duration pill.
+pub fn duration_stats(ctx: &FormatterContext) -> Vec<Stat> {
+    duration_stat(ctx).into_iter().collect()
+}
+
 /// Count newline-separated lines in `(old, new)` for the
 /// `Stat::Diff` pill. Returns `(added, removed)` — both as the
 /// magnitude of each side, NOT a true LCS. For an in-place edit we
@@ -157,7 +165,7 @@ pub fn duration_stat(ctx: &FormatterContext) -> Option<Stat> {
 /// Empty strings count zero lines (`"".lines()` yields no items).
 /// A trailing-newline-only difference (`"a\n"` vs `"a"`) reports
 /// `(1, 1)` per `lines()`'s rules — fine for the magnitude reading.
-pub fn diff_line_counts(old_text: &str, new_text: &str) -> (u32, u32) {
+pub fn line_magnitudes(old_text: &str, new_text: &str) -> (u32, u32) {
     let added = new_text.lines().count() as u32;
     let removed = old_text.lines().count() as u32;
     (added, removed)
@@ -315,41 +323,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diff_line_counts_all_add_when_old_empty() {
-        let (added, removed) = diff_line_counts("", "fn foo() {\n    bar()\n}");
+    fn line_magnitudes_all_add_when_old_empty() {
+        let (added, removed) = line_magnitudes("", "fn foo() {\n    bar()\n}");
         assert_eq!(added, 3);
         assert_eq!(removed, 0);
     }
 
     #[test]
-    fn diff_line_counts_all_remove_when_new_empty() {
-        let (added, removed) = diff_line_counts("fn foo() {\n    bar()\n}", "");
+    fn line_magnitudes_all_remove_when_new_empty() {
+        let (added, removed) = line_magnitudes("fn foo() {\n    bar()\n}", "");
         assert_eq!(added, 0);
         assert_eq!(removed, 3);
     }
 
     #[test]
-    fn diff_line_counts_in_place_edit_reports_each_side() {
+    fn line_magnitudes_in_place_edit_reports_each_side() {
         // Magnitude reading, not LCS — both lines on each side count
         // as the size of the change.
-        let (added, removed) = diff_line_counts("a\nb\nc", "a\nB\nc\nd");
+        let (added, removed) = line_magnitudes("a\nb\nc", "a\nB\nc\nd");
         assert_eq!(added, 4);
         assert_eq!(removed, 3);
     }
 
     #[test]
-    fn diff_line_counts_empty_strings_are_zero() {
-        let (added, removed) = diff_line_counts("", "");
+    fn line_magnitudes_empty_strings_are_zero() {
+        let (added, removed) = line_magnitudes("", "");
         assert_eq!(added, 0);
         assert_eq!(removed, 0);
     }
 
     #[test]
-    fn diff_line_counts_trailing_newline_does_not_inflate() {
+    fn line_magnitudes_trailing_newline_does_not_inflate() {
         // `"a\n".lines()` yields one item, same as `"a"`. Trailing
         // newlines don't bump the count up — fine for our magnitude
         // reading.
-        let (added, _) = diff_line_counts("", "a\n");
+        let (added, _) = line_magnitudes("", "a\n");
         assert_eq!(added, 1);
     }
 }

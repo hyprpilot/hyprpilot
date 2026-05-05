@@ -421,16 +421,8 @@ html:not([data-window-anchor]) .frame {
   background-color: var(--theme-surface);
 }
 
-/* Narrow-width rules. The provider/model pill is the first thing to drop
- * — title still communicates intent; provider/model is re-surfaced in the
- * palette. Git ahead/behind stays; only worktree hides below 340px because
- * its label is the longest chip on the row. */
-@container frame (max-width: 420px) {
-  .frame-provider-pill {
-    display: none;
-  }
-}
-
+/* Narrow-width rules. Worktree hides below 340px because its label
+ * is the longest chip on the row. */
 @container frame (max-width: 340px) {
   .frame-cwd-worktree {
     display: none;
