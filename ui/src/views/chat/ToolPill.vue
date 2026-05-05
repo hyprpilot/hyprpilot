@@ -3,6 +3,7 @@ import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons
 import { computed, ref, watch } from 'vue'
 
 import ToolBody from './ToolBody.vue'
+import ToolPillStats from './ToolPillStats.vue'
 import { ToolState, toolStateTone, type ToolCallView } from '@components'
 
 /**
@@ -65,7 +66,7 @@ const isInteractive = computed(() => hasBody.value)
         <FaIcon :icon="view.icon" class="tool-pill-icon" aria-hidden="true" />
       </span>
       <span class="tool-pill-title">{{ view.title }}</span>
-      <span v-if="view.stat" class="tool-pill-stat">{{ view.stat }}</span>
+      <ToolPillStats :stats="view.stats" />
       <FaIcon v-if="hasBody" :icon="expanded ? faChevronDown : faChevronRight" class="tool-pill-caret" aria-hidden="true" />
     </span>
 
@@ -139,11 +140,6 @@ const isInteractive = computed(() => hasBody.value)
 
 .tool-pill[data-state='done'] .tool-pill-title {
   color: var(--theme-fg-subtle);
-}
-
-.tool-pill-stat {
-  @apply shrink-0 text-[0.56rem];
-  color: var(--theme-fg-dim);
 }
 
 .tool-pill-caret {

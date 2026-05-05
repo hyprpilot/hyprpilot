@@ -41,7 +41,7 @@ impl ToolFormatter for GlobFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description: None,
             output,
             fields,

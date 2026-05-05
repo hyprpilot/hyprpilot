@@ -6,7 +6,7 @@ import ToolDetails from './ToolDetails.vue'
 import { PermissionUi, PillKind, ToolKind, ToolState, type ToolCallView } from '@components'
 
 describe('ToolDetails.vue', () => {
-  it('renders title and stat', () => {
+  it('renders title and duration stat', () => {
     const view: ToolCallView = {
       id: 'tc-1',
       kind: ToolKind.Execute,
@@ -16,12 +16,12 @@ describe('ToolDetails.vue', () => {
       pill: PillKind.Default,
       permissionUi: PermissionUi.Row,
       title: 'bash · pnpm test',
-      stat: '1.4s',
+      stats: [{ kind: 'duration', ms: 1400 }],
       fields: []
     }
     const wrapper = mount(ToolDetails, { props: { view } })
 
     expect(wrapper.text()).toContain('bash · pnpm test')
-    expect(wrapper.text()).toContain('1.4s')
+    expect(wrapper.text()).toContain('1s')
   })
 })

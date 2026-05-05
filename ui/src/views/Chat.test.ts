@@ -103,6 +103,7 @@ const SAMPLE_OPTIONS = [
 
 const FMT = {
   title: 'bash',
+  stats: [],
   fields: []
 }
 

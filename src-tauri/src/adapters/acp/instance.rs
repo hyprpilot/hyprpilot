@@ -80,6 +80,7 @@ impl TurnGuard {
             instance_id: instance_id.clone(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
+            started_at: now_epoch_ms(),
         });
         Self {
             turn_id,
@@ -116,6 +117,7 @@ impl TurnGuard {
             turn_id: self.turn_id.clone(),
             stop_reason,
             error,
+            ended_at: now_epoch_ms(),
         });
         true
     }
@@ -144,6 +146,7 @@ impl Drop for TurnGuard {
             turn_id: self.turn_id.clone(),
             stop_reason: Some("cancelled".to_string()),
             error: None,
+            ended_at: now_epoch_ms(),
         });
     }
 }
@@ -300,12 +303,20 @@ pub(crate) struct MappedSessionUpdate {
 /// `tool_call_update` so the `formatted` snapshot reflects merged
 /// state, not just the delta. Owned by the per-instance notification
 /// task; cleared on session boundary (load_session swap, shutdown).
+///
+/// `started_at` captures wall-clock at first `tool_call` observation;
+/// `completed_at` lands on first state transition to `Completed` /
+/// `Failed`. Both as epoch milliseconds. Per-vendor formatters that
+/// want a `Stat::Duration` read both off `FormatterContext` and emit
+/// `ms = completed_at - started_at` once `completed_at.is_some()`.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RunningToolCall {
     pub wire_name: String,
     pub tool_kind: String,
     pub raw_input: Option<serde_json::Value>,
     pub content: Vec<serde_json::Value>,
+    pub started_at: u64,
+    pub completed_at: Option<u64>,
 }
 
 pub(crate) type ToolCallCache = std::collections::HashMap<String, RunningToolCall>;
@@ -319,8 +330,23 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
         raw_input: running.raw_input.as_ref(),
         adapter: adapter_id,
         content: &running.content,
+        started_at: running.started_at,
+        completed_at: running.completed_at,
     };
     registry.dispatch(&ctx)
+}
+
+/// Wall-clock now in epoch milliseconds. Used by the per-instance
+/// notification task to stamp `started_at` / `completed_at` on every
+/// running tool call. `SystemTime` over `Instant` so the value is
+/// comparable across event boundaries (the UI computes differences
+/// off the same scale via `Date.now()`).
+fn now_epoch_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 pub(crate) fn map_session_update(
@@ -490,9 +516,16 @@ pub(crate) fn map_session_update(
             let content = update.get("content").cloned().unwrap_or(serde_json::Value::Null);
             MappedUpdate::Transcript(project_agent_chunk_content(&content))
         }
-        "agent_thought_chunk" => MappedUpdate::Transcript(TranscriptItem::AgentThought {
-            text: chunk_text(&update),
-        }),
+        "agent_thought_chunk" => {
+            let text = chunk_text(&update);
+            tracing::debug!(
+                target: "acp::thought",
+                text_len = text.len(),
+                raw = %update,
+                "agent_thought_chunk extracted"
+            );
+            MappedUpdate::Transcript(TranscriptItem::AgentThought { text })
+        }
         "session_info_update" => MappedUpdate::SessionInfo {
             title: update.get("title").and_then(|v| v.as_str()).map(str::to_string),
             updated_at: update.get("updatedAt").and_then(|v| v.as_str()).map(str::to_string),
@@ -554,7 +587,9 @@ pub(crate) fn map_session_update(
                 "acp::instance: tool_call payload (formatter input)"
             );
             // Update the per-id running cache so future updates
-            // re-format against merged state.
+            // re-format against merged state. `started_at` captures
+            // wall-clock at this first observation; `completed_at`
+            // stays None until a state transition lands below.
             let running = RunningToolCall {
                 wire_name: title.clone(),
                 tool_kind: tool_kind.clone(),
@@ -564,8 +599,12 @@ pub(crate) fn map_session_update(
                     .and_then(|v| v.as_array())
                     .cloned()
                     .unwrap_or_default(),
+                started_at: now_epoch_ms(),
+                completed_at: None,
             };
             let formatted = format_running(adapter_id, &running);
+            let started_at_ms = running.started_at;
+            let completed_at_ms = running.completed_at;
             tool_calls.insert(id.clone(), running);
             MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
@@ -575,6 +614,8 @@ pub(crate) fn map_session_update(
                 raw_input,
                 content,
                 formatted,
+                started_at_ms,
+                completed_at_ms,
             }))
         }
         "tool_call_update" => {
@@ -607,6 +648,13 @@ pub(crate) fn map_session_update(
             // ("bash · ls /tmp") that would defeat per-(adapter,
             // wire_name) formatter dispatch if we let it through.
             let running = tool_calls.entry(id.clone()).or_default();
+            // First-observation guard: a `tool_call_update` may land
+            // before a `tool_call` did (some agents skip the latter
+            // for fast tools). Stamp started_at on the cache miss
+            // path so duration math has a left-edge to compare.
+            if running.started_at == 0 {
+                running.started_at = now_epoch_ms();
+            }
             if running.wire_name.is_empty() {
                 if let Some(t) = title.as_deref() {
                     running.wire_name = t.to_string();
@@ -621,7 +669,19 @@ pub(crate) fn map_session_update(
             if let Some(arr) = update.get("content").and_then(|v| v.as_array()) {
                 running.content.extend(arr.iter().cloned());
             }
+
+            // Stamp completed_at on the first transition to a terminal
+            // state. Subsequent updates with the same state don't
+            // re-stamp — duration is "first time we saw it done", not
+            // "most-recent observation".
+            if running.completed_at.is_none()
+                && matches!(state, Some(ToolCallState::Completed) | Some(ToolCallState::Failed))
+            {
+                running.completed_at = Some(now_epoch_ms());
+            }
             let formatted = format_running(adapter_id, running);
+            let started_at_ms = running.started_at;
+            let completed_at_ms = running.completed_at;
             MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
                 tool_kind,
@@ -630,6 +690,8 @@ pub(crate) fn map_session_update(
                 raw_input,
                 content,
                 formatted,
+                started_at_ms,
+                completed_at_ms,
             }))
         }
         "plan" => {
@@ -1761,6 +1823,10 @@ async fn run(params: RunParams) {
                             turn_id: synth,
                             stop_reason: Some("replay_complete".into()),
                             error: None,
+                            // Pair with the synthetic TurnStarted's
+                            // `started_at: 0` — UI hides elapsed when
+                            // either side is missing real timing.
+                            ended_at: 0,
                         });
                     });
                 }
@@ -1858,8 +1924,11 @@ async fn run(params: RunParams) {
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid.0.to_string(),
                                     turn_id: prev,
+                                    // Synthetic turn close — pair with its
+                                    // `started_at: 0`, hide elapsed.
                                     stop_reason: Some("superseded".into()),
                                     error: None,
+                                    ended_at: 0,
                                 });
                             }
                             let turn_id = uuid::Uuid::new_v4().to_string();
@@ -2017,6 +2086,7 @@ async fn run(params: RunParams) {
                                     turn_id,
                                     stop_reason: Some("cancelled".to_string()),
                                     error: None,
+                                    ended_at: now_epoch_ms(),
                                 });
                                 // InstanceMeta refresh — same shape as the prompt-
                                 // future path, kept in sync so the header chrome
@@ -2296,11 +2366,19 @@ async fn run(params: RunParams) {
                                 );
                                 *current_turn_id.write().await = Some(synthetic.clone());
                                 *synthetic_turn_id.write().await = Some(synthetic.clone());
+                                // Synthetic turns wrap replay / out-of-turn agent
+                                // activity — there's no meaningful wall-clock for
+                                // them (the captain didn't kick this off, the
+                                // daemon synthesised it). Stamp `started_at: 0`
+                                // so the UI's "no real timing" gate hides the
+                                // elapsed chip instead of rendering replay
+                                // processing time as if it were the turn duration.
                                 let _ = events_tx_notif.send(InstanceEvent::TurnStarted {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid.clone(),
                                     turn_id: synthetic.clone(),
+                                    started_at: 0,
                                 });
                                 turn_id = Some(synthetic);
                             }
@@ -2373,12 +2451,18 @@ async fn run(params: RunParams) {
                             let formatted = {
                                 use crate::tools::formatter::registry::FormatterContext;
                                 let registry = crate::adapters::acp::formatter_registry();
+                                // Permission-request path: the tool isn't running
+                                // yet, so timing isn't meaningful. Pass zeros so
+                                // formatters that key on `completed_at.is_some()`
+                                // skip emitting Stat::Duration here.
                                 let ctx = FormatterContext {
                                     wire_name: tool.as_str(),
                                     kind: kind.as_str(),
                                     raw_input: raw_input.as_ref(),
                                     adapter: provider_id_for_fmt.as_str(),
                                     content: &content,
+                                    started_at: 0,
+                                    completed_at: None,
                                 };
                                 registry.dispatch(&ctx)
                             };

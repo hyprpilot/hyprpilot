@@ -43,7 +43,7 @@ impl ToolFormatter for GrepFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description: None,
             output,
             fields: Vec::new(),

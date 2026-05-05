@@ -870,6 +870,60 @@ impl AcpAdapter {
         let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
         serde_json::to_value(snap).map_err(|e| RpcError::internal_error(e.to_string()))
     }
+
+    /// Same as `instance_meta`, but transparently spawns an instance
+    /// from `(agent_id, profile_id)` when `instance_id` is absent or
+    /// doesn't resolve to a live actor. Drives the palette's
+    /// "no active instance — let me bootstrap one for you" path:
+    /// captain hits Ctrl+K → models on a clean overlay, daemon
+    /// spawns the resolved profile in-place, returns the freshly-
+    /// loaded meta with available models populated.
+    ///
+    /// `MetaSnapshot` waits for the actor's command loop, which only
+    /// starts processing after `session/new` completes — so the
+    /// returned snapshot already has `availableModels` /
+    /// `availableModes` populated by the agent's initialize handshake.
+    pub async fn instance_meta_or_ensure(&self, instance_id: Option<&str>, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<Value, RpcError> {
+        if let Some(id) = instance_id {
+            if let Ok(key) = self.contains_instance(id).await {
+                if let Some(handle) = self.registry.get(key).await {
+                    let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+                    return augment_with_instance_id(snap, &key);
+                }
+            }
+        }
+
+        // No live instance for the given id (or no id given) —
+        // resolve the (agent, profile) the caller indicated and
+        // bootstrap a fresh actor. Same resolve+ensure pipeline
+        // submit_prompt uses, just without the trailing prompt send.
+        let resolved = self.resolve(agent_id, profile_id)?;
+        let key = match instance_id {
+            Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
+            None => InstanceKey::new_v4(),
+        };
+        let key = self.ensure(key, resolved, Bootstrap::Fresh).await?;
+        let handle = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::internal_error("instance actor vanished after ensure"))?;
+        let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+        augment_with_instance_id(snap, &key)
+    }
+}
+
+/// Project a `MetaSnapshot` to JSON and graft the resolved
+/// `instanceId` alongside its fields. The ensure flow returns the
+/// id of the (possibly freshly-spawned) actor so the caller can
+/// route follow-up commands without round-tripping useActiveInstance
+/// (which updates async via the registry's auto-focus event).
+fn augment_with_instance_id(snap: crate::adapters::acp::instance::MetaSnapshot, key: &InstanceKey) -> Result<Value, RpcError> {
+    let mut value = serde_json::to_value(snap).map_err(|e| RpcError::internal_error(e.to_string()))?;
+    if let Value::Object(map) = &mut value {
+        map.insert("instanceId".to_string(), Value::String(key.as_string()));
+    }
+    Ok(value)
 }
 
 #[async_trait]

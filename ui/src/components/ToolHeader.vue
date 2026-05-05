@@ -24,12 +24,9 @@ const props = withDefaults(
     /// any `ToastTone` value wraps the icon+title in a tone-colored
     /// tag (row + modal).
     tone?: ToastTone
-    /// Optional right-aligned stat chip (the pill's hit-count etc.).
-    stat?: string
   }>(),
   {
     tone: undefined,
-    stat: undefined,
     icon: undefined
   }
 )
@@ -59,7 +56,6 @@ const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(prop
       <FaIcon v-if="icon" :icon="icon" class="tool-header-icon" aria-hidden="true" />
       <span class="tool-header-title">{{ title }}</span>
     </template>
-    <span v-if="stat" class="tool-header-stat">{{ stat }}</span>
     <span class="tool-header-spacer" />
     <slot name="trailing" />
   </header>
@@ -96,11 +92,6 @@ const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(prop
 
 .tool-header[data-toned='false'] .tool-header-title {
   font-weight: 600;
-}
-
-.tool-header-stat {
-  font-size: 0.62rem;
-  color: var(--theme-fg-dim);
 }
 
 .tool-header-spacer {

@@ -22,7 +22,7 @@ impl ToolFormatter for ThinkFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output: None,
             fields: Vec::new(),

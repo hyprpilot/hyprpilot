@@ -40,7 +40,7 @@ impl ToolFormatter for ExecuteFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output,
             fields,

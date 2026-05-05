@@ -2,8 +2,8 @@
 //! livecrawl?, type?, contextMaxCharacters? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, text_blocks};
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::shared::{duration_stat, pick, text_blocks};
+use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct WebSearchFormatter;
 
@@ -39,9 +39,11 @@ impl ToolFormatter for WebSearchFormatter {
             Some(trimmed.to_string())
         };
 
+        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+
         FormattedToolCall {
             title,
-            stat: None,
+            stats,
             description: None,
             output,
             fields,

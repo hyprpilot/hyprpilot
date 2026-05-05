@@ -3,7 +3,8 @@
 use convert_case::{Case, Casing};
 use serde_json::Value;
 
-use crate::tools::formatter::types::ToolField;
+use crate::tools::formatter::registry::FormatterContext;
+use crate::tools::formatter::types::{Stat, ToolField};
 
 /// Project a rawInput key (camelCase / snake_case / PascalCase /
 /// SCREAMING_SNAKE) onto the human label the spec sheet renders:
@@ -131,6 +132,35 @@ pub fn wire_title_or_fallback(wire_name: &str, fallback: &str) -> String {
         return fallback.to_string();
     }
     trimmed.to_string()
+}
+
+/// `Stat::Duration` from the cached `started_at` / `completed_at`
+/// timestamps on a `FormatterContext`. Returns `None` while the
+/// tool is mid-flight (the captain decided no live-tick this MR;
+/// the pill stays statless until the call settles). Saturating
+/// subtraction so a degenerate `started_at > completed_at` (clock
+/// drift, system suspend) doesn't underflow.
+pub fn duration_stat(ctx: &FormatterContext) -> Option<Stat> {
+    let completed = ctx.completed_at?;
+    let ms = completed.saturating_sub(ctx.started_at);
+    Some(Stat::Duration { ms })
+}
+
+/// Count newline-separated lines in `(old, new)` for the
+/// `Stat::Diff` pill. Returns `(added, removed)` — both as the
+/// magnitude of each side, NOT a true LCS. For an in-place edit we
+/// report `(new.lines().count(), old.lines().count())` — the user
+/// reads "+12 −3" as size of change, not unchanged-vs-changed
+/// accounting. Run a real diff library only if precision actually
+/// matters somewhere; the captain's call is "magnitude is enough".
+///
+/// Empty strings count zero lines (`"".lines()` yields no items).
+/// A trailing-newline-only difference (`"a\n"` vs `"a"`) reports
+/// `(1, 1)` per `lines()`'s rules — fine for the magnitude reading.
+pub fn diff_line_counts(old_text: &str, new_text: &str) -> (u32, u32) {
+    let added = new_text.lines().count() as u32;
+    let removed = old_text.lines().count() as u32;
+    (added, removed)
 }
 
 /// Project an `(old_text, new_text)` pair onto a Shiki-friendly diff
@@ -278,4 +308,48 @@ pub fn lang_from_path(path: &str) -> Option<&'static str> {
         "cs" => "csharp",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_line_counts_all_add_when_old_empty() {
+        let (added, removed) = diff_line_counts("", "fn foo() {\n    bar()\n}");
+        assert_eq!(added, 3);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn diff_line_counts_all_remove_when_new_empty() {
+        let (added, removed) = diff_line_counts("fn foo() {\n    bar()\n}", "");
+        assert_eq!(added, 0);
+        assert_eq!(removed, 3);
+    }
+
+    #[test]
+    fn diff_line_counts_in_place_edit_reports_each_side() {
+        // Magnitude reading, not LCS — both lines on each side count
+        // as the size of the change.
+        let (added, removed) = diff_line_counts("a\nb\nc", "a\nB\nc\nd");
+        assert_eq!(added, 4);
+        assert_eq!(removed, 3);
+    }
+
+    #[test]
+    fn diff_line_counts_empty_strings_are_zero() {
+        let (added, removed) = diff_line_counts("", "");
+        assert_eq!(added, 0);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn diff_line_counts_trailing_newline_does_not_inflate() {
+        // `"a\n".lines()` yields one item, same as `"a"`. Trailing
+        // newlines don't bump the count up — fine for our magnitude
+        // reading.
+        let (added, _) = diff_line_counts("", "a\n");
+        assert_eq!(added, 1);
+    }
 }

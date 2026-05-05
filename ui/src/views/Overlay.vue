@@ -25,6 +25,7 @@
  *   startSessionStream  → starts the demuxed Tauri event pump
  */
 import { faPenToSquare } from '@fortawesome/free-solid-svg-icons'
+import { useNow } from '@vueuse/core'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import {
@@ -88,7 +89,7 @@ import {
   type WireToolCall
 } from '@composables'
 import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
-import { format, log } from '@lib'
+import { format, formatDuration, log } from '@lib'
 import { Attachments, Body as ChatBody, ChangeBanner, PermissionModal, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
 import { Frame } from '@views/header'
@@ -114,7 +115,22 @@ const { sessions: sessionList, load: restoreSession } = useSessionHistory(active
 // "couple of sessions" intent — small enough to fit alongside the
 // LFG accent + kbd legend at every supported overlay width.
 const IDLE_SESSIONS_PREVIEW = 5
-const sessionListPreview = computed(() => sessionList.value.slice(0, IDLE_SESSIONS_PREVIEW))
+
+// Filter to sessions matching the daemon's current cwd. The idle
+// screen answers "what would I resume here in this directory?" —
+// showing sessions from sibling projects pollutes the answer. The
+// sessions palette (Ctrl+K → sessions) still surfaces the full
+// registry for cross-cwd navigation.
+const sessionsForCwd = computed(() => {
+  const cwd = sessionInfo.value.cwd ?? daemonCwd.value
+
+  if (cwd === undefined) {
+    return sessionList.value
+  }
+
+  return sessionList.value.filter((s) => s.cwd === cwd)
+})
+const sessionListPreview = computed(() => sessionsForCwd.value.slice(0, IDLE_SESSIONS_PREVIEW))
 
 // Idle-row click → resume that session. `restoreSession` mints a
 // fresh instance UUID, fires `session_load`, and the daemon-side
@@ -135,7 +151,7 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 // idle-screen branch reads `timelineBlocks.length === 0` for the
 // no-content gate.
 const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
-const { openTurnId } = useTurns()
+const { openTurnId, turns: turnRecords } = useTurns()
 const { info: sessionInfo } = useSessionInfo()
 const { displayPath } = useHomeDir()
 const { daemonCwd } = useDaemonCwd()
@@ -198,7 +214,7 @@ const headerCounts = computed<BreadcrumbCount[]>(() => [
   {
     id: PaletteLeafId.Sessions,
     label: 'sessions',
-    count: sessionList.value.length
+    count: sessionsForCwd.value.length
   }
 ])
 
@@ -280,6 +296,139 @@ const liveBlockIdx = computed<number>(() => {
 
   return timelineBlocks.value.findIndex((b) => b.turnId === open)
 })
+
+// Reactive wall-clock ref that re-renders elapsed labels every second
+// while a turn / thought is in flight. Once the matching `endedAtMs`
+// (turn) or `completedAtMs` (per-tool) lands, the label converges to
+// the daemon-stamped value and stops moving — `now` keeps ticking but
+// the label expression switches branches.
+const liveNow = useNow({ interval: 1000 })
+
+function liveNowMs(): number {
+  return liveNow.value.getTime()
+}
+
+const turnDurationLabels = computed<Map<string, string>>(() => {
+  const out = new Map<string, string>()
+  const now = liveNowMs()
+
+  for (const t of turnRecords.value) {
+    // `startedAtMs === 0` is the daemon's "no real timing" signal —
+    // synthetic / replay turns don't have a meaningful wall clock.
+    // Skip them so the chip doesn't render replay-processing time as
+    // if it were the turn duration.
+    if (typeof t.startedAtMs !== 'number' || t.startedAtMs === 0) {
+      continue
+    }
+    const end = typeof t.endedAtMs === 'number' ? t.endedAtMs : now
+    const elapsed = Math.max(0, end - t.startedAtMs)
+
+    if (!Number.isFinite(elapsed)) {
+      continue
+    }
+
+    out.set(t.id, formatDuration(elapsed))
+  }
+
+  return out
+})
+
+function elapsedFor(turnId?: string): string | undefined {
+  if (!turnId) {
+    return undefined
+  }
+
+  return turnDurationLabels.value.get(turnId)
+}
+
+/// Thinking elapsed for the assistant block. Sum of:
+///   1. Per-turn stream-shape thinking — `TurnRecord.thinkingMs`
+///      (closed intervals) + `(now - thinkingOpenAtMs)` while the
+///      agent is actively reasoning. The accumulator pauses on
+///      `agent_message_chunk` / `tool_call` and resumes on the next
+///      `agent_thought_chunk`, so the captain reads true reasoning
+///      time, not "wall clock until agent finished writing".
+///   2. Per-tool kind=think durations from `block.thoughts`
+///      (codex-style: each kind=think tool call carries its own
+///      started_at / completed_at).
+/// Returns `undefined` when no thought signal exists (no card).
+interface ThinkingElapsedBlock {
+  turnId?: string
+  thoughts: { call: { startedAtMs: number; completedAtMs?: number } }[]
+}
+
+function thinkingElapsedFor(block: ThinkingElapsedBlock): string | undefined {
+  const now = liveNowMs()
+  let totalMs = 0
+  let hasSignal = false
+
+  if (block.turnId !== undefined) {
+    const turn = turnRecords.value.find((rec) => rec.id === block.turnId)
+
+    if (turn !== undefined) {
+      // Defensive: a TurnRecord pushed before this composable's
+      // HMR reload may not have `thinkingMs` set — `undefined + N`
+      // would cascade `NaN` into `formatDuration` and throw inside
+      // `intervalToDuration`, which fails the StreamCard's prop
+      // binding and silently drops the thought card.
+      const closed = typeof turn.thinkingMs === 'number' ? turn.thinkingMs : 0
+      const open = typeof turn.thinkingOpenAtMs === 'number' ? Math.max(0, now - turn.thinkingOpenAtMs) : 0
+      const stream = closed + open
+
+      if (stream > 0 || turn.thinkingOpenAtMs !== undefined) {
+        totalMs += stream
+        hasSignal = true
+      }
+    }
+  }
+
+  for (const entry of block.thoughts) {
+    const s = entry.call.startedAtMs
+
+    if (typeof s !== 'number' || s <= 0) {
+      continue
+    }
+    const c = entry.call.completedAtMs
+    const end = typeof c === 'number' ? c : now
+
+    totalMs += Math.max(0, end - s)
+    hasSignal = true
+  }
+
+  if (!hasSignal || !Number.isFinite(totalMs)) {
+    return undefined
+  }
+
+  return formatDuration(totalMs)
+}
+
+/// Render the thinking card whenever the agent is reasoning, even if
+/// every chunk so far has carried empty text (claude-code-acp emits
+/// `agent_thought_chunk` with `text: ""` for content_block_start
+/// before any deltas land — the card should appear immediately).
+/// Two truthy signals: real prose accumulated OR the per-turn
+/// thinking interval has any time recorded / is currently open.
+function hasThinkingSignal(block: { turnId?: string; thoughts: { call: { startedAtMs: number } }[] }): boolean {
+  if (block.turnId !== undefined) {
+    const turn = turnRecords.value.find((rec) => rec.id === block.turnId)
+
+    if (turn !== undefined) {
+      const closed = typeof turn.thinkingMs === 'number' ? turn.thinkingMs : 0
+
+      if (closed > 0 || turn.thinkingOpenAtMs !== undefined) {
+        return true
+      }
+    }
+  }
+
+  for (const entry of block.thoughts) {
+    if (typeof entry.call.startedAtMs === 'number' && entry.call.startedAtMs > 0) {
+      return true
+    }
+  }
+
+  return false
+}
 
 let stopStream: (() => void) | undefined
 
@@ -632,7 +781,7 @@ function combinedThoughtText(block: {
   for (const entry of block.thoughts) {
     const text = thoughtText(entry.call)
 
-    if (text.trim().length > 0) {
+    if (text.length > 0) {
       merged.push({ createdAt: entry.createdAt, text })
     }
   }
@@ -643,7 +792,12 @@ function combinedThoughtText(block: {
     }
     const text = entry.item.text ?? ''
 
-    if (text.trim().length > 0) {
+    // Keep whitespace-only chunks too — during streaming a thought
+    // item may briefly hold a leading newline / space that the next
+    // delta replaces. Filtering by `.trim().length` was hiding the
+    // card during those windows; the band's existence carries signal
+    // even before the prose lands.
+    if (text.length > 0) {
       merged.push({ createdAt: entry.createdAt, text })
     }
   }
@@ -968,21 +1122,26 @@ function onQueueSend(itemId: string): void {
           :model="sessionInfo.model ?? activeProfile?.model"
           :cwd="idleCwd"
           :sessions="sessionListPreview"
-          :total-session-count="sessionList.length"
+          :total-session-count="sessionsForCwd.length"
           @restore-session="onRestoreSessionClick"
         />
 
-        <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx">
-          <!-- Single thinking card per turn — thoughts (tool-call kind=think
-               + stream-side agent_thought_chunk) merge in createdAt order
-               so the captain reads one continuous reasoning trace instead
-               of N separate cards stacked in a turn. -->
+        <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx" :elapsed="elapsedFor(block.turnId)">
+          <!-- Single thinking row per turn — same chrome regardless of
+               whether prose accumulated. With text, the row is
+               collapsable and reveals the reasoning trace; without
+               text (claude-code-acp's empty extended-thinking chunks),
+               the row stays a static "thought · 13s" badge so the
+               captain still sees the agent IS reasoning. StreamCard
+               drops the chevron + click affordance when there's no
+               body to expand into. -->
           <StreamCard
-            v-if="combinedThoughtText(block).length > 0"
+            v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
             :kind="StreamKind.Thinking"
             :active="blockIdx === liveBlockIdx"
             label="thought"
-            :text="combinedThoughtText(block)"
+            :elapsed="thinkingElapsedFor(block)"
+            :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
           />
           <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
             <StreamCard
@@ -997,6 +1156,12 @@ function onQueueSend(itemId: string): void {
               kind="mode"
               :to="entry.item.name ?? entry.item.modeId"
               :from="entry.item.prevName ?? entry.item.prevModeId"
+            />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.ModelChange"
+              kind="model"
+              :to="entry.item.name ?? entry.item.modelId"
+              :from="entry.item.prevName ?? entry.item.prevModelId"
             />
           </template>
 

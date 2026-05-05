@@ -17,6 +17,21 @@ export interface TurnRecord {
   endedAt?: number
   /// ACP `StopReason` wire string when the turn ended cleanly.
   stopReason?: string
+  /// Wall-clock (epoch ms) — daemon-stamped on TurnStarted /
+  /// TurnEnded so the UI can render a total-elapsed footer chip.
+  /// `endedAtMs` undefined while the turn is in flight.
+  startedAtMs: number
+  endedAtMs?: number
+  /// Accumulated thinking time across this turn's reasoning phases
+  /// (every `agent_thought_chunk` interval, ended by the next
+  /// `agent_message_chunk` / `tool_call` / `TurnEnded`). The agent
+  /// can think → write → think again multiple times in a single
+  /// turn; this sums every closed interval. Live tick adds
+  /// `(now - thinkingOpenAtMs)` when an interval is currently open.
+  thinkingMs: number
+  /// Wall-clock when the current open thinking interval began;
+  /// `undefined` while the agent is writing / executing tools.
+  thinkingOpenAtMs?: number
 }
 
 interface TurnsState {
@@ -44,12 +59,14 @@ function slotFor(id: InstanceId): TurnsState {
 export interface TurnStartedRaw {
   turnId: string
   sessionId: string
+  startedAtMs: number
 }
 
 export interface TurnEndedRaw {
   turnId: string
   sessionId: string
   stopReason?: string
+  endedAtMs: number
 }
 
 export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
@@ -60,9 +77,56 @@ export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
     id: raw.turnId,
     instanceId: id,
     sessionId: raw.sessionId,
-    createdAt: seq
+    createdAt: seq,
+    startedAtMs: raw.startedAtMs,
+    thinkingMs: 0
   })
   slot.openBySession.set(raw.sessionId, raw.turnId)
+}
+
+/// Mark the agent as entering its reasoning phase. Idempotent — a
+/// second `agent_thought_chunk` while already thinking is just a
+/// continuation of the open interval. Looks up the live turn for
+/// `sessionId` so the caller doesn't need a turn id.
+export function markThinkingStart(id: InstanceId, sessionId: string, atMs: number = Date.now()): void {
+  const slot = states.get(id)
+
+  if (!slot) {
+    return
+  }
+  const turnId = slot.openBySession.get(sessionId)
+
+  if (!turnId) {
+    return
+  }
+  const turn = slot.turns.find((t) => t.id === turnId)
+
+  if (!turn || turn.thinkingOpenAtMs !== undefined) {
+    return
+  }
+  turn.thinkingOpenAtMs = atMs
+}
+
+/// Close the open thinking interval — agent moved to writing /
+/// tool execution / turn end. Idempotent when no interval is open.
+export function markThinkingEnd(id: InstanceId, sessionId: string, atMs: number = Date.now()): void {
+  const slot = states.get(id)
+
+  if (!slot) {
+    return
+  }
+  const turnId = slot.openBySession.get(sessionId)
+
+  if (!turnId) {
+    return
+  }
+  const turn = slot.turns.find((t) => t.id === turnId)
+
+  if (!turn || turn.thinkingOpenAtMs === undefined) {
+    return
+  }
+  turn.thinkingMs += Math.max(0, atMs - turn.thinkingOpenAtMs)
+  turn.thinkingOpenAtMs = undefined
 }
 
 export type TurnEndedListener = (id: InstanceId, raw: TurnEndedRaw) => void
@@ -95,6 +159,12 @@ export function pushTurnEnded(id: InstanceId, raw: TurnEndedRaw): void {
   if (target) {
     target.endedAt = seq
     target.stopReason = raw.stopReason
+    target.endedAtMs = raw.endedAtMs
+
+    if (target.thinkingOpenAtMs !== undefined) {
+      target.thinkingMs += Math.max(0, raw.endedAtMs - target.thinkingOpenAtMs)
+      target.thinkingOpenAtMs = undefined
+    }
   }
 
   if (slot.openBySession.get(raw.sessionId) === raw.turnId) {

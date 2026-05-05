@@ -20,6 +20,7 @@ import { InstanceState } from '@ipc'
 
 const fmt = {
   title: 'bash',
+  stats: [],
   fields: []
 }
 
@@ -56,7 +57,9 @@ describe('usePhase', () => {
   it('returns working when instance is running with an open turn but no agent chunks yet', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
 
     const { phase } = usePhase()
 
@@ -66,7 +69,9 @@ describe('usePhase', () => {
   it('returns streaming when instance is running, a turn is open, and agent chunks have arrived', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hello' }
@@ -80,7 +85,9 @@ describe('usePhase', () => {
   it('returns idle in-between turns even when prior agent turns exist (queue-stuck regression)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hello' }
@@ -88,7 +95,7 @@ describe('usePhase', () => {
     pushTurnEnded('A', {
       turnId: 't-1',
       sessionId: 's-a',
-      stopReason: 'end_turn'
+      stopReason: 'end_turn', endedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -99,7 +106,9 @@ describe('usePhase', () => {
   it('returns pending when a tool call is running (beats streaming)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'hi' }
@@ -110,7 +119,7 @@ describe('usePhase', () => {
       title: 'bash',
       kind: 'bash',
       status: 'running',
-      formatted: fmt
+      formatted: fmt, startedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -121,13 +130,15 @@ describe('usePhase', () => {
   it('returns awaiting when there is a pending permission prompt (beats pending)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
     pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'bash',
       status: 'running',
-      formatted: fmt
+      formatted: fmt, startedAtMs: 0
     })
     pushPermissionRequest('A', 's-a', {
       agentId: 'agent-A',
@@ -153,7 +164,9 @@ describe('usePhase', () => {
   it('returns idle when instance state is ended', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
     pushInstanceState('A', InstanceState.Ended)
 
     const { phase } = usePhase()
@@ -164,7 +177,9 @@ describe('usePhase', () => {
   it('isolates instances: pushing signals for A does not affect B', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'from A' }
@@ -191,7 +206,7 @@ describe('usePhase', () => {
       title: 'bash',
       kind: 'bash',
       status: 'in_progress',
-      formatted: fmt
+      formatted: fmt, startedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -203,7 +218,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushInstanceState('B', InstanceState.Running)
-    pushTurnStarted('B', { turnId: 't-1', sessionId: 's-b' })
+    pushTurnStarted('B', {
+      turnId: 't-1', sessionId: 's-b', startedAtMs: 0
+    })
     pushTranscriptChunk('B', 's-b', {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'from B' }

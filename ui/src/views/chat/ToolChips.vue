@@ -4,14 +4,16 @@ import { computed, ref } from 'vue'
 
 import ToolPill from './ToolPill.vue'
 import type { ToolCallView } from '@components'
+import { formatDuration } from '@lib'
 
 /**
  * ToolChips block — collapsible container holding ALL tool calls
  * for a turn. Header reads "▾ TOOLS · N calls · 9.6s". Body is a
  * 2-col grid of ToolPills; expanded pills span both columns.
  *
- * Block elapsed: caller passes `elapsed`; otherwise we sum any
- * "1.4s"-shaped values in `views[].stat` as a fallback.
+ * Block elapsed: caller passes `elapsed`; otherwise we sum every
+ * `Stat::Duration { ms }` across `views[].stats` and format
+ * compactly via `formatDuration`.
  */
 const props = withDefaults(
   defineProps<{
@@ -32,13 +34,13 @@ const computedElapsed = computed(() => {
   if (props.elapsed) {
     return props.elapsed
   }
-  const total = props.views.reduce((acc, v) => {
-    const m = (v.stat ?? '').match(/^(\d+(?:\.\d+)?)s$/)
+  const totalMs = props.views.reduce((acc, v) => {
+    const sum = (v.stats ?? []).reduce((subAcc, s) => (s.kind === 'duration' ? subAcc + s.ms : subAcc), 0)
 
-    return acc + (m ? parseFloat(m[1]) : 0)
+    return acc + sum
   }, 0)
 
-  return total ? `${total.toFixed(1)}s` : ''
+  return totalMs > 0 ? formatDuration(totalMs) : ''
 })
 </script>
 

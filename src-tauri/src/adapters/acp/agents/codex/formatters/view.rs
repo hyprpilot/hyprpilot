@@ -29,7 +29,7 @@ impl ToolFormatter for ViewFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description: None,
             output: None,
             fields,

@@ -34,6 +34,11 @@ export interface ToolCallRecord {
   /// no client-side formatting fallback. See
   /// `src-tauri/src/formatting/types::FormattedToolCall`.
   formatted: FormattedToolCall
+  /// Wall-clock (epoch ms) of first observation; pairs with
+  /// `completedAtMs` for live-tick elapsed labels on per-tool
+  /// surfaces (the thinking card aggregates across kind=think calls).
+  startedAtMs: number
+  completedAtMs?: number
 }
 
 export interface ToolCallUpdateRecord {
@@ -45,6 +50,10 @@ export interface ToolCallUpdateRecord {
   content: ToolCallContentItem[]
   /// Updated presentation view computed from merged running state.
   formatted: FormattedToolCall
+  /// Re-emitted on every delta — UI doesn't need to join against the
+  /// original `tool_call` record to know when the call started.
+  startedAtMs: number
+  completedAtMs?: number
 }
 
 export interface PlanStep {

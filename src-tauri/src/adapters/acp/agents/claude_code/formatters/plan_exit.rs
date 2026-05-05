@@ -33,7 +33,7 @@ impl ToolFormatter for PlanExitFormatter {
 
         FormattedToolCall {
             title: "plan ready for review".to_string(),
-            stat: None,
+            stats: Vec::new(),
             description: plan,
             output: None,
             fields,

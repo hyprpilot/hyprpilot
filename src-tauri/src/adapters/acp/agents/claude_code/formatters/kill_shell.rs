@@ -14,7 +14,7 @@ impl ToolFormatter for KillShellFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description: None,
             output: None,
             fields: Vec::new(),

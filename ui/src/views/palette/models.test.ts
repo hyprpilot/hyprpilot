@@ -36,14 +36,26 @@ beforeEach(() => {
 })
 
 describe('openModelsLeaf', () => {
-  it('shows the no-instance row when no active instance is set', async() => {
+  it('asks the daemon to ensure-spawn when no active instance is set', async() => {
+    invoke.mockResolvedValueOnce({
+      instanceId: 'inst-spawned',
+      cwd: '/tmp',
+      availableModes: [],
+      availableModels: [{ id: 'sonnet', name: 'Sonnet' }]
+    })
+
     await openModelsLeaf()
+
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceMeta, {
+      instanceId: undefined,
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
+    })
 
     const top = usePalette().stack.value.at(-1)
 
-    expect(top?.title).toBe('models')
-    expect(top?.entries).toHaveLength(1)
-    expect(top?.entries[0]?.name).toBe('no active instance.')
+    expect(top?.entries.map((e) => e.id)).toEqual(['sonnet'])
   })
 
   it('shows the no-options row when the instance has no advertised models', async() => {
@@ -76,7 +88,12 @@ describe('openModelsLeaf', () => {
 
     await openModelsLeaf()
 
-    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceMeta, { instanceId: INSTANCE_ID })
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceMeta, {
+      instanceId: INSTANCE_ID,
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
+    })
 
     const top = usePalette().stack.value.at(-1)
 
@@ -146,7 +163,12 @@ describe('openModelsLeaf', () => {
 
     // Only the instance_meta call — no models_set.
     expect(invoke).toHaveBeenCalledTimes(1)
-    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceMeta, { instanceId: INSTANCE_ID })
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceMeta, {
+      instanceId: INSTANCE_ID,
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
+    })
   })
 
   it('shows an error row when instance_meta fails', async() => {

@@ -1,8 +1,8 @@
 //! opencode's `write` tool. RawInput: `{ filePath, content }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, pick, short_path};
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::shared::{diff_line_counts, format_diff_hunk, pick, short_path};
+use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct WriteFormatter;
 
@@ -16,10 +16,11 @@ impl ToolFormatter for WriteFormatter {
             None => "write".to_string(),
         };
 
-        let stat = body
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("{} chars", s.len()));
+        let mut stats: Vec<Stat> = Vec::new();
+        if let Some(new_text) = body.as_deref().filter(|s| !s.is_empty()) {
+            let (added, removed) = diff_line_counts("", new_text);
+            stats.push(Stat::Diff { added, removed });
+        }
 
         // Render the new content as a diff (all-add) so the captain
         // reviews the file before granting write permission. `content`
@@ -38,7 +39,7 @@ impl ToolFormatter for WriteFormatter {
 
         FormattedToolCall {
             title,
-            stat,
+            stats,
             description,
             output: None,
             fields,

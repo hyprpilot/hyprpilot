@@ -33,7 +33,7 @@ impl ToolFormatter for FetchFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output,
             fields,

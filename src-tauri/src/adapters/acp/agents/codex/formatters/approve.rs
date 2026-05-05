@@ -29,7 +29,7 @@ impl ToolFormatter for ApproveFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output: None,
             fields,

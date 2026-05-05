@@ -29,7 +29,7 @@ impl ToolFormatter for TaskFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description: body,
             output,
             fields: Vec::new(),

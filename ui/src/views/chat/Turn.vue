@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import RoleTag from './RoleTag.vue'
-import { Role } from '@components'
+import { Role, StatPill } from '@components'
 
 /**
  * turn lane: 2px colored left stripe wraps the whole turn (role tag
@@ -29,10 +29,7 @@ const roleLabel = ROLE_LABELS[props.role]
   <article class="turn" :data-role="role" :data-live="live">
     <header class="turn-header">
       <RoleTag :role="role" :label="roleLabel" />
-      <span v-if="elapsed && role === Role.Assistant" class="turn-elapsed">
-        <span v-if="live" class="turn-live-dot" aria-hidden="true" />
-        <span>{{ elapsed }}</span>
-      </span>
+      <StatPill v-if="elapsed && role === Role.Assistant" class="turn-elapsed" :label="elapsed" :live="live" />
     </header>
     <div class="turn-body">
       <slot />
@@ -60,23 +57,9 @@ const roleLabel = ROLE_LABELS[props.role]
   margin-bottom: 4px;
 }
 
-/* Live elapsed chip: dim by default, glows yellow + pulses when live. */
+/* Push the elapsed chip to the right edge of the header. */
 .turn-elapsed {
-  @apply ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm border px-[5px] py-0 text-[0.56rem];
-  color: var(--theme-fg-dim);
-  background-color: var(--theme-surface);
-  border-color: var(--theme-border);
-  font-family: var(--theme-font-mono);
-  letter-spacing: 0.3px;
-}
-
-.turn[data-live='true'] .turn-elapsed {
-  color: var(--theme-state-stream);
-}
-
-.turn-live-dot {
-  @apply inline-block h-[4px] w-[4px] animate-pulse rounded-full;
-  background-color: var(--theme-state-stream);
+  margin-left: auto;
 }
 
 /* wireframe: 4px gap between turn body children — chunks, tool

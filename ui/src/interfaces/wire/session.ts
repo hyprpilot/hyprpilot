@@ -185,7 +185,18 @@ export interface ModesSetArgs {
 }
 
 export interface InstanceMetaArgs {
-  instanceId: string
+  /// Optional when `ensure=true` — the daemon spawns a fresh instance
+  /// from `(agentId, profileId)` if no live actor matches the id
+  /// (or no id is supplied). Required when `ensure=false`.
+  instanceId?: string
+  /// Opt-in: when true and no live instance matches, daemon resolves
+  /// `(agentId, profileId)` and bootstraps a fresh actor in-place.
+  /// Drives the palette's "models / modes leaf opens on a clean
+  /// overlay" path — instead of dead-ending with "no active instance",
+  /// the leaf populates against a freshly-spawned actor.
+  ensure?: boolean
+  agentId?: string
+  profileId?: string
 }
 
 export interface McpsListArgs {
@@ -219,6 +230,12 @@ export interface SessionsInfoArgs {
  * lag the latest `acp:instance-meta` event.
  */
 export interface InstanceMetaSnapshot {
+  /// Resolved instance id — present when the daemon ensured-spawn
+  /// for the caller (see `InstanceMetaArgs.ensure`). The palette
+  /// leaves use it to route follow-up `modes_set` / `models_set`
+  /// commands without waiting for the registry's async auto-focus
+  /// event to refresh `useActiveInstance`.
+  instanceId?: string
   sessionId?: string
   cwd: string
   currentModeId?: string

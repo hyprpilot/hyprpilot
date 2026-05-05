@@ -53,7 +53,7 @@ export function projectFormatted(formatted: FormattedToolCall, meta: ProjectionM
     pill: presentation.pill,
     permissionUi: presentation.permissionUi,
     title: formatted.title,
-    stat: formatted.stat,
+    stats: formatted.stats,
     description: formatted.description,
     output: formatted.output,
     fields: formatted.fields,

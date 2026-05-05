@@ -3,7 +3,7 @@ import { faSquare as farSquare } from '@fortawesome/free-regular-svg-icons'
 import { faChevronDown, faChevronRight, faCircleHalfStroke, faSquareCheck } from '@fortawesome/free-solid-svg-icons'
 import { computed, ref, useSlots, watch } from 'vue'
 
-import { PlanStatus, StreamKind, type PlanItem } from '@components'
+import { PlanStatus, StatPill, StreamKind, type PlanItem } from '@components'
 import { log, renderMarkdown } from '@lib'
 
 /**
@@ -48,6 +48,12 @@ const tone = computed(() => (props.kind === StreamKind.Planning ? 'var(--theme-k
 const hasItems = computed(() => (props.items?.length ?? 0) > 0)
 const hasSlot = computed(() => Boolean(slots.default))
 const useMarkdown = computed(() => props.kind === StreamKind.Thinking && Boolean(props.text))
+/// No expandable content → header is the whole card (used by the
+/// thinking-time-only fallback path: agent reasoned silently for N
+/// seconds, no prose to render). Hides the chevron + drops the
+/// click affordance so the row reads as a static badge, not a
+/// fooling-the-captain "click me to expand into nothing".
+const hasBody = computed(() => hasItems.value || useMarkdown.value || hasSlot.value)
 
 const renderedHtml = ref('')
 
@@ -109,13 +115,20 @@ function planIconFor(status: PlanStatus) {
 </script>
 
 <template>
-  <article class="stream-card" :data-kind="kind" :data-active="expanded" :style="{ '--tone': tone }">
-    <header class="stream-card-header" role="button" tabindex="0" @click="toggle" @keydown.enter.prevent="toggle" @keydown.space.prevent="toggle">
-      <FaIcon :icon="expanded ? faChevronDown : faChevronRight" class="stream-card-caret" aria-hidden="true" />
-      <span v-if="active && expanded" class="stream-card-dot" aria-hidden="true" />
+  <article class="stream-card" :data-kind="kind" :data-active="expanded" :data-has-body="hasBody" :style="{ '--tone': tone }">
+    <header
+      class="stream-card-header"
+      :role="hasBody ? 'button' : undefined"
+      :tabindex="hasBody ? 0 : undefined"
+      :aria-expanded="hasBody ? expanded : undefined"
+      @click="hasBody && toggle()"
+      @keydown.enter.prevent="hasBody && toggle()"
+      @keydown.space.prevent="hasBody && toggle()"
+    >
+      <FaIcon v-if="hasBody" :icon="expanded ? faChevronDown : faChevronRight" class="stream-card-caret" aria-hidden="true" />
       <span class="stream-card-label">{{ label }}</span>
-      <span v-if="elapsed" class="stream-card-elapsed">· {{ elapsed }}</span>
       <span v-if="!expanded && summary" class="stream-card-summary-inline">{{ summary }}</span>
+      <StatPill v-if="elapsed" class="stream-card-elapsed" :label="elapsed" :live="active" />
     </header>
 
     <div v-if="expanded && hasItems" class="stream-card-body">
@@ -166,6 +179,10 @@ function planIconFor(status: PlanStatus) {
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
   letter-spacing: 0.4px;
+}
+
+/* Cursor only on rows that actually expand into a body. */
+.stream-card[data-has-body='true'] .stream-card-header {
   cursor: pointer;
 }
 
@@ -179,21 +196,15 @@ function planIconFor(status: PlanStatus) {
   color: var(--tone);
 }
 
-.stream-card-dot {
-  @apply inline-block h-[6px] w-[6px] animate-pulse rounded-full;
-  background-color: var(--tone);
-  box-shadow: 0 0 6px var(--tone);
-}
-
 .stream-card-label {
   @apply font-bold;
   color: var(--tone);
 }
 
+/* Push the elapsed chip to the right edge of the header so it
+ * aligns with the Turn footer's elapsed chip — same visual law. */
 .stream-card-elapsed {
-  color: var(--theme-fg-dim);
-  text-transform: none;
-  letter-spacing: normal;
+  margin-left: auto;
 }
 
 /* Italic Inter recap — visually distinct from the mono header tag. */

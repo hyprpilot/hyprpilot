@@ -15,13 +15,12 @@
  */
 
 import { ToastTone } from '@components'
-import { useActiveInstance, pushToast } from '@composables'
+import { pushModeChange, useActiveInstance, useProfiles, pushToast } from '@composables'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
 const EMPTY_ROW_ID = '__no-modes__'
-const PLACEHOLDER_ROW_ID = '__no-instance__'
 const ERROR_ROW_ID = '__meta-fetch-failed__'
 
 function noOptionsSpec(message: string): PaletteSpec {
@@ -33,20 +32,6 @@ function noOptionsSpec(message: string): PaletteSpec {
         id: EMPTY_ROW_ID,
         name: 'no modes available',
         description: message
-      }
-    ],
-    onCommit: () => {}
-  }
-}
-
-function noInstanceSpec(): PaletteSpec {
-  return {
-    mode: PaletteMode.Select,
-    title: 'modes',
-    entries: [
-      {
-        id: PLACEHOLDER_ROW_ID,
-        name: 'no active instance.'
       }
     ],
     onCommit: () => {}
@@ -71,18 +56,25 @@ function errorSpec(err: string): PaletteSpec {
 export async function openModesLeaf(): Promise<void> {
   const { open } = usePalette()
   const { id } = useActiveInstance()
+  const { profiles, selected } = useProfiles()
   const instanceId = id.value
-
-  if (!instanceId) {
-    open(noInstanceSpec())
-
-    return
-  }
+  const profileId = selected.value
+  const agentId = profileId ? profiles.value.find((p) => p.id === profileId)?.agent : undefined
 
   let snapshot
 
   try {
-    snapshot = await invoke(TauriCommand.InstanceMeta, { instanceId })
+    // ensure=true: when no live actor matches `instanceId` (or none
+    // is set), the daemon resolves `(agentId, profileId)` and
+    // bootstraps a fresh actor in-place. Picker populates against
+    // the freshly-spawned instance instead of dead-ending with
+    // "no active instance" on a clean overlay.
+    snapshot = await invoke(TauriCommand.InstanceMeta, {
+      instanceId,
+      ensure: true,
+      agentId,
+      profileId
+    })
   } catch(err) {
     const message = String(err)
 
@@ -117,6 +109,17 @@ export async function openModesLeaf(): Promise<void> {
     ]
     : []
 
+  // Daemon echoes the resolved instance id when ensure-spawn ran —
+  // route the commit there directly instead of awaiting the
+  // registry's async auto-focus to refresh `useActiveInstance`.
+  const targetInstance = snapshot.instanceId ?? instanceId
+
+  if (!targetInstance) {
+    open(errorSpec('no instance id resolved after ensure'))
+
+    return
+  }
+
   open({
     mode: PaletteMode.Select,
     title: 'modes',
@@ -128,15 +131,31 @@ export async function openModesLeaf(): Promise<void> {
       if (!pick) {
         return
       }
+      const prev = options.find((m) => m.id === snapshot.currentModeId)
 
       try {
-        await invoke(TauriCommand.ModesSet, { instanceId, modeId: pick.id })
+        await invoke(TauriCommand.ModesSet, { instanceId: targetInstance, modeId: pick.id })
         pushToast(ToastTone.Ok, `mode → ${pick.name}`)
+
+        // Captain-initiated change → leave a chapter-break banner in
+        // the transcript matching the agent-emitted current_mode_update
+        // path. pushModeChange dedupes against the most-recent banner,
+        // so an agent echo (some adapters re-emit after set_mode) won't
+        // stack a second card. Session id needed for the dedupe key
+        // grouping; reach for the live one (snapshot has it).
+        if (snapshot.sessionId) {
+          pushModeChange(targetInstance, snapshot.sessionId, {
+            modeId: pick.id,
+            name: pick.name,
+            prevModeId: prev?.id,
+            prevName: prev?.name
+          })
+        }
       } catch(err) {
         const message = String(err)
 
         log.warn('modes_set failed', {
-          instanceId,
+          instanceId: targetInstance,
           modeId: pick.id,
           err: message
         })

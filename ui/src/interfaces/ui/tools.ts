@@ -9,7 +9,7 @@
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 
 import type { PermissionUi, PillKind, ToolKind, ToolState } from '@constants/ui'
-import type { FormattedToolCall, ToolField as WireToolField } from '@interfaces/wire/formatted-tool-call'
+import type { FormattedToolCall, Stat, ToolField as WireToolField } from '@interfaces/wire/formatted-tool-call'
 
 export type { ToolField } from '@interfaces/wire/formatted-tool-call'
 
@@ -29,7 +29,7 @@ export interface ToolCallView {
   pill: PillKind
   permissionUi: PermissionUi
   title: string
-  stat?: string
+  stats: Stat[]
   description?: string
   output?: string
   fields: WireToolField[]
@@ -74,6 +74,11 @@ export interface WireToolCall {
   /// Daemon-authored presentation content. Re-emitted on every
   /// `tool_call_update` against merged running state.
   formatted: FormattedToolCall
+  /// Daemon-stamped wall-clock (epoch ms). Stable across updates.
+  startedAtMs: number
+  /// Set when the call transitions into Completed / Failed; absence
+  /// = mid-flight, UI ticks elapsed labels live.
+  completedAtMs?: number
   createdAt: number
   updatedAt: number
 }

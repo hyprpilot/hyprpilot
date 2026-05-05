@@ -7,7 +7,8 @@ import { useActiveInstance, type InstanceId } from '../chrome/use-active-instanc
 export enum StreamItemKind {
   Thought = 'thought',
   Plan = 'plan',
-  ModeChange = 'mode_change'
+  ModeChange = 'mode_change',
+  ModelChange = 'model_change'
 }
 
 interface BaseStream {
@@ -23,6 +24,11 @@ interface BaseStream {
 export interface ThoughtStreamItem extends BaseStream {
   kind: StreamItemKind.Thought
   text: string
+  /// Wall-clock at first observation. Pairs with the parent turn's
+  /// `endedAtMs` (or `liveNow` while the turn is still in flight) for
+  /// the thinking-card elapsed chip on agents that ship thoughts via
+  /// `agent_thought_chunk` notifications (claude-code-acp).
+  startedAtMs: number
 }
 
 export interface PlanEntry {
@@ -51,7 +57,20 @@ export interface ModeChangeStreamItem extends BaseStream {
   prevName?: string
 }
 
-export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem
+/// Banner chip for model switches — same chrome as `ModeChangeStreamItem`,
+/// keyed off the model id instead. Fires on the captain's palette
+/// commit; mirrors the agent's `current_model_update` notification
+/// path so user-initiated and agent-initiated changes both leave a
+/// chapter-break in the transcript.
+export interface ModelChangeStreamItem extends BaseStream {
+  kind: StreamItemKind.ModelChange
+  modelId: string
+  name?: string
+  prevModelId?: string
+  prevName?: string
+}
+
+export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem | ModelChangeStreamItem
 
 export interface StreamState {
   items: StreamItem[]
@@ -136,7 +155,8 @@ export function pushThoughtChunk(id: InstanceId, sessionId: string, raw: Thought
     turnId: openTurnIdFor(id, sessionId),
     createdAt: seq,
     updatedAt: seq,
-    text
+    text,
+    startedAtMs: Date.now()
   })
   slot.openThoughtBySession.set(sessionId, itemId)
 }
@@ -205,6 +225,44 @@ export function pushModeChange(id: InstanceId, sessionId: string, change: ModeCh
     modeId: change.modeId,
     name: change.name,
     prevModeId: change.prevModeId,
+    prevName: change.prevName
+  })
+}
+
+export interface ModelChangePush {
+  modelId: string
+  name?: string
+  prevModelId?: string
+  prevName?: string
+}
+
+/// Mirror of `pushModeChange` for model switches. Same dedupe rule:
+/// re-pushing the same model id against the most-recent banner just
+/// touches `updatedAt`. Drives the captain-initiated banner from the
+/// models palette commit; an agent-side `current_model_update` echo
+/// would dedupe against the same id without stacking a second card.
+export function pushModelChange(id: InstanceId, sessionId: string, change: ModelChangePush): void {
+  const slot = slotFor(id)
+  const seq = nextSeq(id)
+  const last = slot.items[slot.items.length - 1]
+
+  if (last && last.kind === StreamItemKind.ModelChange && last.sessionId === sessionId && last.modelId === change.modelId) {
+    last.updatedAt = seq
+
+    return
+  }
+  const itemId = `model-${sessionId}-${slot.items.length}`
+
+  slot.items.push({
+    kind: StreamItemKind.ModelChange,
+    id: itemId,
+    sessionId,
+    turnId: openTurnIdFor(id, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    modelId: change.modelId,
+    name: change.name,
+    prevModelId: change.prevModelId,
     prevName: change.prevName
   })
 }

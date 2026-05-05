@@ -39,6 +39,12 @@ interface ToolCallUpdate {
   /// against merged state per delta); UI replaces the stored value
   /// wholesale on each push.
   formatted: FormattedToolCall
+  /// Wall-clock (epoch ms) of first observation; daemon stamps this
+  /// on the cache miss and re-emits on every delta.
+  startedAtMs: number
+  /// Set on the first transition into Completed / Failed; absence
+  /// = mid-flight (UI ticks live).
+  completedAtMs?: number
 }
 
 export function pushToolCall(id: InstanceId, agentId: string, sessionId: string, raw: ToolCallUpdate): void {
@@ -74,6 +80,11 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
       existing.locations = raw.locations
     }
     existing.formatted = raw.formatted
+    existing.startedAtMs = raw.startedAtMs
+
+    if (raw.completedAtMs !== undefined) {
+      existing.completedAtMs = raw.completedAtMs
+    }
 
     return
   }
@@ -90,6 +101,8 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
     rawInput: raw.rawInput,
     locations: Array.isArray(raw.locations) ? raw.locations : undefined,
     formatted: raw.formatted,
+    startedAtMs: raw.startedAtMs,
+    completedAtMs: raw.completedAtMs,
     createdAt: seq,
     updatedAt: seq
   })

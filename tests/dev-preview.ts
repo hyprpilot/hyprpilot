@@ -236,4 +236,30 @@ function seedHeaderPreview(composables: typeof import('@composables')): void {
   composables.pushInstanceModelState(previewId, { currentModelId: 'claude-opus-4' })
   composables.setInstanceCwd(previewId, '~/dev/hyprpilot')
   composables.setInstanceGitStatus(previewId, { branch: 'main', ahead: 2, behind: 0 })
+
+  // Seed a turn + thought so the thinking card renders in browser
+  // mode without the daemon. Verifies the full pipeline:
+  //   pushTurnStarted → pushThoughtChunk → useTimelineBlocks
+  //   → combinedThoughtText → StreamCard render.
+  // If this card doesn't appear in the preview, the bug is in the
+  // Vue side; if it appears here but not under live wire, the bug
+  // is in the daemon's transcript routing.
+  const sessionId = 'preview-session'
+  const turnId = 'preview-turn'
+
+  composables.pushTurnStarted(previewId, {
+    turnId, sessionId, startedAtMs: Date.now() - 5000
+  })
+  composables.pushThoughtChunk(previewId, sessionId, {
+    sessionUpdate: 'agent_thought_chunk',
+    content: { text: 'I will analyze the request and identify the right approach.\n\nLet me start by examining the codebase structure.' }
+  })
+  composables.pushTranscriptChunk(previewId, sessionId, {
+    sessionUpdate: 'user_message_chunk',
+    content: { type: 'text', text: 'fix the thought card rendering' }
+  })
+  composables.pushTranscriptChunk(previewId, sessionId, {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Looking at the components now…' }
+  })
 }
