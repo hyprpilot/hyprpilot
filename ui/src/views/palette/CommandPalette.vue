@@ -22,7 +22,7 @@ import { faArrowRightToBracket, faArrowTurnDown, faSquareCheck, faUpDown } from 
 import { FocusTrap } from 'focus-trap-vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import { Loading } from '@components'
+import { KbdHint, Loading } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, useMultiSelect, usePalette, usePaletteFilter } from '@composables'
 
 const { stack, close } = usePalette()
@@ -131,9 +131,26 @@ watch(visibleEntries, (rows) => {
 /// dir, keep refining). The row's `description` carries the canonical
 /// text the leaf wants in the buffer (cwd palette → path). Commit
 /// stays on Enter.
+///
+/// `nextTick` + explicit `inputRef.focus()` defends against the
+/// `<FocusTrap>` race — the trap sometimes shifts focus to the
+/// palette frame on Tab even with `preventDefault` + `stopPropagation`
+/// at capture phase. Refocusing after Vue's reactive re-render is the
+/// safety net so the captain can keep typing into the input.
 function autocompleteIntoQuery(current: PaletteEntry | undefined): void {
   if (current?.description !== undefined && current.description.length > 0) {
     query.value = current.description
+    void nextTick(() => {
+      const el = inputRef.value
+
+      if (!el) {
+        return
+      }
+      el.focus()
+      const len = query.value.length
+
+      el.setSelectionRange(len, len)
+    })
   }
 }
 
@@ -344,6 +361,7 @@ onUnmounted(() => {
               :key="entry.id"
               class="palette-row"
               :data-selected="idx === highlighted"
+              :data-active="entry.active === true || entry.kind === 'active'"
               :data-ticked="tickedIds.has(entry.id)"
               :data-multi="top.mode === PaletteMode.MultiSelect"
               :data-testid="`palette-row-${entry.id}`"
@@ -372,32 +390,12 @@ onUnmounted(() => {
         </div>
 
         <footer class="palette-footer">
-          <span class="palette-kbd-hint">
-            <kbd class="palette-kbd">
-              <FaIcon :icon="faUpDown" class="palette-kbd-icon" aria-hidden="true" />
-            </kbd>
-            <span class="palette-kbd-label">navigate</span>
-          </span>
-          <span v-if="top.mode === PaletteMode.MultiSelect" class="palette-kbd-hint">
-            <kbd class="palette-kbd">
-              <FaIcon :icon="faArrowRightToBracket" class="palette-kbd-icon" aria-hidden="true" />
-            </kbd>
-            <span class="palette-kbd-label">toggle</span>
-          </span>
-          <span class="palette-kbd-hint">
-            <kbd class="palette-kbd">
-              <FaIcon :icon="faArrowTurnDown" class="palette-kbd-icon" aria-hidden="true" />
-            </kbd>
-            <span class="palette-kbd-label">confirm</span>
-          </span>
-          <span v-if="top.onDelete" class="palette-kbd-hint">
-            <kbd class="palette-kbd palette-kbd-text">Ctrl+D</kbd>
-            <span class="palette-kbd-label">delete</span>
-          </span>
-          <span class="palette-kbd-hint">
-            <kbd class="palette-kbd palette-kbd-text">Esc</kbd>
-            <span class="palette-kbd-label">close</span>
-          </span>
+          <KbdHint :keys="[faUpDown]" label="navigate" />
+          <KbdHint v-if="top.mode === PaletteMode.MultiSelect" :keys="[faArrowRightToBracket]" label="toggle" />
+          <KbdHint v-if="top.mode === PaletteMode.Input" :keys="[faArrowRightToBracket]" label="autocomplete" />
+          <KbdHint :keys="[faArrowTurnDown]" label="confirm" />
+          <KbdHint v-if="top.onDelete" :keys="['Ctrl+D']" label="delete" />
+          <KbdHint :keys="['Esc']" label="close" />
         </footer>
       </div>
     </div>
@@ -502,6 +500,15 @@ onUnmounted(() => {
   margin-bottom: 1px;
 }
 
+/* Active = the captain's persisted choice (matching profile / model /
+ * cwd / instance). Marks the row with the accent left border so it
+ * reads at a glance, independent of the fuzzy-filter cursor.
+ * `data-selected` (arrow-key cursor) layers on top via the bg fill;
+ * both share the same accent colour so the borders don't conflict. */
+.palette-row[data-active='true'] {
+  border-left-color: var(--theme-accent);
+}
+
 .palette-row[data-selected='true'] {
   background-color: var(--theme-surface-alt);
   border-left-color: var(--theme-accent);
@@ -572,31 +579,5 @@ onUnmounted(() => {
   border-top: 1px solid var(--theme-border);
   gap: 18px;
   font-family: var(--theme-font-mono);
-}
-
-.palette-kbd-hint {
-  @apply inline-flex items-center;
-  gap: 5px;
-}
-
-.palette-kbd {
-  @apply inline-flex items-center justify-center text-[0.56rem];
-  min-width: 18px;
-  padding: 1px 6px;
-  background-color: var(--theme-surface-bg);
-  border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
-  color: var(--theme-fg);
-  font-family: var(--theme-font-mono);
-}
-
-.palette-kbd-icon {
-  width: 8px;
-  height: 8px;
-}
-
-.palette-kbd-label {
-  color: var(--theme-fg-dim);
-  font-size: 0.56rem;
 }
 </style>

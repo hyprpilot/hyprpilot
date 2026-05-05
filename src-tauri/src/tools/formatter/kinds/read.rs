@@ -3,7 +3,7 @@
 //! reads.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, pick, short_path, dedupe_output, title_prefix};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, pick, wire_title_or_fallback};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct ReadFormatter;
@@ -15,11 +15,7 @@ impl ToolFormatter for ReadFormatter {
             .or_else(|| pick(ctx.raw_input, "uri"))
             .filter(|s| !s.is_empty());
 
-        let prefix = title_prefix(ctx.wire_name, "read");
-        let title = match path.as_deref() {
-            Some(p) => format!("{} · {}", prefix, short_path(p)),
-            None => prefix,
-        };
+        let title = wire_title_or_fallback(ctx.wire_name, "read");
 
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());
 

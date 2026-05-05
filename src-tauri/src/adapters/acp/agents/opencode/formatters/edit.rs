@@ -39,7 +39,11 @@ impl ToolFormatter for EditFormatter {
 
         let block_text = text_blocks(ctx.content);
         let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        let output = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
 
         FormattedToolCall {
             title,

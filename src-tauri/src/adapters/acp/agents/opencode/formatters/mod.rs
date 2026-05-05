@@ -24,22 +24,22 @@ pub mod webfetch;
 pub mod websearch;
 pub mod write;
 
+use crate::config::AgentProvider;
 use crate::tools::formatter::registry::FormatterRegistry;
 
-pub const ADAPTER_ID: &str = "acp-opencode";
-
 pub fn register_all(reg: &mut FormatterRegistry) {
-    reg.register_adapter(ADAPTER_ID, "read", Box::new(read::ReadFormatter));
-    reg.register_adapter(ADAPTER_ID, "edit", Box::new(edit::EditFormatter));
-    reg.register_adapter(ADAPTER_ID, "write", Box::new(write::WriteFormatter));
-    reg.register_adapter(ADAPTER_ID, "bash", Box::new(bash::BashFormatter));
-    reg.register_adapter(ADAPTER_ID, "grep", Box::new(grep::GrepFormatter));
-    reg.register_adapter(ADAPTER_ID, "glob", Box::new(glob::GlobFormatter));
-    reg.register_adapter(ADAPTER_ID, "webfetch", Box::new(webfetch::WebFetchFormatter));
-    reg.register_adapter(ADAPTER_ID, "websearch", Box::new(websearch::WebSearchFormatter));
-    reg.register_adapter(ADAPTER_ID, "task", Box::new(task::TaskFormatter));
-    reg.register_adapter(ADAPTER_ID, "todowrite", Box::new(todo::TodoFormatter));
-    reg.register_adapter(ADAPTER_ID, "skill", Box::new(skill::SkillFormatter));
-    reg.register_adapter(ADAPTER_ID, "patch", Box::new(patch::PatchFormatter));
-    reg.register_adapter(ADAPTER_ID, "lsp", Box::new(lsp::LspFormatter));
+    let adapter = AgentProvider::AcpOpenCode.wire_id();
+    reg.register_adapter(adapter, "read", Box::new(read::ReadFormatter));
+    reg.register_adapter(adapter, "edit", Box::new(edit::EditFormatter));
+    reg.register_adapter(adapter, "write", Box::new(write::WriteFormatter));
+    reg.register_adapter(adapter, "bash", Box::new(bash::BashFormatter));
+    reg.register_adapter(adapter, "grep", Box::new(grep::GrepFormatter));
+    reg.register_adapter(adapter, "glob", Box::new(glob::GlobFormatter));
+    reg.register_adapter(adapter, "webfetch", Box::new(webfetch::WebFetchFormatter));
+    reg.register_adapter(adapter, "websearch", Box::new(websearch::WebSearchFormatter));
+    reg.register_adapter(adapter, "task", Box::new(task::TaskFormatter));
+    reg.register_adapter(adapter, "todowrite", Box::new(todo::TodoFormatter));
+    reg.register_adapter(adapter, "skill", Box::new(skill::SkillFormatter));
+    reg.register_adapter(adapter, "patch", Box::new(patch::PatchFormatter));
+    reg.register_adapter(adapter, "lsp", Box::new(lsp::LspFormatter));
 }

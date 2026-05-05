@@ -29,6 +29,14 @@ export interface PaletteEntry {
   name: string
   description?: string
   kind?: string
+  /**
+   * When `true`, the palette paints a primary-color left-border on
+   * the row regardless of fuzzy-filter cursor position. Drives the
+   * "this is your persisted choice" marker (active instance, active
+   * profile, current cwd, …) so the captain reads it at a glance
+   * even while arrow-navigating other rows.
+   */
+  active?: boolean
 }
 
 /**

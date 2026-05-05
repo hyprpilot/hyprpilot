@@ -1,26 +1,25 @@
 //! Generic permission-prompt vocabulary + `PermissionController` trait.
 //!
-//! The unified decision pipeline (S6.5 of the MCP refactor) owns BOTH
-//! the runtime trust store (populated by the UI's "always allow / always
-//! deny" buttons) AND the static per-server hyprpilot extension globs
-//! (loaded from MCP JSON). One match, one ordering:
+//! The decision pipeline is intentionally minimal — hyprpilot stays
+//! transparent to the agent's permission model and only intercepts what
+//! captains explicitly opt into via static MCP-side config:
 //!
-//! 1. **Runtime trust store** — `(instance_id, tool_name) → Allow|Deny`,
-//!    populated by `remember()`. UI's "always" path calls into this.
-//!    Reject beats accept.
-//! 2. **Per-server hyprpilot extension globs** — looked up via the
+//! 1. **Per-server hyprpilot extension globs** — looked up via the
 //!    tool→server attribution map populated at `session/new` time.
 //!    Reject beats accept.
-//! 3. **Default**: `AskUser` — bounces to the UI.
+//! 2. **Default**: `AskUser` — bounces to the UI.
+//!
+//! There is no daemon-side runtime trust store. The captain's "always
+//! allow / always deny" pick rides the wire as-is to ACP; the agent
+//! itself owns whatever persistence it offers (claude-code-acp writes
+//! to `~/.claude/settings.json`, etc.). Hyprpilot does not shadow that.
 //!
 //! `register_pending` + `resolve` own the oneshot waiter map that
 //! bridges the Tauri `permission_reply` command back to the awaiting
-//! ACP handler. Profile-flat `auto_accept_tools` / `auto_reject_tools`
-//! went away — auto-accept / auto-reject lives ONLY inside each MCP
-//! JSON entry's `hyprpilot` extension block.
+//! ACP handler.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -180,44 +179,26 @@ pub struct PermissionReply {
     pub option_id: String,
 }
 
-/// Runtime trust-store decision shape. Populated by the UI's "always
-/// allow / always deny" buttons via `remember()`; consumed at the top
-/// of every `decide()` call. Distinct from `Decision` (which is the
-/// pipeline's output) to make the three-state intent visible — there's
-/// no `AskUser` value to remember.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrustDecision {
-    Allow,
-    Deny,
-}
-
-/// Everything the unified decision pipeline needs at call time.
-/// `instance_id` keys the runtime trust store; `mcps` provides the
-/// per-server hyprpilot-extension globs. Both fields are optional —
-/// when no MCPs are configured (or the call site is a test harness
-/// without instance context), the corresponding lane short-circuits
-/// to a miss and the next lane runs.
+/// Everything the decision pipeline needs at call time. `mcps`
+/// provides the per-server hyprpilot-extension globs; when `None`
+/// every decision falls through to `AskUser`.
 ///
 /// Tool→server attribution is by prefix convention — `mcp__<server>__<tool>`,
 /// the shared shape across claude-code-acp / codex-acp / opencode-acp
 /// (all three namespace MCP tools the same way). Vendor-side native
-/// tools (Bash, Read, …) carry no `mcp__` prefix and skip lane 2
+/// tools (Bash, Read, …) carry no `mcp__` prefix and skip the lookup
 /// entirely.
 pub struct DecisionContext<'a> {
-    pub instance_id: Option<&'a str>,
     pub mcps: Option<&'a MCPsRegistry>,
 }
 
 impl<'a> DecisionContext<'a> {
     /// All-misses context — every decision falls through to `AskUser`.
     /// Used by tests and by call sites that haven't yet wired the
-    /// instance id / registry.
+    /// MCP registry.
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            instance_id: None,
-            mcps: None,
-        }
+        Self { mcps: None }
     }
 }
 
@@ -237,44 +218,15 @@ pub fn parse_mcp_tool_name(tool: &str) -> Option<(&str, &str)> {
     Some((server, leaf))
 }
 
-/// The decision + waiter surface + runtime trust store. `decide` is
-/// synchronous (pure lookups); `remember` / `clear_for_instance` mutate
-/// the trust store; `register_pending` + `resolve` own the oneshot map
-/// that bridges the Tauri `permission_reply` command back to the
-/// awaiting ACP handler.
+/// The decision + waiter surface. `decide` is synchronous (pure
+/// lookups against the per-server MCP glob config). `register_pending`
+/// + `resolve` own the oneshot map that bridges the Tauri
+/// `permission_reply` command back to the awaiting ACP handler.
 #[async_trait]
 pub trait PermissionController: Send + Sync + 'static {
-    /// Run the unified pipeline: trust store → per-server hyprpilot
-    /// globs → AskUser. Reject beats accept inside each lane.
+    /// Run the per-server MCP glob lookup; `AskUser` for everything
+    /// else. Reject beats accept inside the glob lane.
     fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision;
-
-    /// Persist a runtime trust decision for `(instance_id, tool)`.
-    /// Subsequent calls with the same key short-circuit at lane 1 of
-    /// `decide`. Reject beats accept on conflict — calling
-    /// `remember(.., Allow)` after a `remember(.., Deny)` for the same
-    /// key keeps the deny entry. In-memory only; instance shutdown
-    /// clears via `clear_for_instance`.
-    async fn remember(&self, instance_id: &str, tool: &str, decision: TrustDecision);
-
-    /// Drop every trust-store entry for the given instance. Called by
-    /// `AcpAdapter::shutdown_instance` and `restart_instance` so a
-    /// fresh actor boots with a clean slate. No-op when no entries
-    /// exist for the instance.
-    async fn clear_for_instance(&self, instance_id: &str);
-
-    /// Snapshot the trust store as a vector of `(instance_id, tool,
-    /// decision)` triples. Stable iteration order is not guaranteed;
-    /// callers that compare in tests should sort. Used by the
-    /// `permissions_trust_snapshot` Tauri command so the captain can
-    /// review + edit the live auto-allow / auto-deny set from the
-    /// palette without restarting the daemon.
-    async fn snapshot_trust_store(&self) -> Vec<(String, String, TrustDecision)>;
-
-    /// Drop a single trust-store entry. Used by the permissions
-    /// palette's multi-select toggle path so the captain can prune
-    /// stale "always allow" / "always deny" rules per-tool. No-op when
-    /// the `(instance_id, tool)` pair isn't present.
-    async fn forget_trust(&self, instance_id: &str, tool: &str);
 
     /// Register a pending prompt. Returns the receiver the caller
     /// awaits; wrap the receive in `tokio::time::timeout(WAITER_TIMEOUT,
@@ -311,45 +263,19 @@ pub trait PermissionController: Send + Sync + 'static {
     /// - `Some(true)` — waiter resolved with `Selected(option_id)`.
     async fn resolve_if_pending(&self, request_id: &str, option_id: &str) -> Option<bool>;
 
-    /// Resolve a pending request with kind-aware trust-store side effect.
-    /// Pops the waiter atomically, looks up the picked option's kind,
-    /// and BEFORE signaling:
-    ///
-    /// - `kind == "allow_always"` → writes `(instance_id, tool) → Allow`
-    ///   to the trust store via [`Self::remember`].
-    /// - `kind == "reject_always"` → writes `(instance_id, tool) → Deny`.
-    /// - Any other kind (`_once` variants, unknown future kinds) → no
-    ///   trust-store write.
-    ///
-    /// Then signals the waiter with `Selected(option_id)`. The kind is
-    /// the single signal that drives "captain wants this remembered" —
-    /// callers don't need a separate `remember` flag on the wire.
-    ///
-    /// Same return semantics as [`Self::resolve_if_pending`]:
-    /// - `None` — no waiter.
-    /// - `Some(false)` — option_id not in offered set.
-    /// - `Some(true)` — resolved (and trust store updated when the kind
-    ///   warranted it).
-    async fn respond(&self, request_id: &str, option_id: &str) -> Option<bool>;
-
     /// Snapshot every currently-pending request as a
     /// `PermissionRequestSnapshot` vector. Powers `permissions/pending`.
     async fn list_pending(&self) -> Vec<PermissionRequestSnapshot>;
 }
 
-/// Default impl: in-memory waiter map + in-memory trust store. Glob
-/// sets are compiled per `decide` call (the per-server lists are tiny
-/// — a handful of patterns each — so caching is premature; if it
-/// surfaces in a profile, swap to a precompiled cache keyed by server
-/// name + content-hash).
+/// Default impl: in-memory waiter map only. Glob sets are compiled
+/// per `decide` call (the per-server lists are tiny — a handful of
+/// patterns each — so caching is premature; if it surfaces in a
+/// profile, swap to a precompiled cache keyed by server name +
+/// content-hash).
 #[derive(Debug, Default)]
 pub struct DefaultPermissionController {
     waiters: Arc<Mutex<HashMap<String, PendingWaiter>>>,
-    /// Runtime trust store keyed by `(instance_id, tool_name)`. Reject
-    /// wins on conflict; `remember(.., Allow)` is a no-op when a Deny
-    /// entry already exists. `std::sync::RwLock` because `decide` is
-    /// sync — we cannot hold a `tokio::sync::Mutex` across the lookup.
-    trust: Arc<RwLock<HashMap<(String, String), TrustDecision>>>,
 }
 
 #[derive(Debug)]
@@ -404,32 +330,13 @@ impl PermissionController for DefaultPermissionController {
     fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision {
         let tool = req.tool_call.name.as_str();
 
-        // Lane 1 — runtime trust store. Captain's "always allow / always
-        // deny" picks land here; they always beat the static config.
-        if let Some(instance_id) = ctx.instance_id {
-            let trust = self.trust.read().expect("trust store lock poisoned");
-            if let Some(decision) = trust.get(&(instance_id.to_string(), tool.to_string())) {
-                tracing::debug!(
-                    request_id = %req.request_id,
-                    tool,
-                    instance_id,
-                    ?decision,
-                    "permission::decide: trust-store hit"
-                );
-                return match decision {
-                    TrustDecision::Allow => Decision::Allow,
-                    TrustDecision::Deny => Decision::Deny,
-                };
-            }
-        }
-
-        // Lane 2 — per-server hyprpilot extension globs. Attribute the
-        // tool to its server via the `mcp__<server>__<leaf>` prefix
-        // convention, then match the SERVER-RELATIVE leaf against that
-        // server's accept / reject globs. Captains write `read_*` /
-        // `delete_*` under the server block; the `mcp__<server>__`
-        // prefix is implicit. Reject beats accept. Vendor-native tools
-        // (no prefix) skip this lane entirely.
+        // Per-server hyprpilot extension globs. Attribute the tool to
+        // its server via the `mcp__<server>__<leaf>` prefix convention,
+        // then match the SERVER-RELATIVE leaf against that server's
+        // accept / reject globs. Captains write `read_*` / `delete_*`
+        // under the server block; the `mcp__<server>__` prefix is
+        // implicit. Reject beats accept. Vendor-native tools (no
+        // prefix) skip this lane entirely.
         if let Some(registry) = ctx.mcps {
             if let Some((server_name, leaf)) = parse_mcp_tool_name(tool) {
                 if let Some(def) = registry.get(server_name) {
@@ -465,58 +372,6 @@ impl PermissionController for DefaultPermissionController {
             "permission::decide: no rule, AskUser"
         );
         Decision::AskUser
-    }
-
-    async fn remember(&self, instance_id: &str, tool: &str, decision: TrustDecision) {
-        let key = (instance_id.to_string(), tool.to_string());
-        let mut trust = self.trust.write().expect("trust store lock poisoned");
-        // Reject beats accept on conflict — `remember(.., Allow)` after
-        // a `remember(.., Deny)` is a no-op so an accidental click
-        // can't widen access. Re-asserting Deny is fine.
-        match (trust.get(&key), decision) {
-            (Some(TrustDecision::Deny), TrustDecision::Allow) => {
-                tracing::debug!(
-                    instance_id,
-                    tool,
-                    "permission::remember: existing Deny beats Allow, no-op"
-                );
-            }
-            _ => {
-                trust.insert(key, decision);
-                tracing::debug!(
-                    instance_id,
-                    tool,
-                    ?decision,
-                    "permission::remember: trust store updated"
-                );
-            }
-        }
-    }
-
-    async fn clear_for_instance(&self, instance_id: &str) {
-        let mut trust = self.trust.write().expect("trust store lock poisoned");
-        let before = trust.len();
-        trust.retain(|(id, _), _| id != instance_id);
-        let cleared = before - trust.len();
-        if cleared > 0 {
-            tracing::debug!(instance_id, cleared, "permission::clear_for_instance");
-        }
-    }
-
-    async fn snapshot_trust_store(&self) -> Vec<(String, String, TrustDecision)> {
-        let trust = self.trust.read().expect("trust store lock poisoned");
-        trust
-            .iter()
-            .map(|((id, tool), d)| (id.clone(), tool.clone(), *d))
-            .collect()
-    }
-
-    async fn forget_trust(&self, instance_id: &str, tool: &str) {
-        let mut trust = self.trust.write().expect("trust store lock poisoned");
-        let key = (instance_id.to_string(), tool.to_string());
-        if trust.remove(&key).is_some() {
-            tracing::debug!(instance_id, tool, "permission::forget_trust");
-        }
     }
 
     async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome> {
@@ -591,56 +446,6 @@ impl PermissionController for DefaultPermissionController {
         let removed = waiters.remove(request_id).expect("entry checked above");
         let _ = removed.tx.send(PermissionOutcome::Selected(option_id.to_string()));
         tracing::debug!(request_id, option_id, "permission::resolve_if_pending: waiter fired");
-        Some(true)
-    }
-
-    async fn respond(&self, request_id: &str, option_id: &str) -> Option<bool> {
-        // Pop the waiter under a single lock acquisition — validates
-        // option_id is in the offered set, then removes the entry. We
-        // own the snapshot + options + tx after this block; the trust
-        // write below uses a different lock (the trust map) so no
-        // deadlock.
-        let popped = {
-            let mut waiters = self.waiters.lock().await;
-            let entry = waiters.get(request_id)?;
-            if !entry.options.iter().any(|o| o.option_id == option_id) {
-                tracing::debug!(
-                    request_id,
-                    option_id,
-                    "permission::respond: option not in stored options"
-                );
-                return Some(false);
-            }
-            waiters.remove(request_id).expect("entry checked above")
-        };
-        // Kind-aware trust-store write. The agent's offered options
-        // already carry typed kinds via the schema (`allow_always` /
-        // `reject_always` etc.); we read the kind off the popped
-        // snapshot and write only for the persistent variants. Any
-        // other kind (the `_once` pair + unknown future variants)
-        // skips the write — `_once` is the agent-side default and
-        // doesn't change our local memory.
-        let kind = popped
-            .options
-            .iter()
-            .find(|o| o.option_id == option_id)
-            .map(|o| o.kind.as_str())
-            .unwrap_or_default();
-        let trust = match kind {
-            "allow_always" => Some(TrustDecision::Allow),
-            "reject_always" => Some(TrustDecision::Deny),
-            _ => None,
-        };
-        if let (Some(decision), Some(iid)) = (trust, popped.snapshot.instance_id.as_deref()) {
-            self.remember(iid, &popped.snapshot.tool, decision).await;
-        }
-        let _ = popped.tx.send(PermissionOutcome::Selected(option_id.to_string()));
-        tracing::debug!(
-            request_id,
-            option_id,
-            kind,
-            "permission::respond: waiter fired (kind-aware trust write applied if applicable)"
-        );
         Some(true)
     }
 
@@ -763,76 +568,6 @@ mod tests {
         assert_eq!(d, Decision::AskUser);
     }
 
-    #[tokio::test]
-    async fn decide_trust_store_allow_short_circuits() {
-        let controller = DefaultPermissionController::new();
-        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
-        let d = controller.decide(
-            &request("r1", "Bash"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: None,
-            },
-        );
-        assert_eq!(d, Decision::Allow);
-    }
-
-    #[tokio::test]
-    async fn decide_trust_store_deny_short_circuits_over_static_accept() {
-        let controller = DefaultPermissionController::new();
-        // Static accept on the MCP server says allow; trust store says
-        // deny — trust wins because it sits at lane 1 of the pipeline.
-        controller
-            .remember("instance-1", "mcp__filesystem__delete_file", TrustDecision::Deny)
-            .await;
-        let registry = registry_with("filesystem", &["delete_*"], &[]);
-        let d = controller.decide(
-            &request("r1", "mcp__filesystem__delete_file"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: Some(&registry),
-            },
-        );
-        assert_eq!(d, Decision::Deny);
-    }
-
-    #[tokio::test]
-    async fn decide_trust_store_scoped_per_instance() {
-        let controller = DefaultPermissionController::new();
-        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
-        // Same tool, different instance — trust does NOT carry over.
-        let d = controller.decide(
-            &request("r1", "Bash"),
-            &DecisionContext {
-                instance_id: Some("instance-2"),
-                mcps: None,
-            },
-        );
-        assert_eq!(d, Decision::AskUser);
-    }
-
-    #[tokio::test]
-    async fn remember_deny_blocks_subsequent_allow() {
-        let controller = DefaultPermissionController::new();
-        controller.remember("instance-1", "Bash", TrustDecision::Deny).await;
-        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
-        let snapshot = controller.snapshot_trust_store().await;
-        assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot[0].2, TrustDecision::Deny, "Deny survives an Allow re-assert");
-    }
-
-    #[tokio::test]
-    async fn clear_for_instance_drops_only_matching_entries() {
-        let controller = DefaultPermissionController::new();
-        controller.remember("instance-1", "Bash", TrustDecision::Allow).await;
-        controller.remember("instance-1", "Read", TrustDecision::Deny).await;
-        controller.remember("instance-2", "Bash", TrustDecision::Allow).await;
-        controller.clear_for_instance("instance-1").await;
-        let snapshot = controller.snapshot_trust_store().await;
-        assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot[0].0, "instance-2");
-    }
-
     #[test]
     fn decide_per_server_reject_beats_accept() {
         let controller = DefaultPermissionController::new();
@@ -841,10 +576,7 @@ mod tests {
         let registry = registry_with("filesystem", &["delete_*"], &["delete_*"]);
         let d = controller.decide(
             &request("r1", "mcp__filesystem__delete_file"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: Some(&registry),
-            },
+            &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::Deny);
     }
@@ -858,10 +590,7 @@ mod tests {
         let registry = registry_with("filesystem", &["read_*"], &[]);
         let d = controller.decide(
             &request("r1", "mcp__filesystem__read_file"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: Some(&registry),
-            },
+            &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::Allow);
     }
@@ -875,10 +604,7 @@ mod tests {
         let registry = registry_with("filesystem", &["mcp__filesystem__read_*"], &[]);
         let d = controller.decide(
             &request("r1", "mcp__filesystem__read_file"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: Some(&registry),
-            },
+            &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::AskUser);
     }
@@ -886,17 +612,11 @@ mod tests {
     #[test]
     fn decide_native_tool_skips_per_server_lane() {
         // `Bash` is a vendor-native tool with no `mcp__` prefix —
-        // server attribution returns None, lane 2 short-circuits, and
+        // server attribution returns None, the lane short-circuits, and
         // we fall through to AskUser regardless of MCP config.
         let controller = DefaultPermissionController::new();
         let registry = registry_with("filesystem", &["Bash"], &[]);
-        let d = controller.decide(
-            &request("r1", "Bash"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: Some(&registry),
-            },
-        );
+        let d = controller.decide(&request("r1", "Bash"), &DecisionContext { mcps: Some(&registry) });
         assert_eq!(d, Decision::AskUser);
     }
 
@@ -909,10 +629,7 @@ mod tests {
         let registry = registry_with("filesystem", &["*"], &[]);
         let d = controller.decide(
             &request("r1", "mcp__ghost__some_tool"),
-            &DecisionContext {
-                instance_id: Some("instance-1"),
-                mcps: Some(&registry),
-            },
+            &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::AskUser);
     }
@@ -1015,79 +732,6 @@ mod tests {
         assert_eq!(outcome, PermissionOutcome::Selected("allow-once".into()));
         // Waiter dropped from the map.
         assert!(controller.options_for("r1").await.is_none());
-    }
-
-    /// Captain picks an `_once` kind — waiter fires, NO trust-store
-    /// write. Sanity floor for the kind-aware `respond` path.
-    #[tokio::test]
-    async fn respond_with_once_kind_does_not_write_trust_store() {
-        let controller = DefaultPermissionController::new();
-        let rx = controller.register_pending(request("r1", "Bash")).await;
-        let res = controller.respond("r1", "allow-once").await;
-        assert_eq!(res, Some(true));
-        let outcome = tokio::time::timeout(Duration::from_millis(50), rx)
-            .await
-            .expect("waiter fires")
-            .expect("receiver ok");
-        assert_eq!(outcome, PermissionOutcome::Selected("allow-once".into()));
-        let snap = controller.snapshot_trust_store().await;
-        assert!(snap.is_empty(), "expected no trust entries, got {snap:?}");
-    }
-
-    /// `allow_always` kind → trust store gets `(instance, tool) → Allow`
-    /// before the waiter fires. Mirrors the captain hitting "allow always".
-    #[tokio::test]
-    async fn respond_with_allow_always_writes_trust_allow() {
-        let controller = DefaultPermissionController::new();
-        let mut req = request("r1", "Bash");
-        req.options.push(PermissionOptionView {
-            option_id: "allow-always".into(),
-            name: "Allow always".into(),
-            kind: "allow_always".into(),
-        });
-        let rx = controller.register_pending(req).await;
-        let res = controller.respond("r1", "allow-always").await;
-        assert_eq!(res, Some(true));
-        let _ = tokio::time::timeout(Duration::from_millis(50), rx).await;
-        let snap = controller.snapshot_trust_store().await;
-        assert_eq!(snap.len(), 1);
-        let (iid, tool, decision) = &snap[0];
-        assert_eq!(iid, "instance-1");
-        assert_eq!(tool, "Bash");
-        assert!(matches!(decision, TrustDecision::Allow));
-    }
-
-    /// `reject_always` kind → trust store gets `(instance, tool) → Deny`
-    /// before the waiter fires.
-    #[tokio::test]
-    async fn respond_with_reject_always_writes_trust_deny() {
-        let controller = DefaultPermissionController::new();
-        let mut req = request("r1", "Bash");
-        req.options.push(PermissionOptionView {
-            option_id: "reject-always".into(),
-            name: "Reject always".into(),
-            kind: "reject_always".into(),
-        });
-        let rx = controller.register_pending(req).await;
-        let res = controller.respond("r1", "reject-always").await;
-        assert_eq!(res, Some(true));
-        let _ = tokio::time::timeout(Duration::from_millis(50), rx).await;
-        let snap = controller.snapshot_trust_store().await;
-        assert_eq!(snap.len(), 1);
-        let (_, _, decision) = &snap[0];
-        assert!(matches!(decision, TrustDecision::Deny));
-    }
-
-    /// Bad option_id → `Some(false)`, waiter survives, trust store
-    /// untouched (no fire-then-rollback).
-    #[tokio::test]
-    async fn respond_invalid_option_returns_some_false_and_keeps_waiter() {
-        let controller = DefaultPermissionController::new();
-        let _rx = controller.register_pending(request("r1", "Bash")).await;
-        let res = controller.respond("r1", "ghost-option").await;
-        assert_eq!(res, Some(false));
-        assert!(controller.options_for("r1").await.is_some());
-        assert!(controller.snapshot_trust_store().await.is_empty());
     }
 
     /// Timeout enforcement moved out of the controller in the K-245

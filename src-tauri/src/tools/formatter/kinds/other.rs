@@ -7,14 +7,14 @@
 //! field grid.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, pick, dedupe_output, title_prefix};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, pick, wire_title_or_fallback};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct OtherFormatter;
 
 impl ToolFormatter for OtherFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let title = title_prefix(ctx.wire_name, "tool");
+        let title = wire_title_or_fallback(ctx.wire_name, "tool");
 
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());
 

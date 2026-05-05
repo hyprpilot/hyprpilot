@@ -6,7 +6,7 @@
 //! a `\`\`\`diff` fence with `+`/`-` prefixes otherwise.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, format_diff_hunk, pick, short_path, dedupe_output, title_prefix};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, format_diff_hunk, pick, wire_title_or_fallback};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct EditFormatter;
@@ -17,11 +17,7 @@ impl ToolFormatter for EditFormatter {
             .or_else(|| pick(ctx.raw_input, "path"))
             .filter(|s| !s.is_empty());
 
-        let prefix = title_prefix(ctx.wire_name, "edit");
-        let title = match path.as_deref() {
-            Some(p) => format!("{} · {}", prefix, short_path(p)),
-            None => prefix,
-        };
+        let title = wire_title_or_fallback(ctx.wire_name, "edit");
 
         let mut parts: Vec<String> = Vec::new();
         if let Some(d) = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty()) {
@@ -45,7 +41,11 @@ impl ToolFormatter for EditFormatter {
                 parts.push(hunk);
             }
         }
-        let description = if parts.is_empty() { None } else { Some(parts.join("\n\n")) };
+        let description = if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        };
 
         // Edit-shape arg keys are consumed by the diff above — leaving
         // them in the fields grid would render them as redundant noise

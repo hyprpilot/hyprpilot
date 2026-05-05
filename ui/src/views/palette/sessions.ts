@@ -17,7 +17,7 @@
 
 import SessionsPreview from './SessionsPreview.vue'
 import { ToastTone } from '@components'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useProfiles } from '@composables'
+import { type PaletteEntry, PaletteMode, type PaletteSpec, useDaemonCwd, usePalette, useProfiles, useSessionInfo } from '@composables'
 import { setSessionRestored, setSessionRestoring, pushToast } from '@composables'
 import { invoke, TauriCommand, type SessionSummary } from '@ipc'
 import { log } from '@lib'
@@ -138,6 +138,25 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
   }
 }
 
+/// Resolve the cwd to filter sessions against. Prefers the active
+/// instance's cwd (so multiple instances rooted at different paths
+/// each show their own scope); falls back to the daemon's process
+/// cwd when no instance has booted yet (idle landing → palette
+/// open). Returns `undefined` only when neither source is available
+/// — at that point the palette dispatches without a cwd filter and
+/// the daemon returns the agent's full session set.
+function resolveFilterCwd(): string | undefined {
+  const { info } = useSessionInfo()
+  const instanceCwd = info.value.cwd
+
+  if (instanceCwd) {
+    return instanceCwd
+  }
+  const { daemonCwd } = useDaemonCwd()
+
+  return daemonCwd.value
+}
+
 export async function openSessionsLeaf(): Promise<void> {
   const palette = usePalette()
 
@@ -154,17 +173,28 @@ export async function openSessionsLeaf(): Promise<void> {
   // sessions until they hit Ctrl+K twice.
   const { profiles, selected } = useProfiles()
   const profile = profiles.value.find((p) => p.id === selected.value)
-  const args: { agentId?: string; profileId?: string } = {}
+  const cwd = resolveFilterCwd()
+  const args: { agentId?: string; profileId?: string; cwd?: string } = {}
 
   if (profile) {
     args.agentId = profile.agent
     args.profileId = profile.id
   }
 
+  if (cwd) {
+    args.cwd = cwd
+  }
+
   try {
     const sessions = (await invoke(TauriCommand.SessionList, args)).sessions
-    const entries = buildSessionEntries(sessions)
-    const title = entries.length === 0 ? 'sessions — empty' : 'sessions'
+    // Server-side cwd filter is best-effort — vendors that don't honour
+    // the ACP `cwd` arg return their full set, so we apply a
+    // client-side prefix-equal pass too. Sessions with no `cwd` are
+    // dropped from the filtered view (a directory-less session can't
+    // match the addressed root).
+    const filtered = cwd ? sessions.filter((s) => s.cwd === cwd) : sessions
+    const entries = buildSessionEntries(filtered)
+    const title = entries.length === 0 ? 'sessions — empty' : cwd ? `sessions · ${shortenCwd(cwd)}` : 'sessions'
 
     palette.close()
     palette.open(buildSpec(title, entries))

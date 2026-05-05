@@ -46,7 +46,8 @@ export function buildProfilesLeafEntries(deps: ProfilesLeafDeps): ProfilesLeafEn
       id: p.id,
       name: p.id,
       description,
-      kind: p.id === activeId ? 'active' : p.isDefault ? 'default' : undefined
+      kind: p.id === activeId ? 'active' : p.isDefault ? 'default' : undefined,
+      active: p.id === activeId
     }
   })
 

@@ -3,7 +3,7 @@
 //! tools). Optional `path` arg constrains the search root.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, pick, short_path, dedupe_output, title_prefix};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, pick, wire_title_or_fallback};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct SearchFormatter;
@@ -16,12 +16,7 @@ impl ToolFormatter for SearchFormatter {
             .filter(|s| !s.is_empty());
         let path = pick::<String>(ctx.raw_input, "path").filter(|s| !s.is_empty());
 
-        let prefix = title_prefix(ctx.wire_name, "search");
-        let title = match (pattern.as_deref(), path.as_deref()) {
-            (Some(p), Some(root)) => format!("{} · {} in {}", prefix, p, short_path(root)),
-            (Some(p), None) => format!("{} · {}", prefix, p),
-            (None, _) => prefix,
-        };
+        let title = wire_title_or_fallback(ctx.wire_name, "search");
 
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());
 

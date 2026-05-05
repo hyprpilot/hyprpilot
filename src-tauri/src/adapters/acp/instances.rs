@@ -380,7 +380,7 @@ impl AcpAdapter {
         });
 
         self.registry
-            .insert(key, Arc::new(instance))
+            .insert(key, Arc::new(instance), None)
             .await
             .map_err(map_adapter_error_to_rpc)?;
         Ok(key)
@@ -686,11 +686,6 @@ impl AcpAdapter {
             .drop_preserving_slot(key)
             .await
             .map_err(map_adapter_error_to_rpc)?;
-        // Restart resets the per-instance trust store — the captain's
-        // "always allow / always deny" decisions are scoped to a live
-        // actor, not the UUID slot. Same fresh-start semantics as a
-        // brand-new instance.
-        self.permissions.clear_for_instance(&key.as_string()).await;
 
         let mut resolved = self.resolve(Some(&agent_id), profile_id.as_deref())?;
         if mode.is_some() {
@@ -713,7 +708,7 @@ impl AcpAdapter {
             commands_cache: self.commands_cache(),
         });
         self.registry
-            .insert_at_slot(slot, key, Arc::new(instance))
+            .insert(key, Arc::new(instance), Some(slot))
             .await
             .map_err(map_adapter_error_to_rpc)?;
         Ok(key)
@@ -759,17 +754,12 @@ impl AcpAdapter {
     }
 
     /// Shutdown a single instance and auto-focus the oldest survivor.
-    /// Clears the runtime trust-store entries for this instance so a
-    /// future actor that lands on the same UUID (impossible today —
-    /// keys are UUIDs — but defensive) doesn't inherit stale "always
-    /// allow / always deny" decisions.
     pub async fn shutdown_instance(&self, key: InstanceKey) -> Result<InstanceKey, RpcError> {
         let key = self
             .registry
             .shutdown_one(key)
             .await
             .map_err(map_adapter_error_to_rpc)?;
-        self.permissions.clear_for_instance(&key.as_string()).await;
         Ok(key)
     }
 

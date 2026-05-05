@@ -3,7 +3,7 @@
 //! summarise-while-fetching tools.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, pick, dedupe_output, title_prefix};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, pick, wire_title_or_fallback};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct FetchFormatter;
@@ -14,11 +14,7 @@ impl ToolFormatter for FetchFormatter {
             .or_else(|| pick(ctx.raw_input, "uri"))
             .filter(|s| !s.is_empty());
 
-        let prefix = title_prefix(ctx.wire_name, "fetch");
-        let title = match url.as_deref() {
-            Some(u) => format!("{} · {}", prefix, short_host(u)),
-            None => prefix,
-        };
+        let title = wire_title_or_fallback(ctx.wire_name, "fetch");
 
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());
 
@@ -43,10 +39,4 @@ impl ToolFormatter for FetchFormatter {
             fields,
         }
     }
-}
-
-/// Strip protocol + path; keep host. `https://example.com/foo` → `example.com`.
-fn short_host(url: &str) -> String {
-    let trimmed = url.trim_start_matches("https://").trim_start_matches("http://");
-    trimmed.split('/').next().unwrap_or(url).to_string()
 }

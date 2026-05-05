@@ -102,7 +102,8 @@ export async function openModelsLeaf(): Promise<void> {
   const entries: PaletteEntry[] = options.map((m) => ({
     id: m.id,
     name: m.name,
-    description: m.description
+    description: m.description,
+    active: m.id === snapshot.currentModelId
   }))
   const active = options.find((m) => m.id === snapshot.currentModelId)
   const preseed: PaletteEntry[] = active

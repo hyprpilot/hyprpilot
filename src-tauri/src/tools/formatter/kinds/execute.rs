@@ -6,7 +6,7 @@
 //! command in a fenced block.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, dedupe_output, pick, title_prefix};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, pick, wire_title_or_fallback};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct ExecuteFormatter;
@@ -19,14 +19,7 @@ impl ToolFormatter for ExecuteFormatter {
             .filter(|s| !s.is_empty());
         let summary = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());
 
-        let prefix = title_prefix(ctx.wire_name, "execute");
-        let title = match command.as_deref() {
-            Some(cmd) => {
-                let head = cmd.split_whitespace().next().unwrap_or(prefix.as_str());
-                format!("{} · {}", prefix, head)
-            }
-            None => prefix,
-        };
+        let title = wire_title_or_fallback(ctx.wire_name, "execute");
 
         let mut parts: Vec<String> = Vec::new();
         if let Some(s) = summary.as_deref() {
@@ -35,7 +28,11 @@ impl ToolFormatter for ExecuteFormatter {
         if let Some(cmd) = command {
             parts.push(format!("```bash\n{}\n```", cmd));
         }
-        let description = if parts.is_empty() { None } else { Some(parts.join("\n\n")) };
+        let description = if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        };
 
         let fields = args_to_fields(ctx.raw_input, &["command", "cmd", "script", "description"]);
 

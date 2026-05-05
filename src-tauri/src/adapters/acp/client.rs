@@ -21,7 +21,7 @@ use agent_client_protocol::JsonRpcNotification;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use agent_client_protocol::schema::{PermissionOptionKind, ToolKind};
+use agent_client_protocol::schema::PermissionOptionKind;
 
 use crate::adapters::permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
@@ -115,7 +115,16 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
         let title = update.fields.title.clone();
-        let kind_wire = update.fields.kind.as_ref().map(|k| tool_kind_wire(k).to_string());
+        // ACP's `ToolKind` is `#[serde(rename_all = "snake_case")]`
+        // upstream — let serde produce the wire string instead of
+        // duplicating the match locally. `Other` is `#[serde(other)]`
+        // so any future variant collapses onto it; the
+        // `unwrap_or_else` is the safety net.
+        let kind_wire = update
+            .fields
+            .kind
+            .as_ref()
+            .map(|k| serde_plain::to_string(k).unwrap_or_else(|_| "other".to_string()));
         // Prefer the agent's `title` — that's the tool's actual identity
         // (`Bash`, `Read`, `mcp__server__leaf`). Kind is a *classification*
         // (`execute`, `read`); using it as the dispatch key collapses every
@@ -168,27 +177,6 @@ fn permission_option_kind_wire(k: &PermissionOptionKind) -> &'static str {
         PermissionOptionKind::RejectOnce => "reject_once",
         PermissionOptionKind::RejectAlways => "reject_always",
         _ => "unknown",
-    }
-}
-
-/// Wire string for `ToolKind` — mirrors the serde
-/// `rename_all = "snake_case"` shape upstream uses. The `Other`
-/// variant is `#[serde(other)]` upstream so unknown tool kinds
-/// already collapse onto it; the catch-all arm here only fires on
-/// future additive variants.
-fn tool_kind_wire(k: &ToolKind) -> &'static str {
-    match k {
-        ToolKind::Read => "read",
-        ToolKind::Edit => "edit",
-        ToolKind::Delete => "delete",
-        ToolKind::Move => "move",
-        ToolKind::Search => "search",
-        ToolKind::Execute => "execute",
-        ToolKind::Think => "think",
-        ToolKind::Fetch => "fetch",
-        ToolKind::SwitchMode => "switch_mode",
-        ToolKind::Other => "other",
-        _ => "other",
     }
 }
 
@@ -291,7 +279,6 @@ impl AcpClient {
         };
 
         let ctx = DecisionContext {
-            instance_id: self.instance_id.as_deref(),
             mcps: self.mcps.as_deref(),
         };
         match self.permissions.decide(&decision_req, &ctx) {
@@ -300,7 +287,7 @@ impl AcpClient {
                     session = %req.session_id,
                     tool = %tool_call.name,
                     instance_id = ?self.instance_id,
-                    "acp::client: permission auto-accepted by trust store / per-server glob"
+                    "acp::client: permission auto-accepted by per-server glob"
                 );
                 let opt_id = pick_allow_option_id(&decision_req.options).ok_or_else(|| {
                     agent_client_protocol::Error::internal_error()

@@ -74,7 +74,6 @@ const headerBg = computed(() => toneBg(props.tone))
           <FaIcon v-if="icon" :icon="icon" class="modal-tag-icon" aria-hidden="true" />
           <span class="modal-tag-label">{{ title }}</span>
         </span>
-        <span class="modal-spacer" />
         <div class="modal-actions">
           <slot name="actions" />
         </div>
@@ -156,12 +155,15 @@ const headerBg = computed(() => toneBg(props.tone))
   font-weight: 700;
 }
 
-.modal-spacer {
-  flex: 1;
-}
-
 .modal-actions {
-  @apply inline-flex items-center;
+  /* Take remaining row space after the title tag and right-align
+   * children. `flex: 1 1 0` (basis-zero) gives a deterministic share
+   * regardless of children's intrinsic sizes — slot consumers (e.g.
+   * <PermissionActions>) then flex-share that bounded width equally;
+   * single-button consumers sit flush right within it. */
+  @apply flex items-center justify-end;
+  flex: 1 1 0;
+  min-width: 0;
   gap: 6px;
 }
 
