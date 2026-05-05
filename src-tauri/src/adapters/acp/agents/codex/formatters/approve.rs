@@ -19,7 +19,11 @@ impl ToolFormatter for ApproveFormatter {
 
         let block_text = text_blocks(ctx.content);
         let trimmed = block_text.trim();
-        let description = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        let description = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
 
         let fields = args_to_fields(ctx.raw_input, &[]);
 

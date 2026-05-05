@@ -16,12 +16,17 @@ impl ToolFormatter for WriteFormatter {
             None => "write".to_string(),
         };
 
-        let stat = body.as_deref().filter(|s| !s.is_empty()).map(|s| format!("{} chars", s.len()));
+        let stat = body
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{} chars", s.len()));
 
         // Render the new content as a diff (all-add) so the captain
         // reviews the file before granting write permission. `content`
         // is consumed here; not dumped as a redundant field.
-        let description = body.as_deref().and_then(|new_text| format_diff_hunk(path.as_deref(), "", new_text));
+        let description = body
+            .as_deref()
+            .and_then(|new_text| format_diff_hunk(path.as_deref(), "", new_text));
 
         let mut fields: Vec<ToolField> = Vec::new();
         if let Some(p) = path {

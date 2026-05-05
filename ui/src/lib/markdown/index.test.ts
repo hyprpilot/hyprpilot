@@ -72,6 +72,28 @@ describe('renderMarkdown', () => {
     expect(html).toMatch(/<span style="[^"]*color:\s*#/)
   })
 
+  it('Shiki diff-marker transformer adds .line.diff.add and .line.diff.remove classes + strips marker text', async() => {
+    // Match the rich-diff-hunk shape `format_diff_hunk` emits — Rust
+    // adds `<comment-style> [!code ++/--]` annotations per line; the
+    // custom transformer should tag each line + drop the marker text.
+    const src = '```javascript\nfunction old() { return 1 } // [!code --]\nfunction neu() { return 2 } // [!code ++]\n```'
+    const { html } = await renderMarkdown(src)
+
+    expect(html).toContain('class="shiki')
+    expect(html).toContain('has-diff')
+    expect(html).not.toContain('[!code')
+    expect(html).toMatch(/class="[^"]*line[^"]*diff[^"]*add/)
+    expect(html).toMatch(/class="[^"]*line[^"]*diff[^"]*remove/)
+  })
+
+  it('Shiki diff-marker transformer handles `#` comment style (python / shell)', async() => {
+    const src = '```python\ndef new(): pass # [!code ++]\n```'
+    const { html } = await renderMarkdown(src)
+
+    expect(html).toMatch(/class="[^"]*line[^"]*diff[^"]*add/)
+    expect(html).not.toContain('[!code')
+  })
+
   it('fenced code with an unknown language falls through to <pre><code>', async() => {
     const src = '```definitely-not-a-real-language\nplain code\n```'
     const { html } = await renderMarkdown(src)

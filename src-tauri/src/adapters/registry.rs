@@ -66,11 +66,13 @@ impl<H: InstanceActor> AdapterRegistry<H> {
         self.events_tx.subscribe()
     }
 
-    /// Insert a freshly-spawned handle. Caller owns key generation
-    /// (adapter-side: `InstanceKey::new_v4()`). Empty-registry →
-    /// auto-focus the inserted key; emits `InstancesChanged` + (on
-    /// first spawn) `InstancesFocused` in that order.
-    pub async fn insert(&self, key: InstanceKey, handle: Arc<H>) -> AdapterResult<()> {
+    /// Insert a handle. `slot = None` appends + auto-focuses on an
+    /// empty registry (the freshly-spawned path). `slot = Some(n)`
+    /// places at that insertion-order index AND skips the auto-focus
+    /// check — used by `restart` to swap a handle into the same slot
+    /// across a `drop_preserving_slot` cycle without disturbing the
+    /// caller-managed focus pointer. Out-of-bounds `slot` appends.
+    pub async fn insert(&self, key: InstanceKey, handle: Arc<H>, slot: Option<usize>) -> AdapterResult<()> {
         let mut instances = self.instances.lock().await;
         let mut order = self.order.lock().await;
         if instances.contains_key(&key) {
@@ -79,12 +81,20 @@ impl<H: InstanceActor> AdapterRegistry<H> {
             )));
         }
         instances.insert(key, handle);
-        order.push(key);
+        match slot {
+            Some(n) if n < order.len() => order.insert(n, key),
+            _ => order.push(key),
+        }
         let ids: Vec<String> = order.iter().map(|k| k.as_string()).collect();
         drop(instances);
         drop(order);
 
-        let newly_focused = {
+        // Slot-targeted inserts (the restart path) are paired with
+        // their own focus management externally; auto-focus would
+        // clobber that. Append-shaped inserts auto-focus on empty.
+        let newly_focused = if slot.is_some() {
+            false
+        } else {
             let mut focused = self.focused.write().await;
             if focused.is_none() {
                 *focused = Some(key);
@@ -104,35 +114,6 @@ impl<H: InstanceActor> AdapterRegistry<H> {
                 instance_id: Some(key.as_string()),
             });
         }
-        Ok(())
-    }
-
-    /// Insert at a specific insertion-order slot. Used by `restart`
-    /// to keep the instance's ordering position across the
-    /// drop → respawn swap. Out-of-bounds `slot` appends.
-    pub async fn insert_at_slot(&self, slot: usize, key: InstanceKey, handle: Arc<H>) -> AdapterResult<()> {
-        let mut instances = self.instances.lock().await;
-        let mut order = self.order.lock().await;
-        if instances.contains_key(&key) {
-            return Err(AdapterError::InvalidRequest(format!(
-                "instance '{key}' already registered"
-            )));
-        }
-        instances.insert(key, handle);
-        if slot >= order.len() {
-            order.push(key);
-        } else {
-            order.insert(slot, key);
-        }
-        let ids: Vec<String> = order.iter().map(|k| k.as_string()).collect();
-        drop(instances);
-        drop(order);
-
-        let focused_id = self.focused.read().await.map(|k| k.as_string());
-        let _ = self.events_tx.send(InstanceEvent::InstancesChanged {
-            instance_ids: ids,
-            focused_id,
-        });
         Ok(())
     }
 
@@ -404,7 +385,7 @@ mod tests {
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let mut rx = reg.subscribe();
         let k = InstanceKey::new_v4();
-        reg.insert(k, dummy(k, "a")).await.expect("insert");
+        reg.insert(k, dummy(k, "a"), None).await.expect("insert");
         assert_eq!(reg.focused_id().await, Some(k));
 
         let e = rx.recv().await.expect("changed");
@@ -423,8 +404,8 @@ mod tests {
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let k1 = InstanceKey::new_v4();
         let k2 = InstanceKey::new_v4();
-        reg.insert(k1, dummy(k1, "a")).await.unwrap();
-        reg.insert(k2, dummy(k2, "b")).await.unwrap();
+        reg.insert(k1, dummy(k1, "a"), None).await.unwrap();
+        reg.insert(k2, dummy(k2, "b"), None).await.unwrap();
         assert_eq!(reg.focused_id().await, Some(k1));
     }
 
@@ -440,8 +421,8 @@ mod tests {
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let k1 = InstanceKey::new_v4();
         let k2 = InstanceKey::new_v4();
-        reg.insert(k1, dummy(k1, "a")).await.unwrap();
-        reg.insert(k2, dummy(k2, "b")).await.unwrap();
+        reg.insert(k1, dummy(k1, "a"), None).await.unwrap();
+        reg.insert(k2, dummy(k2, "b"), None).await.unwrap();
         reg.focus(k2).await.unwrap();
         reg.shutdown_one(k2).await.unwrap();
         assert_eq!(reg.focused_id().await, Some(k1));
@@ -451,7 +432,7 @@ mod tests {
     async fn shutdown_last_clears_focus() {
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let k = InstanceKey::new_v4();
-        reg.insert(k, dummy(k, "a")).await.unwrap();
+        reg.insert(k, dummy(k, "a"), None).await.unwrap();
         reg.shutdown_one(k).await.unwrap();
         assert!(reg.focused_id().await.is_none());
     }
@@ -462,9 +443,9 @@ mod tests {
         let k1 = InstanceKey::new_v4();
         let k2 = InstanceKey::new_v4();
         let k3 = InstanceKey::new_v4();
-        reg.insert(k1, dummy(k1, "a")).await.unwrap();
-        reg.insert(k2, dummy(k2, "b")).await.unwrap();
-        reg.insert(k3, dummy(k3, "c")).await.unwrap();
+        reg.insert(k1, dummy(k1, "a"), None).await.unwrap();
+        reg.insert(k2, dummy(k2, "b"), None).await.unwrap();
+        reg.insert(k3, dummy(k3, "c"), None).await.unwrap();
         let slot = reg.drop_preserving_slot(k2).await.unwrap();
         assert_eq!(slot, 1);
     }
@@ -478,13 +459,13 @@ mod tests {
         let k1 = InstanceKey::new_v4();
         let k2 = InstanceKey::new_v4();
         let k3 = InstanceKey::new_v4();
-        reg.insert(k1, dummy(k1, "a")).await.unwrap();
-        reg.insert(k2, dummy(k2, "b")).await.unwrap();
-        reg.insert(k3, dummy(k3, "c")).await.unwrap();
+        reg.insert(k1, dummy(k1, "a"), None).await.unwrap();
+        reg.insert(k2, dummy(k2, "b"), None).await.unwrap();
+        reg.insert(k3, dummy(k3, "c"), None).await.unwrap();
 
         let slot = reg.drop_preserving_slot(k2).await.unwrap();
         let k2_new = InstanceKey::new_v4();
-        reg.insert_at_slot(slot, k2_new, dummy(k2_new, "b")).await.unwrap();
+        reg.insert(k2_new, dummy(k2_new, "b"), Some(slot)).await.unwrap();
 
         let order = reg.ordered_keys().await;
         assert_eq!(order, vec![k1, k2_new, k3]);
@@ -500,7 +481,7 @@ mod tests {
     async fn focus_after_remove_rejects() {
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let k = InstanceKey::new_v4();
-        reg.insert(k, dummy(k, "a")).await.unwrap();
+        reg.insert(k, dummy(k, "a"), None).await.unwrap();
         reg.shutdown_one(k).await.unwrap();
         let err = reg.focus(k).await.expect_err("gone");
         assert!(matches!(err, AdapterError::InvalidRequest(_)));
@@ -510,7 +491,7 @@ mod tests {
     async fn list_returns_inserted_info() {
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let k = InstanceKey::new_v4();
-        reg.insert(k, dummy_with_mode(k, "agent-x", Some("plan")))
+        reg.insert(k, dummy_with_mode(k, "agent-x", Some("plan")), None)
             .await
             .unwrap();
         let items = reg.list().await;

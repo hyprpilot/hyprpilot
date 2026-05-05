@@ -12,7 +12,6 @@ import { openInstancesLeaf } from './instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './mcps'
 import { openModelsLeaf } from './models'
 import { openModesLeaf } from './modes'
-import { openPermissionsLeaf } from './permissions'
 import { openProfilesLeaf } from './profiles'
 import { openSessionsLeaf } from './sessions'
 import { openSkillsLeaf } from './skills'
@@ -33,7 +32,6 @@ export enum PaletteLeafId {
   Cwd = 'cwd',
   Instance = 'instance',
   Instances = 'instances',
-  Permissions = 'permissions',
   Mcps = 'mcps',
   Skills = 'skills',
   Daemon = 'daemon'
@@ -81,10 +79,6 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
     name: 'instances',
     followUp: 'K-274'
   },
-  [PaletteLeafId.Permissions]: {
-    id: PaletteLeafId.Permissions,
-    name: 'permissions'
-  },
   [PaletteLeafId.Mcps]: {
     id: PaletteLeafId.Mcps,
     name: 'mcps',
@@ -109,7 +103,6 @@ const ROOT_LEAF_ORDER: PaletteLeafId[] = [
   PaletteLeafId.Models,
   PaletteLeafId.Modes,
   PaletteLeafId.Cwd,
-  PaletteLeafId.Permissions,
   PaletteLeafId.Mcps,
   PaletteLeafId.Skills,
   // Daemon stays last — it's the captain's wire-side surface for
@@ -225,11 +218,6 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
 
       return
     }
-
-    case PaletteLeafId.Permissions:
-      void openPermissionsLeaf()
-
-      return
 
     case PaletteLeafId.Skills:
       openSkillsLeaf()

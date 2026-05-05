@@ -32,7 +32,11 @@ impl ToolFormatter for BashFormatter {
         if let Some(cmd) = command.as_deref() {
             parts.push(format!("```bash\n{}\n```", cmd));
         }
-        let description = if parts.is_empty() { None } else { Some(parts.join("\n\n")) };
+        let description = if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        };
 
         let mut fields: Vec<ToolField> = Vec::new();
         if let Some(t) = timeout {
@@ -50,7 +54,11 @@ impl ToolFormatter for BashFormatter {
 
         let block_text = text_blocks(ctx.content);
         let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        let output = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
 
         FormattedToolCall {
             title,

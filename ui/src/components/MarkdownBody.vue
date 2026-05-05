@@ -2,7 +2,7 @@
 import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager'
 import { ref, watch } from 'vue'
 
-import { log, renderMarkdown } from '@lib'
+import { log, renderMarkdown, renderMarkdownPlain } from '@lib'
 
 /**
  * Renders a markdown source through the shared Shiki + DOMPurify
@@ -21,6 +21,14 @@ const props = defineProps<{ source: string }>()
 
 const html = ref('')
 
+/// Two-pass render: paint synchronous plain markdown-it first
+/// (instant code-block chrome with `+ ` / `- ` line prefixes for
+/// diff hunks), then upgrade async with full Shiki + custom diff
+/// transformer (per-language syntax colors + red/green diff line
+/// backgrounds). Captains never see the raw triple-backtick
+/// markdown source — the plain pass guarantees a usable render
+/// even when Shiki's WASM engine fails to initialise inside the
+/// Tauri WebKitGTK webview.
 watch(
   () => props.source,
   async(raw) => {
@@ -31,12 +39,18 @@ watch(
     }
 
     try {
+      html.value = renderMarkdownPlain(raw)
+    } catch(err) {
+      log.warn('MarkdownBody: plain render failed', { err: String(err) })
+      html.value = ''
+    }
+
+    try {
       const out = await renderMarkdown(raw)
 
       html.value = out.html
     } catch(err) {
-      log.warn('MarkdownBody: render failed', { err: String(err) })
-      html.value = ''
+      log.warn('MarkdownBody: shiki upgrade failed; keeping plain pass', { err: String(err) })
     }
   },
   { immediate: true }

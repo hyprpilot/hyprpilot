@@ -121,21 +121,16 @@ pub fn text_blocks(content: &[Value]) -> String {
     parts.join("\n\n")
 }
 
-/// Title prefix derived from `ctx.wire_name`. Returns the first
-/// whitespace-delimited token lowercased so kind-default formatters
-/// preserve the tool's own identity in the rendered title (`bash`
-/// stays `bash`, not the kind verb `execute`). Falls back to
-/// `fallback` when wire_name is empty.
-pub fn title_prefix(wire_name: &str, fallback: &str) -> String {
+/// Use the agent's wire title verbatim. Trims leading/trailing
+/// whitespace; falls back to `fallback` only when empty. Kind-default
+/// formatters preserve the agent's voice — `"Edit /tmp/foo"` stays
+/// `"Edit /tmp/foo"`, not lowercased to `"edit"`.
+pub fn wire_title_or_fallback(wire_name: &str, fallback: &str) -> String {
     let trimmed = wire_name.trim();
     if trimmed.is_empty() {
         return fallback.to_string();
     }
-    trimmed
-        .split_whitespace()
-        .next()
-        .unwrap_or(fallback)
-        .to_lowercase()
+    trimmed.to_string()
 }
 
 /// Project an `(old_text, new_text)` pair onto a Shiki-friendly diff

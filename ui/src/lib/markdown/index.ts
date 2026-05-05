@@ -1,8 +1,7 @@
-import { transformerNotationDiff } from '@shikijs/transformers'
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 import taskLists from 'markdown-it-task-lists'
-import { createHighlighter, type BundledLanguage, type BundledTheme, type Highlighter } from 'shiki'
+import { createHighlighter, type BundledLanguage, type BundledTheme, type Highlighter, type ShikiTransformer } from 'shiki'
 
 import { log } from '../log'
 import { invoke, TauriCommand } from '@ipc'
@@ -55,6 +54,37 @@ function getHighlighter(): Promise<Highlighter> {
   return highlighterPromise
 }
 
+/// Pre-warm Shiki at module load. The highlighter init does
+/// dynamic ESM imports for the WASM oniguruma engine; in the Tauri
+/// WebKitGTK runtime those imports occasionally take seconds to
+/// resolve and the FIRST `renderMarkdown` call waits on them. By
+/// firing init at import time the highlighter is usually ready by
+/// the time any UI code renders markdown — so the first permission
+/// modal doesn't get stuck on the plain-pass output.
+///
+/// Errors swallowed: if init fails, subsequent `getHighlighter()`
+/// calls hit the same rejected promise and `ensureLanguage` returns
+/// false, falling through to the plain code path. No `unhandled
+/// rejection` either way.
+void getHighlighter().catch(() => undefined)
+
+/// Hard timeout the highlighter init at 3s. Tauri WebKitGTK has
+/// shipped builds where the WASM oniguruma engine's module import
+/// promise never resolves OR rejects (silent stall). Without a
+/// timeout, every `renderMarkdown` call awaits the dead promise
+/// forever — MarkdownBody's plain-pass paint sticks because
+/// `html.value = out.html` never runs.
+const HIGHLIGHTER_TIMEOUT_MS = 3_000
+
+function getHighlighterWithTimeout(): Promise<Highlighter> {
+  return Promise.race([
+    getHighlighter(),
+    new Promise<Highlighter>((_, reject) => {
+      setTimeout(() => reject(new Error(`shiki: highlighter init exceeded ${HIGHLIGHTER_TIMEOUT_MS}ms`)), HIGHLIGHTER_TIMEOUT_MS)
+    })
+  ])
+}
+
 async function ensureLanguage(lang: string): Promise<boolean> {
   if (!lang) {
     return false
@@ -71,16 +101,21 @@ async function ensureLanguage(lang: string): Promise<boolean> {
 
   const task = (async(): Promise<boolean> => {
     try {
-      const hl = await getHighlighter()
+      const hl = await getHighlighterWithTimeout()
 
-      await hl.loadLanguage(lang as BundledLanguage)
+      await Promise.race([
+        hl.loadLanguage(lang as BundledLanguage),
+        new Promise<void>((_, reject) => {
+          setTimeout(() => reject(new Error(`shiki: loadLanguage('${lang}') exceeded ${HIGHLIGHTER_TIMEOUT_MS}ms`)), HIGHLIGHTER_TIMEOUT_MS)
+        })
+      ])
       loadedLangs.add(lang)
 
       return true
     } catch(err) {
       if (!warnedLangs.has(lang)) {
         warnedLangs.add(lang)
-        log.warn('shiki: unknown language; falling back to plain code block', { lang, err: String(err) })
+        log.warn('shiki: language load failed; falling back to plain code block', { lang, err: String(err) })
       }
 
       return false
@@ -98,6 +133,109 @@ function fallbackCode(code: string): string {
   return `<pre><code>${md.utils.escapeHtml(code)}</code></pre>`
 }
 
+/// Match `// [!code ++/--]` (and `#`, `--`, `;` comment-style
+/// variants) at line end — the shape `format_diff_hunk` emits.
+const DIFF_MARKER_RE = /\s*(?:\/\/|#|--|;)\s*\[!code (\+\+|--)\]\s*$/
+
+/// Custom Shiki transformer that adds `.diff.add` / `.diff.remove`
+/// classes to lines carrying our markers and strips the markers
+/// from the rendered text. Replaces `@shikijs/transformers`'s
+/// `transformerNotationDiff` because that one walks per-token AST
+/// nodes inside each line and depends on Shiki's grammar tokenising
+/// the marker comment as the line's last element — fragile across
+/// runtimes (vitest jsdom passes; Tauri's WebKitGTK2 webview
+/// silently misses some token shapes, leaving every fence
+/// unhighlighted with markers visible). Walking the line's plain-text
+/// concatenation is grammar-independent and reproducible.
+const diffMarkerTransformer = (): ShikiTransformer => {
+  let active = false
+  let warned = false
+
+  return {
+    name: 'hyprpilot:diff-marker',
+    line(node) {
+      try {
+        let text = ''
+        const collect = (n: { children?: unknown[]; type?: string; value?: string }): void => {
+          if (n.type === 'text' && typeof n.value === 'string') {
+            text += n.value
+          }
+
+          if (Array.isArray(n.children)) {
+            for (const child of n.children) {
+              collect(child as { children?: unknown[]; type?: string; value?: string })
+            }
+          }
+        }
+
+        collect(node as unknown as { children?: unknown[]; type?: string; value?: string })
+
+        const m = DIFF_MARKER_RE.exec(text)
+
+        if (!m) {
+          return
+        }
+        active = true
+        const cls = m[1] === '++' ? 'diff add' : 'diff remove'
+
+        if (node.properties === undefined) {
+          node.properties = {}
+        }
+        const props = node.properties as Record<string, unknown>
+        const existing = typeof props.class === 'string' ? props.class : ''
+
+        props.class = existing ? `${existing} ${cls}` : cls
+
+        // Strip the marker substring from whichever text node carries it.
+        const strip = (n: { children?: unknown[]; type?: string; value?: string }): boolean => {
+          if (n.type === 'text' && typeof n.value === 'string' && DIFF_MARKER_RE.test(n.value)) {
+            n.value = n.value.replace(DIFF_MARKER_RE, '')
+
+            return true
+          }
+
+          if (Array.isArray(n.children)) {
+            for (const child of n.children) {
+              if (strip(child as { children?: unknown[]; type?: string; value?: string })) {
+                return true
+              }
+            }
+          }
+
+          return false
+        }
+
+        strip(node as unknown as { children?: unknown[]; type?: string; value?: string })
+      } catch(err) {
+        if (!warned) {
+          warned = true
+          log.warn('shiki diff transformer: line hook failed; skipping', { err: String(err) })
+        }
+      }
+    },
+    pre(node) {
+      try {
+        if (!active) {
+          return
+        }
+
+        if (node.properties === undefined) {
+          node.properties = {}
+        }
+        const props = node.properties as Record<string, unknown>
+        const existing = typeof props.class === 'string' ? props.class : ''
+
+        props.class = existing ? `${existing} has-diff` : 'has-diff'
+      } catch(err) {
+        if (!warned) {
+          warned = true
+          log.warn('shiki diff transformer: pre hook failed; skipping', { err: String(err) })
+        }
+      }
+    }
+  }
+}
+
 async function highlightFence(code: string, lang: string): Promise<string> {
   if (!lang) {
     return fallbackCode(code)
@@ -109,18 +247,12 @@ async function highlightFence(code: string, lang: string): Promise<string> {
   }
 
   try {
-    const hl = await getHighlighter()
+    const hl = await getHighlighterWithTimeout()
 
-    // `transformerNotationDiff` rewrites `// [!code ++]` /
-    // `// [!code --]` annotations (and the comment-style variants)
-    // into Shiki's diff-highlighting CSS classes. Costs ~zero on
-    // fences without those markers (the transformer scans + no-ops),
-    // so we apply it universally and let `lib/diff` do the marker
-    // injection upstream.
     return hl.codeToHtml(code, {
       lang: lang as BundledLanguage,
       theme: resolvedTheme,
-      transformers: [transformerNotationDiff()]
+      transformers: [diffMarkerTransformer()]
     })
   } catch(err) {
     log.warn('shiki: codeToHtml failed; falling back', { lang, err: String(err) })
@@ -271,6 +403,60 @@ export async function renderMarkdown(src: string): Promise<RenderedMarkdown> {
   })
 
   return { html: sanitize(stitched) }
+}
+
+/**
+ * Synchronous markdown render WITHOUT Shiki. Code fences land as
+ * `<pre><code>` (HTML-escaped) wrapped in the `injectCopyButton`
+ * chrome. Diff markers (`// [!code ++/--]` shape from rich diff
+ * hunks) are rewritten to `+ ` / `- ` line prefixes so the diff
+ * direction stays readable. Used as MarkdownBody's safety-net when
+ * Shiki throws or stalls — captains never see the raw triple-
+ * backtick markdown source as a `<pre>` text dump.
+ */
+export function renderMarkdownPlain(src: string): string {
+  const { fences, restore } = withFencePlaceholders()
+  let raw: string
+
+  try {
+    raw = md.render(src)
+  } finally {
+    restore()
+  }
+
+  const stitched = raw.replace(FENCE_PLACEHOLDER_RE, (_match, idxStr: string) => {
+    const idx = Number.parseInt(idxStr, 10)
+    const fence = fences[idx]
+
+    if (!fence) {
+      return ''
+    }
+    const rewritten = rewriteDiffMarkersToPrefix(fence.code)
+
+    return injectCopyButton({ html: fallbackCode(rewritten), lang: fence.lang })
+  })
+
+  return sanitize(stitched)
+}
+
+/// Rewrite `// [!code ++/--]` markers to literal `+ ` / `- ` line
+/// prefixes for the no-Shiki fallback path. Drops the marker text;
+/// preserves the line content.
+function rewriteDiffMarkersToPrefix(code: string): string {
+  return code
+    .split('\n')
+    .map((line) => {
+      const m = DIFF_MARKER_RE.exec(line)
+
+      if (!m) {
+        return line
+      }
+      const head = line.slice(0, m.index)
+      const prefix = m[1] === '++' ? '+ ' : '- '
+
+      return `${prefix}${head}`
+    })
+    .join('\n')
 }
 
 export const escapeHtml: (s: string) => string = md.utils.escapeHtml

@@ -15,13 +15,18 @@ impl ToolFormatter for WriteFormatter {
             Some(p) => format!("write · {}", short_path(p)),
             None => "write".to_string(),
         };
-        let stat = body.as_deref().filter(|s| !s.is_empty()).map(|s| format!("{} chars", s.len()));
+        let stat = body
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{} chars", s.len()));
 
         // Render the new content as a diff (empty old → all-add) so
         // the captain reviews the file before granting write
         // permission. Same per-language Shiki rendering as Edit;
         // `content` is consumed here, not dumped as a redundant field.
-        let description = body.as_deref().and_then(|new_text| format_diff_hunk(path.as_deref(), "", new_text));
+        let description = body
+            .as_deref()
+            .and_then(|new_text| format_diff_hunk(path.as_deref(), "", new_text));
 
         let output_text = text_blocks(ctx.content);
         let output = if output_text.is_empty() {

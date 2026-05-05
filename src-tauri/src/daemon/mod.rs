@@ -228,8 +228,6 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::session_load,
             adapter_commands::sessions_info,
             adapter_commands::permission_reply,
-            adapter_commands::permissions_trust_snapshot,
-            adapter_commands::permissions_trust_forget,
             adapter_commands::instances_list,
             adapter_commands::instances_focus,
             adapter_commands::instances_shutdown,

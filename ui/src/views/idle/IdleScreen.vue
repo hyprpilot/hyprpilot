@@ -9,6 +9,7 @@
  * `restoreSession` for the click. The parent (Overlay.vue) owns
  * which sessions are surfaced and how many — this view just renders.
  */
+import { KbdHint } from '@components'
 import type { SessionSummary } from '@ipc'
 
 defineProps<{
@@ -81,7 +82,7 @@ function onRowClick(sessionId: string | undefined): void {
       </div>
       <div v-if="totalSessionCount > sessions.length" class="idle-sessions-more">+{{ totalSessionCount - sessions.length }} more</div>
     </div>
-    <div class="idle-kbd-hint"><kbd class="idle-kbd">Ctrl+K</kbd><span class="idle-kbd-label">command palette.</span></div>
+    <KbdHint class="idle-kbd-hint" :keys="['Ctrl+K']" label="command palette." size="md" />
   </section>
 </template>
 
@@ -252,28 +253,9 @@ function onRowClick(sessionId: string | undefined): void {
   color: var(--theme-status-ok);
 }
 
-/* Sticky kbd hint at the bottom of the idle pane — surfaces the one
- * keybind the captain needs to discover everything else. Mirrors
- * the kbd-style formatting used in the chat footer hints. */
+/* Bottom anchor for the keybind hint — `<KbdHint>` carries its own
+ * chrome; the wrapper just controls placement. */
 .idle-kbd-hint {
   margin-top: 22px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--theme-font-mono);
-  font-size: 0.62rem;
-}
-
-.idle-kbd {
-  padding: 1px 6px;
-  border-radius: 3px;
-  border: 1px solid var(--theme-border-soft);
-  background-color: var(--theme-surface);
-  color: var(--theme-accent);
-  font-weight: 600;
-}
-
-.idle-kbd-label {
-  color: var(--theme-fg-dim);
 }
 </style>

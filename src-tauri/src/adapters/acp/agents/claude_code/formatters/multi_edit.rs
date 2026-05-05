@@ -37,7 +37,11 @@ impl ToolFormatter for MultiEditFormatter {
                 hunks.push(hunk);
             }
         }
-        let description = if hunks.is_empty() { None } else { Some(hunks.join("\n\n")) };
+        let description = if hunks.is_empty() {
+            None
+        } else {
+            Some(hunks.join("\n\n"))
+        };
 
         let output_text = text_blocks(ctx.content);
         let output = if output_text.is_empty() {

@@ -16,7 +16,7 @@ use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
-use super::permission::{PermissionController, TrustDecision};
+use super::permission::PermissionController;
 use super::transcript::Attachment;
 use super::Adapter;
 use crate::completion::hydration::TokenHydrators;
@@ -377,12 +377,10 @@ pub async fn instance_meta(adapter: AdapterState<'_>, instance_id: String) -> Re
 
 /// Resolve a pending permission prompt with the captain's pick.
 ///
-/// `option_id` MUST be one of the agent-offered option ids — the wire
-/// no longer carries synthetic `'allow'` / `'deny'` shortcuts. The
-/// captain's "remember this" intent rides on the option's typed
-/// `kind` field (`allow_always` / `reject_always`) — the controller's
-/// `respond` method reads that and writes the trust-store entry
-/// atomically before signaling the waiter.
+/// `option_id` MUST be one of the agent-offered option ids. Hyprpilot
+/// is transparent to the agent's permission semantics — the captain
+/// picks one of the offered options and we forward it verbatim;
+/// "always" persistence is the agent's concern.
 ///
 /// No-op when no waiter matches `request_id` (already resolved, timed
 /// out, or never registered). The command never errors on that path —
@@ -400,7 +398,7 @@ pub async fn permission_reply(
         option_id = %option_id,
         "cmd::permission_reply: entry"
     );
-    match controller.respond(&request_id, &option_id).await {
+    match controller.resolve_if_pending(&request_id, &option_id).await {
         None => {
             tracing::debug!(request_id, "permission_reply: no waiter — no-op");
         }
@@ -415,48 +413,6 @@ pub async fn permission_reply(
             tracing::info!(request_id, option_id, "cmd::permission_reply: resolved");
         }
     }
-    Ok(())
-}
-
-/// Snapshot of the runtime trust store filtered to the addressed
-/// instance. Drives the permissions palette so the captain can review
-/// the live `(tool, decision)` set + prune entries that no longer fit
-/// (a tool flipped to "always allow" mid-session that should now ask
-/// again, etc.). Empty list when no rules match. Decision is the
-/// camelCase wire form (`allow` / `deny`).
-#[tauri::command]
-pub async fn permissions_trust_snapshot(
-    controller: State<'_, Arc<dyn PermissionController>>,
-    instance_id: String,
-) -> Result<Value, String> {
-    let snapshot = controller.snapshot_trust_store().await;
-    let entries: Vec<Value> = snapshot
-        .into_iter()
-        .filter(|(iid, _, _)| iid == &instance_id)
-        .map(|(_, tool, decision)| {
-            serde_json::json!({
-                "tool": tool,
-                "decision": match decision {
-                    TrustDecision::Allow => "allow",
-                    TrustDecision::Deny => "deny",
-                },
-            })
-        })
-        .collect();
-    Ok(serde_json::json!({ "entries": entries }))
-}
-
-/// Drop a single trust-store entry. Captain-driven — paired with the
-/// permissions palette's multi-select toggle so unticking a row
-/// removes the rule. No-op when the entry isn't present (idempotent
-/// against double-clicks / palette reuse).
-#[tauri::command]
-pub async fn permissions_trust_forget(
-    controller: State<'_, Arc<dyn PermissionController>>,
-    instance_id: String,
-    tool: String,
-) -> Result<(), String> {
-    controller.forget_trust(&instance_id, &tool).await;
     Ok(())
 }
 

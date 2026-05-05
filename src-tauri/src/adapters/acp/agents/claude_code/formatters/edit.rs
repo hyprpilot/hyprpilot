@@ -4,7 +4,7 @@
 //! captain reads the change inline.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{format_diff_hunk, pick, short_path, text_blocks, wire_title_or_fallback};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct EditFormatter;
@@ -14,16 +14,17 @@ impl ToolFormatter for EditFormatter {
         let path = pick::<String>(ctx.raw_input, "file_path");
         let replace_all = pick::<bool>(ctx.raw_input, "replace_all").unwrap_or(false);
 
+        let prefix = wire_title_or_fallback(ctx.wire_name, "Edit");
         let title = match path.as_deref() {
             Some(p) => {
                 let trimmed = short_path(p);
                 if replace_all {
-                    format!("edit · {} (replace all)", trimmed)
+                    format!("{} · {} (replace all)", prefix, trimmed)
                 } else {
-                    format!("edit · {}", trimmed)
+                    format!("{} · {}", prefix, trimmed)
                 }
             }
-            None => "edit".to_string(),
+            None => prefix,
         };
 
         // Prefer agent-supplied diff content blocks (populated as the
@@ -37,7 +38,11 @@ impl ToolFormatter for EditFormatter {
         });
 
         let output_text = text_blocks(ctx.content);
-        let output = if output_text.is_empty() { None } else { Some(output_text) };
+        let output = if output_text.is_empty() {
+            None
+        } else {
+            Some(output_text)
+        };
 
         FormattedToolCall {
             title,

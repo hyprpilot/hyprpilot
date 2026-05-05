@@ -22,12 +22,10 @@ struct PendingParams {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RespondParams {
     request_id: String,
-    /// Real ACP option id from the agent-offered set. The captain's
-    /// "remember this" intent rides on the option's typed kind
-    /// (`allow_always` / `reject_always`) — the controller's
-    /// `respond` method reads it and writes the trust store
-    /// atomically before signaling. No separate `remember` field on
-    /// the wire.
+    /// Real ACP option id from the agent-offered set. Hyprpilot is
+    /// transparent to the agent's permission semantics — we forward
+    /// the captain's pick verbatim. "Always" persistence is the
+    /// agent's concern.
     option_id: String,
 }
 
@@ -56,7 +54,7 @@ impl RpcHandler for PermissionsHandler {
             }
             "permissions/respond" => {
                 let RespondParams { request_id, option_id } = parse_params(params, method)?;
-                match controller.respond(&request_id, &option_id).await {
+                match controller.resolve_if_pending(&request_id, &option_id).await {
                     None => Err(RpcError::invalid_params(format!(
                         "no pending permission for request_id '{request_id}'"
                     ))),

@@ -52,7 +52,11 @@ impl ToolFormatter for TodoFormatter {
         FormattedToolCall {
             title,
             stat,
-            description: if description.is_empty() { None } else { Some(description) },
+            description: if description.is_empty() {
+                None
+            } else {
+                Some(description)
+            },
             output: None,
             fields,
         }

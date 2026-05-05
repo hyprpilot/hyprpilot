@@ -140,12 +140,9 @@ export interface UsePermissionsApi {
   /**
    * Resolve a pending permission with the captain's pick. `optionId`
    * must be one of the agent-offered `optionId` values from the
-   * pending entry's `options` array. The captain's "remember this"
-   * intent is encoded in the option's typed `kind`
-   * (`allow_always` / `reject_always`) — the daemon controller reads
-   * the kind off the offered set and writes the trust store
-   * atomically before signaling the agent. No separate `remember`
-   * field on the wire.
+   * pending entry's `options` array. Hyprpilot is transparent to the
+   * agent's permission model — the option_id rides the wire as-is
+   * and the agent owns "always" persistence.
    */
   respond: (requestId: string, optionId: string) => Promise<void>
 }

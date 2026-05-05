@@ -110,6 +110,21 @@ pub enum AgentProvider {
     Acp,
 }
 
+impl AgentProvider {
+    /// Wire id — the string serde produces / consumes for this variant.
+    /// Single source of truth for the per-vendor identifier; formatter
+    /// `register_all` calls and any other sites that need the ascii
+    /// vendor key call this instead of duplicating the literal.
+    pub const fn wire_id(self) -> &'static str {
+        match self {
+            Self::AcpClaudeCode => "acp-claude-code",
+            Self::AcpCodex => "acp-codex",
+            Self::AcpOpenCode => "acp-opencode",
+            Self::Acp => "acp",
+        }
+    }
+}
+
 /// One `[[profiles]]` entry. Binds an agent id to an optional model
 /// override + optional system prompt file. `system_prompt` is a path
 /// only — there's exactly one mechanism. The file is read at resolve

@@ -22,27 +22,27 @@ pub mod web_fetch;
 pub mod web_search;
 pub mod write;
 
+use crate::config::AgentProvider;
 use crate::tools::formatter::registry::FormatterRegistry;
 
-pub const ADAPTER_ID: &str = "acp-claude-code";
-
 pub fn register_all(reg: &mut FormatterRegistry) {
-    bash::register(reg, ADAPTER_ID);
-    edit::register(reg, ADAPTER_ID);
-    glob::register(reg, ADAPTER_ID);
-    grep::register(reg, ADAPTER_ID);
-    kill_shell::register(reg, ADAPTER_ID);
-    mcp::register(reg, ADAPTER_ID);
-    multi_edit::register(reg, ADAPTER_ID);
-    notebook_edit::register(reg, ADAPTER_ID);
-    plan_exit::register(reg, ADAPTER_ID);
-    read::register(reg, ADAPTER_ID);
-    skill::register(reg, ADAPTER_ID);
-    task::register(reg, ADAPTER_ID);
-    terminal::register(reg, ADAPTER_ID);
-    todo::register(reg, ADAPTER_ID);
-    tool_search::register(reg, ADAPTER_ID);
-    web_fetch::register(reg, ADAPTER_ID);
-    web_search::register(reg, ADAPTER_ID);
-    write::register(reg, ADAPTER_ID);
+    let adapter = AgentProvider::AcpClaudeCode.wire_id();
+    bash::register(reg, adapter);
+    edit::register(reg, adapter);
+    glob::register(reg, adapter);
+    grep::register(reg, adapter);
+    kill_shell::register(reg, adapter);
+    mcp::register(reg, adapter);
+    multi_edit::register(reg, adapter);
+    notebook_edit::register(reg, adapter);
+    plan_exit::register(reg, adapter);
+    read::register(reg, adapter);
+    skill::register(reg, adapter);
+    task::register(reg, adapter);
+    terminal::register(reg, adapter);
+    todo::register(reg, adapter);
+    tool_search::register(reg, adapter);
+    web_fetch::register(reg, adapter);
+    web_search::register(reg, adapter);
+    write::register(reg, adapter);
 }

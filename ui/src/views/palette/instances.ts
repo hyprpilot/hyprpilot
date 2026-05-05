@@ -73,6 +73,7 @@ function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined
     name: headline,
     description: meta.join(' · '),
     kind: entry.instanceId.slice(0, 8),
+    active: entry.instanceId === activeId.value,
     raw: entry
   }
 }

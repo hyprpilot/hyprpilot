@@ -26,7 +26,11 @@ impl ToolFormatter for SkillFormatter {
 
         let block_text = text_blocks(ctx.content);
         let trimmed = block_text.trim();
-        let description = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        let description = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
 
         FormattedToolCall {
             title,

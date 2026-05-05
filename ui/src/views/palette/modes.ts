@@ -103,7 +103,8 @@ export async function openModesLeaf(): Promise<void> {
   const entries: PaletteEntry[] = options.map((m) => ({
     id: m.id,
     name: m.name,
-    description: m.description
+    description: m.description,
+    active: m.id === snapshot.currentModeId
   }))
   const active = options.find((m) => m.id === snapshot.currentModeId)
   const preseed: PaletteEntry[] = active

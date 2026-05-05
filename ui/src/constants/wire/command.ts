@@ -83,8 +83,6 @@ export enum TauriCommand {
   SessionLoad = 'session_load',
   SessionsInfo = 'sessions_info',
   PermissionReply = 'permission_reply',
-  PermissionsTrustSnapshot = 'permissions_trust_snapshot',
-  PermissionsTrustForget = 'permissions_trust_forget',
   InstancesList = 'instances_list',
   InstancesFocus = 'instances_focus',
   InstancesShutdown = 'instances_shutdown',
@@ -142,8 +140,6 @@ export interface TauriCommandArgs {
   [TauriCommand.SessionLoad]: LoadSessionArgs
   [TauriCommand.SessionsInfo]: SessionsInfoArgs
   [TauriCommand.PermissionReply]: PermissionReplyArgs
-  [TauriCommand.PermissionsTrustSnapshot]: { instanceId: string }
-  [TauriCommand.PermissionsTrustForget]: { instanceId: string; tool: string }
   [TauriCommand.InstancesList]: void
   [TauriCommand.InstancesFocus]: InstancesFocusArgs
   [TauriCommand.InstancesShutdown]: InstancesShutdownArgs
@@ -194,8 +190,6 @@ export interface TauriCommandResult {
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
-  [TauriCommand.PermissionsTrustSnapshot]: { entries: { tool: string; decision: 'allow' | 'deny' }[] }
-  [TauriCommand.PermissionsTrustForget]: void
   [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
   [TauriCommand.InstancesFocus]: { focusedId: string }
   [TauriCommand.InstancesShutdown]: { id: string }
