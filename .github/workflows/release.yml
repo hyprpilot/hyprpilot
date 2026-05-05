@@ -20,6 +20,13 @@ jobs:
       pkgver: ${{ steps.ver.outputs.pkgver }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Icons under src-tauri/icons/ are tracked via Git LFS
+          # (see .gitattributes); without `lfs: true` the runner
+          # checks out 130-byte pointer files and tauri's
+          # `generate_context!()` proc-macro panics with "Invalid
+          # PNG signature".
+          lfs: true
 
       - name: Strip leading 'v' from tag
         id: ver

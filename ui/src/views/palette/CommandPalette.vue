@@ -106,7 +106,10 @@ watch(highlighted, () => {
     if (!entry) {
       return
     }
-    rowRefs.get(entry.id)?.scrollIntoView({ block: 'nearest' })
+    // jsdom doesn't implement `scrollIntoView` — feature-check the
+    // method (not just the element) so vitest doesn't surface six
+    // "scrollIntoView is not a function" unhandled errors per run.
+    rowRefs.get(entry.id)?.scrollIntoView?.({ block: 'nearest' })
   })
 })
 

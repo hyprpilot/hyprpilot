@@ -30,6 +30,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Icons under src-tauri/icons/ are tracked via Git LFS
+          # (see .gitattributes); without `lfs: true` the runner
+          # checks out 130-byte pointer files and tauri's
+          # `generate_context!()` proc-macro panics with "Invalid
+          # PNG signature".
+          lfs: true
 
       - name: Install system deps
         run: |
@@ -57,6 +64,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Icons under src-tauri/icons/ are tracked via Git LFS
+          # (see .gitattributes); without `lfs: true` the runner
+          # checks out 130-byte pointer files and tauri's
+          # `generate_context!()` proc-macro panics with "Invalid
+          # PNG signature".
+          lfs: true
 
       - name: Install system deps
         run: |
@@ -84,6 +98,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Icons under src-tauri/icons/ are tracked via Git LFS
+          # (see .gitattributes); without `lfs: true` the runner
+          # checks out 130-byte pointer files and tauri's
+          # `generate_context!()` proc-macro panics with "Invalid
+          # PNG signature".
+          lfs: true
 
       - name: Install system deps
         run: |
