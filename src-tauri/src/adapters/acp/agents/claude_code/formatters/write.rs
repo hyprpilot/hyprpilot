@@ -2,8 +2,8 @@
 //! surfaces the byte count of the new content.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, pick, short_path, text_blocks};
-use crate::tools::formatter::types::FormattedToolCall;
+use crate::tools::formatter::shared::{diff_line_counts, format_diff_hunk, pick, short_path, text_blocks};
+use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct WriteFormatter;
 
@@ -15,10 +15,16 @@ impl ToolFormatter for WriteFormatter {
             Some(p) => format!("write · {}", short_path(p)),
             None => "write".to_string(),
         };
-        let stat = body
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("{} chars", s.len()));
+
+        // Diff-line stat: write replaces the file wholesale, so empty
+        // old → all-add. The `+N` pill conveys both "this many lines"
+        // and "all additions" at a glance, replacing the prior raw
+        // char-count.
+        let mut stats: Vec<Stat> = Vec::new();
+        if let Some(new_text) = body.as_deref().filter(|s| !s.is_empty()) {
+            let (added, removed) = diff_line_counts("", new_text);
+            stats.push(Stat::Diff { added, removed });
+        }
 
         // Render the new content as a diff (empty old → all-add) so
         // the captain reviews the file before granting write
@@ -37,7 +43,7 @@ impl ToolFormatter for WriteFormatter {
 
         FormattedToolCall {
             title,
-            stat,
+            stats,
             description,
             output,
             fields: Vec::new(),

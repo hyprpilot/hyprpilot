@@ -30,7 +30,7 @@ impl ToolFormatter for DeleteFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output: None,
             fields,

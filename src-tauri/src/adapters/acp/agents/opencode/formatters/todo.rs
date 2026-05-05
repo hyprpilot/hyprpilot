@@ -3,7 +3,7 @@
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
 use crate::tools::formatter::shared::pick;
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 #[derive(serde::Deserialize)]
 struct TodoEntry {
@@ -24,7 +24,9 @@ impl ToolFormatter for TodoFormatter {
             .count();
 
         let title = format!("todo · {} pending", pending);
-        let stat = Some(format!("{}/{}", pending, todos.len()));
+        let stats = vec![Stat::Text {
+            value: format!("{}/{}", pending, todos.len()),
+        }];
 
         let mut description = String::new();
         for t in &todos {
@@ -51,7 +53,7 @@ impl ToolFormatter for TodoFormatter {
 
         FormattedToolCall {
             title,
-            stat,
+            stats,
             description: if description.is_empty() {
                 None
             } else {

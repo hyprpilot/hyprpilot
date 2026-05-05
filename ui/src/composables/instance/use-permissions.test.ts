@@ -6,6 +6,7 @@ import { TauriCommand } from '@ipc'
 function fmt() {
   return {
     title: 'bash',
+    stats: [],
     fields: []
   }
 }

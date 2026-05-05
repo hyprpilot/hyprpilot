@@ -1,6 +1,6 @@
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{pick, text_blocks};
-use crate::tools::formatter::types::FormattedToolCall;
+use crate::tools::formatter::shared::{duration_stat, pick, text_blocks};
+use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct WebSearchFormatter;
 
@@ -29,9 +29,11 @@ impl ToolFormatter for WebSearchFormatter {
         let body = text_blocks(ctx.content);
         let output = if body.is_empty() { None } else { Some(body) };
 
+        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+
         FormattedToolCall {
             title,
-            stat: None,
+            stats,
             description: None,
             output,
             fields: Vec::new(),

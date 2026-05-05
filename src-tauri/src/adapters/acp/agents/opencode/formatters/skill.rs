@@ -34,7 +34,7 @@ impl ToolFormatter for SkillFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output: None,
             fields,

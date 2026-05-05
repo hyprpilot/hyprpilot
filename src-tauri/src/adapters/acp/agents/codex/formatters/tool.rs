@@ -6,8 +6,8 @@
 //! single field for visibility — per-server overrides land later.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::args_to_fields;
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::shared::{args_to_fields, duration_stat};
+use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct ToolFormatterCodex;
 
@@ -41,9 +41,11 @@ impl ToolFormatter for ToolFormatterCodex {
             Some(trimmed.to_string())
         };
 
+        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+
         FormattedToolCall {
             title,
-            stat: None,
+            stats,
             description: None,
             output,
             fields,

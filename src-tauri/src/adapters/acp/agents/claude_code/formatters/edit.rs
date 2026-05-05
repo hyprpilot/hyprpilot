@@ -46,7 +46,7 @@ impl ToolFormatter for EditFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output,
             fields: Vec::new(),

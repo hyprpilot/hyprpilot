@@ -14,13 +14,12 @@
  */
 
 import { ToastTone } from '@components'
-import { useActiveInstance, pushToast } from '@composables'
+import { pushModelChange, useActiveInstance, useProfiles, pushToast } from '@composables'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
 const EMPTY_ROW_ID = '__no-models__'
-const PLACEHOLDER_ROW_ID = '__no-instance__'
 const ERROR_ROW_ID = '__meta-fetch-failed__'
 
 function noOptionsSpec(message: string): PaletteSpec {
@@ -32,20 +31,6 @@ function noOptionsSpec(message: string): PaletteSpec {
         id: EMPTY_ROW_ID,
         name: 'no models available',
         description: message
-      }
-    ],
-    onCommit: () => {}
-  }
-}
-
-function noInstanceSpec(): PaletteSpec {
-  return {
-    mode: PaletteMode.Select,
-    title: 'models',
-    entries: [
-      {
-        id: PLACEHOLDER_ROW_ID,
-        name: 'no active instance.'
       }
     ],
     onCommit: () => {}
@@ -70,18 +55,23 @@ function errorSpec(err: string): PaletteSpec {
 export async function openModelsLeaf(): Promise<void> {
   const { open } = usePalette()
   const { id } = useActiveInstance()
+  const { profiles, selected } = useProfiles()
   const instanceId = id.value
-
-  if (!instanceId) {
-    open(noInstanceSpec())
-
-    return
-  }
+  const profileId = selected.value
+  const agentId = profileId ? profiles.value.find((p) => p.id === profileId)?.agent : undefined
 
   let snapshot
 
   try {
-    snapshot = await invoke(TauriCommand.InstanceMeta, { instanceId })
+    // ensure=true: when no live actor matches `instanceId` (or none
+    // is set), the daemon resolves `(agentId, profileId)` and
+    // bootstraps a fresh actor in-place. See modes.ts for the rationale.
+    snapshot = await invoke(TauriCommand.InstanceMeta, {
+      instanceId,
+      ensure: true,
+      agentId,
+      profileId
+    })
   } catch(err) {
     const message = String(err)
 
@@ -116,6 +106,14 @@ export async function openModelsLeaf(): Promise<void> {
     ]
     : []
 
+  const targetInstance = snapshot.instanceId ?? instanceId
+
+  if (!targetInstance) {
+    open(errorSpec('no instance id resolved after ensure'))
+
+    return
+  }
+
   open({
     mode: PaletteMode.Select,
     title: 'models',
@@ -127,15 +125,29 @@ export async function openModelsLeaf(): Promise<void> {
       if (!pick) {
         return
       }
+      const prev = options.find((m) => m.id === snapshot.currentModelId)
 
       try {
-        await invoke(TauriCommand.ModelsSet, { instanceId, modelId: pick.id })
+        await invoke(TauriCommand.ModelsSet, { instanceId: targetInstance, modelId: pick.id })
         pushToast(ToastTone.Ok, `model → ${pick.name}`)
+
+        // Same chapter-break treatment as the modes leaf. Agents
+        // don't currently emit `current_model_update` echoes for
+        // session/set_model, so this is the only banner source for
+        // user-initiated model switches today.
+        if (snapshot.sessionId) {
+          pushModelChange(targetInstance, snapshot.sessionId, {
+            modelId: pick.id,
+            name: pick.name,
+            prevModelId: prev?.id,
+            prevName: prev?.name
+          })
+        }
       } catch(err) {
         const message = String(err)
 
         log.warn('models_set failed', {
-          instanceId,
+          instanceId: targetInstance,
           modelId: pick.id,
           err: message
         })

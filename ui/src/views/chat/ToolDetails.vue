@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import ToolPillStats from './ToolPillStats.vue'
 import { ToolState, toolStateTone, type ToolCallView } from '@components'
 
 /**
  * Full-bleed tool row — the wider sibling to `ToolPill`. Used for
  * tools the chat surface wants to surface prominently. Three-section
- * layout matching `ToolPill`: `[icon] [title] [stat]`.
+ * layout matching `ToolPill`: `[icon] [title] [stats]`.
  */
 const props = defineProps<{
   view: ToolCallView
@@ -20,7 +21,7 @@ const stateTone = computed(() => toolStateTone(props.view.state))
     <span v-if="view.state === ToolState.Running" class="tool-details-dot" aria-hidden="true" />
     <FaIcon :icon="view.icon" class="tool-details-kind" aria-hidden="true" />
     <span class="tool-details-title">{{ view.title }}</span>
-    <span v-if="view.stat" class="tool-details-stat">{{ view.stat }}</span>
+    <ToolPillStats :stats="view.stats" />
   </div>
 </template>
 
@@ -59,10 +60,5 @@ const stateTone = computed(() => toolStateTone(props.view.state))
   @apply flex-1 truncate;
   color: var(--theme-fg);
   min-width: 0;
-}
-
-.tool-details-stat {
-  @apply shrink-0 text-[0.56rem];
-  color: var(--tone);
 }
 </style>

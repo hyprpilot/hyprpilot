@@ -61,6 +61,10 @@ export interface TurnStartedEventPayload {
   instanceId: string
   sessionId: string
   turnId: string
+  /// Wall-clock (epoch ms) when the actor accepted the prompt. UI
+  /// pairs with `TurnEndedEventPayload.endedAt` to render a
+  /// total-elapsed chip on the Turn footer.
+  startedAt: number
 }
 
 export interface TurnEndedEventPayload {
@@ -76,6 +80,9 @@ export interface TurnEndedEventPayload {
   /// (rate limit, agent crash, JSON-RPC error). UI surfaces this
   /// as a toast — without it any failure is invisible to the user.
   error?: string
+  /// Wall-clock (epoch ms) when the prompt resolved. UI subtracts
+  /// `TurnStartedEventPayload.startedAt` for the footer chip.
+  endedAt: number
 }
 
 export interface TerminalOutputChunk {

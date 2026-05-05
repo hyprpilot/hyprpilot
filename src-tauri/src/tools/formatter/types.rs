@@ -21,6 +21,31 @@ pub struct ToolField {
     pub value: String,
 }
 
+/// One pill-right-cell metric. Tagged enum on the wire
+/// (`{ "kind": "diff", "added": 12, "removed": 3 }`). Frontends
+/// switch on `kind` and render each variant via its own chrome —
+/// `Text` as a dim mono pill, `Diff` as a +N / −M two-pill pair,
+/// `Duration` formatted via the UI's `formatDuration` helper,
+/// `Matches` (defined for future use; no tool currently emits it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Stat {
+    /// Free-form pill text — used for tools whose stat doesn't fit
+    /// any structured variant (todo status counts, ad-hoc summaries).
+    Text { value: String },
+    /// Line-count diff for write / edit / multi_edit tools. UI
+    /// renders `+added` (ok-toned pill) and `−removed` (err-toned
+    /// pill); zero side hides.
+    Diff { added: u32, removed: u32 },
+    /// Wall-clock duration in milliseconds. UI formats via
+    /// `formatDuration(ms)` → `"850ms"` / `"3s"` / `"1m 3s"`.
+    Duration { ms: u64 },
+    /// Match count for grep / glob / search-style tools. Defined
+    /// for forward-compat; no formatter currently emits it
+    /// (extraction from agent prose proved fragile).
+    Matches { count: u32 },
+}
+
 /// Daemon-authored tool-call presentation content. Every consumer
 /// reads this off the wire; presentation chrome (icon / pill /
 /// permission-flow surface) layers per-frontend via a
@@ -30,9 +55,14 @@ pub struct ToolField {
 pub struct FormattedToolCall {
     /// Composed display string for the pill's center cell.
     pub title: String,
-    /// Optional pill-right-cell metric ("1.4s" / "2 edits" / "11 chars").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stat: Option<String>,
+    /// Pill-right-cell metrics. Multiple stats render side-by-side
+    /// as separate mini-pills (e.g. `+12 −3` AND `2.4s` for a slow
+    /// edit). Empty vec when no stat applies. Always serialised
+    /// (even when empty) — frontends type `stats` as a required
+    /// `Stat[]` and `.length` / `.reduce` reads on `undefined` would
+    /// crash the render after the first empty-stats update.
+    #[serde(default)]
+    pub stats: Vec<Stat>,
     /// Markdown body (fenced code blocks + prose). Consumer renders
     /// as markdown.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,7 +71,63 @@ pub struct FormattedToolCall {
     /// (stdout / diff / file content).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-    /// Structured key/value rows for arg dumps.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    /// Structured key/value rows for arg dumps. Always serialised
+    /// (even when empty) — same rationale as `stats`: frontends type
+    /// it as required.
+    #[serde(default)]
     pub fields: Vec<ToolField>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the wire shape every frontend depends on. A rename of
+    /// `kind` or a variant tag here would silently strand the UI.
+    #[test]
+    fn stat_serde_roundtrip() {
+        let cases = [
+            (
+                Stat::Text { value: "hello".into() },
+                r#"{"kind":"text","value":"hello"}"#,
+            ),
+            (
+                Stat::Diff { added: 12, removed: 3 },
+                r#"{"kind":"diff","added":12,"removed":3}"#,
+            ),
+            (Stat::Duration { ms: 12345 }, r#"{"kind":"duration","ms":12345}"#),
+            (Stat::Matches { count: 42 }, r#"{"kind":"matches","count":42}"#),
+        ];
+        for (stat, expected) in cases {
+            let json = serde_json::to_string(&stat).expect("serialise");
+            assert_eq!(json, expected, "{stat:?}");
+            let back: Stat = serde_json::from_str(&json).expect("deserialise");
+            assert_eq!(back, stat);
+        }
+    }
+
+    /// Empty `stats` MUST still serialise as `"stats":[]`. Frontends
+    /// type the field as required — dropping it produces a runtime
+    /// `Cannot read properties of undefined` the moment a tool emits
+    /// an update with no stats (which is the steady state for every
+    /// tool that doesn't surface a metric: read, glob, plan, …).
+    #[test]
+    fn formatted_tool_call_emits_empty_stats_array() {
+        let f = FormattedToolCall {
+            title: "bash".into(),
+            stats: Vec::new(),
+            description: None,
+            output: None,
+            fields: Vec::new(),
+        };
+        let json = serde_json::to_string(&f).expect("serialise");
+        assert!(
+            json.contains("\"stats\":[]"),
+            "empty stats vec must serialise as []: {json}"
+        );
+        assert!(
+            json.contains("\"fields\":[]"),
+            "empty fields vec must serialise as []: {json}"
+        );
+    }
 }

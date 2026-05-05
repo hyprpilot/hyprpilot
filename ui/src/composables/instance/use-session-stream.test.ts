@@ -21,6 +21,7 @@ import { InstanceState, TauriEvent } from '@ipc'
 
 const FMT = {
   title: 'bash',
+  stats: [],
   fields: []
 }
 

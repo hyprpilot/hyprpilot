@@ -15,7 +15,7 @@ function makeView(overrides: Partial<ToolCallView> = {}): ToolCallView {
     pill: PillKind.Default,
     permissionUi: PermissionUi.Row,
     title: 'read · src/App.vue',
-    stat: '74 ms',
+    stats: [{ kind: 'duration', ms: 74 }],
     fields: [],
     ...overrides
   }
@@ -28,7 +28,7 @@ describe('ToolPill.vue', () => {
     expect(wrapper.find('.tool-pill-icon-cell').attributes('aria-label')).toBe('read · src/App.vue')
     expect(wrapper.find('.tool-pill-icon').exists()).toBe(true)
     expect(wrapper.text()).toContain('read · src/App.vue')
-    expect(wrapper.text()).toContain('74 ms')
+    expect(wrapper.text()).toContain('74ms')
     expect(wrapper.attributes('data-state')).toBe('done')
     expect(wrapper.attributes('data-kind')).toBe(ToolKind.Read)
   })

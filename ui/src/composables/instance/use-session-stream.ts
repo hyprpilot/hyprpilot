@@ -22,7 +22,7 @@ import { closeTurn, deleteStreamByTurnId, pushModeChange, pushPlan, pushThoughtC
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
-import { pushTurnEnded, pushTurnStarted } from './use-turns'
+import { markThinkingEnd, markThinkingStart, pushTurnEnded, pushTurnStarted } from './use-turns'
 import { recordInstanceState, useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useComposer } from '../composer/use-composer'
 import { pushToast } from '../ui-state/use-toasts'
@@ -125,6 +125,10 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       return
 
     case TranscriptItemKind.AgentText:
+      // Agent moved from thinking → writing. Close the open thinking
+      // interval (no-op when no interval is open). The accumulator
+      // resumes on the next `agent_thought_chunk`.
+      markThinkingEnd(instanceId, sessionId)
       pushTranscriptChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: item.text }
@@ -138,6 +142,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       // the existing `Attachments` chat component renders without a
       // new surface. The `kind` discriminator is stripped at consume
       // time; the rest of the item is the Attachment payload.
+      markThinkingEnd(instanceId, sessionId)
       pushTranscriptChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_message_chunk',
         attachments: [
@@ -155,6 +160,13 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       return
 
     case TranscriptItemKind.AgentThought:
+      // Open / extend the current thinking interval. Fires on every
+      // chunk even when text is empty — claude-code-acp emits an
+      // initial agent_thought_chunk with `text: ""` at the start of
+      // a thinking block (content_block_start), and the captain
+      // wants the elapsed clock to start ticking from that signal,
+      // not from the first non-empty delta.
+      markThinkingStart(instanceId, sessionId)
       pushThoughtChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_thought_chunk',
         content: { type: 'text', text: item.text }
@@ -171,6 +183,9 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       return
 
     case TranscriptItemKind.ToolCall:
+      // Tool execution also pauses the thinking clock — the agent
+      // stopped reasoning long enough to dispatch a tool call.
+      markThinkingEnd(instanceId, sessionId)
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call',
         toolCallId: item.id,
@@ -179,7 +194,9 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         status: item.state,
         rawInput: item.rawInput,
         content: item.content,
-        formatted: item.formatted
+        formatted: item.formatted,
+        startedAtMs: item.startedAtMs,
+        completedAtMs: item.completedAtMs
       } as Parameters<typeof pushToolCall>[3])
 
       return
@@ -193,7 +210,9 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         status: item.state,
         rawInput: item.rawInput,
         content: item.content,
-        formatted: item.formatted
+        formatted: item.formatted,
+        startedAtMs: item.startedAtMs,
+        completedAtMs: item.completedAtMs
       } as Parameters<typeof pushToolCall>[3])
 
       return
@@ -284,21 +303,24 @@ export async function startSessionStream(): Promise<() => void> {
       routePermission(e.payload)
     }),
     await listen(TauriEvent.AcpTurnStarted, (e) => {
-      const { instanceId, sessionId, turnId } = e.payload
+      const { instanceId, sessionId, turnId, startedAt } = e.payload
 
       // The TurnStarted signal owns the per-turn aggregation reset.
       // Each new turn opens fresh thought / plan items so chunked
       // updates within the turn merge cleanly into one block each.
       closeTurn(instanceId, sessionId)
-      pushTurnStarted(instanceId, { turnId, sessionId })
+      pushTurnStarted(instanceId, {
+        turnId, sessionId, startedAtMs: startedAt
+      })
     }),
     await listen(TauriEvent.AcpTurnEnded, (e) => {
-      const { instanceId, sessionId, turnId, stopReason, error } = e.payload
+      const { instanceId, sessionId, turnId, stopReason, error, endedAt } = e.payload
 
       pushTurnEnded(instanceId, {
         turnId,
         sessionId,
-        stopReason
+        stopReason,
+        endedAtMs: endedAt
       })
       // First TurnEnded after `setSessionRestoring(id, true)` clears
       // the transient flag so the chat-transcript <Loading> overlay

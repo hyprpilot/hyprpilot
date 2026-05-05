@@ -4,8 +4,8 @@
 //! `(adapter, "mcp")` we register here.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, parse_mcp, pick, text_blocks};
-use crate::tools::formatter::types::FormattedToolCall;
+use crate::tools::formatter::shared::{args_to_fields, duration_stat, parse_mcp, pick, text_blocks};
+use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct McpFormatter;
 
@@ -29,9 +29,11 @@ impl ToolFormatter for McpFormatter {
             None
         };
 
+        let stats: Vec<Stat> = duration_stat(ctx).into_iter().collect();
+
         FormattedToolCall {
             title,
-            stat: None,
+            stats,
             description,
             output,
             fields,

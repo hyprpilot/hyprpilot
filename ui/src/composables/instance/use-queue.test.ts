@@ -283,11 +283,13 @@ describe('startQueueDispatcher', () => {
       skillAttachments: []
     })
 
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'end_turn'
+      stopReason: 'end_turn', endedAtMs: 0
     })
 
     await Promise.resolve()
@@ -314,11 +316,13 @@ describe('startQueueDispatcher', () => {
       skillAttachments: []
     })
 
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'cancelled'
+      stopReason: 'cancelled', endedAtMs: 0
     })
 
     expect(useQueue('A').items.value).toHaveLength(2)
@@ -333,16 +337,18 @@ describe('startQueueDispatcher', () => {
       skillAttachments: []
     })
 
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'max_tokens'
+    pushTurnStarted('A', {
+      turnId: 't1', sessionId: 's-a', startedAtMs: 0
     })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'refusal'
+      stopReason: 'max_tokens', endedAtMs: 0
+    })
+    pushTurnEnded('A', {
+      turnId: 't1',
+      sessionId: 's-a',
+      stopReason: 'refusal', endedAtMs: 0
     })
 
     expect(invoke).not.toHaveBeenCalled()
@@ -362,11 +368,13 @@ describe('startQueueDispatcher', () => {
       skillAttachments: []
     })
 
-    pushTurnStarted('A', { turnId: 't1', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+    })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'cancelled'
+      stopReason: 'cancelled', endedAtMs: 0
     })
 
     expect(useQueue('A').items.value).toHaveLength(1)
@@ -413,7 +421,9 @@ describe('submit-routing (Overlay.vue parity)', () => {
   it('phase=Working → submit enqueues, no invoke', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', { turnId: 't-active', sessionId: 's-a' })
+    pushTurnStarted('A', {
+      turnId: 't-active', sessionId: 's-a', startedAtMs: 0
+    })
     expect(usePhase().phase.value).toBe(Phase.Working)
 
     const r = routeSubmit('second message')

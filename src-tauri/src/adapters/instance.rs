@@ -154,6 +154,10 @@ pub enum InstanceEvent {
         instance_id: String,
         session_id: String,
         turn_id: String,
+        /// Wall-clock (epoch ms) when the actor accepted the prompt.
+        /// Pairs with `TurnEnded.ended_at` so the UI can render a
+        /// total-elapsed chip on the Turn footer.
+        started_at: u64,
     },
     /// The active `session/prompt` resolved (or errored). `stop_reason`
     /// mirrors the ACP `StopReason` wire string when the response was
@@ -171,6 +175,10 @@ pub enum InstanceEvent {
         stop_reason: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Wall-clock (epoch ms) when the prompt resolved (success or
+        /// error). UI subtracts `TurnStarted.started_at` to render
+        /// the total-elapsed chip.
+        ended_at: u64,
     },
     /// Registry membership changed — an instance spawned, shut down,
     /// or restarted. `instance_ids` is the full post-change set;

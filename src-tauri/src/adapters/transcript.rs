@@ -128,6 +128,16 @@ pub struct ToolCallRecord {
     /// the formatter registry; UI / Neovim plugin / future frontends
     /// render this verbatim instead of re-deriving client-side.
     pub formatted: FormattedToolCall,
+    /// Wall-clock (epoch ms) of the first observation. UI consumers
+    /// pair with `completed_at_ms` for live-tick elapsed labels on
+    /// surfaces that surface per-tool timing (the thinking card,
+    /// future per-tool live chips).
+    pub started_at_ms: u64,
+    /// Wall-clock (epoch ms) of the first state transition into a
+    /// terminal phase (`Completed` / `Failed`). `None` while the
+    /// call is mid-flight — UI treats absence as "live, tick now".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
 }
 
 /// Delta update to an existing tool call. Each field that's `Some`
@@ -154,6 +164,14 @@ pub struct ToolCallUpdateRecord {
     pub content: Vec<ToolCallContentItem>,
     /// Updated presentation view computed from merged running state.
     pub formatted: FormattedToolCall,
+    /// Wall-clock (epoch ms) of the first observation. Stable across
+    /// updates — re-emitted on every delta so the UI can read it
+    /// without joining against the original `tool_call` record.
+    pub started_at_ms: u64,
+    /// Set on the first delta whose state is `Completed` / `Failed`.
+    /// Subsequent updates re-emit the same value (no re-stamp).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
 }
 
 /// Lifecycle phase of a tool call.
@@ -384,11 +402,13 @@ mod tests {
             content: vec![],
             formatted: FormattedToolCall {
                 title: "read · package.json".into(),
-                stat: None,
+                stats: Vec::new(),
                 description: None,
                 output: None,
                 fields: vec![],
             },
+            started_at_ms: 1000,
+            completed_at_ms: None,
         };
         let item = TranscriptItem::ToolCall(record);
         let v = serde_json::to_value(&item).unwrap();

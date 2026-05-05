@@ -53,6 +53,14 @@ pub struct FormatterContext<'a> {
     pub adapter: &'a str,
     /// Output content blocks the agent attached.
     pub content: &'a [serde_json::Value],
+    /// Wall-clock (epoch ms) of the first `tool_call` observation
+    /// for this id. Captured by the per-instance ACP cache.
+    pub started_at: u64,
+    /// Wall-clock (epoch ms) of the first `tool_call_update` whose
+    /// state transitioned to `Completed` / `Failed`. `None` while
+    /// the call is mid-flight; per-vendor formatters that want a
+    /// `Stat::Duration` only emit it once this is `Some`.
+    pub completed_at: Option<u64>,
 }
 
 /// Trait every formatter implements.

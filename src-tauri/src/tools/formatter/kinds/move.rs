@@ -49,7 +49,7 @@ impl ToolFormatter for MoveFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats: Vec::new(),
             description,
             output: None,
             fields,

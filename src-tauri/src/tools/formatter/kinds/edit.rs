@@ -6,8 +6,10 @@
 //! a `\`\`\`diff` fence with `+`/`-` prefixes otherwise.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, dedupe_output, format_diff_hunk, pick, wire_title_or_fallback};
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::shared::{
+    args_to_fields, dedupe_output, diff_line_counts, format_diff_hunk, pick, wire_title_or_fallback,
+};
+use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct EditFormatter;
 
@@ -24,20 +26,25 @@ impl ToolFormatter for EditFormatter {
             parts.push(d);
         }
         parts.extend(diff_blocks_markdown(ctx.content, path.as_deref()));
+
         // Synthesise a diff from rawInput when no `{type:"diff"}` block
         // arrived yet (permission-time, pre-execute). Common shapes
         // across vendors: claude-code ships `old_string`/`new_string`,
         // opencode ships `oldString`/`newString`, write tools ship a
-        // bare `content` (treat as "new file" — empty old).
-        if parts.is_empty() {
-            let old_text = pick::<String>(ctx.raw_input, "old_string")
-                .or_else(|| pick(ctx.raw_input, "oldString"))
-                .unwrap_or_default();
-            let new_text = pick::<String>(ctx.raw_input, "new_string")
-                .or_else(|| pick(ctx.raw_input, "newString"))
-                .or_else(|| pick(ctx.raw_input, "content"))
-                .unwrap_or_default();
-            if let Some(hunk) = format_diff_hunk(path.as_deref(), &old_text, &new_text) {
+        // bare `content` (treat as "new file" — empty old). Captured
+        // for both the description hunk AND the diff stat below.
+        let raw_old = pick::<String>(ctx.raw_input, "old_string")
+            .or_else(|| pick(ctx.raw_input, "oldString"))
+            .unwrap_or_default();
+        let raw_new = pick::<String>(ctx.raw_input, "new_string")
+            .or_else(|| pick(ctx.raw_input, "newString"))
+            .or_else(|| pick(ctx.raw_input, "content"))
+            .unwrap_or_default();
+        if parts.len() <= 1 {
+            // `parts.len() == 0` (no description, no diff blocks) or
+            // `== 1` (description only) → synthesise from rawInput.
+            // ≥2 means at least one real diff block already landed.
+            if let Some(hunk) = format_diff_hunk(path.as_deref(), &raw_old, &raw_new) {
                 parts.push(hunk);
             }
         }
@@ -45,6 +52,18 @@ impl ToolFormatter for EditFormatter {
             None
         } else {
             Some(parts.join("\n\n"))
+        };
+
+        // Diff-line stat: synthesise from the rawInput pair we
+        // already collected. Per-vendor edit formatters (claude-code,
+        // opencode) override this; the kind default catches every
+        // other vendor that lands here (codex's ApplyPatch shape, any
+        // future vendor without a per-tool override).
+        let (added, removed) = diff_line_counts(&raw_old, &raw_new);
+        let stats = if added == 0 && removed == 0 {
+            Vec::new()
+        } else {
+            vec![Stat::Diff { added, removed }]
         };
 
         // Edit-shape arg keys are consumed by the diff above — leaving
@@ -78,7 +97,7 @@ impl ToolFormatter for EditFormatter {
 
         FormattedToolCall {
             title,
-            stat: None,
+            stats,
             description,
             output,
             fields,

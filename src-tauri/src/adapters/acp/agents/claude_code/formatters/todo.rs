@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
 use crate::tools::formatter::shared::{pick, text_blocks};
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct TodoFormatter;
 
@@ -47,10 +47,12 @@ impl ToolFormatter for TodoFormatter {
             "todos".to_string()
         };
         let breakdown: Vec<String> = counts.iter().map(|(k, v)| format!("{}:{}", k, v)).collect();
-        let stat = if breakdown.is_empty() {
-            None
+        let stats: Vec<Stat> = if breakdown.is_empty() {
+            Vec::new()
         } else {
-            Some(breakdown.join(" "))
+            vec![Stat::Text {
+                value: breakdown.join(" "),
+            }]
         };
 
         let body = text_blocks(ctx.content);
@@ -58,7 +60,7 @@ impl ToolFormatter for TodoFormatter {
 
         FormattedToolCall {
             title,
-            stat,
+            stats,
             description: None,
             output,
             fields,

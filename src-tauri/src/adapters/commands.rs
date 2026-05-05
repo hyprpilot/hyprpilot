@@ -370,9 +370,25 @@ pub async fn config_option_set(
 /// command exists for the "always re-ask the daemon" idiom the
 /// pickers want regardless.
 #[tauri::command]
-pub async fn instance_meta(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
-    tracing::debug!(instance_id = %instance_id, "cmd::instance_meta: entry");
-    adapter.instance_meta(&instance_id).await.map_err(|e| e.message)
+pub async fn instance_meta(
+    adapter: AdapterState<'_>,
+    instance_id: Option<String>,
+    ensure: Option<bool>,
+    agent_id: Option<String>,
+    profile_id: Option<String>,
+) -> Result<Value, String> {
+    let ensure = ensure.unwrap_or(false);
+    tracing::debug!(instance_id = ?instance_id, ensure, agent_id = ?agent_id, profile_id = ?profile_id, "cmd::instance_meta: entry");
+
+    if ensure {
+        return adapter
+            .instance_meta_or_ensure(instance_id.as_deref(), agent_id.as_deref(), profile_id.as_deref())
+            .await
+            .map_err(|e| e.message);
+    }
+
+    let id = instance_id.ok_or_else(|| "instance_id required when ensure=false".to_string())?;
+    adapter.instance_meta(&id).await.map_err(|e| e.message)
 }
 
 /// Resolve a pending permission prompt with the captain's pick.

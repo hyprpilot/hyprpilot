@@ -4,6 +4,7 @@ import { pushToolCall, resetTools, useTools } from '@composables'
 
 const stub = {
   title: 'read',
+  stats: [],
   fields: []
 }
 
@@ -19,14 +20,14 @@ describe('useTools', () => {
       toolCallId: 'tc-1',
       title: 'read',
       status: 'completed',
-      formatted: stub
+      formatted: stub, startedAtMs: 0
     })
     pushToolCall('B', 'agent-B', 's-b', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-2',
       title: 'write',
       status: 'pending',
-      formatted: stub
+      formatted: stub, startedAtMs: 0
     })
 
     const a = useTools('A').calls.value
@@ -44,13 +45,13 @@ describe('useTools', () => {
       toolCallId: 'tc-1',
       title: 'read',
       status: 'pending',
-      formatted: stub
+      formatted: stub, startedAtMs: 0
     })
     pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-1',
       status: 'completed',
-      formatted: stub
+      formatted: stub, startedAtMs: 0
     })
 
     const calls = useTools('A').calls.value

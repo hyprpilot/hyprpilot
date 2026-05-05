@@ -23,7 +23,7 @@ impl ToolFormatter for GuardianFormatter {
 
         FormattedToolCall {
             title: "guardian review".to_string(),
-            stat: None,
+            stats: Vec::new(),
             description,
             output: None,
             fields,

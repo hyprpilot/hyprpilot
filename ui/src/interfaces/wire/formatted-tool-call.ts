@@ -16,9 +16,20 @@ export interface ToolField {
   value: string
 }
 
+/**
+ * Per-stat-pill rendering content. Tagged enum mirrors the Rust
+ * `Stat` enum (serde `tag = "kind"`, snake-case variant rename).
+ * Empty `stats` vec on `FormattedToolCall` = no pills rendered.
+ */
+export type Stat =
+  | { kind: 'text'; value: string }
+  | { kind: 'diff'; added: number; removed: number }
+  | { kind: 'duration'; ms: number }
+  | { kind: 'matches'; count: number }
+
 export interface FormattedToolCall {
   title: string
-  stat?: string
+  stats: Stat[]
   description?: string
   output?: string
   fields: ToolField[]
