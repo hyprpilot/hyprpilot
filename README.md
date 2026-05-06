@@ -1,41 +1,19 @@
 # hyprpilot
 
-Rust Tauri 2 overlay daemon + unix-socket CLI for agent-driven workflows on
-Hyprland / Sway. Port of the Python `pilot.py` stack living under
-[`cenk/dotfiles`](https://gitlab.kilic.dev/cenk/dotfiles/-/tree/master/wayland/.config/wayland/scripts).
+**An overlay daemon that runs coding agents at the edge of your screen.**
 
-## Quick start
+## DISCLAIMER
 
-```sh
-mise install         # pin rust / node / pnpm / task
-task install         # cargo fetch + pnpm install
-task dev             # launch the Tauri app with hot-reload
+This is a ~vibe-coded~ agentically engineered, sorry, ~pos~, sorry, poc project that I have used to sharpen my skills to build a thing from start to finish. I have taken out the overlay I was using which was a pretty basic implementation with GTK and turned it into something that I might use a bit more with a little bit more extendibility.
 
-./target/debug/hyprpilot            # run the daemon (default subcommand)
-./target/debug/hyprpilot ctl --help # invoke the CLI surface
-```
+## Features
 
-See `CLAUDE.md` for the full agent-facing manual (toolchain, tasks,
-config layering, logging, framework quirks).
+![screenshot](./docs/public/screenshots/real.png)
 
-Compositor / panel integration:
+This project runs a daemon in the background that is persistent per user and has the ability to spawn multiple agents with different profiles that is configured differently to tailor to your different needs.
 
-- `docs/hyprland.md` — recommended `bind = SUPER, space, exec, hyprpilot
-  ctl overlay toggle` keybind + the full `overlay/*` surface.
-- `docs/waybar.md` — `custom/hyprpilot` waybar module driven by
-  `ctl status --watch`.
+It comes bundled with a CLI interface where you can use it to interact with the daemon as well as the agents.
 
-## Layout
+## Documentation
 
-```
-hyprpilot/
-├── Cargo.toml            # Rust workspace manifest
-├── package.json          # pnpm workspace root (devDep: @tauri-apps/cli)
-├── pnpm-workspace.yaml   # workspace packages: ui, tests/e2e, tests/e2e/support/mock-agent
-├── src-tauri/            # Rust crate (clap + Tauri 2 + tokio unix socket)
-├── ui/                   # Vue 3 + Vite + Tailwind + shadcn-vue frontend
-├── tests/e2e/            # Playwright e2e suite + scripted mock-agent
-├── mise.toml             # toolchain pins
-├── Taskfile.yml          # install / dev / test / format / lint / build / release
-└── .mcp.json             # repo-scoped MCP server registry (empty by default)
-```
+The documentation for the project can be found [here](https://hyprpilot.kilic.dev).
