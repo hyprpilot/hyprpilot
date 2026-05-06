@@ -1,6 +1,6 @@
 //! Claude Code ACP adapter.
 //!
-//! Launches via `bunx --bun @zed-industries/claude-code-acp`. Model
+//! Launches via `bunx --bun @agentclientprotocol/claude-agent-acp`. Model
 //! selection rides on the `ANTHROPIC_MODEL` env var; the system prompt
 //! goes through `FirstMessage` because the shim doesn't expose a
 //! launch-time hook.
@@ -18,7 +18,7 @@ impl AcpAgent for AcpAgentClaudeCode {
         ModelInjection::Env("ANTHROPIC_MODEL")
     }
 
-    /// `@zed-industries/claude-code-acp` never reads `process.argv`;
+    /// `@agentclientprotocol/claude-agent-acp` never reads `process.argv`;
     /// CLI flags like `--append-system-prompt` are silently dropped.
     /// The shim's only system-prompt hook is `_meta.systemPrompt` on
     /// the `session/new` request, which `agent-client-protocol` 0.11
@@ -45,7 +45,7 @@ mod tests {
             provider: AgentProvider::AcpClaudeCode,
             model: model.map(|s| s.to_string()),
             command: "bunx".into(),
-            args: vec!["--bun".into(), "@zed-industries/claude-code-acp".into()],
+            args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
             cwd: None,
             env: BTreeMap::new(),
             thinking_budget_tokens: None,

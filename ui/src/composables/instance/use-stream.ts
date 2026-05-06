@@ -28,7 +28,7 @@ export interface ThoughtStreamItem extends BaseStream {
   /// Wall-clock at first observation. Pairs with the parent turn's
   /// `endedAtMs` (or `liveNow` while the turn is still in flight) for
   /// the thinking-card elapsed chip on agents that ship thoughts via
-  /// `agent_thought_chunk` notifications (claude-code-acp).
+  /// `agent_thought_chunk` notifications (claude-agent-acp).
   startedAtMs: number
 }
 

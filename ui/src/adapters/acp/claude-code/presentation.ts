@@ -1,5 +1,5 @@
 /**
- * claude-code-acp's per-tool presentation overrides. Mirrors Rust's
+ * claude-agent-acp's per-tool presentation overrides. Mirrors Rust's
  * `src-tauri/src/adapters/acp/agents/claude_code/formatters/`.
  *
  * Keys are snake_case wire names (matches the daemon's
@@ -48,7 +48,7 @@ export const claudeCodeOverrides: Record<string, Presentation> = {
   web_fetch: { icon: faPlug, permissionUi: Row },
   web_search: { icon: faMagnifyingGlassPlus, permissionUi: Row },
   exit_plan_mode: { icon: faClipboardList, permissionUi: Modal },
-  // claude-code-acp ≥0.32 renamed the tool to `switch_mode`; same
+  // claude-agent-acp ≥0.32 renamed the tool to `switch_mode`; same
   // modal-permission shape as `ExitPlanMode`.
   switch_mode: { icon: faClipboardList, permissionUi: Modal },
   todo_write: { icon: faListCheck, permissionUi: Row },

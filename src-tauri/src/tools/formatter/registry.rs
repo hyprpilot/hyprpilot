@@ -3,13 +3,13 @@
 //! 1. **Per-(adapter, leading-token)** — adapters register here for
 //!    their vendor-specific tools. Lookup key is the snake-cased
 //!    first whitespace-delimited token of `wire_name`, so a single
-//!    registration of `"Edit"` matches both `"Edit"` (claude-code-acp
+//!    registration of `"Edit"` matches both `"Edit"` (claude-agent-acp
 //!    ≤0.31) and `"Edit /tmp/foo"` (≥0.32 prose-title shape) and
 //!    codex's `"Edit a.rs, b.rs"` — same `edit` key for all three.
 //!    The mcp__ prefix exception routes `mcp__server__leaf` titles
 //!    to the literal key `"mcp"` regardless of leading token.
 //! 2. **Per-(adapter, matcher)** — predicate-driven dispatch for
-//!    tools whose title gives no stable signal (claude-code-acp's
+//!    tools whose title gives no stable signal (claude-agent-acp's
 //!    `switch_mode` emits `"Ready to code?"` / `"EnterPlanMode"`
 //!    / etc.; the discriminator is rawInput shape — `plan` is a
 //!    non-empty string). Matchers iterate in registration order;
@@ -122,7 +122,7 @@ impl FormatterRegistry {
     /// with the live `FormatterContext` at dispatch time; the first
     /// matcher whose predicate returns `true` for an `adapter` match
     /// wins. Use this when the agent's `title` is variable prose
-    /// (claude-code-acp's `switch_mode` emits `"Ready to code?"`
+    /// (claude-agent-acp's `switch_mode` emits `"Ready to code?"`
     /// among others) and the discriminating signal is the rawInput
     /// shape.
     pub fn register_adapter_match<F>(&mut self, adapter: &str, matcher: F, formatter: Box<dyn ToolFormatter>)

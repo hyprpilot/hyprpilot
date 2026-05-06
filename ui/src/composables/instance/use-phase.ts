@@ -40,7 +40,7 @@ export function pushInstanceState(id: InstanceId, state: InstanceState): void {
  *                  dispatches in `idle`; routes to queue otherwise.
  *
  * Gating EVERY busy sub-phase on `openTurnId` is the session-restore
- * fix: claude-code-acp's `session/load` replay streams historical
+ * fix: claude-agent-acp's `session/load` replay streams historical
  * `tool_call` updates with their suspended-time status (e.g.
  * `in_progress`, `pending`). Without the `openTurnId` gate, those
  * stale entries kept phase pinned at `pending` forever — composer

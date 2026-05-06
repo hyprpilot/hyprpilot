@@ -218,7 +218,7 @@ pub trait Adapter: Send + Sync + 'static {
     }
 
     /// `session/load` — resume a persisted session. `cwd` overrides
-    /// the resolved profile's cwd; ACP agents (claude-code-acp)
+    /// the resolved profile's cwd; ACP agents (claude-agent-acp)
     /// scope persisted sessions by cwd, so resuming under a
     /// different cwd than the one the session was created with
     /// returns "Resource not found" upstream.

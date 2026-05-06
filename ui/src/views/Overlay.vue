@@ -411,7 +411,7 @@ function thinkingElapsedFor(block: ThinkingElapsedBlock): string | undefined {
 }
 
 /// Render the thinking card whenever the agent is reasoning, even if
-/// every chunk so far has carried empty text (claude-code-acp emits
+/// every chunk so far has carried empty text (claude-agent-acp emits
 /// `agent_thought_chunk` with `text: ""` for content_block_start
 /// before any deltas land — the card should appear immediately).
 /// Two truthy signals: real prose accumulated OR the per-turn
@@ -741,7 +741,7 @@ function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
 }
 
-// claude-code-acp serializes thinking as a `tool_call` with kind:
+// claude-agent-acp serializes thinking as a `tool_call` with kind:
 // "think" rather than as `agent_thought_chunk` session-update — so
 // the thought body lives on `content[].text` (the tool-call text
 // blocks) plus the chip's `title` as a one-line summary. Stitch
@@ -776,7 +776,7 @@ function thoughtText(call: { title?: string; content: { type?: string; text?: st
  * so the chat surface renders one thinking card per turn instead of
  * stacking N. Both wire shapes feed in:
  *
- *   - tool-call thoughts (`block.thoughts`) — claude-code-acp emits
+ *   - tool-call thoughts (`block.thoughts`) — claude-agent-acp emits
  *     each thinking-block as its own `tool_call` with `kind=think`.
  *     One turn can carry many.
  *   - stream-side thoughts (`block.streamEntries` of kind Thought) —
@@ -1151,7 +1151,7 @@ function onQueueSend(itemId: string): void {
           <!-- Single thinking row per turn — same chrome regardless of
                whether prose accumulated. With text, the row is
                collapsable and reveals the reasoning trace; without
-               text (claude-code-acp's empty extended-thinking chunks),
+               text (claude-agent-acp's empty extended-thinking chunks),
                the row stays a static "thought · 13s" badge so the
                captain still sees the agent IS reasoning. StreamCard
                drops the chevron + click affordance when there's no

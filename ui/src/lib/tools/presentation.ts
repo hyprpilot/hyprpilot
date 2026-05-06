@@ -125,7 +125,7 @@ export function presentationFor(
   // kind classification (`other`) routes to the modal-permission UI.
   // Detect on the rawInput shape (`plan` is a non-empty string), same
   // signal the daemon-side PlanExitFormatter matcher uses. Adapter
-  // gate keeps other vendors out — only claude-code-acp ships
+  // gate keeps other vendors out — only claude-agent-acp ships
   // switch_mode this way today.
   if (adapter === AdapterId.ClaudeCode && typeof rawInput?.plan === 'string' && rawInput.plan.length > 0) {
     const overrides = adapterOverrides[adapter]

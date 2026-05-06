@@ -197,7 +197,7 @@ export function pushCurrentModeUpdate(id: InstanceId, raw: CurrentModeUpdateRaw)
 
 /**
  * Refresh the header title from the latest user prompt.
- * claude-code-acp never proactively sends `session_info_update`,
+ * claude-agent-acp never proactively sends `session_info_update`,
  * so the only signal available client-side is the user prompt
  * itself. Re-deriving on every prompt produces a rolling
  * "what's the captain working on right now" header that tracks

@@ -11,7 +11,7 @@
 //!
 //! There is no daemon-side runtime trust store. The captain's "always
 //! allow / always deny" pick rides the wire as-is to ACP; the agent
-//! itself owns whatever persistence it offers (claude-code-acp writes
+//! itself owns whatever persistence it offers (claude-agent-acp writes
 //! to `~/.claude/settings.json`, etc.). Hyprpilot does not shadow that.
 //!
 //! `register_pending` + `resolve` own the oneshot waiter map that
@@ -166,7 +166,7 @@ pub struct PermissionRequestSnapshot {
 /// every decision falls through to `AskUser`.
 ///
 /// Tool→server attribution is by prefix convention — `mcp__<server>__<tool>`,
-/// the shared shape across claude-code-acp / codex-acp / opencode-acp
+/// the shared shape across claude-agent-acp / codex-acp / opencode-acp
 /// (all three namespace MCP tools the same way). Vendor-side native
 /// tools (Bash, Read, …) carry no `mcp__` prefix and skip the lookup
 /// entirely.
