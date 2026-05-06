@@ -171,12 +171,17 @@ export async function openSessionsLeaf(): Promise<void> {
   palette.open(buildSpec('sessions', [], true))
 
   // Address the active profile so the session list mirrors what the
-  // header pills + idle preview show. Without these args the daemon
-  // dispatches a list-only ACP actor against the configured default
-  // — captain switches profile, palette still shows old profile's
-  // sessions until they hit Ctrl+K twice.
+  // header pills + idle preview show. Prefer the focused instance's
+  // spawning profile (sessionInfo.profileId) over the picker's value —
+  // when the captain switches focus between instances with different
+  // profiles, the header flips but the picker doesn't, and the palette
+  // would otherwise list the picker's profile rather than the one the
+  // captain is actually looking at. Falls back to the picker when no
+  // instance is focused (idle screen).
   const { profiles, selected } = useProfiles()
-  const profile = profiles.value.find((p) => p.id === selected.value)
+  const { info } = useSessionInfo()
+  const profileId = info.value.profileId ?? selected.value
+  const profile = profiles.value.find((p) => p.id === profileId)
   const cwd = resolveFilterCwd()
   const args: { agentId?: string; profileId?: string; cwd?: string } = {}
 

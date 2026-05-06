@@ -101,12 +101,26 @@ const { adapterFor } = useAgentRegistry()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
 const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
-const activeAgentId = computed(() => profiles.value.find((p) => p.id === selectedProfile.value)?.agent)
+const { info: sessionInfo } = useSessionInfo()
 // Session history is wired but the overlay shell doesn't surface a
 // session picker yet — keeping the binding live so the backend stays
 // warm; the palette view (K-249) takes over this role. The list count
 // rides on the row-2 sessions breadcrumb pill.
-const { sessions: sessionList, load: restoreSession } = useSessionHistory(activeAgentId, selectedProfile)
+//
+// Prefer the focused instance's spawning profile over the picker's
+// value: header chrome reads `sessionInfo.profileId` for the profile
+// pill, so the session list has to track the same axis to stay
+// consistent. Without this, switching focus between instances with
+// different profiles flips the header but leaves the session list on
+// whatever profile the picker last touched. Falls back to the picker
+// when no instance is focused yet (idle screen).
+const sessionListProfileId = computed(() => sessionInfo.value.profileId ?? selectedProfile.value)
+const sessionListAgentId = computed(() => {
+  const profileId = sessionListProfileId.value
+
+  return profileId ? profiles.value.find((p) => p.id === profileId)?.agent : undefined
+})
+const { sessions: sessionList, load: restoreSession } = useSessionHistory(sessionListAgentId, sessionListProfileId)
 
 // LFG idle landing only previews the most-recent few sessions —
 // rendering the full registry inline pushes the wordmark + kbd
@@ -152,7 +166,6 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 // no-content gate.
 const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
 const { openTurnId, turns: turnRecords } = useTurns()
-const { info: sessionInfo } = useSessionInfo()
 const { displayPath } = useHomeDir()
 const { daemonCwd } = useDaemonCwd()
 const { items: queuedItems, flush: flushActiveQueue } = useQueue()
