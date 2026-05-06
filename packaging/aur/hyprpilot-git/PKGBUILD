@@ -31,11 +31,21 @@ pkgver() {
   # `.r<count>.g<sha>` so pacman's version comparator sorts later
   # commits over earlier tags. Falls back to `0.0.0.r<rev-count>.<sha>`
   # when no tag exists yet (initial commits).
-  git describe --long --tags 2>/dev/null \
-    | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
-    || printf "0.0.0.r%s.%s" \
-         "$(git rev-list --count HEAD)" \
-         "$(git rev-parse --short HEAD)"
+  #
+  # Capture git describe to a var BEFORE piping through sed —
+  # `git | sed || printf` doesn't fall through because sed exits 0
+  # on empty input, so the `||` branch never fires when there are
+  # no tags. Branching on the captured value covers the unreleased
+  # case correctly.
+  local described
+  described=$(git describe --long --tags 2>/dev/null)
+  if [[ -n "$described" ]]; then
+    printf '%s' "$described" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  else
+    printf "0.0.0.r%s.%s" \
+      "$(git rev-list --count HEAD)" \
+      "$(git rev-parse --short HEAD)"
+  fi
 }
 
 prepare() {
