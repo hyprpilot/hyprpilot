@@ -487,12 +487,37 @@ pub(crate) fn map_session_update(
     let meta = update.get("_meta").cloned();
 
     fn chunk_text(update: &serde_json::Value) -> String {
-        update
-            .get("content")
-            .and_then(|c| c.get("text"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+        // Most ACP-spec'd chunks ride as `{ content: { type: "text",
+        // text: "..." } }`. claude-code-acp's `agent_thought_chunk`
+        // is the outlier: the upstream Anthropic API surfaces
+        // reasoning as `{ type: "thinking", thinking: "..." }`
+        // content blocks, and the agent forwards the block shape
+        // through unchanged (see anthropics/claude-agent-sdk-typescript).
+        // Try `.text` first, then fall back to `.thinking` so we
+        // catch both shapes. Walking content arrays + concatenating
+        // covers the rare multi-block thought delta.
+        let content = match update.get("content") {
+            Some(v) => v,
+            None => return String::new(),
+        };
+        if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
+            return text.to_string();
+        }
+        if let Some(thinking) = content.get("thinking").and_then(|v| v.as_str()) {
+            return thinking.to_string();
+        }
+        if let Some(arr) = content.as_array() {
+            let mut out = String::new();
+            for block in arr {
+                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                    out.push_str(t);
+                } else if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
+                    out.push_str(t);
+                }
+            }
+            return out;
+        }
+        String::new()
     }
 
     /// Project a single agent-emitted `ContentBlock` (the chunk's
@@ -638,12 +663,21 @@ pub(crate) fn map_session_update(
         }
         "agent_thought_chunk" => {
             let text = chunk_text(&update);
-            tracing::debug!(
-                target: "acp::thought",
-                text_len = text.len(),
-                raw = %update,
-                "agent_thought_chunk extracted"
-            );
+            if text.is_empty() {
+                tracing::warn!(
+                    target: "acp::thought",
+                    raw = %update,
+                    "agent_thought_chunk: extracted empty text — content shape \
+                     not in {{text, thinking, [{{text|thinking}}]}}; UI thinking \
+                     card will show no body"
+                );
+            } else {
+                tracing::debug!(
+                    target: "acp::thought",
+                    text_len = text.len(),
+                    "agent_thought_chunk extracted"
+                );
+            }
             MappedUpdate::Transcript(TranscriptItem::AgentThought { text })
         }
         "session_info_update" => MappedUpdate::SessionInfo {
@@ -2620,6 +2654,56 @@ mod tests {
     use super::*;
     use crate::adapters::permission::DefaultPermissionController;
     use crate::config::{AgentConfig, AgentProvider};
+
+    /// Pin every wire shape `chunk_text` extracts text from. Bare-text
+    /// is the ACP-spec'd shape; `thinking` covers claude-code-acp
+    /// passing through Anthropic's reasoning blocks unchanged; the
+    /// array form covers multi-block thought deltas.
+    #[test]
+    fn map_session_update_extracts_thought_text_from_every_known_shape() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let cases: &[(&str, serde_json::Value)] = &[
+            (
+                "hello",
+                json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hello"}}),
+            ),
+            (
+                "reasoning",
+                json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "thinking", "thinking": "reasoning"}}),
+            ),
+            (
+                "AB",
+                json!({"sessionUpdate": "agent_thought_chunk", "content": [{"type": "thinking", "thinking": "A"}, {"type": "text", "text": "B"}]}),
+            ),
+        ];
+        for (expected, update) in cases {
+            let MappedSessionUpdate { mapped, .. } = map_session_update(update.clone(), &mut cache, "claude-code");
+            match mapped {
+                MappedUpdate::Transcript(crate::adapters::TranscriptItem::AgentThought { text }) => {
+                    assert_eq!(&text, expected, "input: {update}");
+                }
+                _ => panic!("expected AgentThought for {update}"),
+            }
+        }
+    }
+
+    /// Empty / unknown content shapes should still flow through (UI
+    /// renders the thinking card with no body) — no panic, no
+    /// silent drop.
+    #[test]
+    fn map_session_update_thought_with_unknown_shape_yields_empty_text() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "weird", "blob": "..."}});
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+        match mapped {
+            MappedUpdate::Transcript(crate::adapters::TranscriptItem::AgentThought { text }) => {
+                assert!(text.is_empty())
+            }
+            _ => panic!("expected AgentThought with empty text"),
+        }
+    }
 
     #[test]
     fn build_prompt_blocks_emits_only_text_when_no_attachments() {

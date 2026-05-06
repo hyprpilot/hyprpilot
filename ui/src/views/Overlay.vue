@@ -1163,7 +1163,7 @@ function onQueueSend(itemId: string): void {
           <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
             <ChatBody v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
             <template v-else>
-              <ChatBody :role="Role.User">{{ entry.turn.text }}</ChatBody>
+              <ChatBody :role="Role.User" :text="entry.turn.text" markdown />
               <Attachments v-if="entry.turn.attachments && entry.turn.attachments.length > 0" :attachments="entry.turn.attachments" @open="onAttachmentOpen" />
             </template>
           </template>

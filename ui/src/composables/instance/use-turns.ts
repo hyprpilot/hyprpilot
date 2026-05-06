@@ -90,6 +90,21 @@ export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
     startedAtMs: raw.startedAtMs,
     thinkingMs: 0
   })
+  // ACP's contract is one session per instance — Bootstrap::Fresh /
+  // Resume each pin a single sessionId for the actor's lifetime, and
+  // a restart tears the actor down (emits Ended → cleanup wipes the
+  // slot entirely). If we see a TurnStarted for sessionA while the
+  // map already has an entry for sessionB, that other entry is a
+  // stale orphan — its sibling TurnEnded never landed (broadcast
+  // dropped, daemon panic mid-turn, etc.). Without this drop, the
+  // phase computation reads `openBySession.values().next()` and
+  // hits the orphan, pinning Phase != Idle even though no real turn
+  // is in flight — composer routes the next prompt into the queue.
+  for (const otherSessionId of slot.openBySession.keys()) {
+    if (otherSessionId !== raw.sessionId) {
+      slot.openBySession.delete(otherSessionId)
+    }
+  }
   slot.openBySession.set(raw.sessionId, raw.turnId)
 }
 

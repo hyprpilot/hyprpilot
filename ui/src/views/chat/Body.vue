@@ -4,25 +4,27 @@ import { computed, useSlots } from 'vue'
 import { MarkdownBody, Role } from '@components'
 
 /**
- * Assistant text card. Default behaviour preserves the slot — both
- * roles render the slot's text content into a styled lane, so
+ * Body card for both roles. Default behaviour preserves the slot —
+ * both roles render the slot's text content into a styled lane, so
  * `<ChatBody :role="Role.User">{{ text }}</ChatBody>` keeps working.
  *
- * Setting `:markdown` + `:text` switches the assistant lane to
- * `<MarkdownBody>` (markdown-it + Shiki + DOMPurify, with code-block
- * chrome — copy + collapse — wired in the component itself). User-role
- * text stays raw (markdown formatting in user input is the user's
- * literal intent and should not be re-rendered).
+ * Setting `:markdown` + `:text` switches the lane to `<MarkdownBody>`
+ * (markdown-it + Shiki + DOMPurify, with code-block chrome — copy +
+ * collapse — wired in the component itself). Both user- and
+ * assistant-role text route through markdown when the prop is set —
+ * captains type pasted code blocks / lists / headings into the
+ * composer too, and rendering them as plain text reads as second-
+ * class compared to the agent's reply.
  */
 const props = defineProps<{
   role: Role
   /** Optional markdown source. Required when `markdown` is true. */
   text?: string
-  /** Render `text` through the markdown pipeline (assistant role only). */
+  /** Render `text` through the markdown pipeline. */
   markdown?: boolean
 }>()
 
-const useMarkdown = computed(() => props.markdown === true && props.role === Role.Assistant)
+const useMarkdown = computed(() => props.markdown === true && typeof props.text === 'string')
 const slots = useSlots()
 const slotEmpty = computed(() => !slots.default)
 </script>
