@@ -4,7 +4,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -53,7 +53,7 @@ jobs:
         run: task install
 
       - name: Build release binary
-        run: task build:release
+        run: task release
 
       - name: Pack tarball
         id: pack
