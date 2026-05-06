@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.4](https://github.com/hyprpilot/hyprpilot/compare/v0.1.3...v0.1.4) (2026-05-06)
+
+
+### Features
+
+* **docs:** vitepress documentation site + tagged-release trigger fix ([#6](https://github.com/hyprpilot/hyprpilot/issues/6)) ([cb499f9](https://github.com/hyprpilot/hyprpilot/commit/cb499f9439467c4a1d07e17e34215419d6b7717b))
+
+
+### Bug Fixes
+
+* **ci:** release-please uses GITHUB_TOKEN + workflow_dispatch downstream ([#7](https://github.com/hyprpilot/hyprpilot/issues/7)) ([47b301d](https://github.com/hyprpilot/hyprpilot/commit/47b301ddd30e104f3dfd0ecc63c5e1d785552a2b))
+
+
+### Documentation
+
+* end-user tone sweep across the docs site ([#8](https://github.com/hyprpilot/hyprpilot/issues/8)) ([09c4e6f](https://github.com/hyprpilot/hyprpilot/commit/09c4e6f794b87100dc9b6a2a9b064ec0b2b9a71b))
+
 ## [0.1.3](https://github.com/hyprpilot/hyprpilot/compare/v0.1.2...v0.1.3) (2026-05-06)
 
 
