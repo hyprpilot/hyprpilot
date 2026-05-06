@@ -2,9 +2,23 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  # `release: published` instead of `push: tags: v*`. release-please
+  # creates the tag using GITHUB_TOKEN via the GitHub API, and GitHub's
+  # anti-recursion rule blocks token-originated tag pushes from
+  # triggering other workflows. Listening on the release event itself
+  # bypasses that — it fires when release-please's auto-publish step
+  # transitions the release out of draft.
+  release:
+    types:
+      - published
+  # Manual escape hatch for retries against an already-published tag
+  # (e.g. when build-release fails post-publish or the AUR push errors).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build artifacts + publish AUR for, e.g. v0.1.2"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,19 +32,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pkgver: ${{ steps.ver.outputs.pkgver }}
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
+      - name: Resolve tag (release event vs manual dispatch)
+        id: ver
+        run: |
+          # `release` event → tag rides on github.event.release.tag_name.
+          # workflow_dispatch → captain supplies it via inputs.tag.
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [[ -z "$TAG" ]]; then
+            echo "no tag resolved (release.tag_name + inputs.tag both empty)" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "pkgver=${TAG#v}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v6
         with:
+          # Pin to the resolved tag so workflow_dispatch retries build
+          # the right commit (default would be `main`'s HEAD).
+          ref: ${{ steps.ver.outputs.tag }}
           # Icons under src-tauri/icons/ are tracked via Git LFS
           # (see .gitattributes); without `lfs: true` the runner
           # checks out 130-byte pointer files and tauri's
           # `generate_context!()` proc-macro panics with "Invalid
           # PNG signature".
           lfs: true
-
-      - name: Strip leading 'v' from tag
-        id: ver
-        run: echo "pkgver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Install system deps
         run: |
@@ -82,9 +109,12 @@ jobs:
       - name: Upload to GitHub Release
         # release-please created the tag + Release; we attach
         # artifacts to the existing Release rather than creating a
-        # new one.
+        # new one. `tag_name` is explicit so the workflow_dispatch
+        # retry path (where `github.ref` is `refs/heads/main`, not
+        # the tag) still resolves the correct release.
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             ${{ steps.pack.outputs.archive }}
             ${{ steps.pack.outputs.archive }}.sha256
@@ -98,6 +128,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Pin to the same tag as build-release so the PKGBUILD's
+          # release-please-bumped pkgver matches the tarball we just
+          # uploaded.
+          ref: ${{ needs.build-release.outputs.tag }}
 
       - name: Push to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
