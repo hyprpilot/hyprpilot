@@ -8,7 +8,8 @@ export enum StreamItemKind {
   Thought = 'thought',
   Plan = 'plan',
   ModeChange = 'mode_change',
-  ModelChange = 'model_change'
+  ModelChange = 'model_change',
+  ConfigOptionChange = 'config_option_change'
 }
 
 interface BaseStream {
@@ -70,7 +71,22 @@ export interface ModelChangeStreamItem extends BaseStream {
   prevName?: string
 }
 
-export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem | ModelChangeStreamItem
+/// Banner chip for vendor-extension config-option flips (claude-agent-acp's
+/// `effort` is the canonical first user). Same chrome as ModeChange /
+/// ModelChange — chapter break in the transcript so the captain can see
+/// "X changed from A to B" inline. `categoryId` carries the wire id
+/// (`effort`) and doubles as the lead-in noun on the banner; `name` is
+/// the picked option's display label resolved against `category.options`.
+export interface ConfigOptionChangeStreamItem extends BaseStream {
+  kind: StreamItemKind.ConfigOptionChange
+  categoryId: string
+  value: string
+  name?: string
+  prevValue?: string
+  prevName?: string
+}
+
+export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem | ModelChangeStreamItem | ConfigOptionChangeStreamItem
 
 export interface StreamState {
   items: StreamItem[]
@@ -266,6 +282,45 @@ export function pushModelChange(id: InstanceId, sessionId: string, change: Model
     modelId: change.modelId,
     name: change.name,
     prevModelId: change.prevModelId,
+    prevName: change.prevName
+  })
+}
+
+export interface ConfigOptionChangePush {
+  categoryId: string
+  value: string
+  name?: string
+  prevValue?: string
+  prevName?: string
+}
+
+/// Mirror of `pushModeChange` for vendor-extension config option flips.
+/// Dedupes on `(categoryId, value)` against the most-recent banner so an
+/// agent-side `config_option_update` echo following the captain's commit
+/// doesn't stack a second card.
+export function pushConfigOptionChange(id: InstanceId, sessionId: string, change: ConfigOptionChangePush): void {
+  const slot = slotFor(id)
+  const seq = nextSeq(id)
+  const last = slot.items[slot.items.length - 1]
+
+  if (last && last.kind === StreamItemKind.ConfigOptionChange && last.sessionId === sessionId && last.categoryId === change.categoryId && last.value === change.value) {
+    last.updatedAt = seq
+
+    return
+  }
+  const itemId = `cfg-${change.categoryId}-${sessionId}-${slot.items.length}`
+
+  slot.items.push({
+    kind: StreamItemKind.ConfigOptionChange,
+    id: itemId,
+    sessionId,
+    turnId: openTurnIdFor(id, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    categoryId: change.categoryId,
+    value: change.value,
+    name: change.name,
+    prevValue: change.prevValue,
     prevName: change.prevName
   })
 }

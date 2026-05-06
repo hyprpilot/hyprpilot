@@ -3,8 +3,8 @@ import { computed, reactive, type ComputedRef } from 'vue'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useProfiles } from '../ui-state/use-profiles'
 import type { GitStatus } from '@components'
-import type { ProfileSummary } from '@ipc'
 import type { SessionConfigOptionCategory } from '@interfaces/wire/event'
+import type { ProfileSummary } from '@ipc'
 
 /**
  * One advertised mode option. Mirrors ACP `SessionMode` —
@@ -391,6 +391,9 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
  * manual selection. `agent` / `model` fall back through the
  * instance's OWN `profileId`, not the picker's selection.
  */
+/* eslint-disable-next-line complexity -- pure projection from slot →
+ * SessionInfo. Every `?? <fallback>` counts as a branch; the
+ * underlying logic is a flat mapping, not control flow. */
 function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: ProfileSummary | undefined): SessionInfo {
   return {
     title: slot?.title,

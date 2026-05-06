@@ -152,6 +152,26 @@ impl AcpAdapter {
         self.read_config().mcps.clone().unwrap_or_default()
     }
 
+    /// Per-instance MCP catalog as a flat `Vec<MCPDefinition>`. Drives
+    /// the `mcps_list` Tauri command's preview pane: when `instance_id`
+    /// resolves to a live actor we use that instance's profile to pick
+    /// the right MCP files, otherwise we fall back to the global set.
+    /// Without this lookup the captain's profile-scoped MCPs are
+    /// invisible in the palette while still being injected into ACP at
+    /// session/new — a silent divergence between what the agent sees
+    /// and what the UI shows.
+    pub async fn resolve_mcp_catalog(&self, instance_id: Option<&str>) -> Vec<crate::mcp::MCPDefinition> {
+        let profile = match instance_id.and_then(|id| InstanceKey::parse(id).ok()) {
+            Some(key) => match self.registry.info_for(key).await {
+                Ok(info) => self.profile_by_id(info.profile_id.as_deref()),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let files = self.effective_mcp_files_for(profile.as_ref());
+        crate::mcp::loader::load_files(&files)
+    }
+
     /// Build a per-instance `MCPsRegistry` from the resolved file list.
     /// Returns `None` when no files are configured (so the permission
     /// pipeline's lane 2 stays inactive and the call site doesn't pay
