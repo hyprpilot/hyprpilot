@@ -33,8 +33,8 @@ Both packages declare these — pacman pulls them automatically. If you build ou
 | Dep | What it provides |
 | --- | --- |
 | `webkit2gtk-4.1` | Webview the overlay renders into. |
-| `gtk3` | GTK toolkit (until [Tauri's GTK4 port](https://github.com/tauri-apps/wry/pull/1530) lands upstream). |
-| `gtk-layer-shell` | `zwlr_layer_shell_v1` integration for the anchor-mode surface. |
+| `gtk3` | GTK toolkit. |
+| `gtk-layer-shell` | Anchor-mode surface support. |
 | `libappindicator-gtk3` | Tray icon. |
 
 ## Compositor support
@@ -43,7 +43,7 @@ Both packages declare these — pacman pulls them automatically. If you build ou
 | --- | --- | --- |
 | Hyprland | ✅ | ✅ |
 | Sway | ✅ | ✅ |
-| GNOME / KDE | ❌ (no `zwlr_layer_shell_v1`) | ✅ |
+| GNOME / KDE | ❌ | ✅ |
 | X11 | ❌ | ✅ |
 
 GNOME / KDE captains: set `[daemon.window] mode = "center"` in your config.

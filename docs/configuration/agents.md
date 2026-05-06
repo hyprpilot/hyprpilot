@@ -57,8 +57,6 @@ system_prompt = [
 | `acp-opencode` | [opencode](https://opencode.ai) | `opencode acp` |
 | `acp-custom` | Captain-supplied ACP-speaking binary | (you provide `command` + `args`) |
 
-Each provider is wired in `match_provider_agent()` in `src-tauri/src/adapters/acp/agents/`. Adding a new vendor is one trait impl + one match arm.
-
 ## Profile fields
 
 | Field | Type | Notes |
@@ -77,18 +75,18 @@ Each provider is wired in `match_provider_agent()` in `src-tauri/src/adapters/ac
 - `agent.default_profile` → must reference a real `[[profiles]].id`.
 - `[[profiles]].agent` → must reference a real `[[agents]].id`.
 
-Garde validates these at startup. Typos abort the boot with a readable message.
+Typos abort startup with a readable error pointing at the offending field.
 
 ## Resolution order
 
 When you submit a prompt:
 
-1. Explicit `--profile <id>` (CLI) or `profile_id` (RPC) — wins.
-2. `agent.default_profile` (if both `agent` and `default_profile` are set).
-3. First `[[profiles]]` entry matching `agent.default`.
-4. First `[[agents]]` entry (no profile, vendor defaults).
+1. The profile you explicitly picked (CLI `--profile <id>`) wins.
+2. Otherwise `agent.default_profile`.
+3. Otherwise the first `[[profiles]]` matching `agent.default`.
+4. Otherwise the first `[[agents]]` entry on its own.
 
-Multiple instances of the same `(agent, profile)` are addressable by distinct UUIDs — N twins of one profile are first-class.
+You can spawn multiple instances of the same profile — they run as independent sessions side-by-side.
 
 ## System prompt composition
 
@@ -99,12 +97,4 @@ system_prompt = [
 ]
 ```
 
-Files are read at resolve time and concatenated with blank-line separators. No external preprocessor; just a plain file array. Empty string (`""`) entries are skipped silently; missing files abort the spawn.
-
-Per-vendor injection strategy:
-
-- **claude-code** — prepended to the first prompt's text block (no spawn-time hook in the SDK).
-- **codex** — passed via `-c instructions=…` at spawn time.
-- **opencode** — prepended to the first prompt (same as claude-code).
-
-Captain doesn't see this distinction; the agent just gets the concatenated prompt at the right point.
+Files are concatenated (with blank-line separators) and prepended to your first prompt — the agent reads the prompt files as context, then your message. Use it to compose a base persona + per-profile addendum without juggling templates.

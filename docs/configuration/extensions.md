@@ -46,16 +46,16 @@ Globs are **server-relative** — write `read_*` (not `mcp__filesystem__read_*`)
 
 ### Merge semantics
 
-- Files iterate in order; map collisions on the same server name = later wins.
+- Files iterate in order; collisions on the same server name = later wins.
 - Per-profile override: `[[profiles]] mcps = [...]` wholesale-replaces the global default. `mcps = []` is the explicit off-switch.
-- Static after boot. Edit the JSON, restart the daemon. (ACP fixes `mcpServers` at `session/new`, so a reload would only land for new instances anyway.)
+- Static after boot. Edit the JSON, restart the daemon.
 
 ### Permission flow
 
-1. Tool request arrives via `session/request_permission`.
-2. Daemon checks the runtime trust store (UI's "always allow / always deny" buttons) — if hit, short-circuit.
-3. Daemon checks the MCP `hyprpilot.{auto,reject}Tools` globs — if hit, short-circuit.
-4. Otherwise, surface the prompt to the captain via the permission stack.
+1. Tool request arrives.
+2. The runtime trust store ("always allow / always deny" from the UI) is consulted first.
+3. The MCP auto-accept / auto-reject globs are consulted next.
+4. Otherwise, the prompt surfaces in the permission stack.
 
 ## Skills
 
@@ -79,12 +79,10 @@ Each root is a flat directory of `<slug>/SKILL.md` bundles — compatible with t
 
 ### Behavior
 
-- **Multi-root.** List multiple `dirs`; first-root-wins on slug collision (`warn!` logged).
-- **Hot-reload.** A `notify` watcher rescans on add / modify / remove. No daemon restart needed.
-- **Missing roots** warn + skip (no auto-mkdir). Recovery: `hyprpilot ctl skills reload` after creating the directory.
+- **Multi-root.** List multiple `dirs`; first root wins on slug collision.
+- **Hot-reload.** Add, edit, or remove files — the daemon picks up changes without restart.
+- **Missing roots** are warned about and skipped. Run `hyprpilot ctl skills reload` after creating a missing directory.
 
 ### Delivery to the agent
 
-Skills attach to user turns through the **palette**, not inline tokens. Captain opens `Ctrl+K → skills`, picks one, the body snapshot rides on the next prompt as an embedded resource. The agent reads context first, then the user's instructions.
-
-The old inline `#{skill/<slug>}` token mechanism was removed — palette is the single delivery surface.
+Skills attach to user turns through the **palette**. Open `Ctrl+K → skills`, pick one, and its body rides on your next prompt as context. The agent reads the skill first, then your message.

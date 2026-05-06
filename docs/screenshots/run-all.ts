@@ -52,6 +52,20 @@ async function enrichBase(page: Page): Promise<void> {
   }, { id: PREVIEW_ID })
 }
 
+/**
+ * Open a palette leaf directly via the dev shim's `openRootLeaf`
+ * dispatch. Avoids the Ctrl+K → type → Enter dance, which doesn't
+ * reliably reach the palette filter input under headless Brave.
+ */
+async function openLeaf(page: Page, leafId: string): Promise<void> {
+  await page.evaluate((id: string) => {
+    const dev = (window as unknown as { __hyprpilot_dev: { openRootLeaf: (id: string) => void } }).__hyprpilot_dev
+
+    dev.openRootLeaf(id)
+  }, leafId)
+  await page.waitForTimeout(500)
+}
+
 const PLAN_MARKDOWN = `## Plan
 
 1. **Audit the permission decision pipeline** in \`PermissionController::decide\` — confirm the runtime trust store is checked before MCP globs.
@@ -128,20 +142,19 @@ const shots: Shot[] = [
     name: 'palette-root',
     seed: async (page) => {
       await enrichBase(page)
-      await page.keyboard.press('Control+KeyK')
-      await page.waitForTimeout(150)
+      await page.evaluate(() => {
+        const dev = (window as unknown as { __hyprpilot_dev: Record<string, (...args: unknown[]) => unknown> }).__hyprpilot_dev
+
+        dev.openRootPalette()
+      })
+      await page.waitForTimeout(200)
     }
   },
   {
     name: 'palette-sessions',
     seed: async (page) => {
       await enrichBase(page)
-      await page.keyboard.press('Control+KeyK')
-      await page.waitForTimeout(120)
-      await page.keyboard.type('sessions')
-      await page.waitForTimeout(120)
-      await page.keyboard.press('Enter')
-      await page.waitForTimeout(500)
+      await openLeaf(page, 'sessions')
     }
   },
   {
@@ -161,12 +174,100 @@ const shots: Shot[] = [
           ]
         })
       }, { id: PREVIEW_ID })
-      await page.keyboard.press('Control+KeyK')
-      await page.waitForTimeout(120)
-      await page.keyboard.type('models')
-      await page.waitForTimeout(120)
-      await page.keyboard.press('Enter')
-      await page.waitForTimeout(500)
+      await openLeaf(page, 'models')
+    }
+  },
+  {
+    name: 'palette-modes',
+    seed: async (page) => {
+      await enrichBase(page)
+      await page.evaluate(({ id }) => {
+        const dev = (window as unknown as { __hyprpilot_dev: Record<string, (...args: unknown[]) => unknown> }).__hyprpilot_dev
+
+        dev.pushInstanceModeState(id, {
+          currentModeId: 'plan',
+          availableModes: [
+            { id: 'plan', name: 'Plan', description: 'Plan first, write second.' },
+            { id: 'default', name: 'Default', description: 'Standard mode.' }
+          ]
+        })
+      }, { id: PREVIEW_ID })
+      await openLeaf(page, 'modes')
+    }
+  },
+  {
+    name: 'palette-effort',
+    seed: async (page) => {
+      await enrichBase(page)
+      await page.evaluate(({ id }) => {
+        const dev = (window as unknown as { __hyprpilot_dev: Record<string, (...args: unknown[]) => unknown> }).__hyprpilot_dev
+
+        dev.pushConfigOptionsUpdate?.(id, [
+          {
+            id: 'effort',
+            name: 'Effort',
+            description: 'Adaptive thinking budget',
+            currentValue: 'high',
+            options: [
+              { value: 'low', name: 'Low', description: 'Minimal reasoning steps.' },
+              { value: 'medium', name: 'Medium', description: 'Balanced reasoning.' },
+              { value: 'high', name: 'High', description: 'Deeper reasoning.' },
+              { value: 'xhigh', name: 'Extra high', description: 'Heavy reasoning; slow.' },
+              { value: 'max', name: 'Max', description: 'Maximum reasoning budget.' }
+            ]
+          }
+        ])
+      }, { id: PREVIEW_ID })
+      await openLeaf(page, 'effort')
+    }
+  },
+  {
+    name: 'palette-profiles',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'profiles')
+    }
+  },
+  {
+    name: 'palette-instance',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'instance')
+    }
+  },
+  {
+    name: 'palette-instances',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'instances')
+    }
+  },
+  {
+    name: 'palette-mcps',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'mcps')
+    }
+  },
+  {
+    name: 'palette-skills',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'skills')
+    }
+  },
+  {
+    name: 'palette-cwd',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'cwd')
+    }
+  },
+  {
+    name: 'palette-daemon',
+    seed: async (page) => {
+      await enrichBase(page)
+      await openLeaf(page, 'daemon')
     }
   },
   {

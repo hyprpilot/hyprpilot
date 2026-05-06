@@ -5,9 +5,7 @@ order: 2
 
 # Hyprland integration
 
-hyprpilot exposes an `overlay/*` RPC namespace that maps cleanly onto a
-hyprland keybind. The recommended binding flips the overlay with a single
-chord.
+Bind a Hyprland chord to flip the overlay on and off.
 
 ## Recommended keybind
 
@@ -36,28 +34,13 @@ hyprpilot ctl overlay hide
 hyprpilot ctl overlay toggle
 ```
 
-Every `overlay/*` call serialises through `WindowRenderer::lock_present`
-on the daemon side, so two near-simultaneous keybind taps land in a
-deterministic visible-XOR-hidden state — never "both hide" or "both
-show".
+Concurrent calls are race-safe — two near-simultaneous keybind taps
+land in a deterministic state, never "both hide" or "both show".
 
-## How it works
+## Notes
 
-- `overlay/toggle` is the canonical bind target — no params, single
-  round-trip, returns `{"visible": bool}` reflecting the post-toggle
-  state.
-- `overlay/present` takes an optional `instanceId` and routes through
-  the same `Adapter::focus` path the UI uses, so a binding like
-  `bind = SUPER, 1, exec, hyprpilot ctl overlay present --instance <uuid>`
-  brings the overlay forward AND switches to a specific instance in
-  one chord.
-- `overlay/hide` keeps the webview alive (just unmaps the surface) so
-  the next present is instant; the daemon process doesn't restart.
-
-## Why not `window/toggle`?
-
-`window/toggle` predates the overlay namespace and is the surface waybar
-uses (`on-click: hyprpilot ctl toggle`). The two namespaces serve
-different consumers and carry different parameters (`overlay/*` accepts
-`instanceId`); both stay live — `overlay/*` is the recommended target
-for new keybinds.
+- `toggle` is the canonical bind target.
+- `present --instance <uuid>` brings the overlay forward AND switches
+  to a specific instance in one chord.
+- `hide` keeps the webview alive (just unmaps the surface) so the next
+  present is instant.

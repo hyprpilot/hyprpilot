@@ -5,12 +5,12 @@ order: 1
 
 # Configuration
 
-Hyprpilot reads layered TOML. Sources resolve in this order; later layers override earlier ones for the fields they set:
+Hyprpilot reads layered TOML. Each source overrides the one before it, so you only need to write what you want to change:
 
-1. **Compiled defaults** — `src-tauri/src/config/defaults.toml`, embedded in the binary. The single source of truth for default values.
-2. **Global config** — `$XDG_CONFIG_HOME/hyprpilot/config.toml` (typically `~/.config/hyprpilot/config.toml`).
-3. **Per-profile config-layer** — `~/.config/hyprpilot/profiles/<name>.toml` when `--config-profile <name>` or `HYPRPILOT_CONFIG_PROFILE=<name>` is set.
-4. **CLI flags** — overrides per-invocation, never persisted.
+1. **Built-in defaults** — embedded in the binary. Everything has a working default.
+2. **Global config** — `~/.config/hyprpilot/config.toml`.
+3. **Per-profile overlay** — `~/.config/hyprpilot/profiles/<name>.toml`, picked with `--config-profile <name>` or `HYPRPILOT_CONFIG_PROFILE=<name>`.
+4. **CLI flags** — override-per-invocation, never persisted.
 
 ## Two `profile` concepts
 
@@ -26,20 +26,18 @@ This page is about the TOML structure. For session profiles, see [Agents](./agen
 ## Where things live
 
 - **User config:** `~/.config/hyprpilot/config.toml`
-- **MCP catalog:** captain-supplied JSON paths listed under top-level `mcps = […]`
-- **Skills directories:** captain-supplied paths under `[skills] dirs = […]`
-- **State + logs:** `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.<date>`
+- **MCPs:** JSON paths listed under top-level `mcps = […]`
+- **Skills:** directories listed under `[skills] dirs = […]`
+- **Logs:** `~/.local/state/hyprpilot/logs/hyprpilot.log.*`
 - **Socket:** `$XDG_RUNTIME_DIR/hyprpilot.sock`
 
 ## Validation
 
-Every section uses `deny_unknown_fields` — typos in user TOML reject at load time with a readable error. Cross-field constraints (e.g. `agent.default` must reference a real `[[agents]].id`) trip the same path.
-
-A deliberately broken `config.toml` aborts startup naming the offending field. Captain doesn't ship to a half-configured daemon.
+Every section rejects unknown fields and validates types at boot — typos in your TOML fail fast with a readable error naming the offending field. Cross-field references (e.g. `agent.default` must reference a real `[[agents]].id`) are checked too.
 
 ## What's in the rest of this section
 
 - [Window](./window) — anchor vs center mode, monitor selection, sizing.
-- [Theme](./theme) — palette tokens (everything in `[ui.theme.*]`).
+- [Theme](./theme) — every color in the overlay.
 - [Agents](./agents) — `[agent]`, `[[agents]]`, `[[profiles]]` registries.
 - [Extensions](./extensions) — MCPs and skills.

@@ -5,64 +5,57 @@ order: 3
 
 # Chat and tools
 
-The transcript is the heart of the overlay. It's where prompts go, agent responses stream back, tool calls render as pills, and permission modals interrupt for action.
+The transcript is the heart of the overlay. Prompts go in, agent responses stream back, tool calls render as compact pills, and permissions interrupt for your call.
 
 ![chat transcript with bash + edit + read tool pills in a single turn](/screenshots/chat-tool-pills.png)
 
 ## Tool pills
 
-Every tool the agent invokes shows up as a compact pill with:
+Every tool the agent invokes shows up as a pill with:
 
-- **Icon** — per-tool-family color (`read` blue, `write` magenta, `bash` orange, `search` cyan, `terminal` green, `agent` purple, `acp` light-blue).
-- **Title** — formatted by the daemon (e.g. `bash: ls -la /tmp` or `edit: src/main.rs`).
-- **State** — running / completed / failed / cancelled, with a per-state animation.
-- **Stats** — typed mini-pills for diff sizes (`+12 −3`), durations (`850ms`, `2.4s`), match counts. Drives the "what just happened" read at a glance.
+- **Icon + color** per tool family — read, write, bash, search, terminal.
+- **Title** showing the tool name + key argument (e.g. `bash: cargo check`, `edit: src/main.rs`).
+- **State** — running, completed, failed, cancelled — with a matching animation.
+- **Stats** — diff sizes (`+12 −3`), durations (`850ms`, `2.4s`), match counts.
 
-Pills are **fully formatted on the daemon side** — the UI is a dumb consumer of `FormattedToolCall` payloads. A future Neovim plugin reuses the same wire.
-
-## Multi-instance
-
-Run as many concurrent agents as you want. Each `(agent, profile)` pair gets a distinct UUID; spawning the same profile twice creates two independent sessions side by side.
-
-![transcript with a pending bash permission row inline above the composer](/screenshots/permission-row.png)
-
-Header pills (left to right): profile badge · agent · model · cwd · mode · MCP count · git status. Click any to jump to the relevant palette leaf for the focused instance.
-
-The instances breadcrumb shows N (count); `Ctrl+K → instances` switches focus. Auto-focus rules:
-
-- First instance to spawn auto-focuses.
-- Shutting down the focused instance reassigns focus to the oldest survivor.
-- Restart preserves the focused slot — the UUID is reused across the swap.
+Running tools auto-expand to show their fields and live output; completed ones collapse back to a single-line pill. Click a pill to toggle.
 
 ## Permission flow
 
-When an agent requests permission for a tool — say a `bash` invocation — the request lands as a permission modal **inline in the transcript** (not as a global blocking dialog).
+When an agent wants to do something destructive or sensitive — running a shell command, editing a file, exiting plan mode — it asks first.
+
+Lightweight requests show up as an inline row above the composer:
+
+![inline permission row — bash exec pending captain decision, transcript context above](/screenshots/permission-row.png)
+
+Heavier ones (plan exits, big diffs) open a modal so you can read the full body before deciding:
 
 ![plan-modal permission with markdown body and Approve / Keep planning actions](/screenshots/permission-modal.png)
 
-Captain has four options per request:
+Either way you get four options:
 
 - **Allow once** — runs this call only.
-- **Allow always** — adds `(instance_id, tool_name)` to the runtime trust store; future identical requests auto-resolve.
+- **Allow always** — remembers it; future identical requests auto-approve.
 - **Deny once** — rejects this call only.
-- **Deny always** — adds the deny rule to the trust store.
+- **Deny always** — remembers a deny rule for next time.
 
-**Reject beats accept** when both lanes (trust store + MCP globs) match — safer default. Vendor-native tools (Bash, Read, …) carry no `mcp__` prefix and skip the MCP lane; they only short-circuit when the captain has clicked an "always" button.
+"Always" decisions are remembered for the lifetime of the focused instance. They reset on shutdown.
 
-## Composer attachments
+## Multi-instance
 
-The composer accepts:
+Run as many agents at once as you want. The header shows the focused instance's profile · agent · model · cwd · mode · mcps. Click any chip to jump to the matching palette leaf.
 
-- **Plain text** — captain's prompt.
-- **Image pills** — drag-drop image files from the OS, paste from clipboard via `Ctrl+P`. PNG-encoded, attached as `ContentBlock::Image`.
-- **Skill pills** — `Ctrl+K → skills` picks one; the body snapshot rides on the next prompt as `ContentBlock::Resource`.
+`Ctrl+K → instances` switches focus between live agents. Spawning a fresh one keeps the previous focus warm in the background.
 
-Submit (`Enter`) sends the whole compose state — text + attachments — through `session_submit` to the focused instance, or queues it if a turn is already in flight.
+## Composer
 
-## Queue
+The composer takes plain text plus two kinds of attachments:
 
-When the active turn is busy, additional submits queue. The queue strip renders above the composer; `Ctrl+Enter` dispatches the next item; per-row edit / delete buttons let you reshape it before send. The queue drains automatically as turns complete.
+- **Images** — drag-drop from your file manager, or `Ctrl+P` to paste from clipboard.
+- **Skills** — `Ctrl+K → skills` (or type `#<name>` in the composer); the skill content rides on your next prompt as context.
+
+`Enter` submits. If a turn is already running, the prompt **queues** above the composer — you can edit or delete queued items before they fire. The queue drains automatically as the agent finishes.
 
 ## Status broadcast
 
-The daemon publishes a `StatusBroadcast` (`idle` / `streaming` / `awaiting` / `error`) over `status/subscribe`. Waybar's `custom/hyprpilot` module reads this stream — see the [Waybar guide](../guide/waybar) for the drop-in.
+The daemon emits a status stream (`idle` / `streaming` / `awaiting` / `error`) so external tools like Waybar can show what hyprpilot is doing without opening the overlay. See the [Waybar guide](../guide/waybar).
