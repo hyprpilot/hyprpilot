@@ -95,3 +95,23 @@ tasks:
     desc: Build a release Tauri bundle.
     cmds:
       - "{{ .tauri }} build"
+
+  docs:dev:
+    desc: VitePress dev server for the documentation site.
+    cmds:
+      - pnpm --filter hyprpilot-docs run dev
+
+  docs:build:
+    desc: Build the documentation site to docs/.vitepress/dist.
+    cmds:
+      - pnpm --filter hyprpilot-docs run build
+
+  docs:preview:
+    desc: Preview the production-built documentation site locally.
+    cmds:
+      - pnpm --filter hyprpilot-docs run preview
+
+  docs:screenshots:
+    desc: Capture all documentation screenshots via Playwright (requires UI dev server).
+    cmds:
+      - pnpm --filter hyprpilot-docs run screenshots

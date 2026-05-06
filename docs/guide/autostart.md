@@ -1,3 +1,8 @@
+---
+title: Autostart
+order: 4
+---
+
 # Autostart
 
 hyprpilot can launch at user login on Linux DEs (GNOME, KDE), macOS,

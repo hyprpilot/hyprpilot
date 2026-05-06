@@ -1,3 +1,8 @@
+---
+title: Waybar
+order: 3
+---
+
 # Waybar integration
 
 hyprpilot exposes a live status stream via `ctl status --watch` that waybar's

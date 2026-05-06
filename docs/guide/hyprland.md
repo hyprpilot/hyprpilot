@@ -1,3 +1,8 @@
+---
+title: Hyprland
+order: 2
+---
+
 # Hyprland integration
 
 hyprpilot exposes an `overlay/*` RPC namespace that maps cleanly onto a

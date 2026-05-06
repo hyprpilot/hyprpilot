@@ -8,6 +8,10 @@
 # Node
 node_modules/
 dist/
+
+# VitePress
+/docs/.vitepress/cache/
+/docs/.vitepress/dist/
 .vite-cache/
 .vite/
 *.tsbuildinfo
