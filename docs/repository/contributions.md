@@ -5,25 +5,22 @@ order: 1
 
 # Contributions
 
-Issues, ideas, and pull requests are welcome.
+Issues, ideas, and pull requests are all welcome.
 
-## Reporting issues
+## Found a bug?
 
-Open a [GitHub Issue](https://github.com/hyprpilot/hyprpilot/issues) with:
+Open a [GitHub Issue](https://github.com/hyprpilot/hyprpilot/issues) and include enough that someone else can reproduce it: what you expected, what actually happened, and a minimal config + agent + prompt that triggers it. A log snippet from `~/.local/state/hyprpilot/logs/` helps a lot too.
 
-- What you expected to happen.
-- What actually happened.
-- A minimal reproduction (config snippet, agent, prompt).
+## Have an idea?
 
-## Pull requests
+[Discussions](https://github.com/hyprpilot/hyprpilot/discussions) is the right place for "would this fit?" or "how would you do this?" — anything where you're sketching rather than reporting. If the conversation lands on something concrete, we can move it to an issue from there.
 
-1. Branch off `main`. Use `feat/<slug>` for new capability, `hotfix/<slug>` for bug fixes.
-2. Conventional commits — `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `ci:`. The version bump and changelog entry both come from your commit subjects.
-3. Open a PR against `main`. Squash-merge is the only path; the branch auto-deletes after.
+## Sending a pull request
 
-That's it. Smaller is better — one logical change per PR.
+Fork, branch, push, open a PR against `main`. That's it. Smaller PRs are easier to review and land — one logical change per PR if you can swing it. Don't worry about getting the commit history perfect; we can tidy it on the way in.
 
-## Asking for help
+If you're not sure your idea will be accepted, open a Discussion or Issue first to sanity-check the direction. Saves everyone time.
 
-- **Issues** for bugs and feature requests.
-- **Discussions** for design conversations and "is this how you'd do it?" questions.
+## Building from source
+
+See [Development](./development.md) for the toolchain and `task dev` loop.

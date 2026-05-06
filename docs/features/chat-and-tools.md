@@ -26,7 +26,7 @@ When an agent wants to do something destructive or sensitive — running a shell
 
 Lightweight requests show up as an inline row above the composer:
 
-![inline permission row — bash exec pending captain decision, transcript context above](/screenshots/permission-row.png)
+![inline permission row — bash exec pending decision, transcript context above](/screenshots/permission-row.png)
 
 Heavier ones (plan exits, big diffs) open a modal so you can read the full body before deciding:
 
