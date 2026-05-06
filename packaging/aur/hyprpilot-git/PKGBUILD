@@ -37,8 +37,11 @@ pkgver() {
   # on empty input, so the `||` branch never fires when there are
   # no tags. Branching on the captured value covers the unreleased
   # case correctly.
+  # `|| true` because makepkg runs pkgver() with `set -e` and
+  # `git describe` exits non-zero when no tags exist — would abort
+  # the function before we even reach the branch.
   local described
-  described=$(git describe --long --tags 2>/dev/null)
+  described=$(git describe --long --tags 2>/dev/null || true)
   if [[ -n "$described" ]]; then
     printf '%s' "$described" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
   else
