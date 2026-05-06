@@ -646,12 +646,22 @@ impl AcpAdapter {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
         session_id: String,
+        cwd: Option<PathBuf>,
     ) -> Result<(), RpcError> {
         let key = match instance_id {
             Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
             None => InstanceKey::new_v4(),
         };
-        let resolved = self.resolve(agent_id, profile_id)?;
+        let mut resolved = self.resolve(agent_id, profile_id)?;
+        // Override the profile-default cwd with the session's own. ACP
+        // agents (claude-code-acp) scope persisted sessions BY cwd —
+        // resuming session-X under any cwd other than the one it was
+        // created with returns "Resource not found". The UI knows the
+        // session's cwd from `session_list`; thread it through here so
+        // the resume request lands in the right scope.
+        if let Some(c) = cwd {
+            resolved.agent.cwd = Some(c);
+        }
         self.ensure(key, resolved, Bootstrap::Resume(session_id)).await?;
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)?;
         Ok(())
@@ -1102,8 +1112,9 @@ impl Adapter for AcpAdapter {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
         session_id: String,
+        cwd: Option<PathBuf>,
     ) -> AdapterResult<()> {
-        AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id)
+        AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id, cwd)
             .await
             .map_err(rpc_to_adapter)
     }

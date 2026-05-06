@@ -138,11 +138,11 @@ const sessionListPreview = computed(() => sessionsForCwd.value.slice(0, IDLE_SES
 // one so replay events paint into the visible transcript. No-op
 // when the row carries no `id` (defensive — every ACP `SessionInfo`
 // should but the type is `id?`).
-function onRestoreSessionClick(sessionId: string | undefined): void {
+function onRestoreSessionClick(sessionId: string | undefined, cwd: string): void {
   if (!sessionId) {
     return
   }
-  void restoreSession(sessionId)
+  void restoreSession(sessionId, cwd)
 }
 
 const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
