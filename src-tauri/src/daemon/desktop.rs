@@ -61,22 +61,22 @@ pub(crate) fn get_git_status(path: String) -> Result<Option<crate::tools::git::G
 /// `${VAR}`-expand without OS access, so the daemon owns the
 /// resolution path; UI-side display niceties (home → `~`
 /// substitution, CSS truncation) stay client-side.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PathsResolveArgs {
-    pub raw: String,
-    #[serde(default)]
-    pub cwd_base: Option<String>,
-}
-
+///
+/// Signature is the flat `(raw, cwdBase)` pair, NOT a wrapping
+/// `PathsResolveArgs` struct — Tauri's command-arg binding
+/// projects struct params as `{ <paramName>: { ... } }` on the
+/// JSON-RPC wire, so a struct here would force the UI to send
+/// `{ args: { raw, cwdBase } }`. Flat params bind directly to
+/// `{ raw, cwdBase }`, matching every other Tauri command in the
+/// codebase.
 #[tauri::command]
-pub(crate) fn paths_resolve(args: PathsResolveArgs) -> Result<Option<String>, String> {
+pub(crate) fn paths_resolve(raw: String, cwd_base: Option<String>) -> Result<Option<String>, String> {
     let home = crate::paths::home_dir();
     let home_str = home.to_string_lossy();
     Ok(crate::tools::path::resolve_absolute(
-        &args.raw,
+        &raw,
         &home_str,
-        args.cwd_base.as_deref(),
+        cwd_base.as_deref(),
     ))
 }
 

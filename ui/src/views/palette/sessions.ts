@@ -24,6 +24,7 @@ import { log } from '@lib'
 
 interface SessionsLeafEntry extends PaletteEntry {
   sessionId: string
+  cwd: string
 }
 
 /** ISO-8601 → "5m ago" / "2h ago" / "3d ago". Returns the raw timestamp on parse failure. */
@@ -87,6 +88,7 @@ export function buildSessionEntries(sessions: SessionSummary[], now: () => numbe
     return {
       id: s.sessionId,
       sessionId: s.sessionId,
+      cwd: s.cwd,
       name,
       description
     }
@@ -117,7 +119,7 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
       // immediately; cleared by use-session-stream on the first
       // TurnEnded for `target`.
       setSessionRestoring(target, true)
-      void invoke(TauriCommand.SessionLoad, { sessionId: pick.sessionId, instanceId: target })
+      void invoke(TauriCommand.SessionLoad, { sessionId: pick.sessionId, instanceId: target, cwd: pick.cwd })
         .then(() => {
           setSessionRestored(target, true)
         })

@@ -43,7 +43,11 @@ export interface UseSessionHistoryApi {
   loading: Ref<boolean>
   lastErr: Ref<string | undefined>
   refresh: (opts?: { force?: boolean }) => Promise<void>
-  load: (sessionId: string) => Promise<void>
+  /// Resume a persisted session. `cwd` overrides the resolved
+  /// profile's cwd at the daemon side — required for claude-code-acp,
+  /// which scopes sessions by cwd ("Resource not found" otherwise).
+  /// UI consumers pass `session.cwd` from `session_list`.
+  load: (sessionId: string, cwd?: string) => Promise<void>
 }
 
 export function useSessionHistory(agentId: Ref<string | undefined>, profileId: Ref<string | undefined>): UseSessionHistoryApi {
@@ -86,7 +90,7 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     }
   }
 
-  async function load(sessionId: string): Promise<void> {
+  async function load(sessionId: string, cwd?: string): Promise<void> {
     const agent = agentId.value
 
     if (!agent) {
@@ -122,7 +126,8 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
         agentId: agent,
         profileId: profileId.value,
         sessionId,
-        instanceId: target
+        instanceId: target,
+        cwd
       })
       setSessionRestored(target, true)
       pushToast(ToastTone.Ok, 'restoring session…')

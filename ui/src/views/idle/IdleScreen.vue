@@ -22,14 +22,14 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  restoreSession: [sessionId: string]
+  restoreSession: [sessionId: string, cwd: string]
 }>()
 
-function onRowClick(sessionId: string | undefined): void {
-  if (!sessionId) {
+function onRowClick(session: SessionSummary): void {
+  if (!session.sessionId) {
     return
   }
-  emit('restoreSession', sessionId)
+  emit('restoreSession', session.sessionId, session.cwd)
 }
 </script>
 
@@ -71,9 +71,9 @@ function onRowClick(sessionId: string | undefined): void {
         :tabindex="s.sessionId ? 0 : undefined"
         :aria-label="s.sessionId ? `restore session ${s.title || s.sessionId}` : undefined"
         :data-restorable="Boolean(s.sessionId)"
-        @click="onRowClick(s.sessionId)"
-        @keydown.enter.prevent="onRowClick(s.sessionId)"
-        @keydown.space.prevent="onRowClick(s.sessionId)"
+        @click="onRowClick(s)"
+        @keydown.enter.prevent="onRowClick(s)"
+        @keydown.space.prevent="onRowClick(s)"
       >
         <span class="idle-sessions-dot" aria-hidden="true">○</span>
         <span class="idle-sessions-cell">{{ s.title || s.sessionId }}</span>

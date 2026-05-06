@@ -85,6 +85,13 @@ export interface LoadSessionArgs {
   agentId?: string
   profileId?: string
   sessionId: string
+  /// Override the resolved profile's cwd. ACP agents
+  /// (claude-code-acp) scope persisted sessions by cwd — resuming
+  /// session-X under any cwd other than the one it was created with
+  /// returns "Resource not found". UI passes the session's stored
+  /// cwd (from `session_list`) so the resume request lands in the
+  /// right scope.
+  cwd?: string
 }
 
 /**

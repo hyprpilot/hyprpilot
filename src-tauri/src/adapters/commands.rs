@@ -203,12 +203,14 @@ pub async fn session_load(
     agent_id: Option<String>,
     profile_id: Option<String>,
     session_id: String,
+    cwd: Option<PathBuf>,
 ) -> Result<(), String> {
     tracing::info!(
         instance_id = ?instance_id,
         agent_id = ?agent_id,
         profile_id = ?profile_id,
         session_id = %session_id,
+        cwd = ?cwd,
         "cmd::session_load: entry"
     );
     let out = adapter
@@ -217,6 +219,7 @@ pub async fn session_load(
             agent_id.as_deref(),
             profile_id.as_deref(),
             session_id,
+            cwd,
         )
         .await
         .map_err(|e| e.message);

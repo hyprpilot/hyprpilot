@@ -216,13 +216,18 @@ pub trait Adapter: Send + Sync + 'static {
         ))
     }
 
-    /// `session/load` — resume a persisted session.
+    /// `session/load` — resume a persisted session. `cwd` overrides
+    /// the resolved profile's cwd; ACP agents (claude-code-acp)
+    /// scope persisted sessions by cwd, so resuming under a
+    /// different cwd than the one the session was created with
+    /// returns "Resource not found" upstream.
     async fn load_session(
         &self,
         _instance_id: Option<&str>,
         _agent_id: Option<&str>,
         _profile_id: Option<&str>,
         _session_id: String,
+        _cwd: Option<std::path::PathBuf>,
     ) -> AdapterResult<()> {
         Err(AdapterError::Unsupported(
             "session/load not supported by this adapter".into(),
