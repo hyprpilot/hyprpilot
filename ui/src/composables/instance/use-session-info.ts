@@ -4,6 +4,7 @@ import { useActiveInstance, type InstanceId } from '../chrome/use-active-instanc
 import { useProfiles } from '../ui-state/use-profiles'
 import type { GitStatus } from '@components'
 import type { ProfileSummary } from '@ipc'
+import type { SessionConfigOptionCategory } from '@interfaces/wire/event'
 
 /**
  * One advertised mode option. Mirrors ACP `SessionMode` —
@@ -71,6 +72,12 @@ export interface SessionInfo {
   model?: string
   availableModes: SessionModeOption[]
   availableModels: SessionModelOption[]
+  /// Adapter-advertised session config option categories beyond the
+  /// spec-reserved `mode` / `model` axes — `effort` (claude-agent-acp
+  /// adaptive thinking) today, vendor extensions tomorrow. The
+  /// palette builds one leaf per category; each carries its own
+  /// `currentValue` and closed-set `options` list.
+  configOptions: SessionConfigOptionCategory[]
   mcpsCount: number
   /// Sticky tag: `true` from `setSessionRestored` onwards. Drives
   /// the header's `↻ resumed` pill.
@@ -96,6 +103,7 @@ export interface SessionInfoState {
   model?: string
   availableModes: SessionModeOption[]
   availableModels: SessionModelOption[]
+  configOptions: SessionConfigOptionCategory[]
   /// MCP servers wired to this instance. Pushed by the daemon on
   /// every `acp:instance-meta` event. `undefined` until the first
   /// InstanceMeta lands; `useSessionInfo` falls back to 0 then.
@@ -148,6 +156,7 @@ function slotFor(id: InstanceId): SessionInfoState {
     slot = {
       availableModes: [],
       availableModels: [],
+      configOptions: [],
       restored: false,
       restoring: false
     }
@@ -241,6 +250,16 @@ export function pushInstanceModelState(id: InstanceId, raw: InstanceModelStateRa
   if (Array.isArray(raw.availableModels)) {
     slot.availableModels = raw.availableModels
   }
+}
+
+/// Replace the advertised config-option categories wholesale.
+/// claude-agent-acp ships the FULL category set on every
+/// `config_option_update` notification — UI mirrors that contract.
+/// Each call overwrites; partial deltas are not a thing on this wire.
+export function pushConfigOptionsUpdate(id: InstanceId, categories: SessionConfigOptionCategory[]): void {
+  const slot = slotFor(id)
+
+  slot.configOptions = categories
 }
 
 /**
@@ -384,6 +403,7 @@ function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: Pro
     model: slot?.model ?? slotProfile?.model,
     availableModes: slot?.availableModes ?? [],
     availableModels: slot?.availableModels ?? [],
+    configOptions: slot?.configOptions ?? [],
     mcpsCount: slot?.mcpsCount ?? 0,
     restored: slot?.restored ?? false,
     restoring: slot?.restoring ?? false,

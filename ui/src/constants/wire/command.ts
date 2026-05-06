@@ -20,6 +20,7 @@ import type {
 } from '@interfaces/wire/completion'
 import type {
   ComposerDraftAppendEventPayload,
+  ConfigOptionsUpdateEventPayload,
   CurrentModeUpdateEventPayload,
   InstanceMetaEventPayload,
   InstanceStateEventPayload,
@@ -31,7 +32,8 @@ import type {
   TerminalEventPayload,
   TranscriptEventPayload,
   TurnEndedEventPayload,
-  TurnStartedEventPayload
+  TurnStartedEventPayload,
+  UsageUpdateEventPayload
 } from '@interfaces/wire/event'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
 import type {
@@ -53,6 +55,7 @@ import type {
   MCPListResult,
   ModelsSetArgs,
   ModesSetArgs,
+  ConfigOptionSetArgs,
   PermissionReplyArgs,
   ProfileSummary,
   SessionInfoResult,
@@ -90,6 +93,7 @@ export enum TauriCommand {
   InstanceRestart = 'instance_restart',
   ModelsSet = 'models_set',
   ModesSet = 'modes_set',
+  ConfigOptionSet = 'config_option_set',
   InstanceMeta = 'instance_meta',
   McpsList = 'mcps_list',
   CompletionQuery = 'completion_query',
@@ -112,6 +116,8 @@ export enum TauriEvent {
   AcpInstanceRenamed = 'acp:instance-renamed',
   AcpSessionInfoUpdate = 'acp:session-info-update',
   AcpCurrentModeUpdate = 'acp:current-mode-update',
+  AcpUsageUpdate = 'acp:usage-update',
+  AcpConfigOptionsUpdate = 'acp:config-options-update',
   AcpInstanceMeta = 'acp:instance-meta',
   ComposerDraftAppend = 'composer:draft-append'
 }
@@ -147,6 +153,7 @@ export interface TauriCommandArgs {
   [TauriCommand.InstanceRestart]: InstanceRestartArgs
   [TauriCommand.ModelsSet]: ModelsSetArgs
   [TauriCommand.ModesSet]: ModesSetArgs
+  [TauriCommand.ConfigOptionSet]: ConfigOptionSetArgs
   [TauriCommand.InstanceMeta]: InstanceMetaArgs
   [TauriCommand.McpsList]: McpsListArgs
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
@@ -197,6 +204,7 @@ export interface TauriCommandResult {
   [TauriCommand.InstanceRestart]: InstanceRestartResult
   [TauriCommand.ModelsSet]: unknown
   [TauriCommand.ModesSet]: unknown
+  [TauriCommand.ConfigOptionSet]: unknown
   [TauriCommand.InstanceMeta]: InstanceMetaSnapshot
   [TauriCommand.McpsList]: MCPListResult
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
@@ -234,6 +242,8 @@ export interface TauriEventPayload {
   [TauriEvent.AcpInstanceRenamed]: InstanceRenamedEventPayload
   [TauriEvent.AcpSessionInfoUpdate]: SessionInfoUpdateEventPayload
   [TauriEvent.AcpCurrentModeUpdate]: CurrentModeUpdateEventPayload
+  [TauriEvent.AcpUsageUpdate]: UsageUpdateEventPayload
+  [TauriEvent.AcpConfigOptionsUpdate]: ConfigOptionsUpdateEventPayload
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
 }

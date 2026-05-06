@@ -1,19 +1,26 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import RoleTag from './RoleTag.vue'
 import { Role, StatPill } from '@components'
+import type { TurnUsage } from '@composables'
 
 /**
  * turn lane: 2px colored left stripe wraps the whole turn (role tag
- * + optional elapsed chip + body). Stripe color is the visual law #2
- * — every captain or pilot turn is a vertical lane the eye follows
- * through deep tool nests. Captain (`Role.User`) → green; Pilot
- * (`Role.Assistant`) → red.
+ * + optional elapsed + usage chips + body). Stripe color is the
+ * visual law #2 — every captain or pilot turn is a vertical lane
+ * the eye follows through deep tool nests. Captain (`Role.User`) →
+ * green; Pilot (`Role.Assistant`) → red.
  */
 const props = withDefaults(
   defineProps<{
     role: Role
     elapsed?: string
     live?: boolean
+    /// Latest `acp:usage-update` reading for this turn — context
+    /// utilisation + cost. Renders as `120k/200k · $0.74` chips
+    /// next to the elapsed pill on assistant turns.
+    usage?: TurnUsage
   }>(),
   { live: false }
 )
@@ -23,13 +30,41 @@ const ROLE_LABELS: Record<Role, string> = {
   [Role.Assistant]: 'pilot'
 }
 const roleLabel = ROLE_LABELS[props.role]
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+
+  return `${n}`
+}
+const usageLabel = computed(() => {
+  const u = props.usage
+  if (!u || u.size === 0) return undefined
+
+  return `${formatTokenCount(u.used)}/${formatTokenCount(u.size)}`
+})
+const costLabel = computed(() => {
+  const c = props.usage?.cost
+  if (!c) return undefined
+  // Currency-symbol mapping for the common cases; fall back to the
+  // ISO code when unrecognised so the captain still sees the value.
+  const symbol = c.currency === 'USD' ? '$' : c.currency === 'EUR' ? '€' : c.currency
+  // Two decimal places is enough resolution at typical session
+  // costs (sub-cent variance is noise).
+
+  return `${symbol}${c.amount.toFixed(2)}`
+})
 </script>
 
 <template>
   <article class="turn" :data-role="role" :data-live="live">
     <header class="turn-header">
       <RoleTag :role="role" :label="roleLabel" />
-      <StatPill v-if="elapsed && role === Role.Assistant" class="turn-elapsed" :label="elapsed" :live="live" />
+      <div v-if="role === Role.Assistant" class="turn-stats">
+        <StatPill v-if="usageLabel" :label="usageLabel" />
+        <StatPill v-if="costLabel" :label="costLabel" />
+        <StatPill v-if="elapsed" :label="elapsed" :live="live" />
+      </div>
     </header>
     <div class="turn-body">
       <slot />
@@ -57,8 +92,10 @@ const roleLabel = ROLE_LABELS[props.role]
   margin-bottom: 4px;
 }
 
-/* Push the elapsed chip to the right edge of the header. */
-.turn-elapsed {
+/* Push the stats cluster to the right edge of the header. */
+.turn-stats {
+  @apply flex items-center;
+  gap: 4px;
   margin-left: auto;
 }
 

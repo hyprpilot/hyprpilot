@@ -328,6 +328,14 @@ function elapsedFor(turnId?: string): string | undefined {
   return turnDurationLabels.value.get(turnId)
 }
 
+function usageFor(turnId?: string) {
+  if (!turnId) {
+    return undefined
+  }
+
+  return turnRecords.value.find((rec) => rec.id === turnId)?.usage
+}
+
 /// Thinking elapsed for the assistant block. Sum of:
 ///   1. Per-turn stream-shape thinking — `TurnRecord.thinkingMs`
 ///      (closed intervals) + `(now - thinkingOpenAtMs)` while the
@@ -1113,7 +1121,7 @@ function onQueueSend(itemId: string): void {
           @restore-session="onRestoreSessionClick"
         />
 
-        <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx" :elapsed="elapsedFor(block.turnId)">
+        <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx" :elapsed="elapsedFor(block.turnId)" :usage="usageFor(block.turnId)">
           <!-- Single thinking row per turn — same chrome regardless of
                whether prose accumulated. With text, the row is
                collapsable and reveals the reasoning trace; without

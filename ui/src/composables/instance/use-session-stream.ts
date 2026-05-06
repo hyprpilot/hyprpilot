@@ -3,6 +3,7 @@ import { cleanupInstance } from './cleanup'
 import { pushPermissionRequest } from './use-permissions'
 import { pushInstanceState } from './use-phase'
 import {
+  pushConfigOptionsUpdate,
   pushCurrentModeUpdate,
   pushInstanceModeState,
   pushInstanceModelState,
@@ -21,7 +22,7 @@ import { closeTurn, deleteStreamByTurnId, pushModeChange, pushPlan, pushThoughtC
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
-import { markThinkingEnd, markThinkingStart, pushTurnEnded, pushTurnStarted } from './use-turns'
+import { markThinkingEnd, markThinkingStart, pushTurnEnded, pushTurnStarted, pushUsageUpdate } from './use-turns'
 import { recordInstanceState, useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useComposer } from '../composer/use-composer'
 import { pushToast } from '../ui-state/use-toasts'
@@ -382,6 +383,14 @@ export async function startSessionStream(): Promise<() => void> {
         prevModeId,
         prevName: prevModeId ? lookupModeName(instanceId, prevModeId) : undefined
       })
+    }),
+    await listen(TauriEvent.AcpUsageUpdate, (e) => {
+      const { instanceId, sessionId, turnId, used, size, cost } = e.payload
+
+      pushUsageUpdate(instanceId, sessionId, turnId, { used, size, cost })
+    }),
+    await listen(TauriEvent.AcpConfigOptionsUpdate, (e) => {
+      pushConfigOptionsUpdate(e.payload.instanceId, e.payload.categories)
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
       const { agentId, instanceId, profileId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload

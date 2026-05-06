@@ -159,6 +159,58 @@ export interface CurrentModeUpdateEventPayload {
 }
 
 /**
+ * Per-session usage telemetry from the agent — context budget +
+ * cost. claude-agent-acp emits this every few notifications during
+ * a turn; UI attaches the latest reading to the active turn so the
+ * captain sees live spend + window utilisation.
+ */
+export interface UsageUpdateEventPayload {
+  agentId: string
+  instanceId: string
+  sessionId: string
+  /// Active turn id at notification time, when one exists. UI binds
+  /// the reading to the turn record; absent for between-turn updates.
+  turnId?: string
+  used: number
+  size: number
+  cost?: { amount: number; currency: string }
+}
+
+/**
+ * One advertised value for a session-level config option (e.g. one
+ * of `low | medium | high | xhigh | max` for `effort`).
+ */
+export interface SessionConfigOptionValue {
+  value: string
+  name: string
+  description?: string
+}
+
+/**
+ * One advertised category — `mode` (spec-reserved), `model` (spec-
+ * reserved), or vendor extensions (`effort` for adaptive thinking,
+ * future per-vendor toggles).
+ */
+export interface SessionConfigOptionCategory {
+  id: string
+  name: string
+  description?: string
+  currentValue?: string
+  options: SessionConfigOptionValue[]
+}
+
+/**
+ * `acp:config-options-update` — adapter-advertised session config
+ * option categories. UI maps each category to a palette leaf.
+ */
+export interface ConfigOptionsUpdateEventPayload {
+  agentId: string
+  instanceId: string
+  sessionId: string
+  categories: SessionConfigOptionCategory[]
+}
+
+/**
  * Daemon-side per-instance metadata refresh — `acp:instance-meta`.
  * Pushed after `session/new`, after `session/load`, and after every
  * turn ends so the header chrome resyncs even when claude-code-acp

@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::agents::{match_provider_agent, SystemPromptInjection};
 use super::client::{AcpClient, ClientEvent, SessionUpdateNotification};
@@ -229,6 +229,60 @@ impl Drop for TurnGuard {
     }
 }
 
+/// Spawn a deferred-close timer for a synthetic turn. Synthetic
+/// turns wrap out-of-turn agent activity (replay snapshots,
+/// post-cancel residue, stray notifications post-`EndTurn`) so the
+/// UI groups them into one block instead of scattering. Without a
+/// closer the synthetic id stays in `TurnState::current` forever —
+/// `usePhase` reads `openTurnId.value !== undefined` and routes the
+/// next prompt into the queue strip.
+///
+/// Originally only `Bootstrap::Resume` attached a closer (for the
+/// replay-drain window); `Bootstrap::Fresh` instances minted
+/// synthetics on stray notifications with no closer. Promoted to a
+/// universal helper so every `open_synthetic` call site spawns one.
+///
+/// `take_synthetic` is a no-op when a real prompt arrived first
+/// (cleared the slot); same when an earlier timer already drained
+/// it (subsequent timers fire on stale snapshots and exit cleanly).
+/// Single-shot per-synthetic — quiet window is wall-clock, not a
+/// live activity tracker.
+fn spawn_synthetic_close_after(
+    quiet_ms: u64,
+    turn_state: SharedTurnState,
+    events_tx: broadcast::Sender<InstanceEvent>,
+    agent_id: String,
+    instance_id: String,
+    session_id: String,
+    stop_reason: &'static str,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(quiet_ms)).await;
+        let synth = match turn_state.write().await.take_synthetic() {
+            Some(s) => s,
+            None => return,
+        };
+        debug!(
+            agent = %agent_id,
+            session = %session_id,
+            turn = %synth,
+            stop_reason,
+            "acp::instance: closing synthetic turn after quiet window"
+        );
+        let _ = events_tx.send(InstanceEvent::TurnEnded {
+            agent_id,
+            instance_id,
+            session_id,
+            turn_id: synth,
+            stop_reason: Some(stop_reason.into()),
+            error: None,
+            // Pair with the synthetic TurnStarted's `started_at: 0` —
+            // UI hides elapsed when either side is missing real timing.
+            ended_at: 0,
+        });
+    });
+}
+
 /// Register a typed `on_receive_request` handler that delegates to an
 /// async `AcpClient` method returning `Result<Response,
 /// agent_client_protocol::Error>`. One registration line per method
@@ -365,6 +419,31 @@ pub(crate) enum MappedUpdate {
     AvailableCommands {
         commands: Vec<crate::completion::source::commands::CommandSummary>,
     },
+    /// Per-session usage telemetry — context budget + cost. claude-
+    /// agent-acp emits this every few notifications during a turn;
+    /// the UI accumulates it onto the active turn so the captain sees
+    /// live spend + window utilisation as the turn streams.
+    Usage {
+        used: u64,
+        size: u64,
+        cost: Option<UsageCost>,
+    },
+    /// Adapter-defined session config options — `effort` (adaptive
+    /// thinking), per-vendor toggles, etc. Mirrors the existing
+    /// `mode` / `model` flow but generalised to the open category
+    /// space. UI maps each category to a palette leaf so captains
+    /// pick `effort: high` without memorising claude-agent-acp's
+    /// magic vocab.
+    ConfigOptions {
+        categories: Vec<crate::adapters::SessionConfigOptionCategory>,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCost {
+    pub amount: f64,
+    pub currency: String,
 }
 
 /// Outcome of one mapper call — the typed `MappedUpdate` plus the
@@ -493,26 +572,32 @@ pub(crate) fn map_session_update(
         // reasoning as `{ type: "thinking", thinking: "..." }`
         // content blocks, and the agent forwards the block shape
         // through unchanged (see anthropics/claude-agent-sdk-typescript).
-        // Try `.text` first, then fall back to `.thinking` so we
-        // catch both shapes. Walking content arrays + concatenating
-        // covers the rare multi-block thought delta.
+        //
+        // Pick the first NON-EMPTY value across the known shapes —
+        // returning early on an empty `.text` would mask a populated
+        // `.thinking` sibling if a vendor ships both in the same
+        // delta. Walking the content array + concatenating handles
+        // multi-block thought deltas.
+        fn pick_nonempty(v: Option<&serde_json::Value>) -> Option<String> {
+            v.and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+        }
         let content = match update.get("content") {
             Some(v) => v,
             None => return String::new(),
         };
-        if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
-            return text.to_string();
+        if let Some(s) = pick_nonempty(content.get("thinking")) {
+            return s;
         }
-        if let Some(thinking) = content.get("thinking").and_then(|v| v.as_str()) {
-            return thinking.to_string();
+        if let Some(s) = pick_nonempty(content.get("text")) {
+            return s;
         }
         if let Some(arr) = content.as_array() {
             let mut out = String::new();
             for block in arr {
-                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                    out.push_str(t);
-                } else if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
-                    out.push_str(t);
+                if let Some(s) = pick_nonempty(block.get("thinking")) {
+                    out.push_str(&s);
+                } else if let Some(s) = pick_nonempty(block.get("text")) {
+                    out.push_str(&s);
                 }
             }
             return out;
@@ -691,6 +776,63 @@ pub(crate) fn map_session_update(
                 .unwrap_or("")
                 .to_string(),
         },
+        "usage_update" => {
+            let used = update.get("used").and_then(|v| v.as_u64()).unwrap_or(0);
+            let size = update.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cost = update.get("cost").and_then(|c| {
+                let amount = c.get("amount").and_then(|v| v.as_f64())?;
+                let currency = c.get("currency").and_then(|v| v.as_str())?.to_string();
+                Some(UsageCost { amount, currency })
+            });
+            MappedUpdate::Usage { used, size, cost }
+        }
+        "config_option_update" => {
+            // claude-agent-acp 0.21+ ships the FULL category set on
+            // every notification; the UI replaces its cache wholesale
+            // rather than merging deltas.
+            use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue};
+            let categories = update
+                .get("configOptions")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|cat| {
+                            let id = cat.get("id").and_then(|v| v.as_str())?.to_string();
+                            let name = cat.get("name").and_then(|v| v.as_str())?.to_string();
+                            let description = cat.get("description").and_then(|v| v.as_str()).map(str::to_string);
+                            let current_value = cat.get("currentValue").and_then(|v| v.as_str()).map(str::to_string);
+                            let options: Vec<SessionConfigOptionValue> = cat
+                                .get("options")
+                                .and_then(|v| v.as_array())
+                                .map(|opts| {
+                                    opts.iter()
+                                        .filter_map(|o| {
+                                            let value = o.get("value").and_then(|v| v.as_str())?.to_string();
+                                            let name = o.get("name").and_then(|v| v.as_str())?.to_string();
+                                            let description =
+                                                o.get("description").and_then(|v| v.as_str()).map(str::to_string);
+                                            Some(SessionConfigOptionValue {
+                                                value,
+                                                name,
+                                                description,
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            Some(SessionConfigOptionCategory {
+                                id,
+                                name,
+                                description,
+                                current_value,
+                                options,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            MappedUpdate::ConfigOptions { categories }
+        }
         "available_commands_update" => {
             use crate::completion::source::commands::CommandSummary;
             let commands = update
@@ -1950,39 +2092,15 @@ async fn run(params: RunParams) {
                 // `current` iff they still match — single lock means
                 // no race window between the two operations a real
                 // prompt could slip into.
-                {
-                    const REPLAY_DRAIN_QUIET_MS: u64 = 1500;
-                    let turn_state = turn_state.clone();
-                    let events = events_tx_notif.clone();
-                    let agent_id = agent_id_notif.clone();
-                    let instance_id = instance_id_notif.clone();
-                    let session_id = sid.0.to_string();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(REPLAY_DRAIN_QUIET_MS)).await;
-                        let synth = match turn_state.write().await.take_synthetic() {
-                            Some(s) => s,
-                            None => return,
-                        };
-                        debug!(
-                            agent = %agent_id,
-                            session = %session_id,
-                            turn = %synth,
-                            "acp::instance: closing synthetic turn after session restore replay"
-                        );
-                        let _ = events.send(InstanceEvent::TurnEnded {
-                            agent_id,
-                            instance_id,
-                            session_id,
-                            turn_id: synth,
-                            stop_reason: Some("replay_complete".into()),
-                            error: None,
-                            // Pair with the synthetic TurnStarted's
-                            // `started_at: 0` — UI hides elapsed when
-                            // either side is missing real timing.
-                            ended_at: 0,
-                        });
-                    });
-                }
+                spawn_synthetic_close_after(
+                    1500,
+                    turn_state.clone(),
+                    events_tx_notif.clone(),
+                    agent_id_notif.clone(),
+                    instance_id_notif.clone(),
+                    sid.0.to_string(),
+                    "replay_complete",
+                );
                 // Resumed sessions already saw the system prompt in their
                 // original turn — re-injecting it on the first post-restore
                 // submit would duplicate it in agent context. Drop the
@@ -2133,10 +2251,16 @@ async fn run(params: RunParams) {
                                 // `TurnEnded { stop_reason: "cancelled" }` so the UI
                                 // never gets stuck on a phantom in-flight turn.
                                 let guard = guard;
-                                let res = conn
-                                    .send_request(PromptRequest::new(sid.clone(), blocks))
-                                    .block_task()
-                                    .await;
+                                let req = PromptRequest::new(sid.clone(), blocks);
+                                trace!(
+                                    target: "acp::wire",
+                                    agent = %agent_log,
+                                    session = %session_log,
+                                    turn = %turn_id_done,
+                                    payload = ?serde_json::to_value(&req).ok(),
+                                    "acp::instance: session/prompt outgoing"
+                                );
+                                let res = conn.send_request(req).block_task().await;
                                 let (stop_reason, error_msg, mapped) = match res {
                                     Ok(resp) => {
                                         info!(
@@ -2437,6 +2561,23 @@ async fn run(params: RunParams) {
                                 update_kind,
                                 "acp::instance: session/update received"
                             );
+                            // Trace-level raw payload so vendor wire-shape
+                            // surprises (e.g. claude-code-acp's empty
+                            // `agent_thought_chunk` content with
+                            // `display: omitted` thinking) surface in the
+                            // log without code changes. Gate behind
+                            // `RUST_LOG='hyprpilot::adapters=trace'` to
+                            // avoid logging every chunk on the hot path
+                            // by default. Captures BEFORE
+                            // `map_session_update` consumes the value.
+                            trace!(
+                                target: "acp::wire",
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                update_kind,
+                                payload = %update,
+                                "acp::instance: session/update raw"
+                            );
                             let MappedSessionUpdate { mapped, meta } =
                                 map_session_update(update, &mut tool_call_cache, provider_id_for_fmt.as_str());
                             // Out-of-turn detection: if a transcript-shape
@@ -2472,6 +2613,26 @@ async fn run(params: RunParams) {
                                     turn_id: synthetic.clone(),
                                     started_at: 0,
                                 });
+                                // Synthetic turns minted from stray notifications
+                                // (post-cancel residue, agent emissions after
+                                // `EndTurn`) have no natural closer — the
+                                // captain's next prompt would clean it up via
+                                // `take_synthetic` in the Prompt arm, but if no
+                                // prompt arrives the slot stays open forever and
+                                // the composer routes everything into the queue.
+                                // Spawn a timer that drains after a quiet
+                                // window. A real prompt arriving first wins the
+                                // race (it takes the synthetic before the timer
+                                // fires; timer becomes a no-op).
+                                spawn_synthetic_close_after(
+                                    2500,
+                                    turn_state.clone(),
+                                    events_tx_notif.clone(),
+                                    agent_id_notif.clone(),
+                                    instance_id_notif.clone(),
+                                    sid.clone(),
+                                    "synthetic_quiet",
+                                );
                                 turn_id = Some(synthetic);
                             }
                             let evt: Option<InstanceEvent> = match mapped {
@@ -2516,6 +2677,26 @@ async fn run(params: RunParams) {
                                         }
                                     }
                                     None
+                                }
+                                MappedUpdate::Usage { used, size, cost } => Some(InstanceEvent::UsageUpdate {
+                                    agent_id: agent_id_notif.clone(),
+                                    instance_id: instance_id_notif.clone(),
+                                    session_id: sid,
+                                    // Bind to the active turn at notification time —
+                                    // UI uses this to attach the latest reading to
+                                    // the right turn in the transcript.
+                                    turn_id: turn_id.clone(),
+                                    used,
+                                    size,
+                                    cost,
+                                }),
+                                MappedUpdate::ConfigOptions { categories } => {
+                                    Some(InstanceEvent::ConfigOptionsUpdate {
+                                        agent_id: agent_id_notif.clone(),
+                                        instance_id: instance_id_notif.clone(),
+                                        session_id: sid,
+                                        categories,
+                                    })
                                 }
                             };
                             if let Some(evt) = evt {
@@ -2869,6 +3050,7 @@ mod tests {
                 cwd: None,
                 env: Default::default(),
                 model: None,
+                thinking_budget_tokens: None,
             },
             profile_id: None,
             model: None,

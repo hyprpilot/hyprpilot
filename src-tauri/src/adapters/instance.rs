@@ -246,6 +246,35 @@ pub enum InstanceEvent {
         session_id: String,
         current_mode_id: String,
     },
+    /// Per-session usage telemetry — context budget + cost. Emitted
+    /// on every `usage_update` notification claude-agent-acp pushes
+    /// during a turn. UI attaches the latest reading to the active
+    /// turn so the captain sees live spend + window utilisation.
+    UsageUpdate {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        /// `turn_id` of the live turn at notification time, when
+        /// one exists; absent for between-turn updates.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        used: u64,
+        size: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cost: Option<crate::adapters::acp::instance::UsageCost>,
+    },
+    /// Adapter-advertised session config option categories. Generic
+    /// vocabulary covering `mode` (spec-reserved), `model` (spec-
+    /// reserved), and vendor extensions (`effort` adaptive-thinking
+    /// for claude-agent-acp 0.21+, etc.). UI maps each category to a
+    /// palette leaf so captains pick values without memorising the
+    /// vendor vocab.
+    ConfigOptionsUpdate {
+        agent_id: String,
+        instance_id: String,
+        session_id: String,
+        categories: Vec<SessionConfigOptionCategory>,
+    },
     /// Daemon-side per-instance metadata refresh — NOT an ACP wire
     /// notification. The daemon emits this after `session/new` resolves
     /// (so the UI gets the resolved cwd + advertised modes/models),
@@ -311,6 +340,47 @@ pub struct SessionModelInfo {
     pub description: Option<String>,
 }
 
+/// One advertised value for a session-level config option (e.g. one
+/// of `low | medium | high | xhigh | max` for `effort`). Mirrors
+/// claude-agent-acp's `configOptions[].options[]` shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigOptionValue {
+    /// Wire value the UI sends back via `set_session_config_option`.
+    pub value: String,
+    /// Display label.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// One advertised category — mirrors claude-agent-acp's
+/// `configOptions[].category`. Covers the spec-reserved `mode` /
+/// `model` axes AND vendor extensions (`effort` for adaptive
+/// thinking, future per-vendor toggles). UI builds a palette leaf
+/// per category so the captain picks values without memorising the
+/// vendor vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigOptionCategory {
+    /// Wire id used both for `set_session_config_option` and as the
+    /// palette leaf identifier.
+    pub id: String,
+    /// Display label for the category (e.g. "Effort").
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Currently-selected value, if any. UI marks the matching
+    /// option as the active row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<String>,
+    /// Closed set of valid values. Empty when the category is a
+    /// free-form text input — UI degrades to the modes-style picker
+    /// when populated, hides the leaf when empty.
+    #[serde(default)]
+    pub options: Vec<SessionConfigOptionValue>,
+}
+
 /// Per-terminal payload variant. `Output` carries stdout / stderr
 /// bytes as the child process emits them; `Exit` lands once on exit
 /// with the resolved status.
@@ -359,6 +429,8 @@ impl InstanceEvent {
             InstanceEvent::DaemonReloaded { .. } => "daemon.reloaded",
             InstanceEvent::SessionInfoUpdate { .. } => "instance.session_info_update",
             InstanceEvent::CurrentModeUpdate { .. } => "instance.current_mode_update",
+            InstanceEvent::UsageUpdate { .. } => "instance.usage_update",
+            InstanceEvent::ConfigOptionsUpdate { .. } => "instance.config_options_update",
             InstanceEvent::InstanceMeta { .. } => "instance.meta",
         }
     }

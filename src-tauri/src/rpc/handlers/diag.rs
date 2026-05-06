@@ -121,6 +121,7 @@ mod tests {
             args: Vec::new(),
             env,
             cwd: None,
+            thinking_budget_tokens: None,
         });
         cfg.profiles.push(crate::config::ProfileConfig {
             id: "ask".into(),
@@ -132,6 +133,7 @@ mod tests {
             mode: None,
             cwd: None,
             env: std::collections::BTreeMap::new(),
+            thinking_budget_tokens: None,
         });
 
         let acp = Arc::new(AcpAdapter::new(cfg.clone(), Arc::new(StatusBroadcast::new(true))));

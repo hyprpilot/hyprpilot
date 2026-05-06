@@ -190,6 +190,16 @@ export interface ModesSetArgs {
   modeId: string
 }
 
+/// Set any session-level config option the agent advertises via
+/// `config_option_update`. Catch-all for vendor extensions like
+/// `effort` (claude-agent-acp adaptive thinking) — the dedicated
+/// `mode` / `model` axes go through `ModesSet` / `ModelsSet`.
+export interface ConfigOptionSetArgs {
+  instanceId: string
+  configId: string
+  value: string
+}
+
 export interface InstanceMetaArgs {
   /// Optional when `ensure=true` — the daemon spawns a fresh instance
   /// from `(agentId, profileId)` if no live actor matches the id
