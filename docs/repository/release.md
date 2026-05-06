@@ -45,15 +45,20 @@ Commits hidden from the changelog (per `.github/release-please-config.json`): `c
 | `package.yml` | Push to `packaging/aur/hyprpilot-git/**` or manual dispatch | Publishes `hyprpilot-git` to AUR. |
 | `docs.yml` | Push to `docs/**` | Builds and deploys this site to GitHub Pages. |
 
-## release-please needs a PAT
+## How release.yml gets triggered
 
-GitHub's anti-recursion rule blocks events created via `GITHUB_TOKEN` from triggering downstream workflows — including `release: published`. release-please therefore needs a Personal Access Token (`RELEASE_PLEASE_TOKEN` repo secret) with these scopes:
+GitHub's anti-recursion rule blocks events created via `GITHUB_TOKEN` from triggering downstream workflows — including `release: published`. To avoid needing a Personal Access Token, `release-please.yml` runs a follow-up step that dispatches `release.yml` via `workflow_dispatch` (which IS exempt from the rule):
 
-- `Contents: Read and write`
-- `Pull requests: Read and write`
-- `Issues: Read and write`
+```yaml
+- name: Dispatch release.yml on new release
+  if: ${{ steps.release.outputs.release_created == 'true' }}
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    TAG: ${{ steps.release.outputs.tag_name }}
+  run: gh workflow run release.yml --ref main -f tag="$TAG"
+```
 
-Without the PAT, `release.yml` doesn't auto-trigger and you have to `workflow_dispatch` it manually after every release.
+Needs `actions: write` on the workflow's `permissions` block — that's it. No PAT, no extra secret.
 
 ## AUR publish
 
