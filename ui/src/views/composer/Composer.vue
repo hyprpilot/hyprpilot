@@ -680,7 +680,10 @@ function onDragOver(e: DragEvent): void {
   border-radius: 4px;
   padding: 8px 10px;
   min-height: 96px;
-  max-height: 25vh;
+  /* Cap at 50% of the viewport height so a captain pasting a long
+   * spec / fenced code block can keep most of it in view while
+   * editing instead of scrolling inside a stubby 25vh box. */
+  max-height: 50vh;
 }
 
 .composer-textarea::placeholder {

@@ -214,6 +214,39 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Idle)
   })
 
+  it('drops foreign-session orphans on TurnStarted (queue-stuck regression)', () => {
+    // Captain reports prompts queueing on a "fresh" instance even
+    // when phase reads idle. Hypothesis: a prior session's turn
+    // never received its TurnEnded (broadcast dropped, daemon
+    // panic mid-turn, restart sequence fired Ended → Running too
+    // tightly), so `openBySession` carried an orphan keyed by the
+    // dead session. The new session's TurnStarted then ended fine,
+    // but `openTurnId` (which reads `values().next()`) hit the
+    // orphan, pinned phase != Idle, and routed the next prompt
+    // into the queue. pushTurnStarted now drops orphans for
+    // foreign sessions before setting its own entry.
+    useActiveInstance().set('A')
+    pushInstanceState('A', InstanceState.Running)
+    pushTurnStarted('A', {
+      turnId: 't-old', sessionId: 's-orphan', startedAtMs: 0
+    })
+    // Simulate the orphan: a new TurnStarted lands on a different
+    // session WITHOUT the prior session's TurnEnded clearing.
+    pushTurnStarted('A', {
+      turnId: 't-new', sessionId: 's-fresh', startedAtMs: 0
+    })
+    // The new turn ends cleanly.
+    pushTurnEnded('A', {
+      turnId: 't-new', sessionId: 's-fresh', stopReason: 'end_turn', endedAtMs: 0
+    })
+
+    const { phase } = usePhase()
+
+    // Without the foreign-session drop the phase would be Working
+    // (orphan turn 't-old' still open under 's-orphan').
+    expect(phase.value).toBe(Phase.Idle)
+  })
+
   it('resolves the explicit instanceId arg over the active id', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)

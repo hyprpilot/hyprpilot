@@ -61,7 +61,7 @@ describe('ChatBody.vue', () => {
     expect(md.html()).toContain('<em>italic</em>')
   })
 
-  it('keeps user-role text raw even when markdown=true is set on the prop', async() => {
+  it('renders user-role text as markdown when :markdown + :text are passed', async() => {
     const wrapper = mount(ChatBody, {
       props: {
         role: Role.User,
@@ -72,8 +72,10 @@ describe('ChatBody.vue', () => {
 
     await flush()
 
-    expect(wrapper.find('.markdown-body').exists()).toBe(false)
-    expect(wrapper.text()).toContain('**bold**')
+    const md = wrapper.find('.markdown-body')
+
+    expect(md.exists()).toBe(true)
+    expect(md.html()).toContain('<strong>bold</strong>')
   })
 
   it('mounts a copy button per fenced code block', async() => {
