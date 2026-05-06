@@ -22,5 +22,13 @@ jobs:
           # `vX.Y.Z` git tag + creates the GitHub Release. The tag
           # then triggers `release.yml` for the binary tarball + AUR
           # publish.
+          #
+          # `token: RELEASE_PLEASE_TOKEN` is mandatory — events created
+          # via the default GITHUB_TOKEN (tag pushes, release publish)
+          # don't trigger downstream workflows per GitHub's
+          # anti-recursion rule. PAT-originated events are exempt, so
+          # `release.yml` auto-triggers on the release-please-created
+          # release.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json

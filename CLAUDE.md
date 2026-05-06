@@ -1688,6 +1688,28 @@ The `ui/` package consumes the workspace-wide config at
 
 Do not add ad-hoc rules to either config file without updating this manual.
 
+## YAML conventions
+
+**Block style only — never JSON-like flow mappings in YAML.** Applies to every
+YAML file the repo ships: `.github/workflows/*.yml`, `Taskfile.yml`,
+`pnpm-workspace.yaml`, etc.
+
+```yaml
+# wrong — flow-style mapping
+- uses: actions/checkout@v6
+  with: { lfs: true }
+
+# right — block style
+- uses: actions/checkout@v6
+  with:
+    lfs: true
+```
+
+GitHub Actions expression syntax `${{ … }}` is unrelated and stays as-is — it
+is a string substitution context, not YAML structure. Same for one-liner
+scalars (`echo "foo"`, `ref: main`). The rule only forbids `{ key: value }`
+shaped mappings inline.
+
 ## Agents
 
 - `.mcp.json` at the repo root is the repo-scoped MCP server registry. Starts
