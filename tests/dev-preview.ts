@@ -132,9 +132,21 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
   agents_list: { agents: [{ id: 'claude-code', provider: 'acp-claude-code', model: 'claude-opus-4' }] },
   commands_list: { commands: [] },
   instances_list: { instances: [] },
+  session_list: { sessions: [] },
   sessions_info: { sessions: [] },
   skills_list: { skills: [] },
-  mcps_list: { mcps: [] }
+  mcps_list: { mcps: [] },
+  paths_resolve: null,
+  get_daemon_cwd: '/home/dev',
+  get_git_status: null,
+  completion_query: {
+    items: [
+      { id: 'git-commit', label: 'git-commit', sourceId: 'skills', description: 'Draft a conventional commit message.' },
+      { id: 'github-pr', label: 'github-pr', sourceId: 'skills', description: 'Draft a pull request description.' },
+      { id: 'gitlab-mr', label: 'gitlab-mr', sourceId: 'skills', description: 'Draft a GitLab merge request description.' }
+    ]
+  },
+  get_completion_config: { ripgrep: { auto: false, debounceMs: 80, minPrefix: 3 } }
 }
 
 /**

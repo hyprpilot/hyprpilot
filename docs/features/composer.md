@@ -7,7 +7,7 @@ order: 4
 
 The composer is the textarea at the bottom of the overlay. It accepts plain text, image attachments, skill attachments, and offers caret-anchored autocomplete from multiple sources.
 
-![composer mid-type with autocomplete popover open](/screenshots/composer-autocomplete.png)
+![composer with the `#` skill sigil mid-type](/screenshots/composer-autocomplete.png)
 
 ## Autocomplete sources
 
