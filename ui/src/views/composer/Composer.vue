@@ -23,7 +23,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
 import { ToastTone, ComposerPillKind, type ComposerPill } from '@components'
-import { type KeymapEntry, pushToast, useAttachments, useCompletion, useComposer, useKeymap, useKeymaps } from '@composables'
+import { type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo } from '@composables'
 import { invoke, Modifier, TauriCommand } from '@ipc'
 import { blobToDataUrl, formatSize, getCaretCoordinates, log, rgbaToPngBlob } from '@lib'
 
@@ -258,8 +258,18 @@ function fireCompletionQuery(opts?: { manual?: boolean }): void {
   }
   repositionPopover()
   const cursor = el.selectionStart ?? el.value.length
+  // Without an explicit cwd the daemon falls through to its own
+  // `current_dir()` — wherever `hyprpilot daemon` was launched —
+  // and ripgrep walks an unrelated tree.
+  const activeId = useActiveInstance().id.value
+  const sessionInfo = useSessionInfo(activeId).info
+  const cwdFallback = useDaemonCwd().daemonCwd
 
-  completion.query(el.value, cursor, { manual: opts?.manual ?? false })
+  completion.query(el.value, cursor, {
+    manual: opts?.manual ?? false,
+    cwd: sessionInfo.value.cwd ?? cwdFallback.value,
+    instanceId: activeId
+  })
 }
 
 function onTextareaInput(): void {
