@@ -448,14 +448,20 @@ function firePermission(action: 'allow' | 'deny'): void {
 
   if (!opt) {
     log.info('keybind no-op', {
-      action, target: 'permission', reason: 'no_basic_variant', offered: active.options.map((o) => o.kind)
+      action,
+      target: 'permission',
+      reason: 'no_basic_variant',
+      offered: active.options.map((o) => o.kind)
     })
     pushToast(ToastTone.Warn, `${action} keybind: agent didn't offer ${targetKind}; click an option directly`)
 
     return
   }
   log.info('keybind invoked', {
-    action, target: 'permission', optionId: opt.optionId, kind: opt.kind
+    action,
+    target: 'permission',
+    optionId: opt.optionId,
+    kind: opt.kind
   })
   void onPermissionReply(active.request.requestId, opt.optionId)
 }
@@ -1121,7 +1127,14 @@ function onQueueSend(itemId: string): void {
           @restore-session="onRestoreSessionClick"
         />
 
-        <Turn v-for="(block, blockIdx) in timelineBlocks" :key="block.groupKey" :role="block.role" :live="blockIdx === liveBlockIdx" :elapsed="elapsedFor(block.turnId)" :usage="usageFor(block.turnId)">
+        <Turn
+          v-for="(block, blockIdx) in timelineBlocks"
+          :key="block.groupKey"
+          :role="block.role"
+          :live="blockIdx === liveBlockIdx"
+          :elapsed="elapsedFor(block.turnId)"
+          :usage="usageFor(block.turnId)"
+        >
           <!-- Single thinking row per turn — same chrome regardless of
                whether prose accumulated. With text, the row is
                collapsable and reveals the reasoning trace; without
@@ -1158,6 +1171,12 @@ function onQueueSend(itemId: string): void {
               :to="entry.item.name ?? entry.item.modelId"
               :from="entry.item.prevName ?? entry.item.prevModelId"
             />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
+              :kind="entry.item.categoryId"
+              :to="entry.item.name ?? entry.item.value"
+              :from="entry.item.prevName ?? entry.item.prevValue"
+            />
           </template>
 
           <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterFor(t.call.agentId)))" />
@@ -1192,11 +1211,7 @@ function onQueueSend(itemId: string): void {
        Modal; future heavy-confirm flows opt in by setting the same
        discriminator. Top-level so the backdrop covers the viewport
        regardless of any chat-transcript scroll position. -->
-  <PermissionModal
-    v-if="activeModalView"
-    :view="activeModalView"
-    @reply="(optionId) => onPermissionReply(activeModalView!.request.requestId, optionId)"
-  />
+  <PermissionModal v-if="activeModalView" :view="activeModalView" @reply="(optionId) => onPermissionReply(activeModalView!.request.requestId, optionId)" />
 
   <!-- Rename-instance modal — singleton driven by
        `useRenameInstanceModal()`. Body composes `<ModalDescription>`

@@ -1,4 +1,3 @@
-
 import { cleanupInstance } from './cleanup'
 import { pushPermissionRequest } from './use-permissions'
 import { pushInstanceState } from './use-phase'
@@ -16,9 +15,10 @@ import {
   setSessionRestoring,
   setSessionTitleFromPrompt,
   lookupCurrentMode,
-  lookupModeName
+  lookupModeName,
+  useSessionInfo
 } from './use-session-info'
-import { closeTurn, deleteStreamByTurnId, pushModeChange, pushPlan, pushThoughtChunk } from './use-stream'
+import { closeTurn, deleteStreamByTurnId, pushConfigOptionChange, pushModeChange, pushPlan, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
@@ -306,7 +306,9 @@ export async function startSessionStream(): Promise<() => void> {
       // updates within the turn merge cleanly into one block each.
       closeTurn(instanceId, sessionId)
       pushTurnStarted(instanceId, {
-        turnId, sessionId, startedAtMs: startedAt
+        turnId,
+        sessionId,
+        startedAtMs: startedAt
       })
     }),
     await listen(TauriEvent.AcpTurnEnded, (e) => {
@@ -387,10 +389,41 @@ export async function startSessionStream(): Promise<() => void> {
     await listen(TauriEvent.AcpUsageUpdate, (e) => {
       const { instanceId, sessionId, turnId, used, size, cost } = e.payload
 
-      pushUsageUpdate(instanceId, sessionId, turnId, { used, size, cost })
+      pushUsageUpdate(instanceId, sessionId, turnId, {
+        used, size, cost
+      })
     }),
     await listen(TauriEvent.AcpConfigOptionsUpdate, (e) => {
-      pushConfigOptionsUpdate(e.payload.instanceId, e.payload.categories)
+      const { instanceId, sessionId, categories } = e.payload
+      // Diff against the prior snapshot BEFORE overwriting it so the
+      // chat banner reads `effort · medium → high` for agent-pushed
+      // flips too — mirrors the captain-commit path in
+      // views/palette/effort.ts. pushConfigOptionChange dedupes on
+      // (categoryId, value), so the captain commit + agent echo
+      // collapse to a single banner.
+      const prior = useSessionInfo(instanceId).info.value.configOptions
+
+      for (const next of categories) {
+        if (next.currentValue === undefined) {
+          continue
+        }
+        const prev = prior.find((c) => c.id === next.id)
+
+        if (prev?.currentValue === next.currentValue) {
+          continue
+        }
+        const nextOption = next.options.find((opt) => opt.value === next.currentValue)
+        const prevOption = prev?.currentValue ? prev.options.find((opt) => opt.value === prev.currentValue) : undefined
+
+        pushConfigOptionChange(instanceId, sessionId, {
+          categoryId: next.id,
+          value: next.currentValue,
+          name: nextOption?.name,
+          prevValue: prev?.currentValue,
+          prevName: prevOption?.name
+        })
+      }
+      pushConfigOptionsUpdate(instanceId, categories)
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
       const { agentId, instanceId, profileId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload

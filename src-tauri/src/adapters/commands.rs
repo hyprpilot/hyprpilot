@@ -20,10 +20,8 @@ use super::permission::PermissionController;
 use super::transcript::Attachment;
 use super::Adapter;
 use crate::completion::hydration::TokenHydrators;
-use crate::mcp::MCPsRegistry;
 
 type AdapterState<'a> = State<'a, Arc<AcpAdapter>>;
-type MCPsState<'a> = State<'a, Arc<MCPsRegistry>>;
 type HydratorsState<'a> = State<'a, TokenHydrators>;
 
 #[tauri::command]
@@ -439,16 +437,17 @@ pub async fn permission_reply(
     Ok(())
 }
 
-/// Read-only snapshot of the resolved MCP set. UI's palette `mcps`
-/// leaf binds to this. With per-instance overrides gone (S5), every
-/// server in the resolved file set is "active"; captains can't
-/// toggle one off without editing the JSON files + `daemon/reload`.
-/// The returned shape passes `raw` through verbatim so the UI's
-/// preview pane can render the full opaque entry — env values are
-/// NOT redacted here (UI does the redaction layer).
+/// Read-only snapshot of the resolved MCP set for an instance. When
+/// `instance_id` resolves to a live actor we resolve the catalog
+/// through its profile (profile's `mcps` wholesale-replaces the
+/// global default — same path as the ACP injection at session/new);
+/// otherwise we fall back to the global set. Without the per-instance
+/// resolution captains who scope their MCPs under `[[profiles]]
+/// mcps = […]` see an empty palette while the live agent has the
+/// servers wired in.
 #[tauri::command]
-pub async fn mcps_list(mcps: MCPsState<'_>) -> Result<Value, String> {
-    let catalog = mcps.list();
+pub async fn mcps_list(adapter: AdapterState<'_>, instance_id: Option<String>) -> Result<Value, String> {
+    let catalog = adapter.resolve_mcp_catalog(instance_id.as_deref()).await;
     let items: Vec<Value> = catalog
         .iter()
         .map(|m| {
