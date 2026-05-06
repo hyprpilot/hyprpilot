@@ -29,7 +29,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Icons under src-tauri/icons/ are tracked via Git LFS
           # (see .gitattributes); without `lfs: true` the runner
@@ -49,7 +49,7 @@ jobs:
             pkg-config
 
       - name: Bootstrap toolchain via mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
@@ -63,7 +63,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Icons under src-tauri/icons/ are tracked via Git LFS
           # (see .gitattributes); without `lfs: true` the runner
@@ -83,7 +83,7 @@ jobs:
             pkg-config
 
       - name: Bootstrap toolchain via mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
@@ -97,7 +97,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Icons under src-tauri/icons/ are tracked via Git LFS
           # (see .gitattributes); without `lfs: true` the runner
@@ -117,7 +117,7 @@ jobs:
             pkg-config
 
       - name: Bootstrap toolchain via mise
-        uses: jdx/mise-action@v2
+        uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
