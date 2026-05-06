@@ -52,14 +52,16 @@ You can have multiple instances of the same profile running side-by-side — eac
 
 ```toml
 [agent]
-default = "claude-code"            # which [[agents]] entry wins when nothing's specified
-default_profile = "engineer"       # which [[profiles]] new instances pick by default
+default = "claude-code"      # which [[agents]] entry wins when nothing's specified
+
+[profile]
+default = "engineer"         # which [[profiles]] new instances pick by default
 ```
 
 Resolution when you submit a prompt:
 
 1. The profile you picked from the palette (or `--profile <id>` from the CLI) wins.
-2. Otherwise `[agent] default_profile`.
+2. Otherwise `[profile] default`.
 3. Otherwise the first `[[profiles]]` matching `[agent] default`.
 4. Otherwise the first `[[agents]]` entry by itself.
 

@@ -62,9 +62,11 @@ MY_AGENT_TOKEN = "${env:MY_AGENT_TOKEN}"
 ```toml
 [agent]
 default = "claude-code"
-default_profile = "ask"
+
+[profile]
+default = "ask"
 ```
 
-`default` falls back when nothing else picks an agent (a profile didn't specify one, no `[[profiles]]` matched). `default_profile` is the profile new instances open with.
+`[agent] default` falls back when nothing else picks an agent (a profile didn't specify one, no `[[profiles]]` matched). `[profile] default` is the profile new instances open with.
 
 Both must reference real `id`s — the daemon refuses to start with a typo.
