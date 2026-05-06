@@ -87,6 +87,13 @@ pub struct TerminalState {
     pub exit: Arc<Mutex<Option<TerminalExitStatus>>>,
     /// Captured at spawn time for the exit-log duration field.
     pub started_at: Instant,
+    /// Stdout / stderr reader join handles. `wait()` drains these
+    /// after `child.wait()` returns so the buffer reflects every byte
+    /// the child wrote before exit. Without the drain there's a race
+    /// where `child.wait()` resolves while the reader task still has
+    /// chunks queued from the pipe — `output()` then sees a partial
+    /// buffer and `truncated` is wrong.
+    pub readers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// Ring-style buffer: grows until `limit`, then shifts bytes off the
@@ -186,8 +193,9 @@ impl Terminals {
 
         let session_key_str = session_key.as_ref().to_string();
         let terminal_id_str = terminal_id.0.to_string();
+        let mut readers = Vec::with_capacity(2);
         if let Some(stdout) = child.stdout.take() {
-            spawn_buffer_reader(
+            readers.push(spawn_buffer_reader(
                 stdout,
                 BufferReaderConfig {
                     buffer: buffer.clone(),
@@ -197,10 +205,10 @@ impl Terminals {
                     terminal_id: terminal_id_str.clone(),
                     stream: TerminalToolStream::Stdout,
                 },
-            );
+            ));
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_buffer_reader(
+            readers.push(spawn_buffer_reader(
                 stderr,
                 BufferReaderConfig {
                     buffer: buffer.clone(),
@@ -210,7 +218,7 @@ impl Terminals {
                     terminal_id: terminal_id_str.clone(),
                     stream: TerminalToolStream::Stderr,
                 },
-            );
+            ));
         }
 
         let state = TerminalState {
@@ -218,6 +226,7 @@ impl Terminals {
             buffer,
             exit,
             started_at: Instant::now(),
+            readers,
         };
 
         let mut registry = self.registry.lock().await;
@@ -248,17 +257,31 @@ impl Terminals {
         req: WaitForTerminalExitRequest,
     ) -> Result<WaitForTerminalExitResponse, TerminalError> {
         let key = (session_key.as_ref().to_string(), req.terminal_id.clone());
-        let (child, exit_slot, started_at) = {
+        let (child, exit_slot, started_at, readers) = {
             let mut registry = self.registry.lock().await;
             let state = registry
                 .get_mut(&key)
                 .ok_or_else(|| TerminalError::UnknownTerminal(req.terminal_id.0.to_string()))?;
-            (state.child.take(), state.exit.clone(), state.started_at)
+            (
+                state.child.take(),
+                state.exit.clone(),
+                state.started_at,
+                std::mem::take(&mut state.readers),
+            )
         };
 
         let status = match child {
             Some(mut child) => {
                 let out = child.wait().await?;
+                // Drain pipe readers AFTER child.wait() resolves so the
+                // OutputBuffer reflects every byte the child wrote
+                // before exit. Without this the test
+                // `create_captures_stdout_within_limit` flakes — the
+                // child finishes writing and exits faster than the
+                // reader task drains the pipe.
+                for handle in readers {
+                    let _ = handle.await;
+                }
                 let status = exit_status_from(&out);
                 let duration_ms = started_at.elapsed().as_millis();
                 tracing::debug!(
@@ -352,7 +375,7 @@ struct BufferReaderConfig {
     stream: TerminalToolStream,
 }
 
-fn spawn_buffer_reader<R>(reader: R, cfg: BufferReaderConfig)
+fn spawn_buffer_reader<R>(reader: R, cfg: BufferReaderConfig) -> tokio::task::JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -388,7 +411,7 @@ where
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(unix)]
