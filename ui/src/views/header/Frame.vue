@@ -103,13 +103,7 @@ const hasGit = computed(() => Boolean(props.gitStatus))
         </button>
         <span v-if="title" class="frame-title">{{ title }}</span>
         <span v-else class="frame-title-spacer" />
-        <button
-          v-if="instancesCount > 1"
-          type="button"
-          class="frame-instances-pill"
-          :aria-label="`${instancesCount} instances`"
-          @click="emit('instancesClick')"
-        >
+        <button v-if="instancesCount > 1" type="button" class="frame-instances-pill" :aria-label="`${instancesCount} instances`" @click="emit('instancesClick')">
           <span class="frame-instances-count">{{ instancesCount }}</span>
           <span class="frame-instances-label">instances</span>
         </button>

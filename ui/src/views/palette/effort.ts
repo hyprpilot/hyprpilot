@@ -176,7 +176,10 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
         const message = String(err)
 
         log.warn('config_option_set failed', {
-          instanceId: targetInstance, categoryId, value: pick.id, err: message
+          instanceId: targetInstance,
+          categoryId,
+          value: pick.id,
+          err: message
         })
         pushToast(ToastTone.Err, `${categoryId}: ${message}`)
       }

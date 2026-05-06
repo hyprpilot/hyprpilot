@@ -284,12 +284,15 @@ describe('startQueueDispatcher', () => {
     })
 
     pushTurnStarted('A', {
-      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'end_turn', endedAtMs: 0
+      stopReason: 'end_turn',
+      endedAtMs: 0
     })
 
     await Promise.resolve()
@@ -317,12 +320,15 @@ describe('startQueueDispatcher', () => {
     })
 
     pushTurnStarted('A', {
-      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'cancelled', endedAtMs: 0
+      stopReason: 'cancelled',
+      endedAtMs: 0
     })
 
     expect(useQueue('A').items.value).toHaveLength(2)
@@ -338,17 +344,21 @@ describe('startQueueDispatcher', () => {
     })
 
     pushTurnStarted('A', {
-      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'max_tokens', endedAtMs: 0
+      stopReason: 'max_tokens',
+      endedAtMs: 0
     })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'refusal', endedAtMs: 0
+      stopReason: 'refusal',
+      endedAtMs: 0
     })
 
     expect(invoke).not.toHaveBeenCalled()
@@ -369,12 +379,15 @@ describe('startQueueDispatcher', () => {
     })
 
     pushTurnStarted('A', {
-      turnId: 't1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTurnEnded('A', {
       turnId: 't1',
       sessionId: 's-a',
-      stopReason: 'cancelled', endedAtMs: 0
+      stopReason: 'cancelled',
+      endedAtMs: 0
     })
 
     expect(useQueue('A').items.value).toHaveLength(1)
@@ -422,7 +435,9 @@ describe('submit-routing (Overlay.vue parity)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-active', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-active',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     expect(usePhase().phase.value).toBe(Phase.Working)
 

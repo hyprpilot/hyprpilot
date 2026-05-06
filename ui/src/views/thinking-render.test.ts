@@ -12,7 +12,9 @@ beforeEach(() => {
 describe('thinking block rendering plumbing', () => {
   it('agent_thought_chunk arrives → stream item with text + turnId, surfaces in timeline block', () => {
     pushTurnStarted('A', {
-      turnId: 't-live', sessionId: 's-a', startedAtMs: 1000
+      turnId: 't-live',
+      sessionId: 's-a',
+      startedAtMs: 1000
     })
 
     pushThoughtChunk('A', 's-a', {

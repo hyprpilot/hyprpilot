@@ -32,20 +32,23 @@ const ROLE_LABELS: Record<Role, string> = {
 const roleLabel = ROLE_LABELS[props.role]
 
 function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  if (n >= 1_000_000) {return `${(n / 1_000_000).toFixed(1)}M`}
+
+  if (n >= 1_000) {return `${Math.round(n / 1_000)}k`}
 
   return `${n}`
 }
 const usageLabel = computed(() => {
   const u = props.usage
-  if (!u || u.size === 0) return undefined
+
+  if (!u || u.size === 0) {return undefined}
 
   return `${formatTokenCount(u.used)}/${formatTokenCount(u.size)}`
 })
 const costLabel = computed(() => {
   const c = props.usage?.cost
-  if (!c) return undefined
+
+  if (!c) {return undefined}
   // Currency-symbol mapping for the common cases; fall back to the
   // ISO code when unrecognised so the captain still sees the value.
   const symbol = c.currency === 'USD' ? '$' : c.currency === 'EUR' ? '€' : c.currency

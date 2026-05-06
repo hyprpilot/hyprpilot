@@ -18,17 +18,7 @@
  */
 
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
-import {
-  faBrain,
-  faFileLines,
-  faGlobe,
-  faMagnifyingGlass,
-  faPen,
-  faPenToSquare,
-  faPlug,
-  faTerminal,
-  faTrash
-} from '@fortawesome/free-solid-svg-icons'
+import { faBrain, faFileLines, faGlobe, faMagnifyingGlass, faPen, faPenToSquare, faPlug, faTerminal, faTrash } from '@fortawesome/free-solid-svg-icons'
 
 import { acpOverrides } from '@adapters/acp/acp/presentation'
 import { claudeCodeOverrides } from '@adapters/acp/claude-code/presentation'

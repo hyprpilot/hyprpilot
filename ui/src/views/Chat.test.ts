@@ -91,13 +91,19 @@ beforeEach(async() => {
 // destructive for a single keystroke.
 const SAMPLE_OPTIONS = [
   {
-    optionId: 'allow-once-id', name: 'Allow once', kind: 'allow_once'
+    optionId: 'allow-once-id',
+    name: 'Allow once',
+    kind: 'allow_once'
   },
   {
-    optionId: 'allow-always-id', name: 'Allow always', kind: 'allow_always'
+    optionId: 'allow-always-id',
+    name: 'Allow always',
+    kind: 'allow_always'
   },
   {
-    optionId: 'reject-once-id', name: 'Reject once', kind: 'reject_once'
+    optionId: 'reject-once-id',
+    name: 'Reject once',
+    kind: 'reject_once'
   }
 ]
 

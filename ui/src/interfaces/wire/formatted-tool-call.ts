@@ -21,10 +21,7 @@ export interface ToolField {
  * `Stat` enum (serde `tag = "kind"`, snake-case variant rename).
  * Empty `stats` vec on `FormattedToolCall` = no pills rendered.
  */
-export type Stat =
-  | { kind: 'text'; value: string }
-  | { kind: 'diff'; added: number; removed: number }
-  | { kind: 'duration'; ms: number }
+export type Stat = { kind: 'text'; value: string } | { kind: 'diff'; added: number; removed: number } | { kind: 'duration'; ms: number }
 
 export interface FormattedToolCall {
   title: string

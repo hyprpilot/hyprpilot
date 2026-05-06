@@ -56,15 +56,7 @@ const headerBg = computed(() => toneBg(props.tone))
 </script>
 
 <template>
-  <div
-    class="modal-backdrop"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    :aria-label="title"
-    @click.self="onBackdropClick"
-    @keydown.escape.stop="onBackdropClick"
-  >
+  <div class="modal-backdrop" role="dialog" aria-modal="true" tabindex="-1" :aria-label="title" @click.self="onBackdropClick" @keydown.escape.stop="onBackdropClick">
     <article class="modal" :data-tone="tone">
       <header class="modal-header">
         <span class="modal-tag" :style="{ backgroundColor: headerBg }">

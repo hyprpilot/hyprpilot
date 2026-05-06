@@ -23,7 +23,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
 import { ToastTone, ComposerPillKind, type ComposerPill } from '@components'
-import { type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo } from '@composables'
+import {
+  type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo
+} from '@composables'
 import { invoke, Modifier, TauriCommand } from '@ipc'
 import { blobToDataUrl, formatSize, getCaretCoordinates, log, rgbaToPngBlob } from '@lib'
 
@@ -102,6 +104,7 @@ function resize(): void {
   if (!el) {
     return
   }
+
   // When the composer is empty, leave the inline height unset so
   // CSS `min-height` is the sole governor of the rendered box.
   // Writing an inline `height: <scrollHeight>px` for empty content

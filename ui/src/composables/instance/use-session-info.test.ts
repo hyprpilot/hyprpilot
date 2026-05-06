@@ -239,4 +239,3 @@ describe('setSessionRestored', () => {
     expect(useSessionInfo('A').info.value.restored).toBe(false)
   })
 })
-

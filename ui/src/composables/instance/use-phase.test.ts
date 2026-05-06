@@ -58,7 +58,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -70,7 +72,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
@@ -86,7 +90,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
@@ -95,7 +101,8 @@ describe('usePhase', () => {
     pushTurnEnded('A', {
       turnId: 't-1',
       sessionId: 's-a',
-      stopReason: 'end_turn', endedAtMs: 0
+      stopReason: 'end_turn',
+      endedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -107,7 +114,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
@@ -119,7 +128,8 @@ describe('usePhase', () => {
       title: 'bash',
       kind: 'bash',
       status: 'running',
-      formatted: fmt, startedAtMs: 0
+      formatted: fmt,
+      startedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -131,14 +141,17 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushToolCall('A', 'agent-A', 's-a', {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'bash',
       status: 'running',
-      formatted: fmt, startedAtMs: 0
+      formatted: fmt,
+      startedAtMs: 0
     })
     pushPermissionRequest('A', 's-a', {
       agentId: 'agent-A',
@@ -165,7 +178,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushInstanceState('A', InstanceState.Ended)
 
@@ -178,7 +193,9 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-1', sessionId: 's-a', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
     })
     pushTranscriptChunk('A', 's-a', {
       sessionUpdate: 'agent_message_chunk',
@@ -206,7 +223,8 @@ describe('usePhase', () => {
       title: 'bash',
       kind: 'bash',
       status: 'in_progress',
-      formatted: fmt, startedAtMs: 0
+      formatted: fmt,
+      startedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -228,16 +246,23 @@ describe('usePhase', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
-      turnId: 't-old', sessionId: 's-orphan', startedAtMs: 0
+      turnId: 't-old',
+      sessionId: 's-orphan',
+      startedAtMs: 0
     })
     // Simulate the orphan: a new TurnStarted lands on a different
     // session WITHOUT the prior session's TurnEnded clearing.
     pushTurnStarted('A', {
-      turnId: 't-new', sessionId: 's-fresh', startedAtMs: 0
+      turnId: 't-new',
+      sessionId: 's-fresh',
+      startedAtMs: 0
     })
     // The new turn ends cleanly.
     pushTurnEnded('A', {
-      turnId: 't-new', sessionId: 's-fresh', stopReason: 'end_turn', endedAtMs: 0
+      turnId: 't-new',
+      sessionId: 's-fresh',
+      stopReason: 'end_turn',
+      endedAtMs: 0
     })
 
     const { phase } = usePhase()
@@ -252,7 +277,9 @@ describe('usePhase', () => {
     pushInstanceState('A', InstanceState.Running)
     pushInstanceState('B', InstanceState.Running)
     pushTurnStarted('B', {
-      turnId: 't-1', sessionId: 's-b', startedAtMs: 0
+      turnId: 't-1',
+      sessionId: 's-b',
+      startedAtMs: 0
     })
     pushTranscriptChunk('B', 's-b', {
       sessionUpdate: 'agent_message_chunk',

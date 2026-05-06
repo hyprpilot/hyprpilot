@@ -25,11 +25,7 @@ interface InstanceRow extends PaletteEntry {
   raw: InstanceListEntry
 }
 
-function rowFor(
-  entry: InstanceListEntry,
-  displayPath: (path: string | undefined) => string,
-  activeInstanceId: string | undefined
-): InstanceRow {
+function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined) => string, activeInstanceId: string | undefined): InstanceRow {
   const { info } = useSessionInfo(entry.instanceId)
   const { items } = useQueue(entry.instanceId)
   const { all: terminals } = useTerminals(entry.instanceId)

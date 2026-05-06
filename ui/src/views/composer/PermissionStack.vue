@@ -45,11 +45,7 @@ const activeIndex = computed(() => {
     <div v-if="total > 1" class="permission-panel-counter-strip">
       <span class="permission-panel-counter">{{ activeIndex }} of {{ total }}</span>
     </div>
-    <PermissionRow
-      :view="active"
-      @reply="(optionId) => emit('reply', active!.request.requestId, optionId)"
-      @dismiss="emit('dismiss', active!.request.requestId)"
-    />
+    <PermissionRow :view="active" @reply="(optionId) => emit('reply', active!.request.requestId, optionId)" @dismiss="emit('dismiss', active!.request.requestId)" />
   </section>
 </template>
 

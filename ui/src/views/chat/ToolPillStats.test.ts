@@ -14,9 +14,13 @@ describe('ToolPillStats.vue', () => {
   it('splits diff into ok / err pills, hides zero sides', () => {
     const w = mount(ToolPillStats, {
       props: {
-        stats: [{
-          kind: 'diff', added: 12, removed: 3
-        }]
+        stats: [
+          {
+            kind: 'diff',
+            added: 12,
+            removed: 3
+          }
+        ]
       }
     })
     const pills = w.findAll('.stat-pill')
@@ -31,9 +35,13 @@ describe('ToolPillStats.vue', () => {
   it('hides the diff entirely when both sides are zero', () => {
     const w = mount(ToolPillStats, {
       props: {
-        stats: [{
-          kind: 'diff', added: 0, removed: 0
-        }]
+        stats: [
+          {
+            kind: 'diff',
+            added: 0,
+            removed: 0
+          }
+        ]
       }
     })
 
@@ -52,7 +60,9 @@ describe('ToolPillStats.vue', () => {
         stats: [
           { kind: 'duration', ms: 850 },
           {
-            kind: 'diff', added: 20, removed: 0
+            kind: 'diff',
+            added: 20,
+            removed: 0
           }
         ]
       }

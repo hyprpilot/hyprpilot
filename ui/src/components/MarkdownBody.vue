@@ -405,7 +405,9 @@ function onRootKeydown(event: KeyboardEvent): void {
   font-family: var(--theme-font-mono);
   color: var(--theme-fg-dim);
   background-color: var(--theme-surface-bg);
-  transition: color 0.12s, border-color 0.12s;
+  transition:
+    color 0.12s,
+    border-color 0.12s;
 }
 
 .markdown-body :deep(.md-codeblock .md-copy:hover) {

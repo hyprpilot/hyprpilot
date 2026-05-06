@@ -102,6 +102,7 @@ export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
     startedAtMs: raw.startedAtMs,
     thinkingMs: 0
   })
+
   // ACP's contract is one session per instance — Bootstrap::Fresh /
   // Resume each pin a single sessionId for the actor's lifetime, and
   // a restart tears the actor down (emits Ended → cleanup wipes the
@@ -192,16 +193,9 @@ export function __resetTurnEndedListeners(): void {
 /// the most recent open turn for the session, or the latest turn
 /// in the slot, so the captain still sees a fresh reading on the
 /// nearest turn record. Idempotent — overwrites the prior reading.
-export function pushUsageUpdate(
-  id: InstanceId,
-  sessionId: string,
-  turnId: string | undefined,
-  usage: TurnUsage
-): void {
+export function pushUsageUpdate(id: InstanceId, sessionId: string, turnId: string | undefined, usage: TurnUsage): void {
   const slot = slotFor(id)
-  let target = turnId
-    ? slot.turns.find((t) => t.id === turnId)
-    : undefined
+  let target = turnId ? slot.turns.find((t) => t.id === turnId) : undefined
 
   if (!target) {
     // Fall back to the open turn for the session, then the most
@@ -209,9 +203,7 @@ export function pushUsageUpdate(
     // useful. Drop entirely if no turns exist.
     const openId = slot.openBySession.get(sessionId)
 
-    target = openId
-      ? slot.turns.find((t) => t.id === openId)
-      : [...slot.turns].reverse().find((t) => t.sessionId === sessionId)
+    target = openId ? slot.turns.find((t) => t.id === openId) : [...slot.turns].reverse().find((t) => t.sessionId === sessionId)
   }
 
   if (!target) {

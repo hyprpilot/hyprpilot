@@ -7,10 +7,10 @@
 
 import { openCwdLeaf } from './cwd'
 import { openDaemonLeaf } from './daemon'
+import { openEffortLeaf } from './effort'
 import { openInstanceLeaf } from './instance'
 import { openInstancesLeaf } from './instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './mcps'
-import { openEffortLeaf } from './effort'
 import { openModelsLeaf } from './models'
 import { openModesLeaf } from './modes'
 import { openProfilesLeaf } from './profiles'

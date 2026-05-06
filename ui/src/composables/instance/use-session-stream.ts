@@ -390,7 +390,9 @@ export async function startSessionStream(): Promise<() => void> {
       const { instanceId, sessionId, turnId, used, size, cost } = e.payload
 
       pushUsageUpdate(instanceId, sessionId, turnId, {
-        used, size, cost
+        used,
+        size,
+        cost
       })
     }),
     await listen(TauriEvent.AcpConfigOptionsUpdate, (e) => {

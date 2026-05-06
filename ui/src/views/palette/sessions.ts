@@ -119,7 +119,9 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
       // immediately; cleared by use-session-stream on the first
       // TurnEnded for `target`.
       setSessionRestoring(target, true)
-      void invoke(TauriCommand.SessionLoad, { sessionId: pick.sessionId, instanceId: target, cwd: pick.cwd })
+      void invoke(TauriCommand.SessionLoad, {
+        sessionId: pick.sessionId, instanceId: target, cwd: pick.cwd
+      })
         .then(() => {
           setSessionRestored(target, true)
         })

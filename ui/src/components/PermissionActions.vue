@@ -53,7 +53,8 @@ function variantFor(opt: PermissionOptionView): ButtonVariant {
       :title="opt.name"
       :aria-label="opt.name"
       @click="emit('reply', opt.optionId)"
-    ><span class="permission-actions-label">{{ opt.name }}</span></Button>
+      ><span class="permission-actions-label">{{ opt.name }}</span></Button
+    >
   </div>
 </template>
 

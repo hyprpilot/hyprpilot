@@ -42,23 +42,31 @@ const renderables = computed<PillView[]>(() => {
 
     if (stat.kind === 'text' && stat.value.length > 0) {
       out.push({
-        key: `${base}:text`, label: stat.value, tone: 'neutral'
+        key: `${base}:text`,
+        label: stat.value,
+        tone: 'neutral'
       })
     } else if (stat.kind === 'diff') {
       if (stat.added > 0) {
         out.push({
-          key: `${base}:add`, label: `+${stat.added}`, tone: 'ok'
+          key: `${base}:add`,
+          label: `+${stat.added}`,
+          tone: 'ok'
         })
       }
 
       if (stat.removed > 0) {
         out.push({
-          key: `${base}:rem`, label: `−${stat.removed}`, tone: 'err'
+          key: `${base}:rem`,
+          label: `−${stat.removed}`,
+          tone: 'err'
         })
       }
     } else if (stat.kind === 'duration') {
       out.push({
-        key: `${base}:dur`, label: formatDuration(stat.ms), tone: 'neutral'
+        key: `${base}:dur`,
+        label: formatDuration(stat.ms),
+        tone: 'neutral'
       })
     }
   }

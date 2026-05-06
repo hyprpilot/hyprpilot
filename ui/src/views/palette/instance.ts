@@ -49,13 +49,7 @@ function startNewInstance(profileId: string | undefined, label: string | undefin
   useToasts().push(ToastTone.Ok, label ? `new instance · ${label}` : 'new instance staged')
 }
 
-function buildInstanceLeafSpec(args: {
-  focused?: InstanceId
-  currentName?: string
-  onPickNew: () => void
-  onPickRename: () => void
-  onPickShutdown: () => void
-}): PaletteSpec {
+function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: string; onPickNew: () => void; onPickRename: () => void; onPickShutdown: () => void }): PaletteSpec {
   const entries: PaletteEntry[] = [
     {
       id: ACTION_NEW,
