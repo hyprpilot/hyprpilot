@@ -79,6 +79,18 @@ pub struct AgentConfig {
     #[garde(skip)]
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Token budget for the agent's reasoning ("extended thinking")
+    /// phase. Only the `acp-claude-code` provider consumes this
+    /// today — translated to `MAX_THINKING_TOKENS=<n>` on the
+    /// spawned process env. Per Anthropic's docs, Claude Opus 4.7+
+    /// default `thinking.display = "omitted"`: thinking is BILLED
+    /// either way, but the chunks arrive with empty text unless an
+    /// explicit budget tells the SDK to pass `display: "showing"`.
+    /// `None` (unset) defaults to a sensible visible budget for
+    /// `acp-claude-code` (10000) and pass-through for every other
+    /// provider; `Some(0)` is the explicit "no thinking" off-switch.
+    #[garde(skip)]
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 /// Closed enum — each named variant maps to an `AcpAgent` impl with
@@ -183,6 +195,11 @@ pub struct ProfileConfig {
     #[serde(default)]
     #[garde(skip)]
     pub env: BTreeMap<String, String>,
+    /// Profile-level override of `AgentConfig.thinking_budget_tokens`.
+    /// Wins over the agent default when both are set. See
+    /// `AgentConfig.thinking_budget_tokens` for the full semantics.
+    #[garde(skip)]
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 #[cfg(test)]

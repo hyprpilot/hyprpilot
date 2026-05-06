@@ -599,6 +599,27 @@ module target. Helpers:
 
 Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
 
+### Diagnostic trace targets
+
+Targeted `trace`-level emissions for hard-to-reproduce wire bugs.
+Each is silent by default; enable per-target via `RUST_LOG`:
+
+| Target | What it captures | When to enable |
+| --- | --- | --- |
+| `acp::wire` | Every incoming `session/update` notification (raw JSON) AND the outgoing `session/prompt` request (raw JSON) | Diagnosing vendor wire-shape surprises (empty thought-chunk content, missing `content_block_delta`s, unexpected sessionUpdate variants) |
+| `acp::thought` | Per-`agent_thought_chunk` extraction outcome (text length on success; raw payload + `content shape not in {…}` `warn!` on empty) | Confirming what the SDK is actually shipping in the thinking field |
+
+Example one-shot for the thinking-block path:
+
+```sh
+RUST_LOG='hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace' \
+  hyprpilot daemon
+```
+
+Daemon log file lands under `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.<date>`;
+grep for `target: acp::wire` lines to see the raw payload of every
+`session/update` and `session/prompt`.
+
 ## Frontend testing
 
 Two tiers, two locations — one convention per tier, no forks. Add tests

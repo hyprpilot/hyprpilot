@@ -1163,6 +1163,8 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::DaemonReloaded { .. } => "daemon:reloaded",
         GenEvt::SessionInfoUpdate { .. } => "acp:session-info-update",
         GenEvt::CurrentModeUpdate { .. } => "acp:current-mode-update",
+        GenEvt::UsageUpdate { .. } => "acp:usage-update",
+        GenEvt::ConfigOptionsUpdate { .. } => "acp:config-options-update",
         GenEvt::InstanceMeta { .. } => "acp:instance-meta",
     };
     match serde_json::to_value(&evt) {

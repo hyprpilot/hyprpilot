@@ -85,14 +85,17 @@ const slotEmpty = computed(() => !slots.default)
   background-color: rgba(var(--theme-accent-assistant-rgb), 0.01);
 }
 
-.chat-body[data-role='user'] {
-  white-space: pre-wrap;
-}
-
 .chat-body[data-role='user']::before {
   background-color: rgba(var(--theme-accent-user-rgb), 0.01);
 }
 
+/* `white-space: pre-wrap` belongs ONLY on the plain-text fallback —
+ * markdown-it's HTML output carries literal `\n` text nodes between
+ * block elements (`<p>foo</p>\n<p>bar</p>\n<ul>…`), and `pre-wrap`
+ * renders those newlines as visible blank lines, stacking on top of
+ * the paragraph margins. Limiting the rule to `.chat-body-plain`
+ * keeps newline preservation for the no-markdown case while letting
+ * the markdown lane render with the margins it asked for. */
 .chat-body-plain {
   white-space: pre-wrap;
 }

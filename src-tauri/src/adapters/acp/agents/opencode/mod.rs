@@ -43,6 +43,7 @@ mod tests {
             args: vec!["acp".into()],
             cwd: None,
             env: BTreeMap::new(),
+            thinking_budget_tokens: None,
         }
     }
 

@@ -10,6 +10,7 @@ import { openDaemonLeaf } from './daemon'
 import { openInstanceLeaf } from './instance'
 import { openInstancesLeaf } from './instances'
 import { openMcpsLeaf, type OpenMcpsLeafOptions } from './mcps'
+import { openEffortLeaf } from './effort'
 import { openModelsLeaf } from './models'
 import { openModesLeaf } from './modes'
 import { openProfilesLeaf } from './profiles'
@@ -29,6 +30,7 @@ export enum PaletteLeafId {
   Profiles = 'profiles',
   Models = 'models',
   Modes = 'modes',
+  Effort = 'effort',
   Cwd = 'cwd',
   Instance = 'instance',
   Instances = 'instances',
@@ -47,6 +49,7 @@ const ROOT_LEAVES: Record<PaletteLeafId, RootLeaf> = {
   [PaletteLeafId.Profiles]: { id: PaletteLeafId.Profiles, name: 'profiles' },
   [PaletteLeafId.Models]: { id: PaletteLeafId.Models, name: 'models' },
   [PaletteLeafId.Modes]: { id: PaletteLeafId.Modes, name: 'modes' },
+  [PaletteLeafId.Effort]: { id: PaletteLeafId.Effort, name: 'effort' },
   [PaletteLeafId.Cwd]: { id: PaletteLeafId.Cwd, name: 'cwd' },
   [PaletteLeafId.Instance]: { id: PaletteLeafId.Instance, name: 'instance' },
   [PaletteLeafId.Instances]: { id: PaletteLeafId.Instances, name: 'instances' },
@@ -62,6 +65,7 @@ const ROOT_LEAF_ORDER: PaletteLeafId[] = [
   PaletteLeafId.Sessions,
   PaletteLeafId.Models,
   PaletteLeafId.Modes,
+  PaletteLeafId.Effort,
   PaletteLeafId.Cwd,
   PaletteLeafId.Mcps,
   PaletteLeafId.Skills,
@@ -134,6 +138,11 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
 
     case PaletteLeafId.Modes:
       void openModesLeaf()
+
+      return
+
+    case PaletteLeafId.Effort:
+      void openEffortLeaf()
 
       return
 

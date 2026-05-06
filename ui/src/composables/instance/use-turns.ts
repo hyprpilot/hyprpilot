@@ -32,6 +32,18 @@ export interface TurnRecord {
   /// Wall-clock when the current open thinking interval began;
   /// `undefined` while the agent is writing / executing tools.
   thinkingOpenAtMs?: number
+  /// Latest `acp:usage-update` reading bound to this turn — context
+  /// utilisation + spend running totals. claude-agent-acp pushes
+  /// these mid-turn; the UI keeps the most recent so the Turn
+  /// footer can render `120k/200k · $0.74` chips next to elapsed.
+  usage?: TurnUsage
+}
+
+/// Telemetry for one turn — context-window utilisation + cost.
+export interface TurnUsage {
+  used: number
+  size: number
+  cost?: { amount: number; currency: string }
 }
 
 interface TurnsState {
@@ -173,6 +185,39 @@ export function onTurnEnded(listener: TurnEndedListener): () => void {
 
 export function __resetTurnEndedListeners(): void {
   turnEndedListeners.clear()
+}
+
+/// Bind the latest `acp:usage-update` reading to a turn.
+/// `turnId == null` means the daemon emitted between turns — picks
+/// the most recent open turn for the session, or the latest turn
+/// in the slot, so the captain still sees a fresh reading on the
+/// nearest turn record. Idempotent — overwrites the prior reading.
+export function pushUsageUpdate(
+  id: InstanceId,
+  sessionId: string,
+  turnId: string | undefined,
+  usage: TurnUsage
+): void {
+  const slot = slotFor(id)
+  let target = turnId
+    ? slot.turns.find((t) => t.id === turnId)
+    : undefined
+
+  if (!target) {
+    // Fall back to the open turn for the session, then the most
+    // recent turn — between-turn usage updates still pin somewhere
+    // useful. Drop entirely if no turns exist.
+    const openId = slot.openBySession.get(sessionId)
+
+    target = openId
+      ? slot.turns.find((t) => t.id === openId)
+      : [...slot.turns].reverse().find((t) => t.sessionId === sessionId)
+  }
+
+  if (!target) {
+    return
+  }
+  target.usage = usage
 }
 
 export function pushTurnEnded(id: InstanceId, raw: TurnEndedRaw): void {

@@ -159,6 +159,7 @@ mod tests {
             args: vec!["--bun".into(), "@zed-industries/claude-code-acp".into()],
             cwd: None,
             env: Default::default(),
+            thinking_budget_tokens: None,
         }
     }
 

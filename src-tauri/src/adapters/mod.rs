@@ -24,7 +24,8 @@ use async_trait::async_trait;
 pub use acp::AcpAdapter;
 pub use instance::{
     validate_instance_name, InstanceEvent, InstanceEventStream, InstanceInfo, InstanceKey, InstanceState,
-    SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk, TerminalStream,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk,
+    TerminalStream,
 };
 pub use transcript::{
     Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,

@@ -48,6 +48,7 @@ mod tests {
             args: vec!["--bun".into(), "@zed-industries/claude-code-acp".into()],
             cwd: None,
             env: BTreeMap::new(),
+            thinking_budget_tokens: None,
         }
     }
 
