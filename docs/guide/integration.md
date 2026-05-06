@@ -62,7 +62,7 @@ The AUR package installs a systemd user unit at `/usr/lib/systemd/user/hyprpilot
 systemctl --user enable --now hyprpilot.service
 ```
 
-Bound to `graphical-session.target` — starts when your session comes up, stops when you log out. Pairs with `[daemon.window] visible = false` (the default) so the daemon boots hidden and your keybind is the first user-visible map.
+The shipped unit isn't bound to any session target — start condition is yours to compose. To tie it to your graphical session, see the [systemd note in the installation guide](./installation#as-a-systemd-user-service-recommended). Pairs with `[daemon.window] visible = false` (the default) so the daemon boots hidden and your keybind is the first user-visible map.
 
 If you'd rather start it inline in your compositor config, wrap it so env vars come in:
 

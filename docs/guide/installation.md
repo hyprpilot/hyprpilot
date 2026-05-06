@@ -13,7 +13,6 @@ Hyprpilot is published to the AUR in two flavors. Pick one — they conflict by 
 
 ```sh
 yay -S hyprpilot-bin
-# or paru -S hyprpilot-bin
 ```
 
 Tracks the latest GitHub Release.
@@ -28,12 +27,12 @@ Builds from `main`.
 
 ## Compositor support
 
-| Compositor | Anchor mode | Center mode |
-| --- | --- | --- |
-| Hyprland | ✅ | ✅ |
-| Sway | ✅ | ✅ |
-| GNOME / KDE | ❌ | ✅ |
-| X11 | ❌ | ✅ |
+| Compositor  | Anchor mode | Center mode |
+| ----------- | ----------- | ----------- |
+| Hyprland    | ✅          | ✅          |
+| Sway        | ✅          | ✅          |
+| GNOME / KDE | ❌          | ✅          |
+| X11         | ❌          | ✅          |
 
 GNOME / KDE / X11: set `[daemon.window] mode = "center"` in your config.
 
@@ -41,7 +40,7 @@ GNOME / KDE / X11: set `[daemon.window] mode = "center"` in your config.
 
 1. **Configure profiles** — drop a `[[profiles]]` block in `~/.config/hyprpilot/config.toml`. See [Configuration → Profiles](../configuration/profiles).
 2. **Pick how it starts** — keybind, systemd user unit, or `exec-once`. See [Integration](./integration).
-3. *(Optional)* **Status in the bar** — see [Waybar](./waybar).
+3. _(Optional)_ **Status in the bar** — see [Waybar](./waybar).
 
 ## Running it
 
@@ -57,13 +56,26 @@ The shell already has your env loaded, so this just works. Pop the overlay with 
 
 ### As a systemd user service (recommended)
 
-The AUR package installs a unit at `/usr/lib/systemd/user/hyprpilot.service` bound to `graphical-session.target`:
+The AUR package installs a unit at `/usr/lib/systemd/user/hyprpilot.service`:
 
 ```sh
 systemctl --user enable --now hyprpilot.service
 ```
 
-systemd starts the daemon when your graphical session comes up and stops it when you log out. Logs live at:
+The shipped unit is intentionally **not** bound to `graphical-session.target` — we don't make assumptions about your session manager. If you want the daemon to start with your graphical session, drop a override in `~/.config/systemd/user/hyprpilot.service.d/override.conf`:
+
+```ini
+[Unit]
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+Hyprland users can also follow the [systemd integration](https://wiki.hyprland.org/Useful-Utilities/Systemd-start/) docs to make `graphical-session.target` fire at the right moment.
+
+Logs:
 
 ```sh
 journalctl --user -u hyprpilot.service -f
