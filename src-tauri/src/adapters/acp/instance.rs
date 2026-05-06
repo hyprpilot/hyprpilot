@@ -2691,6 +2691,24 @@ async fn run(params: RunParams) {
                                     cost,
                                 }),
                                 MappedUpdate::ConfigOptions { categories } => {
+                                    // claude-agent-acp can ride mode / model on the
+                                    // configOptions channel instead of dedicated
+                                    // current_mode_update / current_model_update notifications.
+                                    // Mirror those flips into the per-instance RwLocks so the
+                                    // next MetaEmitter::emit doesn't restate a stale id.
+                                    for category in &categories {
+                                        if let Some(value) = category.current_value.as_ref() {
+                                            match category.id.as_str() {
+                                                "mode" => {
+                                                    *current_mode_meta.write().await = Some(value.clone());
+                                                }
+                                                "model" => {
+                                                    *current_model_meta.write().await = Some(value.clone());
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
                                     Some(InstanceEvent::ConfigOptionsUpdate {
                                         agent_id: agent_id_notif.clone(),
                                         instance_id: instance_id_notif.clone(),
