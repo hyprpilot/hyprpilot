@@ -56,8 +56,12 @@ prepare() {
   cd "$srcdir/$pkgname"
   # Icons under src-tauri/icons/ are LFS-tracked. `git+https` clones
   # only the pointer files; tauri's generate_context!() rejects them
-  # with "Invalid PNG signature" at compile time.
+  # with "Invalid PNG signature" at compile time. makepkg's source
+  # cache uses a local bare clone as `origin` — that bare has no LFS
+  # objects, so we point the LFS endpoint at GitHub's HTTPS URL
+  # before pulling.
   git lfs install --local
+  git config --local lfs.url "https://github.com/hyprpilot/hyprpilot.git/info/lfs"
   git lfs pull
   pnpm install --frozen-lockfile
 }
