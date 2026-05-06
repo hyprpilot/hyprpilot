@@ -222,6 +222,8 @@ async function exposeDevHelpers(): Promise<void> {
     pushPermissionRequest: composables.pushPermissionRequest,
     pushTurnStarted: composables.pushTurnStarted,
     pushTurnEnded: composables.pushTurnEnded,
+    markThinkingStart: composables.markThinkingStart,
+    markThinkingEnd: composables.markThinkingEnd,
     pushTranscriptChunk: composables.pushTranscriptChunk,
     pushThoughtChunk: composables.pushThoughtChunk,
     pushPlan: composables.pushPlan,

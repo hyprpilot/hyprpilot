@@ -82,17 +82,25 @@ const shots: Shot[] = [
           sessionUpdate: 'user_message_chunk',
           content: { type: 'text', text: 'refactor the permission flow to land allow/deny rules in a runtime trust store. keep MCP globs as the second lane.' }
         })
+        // Thought block paired with elapsed time + a follow-up agent
+        // message — thoughts shouldn't render alone.
+        dev.markThinkingStart(id, sid, turnStart + 600)
         dev.pushThoughtChunk(id, sid, {
           sessionUpdate: 'agent_thought_chunk',
           content: { type: 'text', text: 'Looking at the current permission decision pipeline. The `PermissionController::decide` fn already has a two-lane shape — runtime trust store first, MCP globs second.\n\nThe captain wants persistent trust decisions. Plan: add a SQLite-backed store keyed on `(instance_id, tool_name)`, populate via the UI\'s "always" buttons.' }
+        })
+        dev.markThinkingEnd(id, sid, turnStart + 4000)
+        dev.pushTranscriptChunk(id, sid, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Got it — adding a SQLite-backed `TrustStore` under `tools/` and threading it through `PermissionController::decide` ahead of the MCP-glob lane.' }
         })
         dev.pushToolCall(id, 'claude-code', sid, {
           sessionUpdate: 'tool_call',
           toolCallId: 'tc-hero-1',
           kind: 'read',
           status: 'completed',
-          startedAtMs: turnStart + 4000,
-          completedAtMs: turnStart + 4180,
+          startedAtMs: turnStart + 4500,
+          completedAtMs: turnStart + 4680,
           formatted: { title: 'read src/adapters/permission.rs', stats: [{ kind: 'duration', ms: 180 }], fields: [] }
         })
         dev.pushToolCall(id, 'claude-code', sid, {
@@ -239,8 +247,12 @@ const shots: Shot[] = [
         })
         // Modal-class permission: tool = `exit_plan_mode` → claude-code
         // override maps to PermissionUi.Modal. Description carries
-        // markdown plan content rendered by ToolBody.
+        // markdown plan content rendered by ToolBody. `agentId` is
+        // mandatory — the adapter override only applies when the
+        // permission carries the agent so `adapterFor()` can resolve
+        // the per-vendor presentation map.
         dev.pushPermissionRequest(id, sid, {
+          agentId: 'claude-code',
           requestId: 'r-plan',
           tool: 'exit_plan_mode',
           kind: 'other',
@@ -331,6 +343,7 @@ const shots: Shot[] = [
         // route bash to PermissionUi.Row, rendering inline above the
         // composer.
         dev.pushPermissionRequest(focused, sid, {
+          agentId: 'claude-code',
           requestId: 'r-bash',
           tool: 'bash',
           kind: 'execute',
