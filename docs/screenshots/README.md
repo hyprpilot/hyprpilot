@@ -43,9 +43,9 @@ task docs:screenshots
 | `palette-sessions.png` | `features/command-palette.md` | Sessions leaf, cwd-filtered. |
 | `palette-models.png` | `features/command-palette.md` | Models leaf with claude-haiku highlighted. |
 | `chat-tool-pills.png` | `features/chat-and-tools.md` | Transcript with bash + edit + read pills. |
-| `permission-modal.png` | `features/chat-and-tools.md` | Permission request for `bash rm -rf`. |
+| `permission-modal.png` | `features/chat-and-tools.md` | Plan-modal permission (claude-code's `exit_plan_mode`) with markdown body. |
 | `composer-autocomplete.png` | `features/composer.md` | Composer mid-type with autocomplete popover. |
-| `multi-instance-header.png` | `features/chat-and-tools.md` | Header chrome showing 3 instances. |
+| `permission-row.png` | `features/chat-and-tools.md` | Inline permission row — `bash` exec pending captain decision, transcript prefilled. |
 
 ## Updating
 

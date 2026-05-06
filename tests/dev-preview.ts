@@ -132,7 +132,14 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
   agents_list: { agents: [{ id: 'claude-code', provider: 'acp-claude-code', model: 'claude-opus-4' }] },
   commands_list: { commands: [] },
   instances_list: { instances: [] },
-  session_list: { sessions: [] },
+  session_list: {
+    sessions: [
+      { sessionId: 'sess-001', title: 'reskin overlay header to wireframe spec', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString() },
+      { sessionId: 'sess-002', title: 'audit permission decision pipeline', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString() },
+      { sessionId: 'sess-003', title: 'wire release-please PAT through release.yml', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 7).toISOString() },
+      { sessionId: 'sess-004', title: 'composer attachments drag-drop', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 26).toISOString() }
+    ]
+  },
   sessions_info: { sessions: [] },
   skills_list: { skills: [] },
   mcps_list: { mcps: [] },
@@ -214,6 +221,7 @@ async function exposeDevHelpers(): Promise<void> {
     useToasts: composables.useToasts,
     pushPermissionRequest: composables.pushPermissionRequest,
     pushTurnStarted: composables.pushTurnStarted,
+    pushTurnEnded: composables.pushTurnEnded,
     pushTranscriptChunk: composables.pushTranscriptChunk,
     pushThoughtChunk: composables.pushThoughtChunk,
     pushPlan: composables.pushPlan,
@@ -225,6 +233,8 @@ async function exposeDevHelpers(): Promise<void> {
     pushInstanceModelState: composables.pushInstanceModelState,
     setInstanceCwd: composables.setInstanceCwd,
     setInstanceGitStatus: composables.setInstanceGitStatus,
+    setInstanceMcpsCount: composables.setInstanceMcpsCount,
+    setInstanceProfile: composables.setInstanceProfile,
     setSessionRestored: composables.setSessionRestored,
     useActiveInstance: composables.useActiveInstance
   }

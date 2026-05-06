@@ -24,7 +24,7 @@ Pills are **fully formatted on the daemon side** — the UI is a dumb consumer o
 
 Run as many concurrent agents as you want. Each `(agent, profile)` pair gets a distinct UUID; spawning the same profile twice creates two independent sessions side by side.
 
-![header chrome showing 3 instances + breadcrumb pills](/screenshots/multi-instance-header.png)
+![transcript with a pending bash permission row inline above the composer](/screenshots/permission-row.png)
 
 Header pills (left to right): profile badge · agent · model · cwd · mode · MCP count · git status. Click any to jump to the relevant palette leaf for the focused instance.
 
@@ -38,7 +38,7 @@ The instances breadcrumb shows N (count); `Ctrl+K → instances` switches focus.
 
 When an agent requests permission for a tool — say a `bash` invocation — the request lands as a permission modal **inline in the transcript** (not as a global blocking dialog).
 
-![permission request modal for bash with allow/deny actions](/screenshots/permission-modal.png)
+![plan-modal permission with markdown body and Approve / Keep planning actions](/screenshots/permission-modal.png)
 
 Captain has four options per request:
 
