@@ -56,6 +56,3 @@ The composer takes plain text plus two kinds of attachments:
 
 `Enter` submits. If a turn is already running, the prompt **queues** above the composer — you can edit or delete queued items before they fire. The queue drains automatically as the agent finishes.
 
-## Status broadcast
-
-The daemon emits a status stream (`idle` / `streaming` / `awaiting` / `error`) so external tools like Waybar can show what hyprpilot is doing without opening the overlay. See the [Waybar guide](../guide/waybar).

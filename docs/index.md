@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: hyprpilot
-  text: Agent-driven workflows for Hyprland.
-  tagline: A Tauri overlay daemon that runs ACP-speaking coding agents at the edge of your screen.
+  text: Agent-driven workflows for Linux.
+  tagline: An overlay daemon that runs coding agents at the edge of your screen.
   image:
     src: /icon.png
     alt: hyprpilot
@@ -20,22 +20,22 @@ hero:
       link: https://github.com/hyprpilot/hyprpilot
 
 features:
-  - icon: ⚡
-    title: Native overlay
-    details: zwlr_layer_shell anchor on Hyprland & Sway, regular top-level window everywhere else. One config knob switches modes.
+  - icon: ⌨️
+    title: Keymap first
+    details: Ctrl+K opens the palette. Sessions, profiles, models, modes, MCPs, skills, instances — all one chord away. The mouse is optional.
+  - icon: 🪟
+    title: Multi-instance, multi-session
+    details: Run several agents at once and switch focus instantly. Resume any past session from the palette without losing the live ones.
+  - icon: 🎛
+    title: Pre-configured profiles
+    details: Pin an agent + model + cwd + system prompt + MCPs as a profile. Spawn instances of it on demand from the palette.
   - icon: 🤖
-    title: Multi-agent
-    details: claude-code, codex, opencode — all wired through the Agent Client Protocol. Run multiple instances side-by-side.
-  - icon: 🎯
-    title: Captain-driven
-    details: Ctrl+K palette over sessions, profiles, models, modes, MCPs, skills, instances. Keymap-first, mouse-optional.
-  - icon: 🔌
-    title: MCP-native
-    details: Drop ~/.claude.json straight in. Per-server auto-accept / auto-reject globs for safe automation.
+    title: Bring your agent
+    details: claude-code, codex, opencode — speak the Agent Client Protocol and you are in. Drop your existing claude.json straight in.
   - icon: 📜
-    title: Skills as first-class
-    details: Anthropic's claude-code skill convention, attached to user turns as embedded resources at palette-pick time.
+    title: Skills as context
+    details: Anthropic's skill convention, attached to your next prompt from the palette as a markdown resource the agent reads first.
   - icon: 🎨
-    title: Themed in Rust
-    details: One TOML defines the entire palette. The webview reads it; CSS doesn't redeclare anything.
+    title: Themed
+    details: Every color, every chip, every state — overridable from one TOML. Light + dark, gold-anchored to match the rest of your desktop.
 ---

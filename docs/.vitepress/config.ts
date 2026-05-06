@@ -3,7 +3,7 @@ import { withSidebar } from 'vitepress-sidebar'
 
 const vitePressOptions = defineConfig({
   title: 'Hyprpilot',
-  description: 'Tauri overlay daemon for agent-driven workflows on Hyprland.',
+  description: 'An overlay daemon that runs coding agents at the edge of your screen.',
   cleanUrls: true,
   lastUpdated: true,
   head: [
@@ -17,7 +17,6 @@ const vitePressOptions = defineConfig({
       { text: 'Guide', link: '/guide/installation' },
       { text: 'Configuration', link: '/configuration/' },
       { text: 'Features', link: '/features/' },
-      { text: 'Development', link: '/development' },
       { text: 'Repository', link: '/repository/contributions' }
     ],
     socialLinks: [

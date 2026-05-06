@@ -1,0 +1,186 @@
+---
+title: Profiles
+order: 2
+---
+
+# Profiles
+
+A profile is a preset that binds together everything an agent instance needs: which agent vendor, which model, where it runs, what system prompt it loads, which MCPs it has access to, what mode it starts in. Pick a profile from the palette and a fresh instance spawns ready to work.
+
+This is the most important config you'll write. Everything else (themes, window mode) tunes the chrome — profiles tune the work.
+
+## Anatomy
+
+```toml
+[[profiles]]
+id = "engineer"                          # palette label, also addressable via CLI
+agent = "claude-code"                    # must match an [[agents]].id
+model = "claude-sonnet-4-5"              # optional; overrides the agent's default
+cwd = "~/code/hyprpilot"                 # optional; falls back to where the daemon was started
+mode = "default"                         # optional; vendor-specific (e.g. plan / default)
+system_prompt = [
+  "~/.config/hyprpilot/prompts/base.md",
+  "~/.config/hyprpilot/prompts/engineer.md"
+]
+mcps = [
+  "~/.config/hyprpilot/mcps/team.json",
+  "~/.claude.json"
+]
+```
+
+Spawn it from the palette: `Ctrl+K → profiles → engineer`. Or explicitly from the CLI:
+
+```sh
+hyprpilot ctl prompts send --profile engineer "show me the failing tests"
+```
+
+You can have multiple instances of the same profile running side-by-side — each gets its own UUID and its own session.
+
+## Fields
+
+| Field | Type | What it does |
+| --- | --- | --- |
+| `id` | string | Unique within `[[profiles]]`. Shows up as the palette row. |
+| `agent` | string | Which `[[agents]]` entry to spawn. |
+| `model` | string (optional) | Overrides the agent's default model for this profile. |
+| `cwd` | path (optional) | Where the agent operates. `~`, `${VAR}` expansion supported. |
+| `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. codex: approval modes. |
+| `system_prompt` | path[] (optional) | Files concatenated and prepended to your first prompt. `[]` = no prompt. |
+| `mcps` | path[] (optional) | MCP catalog override for this profile. `[]` = no MCPs. |
+
+## Picking the default
+
+```toml
+[agent]
+default = "claude-code"            # which [[agents]] entry wins when nothing's specified
+default_profile = "engineer"       # which [[profiles]] new instances pick by default
+```
+
+Resolution when you submit a prompt:
+
+1. The profile you picked from the palette (or `--profile <id>` from the CLI) wins.
+2. Otherwise `[agent] default_profile`.
+3. Otherwise the first `[[profiles]]` matching `[agent] default`.
+4. Otherwise the first `[[agents]]` entry by itself.
+
+## System prompts
+
+`system_prompt` takes a list of file paths. The daemon reads them, concatenates with blank-line separators, and prepends the result to your first prompt. The agent treats it as context, then reads your message.
+
+```toml
+system_prompt = [
+  "~/.config/hyprpilot/prompts/base.md",         # shared persona
+  "~/.config/hyprpilot/prompts/engineer.md"      # per-profile addendum
+]
+```
+
+Composition lets a base persona + per-profile addendum land without juggling templates. `[]` is the explicit "no prompt" off-switch.
+
+## MCPs
+
+MCPs (Model Context Protocol servers) extend an agent with tools — filesystem, search, GitHub, custom services. Each path under `mcps` is a JSON file using the standard `mcpServers` shape that Claude Code, Codex, and Cursor all read.
+
+**You can drop your existing `~/.claude.json` straight in.** It works.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Files iterate in order. Same-named servers in later files override earlier ones.
+
+### Auto-accept / auto-reject
+
+Each server entry takes an optional `hyprpilot` block to short-circuit specific tool calls without surfacing a permission prompt:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "hyprpilot": {
+        "autoAcceptTools": ["read_*"],
+        "autoRejectTools": ["delete_*"]
+      }
+    }
+  }
+}
+```
+
+Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`. Reject wins over accept when both match.
+
+### Per-profile MCP override
+
+`[[profiles]] mcps = [...]` wholesale-replaces the global MCP set for that profile. `mcps = []` means "no MCPs at all" — handy for a sandboxed read-only profile.
+
+## Skills
+
+Skills aren't picked at config time — they live in their own catalog and ride along with prompts you specifically attach them to. Configure the catalog roots once:
+
+```toml
+[skills]
+dirs = ["~/.config/hyprpilot/skills"]
+```
+
+Each root is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's claude-code skill convention](https://github.com/anthropics/claude-code/blob/main/skills/README.md):
+
+```
+~/.config/hyprpilot/skills/
+├── git-commit/
+│   └── SKILL.md
+├── linear-issue/
+│   ├── SKILL.md
+│   └── references/
+└── github-pr/
+    └── SKILL.md
+```
+
+In the composer, `Ctrl+K → skills → <slug>` (or type `#<slug>` directly) attaches a skill to your next prompt. The agent reads the skill body first, then your message. Reload after editing a `SKILL.md` via the palette's `skills → reload` action.
+
+## Examples
+
+### A planning profile with no MCPs
+
+```toml
+[[profiles]]
+id = "plan"
+agent = "claude-code"
+model = "claude-opus-4-5"
+mode = "plan"
+mcps = []
+```
+
+### A code-review profile pinned to a repo
+
+```toml
+[[profiles]]
+id = "review-hyprpilot"
+agent = "claude-code"
+cwd = "~/code/hyprpilot"
+system_prompt = ["~/.config/hyprpilot/prompts/reviewer.md"]
+```
+
+### A read-only filesystem-only profile
+
+```toml
+[[profiles]]
+id = "browse"
+agent = "claude-code"
+mcps = ["~/.config/hyprpilot/mcps/readonly-fs.json"]
+```
+
+…where `readonly-fs.json` lists `filesystem` with `autoRejectTools = ["write_*", "delete_*", "edit_*"]`.
