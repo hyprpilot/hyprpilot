@@ -14,6 +14,7 @@ depends=(
 )
 makedepends=(
   'git'
+  'git-lfs'
   'cargo'
   'nodejs>=24'
   'pnpm'
@@ -53,6 +54,11 @@ pkgver() {
 
 prepare() {
   cd "$srcdir/$pkgname"
+  # Icons under src-tauri/icons/ are LFS-tracked. `git+https` clones
+  # only the pointer files; tauri's generate_context!() rejects them
+  # with "Invalid PNG signature" at compile time.
+  git lfs install --local
+  git lfs pull
   pnpm install --frozen-lockfile
 }
 
