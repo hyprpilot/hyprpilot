@@ -1,7 +1,12 @@
 [tools]
 rust = "stable"
 node = "24"
-pnpm = "10"
+# Explicit github backend — the default `aqua:pnpm/pnpm` registry
+# tries to fetch a `pnpm-linux-x64.tar.gz` asset that doesn't exist
+# (pnpm ships standalone executables in its GitHub releases, not
+# tarballs), breaking `mise install` on every CI run. `github:`
+# matches the platform-suffixed binary directly.
+"github:pnpm/pnpm" = { version = "10", exe = "pnpm", matching = "linux-x64" }
 task = "3"
 usage = "3"
 "cargo:cargo-nextest" = "latest"
