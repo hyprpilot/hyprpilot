@@ -60,7 +60,10 @@ build() {
   cd "$srcdir/$pkgname"
   export CARGO_TARGET_DIR="$srcdir/target"
   pnpm --filter hyprpilot-ui run build
-  cargo build --release --frozen --manifest-path src-tauri/Cargo.toml
+  # `--locked` (not `--frozen`): pin to the checked-in Cargo.lock
+  # but still allow registry fetches. `--frozen` implies offline,
+  # which fails on a fresh clone where ~/.cargo/registry is empty.
+  cargo build --release --locked --manifest-path src-tauri/Cargo.toml
 }
 
 package() {
