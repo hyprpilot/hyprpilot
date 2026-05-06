@@ -215,16 +215,29 @@ const shots: Shot[] = [
           completedAtMs: turnStart + 10_400,
           formatted: { title: 'bash: cargo check', stats: [{ kind: 'duration', ms: 2400 }], fields: [] }
         })
+        // One mid-flight tool — `running` auto-expands the pill so the
+        // body (fields + description + output) renders inline. Captures
+        // the "live tool execution" shape captains see while a turn is
+        // in progress.
         dev.pushToolCall(id, 'claude-code', sid, {
           sessionUpdate: 'tool_call',
           toolCallId: 'tc-4',
           kind: 'execute',
-          status: 'completed',
-          startedAtMs: turnStart + 11_000,
-          completedAtMs: turnStart + 13_600,
-          formatted: { title: 'bash: cargo nextest run --test-threads 4', stats: [{ kind: 'duration', ms: 2600 }], fields: [] }
+          status: 'running',
+          startedAtMs: turnStart + 12_000,
+          formatted: {
+            title: 'bash: cargo nextest run --test-threads 4',
+            stats: [],
+            fields: [
+              { label: 'cwd', value: '/home/dev/hyprpilot/src-tauri' },
+              { label: 'command', value: 'cargo nextest run --test-threads 4' }
+            ],
+            description: 'Re-running the suite under reduced parallelism after the permission decision-pipeline change.',
+            output: '   Compiling hyprpilot v0.1.3\n    Finished `test` profile [unoptimized + debuginfo] target(s)\n     Running unittests src/main.rs\n        PASS [   0.011s] adapters::permission::tests::trust_store_short_circuits_glob_lane'
+          }
         })
-        dev.pushTurnEnded(id, { sessionId: sid, turnId: tid, endedAtMs: turnEnd, stopReason: 'end_turn' })
+        // No pushTurnEnded — the turn is still live (matches the
+        // running tool above + the elapsed-clock chip).
       }, { id: PREVIEW_ID, sid: PREVIEW_SESSION })
     }
   },
@@ -353,7 +366,15 @@ const shots: Shot[] = [
             { optionId: 'allow_always', name: 'Allow always', kind: 'allow_always' },
             { optionId: 'reject', name: 'Deny', kind: 'reject_once' }
           ],
-          formatted: { title: 'bash: cat /home/dev/dotfiles/Taskfile.yml', stats: [], fields: [] }
+          formatted: {
+            title: 'bash: cat /home/dev/dotfiles/Taskfile.yml',
+            stats: [],
+            fields: [
+              { label: 'cwd', value: '/home/dev/dotfiles' },
+              { label: 'command', value: 'cat Taskfile.yml' }
+            ],
+            description: 'Reading the dotfiles repo\'s Taskfile so I can compare its install / format / lint shape against the blog repo and propose a unified one.'
+          }
         })
       }, { focused: PREVIEW_ID, sid: PREVIEW_SESSION })
     }
