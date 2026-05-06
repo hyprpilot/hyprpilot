@@ -229,6 +229,60 @@ impl Drop for TurnGuard {
     }
 }
 
+/// Spawn a deferred-close timer for a synthetic turn. Synthetic
+/// turns wrap out-of-turn agent activity (replay snapshots,
+/// post-cancel residue, stray notifications post-`EndTurn`) so the
+/// UI groups them into one block instead of scattering. Without a
+/// closer the synthetic id stays in `TurnState::current` forever —
+/// `usePhase` reads `openTurnId.value !== undefined` and routes the
+/// next prompt into the queue strip.
+///
+/// Originally only `Bootstrap::Resume` attached a closer (for the
+/// replay-drain window); `Bootstrap::Fresh` instances minted
+/// synthetics on stray notifications with no closer. Promoted to a
+/// universal helper so every `open_synthetic` call site spawns one.
+///
+/// `take_synthetic` is a no-op when a real prompt arrived first
+/// (cleared the slot); same when an earlier timer already drained
+/// it (subsequent timers fire on stale snapshots and exit cleanly).
+/// Single-shot per-synthetic — quiet window is wall-clock, not a
+/// live activity tracker.
+fn spawn_synthetic_close_after(
+    quiet_ms: u64,
+    turn_state: SharedTurnState,
+    events_tx: broadcast::Sender<InstanceEvent>,
+    agent_id: String,
+    instance_id: String,
+    session_id: String,
+    stop_reason: &'static str,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(quiet_ms)).await;
+        let synth = match turn_state.write().await.take_synthetic() {
+            Some(s) => s,
+            None => return,
+        };
+        debug!(
+            agent = %agent_id,
+            session = %session_id,
+            turn = %synth,
+            stop_reason,
+            "acp::instance: closing synthetic turn after quiet window"
+        );
+        let _ = events_tx.send(InstanceEvent::TurnEnded {
+            agent_id,
+            instance_id,
+            session_id,
+            turn_id: synth,
+            stop_reason: Some(stop_reason.into()),
+            error: None,
+            // Pair with the synthetic TurnStarted's `started_at: 0` —
+            // UI hides elapsed when either side is missing real timing.
+            ended_at: 0,
+        });
+    });
+}
+
 /// Register a typed `on_receive_request` handler that delegates to an
 /// async `AcpClient` method returning `Result<Response,
 /// agent_client_protocol::Error>`. One registration line per method
@@ -1950,39 +2004,15 @@ async fn run(params: RunParams) {
                 // `current` iff they still match — single lock means
                 // no race window between the two operations a real
                 // prompt could slip into.
-                {
-                    const REPLAY_DRAIN_QUIET_MS: u64 = 1500;
-                    let turn_state = turn_state.clone();
-                    let events = events_tx_notif.clone();
-                    let agent_id = agent_id_notif.clone();
-                    let instance_id = instance_id_notif.clone();
-                    let session_id = sid.0.to_string();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(REPLAY_DRAIN_QUIET_MS)).await;
-                        let synth = match turn_state.write().await.take_synthetic() {
-                            Some(s) => s,
-                            None => return,
-                        };
-                        debug!(
-                            agent = %agent_id,
-                            session = %session_id,
-                            turn = %synth,
-                            "acp::instance: closing synthetic turn after session restore replay"
-                        );
-                        let _ = events.send(InstanceEvent::TurnEnded {
-                            agent_id,
-                            instance_id,
-                            session_id,
-                            turn_id: synth,
-                            stop_reason: Some("replay_complete".into()),
-                            error: None,
-                            // Pair with the synthetic TurnStarted's
-                            // `started_at: 0` — UI hides elapsed when
-                            // either side is missing real timing.
-                            ended_at: 0,
-                        });
-                    });
-                }
+                spawn_synthetic_close_after(
+                    1500,
+                    turn_state.clone(),
+                    events_tx_notif.clone(),
+                    agent_id_notif.clone(),
+                    instance_id_notif.clone(),
+                    sid.0.to_string(),
+                    "replay_complete",
+                );
                 // Resumed sessions already saw the system prompt in their
                 // original turn — re-injecting it on the first post-restore
                 // submit would duplicate it in agent context. Drop the
@@ -2472,6 +2502,26 @@ async fn run(params: RunParams) {
                                     turn_id: synthetic.clone(),
                                     started_at: 0,
                                 });
+                                // Synthetic turns minted from stray notifications
+                                // (post-cancel residue, agent emissions after
+                                // `EndTurn`) have no natural closer — the
+                                // captain's next prompt would clean it up via
+                                // `take_synthetic` in the Prompt arm, but if no
+                                // prompt arrives the slot stays open forever and
+                                // the composer routes everything into the queue.
+                                // Spawn a timer that drains after a quiet
+                                // window. A real prompt arriving first wins the
+                                // race (it takes the synthetic before the timer
+                                // fires; timer becomes a no-op).
+                                spawn_synthetic_close_after(
+                                    2500,
+                                    turn_state.clone(),
+                                    events_tx_notif.clone(),
+                                    agent_id_notif.clone(),
+                                    instance_id_notif.clone(),
+                                    sid.clone(),
+                                    "synthetic_quiet",
+                                );
                                 turn_id = Some(synthetic);
                             }
                             let evt: Option<InstanceEvent> = match mapped {
