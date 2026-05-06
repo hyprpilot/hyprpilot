@@ -567,7 +567,7 @@ pub(crate) fn map_session_update(
 
     fn chunk_text(update: &serde_json::Value) -> String {
         // Most ACP-spec'd chunks ride as `{ content: { type: "text",
-        // text: "..." } }`. claude-code-acp's `agent_thought_chunk`
+        // text: "..." } }`. claude-agent-acp's `agent_thought_chunk`
         // is the outlier: the upstream Anthropic API surfaces
         // reasoning as `{ type: "thinking", thinking: "..." }`
         // content blocks, and the agent forwards the block shape
@@ -1169,7 +1169,7 @@ fn spawn_subprocess(cfg: &AgentConfig, system_prompt: Option<&str>) -> Result<Sp
     let mut cmd = agent.spawn(cfg);
     // Centralize stderr capture here rather than duplicating across
     // every vendor agent. Vendor SDKs (notably claude-agent-sdk under
-    // claude-code-acp) print noisy cleanup stack traces to stderr on
+    // claude-agent-acp) print noisy cleanup stack traces to stderr on
     // shutdown; piping keeps that out of the parent terminal.
     cmd.stderr(std::process::Stdio::piped());
     let first_message_prefix = match system_prompt {
@@ -1752,7 +1752,7 @@ async fn run(params: RunParams) {
         let load_supported = init.agent_capabilities.load_session;
 
         // Per-instance metadata snapshot. The daemon emits this on
-        // `InstanceEvent::InstanceMeta` because claude-code-acp doesn't
+        // `InstanceEvent::InstanceMeta` because claude-agent-acp doesn't
         // proactively send `SessionInfoUpdate` / `CurrentModeUpdate`
         // notifications — the UI would otherwise never see cwd / mode
         // / model values.
@@ -1837,7 +1837,7 @@ async fn run(params: RunParams) {
                     *current_mode_meta.write().await = Some(modes.current_mode_id.0.to_string());
                 }
                 // Same shape as modes, gated by ACP's `unstable_session_model`
-                // feature (our crate enables `["unstable"]`). claude-code-acp
+                // feature (our crate enables `["unstable"]`). claude-agent-acp
                 // populates this with the agent's advertised model list +
                 // current selection; without reading it here the picker's
                 // `availableModels` stays empty even though the actor knows
@@ -1951,7 +1951,7 @@ async fn run(params: RunParams) {
                 let sid = SessionId::new(sid);
                 // Prefer `session/load` when advertised — it's the
                 // method that actually replays prior history as
-                // `session/update` notifications. claude-code-acp
+                // `session/update` notifications. claude-agent-acp
                 // advertises `session/resume` too but resume returns
                 // success without re-streaming the transcript, so
                 // restored sessions render empty. Fall back to resume
@@ -2562,7 +2562,7 @@ async fn run(params: RunParams) {
                                 "acp::instance: session/update received"
                             );
                             // Trace-level raw payload so vendor wire-shape
-                            // surprises (e.g. claude-code-acp's empty
+                            // surprises (e.g. claude-agent-acp's empty
                             // `agent_thought_chunk` content with
                             // `display: omitted` thinking) surface in the
                             // log without code changes. Gate behind
@@ -2840,7 +2840,7 @@ async fn run(params: RunParams) {
     // shutdown + the resulting stdin EOF are the standard ACP signals
     // to terminate. SIGKILL'ing zero-delay mid-cleanup makes vendor
     // SDKs (notably `@anthropic-ai/claude-agent-sdk` inside
-    // claude-code-acp) spew "Query closed before response received" on
+    // claude-agent-acp) spew "Query closed before response received" on
     // stderr because they're tearing down a still-open Anthropic
     // streaming connection that's kept warm between turns. Wait up to
     // 5s for a clean exit, fall back to SIGKILL.
@@ -2876,7 +2876,7 @@ mod tests {
     use crate::config::{AgentConfig, AgentProvider};
 
     /// Pin every wire shape `chunk_text` extracts text from. Bare-text
-    /// is the ACP-spec'd shape; `thinking` covers claude-code-acp
+    /// is the ACP-spec'd shape; `thinking` covers claude-agent-acp
     /// passing through Anthropic's reasoning blocks unchanged; the
     /// array form covers multi-block thought deltas.
     #[test]

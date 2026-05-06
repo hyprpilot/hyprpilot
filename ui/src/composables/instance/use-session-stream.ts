@@ -104,7 +104,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         attachments: item.attachments
       } as Parameters<typeof pushTranscriptChunk>[2])
       // Re-derive the header title from each user prompt — agents
-      // like claude-code-acp never push `session_info_update`, so
+      // like claude-agent-acp never push `session_info_update`, so
       // re-running on every prompt produces a rolling "what's the
       // captain working on now" title that tracks the latest
       // context. A real wire title landing later still wins via
@@ -158,7 +158,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
 
     case TranscriptItemKind.AgentThought:
       // Open / extend the current thinking interval. Fires on every
-      // chunk even when text is empty — claude-code-acp emits an
+      // chunk even when text is empty — claude-agent-acp emits an
       // initial agent_thought_chunk with `text: ""` at the start of
       // a thinking block (content_block_start), and the captain
       // wants the elapsed clock to start ticking from that signal,

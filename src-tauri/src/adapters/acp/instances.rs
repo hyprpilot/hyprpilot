@@ -655,7 +655,7 @@ impl AcpAdapter {
     /// key if present, then spawns with `Bootstrap::Resume(session_id)`.
     /// Auto-focuses the resumed instance so the UI's transcript view +
     /// header chrome flip onto it without the caller threading focus
-    /// separately. claude-code-acp (and any spec-compliant ACP agent)
+    /// separately. claude-agent-acp (and any spec-compliant ACP agent)
     /// streams `session/update` notifications WHILE servicing the
     /// `LoadSessionRequest` to replay prior turns; those notifications
     /// land on the resumed instance's slot and only become visible if
@@ -674,7 +674,7 @@ impl AcpAdapter {
         };
         let mut resolved = self.resolve(agent_id, profile_id)?;
         // Override the profile-default cwd with the session's own. ACP
-        // agents (claude-code-acp) scope persisted sessions BY cwd —
+        // agents (claude-agent-acp) scope persisted sessions BY cwd —
         // resuming session-X under any cwd other than the one it was
         // created with returns "Resource not found". The UI knows the
         // session's cwd from `session_list`; thread it through here so

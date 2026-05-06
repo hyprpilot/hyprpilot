@@ -1,12 +1,6 @@
 [Unit]
 Description=hyprpilot — Tauri overlay daemon for agent-driven workflows
 Documentation=https://github.com/hyprpilot/hyprpilot
-# Bind to the graphical session so the unit only runs while the
-# captain has a desktop / Wayland session active. PartOf =
-# graphical-session.target stops the service automatically when the
-# session exits.
-After=graphical-session.target
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -23,4 +17,4 @@ ProtectHome=read-only
 ReadWritePaths=%t %h/.config/hyprpilot %h/.local/state/hyprpilot %h/.local/share/hyprpilot
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

@@ -1,8 +1,12 @@
+---
+title: Waybar
+order: 3
+---
+
 # Waybar integration
 
-hyprpilot exposes a live status stream via `ctl status --watch` that waybar's
-`custom/*` module protocol can consume directly. Clicking the indicator toggles
-the overlay via `ctl toggle` — no extra wiring needed.
+`hyprpilot ctl status --watch` streams live status that waybar can render
+directly. Clicking the indicator toggles the overlay.
 
 ## Waybar config
 
@@ -22,18 +26,11 @@ Add the following to your waybar `config` file (usually
 
 ### How it works
 
-- `exec` runs `ctl status --watch`, which connects to the daemon, calls
-  `status/subscribe`, and streams one JSON object per state change to stdout.
-  Waybar re-renders on each line.
-- `return-type: "json"` tells waybar to parse the line as
-  `{ text, class, tooltip, alt, ... }`.
-- `on-click` calls `ctl toggle` — the CLI round-trips through the JSON-RPC
-  socket and flips window visibility.
-- `restart-interval: 5` is a safety net: if `ctl status --watch` exits
-  (e.g. the daemon is killed), waybar restarts it after 5 seconds. The
-  `--watch` client itself reconnects with back-off on socket loss and emits an
-  `"offline"` payload between attempts, so the indicator always shows
-  something valid.
+- `exec` streams one JSON object per state change. Waybar re-renders on each line.
+- `on-click` flips overlay visibility.
+- `restart-interval: 5` is a safety net if the daemon dies. The `--watch`
+  client itself reconnects with back-off and emits an `"offline"` payload
+  between attempts, so the indicator always shows something valid.
 
 ### One-shot polling (alternative)
 

@@ -3,7 +3,7 @@
 //! `<MarkdownBody>` so the captain reviews + accepts before the agent
 //! leaves plan mode.
 //!
-//! claude-code-acp ≥0.32 emits this as `switch_mode` (with a `plan`
+//! claude-agent-acp ≥0.32 emits this as `switch_mode` (with a `plan`
 //! rawInput); older builds emit `ExitPlanMode`. Register under both
 //! names so the dispatch hits regardless of the SDK release.
 //! `plan_filepath` is the agent-resolved plan-on-disk path — surfaced
@@ -44,7 +44,7 @@ impl ToolFormatter for PlanExitFormatter {
 pub fn register(reg: &mut FormatterRegistry, adapter: &str) {
     reg.register_adapter(adapter, "ExitPlanMode", Box::new(PlanExitFormatter));
     reg.register_adapter(adapter, "switch_mode", Box::new(PlanExitFormatter));
-    // claude-code-acp ≥0.32 emits the switch_mode tool with a prose
+    // claude-agent-acp ≥0.32 emits the switch_mode tool with a prose
     // title ("Ready to code?", "EnterPlanMode", varies per direction)
     // — neither the wire-name registration above nor the leading-
     // token tier discriminate. The discriminating signal is a

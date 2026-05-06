@@ -131,10 +131,92 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
   },
   agents_list: { agents: [{ id: 'claude-code', provider: 'acp-claude-code', model: 'claude-opus-4' }] },
   commands_list: { commands: [] },
-  instances_list: { instances: [] },
+  instances_list: {
+    instances: [
+      { instanceId: 'preview-instance', agentId: 'claude-code', name: 'hyprpilot', profileId: 'captain', sessionId: 'preview-session', mode: 'plan' },
+      { instanceId: 'inst-blog', agentId: 'claude-code', name: 'blog', profileId: 'captain', sessionId: 'sess-blog', mode: 'default' },
+      { instanceId: 'inst-dotfiles', agentId: 'claude-code', name: 'dotfiles', profileId: 'captain', sessionId: 'sess-dotfiles', mode: 'default' }
+    ]
+  },
+  session_list: {
+    sessions: [
+      { sessionId: 'sess-001', title: 'reskin overlay header to wireframe spec', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString() },
+      { sessionId: 'sess-002', title: 'audit permission decision pipeline', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString() },
+      { sessionId: 'sess-003', title: 'wire release-please PAT through release.yml', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 7).toISOString() },
+      { sessionId: 'sess-004', title: 'composer attachments drag-drop', cwd: '/home/dev/hyprpilot', updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 26).toISOString() }
+    ]
+  },
   sessions_info: { sessions: [] },
-  skills_list: { skills: [] },
-  mcps_list: { mcps: [] }
+  skills_list: {
+    skills: [
+      { slug: 'git-commit', title: 'git-commit', description: 'Draft a conventional commit message.', path: '/home/dev/.config/hyprpilot/skills/git-commit/SKILL.md' },
+      { slug: 'github-pr', title: 'github-pr', description: 'Draft a pull request description.', path: '/home/dev/.config/hyprpilot/skills/github-pr/SKILL.md' },
+      { slug: 'gitlab-mr', title: 'gitlab-mr', description: 'Draft a GitLab merge request description.', path: '/home/dev/.config/hyprpilot/skills/gitlab-mr/SKILL.md' },
+      { slug: 'plan-hard', title: 'plan-hard', description: 'Deep, interview-driven plan mode for non-trivial work.', path: '/home/dev/.config/hyprpilot/skills/plan-hard/SKILL.md' },
+      { slug: 'reevaluate', title: 'reevaluate', description: 'Audit + improve a section of the codebase.', path: '/home/dev/.config/hyprpilot/skills/reevaluate/SKILL.md' }
+    ]
+  },
+  mcps_list: {
+    mcps: [
+      { name: 'filesystem', source: '/home/dev/.config/hyprpilot/mcps/team.json', raw: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] }, hyprpilot: { autoAcceptTools: ['read_*'], autoRejectTools: ['delete_*'] } },
+      { name: 'github', source: '/home/dev/.config/hyprpilot/mcps/team.json', raw: { command: 'gh-mcp-server' }, hyprpilot: { autoAcceptTools: [], autoRejectTools: [] } },
+      { name: 'playwright', source: '/home/dev/.claude.json', raw: { command: 'npx', args: ['@playwright/mcp@latest'] }, hyprpilot: { autoAcceptTools: ['browser_navigate', 'browser_screenshot'], autoRejectTools: [] } },
+      { name: 'context7', source: '/home/dev/.claude.json', raw: { url: 'https://mcp.context7.com/mcp', type: 'http' }, hyprpilot: { autoAcceptTools: ['*'], autoRejectTools: [] } }
+    ]
+  },
+  instance_meta: {
+    instanceId: 'preview-instance',
+    sessionId: 'preview-session',
+    cwd: '/home/dev/hyprpilot',
+    profileId: 'captain',
+    currentModeId: 'plan',
+    currentModelId: 'claude-opus-4',
+    availableModes: [
+      { id: 'plan', name: 'Plan', description: 'Plan first, write second.' },
+      { id: 'default', name: 'Default', description: 'Standard mode.' }
+    ],
+    availableModels: [
+      { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', description: 'Most capable; slower.' },
+      { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Balanced default.' },
+      { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', description: 'Fast; cheaper.' },
+      { id: 'claude-opus-4', name: 'Claude Opus 4', description: 'Previous generation.' }
+    ],
+    configOptions: [
+      {
+        id: 'effort',
+        name: 'Effort',
+        description: 'Adaptive thinking budget',
+        currentValue: 'high',
+        options: [
+          { value: 'low', name: 'Low', description: 'Minimal reasoning steps.' },
+          { value: 'medium', name: 'Medium', description: 'Balanced reasoning.' },
+          { value: 'high', name: 'High', description: 'Deeper reasoning.' },
+          { value: 'xhigh', name: 'Extra high', description: 'Heavy reasoning; slow.' },
+          { value: 'max', name: 'Max', description: 'Maximum reasoning budget.' }
+        ]
+      }
+    ],
+    mcpsCount: 4
+  },
+  daemon_rpc: {
+    daemon: { pid: 1234, uptimeSecs: 3600, version: '0.1.3', socketPath: '/run/user/1000/hyprpilot.sock', instanceCount: 3 },
+    instances: [],
+    profiles: [],
+    skills: { count: 5, dirs: ['/home/dev/.config/hyprpilot/skills'] },
+    mcps: { count: 4, paths: ['/home/dev/.config/hyprpilot/mcps/team.json', '/home/dev/.claude.json'] }
+  },
+  skills_reload: { count: 5 },
+  paths_resolve: null,
+  get_daemon_cwd: '/home/dev',
+  get_git_status: null,
+  completion_query: {
+    items: [
+      { id: 'git-commit', label: 'git-commit', sourceId: 'skills', description: 'Draft a conventional commit message.' },
+      { id: 'github-pr', label: 'github-pr', sourceId: 'skills', description: 'Draft a pull request description.' },
+      { id: 'gitlab-mr', label: 'gitlab-mr', sourceId: 'skills', description: 'Draft a GitLab merge request description.' }
+    ]
+  },
+  get_completion_config: { ripgrep: { auto: false, debounceMs: 80, minPrefix: 3 } }
 }
 
 /**
@@ -195,6 +277,7 @@ export function applyDevPreview(): void {
 async function exposeDevHelpers(): Promise<void> {
   const composables = await import('@composables')
   const types = await import('@components')
+  const palette = await import('@views/palette')
 
   ;(window as unknown as Record<string, unknown>).__hyprpilot_dev = {
     pushToast: composables.pushToast,
@@ -202,6 +285,9 @@ async function exposeDevHelpers(): Promise<void> {
     useToasts: composables.useToasts,
     pushPermissionRequest: composables.pushPermissionRequest,
     pushTurnStarted: composables.pushTurnStarted,
+    pushTurnEnded: composables.pushTurnEnded,
+    markThinkingStart: composables.markThinkingStart,
+    markThinkingEnd: composables.markThinkingEnd,
     pushTranscriptChunk: composables.pushTranscriptChunk,
     pushThoughtChunk: composables.pushThoughtChunk,
     pushPlan: composables.pushPlan,
@@ -211,10 +297,16 @@ async function exposeDevHelpers(): Promise<void> {
     pushCurrentModeUpdate: composables.pushCurrentModeUpdate,
     pushInstanceModeState: composables.pushInstanceModeState,
     pushInstanceModelState: composables.pushInstanceModelState,
+    pushConfigOptionsUpdate: composables.pushConfigOptionsUpdate,
     setInstanceCwd: composables.setInstanceCwd,
     setInstanceGitStatus: composables.setInstanceGitStatus,
+    setInstanceMcpsCount: composables.setInstanceMcpsCount,
+    setInstanceProfile: composables.setInstanceProfile,
     setSessionRestored: composables.setSessionRestored,
-    useActiveInstance: composables.useActiveInstance
+    useActiveInstance: composables.useActiveInstance,
+    openRootPalette: palette.openRootPalette,
+    openRootLeaf: palette.openRootLeaf,
+    PaletteLeafId: palette.PaletteLeafId
   }
 
   seedHeaderPreview(composables)

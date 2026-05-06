@@ -279,7 +279,7 @@ pub enum InstanceEvent {
     /// notification. The daemon emits this after `session/new` resolves
     /// (so the UI gets the resolved cwd + advertised modes/models),
     /// after every `session/prompt` resolution (turn-end refresh), and
-    /// after a restart that swaps the cwd. claude-code-acp doesn't
+    /// after a restart that swaps the cwd. claude-agent-acp doesn't
     /// emit `SessionInfoUpdate` or `CurrentModeUpdate` proactively, so
     /// without this push the header chrome would never see cwd / mode
     /// / model values.

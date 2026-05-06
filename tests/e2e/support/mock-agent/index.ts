@@ -2,7 +2,7 @@
 // Scripted ACP-speaking child process for tests/e2e/.
 //
 // Why a scripted stub over a real vendor runtime: `bunx
-// @zed-industries/claude-code-acp` (etc.) hits the network, needs
+// @agentclientprotocol/claude-agent-acp` (etc.) hits the network, needs
 // credentials, and isn't reproducible. This stub replays a fixed
 // transcript over stdio JSON-RPC so the daemon's live-session bridge
 // (K-240) has a deterministic counterpart in CI.

@@ -10,7 +10,7 @@ import { log } from '@lib'
 // the cached list without spawning another ephemeral list-only ACP
 // actor. Each fresh listing currently boots a full agent subprocess
 // (initialize → list → shutdown ≈ 500ms each, plus heavy CPU + bunx
-// download cost for claude-code-acp), so reactive re-fetches on
+// download cost for claude-agent-acp), so reactive re-fetches on
 // every component mount / state-event were dominating the daemon log
 // + chewing through process spawns. 30s strikes a balance between
 // "list reflects fresh state when the user has just done something"
@@ -44,7 +44,7 @@ export interface UseSessionHistoryApi {
   lastErr: Ref<string | undefined>
   refresh: (opts?: { force?: boolean }) => Promise<void>
   /// Resume a persisted session. `cwd` overrides the resolved
-  /// profile's cwd at the daemon side — required for claude-code-acp,
+  /// profile's cwd at the daemon side — required for claude-agent-acp,
   /// which scopes sessions by cwd ("Resource not found" otherwise).
   /// UI consumers pass `session.cwd` from `session_list`.
   load: (sessionId: string, cwd?: string) => Promise<void>

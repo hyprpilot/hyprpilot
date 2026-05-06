@@ -156,7 +156,7 @@ mod tests {
             provider: AgentProvider::AcpClaudeCode,
             model: None,
             command: "bunx".into(),
-            args: vec!["--bun".into(), "@zed-industries/claude-code-acp".into()],
+            args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
             cwd: None,
             env: Default::default(),
             thinking_budget_tokens: None,
