@@ -2801,7 +2801,28 @@ async fn run(params: RunParams) {
     let builder = register_client_handler!(builder, client, kill_terminal);
     let builder = register_client_handler!(builder, client, release_terminal);
 
-    let run_outcome = builder.connect_with(transport, dispatch).await;
+    // Race the agent run against the child process exit. The ACP
+    // crate's `send_request(...).block_task().await` doesn't propagate
+    // a transport drop — when the child dies before responding to
+    // `initialize`, the dispatch future stalls indefinitely. Watching
+    // `child.wait()` in the same select! gives us a fast surface for
+    // crashed agents (instead of waiting on a watchdog that doesn't
+    // exist on this code path) and converts the failure into the
+    // `InstanceState::Error` lifecycle event the rest of the system
+    // already handles.
+    let run_outcome: Result<(), anyhow::Error> = tokio::select! {
+        outcome = builder.connect_with(transport, dispatch) => outcome.map_err(|err| anyhow::anyhow!("acp connection ended: {err}")),
+        wait = child.wait() => match wait {
+            Ok(status) => {
+                warn!(agent = %agent_id, ?status, "acp::instance: child exited before connection closed");
+                Err(anyhow::anyhow!("agent process exited before disconnect: {status}"))
+            }
+            Err(err) => {
+                warn!(agent = %agent_id, %err, "acp::instance: child wait failed mid-run");
+                Err(anyhow::anyhow!("child wait failed: {err}"))
+            }
+        }
+    };
 
     let final_state = match &run_outcome {
         Ok(_) => {
