@@ -21,7 +21,7 @@ bind = SUPER, space, exec, hyprpilot ctl overlay toggle
 bindsym $mod+space exec hyprpilot ctl overlay toggle
 ```
 
-Concurrent calls are race-safe — two near-simultaneous taps land in a deterministic state, never "both hide" or "both show".
+Mash the keybind as fast as you like — the overlay always lands in a sensible visible/hidden state.
 
 ## Subcommands worth binding
 

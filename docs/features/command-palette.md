@@ -51,7 +51,7 @@ Effort is claude-code's adaptive-thinking budget — `low` / `medium` / `high` /
 
 ![instance leaf — new / rename / shutdown actions](/screenshots/palette-instance.png)
 
-Single-instance actions: `new` stages a fresh instance; `rename` gives it a captain-friendly name; `shutdown` tears it down.
+Single-instance actions: `new` stages a fresh instance; `rename` gives it a friendly name; `shutdown` tears it down.
 
 ![instances leaf — master-detail with 3 live instances](/screenshots/palette-instances.png)
 

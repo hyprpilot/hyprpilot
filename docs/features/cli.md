@@ -52,14 +52,14 @@ hyprpilot ctl prompts send --profile engineer "show failing tests"
 # Pipe stdin — push-to-talk pattern.
 whisper-stream | hyprpilot ctl prompts send --stdin
 
-# Append to the composer instead of dispatching — the captain hits Enter.
+# Append to the composer instead of dispatching — you hit Enter to send.
 hyprpilot ctl prompts send --instance review --append "and check the migration"
 
 # Cancel the in-flight turn.
 hyprpilot ctl prompts cancel --instance review
 ```
 
-`--instance` accepts a UUID, an existing captain-set name, or a fresh slug. A slug that doesn't match any live instance auto-spawns a new one named after the slug — single keybinds like `ctl prompts send --instance scratch "hi"` become "open scratch, creating it if needed".
+`--instance` accepts a UUID, an existing instance name, or a fresh slug. A slug that doesn't match any live instance auto-spawns a new one named after the slug — single keybinds like `ctl prompts send --instance scratch "hi"` become "open scratch, creating it if needed".
 
 ### Instances
 
