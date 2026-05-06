@@ -102,6 +102,20 @@ function resize(): void {
   if (!el) {
     return
   }
+  // When the composer is empty, leave the inline height unset so
+  // CSS `min-height` is the sole governor of the rendered box.
+  // Writing an inline `height: <scrollHeight>px` for empty content
+  // freezes a value the layout engine resolved before the first
+  // paint settled — on cold-overlay-popup in webkit2gtk this paints
+  // at the rows="2" intrinsic (~65px) for one frame before
+  // min-height pulls it back to 96px on the next reflow. Skipping
+  // the inline write keeps the box at a consistent 96px floor from
+  // the very first frame.
+  if (el.value.length === 0) {
+    el.style.height = ''
+
+    return
+  }
   el.style.height = 'auto'
   el.style.height = `${el.scrollHeight}px`
 }
@@ -583,7 +597,6 @@ function onDragOver(e: DragEvent): void {
         ref="textareaRef"
         v-model="text"
         class="composer-textarea"
-        rows="3"
         :placeholder="placeholder"
         :disabled="disabled"
         data-testid="composer-textarea"
