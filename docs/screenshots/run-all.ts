@@ -38,6 +38,12 @@ const VIEWPORT = { width: 768, height: 1080 }
 interface Shot {
   name: string
   seed: (page: Page) => Promise<void>
+  /** Set to true for the remote-pair shots — the SPA boots in
+   *  remote-host mode so the pair landing page renders. */
+  forceRemote?: boolean
+  /** Override the default 768×1080 desktop frame. Phone shots use
+   *  ~390×844 (iPhone 14 Pro frame size). */
+  viewport?: { width: number, height: number }
 }
 
 const PREVIEW_ID = 'preview-instance'
@@ -479,6 +485,25 @@ const shots: Shot[] = [
         })
       }, { focused: PREVIEW_ID, sid: PREVIEW_SESSION })
     }
+  },
+  {
+    name: 'remote-pair-mobile',
+    forceRemote: true,
+    viewport: { width: 390, height: 844 },
+    seed: async (page) => {
+      await page.evaluate(() => {
+        const dev = (window as unknown as { __hyprpilot_dev: { seedPairPreview: (view: unknown) => void } }).__hyprpilot_dev
+
+        dev.seedPairPreview({
+          authenticated: false,
+          pending: {
+            pendingId: 'pair-preview',
+            deviceCode: 'ocean velvet iron prairie',
+            expiresInSeconds: 47
+          }
+        })
+      })
+    }
   }
 ]
 
@@ -487,10 +512,27 @@ async function main(): Promise<void> {
     ?? (process.env.CI ? undefined : '/usr/bin/brave')
 
   const browser = await chromium.launch({ executablePath })
-  const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
-  const page = await ctx.newPage()
+
+  const filter = process.env.HYPRPILOT_DOCS_SHOT_FILTER
 
   for (const shot of shots) {
+    if (filter && !shot.name.includes(filter)) {
+      continue
+    }
+    // Each shot gets a fresh context so per-shot init scripts (the
+    // remote-pair preview flag) don't leak into the next shot.
+    const ctx = await browser.newContext({
+      viewport: shot.viewport ?? VIEWPORT,
+      deviceScaleFactor: 1
+    })
+
+    if (shot.forceRemote === true) {
+      await ctx.addInitScript(() => {
+        ;(window as { __hyprpilotForceRemote?: boolean }).__hyprpilotForceRemote = true
+      })
+    }
+    const page = await ctx.newPage()
+
     await page.goto(DEV_URL, { waitUntil: 'networkidle' })
     await page.waitForTimeout(400)
     await shot.seed(page)
@@ -499,9 +541,9 @@ async function main(): Promise<void> {
 
     await page.screenshot({ path: out, fullPage: false })
     console.log(`captured ${shot.name} → ${out}`)
+    await ctx.close()
   }
 
-  await ctx.close()
   await browser.close()
 }
 

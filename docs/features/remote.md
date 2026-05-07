@@ -5,55 +5,85 @@ order: 6
 
 # Remote bridge
 
-Phone-as-overlay. Browser-as-overlay. Anything on the LAN that speaks HTTPS + WebSocket loads the same Vue overlay the desktop runs and operates the daemon as a remote — full mirror, not a viewer.
+Open hyprpilot on your phone. Or your tablet. Or another laptop. Same overlay, same chat, same agent — driven from any browser on the LAN.
 
-## What it gives you
+## What it's for
 
-- The desktop is at the workstation; you're on the couch with a phone. Browse to `https://<workstation>:7423/` — same overlay, same chat, same palette, same everything.
-- Tablet on the side of the desk for monitoring while the laptop is doing other work.
-- Quickly fire prompts from another machine without SSH'ing in.
+- You're at the desktop and you stand up. Pick your phone off the charger, open the bookmark, keep typing.
+- A tablet on the side of the desk while the laptop is mid-build, watching the agent chew through a task.
+- Quick prompts from another machine without having to SSH in and start a CLI.
 
-## How pairing works
+It's not a viewer or a mirror. The phone drives the agent the same way the desktop does — every palette, every command, every keyboard hint that's been turned into a tap target.
 
-Hyprpilot doesn't ship a trust store, doesn't manage tokens, doesn't track "known devices". Every connection re-pairs from scratch — same interaction model as Bluetooth, Chromecast, AirDrop.
+## Pairing — what you'll actually see
 
-1. Phone opens `https://<host>:7423/` in a browser. The SPA detects it's running outside Tauri and opens a WebSocket to `wss://<host>:7423/ws`.
-2. Daemon mints a 4-word [BIP39](https://en.bitcoin.it/wiki/BIP_0039) code (one of 2048<sup>4</sup> ≈ 16 trillion phrases). Both ends show it as readable text **and** as a QR.
-3. Confirm in any of three ways:
-   - **Type** the four words into the desktop modal.
-   - **Scan from the desktop** — click *scan*, hold the phone's QR up to the laptop webcam, click confirm.
-   - **Scan from the phone** — tap *scan desktop QR*, point the phone at the desktop modal's QR. Decoded code is pushed back over the WS automatically — no further click needed.
-4. On match the WebSocket upgrades to authenticated. The phone's SPA can now drive the daemon — just like the desktop overlay does over Tauri's IPC.
-5. Disconnect → silent reconnect. The daemon hands back a session token in the `authenticated` frame; the device stores it and replays it on the next connection. **Pair once per daemon run.** Daemon restart wipes the token table — re-pair from scratch.
+Hyprpilot doesn't keep a list of "trusted devices". Every time a phone connects, you confirm it once. Like Bluetooth or AirDrop.
 
-The pair window expires after 60 seconds with a 3-attempt cap. Wrong code three times → daemon burns the pending state and closes the WS.
+### 1. Open the URL
 
-## Discovery
+On the phone: open `https://<your-host>:6262/`. The browser warns about the self-signed certificate the first time — trust it.
 
-There's no mDNS / Bonjour / Zeroconf. Bookmark `https://<workstation-ip>:7423` on the phone after the first pair and reuse it. If your workstation's IP rotates, re-bookmark. Keeping discovery static keeps the trust story simple.
+You see a screen on the phone showing a 4-word code and a QR. Something like:
 
-## TLS
+```
+ocean · velvet · iron · prairie
+```
 
-The bridge is TLS-only. There is no plain-HTTP fallback. On first start the daemon auto-generates a self-signed cert covering `127.0.0.1`, `::1`, `localhost`, the OS hostname, and every detected non-loopback IPv4 — so the per-IP TLS warning stays manageable.
+### 2. Open the overlay on the desktop
 
-The phone sees the self-signed warning on first connect; once you click through, it's persistent for that `(device, daemon)` pair until the cert rotates. To eliminate the warning entirely, supply a cert signed by a CA your phone already trusts via `[remote] tls_cert` / `tls_key` — see [Configuration → Remote bridge](../configuration/remote).
+If it's not already up, pop it (`Super+Space`, the system tray, or whichever bind you use). A modal appears with a different 4-word code and its own QR.
 
-## Mobile chrome
+The phone code and the desktop code are different on purpose. Each side shows its own code; the other side has to confirm it.
 
-Below 540px viewport (every common phone width in portrait), the overlay hides keyboard-hint chrome since touch users have no keybinds to read. The full mobile-shell with a touch-friendly bottom toolbar is on the roadmap.
+### 3. Confirm — pick whichever is easiest
 
-## What's not in scope today
+You have three ways to do it:
 
-- **Persistent device pairing.** No "trust this device" toggle. Re-pair every time. By design.
-- **Public-internet exposure.** The TLS + pair-on-connect model handles untrusted networks within reason, but hyprpilot doesn't ship rate-limiting / IP allowlists / DDoS shielding. Run it on the LAN, or behind a VPN / Tailscale tailnet, not on a public IP.
+- **Type.** Read the desktop's four words off the desktop screen, type them into the phone. Or read the phone's four words off the phone, type them into the desktop modal.
+- **Scan from desktop.** Click *scan* on the desktop modal. Hold the phone up to the laptop webcam. The desktop reads the QR off the phone screen, the four words appear in the input, click *confirm*.
+- **Scan from phone.** Tap *scan desktop QR* on the phone. Point the phone at the desktop modal. The phone reads it and submits automatically — no extra tap.
+
+The last one is usually the easiest: rear-camera phones are higher resolution than laptop webcams.
+
+### 4. You're in
+
+The pair screen on the phone disappears, the modal on the desktop closes, the chat surface comes up. Both ends are now driving the same agent.
+
+### What if I get it wrong?
+
+You have 60 seconds and 3 tries. Wrong code three times and the phone has to reload the page to start over. Same if you walk away — the connection times out cleanly.
+
+### Reconnecting
+
+Phone screen locks, you come back, browser disconnects and reconnects — no re-pair. Hyprpilot remembers the device for the lifetime of the daemon. Restart the daemon and everyone re-pairs from scratch (one re-pair per device, not per session).
+
+## What works on mobile
+
+Everything the desktop does:
+
+- Chat / composer / palette
+- Permission prompts (allow / deny right on the phone)
+- Tool runs, terminals, attachments
+- Multiple instances, model + profile switching
+
+The chrome adapts to touch:
+
+- Keyboard hints become tap buttons
+- Pill rows scroll horizontally instead of clipping
+- Tap the dimmed area outside the palette to dismiss it
+- The palette opens via the menu button in the header (top-right)
+
+## What you give up
+
+- **No public-internet exposure.** Hyprpilot is built for the LAN or a Tailscale / WireGuard tailnet. There's no rate limiting, no IP allowlist, no DDoS shield.
+- **No stored device list.** If your daemon restarts every day, you re-pair every day. By design — there's no "trust this device" toggle to manage.
+- **No mDNS / Bonjour discovery.** Bookmark the URL once. If your IP rotates, re-bookmark.
 
 ## Setup
-
-See [Configuration → Remote bridge](../configuration/remote) for the config knobs. The minimal opt-in is:
 
 ```toml
 [remote]
 enabled = true
 ```
 
-Restart the daemon, point the phone's browser at `https://<workstation-ip>:7423/`, and pair.
+Restart, point the phone at `https://<your-host>:6262/`, pair. See [Configuration → Remote bridge](../configuration/remote) for the certificate options and bind address knobs.

@@ -62,7 +62,17 @@ const pairListeners: Set<(frame: PendingFrame | undefined) => void> = new Set()
  * served by the daemon's HTTPS bridge to a browser.
  */
 export function isRemoteHost(): boolean {
-  return typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)
+  if (typeof window === 'undefined') {
+    return false
+  }
+  // Dev / screenshot harness override — lets the pair preview render
+  // without touching production logic. Production builds tree-shake
+  // this since nothing sets the flag in normal flow.
+  if ((window as { __hyprpilotForceRemote?: boolean }).__hyprpilotForceRemote === true) {
+    return true
+  }
+
+  return !('__TAURI_INTERNALS__' in window)
 }
 
 /**
@@ -511,4 +521,18 @@ export function retryRemotePair(): void {
 
 export function ensureRemoteConnection(): Promise<void> {
   return connect().then(() => undefined)
+}
+
+/**
+ * Dev / screenshot-harness seeder. Sets the module-level pair state
+ * directly + fires subscribers. Only used by the docs screenshot
+ * pipeline to render the pair landing page without spinning up a real
+ * WS handshake. Not wired anywhere in production flow.
+ */
+export function __seedPairPreview(view: PairView): void {
+  pendingFrame = view.pending
+  authenticated = view.authenticated
+  lastConfirmRejection = view.lastConfirmRejection
+  terminalReason = view.terminalReason
+  notifyPairListeners()
 }

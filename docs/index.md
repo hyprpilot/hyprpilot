@@ -40,5 +40,5 @@ features:
     details: Every color, every chip, every state — overridable from one TOML. Light + dark, gold-anchored to match the rest of your desktop.
   - icon: 📱
     title: Phone as remote
-    details: Opt in to a TLS HTTPS+WS bridge. Any browser on the LAN loads the same overlay and drives the daemon. Pair-on-connect — no persistent tokens.
+    details: Open the same overlay from any browser on the LAN. Pair once with a 4-word code or a QR scan, then drive the agent from your phone or tablet.
 ---
