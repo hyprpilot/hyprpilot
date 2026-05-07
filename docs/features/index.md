@@ -26,6 +26,7 @@ You don't see vendor seams in the overlay — model picking, mode switching, per
 - [**Chat & tools**](./chat-and-tools) — transcript with tool pills, inline + modal permission flows, multi-instance focus.
 - [**Composer**](./composer) — caret-anchored autocomplete, drag-drop image attachments, queued submits.
 - [**Daemon & CLI**](./cli) — every action the palette can do, scriptable from the shell. Push-to-talk, status streaming, daemon lifecycle.
+- [**Remote bridge**](./remote) — phone (or any browser on the LAN) loads the overlay over TLS and operates the daemon as a remote. Pair-on-connect, no persistent tokens.
 - **Pre-configured profiles** — pin agent + model + cwd + system prompt + MCPs as a profile, spawn instances of it from the palette. See [Configuration → Profiles](../configuration/profiles).
 - **MCP-native** — drop your existing `~/.claude.json` straight in. Per-server auto-accept / auto-reject globs short-circuit prompts you've already decided.
 - **Skills as context** — Anthropic's claude-code skill convention. Pick a skill from the palette; its body rides on your next prompt as a markdown resource.

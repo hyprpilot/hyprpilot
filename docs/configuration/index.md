@@ -72,3 +72,4 @@ Every section validates types and rejects unknown fields at boot — typos fail 
 - [Agents](./agents) — registering agent vendors (claude-code, codex, opencode, custom).
 - [Window](./window) — anchor vs center mode, monitor selection, sizing.
 - [Theme](./theme) — every color in the overlay.
+- [Remote bridge](./remote) — phone / browser as a remote overlay over TLS.

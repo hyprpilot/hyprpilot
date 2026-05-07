@@ -48,7 +48,7 @@ level = "info"
 # tls_key  = "~/.config/hyprpilot/remote-key.pem"
 [remote]
 enabled = false
-bind = "127.0.0.1:7423"
+bind = "0.0.0.0:7423"
 
 # `[[skills]]` — array of skill catalog roots. Each entry has a
 # `dir` (where `<slug>/SKILL.md` bundles live) and an optional
