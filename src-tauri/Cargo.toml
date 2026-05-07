@@ -56,6 +56,25 @@ grep-searcher = "0.1.16"
 path-absolutize = "3.1.1"
 git2 = { version = "0.20.4", default-features = false }
 convert_case = "0.6"
+# Remote bridge — TLS axum HTTP+WS server alongside the Tauri overlay
+# + unix socket. axum brings hyper / tokio-rustls for free. rcgen +
+# rustls + rustls-pemfile drive the self-signed cert auto-generation
+# path; bip39 encodes the per-connection pair codes; qrcode renders
+# the same code as a QR for the camera-scan path.
+axum = { version = "0.8", features = ["ws", "http2"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+rcgen = "0.13"
+bip39 = "2"
+qrcode = "0.14"
+base64 = "0.22"
+sha2 = "0.10"
+hostname = "0.4"
+tower-http = { version = "0.6", features = ["trace"] }
+futures-util = "0.3"
+rand = "0.8"
+time = "0.3.47"
 
 [dev-dependencies]
 tempfile = "3"

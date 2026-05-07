@@ -127,7 +127,7 @@ function preview(text: string): string {
 @reference '../../assets/styles.css';
 
 .palette-instances-preview {
-  @apply flex flex-col gap-2 px-[14px] py-[12px];
+  @apply flex flex-col gap-2 px-[0.875rem] py-[0.75rem];
 }
 
 .palette-instances-preview-empty,
@@ -140,7 +140,7 @@ function preview(text: string): string {
 .palette-instances-preview-title {
   @apply m-0 text-left text-[0.9rem] font-semibold leading-tight;
   color: var(--theme-fg);
-  letter-spacing: -0.1px;
+  letter-spacing: -0.00625rem;
 }
 
 .palette-instances-preview-subhead {
@@ -150,7 +150,7 @@ function preview(text: string): string {
 }
 
 .palette-instances-preview-meta {
-  @apply m-0 grid gap-y-[3px] gap-x-[10px] text-[0.7rem];
+  @apply m-0 grid gap-y-[0.1875rem] gap-x-[0.625rem] text-[0.7rem];
   font-family: var(--theme-font-mono);
   grid-template-columns: auto 1fr;
 }
@@ -180,15 +180,15 @@ function preview(text: string): string {
   @apply text-[0.55rem] uppercase;
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
-  letter-spacing: 1px;
+  letter-spacing: 0.0625rem;
 }
 
 .palette-instances-preview-turn {
-  @apply flex flex-col gap-[2px];
-  padding: 5px 8px;
-  border-radius: 3px;
+  @apply flex flex-col gap-[0.125rem];
+  padding: 0.3125rem 0.5rem;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface-bg);
-  border-left: 2px solid var(--theme-border-soft);
+  border-left: 0.125rem solid var(--theme-border-soft);
 }
 
 .palette-instances-preview-turn[data-role='user'] {
@@ -203,7 +203,7 @@ function preview(text: string): string {
   @apply text-[0.55rem] uppercase;
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
-  letter-spacing: 1px;
+  letter-spacing: 0.0625rem;
 }
 
 .palette-instances-preview-turn-body {

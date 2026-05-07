@@ -70,4 +70,15 @@ const toneVar = computed(() => {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Touch-friendly hit target on phones / tablets — 44px (2.75rem)
+ * floor matches the rest of the codebase's tap surfaces. Desktop
+ * keeps the compact chrome since mouse + keyboard users don't need
+ * the height. */
+@media (pointer: coarse) {
+  .button {
+    @apply px-3 py-[0.5rem];
+    min-height: 2.75rem;
+  }
+}
 </style>

@@ -72,7 +72,21 @@ const errorMessage = computed<string | null>(() => (props.validate ? props.valid
 
 <template>
   <div class="modal-input-wrap">
-    <input ref="inputRef" type="text" class="modal-input" :value="value" :placeholder="placeholder" :data-invalid="errorMessage !== null" @input="onInput" @keydown="onKeydown" />
+    <input
+      ref="inputRef"
+      type="text"
+      class="modal-input"
+      :value="value"
+      :placeholder="placeholder"
+      :data-invalid="errorMessage !== null"
+      autocomplete="off"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+      enterkeyhint="done"
+      @input="onInput"
+      @keydown="onKeydown"
+    />
     <span v-if="errorMessage" class="modal-input-error">{{ errorMessage }}</span>
   </div>
 </template>
@@ -86,11 +100,11 @@ const errorMessage = computed<string | null>(() => (props.validate ? props.valid
 
 .modal-input {
   @apply w-full;
-  padding: 6px 8px;
+  padding: 0.375rem 0.5rem;
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
   border: 1px solid var(--theme-border);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-family: var(--theme-font-mono);
   font-size: 0.78rem;
   outline: none;

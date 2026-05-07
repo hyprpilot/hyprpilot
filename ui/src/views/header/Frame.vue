@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { faArrowDown, faArrowUp, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faArrowDown, faArrowUp, faBars, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
-import { BreadcrumbPill, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
+import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
 
 /**
  * Overlay chrome per wireframe Frame template:
@@ -61,6 +61,9 @@ const emit = defineEmits<{
   /// Emitted when the captain clicks the row-1 instances pill — the
   /// parent opens the instances palette.
   instancesClick: []
+  /// Emitted when the captain taps the row-1 palette-open button —
+  /// touch surface for `palette.open` (the desktop `Ctrl+K` keybind).
+  paletteClick: []
 }>()
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
@@ -69,43 +72,51 @@ const hasGit = computed(() => Boolean(props.gitStatus))
 </script>
 
 <template>
-  <section class="frame" :style="{ '--frame-phase': phaseColor }" data-testid="frame">
+  <section class="frame" data-testid="frame">
     <header class="frame-header">
       <div class="frame-row frame-row-1">
-        <!-- Captain-set name takes the leftmost slot when present:
-             the dot+phase color stays here (it's the active-instance
-             marker). Profile pill becomes a secondary breadcrumb to
-             its right. When no name is set, the profile pill keeps
-             the dot — legacy shape. -->
-        <button v-if="name" type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="instance name" @click="emit('pillClick', 'profile')">
-          <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
-          {{ name }}
-        </button>
-        <button
-          type="button"
-          class="frame-profile-pill"
-          :style="!name ? { backgroundColor: phaseColor } : undefined"
-          :data-secondary="Boolean(name)"
-          aria-label="profile"
-          @click="emit('pillClick', 'profile')"
-        >
-          <span v-if="!name" class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
-          {{ profile }}
-        </button>
-        <button v-if="provider" type="button" class="frame-adapter-pill" aria-label="adapter" @click="emit('pillClick', 'provider')">
-          {{ provider }}
-        </button>
-        <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
-          {{ model }}
-        </button>
-        <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
-          {{ modeTag }}
-        </button>
-        <span v-if="title" class="frame-title">{{ title }}</span>
-        <span v-else class="frame-title-spacer" />
+        <!-- Pills + title compete with each other for horizontal
+             space. On wide screens they all fit; on narrow / phone
+             widths the HorizontalScroller lets the captain swipe (or
+             tap arrow chevrons) to reach pills that ran past the
+             viewport, instead of stacking onto a second line and
+             eating chat height. Trailing buttons (instances /
+             palette-open / close) stay anchored on the right. -->
+        <HorizontalScroller class="frame-row-1-scroller">
+          <button v-if="name" type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="instance name" @click="emit('pillClick', 'profile')">
+            <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
+            {{ name }}
+          </button>
+          <button
+            type="button"
+            class="frame-profile-pill"
+            :style="!name ? { backgroundColor: phaseColor } : undefined"
+            :data-secondary="Boolean(name)"
+            aria-label="profile"
+            @click="emit('pillClick', 'profile')"
+          >
+            <span v-if="!name" class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
+            {{ profile }}
+          </button>
+          <button v-if="provider" type="button" class="frame-adapter-pill" aria-label="adapter" @click="emit('pillClick', 'provider')">
+            {{ provider }}
+          </button>
+          <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
+            {{ model }}
+          </button>
+          <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
+            {{ modeTag }}
+          </button>
+          <span v-if="title" class="frame-title">{{ title }}</span>
+        </HorizontalScroller>
         <button v-if="instancesCount > 1" type="button" class="frame-instances-pill" :aria-label="`${instancesCount} instances`" @click="emit('instancesClick')">
           <span class="frame-instances-count">{{ instancesCount }}</span>
           <span class="frame-instances-label">instances</span>
+        </button>
+        <!-- Palette-open button: visible only on coarse pointers
+             (phones / tablets). Desktop captains hit Ctrl+K. -->
+        <button type="button" class="frame-palette" aria-label="open command palette" @click="emit('paletteClick')">
+          <FaIcon :icon="faBars" class="frame-palette-icon" />
         </button>
         <button type="button" class="frame-close" aria-label="close" @click="emit('close')">
           <FaIcon :icon="faXmark" class="frame-close-icon" />
@@ -124,11 +135,11 @@ const hasGit = computed(() => Boolean(props.gitStatus))
             <span class="frame-cwd-git-behind"> <FaIcon :icon="faArrowDown" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.behind ?? 0 }} </span>
           </span>
         </button>
-        <div class="frame-counts">
+        <HorizontalScroller v-if="counts.length > 0" class="frame-counts">
           <button v-for="c in counts" :key="c.label" type="button" class="frame-pill-button" :aria-label="c.id ?? c.label" @click="emit('breadcrumbClick', c.id ?? c.label)">
             <BreadcrumbPill :color="c.color" :label="c.label" :count="c.count" />
           </button>
-        </div>
+        </HorizontalScroller>
       </div>
     </header>
 
@@ -155,14 +166,6 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   font-family: var(--theme-font-sans);
-  /* visual law #1 — phase color as the instance border. Replaces the
-   * old `--theme-window-edge` body border so we have one source of
-   * "what state is this overlay in" rather than two stacked stripes.
-   * Edge selection: in anchor mode the stripe paints the inward
-   * edge (opposite the anchored side, the one users actually see);
-   * in center mode the whole perimeter glows. The reactive color
-   * rides on `--frame-phase` (set inline from the `phase` prop). */
-  --frame-phase: var(--theme-state-idle);
   /* The Frame is the overlay's width authority — every width-responsive
    * primitive inside it reads `@container frame (...)` so narrow anchors
    * (right/left 40% on small monitors) don't horizontal-scroll or clip. */
@@ -170,24 +173,29 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   container-name: frame;
 }
 
+/* Static border — phase state lives elsewhere (the profile pill's dot
+ * pulses, the toast / loading surfaces carry phase color, the
+ * permission stack's warm-brown band). The chrome border itself is
+ * neutral so the captain reads phase from the active surface, not from
+ * a perimeter that's always there. */
 html[data-window-anchor='right'] .frame {
-  border-left: 3px solid var(--frame-phase);
+  border-left: 1px solid var(--theme-border);
 }
 
 html[data-window-anchor='left'] .frame {
-  border-right: 3px solid var(--frame-phase);
+  border-right: 1px solid var(--theme-border);
 }
 
 html[data-window-anchor='top'] .frame {
-  border-bottom: 3px solid var(--frame-phase);
+  border-bottom: 1px solid var(--theme-border);
 }
 
 html[data-window-anchor='bottom'] .frame {
-  border-top: 3px solid var(--frame-phase);
+  border-top: 1px solid var(--theme-border);
 }
 
 html:not([data-window-anchor]) .frame {
-  border: 3px solid var(--frame-phase);
+  border: 1px solid var(--theme-border);
 }
 
 .frame-header {
@@ -201,15 +209,23 @@ html:not([data-window-anchor]) .frame {
  * the divider stays attached to the row when one is hidden. */
 .frame-row-1 {
   @apply flex items-center border-b;
-  padding: 8px 14px 8px 4px;
-  gap: 10px;
+  padding: 0.5rem 0.875rem 0.5rem 0.25rem;
+  gap: 0.5rem;
+  min-width: 0;
   border-color: var(--theme-border);
+}
+
+/* Scroller takes the available space; trailing buttons stay
+ * anchored right. The pill gap matches the row gap so visually
+ * scrolling looks like part of the same row. */
+.frame-row-1-scroller {
+  --horizontal-scroller-gap: 0.625rem;
 }
 
 .frame-row-2 {
   @apply flex items-stretch border-b;
-  padding: 5px 14px 5px 4px;
-  gap: 6px;
+  padding: 0.3125rem 0.875rem 0.3125rem 0.25rem;
+  gap: 0.375rem;
   background-color: var(--theme-surface-bg);
   border-color: var(--theme-border);
 }
@@ -217,13 +233,17 @@ html:not([data-window-anchor]) .frame {
 /* Profile pill — phase color bg + dark ink + mono. Pulse dot when the
  * session is in any active phase (working/streaming/awaiting/pending). */
 .frame-profile-pill {
-  @apply inline-flex shrink-0 items-center gap-[6px] rounded-sm border-0 leading-tight;
-  padding: 3px 11px;
+  @apply inline-flex shrink-0 items-center gap-[0.375rem] rounded-sm border-0 leading-tight;
+  padding: 0.1875rem 0.6875rem;
   font-size: 0.7rem;
   font-weight: 700;
   color: var(--theme-fg-on-tone);
   font-family: var(--theme-font-mono);
   cursor: pointer;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Secondary profile pill (rendered to the right of a captain-set
@@ -236,7 +256,7 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-profile-dot {
-  @apply inline-block h-[6px] w-[6px] shrink-0 rounded-full;
+  @apply inline-block h-[0.375rem] w-[0.375rem] shrink-0 rounded-full;
   background-color: var(--theme-fg-on-tone);
 }
 
@@ -251,13 +271,21 @@ html:not([data-window-anchor]) .frame {
 .frame-model-pill,
 .frame-mode-pill {
   @apply inline-flex shrink-0 items-center rounded-sm leading-tight;
-  padding: 3px 9px;
+  padding: 0.1875rem 0.5625rem;
   font-size: 0.66rem;
   font-weight: 700;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
   font-family: var(--theme-font-mono);
   cursor: pointer;
+  /* Long model / adapter names (e.g. claude-sonnet-4-5-20250514)
+   * truncate before squeezing the close button off-screen. Hard
+   * `shrink-0` is preserved — the pill keeps its full width when
+   * the row has room and only the inner text ellipsises. */
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .frame-adapter-pill {
@@ -280,19 +308,15 @@ html:not([data-window-anchor]) .frame {
 /* Session title — italic dashed pill, mono, ink-2, ellipsizes. */
 .frame-title {
   @apply flex-1 truncate;
-  padding: 3px 10px;
+  padding: 0.1875rem 0.625rem;
   font-size: 0.66rem;
   min-width: 0;
   color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-bg);
   border: 1px dashed var(--theme-border-soft);
-  border-radius: 4px;
+  border-radius: 0.25rem;
   font-family: var(--theme-font-mono);
   font-style: italic;
-}
-
-.frame-title-spacer {
-  @apply flex-1;
 }
 
 /* Row 1 instances pill — sits between the title (or spacer) and the
@@ -300,13 +324,13 @@ html:not([data-window-anchor]) .frame {
  * fg) so the captain reads "+N" first. Hidden when the registry has
  * a single instance: nothing extra to surface. */
 .frame-instances-pill {
-  @apply inline-flex shrink-0 cursor-pointer items-center gap-[5px] border-0 leading-tight;
-  padding: 2px 8px;
+  @apply inline-flex shrink-0 cursor-pointer items-center gap-[0.3125rem] border-0 leading-tight;
+  padding: 0.125rem 0.5rem;
   font-size: 0.6rem;
   font-weight: 700;
   color: var(--theme-accent);
   background-color: color-mix(in srgb, var(--theme-accent) 18%, transparent);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-family: var(--theme-font-mono);
 }
 
@@ -321,13 +345,13 @@ html:not([data-window-anchor]) .frame {
 .frame-instances-label {
   font-weight: 500;
   text-transform: lowercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
 }
 
 .frame-cwd-git-arrow {
-  width: 7px;
-  height: 7px;
-  margin-right: 1px;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  margin-right: 0.0625rem;
 }
 
 .frame-close {
@@ -339,12 +363,44 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-close-icon {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 .frame-close:hover {
   color: var(--theme-status-err);
+}
+
+/* Hidden on mouse — the palette has Ctrl+K. Surfaces on coarse
+ * pointers (phones / tablets) so touch users have a tap entry to
+ * the command palette. */
+.frame-palette {
+  @apply hidden shrink-0 items-center justify-center border-0 bg-transparent leading-none;
+  color: var(--theme-fg-dim);
+  cursor: pointer;
+  font-family: var(--theme-font-mono);
+}
+
+.frame-palette-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.frame-palette:hover {
+  color: var(--theme-fg);
+}
+
+@media (pointer: coarse) {
+  .frame-palette {
+    @apply inline-flex;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  .frame-close {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
 }
 
 /* Row 2 — cwd pill on the left (flex:1, accent yellow left-stripe,
@@ -352,14 +408,14 @@ html:not([data-window-anchor]) .frame {
  * / skills / etc.) sit alongside as breadcrumb pills. */
 .frame-cwd {
   @apply inline-flex min-w-0 flex-1 items-center;
-  padding: 3px 10px;
-  gap: 6px;
+  padding: 0.1875rem 0.625rem;
+  gap: 0.375rem;
   font-size: 0.66rem;
   color: var(--theme-fg);
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border-soft);
-  border-left: 3px solid var(--theme-accent);
-  border-radius: 3px;
+  border-left: 0.1875rem solid var(--theme-accent);
+  border-radius: 0.1875rem;
   font-family: var(--theme-font-mono);
   cursor: pointer;
   overflow: hidden;
@@ -376,9 +432,9 @@ html:not([data-window-anchor]) .frame {
 
 .frame-cwd-git {
   @apply ml-auto inline-flex shrink-0 items-center;
-  padding: 1px 7px;
-  gap: 6px;
-  border-radius: 3px;
+  padding: 0.0625rem 0.4375rem;
+  gap: 0.375rem;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
 }
@@ -397,7 +453,9 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-counts {
-  @apply flex shrink-0 items-center gap-1;
+  --horizontal-scroller-gap: 0.25rem;
+  flex: 0 1 auto;
+  max-width: 50%;
 }
 
 /* Body is a positioning context for the absolute-positioned toast
@@ -415,9 +473,9 @@ html:not([data-window-anchor]) .frame {
   background-color: var(--theme-surface);
 }
 
-/* Narrow-width rules. Worktree hides below 340px because its label
+/* Narrow-width rules. Worktree hides below 21.25rem because its label
  * is the longest chip on the row. */
-@container frame (max-width: 340px) {
+@container frame (max-width: 21.25rem) {
   .frame-cwd-worktree {
     display: none;
   }

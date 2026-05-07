@@ -6,6 +6,7 @@ mod daemon;
 mod logging;
 mod mcp;
 mod paths;
+mod remote;
 mod rpc;
 mod skills;
 mod tools;

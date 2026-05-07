@@ -28,7 +28,7 @@ defineProps<{
 }
 
 .mini-palette-card-title {
-  @apply border-b px-2 py-[4px] text-[0.68rem] uppercase tracking-wider;
+  @apply border-b px-2 py-[0.25rem] text-[0.68rem] uppercase tracking-wider;
   border-color: var(--theme-border-soft);
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg-dim);

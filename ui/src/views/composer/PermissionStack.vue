@@ -55,13 +55,13 @@ const activeIndex = computed(() => {
 .permission-panel {
   @apply flex flex-col overflow-y-auto;
   background-color: var(--theme-permission-bg);
-  border-top: 2px solid var(--theme-status-warn);
-  max-height: 45vh;
+  border-top: 0.125rem solid var(--theme-status-warn);
+  max-height: 45dvh;
 }
 
 .permission-panel-counter-strip {
   @apply flex items-center;
-  padding: 4px 14px;
+  padding: 0.25rem 0.875rem;
   background-color: var(--theme-permission-bg);
   border-bottom: 1px solid var(--theme-border-soft);
 }
@@ -71,9 +71,9 @@ const activeIndex = computed(() => {
   background-color: var(--theme-surface-bg);
   border: 1px solid var(--theme-border-soft);
   color: var(--theme-fg);
-  padding: 1px 7px;
-  border-radius: 3px;
-  letter-spacing: 0.4px;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 0.1875rem;
+  letter-spacing: 0.025rem;
   font-family: var(--theme-font-mono);
 }
 </style>

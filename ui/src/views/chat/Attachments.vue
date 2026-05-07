@@ -134,20 +134,20 @@ const images = computed(() => props.attachments.filter(isImage))
 
 .attachments {
   @apply flex flex-col;
-  margin-top: 4px;
-  gap: 6px;
+  margin-top: 0.25rem;
+  gap: 0.375rem;
 }
 
 .attachments-pills {
   @apply flex flex-wrap;
-  gap: 4px;
+  gap: 0.25rem;
 }
 
 .attachments-pill {
   @apply inline-flex items-center gap-2 border bg-transparent;
   border-color: var(--theme-border-soft);
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 0.125rem 0.5rem;
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;
   color: var(--theme-fg-subtle);
@@ -162,8 +162,8 @@ const images = computed(() => props.attachments.filter(isImage))
 }
 
 .attachments-pill-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
   color: var(--theme-fg-dim);
   flex-shrink: 0;
 }
@@ -172,18 +172,18 @@ const images = computed(() => props.attachments.filter(isImage))
   @apply truncate;
   color: var(--theme-fg);
   font-weight: 600;
-  max-width: 220px;
+  max-width: 13.75rem;
 }
 
 .attachments-pill-mime {
   color: var(--theme-fg-faint);
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
   font-size: 0.58rem;
 }
 
 .attachments-pill-open {
-  width: 8px;
-  height: 8px;
+  width: 0.5rem;
+  height: 0.5rem;
   color: var(--theme-fg-faint);
   flex-shrink: 0;
 }
@@ -194,13 +194,13 @@ const images = computed(() => props.attachments.filter(isImage))
 
 .attachments-images {
   @apply flex flex-wrap;
-  gap: 4px;
+  gap: 0.25rem;
 }
 
 .attachments-image {
   @apply rounded-sm;
   max-width: 100%;
-  max-height: 240px;
+  max-height: 15rem;
   object-fit: contain;
   border: 1px solid var(--theme-border-soft);
   background-color: var(--theme-surface);

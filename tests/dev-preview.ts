@@ -278,6 +278,7 @@ async function exposeDevHelpers(): Promise<void> {
   const composables = await import('@composables')
   const types = await import('@components')
   const palette = await import('@views/palette')
+  const remoteBridge = await import('@ipc/remote-bridge')
 
   ;(window as unknown as Record<string, unknown>).__hyprpilot_dev = {
     pushToast: composables.pushToast,
@@ -306,7 +307,11 @@ async function exposeDevHelpers(): Promise<void> {
     useActiveInstance: composables.useActiveInstance,
     openRootPalette: palette.openRootPalette,
     openRootLeaf: palette.openRootLeaf,
-    PaletteLeafId: palette.PaletteLeafId
+    PaletteLeafId: palette.PaletteLeafId,
+    seedPairPreview: (view: Parameters<typeof remoteBridge.__seedPairPreview>[0], remote = true) => {
+      ;(window as unknown as Record<string, unknown>).__hyprpilot_force_remote = remote
+      remoteBridge.__seedPairPreview(view)
+    }
   }
 
   seedHeaderPreview(composables)

@@ -36,14 +36,14 @@ withDefaults(
 .stat-pill {
   @apply inline-flex shrink-0 items-center text-[0.56rem];
   font-family: var(--theme-font-mono);
-  padding: 1px 5px;
+  padding: 0.0625rem 0.3125rem;
   border: 1px solid var(--theme-border);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   color: var(--theme-fg-dim);
   background-color: var(--theme-surface-bg);
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
   line-height: 1.2;
-  gap: 4px;
+  gap: 0.25rem;
   /* Headers (`stream-card-header`, `tool-chips-header`) wrap the
    * pill in `text-transform: uppercase`, which would inherit and
    * render `13s` as `13S` / `1m 3s` as `1M 3S`. The pill is its

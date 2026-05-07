@@ -32,9 +32,9 @@ const soft = computed(() => (props.role === Role.User ? 'var(--theme-accent-user
   background-color: var(--soft);
   font-family: var(--theme-font-mono);
   text-transform: lowercase;
-  padding: 1px 7px;
-  border-radius: 3px;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 0.1875rem;
   font-size: 0.62rem;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
 }
 </style>

@@ -102,7 +102,10 @@ export enum TauriCommand {
   CompletionCancel = 'completion_cancel',
   CompletionRank = 'completion_rank',
   GetCompletionConfig = 'get_completion_config',
-  SkillsReload = 'skills_reload'
+  SkillsReload = 'skills_reload',
+  RemoteConfirmPair = 'remote_confirm_pair',
+  RemoteRejectPair = 'remote_reject_pair',
+  RemotePendingPairs = 'remote_pending_pairs'
 }
 
 export enum TauriEvent {
@@ -121,7 +124,9 @@ export enum TauriEvent {
   AcpConfigOptionsUpdate = 'acp:config-options-update',
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
-  ComposerDraftAppend = 'composer:draft-append'
+  ComposerDraftAppend = 'composer:draft-append',
+  RemotePairRequest = 'remote:pair-request',
+  RemotePairResolved = 'remote:pair-resolved'
 }
 
 /**
@@ -170,6 +175,9 @@ export interface TauriCommandArgs {
   [TauriCommand.CompletionRank]: { query: string; candidates: CandidateItem[] }
   [TauriCommand.GetCompletionConfig]: void
   [TauriCommand.SkillsReload]: void
+  [TauriCommand.RemoteConfirmPair]: { pendingId: string; code: string }
+  [TauriCommand.RemoteRejectPair]: { pendingId: string }
+  [TauriCommand.RemotePendingPairs]: void
 }
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
@@ -215,6 +223,9 @@ export interface TauriCommandResult {
   [TauriCommand.CompletionRank]: CompletionQueryResponse
   [TauriCommand.GetCompletionConfig]: CompletionConfigSnapshot
   [TauriCommand.SkillsReload]: { count: number }
+  [TauriCommand.RemoteConfirmPair]: { confirmed: boolean }
+  [TauriCommand.RemoteRejectPair]: void
+  [TauriCommand.RemotePendingPairs]: RemotePendingPair[]
 }
 
 /**
@@ -249,4 +260,49 @@ export interface TauriEventPayload {
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
+  [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
+  [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload
+}
+
+/**
+ * Payload of `remote:pair-request` — emitted on every WS upgrade
+ * the daemon receives from a phone (or any browser) hitting the
+ * remote bridge. Carries BOTH codes: the desktop renders its own
+ * (`desktopCode`) as QR + words and expects the captain to present
+ * the device's code (`deviceCode`) — typed manually, or scanned
+ * from the device's QR. Asymmetric codes are the whole point of
+ * the pairing: presenting the same code visible on the same screen
+ * proves nothing.
+ */
+export interface RemotePairRequestEventPayload {
+  pendingId: string
+  /** Code rendered on the connecting device — desktop's expected input. */
+  deviceCode: string
+  /** Code rendered on the desktop modal — device's expected input. */
+  desktopCode: string
+  remoteAddr: string
+}
+
+/**
+ * Payload of `remote:pair-resolved` — emitted whenever a pending
+ * pair transitions out of `pending` (confirmed by either side, or
+ * rejected via timeout / captain-reject / attempt-cap / connection
+ * drop). The desktop modal listens for this and clears its state
+ * the moment it lands; without it the modal would stay open after
+ * the device side authenticates first (captain scanned the desktop's
+ * QR with the phone).
+ */
+export interface RemotePairResolvedEventPayload {
+  pendingId: string
+  outcome: 'confirmed' | 'rejected'
+}
+
+/**
+ * Snapshot row from `remote_pending_pairs`. Diagnostic surface for
+ * "queue of waiting devices" UX.
+ */
+export interface RemotePendingPair {
+  pendingId: string
+  remoteAddr: string
+  expiresInSeconds: number
 }

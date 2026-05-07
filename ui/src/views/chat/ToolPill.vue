@@ -82,12 +82,12 @@ const isInteractive = computed(() => hasBody.value)
 .tool-pill {
   @apply flex flex-col text-[0.62rem] leading-tight;
   font-family: var(--theme-font-mono);
-  border-left: 2px solid var(--tone);
+  border-left: 0.125rem solid var(--tone);
   background-color: var(--theme-surface);
   border-top: 1px solid var(--theme-border);
   border-right: 1px solid var(--theme-border);
   border-bottom: 1px solid var(--theme-border);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   min-width: 0;
   overflow: hidden;
 }
@@ -101,8 +101,8 @@ const isInteractive = computed(() => hasBody.value)
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
-  column-gap: 8px;
-  padding: 3px 8px;
+  column-gap: 0.5rem;
+  padding: 0.1875rem 0.5rem;
 }
 
 .tool-pill[data-expanded='true'] .tool-pill-header {
@@ -114,18 +114,18 @@ const isInteractive = computed(() => hasBody.value)
 }
 
 .tool-pill-icon-cell {
-  @apply flex items-center gap-[4px];
+  @apply flex items-center gap-[0.25rem];
   flex-shrink: 0;
 }
 
 .tool-pill-dot {
-  @apply inline-block h-[4px] w-[4px] shrink-0 animate-pulse rounded-full;
+  @apply inline-block h-[0.25rem] w-[0.25rem] shrink-0 animate-pulse rounded-full;
   background-color: var(--tone);
 }
 
 .tool-pill-icon {
-  width: 11px;
-  height: 11px;
+  width: 0.6875rem;
+  height: 0.6875rem;
   color: var(--tone);
   flex-shrink: 0;
 }
@@ -144,14 +144,14 @@ const isInteractive = computed(() => hasBody.value)
 
 .tool-pill-caret {
   @apply shrink-0;
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
   color: var(--theme-fg-dim);
 }
 
 .tool-pill-body {
   @apply flex flex-col overflow-y-auto;
-  padding: 8px 10px;
+  padding: 0.5rem 0.625rem;
   max-height: 60vh;
 }
 </style>

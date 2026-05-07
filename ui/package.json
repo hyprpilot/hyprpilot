@@ -31,6 +31,8 @@
     "focus-trap-vue": "^4.0.3",
     "markdown-it": "^14.1.0",
     "markdown-it-task-lists": "^2.1.1",
+    "qr-scanner": "^1.4.2",
+    "qrcode": "^1.5.4",
     "shiki": "^4.0.2",
     "vue": "^3.5.32"
   },
@@ -38,6 +40,7 @@
     "@tailwindcss/vite": "^4.2.4",
     "@testing-library/vue": "^8.1.0",
     "@types/markdown-it": "^14.1.2",
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.6",
     "@vitest/ui": "^4.1.5",
     "@vue/test-utils": "^2.4.10",

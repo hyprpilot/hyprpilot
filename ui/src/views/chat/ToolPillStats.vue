@@ -86,6 +86,6 @@ const renderables = computed<PillView[]>(() => {
 
 .tool-pill-stats {
   @apply flex shrink-0 items-center;
-  gap: 4px;
+  gap: 0.25rem;
 }
 </style>

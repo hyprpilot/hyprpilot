@@ -88,17 +88,17 @@ const wrapperClass = computed(() => `loading loading-${props.mode}`)
 
 .loading-inline {
   width: 100%;
-  padding: 24px 16px;
+  padding: 1.5rem 1rem;
 }
 
 .loading-inner {
   @apply flex flex-col items-center;
-  gap: 10px;
+  gap: 0.625rem;
 }
 
 .loading-spinner {
-  width: 18px;
-  height: 18px;
+  width: 1.125rem;
+  height: 1.125rem;
   color: var(--theme-accent);
 }
 
@@ -110,9 +110,9 @@ const wrapperClass = computed(() => `loading loading-${props.mode}`)
   background-color: var(--theme-surface-bg);
   border: 1px solid var(--theme-border-soft);
   color: var(--theme-fg-subtle);
-  padding: 3px 8px;
-  border-radius: 3px;
-  letter-spacing: 0.6px;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 0.1875rem;
+  letter-spacing: 0.0375rem;
   font-weight: 600;
   max-width: 48ch;
   text-overflow: ellipsis;

@@ -77,21 +77,21 @@ const exitLabel = computed(() => {
 }
 
 .terminal-card-header {
-  @apply flex min-w-0 items-center gap-2 border-b px-2 py-[5px] text-[0.72rem];
+  @apply flex min-w-0 items-center gap-2 border-b px-2 py-[0.3125rem] text-[0.72rem];
   border-color: var(--theme-border-soft);
   background-color: var(--theme-surface-alt);
   font-family: var(--theme-font-mono);
 }
 
 .terminal-card-label {
-  @apply font-bold;
+  @apply shrink-0 font-bold;
   color: var(--theme-kind-bash);
 }
 
 .terminal-card-kind {
   @apply shrink-0;
-  width: 11px;
-  height: 11px;
+  width: 0.6875rem;
+  height: 0.6875rem;
   color: var(--theme-kind-bash);
 }
 
@@ -101,12 +101,22 @@ const exitLabel = computed(() => {
   font-family: var(--theme-font-mono);
 }
 
+/* `cwd` shrinks before `command` (deeper paths are less informative
+ * than the command itself); both yield before the trailing status
+ * dot + cancel button, which carry hard `shrink-0`. */
 .terminal-card-cwd {
+  @apply min-w-0 shrink truncate;
+  max-width: 40%;
   color: var(--theme-fg-dim);
 }
 
+.terminal-card-cancel,
+.terminal-card-exit {
+  @apply shrink-0;
+}
+
 .terminal-card-status-dot {
-  @apply inline-block h-[6px] w-[6px] shrink-0 rounded-full;
+  @apply inline-block h-[0.375rem] w-[0.375rem] shrink-0 rounded-full;
 }
 
 .terminal-card-status-dot[data-state='stream'] {
@@ -130,6 +140,13 @@ const exitLabel = computed(() => {
 
 .terminal-card-cancel:hover {
   text-decoration: underline;
+}
+
+@media (pointer: coarse) {
+  .terminal-card-cancel {
+    min-height: 2.25rem;
+    padding: 0 0.625rem;
+  }
 }
 
 .terminal-card-exit {

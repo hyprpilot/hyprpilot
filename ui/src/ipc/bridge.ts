@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event'
 
+import { remoteInvoke, remoteListen, isRemoteHost } from './remote-bridge'
 import { TauriCommand, TauriEvent, type TauriCommandArgs, type TauriCommandResult, type TauriEventPayload } from '@constants/wire'
 
 /**
@@ -13,9 +14,14 @@ import { TauriCommand, TauriEvent, type TauriCommandArgs, type TauriCommandResul
  * each need to remember to log. Callers still toast user-facing errors
  * themselves; this is observability, not UX.
  *
- * Commands declared with `void` args don't take a second positional
- * argument; commands with non-void args require the typed object.
- * TypeScript narrows on `K`, so the right overload picks per call.
+ * Two transports behind one signature:
+ * - **Tauri** (default) — `window.__TAURI_INTERNALS__` is present;
+ *   calls flow through `@tauri-apps/api/core::invoke`.
+ * - **Remote WS** (browser hitting the `/` endpoint of the daemon's
+ *   axum bridge) — no Tauri internals; calls flow through a single
+ *   duplex WS that mirrors the unix-socket NDJSON shape. The pair-
+ *   on-connect handshake runs in `./remote-bridge` before any RPC
+ *   is allowed.
  */
 export async function invoke<K extends TauriCommand>(
   ...args: TauriCommandArgs[K] extends void ? [command: K] : [command: K, args: TauriCommandArgs[K]]
@@ -23,6 +29,10 @@ export async function invoke<K extends TauriCommand>(
   const [command, payload] = args
 
   try {
+    if (isRemoteHost()) {
+      return (await remoteInvoke(command, payload as Record<string, unknown> | undefined)) as TauriCommandResult[K]
+    }
+
     return await tauriInvoke<TauriCommandResult[K]>(command, payload as Record<string, unknown> | undefined)
   } catch(err) {
     // Lazy-import to avoid an `@lib` <-> `@ipc` cyclic dep at module
@@ -35,6 +45,10 @@ export async function invoke<K extends TauriCommand>(
 }
 
 export async function listen<K extends TauriEvent>(event: K, cb: EventCallback<TauriEventPayload[K]>): Promise<UnlistenFn> {
+  if (isRemoteHost()) {
+    return remoteListen(event, cb as EventCallback<unknown>)
+  }
+
   return tauriListen<TauriEventPayload[K]>(event, cb)
 }
 

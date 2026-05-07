@@ -38,4 +38,7 @@ features:
   - icon: 🎨
     title: Themed
     details: Every color, every chip, every state — overridable from one TOML. Light + dark, gold-anchored to match the rest of your desktop.
+  - icon: 📱
+    title: Phone as remote
+    details: Open the same overlay from any browser on the LAN. Pair once with a 4-word code or a QR scan, then drive the agent from your phone or tablet.
 ---

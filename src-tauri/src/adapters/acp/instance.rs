@@ -2854,8 +2854,16 @@ async fn run(params: RunParams) {
     let run_outcome: Result<(), anyhow::Error> = tokio::select! {
         outcome = builder.connect_with(transport, dispatch) => outcome.map_err(|err| anyhow::anyhow!("acp connection ended: {err}")),
         wait = child.wait() => match wait {
+            Ok(status) if status.success() => {
+                // Clean child exit before our shutdown handshake —
+                // expected for `Bootstrap::ListOnly` actors and any
+                // vendor that voluntarily exits 0 after their work
+                // ends. Not an error; surface as a clean `Ended`.
+                info!(agent = %agent_id, ?status, "acp::instance: child exited cleanly before disconnect");
+                Ok(())
+            }
             Ok(status) => {
-                warn!(agent = %agent_id, ?status, "acp::instance: child exited before connection closed");
+                warn!(agent = %agent_id, ?status, "acp::instance: child exited with non-zero status before connection closed");
                 Err(anyhow::anyhow!("agent process exited before disconnect: {status}"))
             }
             Err(err) => {

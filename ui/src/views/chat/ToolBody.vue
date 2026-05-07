@@ -81,7 +81,7 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
 
 .tool-body {
   @apply flex flex-col;
-  gap: 8px;
+  gap: 0.5rem;
   font-family: var(--theme-font-mono);
   font-size: 0.7rem;
   line-height: 1.55;
@@ -110,13 +110,13 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
 
 .tool-body-fields {
   @apply flex flex-col;
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 .tool-body-field {
   display: grid;
   grid-template-columns: minmax(0, max-content) 1fr;
-  column-gap: 12px;
+  column-gap: 0.75rem;
   align-items: baseline;
   min-width: 0;
 }
@@ -124,7 +124,7 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
 .tool-body-label {
   @apply text-[0.6rem] uppercase;
   color: var(--theme-fg-subtle);
-  letter-spacing: 0.6px;
+  letter-spacing: 0.0375rem;
   font-weight: 600;
   max-width: 25ch;
   overflow: hidden;
@@ -136,8 +136,8 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
   display: block;
   background-color: var(--theme-surface-bg);
   border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
-  padding: 4px 7px;
+  border-radius: 0.1875rem;
+  padding: 0.25rem 0.4375rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--theme-fg);
@@ -147,14 +147,14 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
 
 .tool-body-output {
   border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   overflow: hidden;
   background-color: var(--theme-surface-bg);
 }
 
 .tool-body-output-header {
   @apply flex items-center gap-2 cursor-pointer;
-  padding: 4px 8px;
+  padding: 0.25rem 0.5rem;
   background-color: var(--theme-surface);
   user-select: none;
 }
@@ -164,24 +164,24 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
 }
 
 .tool-body-output-caret {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
   color: var(--theme-fg-dim);
 }
 
 .tool-body-output-label {
   @apply text-[0.6rem] uppercase font-bold;
   color: var(--theme-fg-subtle);
-  letter-spacing: 0.6px;
+  letter-spacing: 0.0375rem;
 }
 
 .tool-body-output-body {
   @apply m-0 text-[0.62rem] leading-snug;
-  padding: 6px 8px;
+  padding: 0.375rem 0.5rem;
   color: var(--theme-fg-subtle);
   white-space: pre-wrap;
   overflow-x: auto;
-  max-height: 280px;
+  max-height: 17.5rem;
   overflow-y: auto;
 }
 </style>

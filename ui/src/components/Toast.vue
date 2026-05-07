@@ -85,27 +85,30 @@ function RenderBody(): VNode | string | null {
  * via absolute positioning (the parent `.frame-body` is relative). */
 .toast {
   position: absolute;
-  top: 8px;
-  left: 14px;
-  right: 14px;
+  top: 0.5rem;
+  left: 0.875rem;
+  right: 0.875rem;
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 10px;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.375rem 0.5rem 0.375rem 0.625rem;
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border-soft);
-  border-left: 3px solid var(--tone);
-  border-radius: 3px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  border-left: 0.1875rem solid var(--tone);
+  border-radius: 0.1875rem;
+  box-shadow: 0 0.375rem 1.25rem rgba(0, 0, 0, 0.45);
   font-family: var(--theme-font-mono);
   font-size: 0.56rem;
   color: var(--theme-fg-dim);
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.0625rem;
 }
 
 .toast :deep(.toast-message) {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--theme-fg-subtle);
   font-size: 0.66rem;
   text-transform: none;
@@ -119,24 +122,32 @@ function RenderBody(): VNode | string | null {
   flex: 1;
   height: 1px;
   background-color: var(--theme-border);
-  margin-left: 4px;
+  margin-left: 0.25rem;
 }
 
 .toast-dismiss {
-  @apply inline-flex items-center justify-center;
+  @apply inline-flex shrink-0 items-center justify-center;
   color: var(--theme-fg-dim);
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0 0.25rem;
   background: transparent;
   border: 0;
 }
 
 .toast-dismiss-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .toast-dismiss:hover {
   color: var(--theme-fg);
+}
+
+@media (pointer: coarse) {
+  .toast-dismiss {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    padding: 0.5rem;
+  }
 }
 </style>

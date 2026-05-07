@@ -49,7 +49,7 @@ const emit = defineEmits<{
   @apply sticky top-0 z-10 text-[0.7rem];
   background-color: var(--theme-permission-bg);
   border-bottom: 1px solid var(--theme-border-soft);
-  padding: 6px 14px 6px 4px;
+  padding: 0.375rem 0.875rem 0.375rem 0.25rem;
 }
 
 .permission-row-actions {
@@ -63,6 +63,6 @@ const emit = defineEmits<{
 
 .permission-row-body {
   @apply flex flex-col;
-  padding: 8px 10px;
+  padding: 0.5rem 0.625rem;
 }
 </style>

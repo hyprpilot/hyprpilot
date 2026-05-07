@@ -168,14 +168,14 @@ function planIconFor(status: PlanStatus) {
 .stream-card {
   @apply flex flex-col text-[0.78rem] leading-snug;
   color: var(--theme-fg);
-  border-left: 3px solid var(--tone);
+  border-left: 0.1875rem solid var(--tone);
   border-top: 1px solid var(--theme-border-soft);
   border-right: 1px solid var(--theme-border-soft);
   border-bottom: 1px solid var(--theme-border-soft);
-  border-radius: 4px;
+  border-radius: 0.25rem;
   background-color: var(--theme-surface);
   font-family: var(--theme-font-sans);
-  padding: 6px 10px;
+  padding: 0.375rem 0.625rem;
 }
 
 .stream-card[data-active='false'] {
@@ -183,14 +183,20 @@ function planIconFor(status: PlanStatus) {
   border-top-color: var(--theme-border);
   border-right-color: var(--theme-border);
   border-bottom-color: var(--theme-border);
-  padding: 4px 10px;
+  padding: 0.25rem 0.625rem;
 }
 
 .stream-card-header {
-  @apply flex items-center gap-2 text-[0.62rem] uppercase;
+  @apply flex min-w-0 items-center gap-2 text-[0.62rem] uppercase;
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
+}
+
+.stream-card-caret,
+.stream-card-label,
+.stream-card-elapsed {
+  flex-shrink: 0;
 }
 
 /* Cursor only on rows that actually expand into a body. */
@@ -199,8 +205,8 @@ function planIconFor(status: PlanStatus) {
 }
 
 .stream-card-caret {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
   color: var(--theme-fg-dim);
 }
 
@@ -219,9 +225,13 @@ function planIconFor(status: PlanStatus) {
   margin-left: auto;
 }
 
-/* Italic Inter recap — visually distinct from the mono header tag. */
+/* Italic Inter recap — visually distinct from the mono header tag.
+ * `flex: 1 1 auto` + `min-w-0` so the recap is the only column that
+ * yields when a long summary would push the elapsed chip off the
+ * right edge. */
 .stream-card-summary-inline {
-  @apply ml-1 truncate text-[0.7rem] italic normal-case;
+  @apply ml-1 min-w-0 truncate text-[0.7rem] italic normal-case;
+  flex: 1 1 auto;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-sans);
   letter-spacing: normal;
@@ -230,14 +240,14 @@ function planIconFor(status: PlanStatus) {
 
 /* Body separator: dashed line above + 6px top padding, per wireframe. */
 .stream-card-body {
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 0.375rem;
+  padding-top: 0.375rem;
   border-top: 1px dashed var(--theme-border);
 }
 
 .stream-card-list {
   @apply m-0 flex list-none flex-col p-0;
-  gap: 4px;
+  gap: 0.25rem;
 }
 
 .stream-card-item {
@@ -248,8 +258,8 @@ function planIconFor(status: PlanStatus) {
 
 .stream-card-glyph {
   @apply shrink-0;
-  width: 11px;
-  height: 11px;
+  width: 0.6875rem;
+  height: 0.6875rem;
   color: var(--theme-fg-dim);
 }
 
@@ -312,7 +322,7 @@ function planIconFor(status: PlanStatus) {
 }
 
 .stream-card-prose :deep(code) {
-  @apply rounded-sm px-1 py-[1px] text-[0.85em];
+  @apply rounded-sm px-1 py-[0.0625rem] text-[0.85em];
   font-family: var(--theme-font-mono);
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);

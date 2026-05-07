@@ -156,10 +156,44 @@ function onRootKeydown(event: KeyboardEvent): void {
   font-size: 0.85rem;
   line-height: 1.5;
   color: var(--theme-fg);
+  /* Constrain to the bubble. Prose children below inherit the
+   * `overflow-wrap: anywhere` rule so long unbreakable tokens (URLs,
+   * identifiers like `claude-sonnet-4-5-20250514`, file paths) wrap
+   * inside the chat width on phones instead of pushing the bubble
+   * past the viewport. `<pre>` and `<table>` opt out via their own
+   * `overflow-x: auto` rules below. */
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Prose elements wrap aggressively. Targeting prose-receiving
+ * children specifically so the rule doesn't interfere with `<pre>`
+ * (whose `white-space: pre` keeps source layout intact) or
+ * scrollable tables (whose `display: block; overflow-x: auto`
+ * already handles overflow). */
+.markdown-body :deep(p),
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6),
+.markdown-body :deep(li),
+.markdown-body :deep(blockquote),
+.markdown-body :deep(a),
+.markdown-body :deep(td),
+.markdown-body :deep(th) {
+  overflow-wrap: anywhere;
+}
+
+/* Inline `<code>` (the fenced-block override stays put via the
+ * `.md-codeblock` descendant selectors below). */
+.markdown-body :deep(code) {
+  overflow-wrap: anywhere;
 }
 
 .markdown-body :deep(p) {
-  margin: 6px 0;
+  margin: 0.375rem 0;
 }
 
 .markdown-body :deep(p:first-child) {
@@ -172,8 +206,8 @@ function onRootKeydown(event: KeyboardEvent): void {
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 6px 0;
-  padding-left: 22px;
+  margin: 0.375rem 0;
+  padding-left: 1.375rem;
   font-size: inherit;
   line-height: inherit;
 }
@@ -187,7 +221,7 @@ function onRootKeydown(event: KeyboardEvent): void {
 }
 
 .markdown-body :deep(li) {
-  margin: 2px 0;
+  margin: 0.125rem 0;
 }
 
 /* GFM task-list checkboxes (markdown-it-task-lists) — drop the disc
@@ -201,7 +235,7 @@ function onRootKeydown(event: KeyboardEvent): void {
 }
 
 .markdown-body :deep(.task-list-item-checkbox) {
-  margin: 0 6px 0 0;
+  margin: 0 0.375rem 0 0;
   vertical-align: middle;
 }
 
@@ -211,7 +245,7 @@ function onRootKeydown(event: KeyboardEvent): void {
 .markdown-body :deep(h4),
 .markdown-body :deep(h5),
 .markdown-body :deep(h6) {
-  margin: 12px 0 6px;
+  margin: 0.75rem 0 0.375rem;
   font-weight: 700;
   color: var(--theme-fg);
   line-height: 1.3;
@@ -228,16 +262,16 @@ function onRootKeydown(event: KeyboardEvent): void {
 }
 
 .markdown-body :deep(blockquote) {
-  margin: 6px 0;
-  padding-left: 8px;
-  border-left: 2px solid var(--theme-border-soft);
+  margin: 0.375rem 0;
+  padding-left: 0.5rem;
+  border-left: 0.125rem solid var(--theme-border-soft);
   color: var(--theme-fg-dim);
 }
 
 .markdown-body :deep(a) {
   color: var(--theme-accent);
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: 0.125rem;
 }
 
 /* Inline code only — fenced blocks below override via .md-codeblock
@@ -245,8 +279,8 @@ function onRootKeydown(event: KeyboardEvent): void {
 .markdown-body :deep(code) {
   font-family: var(--theme-font-mono);
   font-size: 0.85em;
-  padding: 1px 4px;
-  border-radius: 3px;
+  padding: 0.0625rem 0.25rem;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
 }
@@ -255,11 +289,11 @@ function onRootKeydown(event: KeyboardEvent): void {
  * language). The .md-codeblock chrome below replaces it for known
  * languages. */
 .markdown-body :deep(pre) {
-  margin: 8px 0;
-  padding: 8px 10px;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.625rem;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   overflow-x: auto;
 }
 
@@ -271,9 +305,9 @@ function onRootKeydown(event: KeyboardEvent): void {
 /* Fenced-block chrome — caret + lang + spacer + copy. Shared across
  * every consumer; consumers DO NOT re-style this. */
 .markdown-body :deep(.md-codeblock) {
-  margin: 8px 0;
+  margin: 0.5rem 0;
   border: 1px solid var(--theme-border);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface-bg);
   overflow: hidden;
 }
@@ -281,9 +315,9 @@ function onRootKeydown(event: KeyboardEvent): void {
 .markdown-body :deep(.md-codeblock-header) {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   cursor: pointer;
-  padding: 4px 6px 4px 8px;
+  padding: 0.25rem 0.375rem 0.25rem 0.5rem;
   border-bottom: 1px solid var(--theme-border);
   background-color: var(--theme-surface);
   font-family: var(--theme-font-mono);
@@ -299,7 +333,7 @@ function onRootKeydown(event: KeyboardEvent): void {
   align-items: center;
   justify-content: center;
   color: var(--theme-fg-dim);
-  width: 10px;
+  width: 0.625rem;
 }
 
 /* Caret swap by collapse state. The HTML emits both icons; CSS
@@ -318,7 +352,7 @@ function onRootKeydown(event: KeyboardEvent): void {
   font-size: 0.62rem;
   text-transform: uppercase;
   color: var(--theme-fg-faint);
-  letter-spacing: 0.6px;
+  letter-spacing: 0.0375rem;
 }
 
 .markdown-body :deep(.md-codeblock-spacer) {
@@ -336,7 +370,7 @@ function onRootKeydown(event: KeyboardEvent): void {
 .markdown-body :deep(.md-codeblock pre) {
   margin: 0;
   overflow-x: auto;
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
   font-size: 0.82rem;
   line-height: 1.45;
   font-family: var(--theme-font-mono);
@@ -362,14 +396,14 @@ function onRootKeydown(event: KeyboardEvent): void {
   display: inline-block;
   width: 100%;
   position: relative;
-  padding-left: 18px;
-  margin-left: -8px;
+  padding-left: 1.125rem;
+  margin-left: -0.5rem;
 }
 
 .markdown-body :deep(.md-codeblock pre .line.diff.add)::before {
   content: '+';
   position: absolute;
-  left: 4px;
+  left: 0.25rem;
   top: 0;
   color: var(--theme-status-ok);
   font-weight: 700;
@@ -380,14 +414,14 @@ function onRootKeydown(event: KeyboardEvent): void {
   display: inline-block;
   width: 100%;
   position: relative;
-  padding-left: 18px;
-  margin-left: -8px;
+  padding-left: 1.125rem;
+  margin-left: -0.5rem;
 }
 
 .markdown-body :deep(.md-codeblock pre .line.diff.remove)::before {
   content: '-';
   position: absolute;
-  left: 4px;
+  left: 0.25rem;
   top: 0;
   color: var(--theme-status-err);
   font-weight: 700;
@@ -396,11 +430,11 @@ function onRootKeydown(event: KeyboardEvent): void {
 .markdown-body :deep(.md-codeblock .md-copy) {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   border: 1px solid var(--theme-border);
-  padding: 2px 6px;
+  padding: 0.125rem 0.375rem;
   font-size: 0.6rem;
   font-family: var(--theme-font-mono);
   color: var(--theme-fg-dim);
@@ -420,15 +454,22 @@ function onRootKeydown(event: KeyboardEvent): void {
   border-color: var(--theme-status-ok);
 }
 
+/* `display: block` + `overflow-x: auto` on the table itself lets a
+ * wide markdown table scroll horizontally on phones / narrow chat
+ * bubbles instead of punching through the message width. Inner
+ * `tbody/tr/td` keep their default `display: table-*` so the cells
+ * still align as a table inside the scroll container. */
 .markdown-body :deep(table) {
-  margin: 6px 0;
-  width: 100%;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 0.375rem 0;
   border-collapse: collapse;
 }
 
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
-  padding: 4px 8px;
+  padding: 0.25rem 0.5rem;
   text-align: left;
   border: 1px solid var(--theme-border);
 }

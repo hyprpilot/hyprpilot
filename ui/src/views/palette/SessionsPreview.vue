@@ -118,7 +118,7 @@ function formatCwd(raw: string): string {
 @reference '../assets/styles.css';
 
 .palette-sessions-preview {
-  @apply flex flex-col gap-1 px-[14px] py-[12px];
+  @apply flex flex-col gap-1 px-[0.875rem] py-[0.75rem];
 }
 
 .palette-sessions-preview-state-msg {
@@ -134,11 +134,11 @@ function formatCwd(raw: string): string {
 .palette-sessions-preview-title {
   @apply m-0 text-left text-[0.9rem] font-semibold leading-tight;
   color: var(--theme-fg);
-  letter-spacing: -0.1px;
+  letter-spacing: -0.00625rem;
 }
 
 .palette-sessions-preview-meta {
-  @apply m-0 mt-[6px] grid gap-y-[3px] gap-x-[10px] text-[0.7rem];
+  @apply m-0 mt-[0.375rem] grid gap-y-[0.1875rem] gap-x-[0.625rem] text-[0.7rem];
   font-family: var(--theme-font-mono);
   grid-template-columns: auto 1fr;
 }

@@ -120,19 +120,20 @@ watch(
 
 .completion-popover {
   @apply flex flex-col;
-  width: 360px;
-  max-height: 240px;
+  width: 100%;
+  max-width: 22.5rem;
+  max-height: 15rem;
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+  border-radius: 0.25rem;
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 0.4);
   overflow: hidden;
 }
 
 .completion-list {
   @apply flex flex-col overflow-y-auto;
   margin: 0;
-  padding: 4px 0;
+  padding: 0.25rem 0;
   list-style: none;
   flex: 1 1 auto;
 }
@@ -144,16 +145,16 @@ watch(
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;
   color: var(--theme-fg-dim);
-  letter-spacing: 0.5px;
+  letter-spacing: 0.03125rem;
 }
 
 .completion-footer-hint {
   @apply inline-flex items-center justify-center gap-px;
-  min-width: 16px;
-  padding: 0 4px;
+  min-width: 1rem;
+  padding: 0 0.25rem;
   color: var(--theme-fg);
   background-color: var(--theme-surface-alt);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-weight: 600;
   font-size: 0.55rem;
 }
@@ -167,6 +168,6 @@ watch(
 }
 
 .completion-footer-label {
-  margin-right: 8px;
+  margin-right: 0.5rem;
 }
 </style>

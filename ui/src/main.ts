@@ -3,6 +3,7 @@ import { createApp } from 'vue'
 
 import App from './App.vue'
 import { applyTheme, applyWindowState, loadCompletionConfig, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus, startGitStatus } from '@composables'
+import { ensureRemoteConnection, isRemoteHost, subscribePair } from '@ipc/remote-bridge'
 import { log } from '@lib'
 import '@assets/styles.css'
 
@@ -40,6 +41,23 @@ function installGlobalErrorBridge(): void {
   })
 }
 
+/**
+ * Resolve once the remote bridge upgrades a pending WS connection
+ * to authenticated. Subscribes to `pair` frames; remote-host SPA
+ * pauses the IPC-heavy boot steps until the captain confirms on
+ * the desktop.
+ */
+function waitForPairAuthenticated(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const unsubscribe = subscribePair((view) => {
+      if (view.authenticated) {
+        unsubscribe()
+        resolve()
+      }
+    })
+  })
+}
+
 // FontAwesome icons land via per-component direct imports
 // (`import { faFoo } from '@fortawesome/free-solid-svg-icons'` +
 // `<FaIcon :icon="faFoo" />`). No central `library.add(...)` registry
@@ -66,21 +84,13 @@ async function boot(): Promise<void> {
     applyDevPreview()
   }
 
-  // Theme + window state apply before mount so there is no FOUC
-  // window per CLAUDE.md ("Rust is the sole source; applyTheme runs
-  // synchronously in main.ts before createApp().mount('#app')").
-  setBootStatus('applying theme')
-  await applyTheme()
-  setBootStatus('configuring window')
-  await applyWindowState()
-
-  // Mount NOW with the fullscreen <Loading> visible so the
-  // remaining IPC steps (GTK font probe, $HOME, keymaps) paint
-  // their status pills as they progress instead of completing
-  // pre-mount and leaving a blank viewport. Without this early
-  // mount the user never sees the loading screen — the App.vue
-  // first paints AFTER `markBootDone()`, so `done=true` already
-  // and the v-if gate evaluates false on first render.
+  // Remote-host (browser hitting the daemon's HTTPS bridge): the
+  // bridge gates every `invoke()` on pair authentication. Mount
+  // App.vue FIRST — its `<RemotePairScreen>` v-if renders the QR +
+  // 4-word code without touching IPC, so the captain has something
+  // to scan / read. Theme + window state can't apply yet (Tauri
+  // commands), so the screen reads bare-DOM defaults until the WS
+  // authenticates and the Tauri-bridged boot steps run.
   const app = createApp(App)
 
   app.component('FaIcon', FontAwesomeIcon)
@@ -88,7 +98,27 @@ async function boot(): Promise<void> {
     log.error('vue error', { source: 'vue.errorHandler', info }, err)
   }
   installGlobalErrorBridge()
-  app.mount('#app')
+
+  if (isRemoteHost()) {
+    setBootStatus('connecting to daemon…')
+    app.mount('#app')
+    await ensureRemoteConnection()
+    await waitForPairAuthenticated()
+    setBootStatus('applying theme')
+    await applyTheme()
+    setBootStatus('configuring window')
+    await applyWindowState()
+  } else {
+    // Tauri host: theme + window state apply before mount so there
+    // is no FOUC window per CLAUDE.md ("Rust is the sole source;
+    // applyTheme runs synchronously in main.ts before
+    // createApp().mount('#app')").
+    setBootStatus('applying theme')
+    await applyTheme()
+    setBootStatus('configuring window')
+    await applyWindowState()
+    app.mount('#app')
+  }
 
   // Step the user through the post-mount boot work. Each
   // setBootStatus updates the live <Loading> status pill before

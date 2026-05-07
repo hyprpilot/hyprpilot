@@ -29,7 +29,7 @@ defineEmits<{ remove: [id: string] }>()
 @reference '../../assets/styles.css';
 
 .composer-pill {
-  @apply inline-flex items-center gap-1 border px-2 py-[2px] text-[0.7rem] leading-tight;
+  @apply inline-flex items-center gap-1 border px-2 py-[0.125rem] text-[0.7rem] leading-tight;
   font-family: var(--theme-font-mono);
   color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-alt);
@@ -41,22 +41,30 @@ defineEmits<{ remove: [id: string] }>()
 }
 
 .composer-pill-label {
-  @apply truncate;
+  @apply min-w-0 truncate;
   max-width: 24ch;
 }
 
 .composer-pill-remove {
-  @apply border-0 bg-transparent px-0 text-[0.7rem] leading-none;
+  @apply shrink-0 border-0 bg-transparent px-0 text-[0.7rem] leading-none;
   color: var(--theme-fg-dim);
   cursor: pointer;
 }
 
 .composer-pill-remove-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .composer-pill-remove:hover {
   color: var(--theme-status-err);
+}
+
+@media (pointer: coarse) {
+  .composer-pill-remove {
+    min-width: 1.75rem;
+    min-height: 1.75rem;
+    padding: 0.25rem;
+  }
 }
 </style>

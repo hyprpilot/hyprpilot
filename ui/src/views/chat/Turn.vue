@@ -81,8 +81,8 @@ const costLabel = computed(() => {
 /* turn lane: 2px stripe, padding-left 4px (per wireframe spec). */
 .turn {
   @apply flex flex-col py-1;
-  padding-left: 4px;
-  border-left: 2px solid var(--theme-accent-user);
+  padding-left: 0.25rem;
+  border-left: 0.125rem solid var(--theme-accent-user);
   position: relative;
 }
 
@@ -92,13 +92,13 @@ const costLabel = computed(() => {
 
 .turn-header {
   @apply flex items-center gap-2;
-  margin-bottom: 4px;
+  margin-bottom: 0.25rem;
 }
 
 /* Push the stats cluster to the right edge of the header. */
 .turn-stats {
   @apply flex items-center;
-  gap: 4px;
+  gap: 0.25rem;
   margin-left: auto;
 }
 
@@ -106,6 +106,6 @@ const costLabel = computed(() => {
  * chips, stream cards stack tightly. */
 .turn-body {
   @apply flex flex-col;
-  gap: 4px;
+  gap: 0.25rem;
 }
 </style>

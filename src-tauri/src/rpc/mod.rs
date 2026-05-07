@@ -9,6 +9,7 @@ use serde_json::Value;
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
     DaemonHandler, DiagHandler, InstancesHandler, OverlayHandler, PermissionsHandler, PromptsHandler, StatusHandler,
+    TauriProxyHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -54,6 +55,7 @@ impl RpcDispatcher {
                 Box::new(InstancesHandler),
                 Box::new(PromptsHandler),
                 Box::new(PermissionsHandler),
+                Box::new(TauriProxyHandler),
             ],
         }
     }

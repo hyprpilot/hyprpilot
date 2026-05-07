@@ -50,7 +50,13 @@ watch(
 
     if (spec) {
       void nextTick(() => {
-        inputRef.value?.focus()
+        // On touch devices, skip auto-focus so the virtual keyboard
+        // doesn't pop up on every palette open. The captain taps the
+        // input explicitly when they want to type. Desktop / mouse
+        // users keep the existing focus-on-open behaviour.
+        if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches) {
+          inputRef.value?.focus()
+        }
         trapActive.value = true
       })
     } else {
@@ -172,7 +178,6 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   }
 
   const rows = visibleEntries.value
-  const current = rows[highlighted.value]
 
   const key = e.key
   const ctrl = e.ctrlKey
@@ -210,10 +215,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'Tab' && spec.mode === PaletteMode.MultiSelect) {
     e.preventDefault()
     e.stopPropagation()
-
-    if (current) {
-      toggleTick(current.id)
-    }
+    onTickHighlighted()
 
     return
   }
@@ -221,7 +223,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'Tab' && spec.mode === PaletteMode.Input) {
     e.preventDefault()
     e.stopPropagation()
-    autocompleteIntoQuery(current)
+    onAutocompleteHighlighted()
 
     return
   }
@@ -229,17 +231,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (ctrl && key.toLowerCase() === 'd') {
     e.preventDefault()
     e.stopPropagation()
-
-    if (current && spec.onDelete) {
-      // `update` is the only path that surfaces entry mutations
-      // through the reactive proxy on `top.value`. Capturing the
-      // raw spec literal in the leaf closure and assigning to
-      // `.entries` directly skips the proxy and leaves the palette
-      // rendering stale rows. Same pattern as onQueryChange.
-      void spec.onDelete(current, (next) => {
-        spec.entries = next
-      })
-    }
+    onDeleteHighlighted()
 
     return
   }
@@ -249,6 +241,33 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
     e.stopPropagation()
     commit()
   }
+}
+
+function onTickHighlighted(): void {
+  const current = visibleEntries.value[highlighted.value]
+
+  if (current) {
+    toggleTick(current.id)
+  }
+}
+
+function onAutocompleteHighlighted(): void {
+  autocompleteIntoQuery(visibleEntries.value[highlighted.value])
+}
+
+function onDeleteHighlighted(): void {
+  const spec = top.value
+  const current = visibleEntries.value[highlighted.value]
+
+  if (!spec || !current || !spec.onDelete) {
+    return
+  }
+  // `update` is the only path that surfaces entry mutations through
+  // the reactive proxy on `top.value`. Assigning to `.entries` on the
+  // raw spec literal skips the proxy and leaves rows stale.
+  void spec.onDelete(current, (next) => {
+    spec.entries = next
+  })
 }
 
 function commit(): void {
@@ -336,7 +355,7 @@ onUnmounted(() => {
 
 <template>
   <FocusTrap v-if="top" :active="trapActive" :escape-deactivates="false" :allow-outside-click="true">
-    <div class="palette-overlay" data-testid="palette-overlay">
+    <div class="palette-overlay" data-testid="palette-overlay" @click.self="close">
       <div
         class="palette-frame"
         :data-wide="Boolean(top.preview)"
@@ -359,6 +378,9 @@ onUnmounted(() => {
             spellcheck="false"
             autocomplete="off"
             autocapitalize="off"
+            autocorrect="off"
+            inputmode="search"
+            enterkeyhint="go"
             data-testid="palette-input"
           />
           <span class="palette-result-count">{{ visibleEntries.length }} result{{ visibleEntries.length === 1 ? '' : 's' }}</span>
@@ -402,11 +424,11 @@ onUnmounted(() => {
 
         <footer class="palette-footer">
           <KbdHint :keys="[faUpDown]" label="navigate" />
-          <KbdHint v-if="top.mode === PaletteMode.MultiSelect" :keys="[faArrowRightToBracket]" label="toggle" />
-          <KbdHint v-if="top.mode === PaletteMode.Input" :keys="[faArrowRightToBracket]" label="autocomplete" />
-          <KbdHint :keys="[faArrowTurnDown]" label="confirm" />
-          <KbdHint v-if="top.onDelete" :keys="['Ctrl+D']" label="delete" />
-          <KbdHint :keys="['Esc']" label="close" />
+          <KbdHint v-if="top.mode === PaletteMode.MultiSelect" :keys="[faArrowRightToBracket]" label="toggle" :on-activate="onTickHighlighted" />
+          <KbdHint v-if="top.mode === PaletteMode.Input" :keys="[faArrowRightToBracket]" label="autocomplete" :on-activate="onAutocompleteHighlighted" />
+          <KbdHint :keys="[faArrowTurnDown]" label="confirm" :on-activate="commit" />
+          <KbdHint v-if="top.onDelete" :keys="['Ctrl+D']" label="delete" :on-activate="onDeleteHighlighted" />
+          <KbdHint class="palette-footer-esc" :keys="['Esc']" label="close" :on-activate="close" />
         </footer>
       </div>
     </div>
@@ -422,7 +444,7 @@ onUnmounted(() => {
 .palette-overlay {
   @apply fixed inset-0 z-50 flex items-center justify-center;
   background-color: color-mix(in srgb, var(--theme-surface-bg) 60%, transparent);
-  padding: 24px;
+  padding: 1.5rem;
 }
 
 /* palette frame: surface bg + line2 border, 8px radius, big shadow.
@@ -431,14 +453,18 @@ onUnmounted(() => {
  * viewport. `max-width` clamps gracefully on narrow anchors. */
 .palette-frame {
   @apply flex flex-col;
-  max-height: 70vh;
+  /* Fixed height (not max-height) so the palette doesn't resize
+   * as rows of varying heights or preview content scroll in/out
+   * — moving frame chrome is jarring while you're scanning rows. */
+  height: 70dvh;
+  max-height: 32rem;
   width: 32rem;
-  max-width: calc(100vw - 48px);
+  max-width: calc(100vw - 3rem);
   border: 1px solid var(--theme-border-soft);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background-color: var(--theme-surface);
   color: var(--theme-fg);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.6);
   overflow: hidden;
 }
 
@@ -453,7 +479,7 @@ onUnmounted(() => {
 /* wireframe header: title › query (caret) ... result count. */
 .palette-header {
   @apply flex items-center gap-2;
-  padding: 10px 14px;
+  padding: 0.625rem 0.875rem;
   border-bottom: 1px solid var(--theme-border);
   font-family: var(--theme-font-mono);
 }
@@ -469,7 +495,7 @@ onUnmounted(() => {
 }
 
 .palette-input {
-  @apply flex-1 bg-transparent outline-none border-0 text-[0.7rem];
+  @apply min-w-0 flex-1 bg-transparent outline-none border-0 text-[0.7rem];
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
 }
@@ -489,7 +515,7 @@ onUnmounted(() => {
 }
 
 .palette-list {
-  @apply m-0 flex min-h-0 flex-1 list-none flex-col overflow-y-auto p-[6px];
+  @apply m-0 flex min-h-0 flex-1 list-none flex-col overflow-y-auto p-[0.375rem];
   min-width: 0;
 }
 
@@ -505,12 +531,12 @@ onUnmounted(() => {
  *   captain's currently-picked profile / model / cwd / instance).
  * When a row is both, both borders light up. */
 .palette-row {
-  @apply flex items-center gap-[10px] text-[0.7rem];
+  @apply flex items-center gap-[0.625rem] text-[0.7rem];
   cursor: pointer;
-  padding: 6px 10px;
-  border-radius: 4px;
-  border-left: 3px solid transparent;
-  border-right: 3px solid transparent;
+  padding: 0.375rem 0.625rem;
+  border-radius: 0.25rem;
+  border-left: 0.1875rem solid transparent;
+  border-right: 0.1875rem solid transparent;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
   margin-bottom: 1px;
@@ -528,7 +554,7 @@ onUnmounted(() => {
 
 .palette-tick {
   @apply inline-flex shrink-0 items-center justify-center text-[0.7rem];
-  width: 18px;
+  width: 1.125rem;
   text-align: center;
   color: var(--theme-fg-dim);
 }
@@ -537,8 +563,14 @@ onUnmounted(() => {
   color: var(--theme-accent);
 }
 
+/* `palette-name` shrinks before `palette-description` because the
+ * name is the row's identity and stays meaningful when ellipsised;
+ * description is secondary. Both yield before the trailing
+ * `palette-kind` chip, which is `shrink-0`. */
 .palette-name {
-  @apply shrink-0 font-bold;
+  @apply min-w-0 truncate font-bold;
+  flex: 0 1 auto;
+  max-width: 60%;
 }
 
 .palette-row[data-selected='true'] .palette-name {
@@ -558,7 +590,7 @@ onUnmounted(() => {
 
 .palette-empty {
   @apply text-[0.7rem];
-  padding: 12px 16px;
+  padding: 0.75rem 1rem;
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
 }
@@ -574,21 +606,48 @@ onUnmounted(() => {
 
 .palette-preview {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
-  padding: 12px 14px;
+  padding: 0.75rem 0.875rem;
 }
 
+/* Mobile / narrow palettes: stack the preview UNDER the results
+ * (instead of hiding it) so detail-rich palettes — sessions,
+ * MCPs, instances — keep their preview content reachable. The
+ * `data-wide='true'` palette grows from 32rem to 56rem on
+ * desktop; on phones the frame is viewport-bounded, so we just
+ * flip `.palette-content` from row to column and let both panes
+ * share the height. */
 @media (max-width: 560px) {
+  .palette-content {
+    flex-direction: column;
+  }
+
+  .palette-frame[data-wide='true'] .palette-list {
+    flex: 0 0 50%;
+    border-right: none;
+    border-bottom: 1px solid var(--theme-border);
+  }
+
   .palette-preview {
-    display: none;
+    flex: 1 1 50%;
   }
 }
 
-/* wireframe footer: keyboard hints, mono dim, centered. */
+/* wireframe footer: keyboard hints, mono dim, centered. Wraps on
+ * narrow widths so 5-6 hints don't punch out of phone viewports. */
 .palette-footer {
-  @apply flex items-center justify-center;
-  padding: 8px 14px;
+  @apply flex flex-wrap items-center justify-center;
+  padding: 0.5rem 0.875rem;
   border-top: 1px solid var(--theme-border);
-  gap: 18px;
+  gap: 0.5rem 1.125rem;
   font-family: var(--theme-font-mono);
+}
+
+/* Esc is keyboard-only — touch users tap the backdrop / scrim to
+ * dismiss the palette. The KbdHint chip would clutter the footer
+ * without adding capability. */
+@media (pointer: coarse) {
+  .palette-footer-esc {
+    display: none;
+  }
 }
 </style>

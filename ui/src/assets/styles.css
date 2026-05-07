@@ -71,20 +71,44 @@
   --color-theme-permission-bg-active: var(--theme-permission-bg-active);
 }
 
-/* No `font-size` declaration on html — UI scaling lives in `[ui]
- * zoom` (Rust-side config), applied via `WebviewWindow::set_zoom`
- * at boot. That scales text + layout together (Chromium page zoom),
- * which is the only way to scale our `px`-heavy primitives uniformly.
- * Browser default 16px stays as the `rem` baseline. */
+/* `:root { font-size }` — the rem baseline. Every layout primitive
+ * in the SFC tree resolves to rem (typography, paddings, widths,
+ * gaps, borders that should track scale); rems multiply against
+ * this to land in CSS pixels. 16px matches the browser default,
+ * mobile browsers' default zoom, and Tailwind's spacing scale
+ * (1rem = 16px = `4` on the spacing scale). Captains who want
+ * the whole UI bigger / smaller use `[ui] zoom` (Tauri-side
+ * `WebviewWindow::set_zoom`) which is a Chromium page-zoom
+ * multiplier on top of this — the two compose. The browser
+ * remote-host path uses 16px as-is; mobile gets a small bump
+ * via the media query at the bottom of this file.
+ *
+ * **Always use rem (or Tailwind utilities, which are rem-based)
+ * for new layout / typography. Reserve px for hairlines (1px
+ * borders) and properties that should stay device-pixel exact
+ * regardless of UI scale.** */
+:root {
+  font-size: 16px;
+}
+
 /* The overlay ALWAYS fills its window — compositor gives us a surface of
  * a fixed size (anchor width × height, or center mode rect), and the UI
- * must lay out to match. `height: 100%` on every rung of the tree so
- * `Frame { flex: 1 }` children (transcript, palette body) can stretch. */
+ * must lay out to match. `height: 100dvh` on every rung of the tree so
+ * `Frame { flex: 1 }` children (transcript, palette body) can stretch.
+ *
+ * `overflow: hidden` on `html, body, #app, .overlay-root` is load-bearing
+ * for mobile — without it, any inner element that overflows (a wide
+ * pill row, a tall queue strip, a markdown table mid-scroll) walks the
+ * scroll back up to the document, which the captain reads as "the page
+ * is scrolling, not the composer". The per-surface scroll containers
+ * (`.chat-transcript`, `.frame-body`, `.composer-textarea`,
+ * `.palette-list`, modals) declare their own `overflow-y: auto`. */
 html,
 body {
   margin: 0;
   padding: 0;
-  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 /* `#app` is the Vue mount point — kept as a plain block (not flex) so
@@ -95,12 +119,14 @@ body {
  * 100vh fill. */
 #app {
   height: 100%;
+  overflow: hidden;
 }
 
 .overlay-root {
   height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .overlay-root > * {
@@ -122,3 +148,9 @@ body {
   box-sizing: border-box;
   background-color: var(--theme-surface-bg);
 }
+
+/* Mobile-friendly KbdHints: when `KbdHint` carries an `onActivate`
+ * prop, the chip renders as a `<button>` and grows to a 2.75rem hit
+ * target under `pointer: coarse` (see `components/KbdHint.vue`). Hints
+ * stay visible on phones rather than hidden — they double as tap
+ * affordances for actions that desktop users trigger via keybinds. */

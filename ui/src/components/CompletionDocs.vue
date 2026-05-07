@@ -23,12 +23,13 @@ defineProps<{
 
 .completion-docs {
   @apply overflow-y-auto p-3;
-  width: 360px;
-  max-height: 240px;
+  width: 100%;
+  max-width: 22.5rem;
+  max-height: 15rem;
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border);
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+  border-radius: 0.25rem;
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 0.4);
   font-size: 0.78rem;
   color: var(--theme-fg);
 }

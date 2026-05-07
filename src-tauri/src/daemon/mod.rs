@@ -69,9 +69,9 @@ fn get_keymaps(keymaps: State<'_, KeymapsConfig>) -> KeymapsConfig {
 /// selectors) — those are daemon-internal concerns.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WindowState {
-    mode: WindowMode,
-    anchor_edge: Option<Edge>,
+pub(crate) struct WindowState {
+    pub(crate) mode: WindowMode,
+    pub(crate) anchor_edge: Option<Edge>,
 }
 
 #[tauri::command]
@@ -251,6 +251,9 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             crate::completion::commands::completion_cancel,
             crate::completion::commands::completion_rank,
             crate::completion::commands::get_completion_config,
+            crate::remote::commands::remote_confirm_pair,
+            crate::remote::commands::remote_reject_pair,
+            crate::remote::commands::remote_pending_pairs,
         ])
         .setup(move |app| {
             setup_app(app, state, listener, started_at, socket_path)?;
@@ -546,9 +549,57 @@ fn setup_app(
     };
 
     install_signal_handler(app.handle().clone(), state.adapter);
-    spawn_accept_loop(listener, rpc_state);
+    spawn_accept_loop(listener, rpc_state.clone());
+    spawn_remote_bridge(app.handle().clone(), &rpc_state);
 
     Ok(())
+}
+
+/// Bring up the optional TLS axum HTTP+WS server when
+/// `[remote] enabled = true`. Phone (or any browser) loads the
+/// embedded SPA over HTTPS; per-connection pair confirmation gates
+/// every WS upgrade. Failures here warn-and-continue so a misconfigured
+/// remote block doesn't abort the daemon's main overlay path.
+fn spawn_remote_bridge(app: tauri::AppHandle, rpc_state: &crate::rpc::RpcState) {
+    let cfg = rpc_state.config.read().expect("config lock poisoned").remote.clone();
+    if !cfg.enabled() {
+        return;
+    }
+    let bind = match crate::remote::server::parse_bind(&cfg.resolved_bind()) {
+        Ok(b) => b,
+        Err(err) => {
+            warn!(%err, "remote: invalid bind — bridge disabled");
+            return;
+        }
+    };
+    let tls = match crate::remote::cert::resolve_or_generate(&cfg) {
+        Ok(t) => t,
+        Err(err) => {
+            warn!(%err, "remote: failed to resolve TLS material — bridge disabled");
+            return;
+        }
+    };
+    let pairs = crate::remote::pair::PairStore::new();
+    let sessions = crate::remote::session::SessionTokens::new();
+    let state = crate::remote::server::RemoteState {
+        app: app.clone(),
+        status: rpc_state.status.clone(),
+        dispatcher: rpc_state.dispatcher.clone(),
+        adapter: rpc_state.adapter.clone(),
+        config: rpc_state.config.clone(),
+        mcps: rpc_state.mcps.clone(),
+        pairs: pairs.clone(),
+        sessions: sessions.clone(),
+        started_at: rpc_state.started_at,
+    };
+    app.manage(pairs);
+    app.manage(sessions);
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = crate::remote::server::serve(bind, tls, state).await {
+            warn!(%err, "remote: serve loop terminated");
+        }
+    });
+    info!(%bind, "remote: bridge spawned");
 }
 
 /// Install SIGINT / SIGTERM handlers that route to [`shutdown`] —

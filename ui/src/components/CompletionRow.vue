@@ -107,8 +107,8 @@ const sourceLabel = computed<string>(() => {
 }
 
 .completion-row-icon {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   color: var(--theme-fg-dim);
   flex-shrink: 0;
 }
@@ -119,7 +119,8 @@ const sourceLabel = computed<string>(() => {
 
 .completion-row-label {
   @apply truncate;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 50%;
 }
 
@@ -139,10 +140,10 @@ const sourceLabel = computed<string>(() => {
 .completion-row-source {
   flex: 0 0 auto;
   margin-left: auto;
-  padding-left: 8px;
+  padding-left: 0.5rem;
   color: var(--theme-fg-faint);
   font-size: 0.66rem;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
   text-transform: uppercase;
 }
 </style>

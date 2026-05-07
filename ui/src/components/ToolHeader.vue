@@ -45,7 +45,6 @@ const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(prop
       <FaIcon v-if="icon" :icon="icon" class="tool-header-icon" aria-hidden="true" />
       <span class="tool-header-title">{{ title }}</span>
     </template>
-    <span class="tool-header-spacer" />
     <slot name="trailing" />
   </header>
 </template>
@@ -55,27 +54,40 @@ const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(prop
 
 .tool-header {
   @apply flex items-center;
-  gap: 8px;
+  gap: 0.5rem;
+  min-width: 0;
   font-family: var(--theme-font-mono);
 }
 
+/* Title column grows to fill available space and yields when the
+ * trailing slot's controls (caret, action buttons, dismiss) need
+ * room. Without `min-width: 0` on the flex item, a long unbroken
+ * tool path refuses to shrink and pushes the slot offscreen. */
 .tool-header-tag {
-  @apply inline-flex shrink-0 items-center;
-  gap: 5px;
-  padding: 2px 7px;
+  @apply inline-flex items-center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.3125rem;
+  padding: 0.125rem 0.4375rem;
   color: var(--theme-fg-on-tone);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-size: 0.62rem;
   font-weight: 700;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
 }
 
 .tool-header-icon {
-  width: 9px;
-  height: 9px;
+  flex-shrink: 0;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .tool-header-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 700;
 }
 
@@ -83,7 +95,7 @@ const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(prop
   font-weight: 600;
 }
 
-.tool-header-spacer {
-  flex: 1;
+.tool-header :slotted(*) {
+  flex-shrink: 0;
 }
 </style>

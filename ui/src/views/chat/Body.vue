@@ -66,8 +66,8 @@ const slotEmpty = computed(() => !slots.default)
    * left edge stays squared because the stripe is the body's
    * left frame. 4px matches every other container surface
    * (composer, modal, palette card). */
-  border-top-right-radius: 4px;
-  border-bottom-right-radius: 4px;
+  border-top-right-radius: 0.25rem;
+  border-bottom-right-radius: 0.25rem;
   overflow-wrap: anywhere;
   min-width: 0;
   font-family: var(--theme-font-sans);
