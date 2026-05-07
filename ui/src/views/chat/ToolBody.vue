@@ -14,11 +14,17 @@ import { MarkdownBody, type ToolCallView } from '@components'
  *
  *  1. Description — markdown body via `<MarkdownBody>` (LLM summary,
  *     fenced command/diff blocks). MarkdownBody owns the fence chrome
- *     (collapse + copy) so consumers get working code blocks for free.
+ *     (collapse + copy) so consumers get working code blocks (Shiki
+ *     syntax-highlighted) for free.
  *  2. Fields — structured key/value rows (path, pattern, MCP arg
  *     dumps, JSON args).
  *  3. Output — preformatted plain text (stdout / file content) in a
  *     collapsible mono pre block.
+ *
+ * Order is description → fields → output to match `## title \n
+ * description \n fields-map` — every formatter that emits both a
+ * description AND fields treats the description as the human-facing
+ * lede and the fields as the structured bag underneath.
  *
  * Returns nothing visible when none of the three are populated; the
  * consumer doesn't need a v-if guard on whether to render.
@@ -39,18 +45,18 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
 
 <template>
   <div v-if="hasContent" class="tool-body">
-    <!-- Fields render first — small key/value rows let the captain
-         scan path / pattern / pid / etc. before the (often large)
-         description block. Edit / patch tools rely on this ordering
-         so the diff hunk doesn't push the path off-screen. -->
+    <!-- Description renders first — it's the human-facing summary
+         the captain reads to understand what the tool call is doing.
+         Fields are the structured arg dump beneath; output (when
+         present) is the captured stdout/diff at the bottom. -->
+    <MarkdownBody v-if="view.description" :source="view.description" class="tool-body-description" />
+
     <div v-if="hasFields" class="tool-body-fields">
       <div v-for="row in view.fields" :key="row.label" class="tool-body-field">
         <span class="tool-body-label">{{ row.label }}</span>
         <code class="tool-body-code">{{ row.value }}</code>
       </div>
     </div>
-
-    <MarkdownBody v-if="view.description" :source="view.description" class="tool-body-description" />
 
     <section v-if="view.output" class="tool-body-output" :data-expanded="outputExpanded">
       <header
