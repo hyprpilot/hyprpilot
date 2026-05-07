@@ -5,7 +5,7 @@ import QRCode from 'qrcode'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { Button, ButtonTone, ButtonVariant, Modal, ModalDescription, ModalInput, ToastTone } from '@components'
-import { type RemotePairState, useRemotePair } from '@composables'
+import { type KeymapEntry, type RemotePairState, useKeymap, useKeymaps, useRemotePair } from '@composables'
 import { log } from '@lib'
 
 /**
@@ -183,6 +183,51 @@ function stopScan(): void {
 onBeforeUnmount(() => {
   stopScan()
 })
+
+// Approval keybinds — same chord the captain uses for tool-permission
+// prompts (`approvals.allow` = Ctrl+G, `approvals.deny` = Ctrl+R by
+// default). Pair confirm + reject are the same shape of "act on this
+// pending request"; binding the same chord keeps the muscle memory
+// consistent. The Overlay-level permission handler also listens on
+// these chords but bails when no permission is queued, so the two
+// paths don't fight in the common case (pair modal up, no pending
+// permissions).
+const { keymaps } = useKeymaps()
+
+useKeymap(
+  () => document,
+  (): KeymapEntry[] => {
+    if (!keymaps.value) {
+      return []
+    }
+
+    return [
+      {
+        binding: keymaps.value.approvals.allow,
+        handler: () => {
+          // Skip when the draft is empty — confirming an empty code
+          // is just a guaranteed mismatch round-trip with no captain
+          // intent. Useful flow: scan auto-fills, captain hits the
+          // chord to commit.
+          if (draft.value.trim().length === 0) {
+            return false
+          }
+          void onAccept()
+
+          return true
+        }
+      },
+      {
+        binding: keymaps.value.approvals.deny,
+        handler: () => {
+          void onReject()
+
+          return true
+        }
+      }
+    ]
+  }
+)
 </script>
 
 <template>

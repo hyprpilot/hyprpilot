@@ -29,6 +29,14 @@ let connectPromise: Promise<WebSocket> | undefined
 let authenticated = false
 let pendingFrame: PendingFrame | undefined
 let lastConfirmRejection: string | undefined
+/**
+ * Survives the WS close that follows a `rejected` / expiry frame so
+ * the mobile pair screen can render a "the desktop rejected this
+ * pair request" banner instead of bouncing back to a generic
+ * "connecting…" loader. Cleared when the user retries (a fresh
+ * `pending` frame lands on a new connection).
+ */
+let terminalReason: string | undefined
 
 interface PendingFrame {
   pendingId: string
@@ -88,6 +96,14 @@ async function connect(): Promise<WebSocket> {
       authenticated = false
       pendingFrame = undefined
       lastConfirmRejection = undefined
+
+      // Preserve `terminalReason` across the close — that's what tells
+      // the mobile UI "this pair was rejected" vs "we just lost the
+      // connection". A connection drop with no preceding `rejected`
+      // frame fills it with a generic message.
+      if (terminalReason === undefined) {
+        terminalReason = 'connection lost'
+      }
       notifyPairListeners()
       // Reject every in-flight RPC so callers see the disconnect.
       const queued = [...inflight.values()]
@@ -162,7 +178,10 @@ function handleFrameByType(msg: Record<string, unknown>): void {
         qrPayload: String(msg.qrPayload),
         expiresInSeconds: Number(msg.expiresInSeconds ?? 60)
       }
+      // Fresh pending = fresh connection = retry succeeded; clear
+      // any leftover terminal/rejection text from a prior attempt.
       lastConfirmRejection = undefined
+      terminalReason = undefined
       notifyPairListeners()
 
       return
@@ -170,6 +189,7 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       authenticated = true
       pendingFrame = undefined
       lastConfirmRejection = undefined
+      terminalReason = undefined
       notifyPairListeners()
 
       return
@@ -177,6 +197,10 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       authenticated = false
       pendingFrame = undefined
       lastConfirmRejection = undefined
+      // Preserved through the close handler so the mobile UI can
+      // show a dedicated "rejected" screen instead of falling back
+      // to the generic "connecting…" loader.
+      terminalReason = typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : 'pair request rejected'
       notifyPairListeners()
 
       if (socket) {
@@ -317,11 +341,20 @@ export interface PairView {
    * the mobile UI can flash a one-shot error pill.
    */
   lastConfirmRejection?: string
+  /**
+   * Terminal reason for a closed WS — populated when the daemon sent
+   * `{type:"rejected"}` (captain hit reject / pair expired / 3 wrong
+   * codes) or when the connection dropped without an explicit
+   * rejection. Survives the `close` event so the mobile UI can render
+   * a dedicated "rejected" view rather than the generic loader.
+   * Cleared on the next `pending` frame (retry succeeded).
+   */
+  terminalReason?: string
 }
 
 function buildPairView(): PairView {
   return {
-    pending: pendingFrame, authenticated, lastConfirmRejection
+    pending: pendingFrame, authenticated, lastConfirmRejection, terminalReason
   }
 }
 
@@ -360,6 +393,21 @@ export function confirmFromBrowser(code: string): void {
   lastConfirmRejection = undefined
   notifyPairListeners()
   socket.send(JSON.stringify({ type: 'confirm', code: code.trim() }))
+}
+
+/**
+ * Force a fresh pair attempt after a `terminalReason` landed. Reloads
+ * the page so the SPA re-runs its boot from a clean slate — re-mints
+ * the WS, picks up a fresh pending code, etc. Page reload is the
+ * coarsest correct retry; a finer-grained reset (just the WS, keep
+ * the SPA) would have to manage all the in-flight RPC promises that
+ * `close()` rejected on the previous run, and the boot path is cheap
+ * enough that one reload is the simpler answer.
+ */
+export function retryRemotePair(): void {
+  if (typeof window !== 'undefined') {
+    window.location.reload()
+  }
 }
 
 export function ensureRemoteConnection(): Promise<void> {
