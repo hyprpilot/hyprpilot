@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/hyprpilot/hyprpilot/compare/v0.1.6...v0.1.7) (2026-05-07)
+
+
+### Features
+
+* **config:** array-of-tables shape for mcps + skills with glob ignore; ([#15](https://github.com/hyprpilot/hyprpilot/issues/15)) ([490ef9c](https://github.com/hyprpilot/hyprpilot/commit/490ef9c07485febf116c91c9a408f45165f73cd0))
+
 ## [0.1.6](https://github.com/hyprpilot/hyprpilot/compare/v0.1.5...v0.1.6) (2026-05-07)
 
 
