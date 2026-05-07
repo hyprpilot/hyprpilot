@@ -18,8 +18,10 @@ Phone-as-overlay. Browser-as-overlay. Anything on the LAN that speaks HTTPS + We
 Hyprpilot doesn't ship a trust store, doesn't manage tokens, doesn't track "known devices". Every connection re-pairs from scratch — same interaction model as Bluetooth, Chromecast, AirDrop.
 
 1. Phone opens `https://<host>:7423/` in a browser. The SPA detects it's running outside Tauri and opens a WebSocket to `wss://<host>:7423/ws`.
-2. Daemon mints a 4-word [BIP39](https://en.bitcoin.it/wiki/BIP_0039) code (one of 2048<sup>4</sup> ≈ 16 trillion phrases). Phone shows it.
-3. Desktop overlay automatically opens a confirm modal showing the same 4 words. Captain reads the code off the phone and types it into the desktop.
+2. Daemon mints a 4-word [BIP39](https://en.bitcoin.it/wiki/BIP_0039) code (one of 2048<sup>4</sup> ≈ 16 trillion phrases). Phone shows it as readable text **and** as a QR encoding the same string.
+3. Desktop overlay automatically opens a confirm modal showing the same 4 words. Two confirm paths:
+   - Type the four words.
+   - Click *scan*, hold the phone up to the laptop webcam — the QR is decoded in-browser and the input is auto-filled. Click confirm.
 4. On match the WebSocket upgrades to authenticated. The phone's SPA can now drive the daemon — just like the desktop overlay does over Tauri's IPC.
 5. Disconnect → re-pair on reconnect. The contract is one connection.
 
@@ -42,7 +44,6 @@ Below 540px viewport (every common phone width in portrait), the overlay hides k
 ## What's not in scope today
 
 - **Persistent device pairing.** No "trust this device" toggle. Re-pair every time. By design.
-- **Camera QR scanning on the desktop modal.** Today the captain types the 4 words. QR scan slots in as a future "scan" button next to the input.
 - **Public-internet exposure.** The TLS + pair-on-connect model handles untrusted networks within reason, but hyprpilot doesn't ship rate-limiting / IP allowlists / DDoS shielding. Run it on the LAN, or behind a VPN / Tailscale tailnet, not on a public IP.
 
 ## Setup

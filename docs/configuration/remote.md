@@ -48,13 +48,19 @@ To bring your own cert (e.g. one signed by a private CA your devices already tru
 
 ## Pair-on-connect flow
 
-1. Connecting device opens `wss://<host>:7423/ws`.
+1. Connecting device opens `https://<host>:7423/`. The SPA detects it's running outside Tauri and opens `wss://<host>:7423/ws`.
 2. Daemon mints a 4-word BIP39 code, holds the connection in `pending` state, and emits a `remote:pair-request` Tauri event to the desktop overlay.
-3. Connecting device displays the code (it arrives in the welcome WS frame).
-4. Desktop overlay auto-opens a confirm modal showing the same 4 words.
-5. Captain reads the code off the connecting device and types it into the desktop modal. On match the WS upgrades to `authenticated` and the SPA can issue RPCs.
+3. Connecting device's pair landing screen displays the code as readable text **and** as a QR encoding the same string.
+4. Desktop overlay auto-opens a confirm modal showing the same 4 words. Two confirm paths:
+   - **Type** the four words into the modal input.
+   - **Scan** — click the *scan* button → the desktop's webcam reads the QR off the connecting device → the decoded code auto-fills the input. Captain still hits *confirm* to commit; the scan only fills.
+5. On match the WS upgrades to `authenticated` and the SPA finishes booting + can issue RPCs.
 6. Mismatch → modal flags the error and the WS stays pending.
 7. No confirm within 60 seconds, or 3 wrong attempts → daemon expires the pending pair and closes the WS.
+
+### Scanning
+
+The scan button uses [`qr-scanner`](https://github.com/nimiq/qr-scanner) — runs entirely in the browser, no external service. Camera permission is requested on first click via the Web `MediaDevices.getUserMedia()` API; deny it once and the captain falls back to typing the four words. Hold the connecting device's pair screen up to the laptop webcam — modern phones display the QR large enough that even a 720p webcam decodes it within a second or two.
 
 State is connection-scoped. Disconnect → re-pair on reconnect. There is no trust store, no rotation, no revocation — the contract is the one connection.
 

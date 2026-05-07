@@ -310,6 +310,10 @@ export function subscribePair(cb: (view: PairView) => void): () => void {
   }
 }
 
+export function getRemotePairView(): PairView {
+  return { pending: pendingFrame, authenticated }
+}
+
 export function ensureRemoteConnection(): Promise<void> {
   return connect().then(() => undefined)
 }
