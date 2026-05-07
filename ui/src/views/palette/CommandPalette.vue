@@ -178,7 +178,6 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   }
 
   const rows = visibleEntries.value
-  const current = rows[highlighted.value]
 
   const key = e.key
   const ctrl = e.ctrlKey

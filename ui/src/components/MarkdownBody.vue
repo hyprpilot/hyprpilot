@@ -420,9 +420,16 @@ function onRootKeydown(event: KeyboardEvent): void {
   border-color: var(--theme-status-ok);
 }
 
+/* `display: block` + `overflow-x: auto` on the table itself lets a
+ * wide markdown table scroll horizontally on phones / narrow chat
+ * bubbles instead of punching through the message width. Inner
+ * `tbody/tr/td` keep their default `display: table-*` so the cells
+ * still align as a table inside the scroll container. */
 .markdown-body :deep(table) {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
   margin: 0.375rem 0;
-  width: 100%;
   border-collapse: collapse;
 }
 
