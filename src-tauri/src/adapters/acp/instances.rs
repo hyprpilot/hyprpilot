@@ -31,7 +31,7 @@ use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::registry::AdapterRegistry;
 use crate::adapters::{
     Adapter, AdapterError, AdapterId, AdapterResult, Bootstrap, InstanceEvent, InstanceEventStream, InstanceInfo,
-    InstanceKey, SpawnSpec, UserTurnInput,
+    InstanceKey, InstanceState, SpawnSpec, UserTurnInput,
 };
 use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
@@ -399,6 +399,18 @@ impl AcpAdapter {
                         }
                     }
                     Ok(InstanceEvent::TurnEnded { instance_id, .. }) => {
+                        if let Ok(mut set) = busy.write() {
+                            set.remove(&instance_id);
+                        }
+                    }
+                    // Defensive cleanup on actor termination — covers
+                    // crash paths that bypass the `TurnGuard` drop and
+                    // leave a stale "busy" entry forever. Any non-live
+                    // state means there's no actor to be busy on
+                    // anyway.
+                    Ok(InstanceEvent::State { instance_id, state, .. })
+                        if matches!(state, InstanceState::Ended | InstanceState::Error) =>
+                    {
                         if let Ok(mut set) = busy.write() {
                             set.remove(&instance_id);
                         }

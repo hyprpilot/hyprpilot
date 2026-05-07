@@ -54,6 +54,18 @@ export interface TranscriptState {
   turns: ChatTurnItem[]
 }
 
+/// **Interim caps** — replaced by daemon-side transcript store +
+/// windowed snapshot RPCs in the state-replay PR (see plan file
+/// `gleaming-squishing-rain.md`). Until that lands the UI is the only
+/// place transcript state lives, so unbounded growth here translates
+/// to days-long sessions blowing through hundreds of MB of reactive
+/// proxy. Once the daemon stores transcript and the UI pulls a
+/// `chat` snapshot for the visible window, these caps go away —
+/// the daemon truncates, the UI virtual-scrolls.
+const MAX_TURNS_PER_INSTANCE = 500
+const MAX_TURN_TEXT_BYTES = 256_000
+const TRUNCATION_SUFFIX = '\n\n…[truncated to keep the overlay responsive]'
+
 const states = reactive(new Map<InstanceId, TranscriptState>())
 
 function slotFor(id: InstanceId): TranscriptState {
@@ -119,7 +131,7 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
   const last = slot.turns[slot.turns.length - 1]
 
   if (last && last.role === role && last.sessionId === sessionId && (hasExplicitId ? last.id === raw.messageId : true)) {
-    last.text += text
+    last.text = appendCapped(last.text, text)
     last.updatedAt = seq
 
     // Attachments append to the existing turn (instead of replacing)
@@ -141,11 +153,33 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
     turnId: openTurnIdFor(id, sessionId),
     createdAt: seq,
     updatedAt: seq,
-    text,
+    text: appendCapped('', text),
     attachments: raw.attachments ?? []
   }
 
   slot.turns.push(turn)
+  trimSlot(slot)
+}
+
+function appendCapped(existing: string, addition: string): string {
+  if (existing.length >= MAX_TURN_TEXT_BYTES) {
+    return existing
+  }
+  const next = existing + addition
+
+  if (next.length <= MAX_TURN_TEXT_BYTES) {
+    return next
+  }
+
+  return next.slice(0, MAX_TURN_TEXT_BYTES) + TRUNCATION_SUFFIX
+}
+
+function trimSlot(slot: TranscriptState): void {
+  const overflow = slot.turns.length - MAX_TURNS_PER_INSTANCE
+
+  if (overflow > 0) {
+    slot.turns.splice(0, overflow)
+  }
 }
 
 /**

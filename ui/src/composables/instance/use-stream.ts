@@ -111,7 +111,35 @@ export interface StreamState {
   openPlanBySession: Map<string, string>
 }
 
+/// **Interim caps** — same story as `use-transcript.ts`. Removed once
+/// the daemon owns the truth and the UI virtual-scrolls a window of
+/// stream items via `instance/snapshot/chat`.
+const MAX_STREAM_ITEMS_PER_INSTANCE = 500
+const MAX_THOUGHT_TEXT_BYTES = 256_000
+const STREAM_TRUNCATION_SUFFIX = '\n\n…[truncated to keep the overlay responsive]'
+
 const states = reactive(new Map<InstanceId, StreamState>())
+
+function appendCappedText(existing: string, addition: string): string {
+  if (existing.length >= MAX_THOUGHT_TEXT_BYTES) {
+    return existing
+  }
+  const next = existing + addition
+
+  if (next.length <= MAX_THOUGHT_TEXT_BYTES) {
+    return next
+  }
+
+  return next.slice(0, MAX_THOUGHT_TEXT_BYTES) + STREAM_TRUNCATION_SUFFIX
+}
+
+function trimStreamSlot(slot: StreamState): void {
+  const overflow = slot.items.length - MAX_STREAM_ITEMS_PER_INSTANCE
+
+  if (overflow > 0) {
+    slot.items.splice(0, overflow)
+  }
+}
 
 function slotFor(id: InstanceId): StreamState {
   let slot = states.get(id)
@@ -168,7 +196,7 @@ export function pushThoughtChunk(id: InstanceId, sessionId: string, raw: Thought
     const target = slot.items.find((it): it is ThoughtStreamItem => it.kind === StreamItemKind.Thought && it.sessionId === sessionId && it.id === openId)
 
     if (target) {
-      target.text += text
+      target.text = appendCappedText(target.text, text)
       target.updatedAt = seq
 
       return
@@ -184,9 +212,10 @@ export function pushThoughtChunk(id: InstanceId, sessionId: string, raw: Thought
     turnId: openTurnIdFor(id, sessionId),
     createdAt: seq,
     updatedAt: seq,
-    text,
+    text: appendCappedText('', text),
     startedAtMs: Date.now()
   })
+  trimStreamSlot(slot)
   slot.openThoughtBySession.set(sessionId, itemId)
 }
 
@@ -218,6 +247,7 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
     updatedAt: seq,
     entries
   })
+  trimStreamSlot(slot)
   slot.openPlanBySession.set(sessionId, itemId)
 }
 
@@ -256,6 +286,7 @@ export function pushModeChange(id: InstanceId, sessionId: string, change: ModeCh
     prevModeId: change.prevModeId,
     prevName: change.prevName
   })
+  trimStreamSlot(slot)
 }
 
 export interface ModelChangePush {
@@ -294,6 +325,7 @@ export function pushModelChange(id: InstanceId, sessionId: string, change: Model
     prevModelId: change.prevModelId,
     prevName: change.prevName
   })
+  trimStreamSlot(slot)
 }
 
 export interface ConfigOptionChangePush {
@@ -333,6 +365,7 @@ export function pushConfigOptionChange(id: InstanceId, sessionId: string, change
     prevValue: change.prevValue,
     prevName: change.prevName
   })
+  trimStreamSlot(slot)
 }
 
 export interface SystemPromptInjectedPush {
@@ -373,6 +406,7 @@ export function pushSystemPromptInjected(id: InstanceId, push: SystemPromptInjec
     updatedAt: seq,
     files: [...push.files]
   })
+  trimStreamSlot(slot)
 }
 
 export function resetStream(id: InstanceId): void {

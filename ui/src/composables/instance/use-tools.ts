@@ -1,4 +1,4 @@
-import { computed, reactive, type ComputedRef } from 'vue'
+import { computed, markRaw, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
 import { openTurnIdFor } from './use-turns'
@@ -10,15 +10,80 @@ export type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation }
 
 export interface ToolsState {
   calls: WireToolCall[]
+  /// O(1) counter of calls whose `status` is non-terminal. Maintained
+  /// inline with mutation so `usePhase` can answer
+  /// "is anything running?" without scanning `calls` per chunk.
+  runningCount: number
 }
 
+const TERMINAL_STATUSES = new Set(['completed', 'done', 'failed', 'error'])
+
+function isRunning(status: string | undefined): boolean {
+  if (!status) {
+    return true
+  }
+
+  return !TERMINAL_STATUSES.has(status.toLowerCase())
+}
+
+/// **Interim cap** — same story as `use-transcript.ts` /
+/// `use-stream.ts`. Replaced by daemon-side tool-call snapshots once
+/// the state-replay PR lands.
+const MAX_TOOL_CALLS_PER_INSTANCE = 1000
+
 const states = reactive(new Map<InstanceId, ToolsState>())
+
+/// `formatted`, `content`, `rawInput` carry diff blobs / large
+/// command outputs / argument trees. Wrapping them in `markRaw`
+/// before they hit the reactive slot stops Vue's reactivity proxy
+/// from deep-traversing every read — every render of the tool pill
+/// otherwise walks the entire diff structure to set up tracking.
+/// Each wrap is guarded against `undefined`/null because some test
+/// fixtures and edge wire shapes omit these fields entirely; Vue's
+/// `markRaw` does not accept primitives.
+function rawifyMaybe<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    return markRaw(value as object) as T
+  }
+
+  return value
+}
+
+function rawifyHeavyFields(raw: ToolCallUpdate): ToolCallUpdate {
+  return {
+    ...raw,
+    formatted: rawifyMaybe(raw.formatted),
+    content: Array.isArray(raw.content) ? rawifyMaybe(raw.content) : raw.content,
+    rawInput: rawifyMaybe(raw.rawInput),
+    locations: Array.isArray(raw.locations) ? rawifyMaybe(raw.locations) : raw.locations
+  }
+}
+
+function recountRunning(slot: ToolsState): void {
+  let n = 0
+
+  for (const c of slot.calls) {
+    if (isRunning(c.status)) {
+      n += 1
+    }
+  }
+  slot.runningCount = n
+}
+
+function trimToolsSlot(slot: ToolsState): void {
+  const overflow = slot.calls.length - MAX_TOOL_CALLS_PER_INSTANCE
+
+  if (overflow > 0) {
+    slot.calls.splice(0, overflow)
+    recountRunning(slot)
+  }
+}
 
 function slotFor(id: InstanceId): ToolsState {
   let slot = states.get(id)
 
   if (!slot) {
-    slot = { calls: [] }
+    slot = { calls: [], runningCount: 0 }
     states.set(id, slot)
   }
 
@@ -56,39 +121,48 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
   const slot = slotFor(id)
   const seq = nextSeq(id)
   const toolCallId = raw.toolCallId ?? `tc-${seq}`
+  const heavy = rawifyHeavyFields(raw)
   const existing = slot.calls.find((c) => c.toolCallId === toolCallId && c.sessionId === sessionId)
 
   if (existing) {
     existing.updatedAt = seq
 
-    if (raw.title !== undefined) {
-      existing.title = raw.title
+    if (heavy.title !== undefined) {
+      existing.title = heavy.title
     }
 
-    if (raw.status !== undefined) {
-      existing.status = raw.status
+    if (heavy.status !== undefined) {
+      const wasRunning = isRunning(existing.status)
+      const nowRunning = isRunning(heavy.status)
+
+      if (wasRunning && !nowRunning) {
+        slot.runningCount = Math.max(0, slot.runningCount - 1)
+      } else if (!wasRunning && nowRunning) {
+        slot.runningCount += 1
+      }
+      existing.status = heavy.status
     }
 
-    if (raw.kind !== undefined) {
-      existing.kind = raw.kind
+    if (heavy.kind !== undefined) {
+      existing.kind = heavy.kind
     }
 
-    if (Array.isArray(raw.content)) {
-      existing.content = raw.content
+    if (Array.isArray(heavy.content)) {
+      existing.content = heavy.content
     }
 
-    if (raw.rawInput !== undefined) {
-      existing.rawInput = raw.rawInput
+    if (heavy.rawInput !== undefined) {
+      existing.rawInput = heavy.rawInput
     }
 
-    if (Array.isArray(raw.locations)) {
-      existing.locations = raw.locations
+    if (Array.isArray(heavy.locations)) {
+      existing.locations = heavy.locations
     }
-    existing.formatted = raw.formatted
-    existing.startedAtMs = raw.startedAtMs
+    existing.formatted = heavy.formatted
+    existing.startedAtMs = heavy.startedAtMs
 
-    if (raw.completedAtMs !== undefined) {
-      existing.completedAtMs = raw.completedAtMs
+    if (heavy.completedAtMs !== undefined) {
+      existing.completedAtMs = heavy.completedAtMs
     }
 
     return
@@ -99,18 +173,23 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
     sessionId,
     turnId: openTurnIdFor(id, sessionId),
     toolCallId,
-    title: raw.title,
-    status: raw.status,
-    kind: raw.kind,
-    content: Array.isArray(raw.content) ? raw.content : [],
-    rawInput: raw.rawInput,
-    locations: Array.isArray(raw.locations) ? raw.locations : undefined,
-    formatted: raw.formatted,
-    startedAtMs: raw.startedAtMs,
-    completedAtMs: raw.completedAtMs,
+    title: heavy.title,
+    status: heavy.status,
+    kind: heavy.kind,
+    content: Array.isArray(heavy.content) ? heavy.content : [],
+    rawInput: heavy.rawInput,
+    locations: Array.isArray(heavy.locations) ? heavy.locations : undefined,
+    formatted: heavy.formatted,
+    startedAtMs: heavy.startedAtMs,
+    completedAtMs: heavy.completedAtMs,
     createdAt: seq,
     updatedAt: seq
   })
+
+  if (isRunning(heavy.status)) {
+    slot.runningCount += 1
+  }
+  trimToolsSlot(slot)
 }
 
 export function resetTools(id: InstanceId): void {
@@ -129,6 +208,7 @@ export function deleteToolsByTurnId(id: InstanceId, turnId: string): number {
   const before = slot.calls.length
 
   slot.calls = slot.calls.filter((c) => c.turnId !== turnId)
+  recountRunning(slot)
 
   return before - slot.calls.length
 }
@@ -137,7 +217,7 @@ export function getToolCall(id: InstanceId, toolCallId: string): WireToolCall | 
   return states.get(id)?.calls.find((c) => c.toolCallId === toolCallId)
 }
 
-export function useTools(instanceId?: InstanceId): { calls: ComputedRef<WireToolCall[]> } {
+export function useTools(instanceId?: InstanceId): { calls: ComputedRef<WireToolCall[]>; runningCount: ComputedRef<number> } {
   const { id: activeId } = useActiveInstance()
   const calls = computed<WireToolCall[]>(() => {
     const resolved = instanceId ?? activeId.value
@@ -148,6 +228,15 @@ export function useTools(instanceId?: InstanceId): { calls: ComputedRef<WireTool
 
     return states.get(resolved)?.calls ?? []
   })
+  const runningCount = computed<number>(() => {
+    const resolved = instanceId ?? activeId.value
 
-  return { calls }
+    if (!resolved) {
+      return 0
+    }
+
+    return states.get(resolved)?.runningCount ?? 0
+  })
+
+  return { calls, runningCount }
 }

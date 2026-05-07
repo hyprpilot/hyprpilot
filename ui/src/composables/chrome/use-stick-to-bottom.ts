@@ -46,6 +46,32 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
   let resizeObs: ResizeObserver | undefined
   let mutationObs: MutationObserver | undefined
 
+  // rAF coalescing — observers fire per text mutation during
+  // streaming (one per chunk × N children). Each callback synchronously
+  // reads `scrollHeight` / `scrollTop` / `clientHeight` then writes
+  // `scrollTop`, forcing a layout flush per chunk. Coalescing to one
+  // rAF tick per burst collapses 50 layout flushes/sec to ~60Hz max.
+  let rafPending = false
+  let rafHandle: number | undefined
+  function scheduleStick(): void {
+    if (rafPending) {
+      return
+    }
+
+    if (!stuck.value) {
+      return
+    }
+    rafPending = true
+    rafHandle = requestAnimationFrame(() => {
+      rafPending = false
+      rafHandle = undefined
+
+      if (stuck.value) {
+        scrollToBottom()
+      }
+    })
+  }
+
   onMounted(() => {
     const el = scrollEl.value
 
@@ -60,20 +86,12 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     // initial scroll-to-bottom still runs and the user can scroll
     // manually.
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObs = new ResizeObserver(() => {
-        if (stuck.value) {
-          scrollToBottom()
-        }
-      })
+      resizeObs = new ResizeObserver(scheduleStick)
       resizeObs.observe(el)
     }
 
     if (typeof MutationObserver !== 'undefined') {
-      mutationObs = new MutationObserver(() => {
-        if (stuck.value) {
-          scrollToBottom()
-        }
-      })
+      mutationObs = new MutationObserver(scheduleStick)
       mutationObs.observe(el, {
         childList: true,
         subtree: true,
@@ -92,6 +110,12 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     }
     resizeObs?.disconnect()
     mutationObs?.disconnect()
+
+    if (rafHandle !== undefined) {
+      cancelAnimationFrame(rafHandle)
+      rafHandle = undefined
+      rafPending = false
+    }
   })
 
   return { stuck, scrollToBottom }

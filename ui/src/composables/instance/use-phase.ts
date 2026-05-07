@@ -62,7 +62,7 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
   // read. Lifted version creates them once; sub-composables track
   // active-id changes through their own internal `computed`s.
   const { rowQueue, modalQueue } = usePermissions(instanceId)
-  const { calls } = useTools(instanceId)
+  const { runningCount } = useTools(instanceId)
   const { openTurnId } = useTurns(instanceId)
   const { turns } = useTranscript(instanceId)
 
@@ -84,13 +84,10 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
       return Phase.Idle
     }
 
-    const hasRunningTool = calls.value.some((c) => {
-      const s = (c.status ?? '').toLowerCase()
-
-      return s !== 'completed' && s !== 'done' && s !== 'failed' && s !== 'error'
-    })
-
-    if (hasRunningTool) {
+    // O(1) running-tool check via the counter `use-tools` maintains
+    // inline with status mutations. Previously this scanned every
+    // historical tool call per chunk during streaming.
+    if (runningCount.value > 0) {
       return Phase.Pending
     }
 

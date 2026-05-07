@@ -901,7 +901,15 @@ pub(crate) fn map_session_update(
             let formatted = format_running(adapter_id, &running);
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
-            tool_calls.insert(id.clone(), running);
+            // Some agents emit the initial `tool_call` already in a
+            // terminal state (fast tools that complete before they ever
+            // stream a running chunk). Skip the cache insert in that
+            // case so we don't leak entries the merge logic will never
+            // see again.
+            let is_terminal = matches!(state, ToolCallState::Completed | ToolCallState::Failed);
+            if !is_terminal {
+                tool_calls.insert(id.clone(), running);
+            }
             MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
                 tool_kind,
@@ -978,6 +986,16 @@ pub(crate) fn map_session_update(
             let formatted = format_running(adapter_id, running);
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
+            // Drop the cache entry once the tool has reached a terminal
+            // state — `formatted` is already on the outgoing record so
+            // subscribers have everything they need. Holding onto every
+            // running call forever leaks the actor's memory across long
+            // sessions where each entry can carry diff blobs / large
+            // raw inputs.
+            let is_terminal = matches!(state, Some(ToolCallState::Completed) | Some(ToolCallState::Failed));
+            if is_terminal {
+                tool_calls.remove(&id);
+            }
             MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
                 tool_kind,
