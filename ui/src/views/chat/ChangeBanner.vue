@@ -66,10 +66,16 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
   background-color: var(--theme-border-soft);
 }
 
+/* Pill yields when long values (cwd paths, branch names) would
+ * push past the row width on phones. The two flanking rules
+ * already shrink first via `flex: 1 1 auto`; the pill takes a
+ * `min-width: 0` so the inner text can wrap. */
 .change-banner-label {
   @apply inline-flex items-center;
   gap: 0.375rem;
   padding: 0.125rem 0.5rem;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--theme-border-soft);
   border-radius: 0.1875rem;
   background-color: var(--theme-surface);
@@ -77,8 +83,14 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
 }
 
 .change-banner-text {
-  @apply inline-flex items-center;
+  @apply inline-flex flex-wrap items-center;
   gap: 0.3125rem;
+  min-width: 0;
+}
+
+.change-banner-from,
+.change-banner-to {
+  overflow-wrap: anywhere;
 }
 
 .change-banner-leader {

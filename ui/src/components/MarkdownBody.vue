@@ -156,6 +156,40 @@ function onRootKeydown(event: KeyboardEvent): void {
   font-size: 0.85rem;
   line-height: 1.5;
   color: var(--theme-fg);
+  /* Constrain to the bubble. Prose children below inherit the
+   * `overflow-wrap: anywhere` rule so long unbreakable tokens (URLs,
+   * identifiers like `claude-sonnet-4-5-20250514`, file paths) wrap
+   * inside the chat width on phones instead of pushing the bubble
+   * past the viewport. `<pre>` and `<table>` opt out via their own
+   * `overflow-x: auto` rules below. */
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Prose elements wrap aggressively. Targeting prose-receiving
+ * children specifically so the rule doesn't interfere with `<pre>`
+ * (whose `white-space: pre` keeps source layout intact) or
+ * scrollable tables (whose `display: block; overflow-x: auto`
+ * already handles overflow). */
+.markdown-body :deep(p),
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6),
+.markdown-body :deep(li),
+.markdown-body :deep(blockquote),
+.markdown-body :deep(a),
+.markdown-body :deep(td),
+.markdown-body :deep(th) {
+  overflow-wrap: anywhere;
+}
+
+/* Inline `<code>` (the fenced-block override stays put via the
+ * `.md-codeblock` descendant selectors below). */
+.markdown-body :deep(code) {
+  overflow-wrap: anywhere;
 }
 
 .markdown-body :deep(p) {
