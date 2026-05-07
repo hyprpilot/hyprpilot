@@ -19,7 +19,7 @@
  */
 
 import { ToastTone } from '@components'
-import { useActiveInstance, useCwdHistory, useHomeDir, usePalette, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
+import { useActiveInstance, useCwdHistory, useHomeDir, usePalette, useProfiles, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -29,6 +29,7 @@ const COMPLETION_DEBOUNCE_MS = 120
 
 async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
   const { id: activeId } = useActiveInstance()
+  const { profiles, selected } = useProfiles()
   const { displayPath } = useHomeDir()
   const { push } = useCwdHistory()
   const toasts = useToasts()
@@ -49,16 +50,21 @@ async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
 
     return
   }
-  const instanceId = activeId.value
-
-  if (!instanceId) {
-    toasts.push(ToastTone.Err, 'cwd: no active instance to restart')
-
-    return
-  }
+  // ensure=true: when no live actor matches `instanceId` (or none is
+  // set), the daemon resolves `(agentId, profileId)` and bootstraps a
+  // fresh actor rooted at `cwd`. Mirrors the models / modes / effort
+  // leaves' empty-instance handling.
+  const profileId = selected.value
+  const agentId = profileId ? profiles.value.find((p) => p.id === profileId)?.agent : undefined
 
   try {
-    await invoke(TauriCommand.InstanceRestart, { instanceId, cwd: absolute })
+    await invoke(TauriCommand.InstanceRestart, {
+      instanceId: activeId.value,
+      cwd: absolute,
+      ensure: true,
+      agentId,
+      profileId
+    })
     push(absolute)
     toasts.push(ToastTone.Ok, `cwd → ${displayPath(absolute)}`)
   } catch(err) {

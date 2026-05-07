@@ -91,15 +91,38 @@ pub async fn session_cancel(
 /// Mirror of the `instances/restart` JSON-RPC method for the webview.
 /// `cwd` is optional — supplying it overlays the resolved agent cwd
 /// before the post-restart actor spawns. Drives the K-266 cwd palette.
+///
+/// `ensure: true` mirrors `instance_meta`'s flag — when no live actor
+/// matches `instance_id` (or none is supplied), the daemon resolves
+/// `(agent_id, profile_id)` and spawns a fresh instance rooted at
+/// `cwd` instead of erroring. Lets the cwd palette work on a
+/// fresh-boot daemon with empty registry.
 #[tauri::command]
 pub async fn instance_restart(
     adapter: AdapterState<'_>,
-    instance_id: String,
+    instance_id: Option<String>,
     cwd: Option<PathBuf>,
+    ensure: Option<bool>,
+    agent_id: Option<String>,
+    profile_id: Option<String>,
 ) -> Result<Value, String> {
-    tracing::info!(instance_id = %instance_id, cwd = ?cwd, "cmd::instance_restart: entry");
-    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
-    let out = adapter.restart_instance(key, cwd).await.map_err(|e| e.message);
+    let ensure = ensure.unwrap_or(false);
+    tracing::info!(
+        instance_id = ?instance_id,
+        cwd = ?cwd,
+        ensure,
+        agent_id = ?agent_id,
+        profile_id = ?profile_id,
+        "cmd::instance_restart: entry"
+    );
+    let key = match instance_id.as_deref() {
+        Some(id) => Some(InstanceKey::parse(id).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let out = adapter
+        .restart_instance(key, cwd, ensure, agent_id.as_deref(), profile_id.as_deref())
+        .await
+        .map_err(|e| e.message);
     match &out {
         Ok(_) => tracing::info!("cmd::instance_restart: accepted"),
         Err(err) => tracing::warn!(%err, "cmd::instance_restart: failed"),
