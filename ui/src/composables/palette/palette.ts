@@ -114,6 +114,10 @@ export interface PaletteSpec {
 
 const stack = ref<PaletteSpec[]>([])
 let lastFocused: HTMLElement | undefined
+// Set by `CommandPalette.vue` on mount; cleared on unmount. Lets the
+// global Ctrl+F handler refocus the search input without reaching
+// across components for a DOM ref.
+let focusCallback: (() => void) | undefined
 
 // Snapshot + eagerly clear before focusing: a `focus()` that throws or
 // triggers listeners that re-enter `close()` must not leave a stale ref
@@ -140,6 +144,16 @@ export function usePalette(): {
   open: (spec: PaletteSpec) => void
   close: () => void
   closeAll: () => void
+  /// True while at least one palette spec is on the stack.
+  isOpen: () => boolean
+  /// Refocus the live palette's search input. No-op when no palette
+  /// is mounted. Called from the global Ctrl+F handler when the
+  /// captain has clicked away from the input mid-pick.
+  focusInput: () => void
+  /// Component-internal: `CommandPalette.vue` registers its
+  /// `inputRef.focus()` on mount and clears it on unmount. External
+  /// callers should never call this — they use `focusInput()`.
+  registerFocusCallback: (cb: (() => void) | undefined) => void
 } {
   return {
     stack,
@@ -171,6 +185,15 @@ export function usePalette(): {
       }
       stack.value.length = 0
       restoreFocus()
+    },
+    isOpen(): boolean {
+      return stack.value.length > 0
+    },
+    focusInput(): void {
+      focusCallback?.()
+    },
+    registerFocusCallback(cb: (() => void) | undefined): void {
+      focusCallback = cb
     }
   }
 }
@@ -179,4 +202,5 @@ export function usePalette(): {
 export function __resetPaletteStackForTests(): void {
   stack.value.length = 0
   lastFocused = undefined
+  focusCallback = undefined
 }

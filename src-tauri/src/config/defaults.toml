@@ -169,6 +169,7 @@ bright_white = "#ffffff"
 submit = { key = "enter" }
 newline = { modifiers = ["shift"], key = "enter" }
 cancel_turn = { modifiers = ["ctrl"], key = "d" }
+focus_input = { modifiers = ["ctrl"], key = "f" }
 
 [keymaps.approvals]
 allow = { modifiers = ["ctrl"], key = "g" }

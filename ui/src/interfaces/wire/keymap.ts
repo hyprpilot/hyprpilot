@@ -26,6 +26,7 @@ export interface ChatKeymaps {
   submit: Binding
   newline: Binding
   cancel_turn: Binding
+  focus_input: Binding
 }
 
 export interface ApprovalsKeymaps {

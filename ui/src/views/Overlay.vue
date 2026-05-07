@@ -67,6 +67,7 @@ import {
   useAgentRegistry,
   resetPermissions,
   useAttachments,
+  useComposer,
   useDaemonCwd,
   useHomeDir,
   useKeymap,
@@ -480,7 +481,8 @@ function firePermission(action: 'allow' | 'deny'): void {
 }
 
 const { keymaps } = useKeymaps()
-const { closeAll: closeAllPalettes } = usePalette()
+const { closeAll: closeAllPalettes, isOpen: paletteIsOpen, focusInput: focusPaletteInput } = usePalette()
+const composer = useComposer()
 
 // Singleton "rename instance" modal target. The palette's
 // `instance > rename` action populates `target`; the modal v-ifs
@@ -565,6 +567,23 @@ useKeymap(
         binding: keymaps.value.palette.close,
         handler: () => {
           closeAllPalettes()
+        }
+      },
+      {
+        // Refocus whichever input is "primary" right now: the
+        // palette's search input when a palette is open, otherwise
+        // the composer textarea. Lets the captain Ctrl+F back into
+        // typing after a click pulled focus elsewhere (a tool pill,
+        // a permission button, the transcript scroll area).
+        binding: keymaps.value.chat.focus_input,
+        handler: () => {
+          if (paletteIsOpen()) {
+            focusPaletteInput()
+          } else {
+            composer.focus()
+          }
+
+          return true
         }
       },
       {

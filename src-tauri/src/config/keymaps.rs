@@ -264,6 +264,11 @@ pub struct ChatKeymaps {
     /// shell convention; users override per their layout).
     #[garde(dive)]
     pub cancel_turn: Option<Binding>,
+    /// Focus whichever input is currently relevant: the palette's
+    /// search input when the palette stack is open, otherwise the
+    /// composer textarea. Default: `Ctrl+F`.
+    #[garde(dive)]
+    pub focus_input: Option<Binding>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]

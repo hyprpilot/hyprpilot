@@ -28,7 +28,8 @@ const DEFAULT_KEYMAPS = {
   chat: {
     submit: { modifiers: [], key: 'enter' },
     newline: { modifiers: [Modifier.Shift], key: 'enter' },
-    cancel_turn: { modifiers: [Modifier.Ctrl], key: 'c' }
+    cancel_turn: { modifiers: [Modifier.Ctrl], key: 'c' },
+    focus_input: { modifiers: [Modifier.Ctrl], key: 'f' }
   },
   approvals: {
     allow: { modifiers: [Modifier.Ctrl], key: 'g' },

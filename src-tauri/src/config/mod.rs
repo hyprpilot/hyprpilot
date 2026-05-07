@@ -435,6 +435,8 @@ dirs = []
             k.palette.instances.focus,
             Some(binding(&[Modifier::Ctrl], Key::Char('i')))
         );
+        assert_eq!(k.chat.cancel_turn, Some(binding(&[Modifier::Ctrl], Key::Char('d'))));
+        assert_eq!(k.chat.focus_input, Some(binding(&[Modifier::Ctrl], Key::Char('f'))));
 
         cfg.validate().expect("seeded defaults validate");
     }
