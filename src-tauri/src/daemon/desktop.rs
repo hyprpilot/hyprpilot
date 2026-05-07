@@ -104,7 +104,6 @@ pub(crate) async fn daemon_rpc(
         status: status.inner(),
         adapter: adapter.inner().clone(),
         config: Some(config.inner().clone()),
-        skills: None,
         mcps: None,
         already_subscribed: false,
         started_at: None,

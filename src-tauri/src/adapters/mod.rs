@@ -358,6 +358,16 @@ pub trait Adapter: Send + Sync + 'static {
     /// Publish a `DaemonReloaded` event onto the adapter's event
     /// broadcast. Adapters with no registry no-op silently.
     fn publish_daemon_reloaded(&self, _profiles: usize, _skills_count: usize, _mcps_count: usize) {}
+
+    /// Reload every live instance's skills registry from disk and
+    /// return the aggregate skill count. Default returns `0` —
+    /// adapters without per-instance skills (e.g. a future
+    /// HTTP transport that gets skills server-side) keep the
+    /// `daemon/reload` count honest at zero rather than reporting a
+    /// stale daemon-global.
+    async fn reload_all_skills(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,9 @@
 //! `attachments_hydrate` parses these back into `Attachment`
 //! payloads on the wire.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -22,13 +24,36 @@ use crate::skills::{SkillSlug, SkillsRegistry};
 /// Cap on candidates returned per query — UI scrolls if more.
 const MAX_RESULTS: usize = 50;
 
+/// Async resolver returning the skills registry the autocomplete
+/// should query. Production captures the `AcpAdapter` and returns
+/// the focused instance's registry; tests pass a closure returning
+/// a fixed registry so the source stays unit-testable without an
+/// adapter.
+pub type SkillsResolver =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<Arc<SkillsRegistry>>> + Send>> + Send + Sync>;
+
 pub struct SkillsSource {
-    registry: Arc<SkillsRegistry>,
+    resolver: SkillsResolver,
 }
 
 impl SkillsSource {
-    pub fn new(registry: Arc<SkillsRegistry>) -> Self {
-        Self { registry }
+    pub fn new(resolver: SkillsResolver) -> Self {
+        Self { resolver }
+    }
+
+    /// Convenience for tests: wrap a fixed `Arc<SkillsRegistry>` in a
+    /// resolver that always returns it.
+    #[cfg(test)]
+    pub fn with_registry(registry: Arc<SkillsRegistry>) -> Self {
+        let resolver: SkillsResolver = Arc::new(move || {
+            let r = registry.clone();
+            Box::pin(async move { Some(r) })
+        });
+        Self::new(resolver)
+    }
+
+    async fn registry(&self) -> Option<Arc<SkillsRegistry>> {
+        (self.resolver)().await
     }
 }
 
@@ -74,7 +99,10 @@ impl CompletionSource for SkillsSource {
         _cwd: Option<&Path>,
         _cancel: Arc<AtomicBool>,
     ) -> Result<Vec<CompletionItem>> {
-        let skills = self.registry.list();
+        let Some(registry) = self.registry().await else {
+            return Ok(Vec::new());
+        };
+        let skills = registry.list();
         let pattern = Pattern::parse(&ctx.query, CaseMatching::Ignore, Normalization::Smart);
         let mut matcher = Matcher::new(Config::DEFAULT);
 
@@ -145,7 +173,10 @@ impl CompletionSource for SkillsSource {
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
-        Ok(self.registry.get(&parsed).map(|s| s.body))
+        let Some(registry) = self.registry().await else {
+            return Ok(None);
+        };
+        Ok(registry.get(&parsed).map(|s| s.body))
     }
 }
 
@@ -179,7 +210,7 @@ mod tests {
     #[test]
     fn detect_skill_at_word_boundary() {
         let registry = Arc::new(SkillsRegistry::new(vec![]));
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         let text = "hello #git";
         let cursor = text.len();
         let ctx = source.detect(text, cursor, false).unwrap();
@@ -191,7 +222,7 @@ mod tests {
     #[test]
     fn detect_skill_at_text_start() {
         let registry = Arc::new(SkillsRegistry::new(vec![]));
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         let ctx = source.detect("#abc", 4, false).unwrap();
         assert_eq!(ctx.trigger_offset, 0);
         assert_eq!(ctx.query, "abc");
@@ -200,7 +231,7 @@ mod tests {
     #[test]
     fn detect_skill_rejects_mid_word() {
         let registry = Arc::new(SkillsRegistry::new(vec![]));
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         // Mid-word `#` (no whitespace before) — not a sigil context.
         assert!(source.detect("foo#bar", 7, false).is_none());
     }
@@ -208,7 +239,7 @@ mod tests {
     #[test]
     fn detect_skill_rejects_when_no_sigil() {
         let registry = Arc::new(SkillsRegistry::new(vec![]));
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         assert!(source.detect("just typing", 11, false).is_none());
     }
 
@@ -219,7 +250,7 @@ mod tests {
             ("git-branch", "git branch body"),
             ("docker-up", "docker body"),
         ]);
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         let ctx = CompletionContext {
             trigger_offset: 0,
             cursor: 4,
@@ -239,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_skill_body() {
         let registry = make_registry_with(&[("hello-world", "the body content")]);
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         let body = source.resolve("skills://hello-world").await.unwrap();
         assert!(body.is_some());
         assert!(body.unwrap().contains("the body content"));
@@ -248,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_unknown_slug_returns_none() {
         let registry = make_registry_with(&[("real", "")]);
-        let source = SkillsSource::new(registry);
+        let source = SkillsSource::with_registry(registry);
         assert!(source.resolve("skills://nonexistent").await.unwrap().is_none());
     }
 }

@@ -241,6 +241,56 @@ the inline `#{skill/<slug>}` token mechanism was deleted end-to-end.
 Picked skills attach to the user turn as `UserTurnInput::Prompt {
 text, attachments }`; see the **ACP bridge** section.
 
+### `[[profiles]] skills = [...]` — per-instance skills registries
+
+The skills registry is **per-instance**, not daemon-global. Each
+spawned `AcpInstance` owns an `Arc<SkillsRegistry>` built once at
+spawn time from the active profile's `skills = [...]` (with
+profile→global fallback). The composer autocomplete, the inline-
+token hydrator, and the palette / `skills/list` Tauri command all
+read through `AcpAdapter::focused_skills()` (focused-instance
+default) or `AcpAdapter::instance_skills(key)` (explicit
+addressing).
+
+**Why per-instance, not a daemon-global view filtered at list time:**
+the profile's `skills = [...]` block **wholesale-replaces** the
+global `[[skills]]` (mirrors `mcps`). Profiles aren't required to
+share roots — each can pick its own dir set. A union-with-filter
+view across all profiles can't represent "different profiles, no
+shared dirs" cleanly, and the dedup-by-dir variant (which
+hyprpilot shipped pre-K-XXX) freezes the first-iterated profile's
+ignore globs onto the merged view, so under a different profile
+the palette renders the wrong filter forever. Per-instance fixes
+both: each instance sees exactly its profile's roots + globs;
+switching instances flips the visible skill set.
+
+**Wholesale-replace semantics**: profile's `skills = [...]` wins
+over the global `[[skills]]`; `skills = []` is the explicit "no
+skills" off-switch; unset (`None`) inherits the global. Mirrors
+`mcps`. Resolved at spawn time via
+`AcpAdapter::effective_skills_for(profile)` →
+`build_skills_registry_for(profile)` →
+`SkillsRegistry::reload()`.
+
+**Reload paths:**
+
+- **`skills/reload { instance_id? }` Tauri command** — palette's
+  "refresh skills" entry. Reloads the addressed instance's
+  registry from disk (or the focused instance when omitted), so
+  newly-edited SKILL.md files appear in the next listing.
+- **`daemon/reload` JSON-RPC method** — fans out to every live
+  instance via `Adapter::reload_all_skills`. The aggregate
+  post-reload count rides the response's `skillsCount` field.
+- **No fs watcher** — captain-driven explicit reload only.
+  Editor / git noise burnt through the debouncer in earlier
+  iterations.
+
+**No daemon-global skills cache.** `daemon::resolve_skills_entries`
++ `RuntimeState.skills` + `RpcState.skills` are gone. The only
+skill catalogues that exist at runtime are the per-instance ones
+the spawn pipeline builds, plus whatever the captain's editor
+session keeps open on disk.
+
 ### `mcps` — JSON-file MCP catalog
 
 `mcps: Option<Vec<PathBuf>>` at the TOML root lists the JSON paths
