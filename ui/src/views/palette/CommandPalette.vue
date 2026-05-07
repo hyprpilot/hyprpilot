@@ -210,10 +210,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'Tab' && spec.mode === PaletteMode.MultiSelect) {
     e.preventDefault()
     e.stopPropagation()
-
-    if (current) {
-      toggleTick(current.id)
-    }
+    onTickHighlighted()
 
     return
   }
@@ -221,7 +218,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (key === 'Tab' && spec.mode === PaletteMode.Input) {
     e.preventDefault()
     e.stopPropagation()
-    autocompleteIntoQuery(current)
+    onAutocompleteHighlighted()
 
     return
   }
@@ -229,17 +226,7 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
   if (ctrl && key.toLowerCase() === 'd') {
     e.preventDefault()
     e.stopPropagation()
-
-    if (current && spec.onDelete) {
-      // `update` is the only path that surfaces entry mutations
-      // through the reactive proxy on `top.value`. Capturing the
-      // raw spec literal in the leaf closure and assigning to
-      // `.entries` directly skips the proxy and leaves the palette
-      // rendering stale rows. Same pattern as onQueryChange.
-      void spec.onDelete(current, (next) => {
-        spec.entries = next
-      })
-    }
+    onDeleteHighlighted()
 
     return
   }
@@ -249,6 +236,33 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
     e.stopPropagation()
     commit()
   }
+}
+
+function onTickHighlighted(): void {
+  const current = visibleEntries.value[highlighted.value]
+
+  if (current) {
+    toggleTick(current.id)
+  }
+}
+
+function onAutocompleteHighlighted(): void {
+  autocompleteIntoQuery(visibleEntries.value[highlighted.value])
+}
+
+function onDeleteHighlighted(): void {
+  const spec = top.value
+  const current = visibleEntries.value[highlighted.value]
+
+  if (!spec || !current || !spec.onDelete) {
+    return
+  }
+  // `update` is the only path that surfaces entry mutations through
+  // the reactive proxy on `top.value`. Assigning to `.entries` on the
+  // raw spec literal skips the proxy and leaves rows stale.
+  void spec.onDelete(current, (next) => {
+    spec.entries = next
+  })
 }
 
 function commit(): void {
@@ -402,11 +416,11 @@ onUnmounted(() => {
 
         <footer class="palette-footer">
           <KbdHint :keys="[faUpDown]" label="navigate" />
-          <KbdHint v-if="top.mode === PaletteMode.MultiSelect" :keys="[faArrowRightToBracket]" label="toggle" />
-          <KbdHint v-if="top.mode === PaletteMode.Input" :keys="[faArrowRightToBracket]" label="autocomplete" />
-          <KbdHint :keys="[faArrowTurnDown]" label="confirm" />
-          <KbdHint v-if="top.onDelete" :keys="['Ctrl+D']" label="delete" />
-          <KbdHint :keys="['Esc']" label="close" />
+          <KbdHint v-if="top.mode === PaletteMode.MultiSelect" :keys="[faArrowRightToBracket]" label="toggle" :on-activate="onTickHighlighted" />
+          <KbdHint v-if="top.mode === PaletteMode.Input" :keys="[faArrowRightToBracket]" label="autocomplete" :on-activate="onAutocompleteHighlighted" />
+          <KbdHint :keys="[faArrowTurnDown]" label="confirm" :on-activate="commit" />
+          <KbdHint v-if="top.onDelete" :keys="['Ctrl+D']" label="delete" :on-activate="onDeleteHighlighted" />
+          <KbdHint :keys="['Esc']" label="close" :on-activate="close" />
         </footer>
       </div>
     </div>

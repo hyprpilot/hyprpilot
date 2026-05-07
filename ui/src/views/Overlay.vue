@@ -1192,6 +1192,7 @@ function onQueueSend(itemId: string): void {
           :sessions="sessionListPreview"
           :total-session-count="sessionsForCwd.length"
           @restore-session="onRestoreSessionClick"
+          @open-palette="openRootPalette"
         />
 
         <Turn

@@ -138,20 +138,8 @@ body {
   background-color: var(--theme-surface-bg);
 }
 
-/* Mobile breakpoint — phone / narrow tablets browsing the daemon's
- * remote bridge. Demote chrome that depends on a physical keyboard
- * (the `<KbdHint>` rows in the palette footer + the idle-screen
- * Ctrl+K hint) since touch users have no keybinds to read. The full
- * mobile-shell with a bottom toolbar lives in a follow-up; this is
- * the minimum so the chrome doesn't lie about what's available.
- *
- * Breakpoint at 540px — covers every common phone width in portrait
- * (iPhone 8 = 375, iPhone 14 Pro Max = 430, Pixel 7 = 412, Galaxy S
- * series = 360-412). Narrow Linux floats stay above 600 in practice.
- */
-@media (max-width: 540px) {
-  .kbd-hint,
-  .idle-kbd-hint {
-    display: none;
-  }
-}
+/* Mobile-friendly KbdHints: when `KbdHint` carries an `onActivate`
+ * prop, the chip renders as a `<button>` and grows to a 2.75rem hit
+ * target under `pointer: coarse` (see `components/KbdHint.vue`). Hints
+ * stay visible on phones rather than hidden — they double as tap
+ * affordances for actions that desktop users trigger via keybinds. */

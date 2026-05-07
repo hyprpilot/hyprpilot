@@ -23,6 +23,7 @@ defineProps<{
 
 const emit = defineEmits<{
   restoreSession: [sessionId: string, cwd: string]
+  openPalette: []
 }>()
 
 function onRowClick(session: SessionSummary): void {
@@ -82,7 +83,7 @@ function onRowClick(session: SessionSummary): void {
       </div>
       <div v-if="totalSessionCount > sessions.length" class="idle-sessions-more">+{{ totalSessionCount - sessions.length }} more</div>
     </div>
-    <KbdHint class="idle-kbd-hint" :keys="['Ctrl+K']" label="command palette." size="md" />
+    <KbdHint class="idle-kbd-hint" :keys="['Ctrl+K']" label="command palette." size="md" :on-activate="() => emit('openPalette')" />
   </section>
 </template>
 
