@@ -2,7 +2,7 @@
 import { faArrowDown, faArrowUp, faBars, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
-import { BreadcrumbPill, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
+import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
 
 /**
  * Overlay chrome per wireframe Frame template:
@@ -72,40 +72,43 @@ const hasGit = computed(() => Boolean(props.gitStatus))
 </script>
 
 <template>
-  <section class="frame" :style="{ '--frame-phase': phaseColor }" data-testid="frame">
+  <section class="frame" data-testid="frame">
     <header class="frame-header">
       <div class="frame-row frame-row-1">
-        <!-- Captain-set name takes the leftmost slot when present:
-             the dot+phase color stays here (it's the active-instance
-             marker). Profile pill becomes a secondary breadcrumb to
-             its right. When no name is set, the profile pill keeps
-             the dot — legacy shape. -->
-        <button v-if="name" type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="instance name" @click="emit('pillClick', 'profile')">
-          <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
-          {{ name }}
-        </button>
-        <button
-          type="button"
-          class="frame-profile-pill"
-          :style="!name ? { backgroundColor: phaseColor } : undefined"
-          :data-secondary="Boolean(name)"
-          aria-label="profile"
-          @click="emit('pillClick', 'profile')"
-        >
-          <span v-if="!name" class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
-          {{ profile }}
-        </button>
-        <button v-if="provider" type="button" class="frame-adapter-pill" aria-label="adapter" @click="emit('pillClick', 'provider')">
-          {{ provider }}
-        </button>
-        <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
-          {{ model }}
-        </button>
-        <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
-          {{ modeTag }}
-        </button>
-        <span v-if="title" class="frame-title">{{ title }}</span>
-        <span v-else class="frame-title-spacer" />
+        <!-- Pills + title compete with each other for horizontal
+             space. On wide screens they all fit; on narrow / phone
+             widths the HorizontalScroller lets the captain swipe (or
+             tap arrow chevrons) to reach pills that ran past the
+             viewport, instead of stacking onto a second line and
+             eating chat height. Trailing buttons (instances /
+             palette-open / close) stay anchored on the right. -->
+        <HorizontalScroller class="frame-row-1-scroller">
+          <button v-if="name" type="button" class="frame-profile-pill" :style="{ backgroundColor: phaseColor }" aria-label="instance name" @click="emit('pillClick', 'profile')">
+            <span class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
+            {{ name }}
+          </button>
+          <button
+            type="button"
+            class="frame-profile-pill"
+            :style="!name ? { backgroundColor: phaseColor } : undefined"
+            :data-secondary="Boolean(name)"
+            aria-label="profile"
+            @click="emit('pillClick', 'profile')"
+          >
+            <span v-if="!name" class="frame-profile-dot" :class="{ 'animate-pulse': isPulsing }" aria-hidden="true" />
+            {{ profile }}
+          </button>
+          <button v-if="provider" type="button" class="frame-adapter-pill" aria-label="adapter" @click="emit('pillClick', 'provider')">
+            {{ provider }}
+          </button>
+          <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
+            {{ model }}
+          </button>
+          <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
+            {{ modeTag }}
+          </button>
+          <span v-if="title" class="frame-title">{{ title }}</span>
+        </HorizontalScroller>
         <button v-if="instancesCount > 1" type="button" class="frame-instances-pill" :aria-label="`${instancesCount} instances`" @click="emit('instancesClick')">
           <span class="frame-instances-count">{{ instancesCount }}</span>
           <span class="frame-instances-label">instances</span>
@@ -132,11 +135,11 @@ const hasGit = computed(() => Boolean(props.gitStatus))
             <span class="frame-cwd-git-behind"> <FaIcon :icon="faArrowDown" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.behind ?? 0 }} </span>
           </span>
         </button>
-        <div class="frame-counts">
+        <HorizontalScroller v-if="counts.length > 0" class="frame-counts">
           <button v-for="c in counts" :key="c.label" type="button" class="frame-pill-button" :aria-label="c.id ?? c.label" @click="emit('breadcrumbClick', c.id ?? c.label)">
             <BreadcrumbPill :color="c.color" :label="c.label" :count="c.count" />
           </button>
-        </div>
+        </HorizontalScroller>
       </div>
     </header>
 
@@ -163,14 +166,6 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   font-family: var(--theme-font-sans);
-  /* visual law #1 — phase color as the instance border. Replaces the
-   * old `--theme-window-edge` body border so we have one source of
-   * "what state is this overlay in" rather than two stacked stripes.
-   * Edge selection: in anchor mode the stripe paints the inward
-   * edge (opposite the anchored side, the one users actually see);
-   * in center mode the whole perimeter glows. The reactive color
-   * rides on `--frame-phase` (set inline from the `phase` prop). */
-  --frame-phase: var(--theme-state-idle);
   /* The Frame is the overlay's width authority — every width-responsive
    * primitive inside it reads `@container frame (...)` so narrow anchors
    * (right/left 40% on small monitors) don't horizontal-scroll or clip. */
@@ -178,24 +173,29 @@ const hasGit = computed(() => Boolean(props.gitStatus))
   container-name: frame;
 }
 
+/* Static border — phase state lives elsewhere (the profile pill's dot
+ * pulses, the toast / loading surfaces carry phase color, the
+ * permission stack's warm-brown band). The chrome border itself is
+ * neutral so the captain reads phase from the active surface, not from
+ * a perimeter that's always there. */
 html[data-window-anchor='right'] .frame {
-  border-left: 0.1875rem solid var(--frame-phase);
+  border-left: 1px solid var(--theme-border);
 }
 
 html[data-window-anchor='left'] .frame {
-  border-right: 0.1875rem solid var(--frame-phase);
+  border-right: 1px solid var(--theme-border);
 }
 
 html[data-window-anchor='top'] .frame {
-  border-bottom: 0.1875rem solid var(--frame-phase);
+  border-bottom: 1px solid var(--theme-border);
 }
 
 html[data-window-anchor='bottom'] .frame {
-  border-top: 0.1875rem solid var(--frame-phase);
+  border-top: 1px solid var(--theme-border);
 }
 
 html:not([data-window-anchor]) .frame {
-  border: 0.1875rem solid var(--frame-phase);
+  border: 1px solid var(--theme-border);
 }
 
 .frame-header {
@@ -210,9 +210,16 @@ html:not([data-window-anchor]) .frame {
 .frame-row-1 {
   @apply flex items-center border-b;
   padding: 0.5rem 0.875rem 0.5rem 0.25rem;
-  gap: 0.625rem;
+  gap: 0.5rem;
   min-width: 0;
   border-color: var(--theme-border);
+}
+
+/* Scroller takes the available space; trailing buttons stay
+ * anchored right. The pill gap matches the row gap so visually
+ * scrolling looks like part of the same row. */
+.frame-row-1-scroller {
+  --horizontal-scroller-gap: 0.625rem;
 }
 
 .frame-row-2 {
@@ -310,10 +317,6 @@ html:not([data-window-anchor]) .frame {
   border-radius: 0.25rem;
   font-family: var(--theme-font-mono);
   font-style: italic;
-}
-
-.frame-title-spacer {
-  @apply flex-1;
 }
 
 /* Row 1 instances pill — sits between the title (or spacer) and the
@@ -450,7 +453,9 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-counts {
-  @apply flex shrink-0 items-center gap-1;
+  --horizontal-scroller-gap: 0.25rem;
+  flex: 0 1 auto;
+  max-width: 50%;
 }
 
 /* Body is a positioning context for the absolute-positioned toast

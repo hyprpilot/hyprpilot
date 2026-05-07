@@ -355,7 +355,7 @@ onUnmounted(() => {
 
 <template>
   <FocusTrap v-if="top" :active="trapActive" :escape-deactivates="false" :allow-outside-click="true">
-    <div class="palette-overlay" data-testid="palette-overlay">
+    <div class="palette-overlay" data-testid="palette-overlay" @click.self="close">
       <div
         class="palette-frame"
         :data-wide="Boolean(top.preview)"
@@ -428,7 +428,7 @@ onUnmounted(() => {
           <KbdHint v-if="top.mode === PaletteMode.Input" :keys="[faArrowRightToBracket]" label="autocomplete" :on-activate="onAutocompleteHighlighted" />
           <KbdHint :keys="[faArrowTurnDown]" label="confirm" :on-activate="commit" />
           <KbdHint v-if="top.onDelete" :keys="['Ctrl+D']" label="delete" :on-activate="onDeleteHighlighted" />
-          <KbdHint :keys="['Esc']" label="close" :on-activate="close" />
+          <KbdHint class="palette-footer-esc" :keys="['Esc']" label="close" :on-activate="close" />
         </footer>
       </div>
     </div>
@@ -453,7 +453,11 @@ onUnmounted(() => {
  * viewport. `max-width` clamps gracefully on narrow anchors. */
 .palette-frame {
   @apply flex flex-col;
-  max-height: 70dvh;
+  /* Fixed height (not max-height) so the palette doesn't resize
+   * as rows of varying heights or preview content scroll in/out
+   * — moving frame chrome is jarring while you're scanning rows. */
+  height: 70dvh;
+  max-height: 32rem;
   width: 32rem;
   max-width: calc(100vw - 3rem);
   border: 1px solid var(--theme-border-soft);
@@ -605,26 +609,45 @@ onUnmounted(() => {
   padding: 0.75rem 0.875rem;
 }
 
+/* Mobile / narrow palettes: stack the preview UNDER the results
+ * (instead of hiding it) so detail-rich palettes — sessions,
+ * MCPs, instances — keep their preview content reachable. The
+ * `data-wide='true'` palette grows from 32rem to 56rem on
+ * desktop; on phones the frame is viewport-bounded, so we just
+ * flip `.palette-content` from row to column and let both panes
+ * share the height. */
 @media (max-width: 560px) {
-  .palette-preview {
-    display: none;
+  .palette-content {
+    flex-direction: column;
   }
 
-  /* Without the preview pane mounted, the list reverts to filling
-   * the panel — otherwise the `flex: 0 0 42%` rule above leaves a
-   * blank 58% gap on phones. */
   .palette-frame[data-wide='true'] .palette-list {
-    flex: 1 1 100%;
+    flex: 0 0 50%;
     border-right: none;
+    border-bottom: 1px solid var(--theme-border);
+  }
+
+  .palette-preview {
+    flex: 1 1 50%;
   }
 }
 
-/* wireframe footer: keyboard hints, mono dim, centered. */
+/* wireframe footer: keyboard hints, mono dim, centered. Wraps on
+ * narrow widths so 5-6 hints don't punch out of phone viewports. */
 .palette-footer {
-  @apply flex items-center justify-center;
+  @apply flex flex-wrap items-center justify-center;
   padding: 0.5rem 0.875rem;
   border-top: 1px solid var(--theme-border);
-  gap: 1.125rem;
+  gap: 0.5rem 1.125rem;
   font-family: var(--theme-font-mono);
+}
+
+/* Esc is keyboard-only — touch users tap the backdrop / scrim to
+ * dismiss the palette. The KbdHint chip would clutter the footer
+ * without adding capability. */
+@media (pointer: coarse) {
+  .palette-footer-esc {
+    display: none;
+  }
 }
 </style>

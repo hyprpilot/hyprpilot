@@ -93,13 +93,22 @@
 
 /* The overlay ALWAYS fills its window — compositor gives us a surface of
  * a fixed size (anchor width × height, or center mode rect), and the UI
- * must lay out to match. `height: 100%` on every rung of the tree so
- * `Frame { flex: 1 }` children (transcript, palette body) can stretch. */
+ * must lay out to match. `height: 100dvh` on every rung of the tree so
+ * `Frame { flex: 1 }` children (transcript, palette body) can stretch.
+ *
+ * `overflow: hidden` on `html, body, #app, .overlay-root` is load-bearing
+ * for mobile — without it, any inner element that overflows (a wide
+ * pill row, a tall queue strip, a markdown table mid-scroll) walks the
+ * scroll back up to the document, which the captain reads as "the page
+ * is scrolling, not the composer". The per-surface scroll containers
+ * (`.chat-transcript`, `.frame-body`, `.composer-textarea`,
+ * `.palette-list`, modals) declare their own `overflow-y: auto`. */
 html,
 body {
   margin: 0;
   padding: 0;
-  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 /* `#app` is the Vue mount point — kept as a plain block (not flex) so
@@ -110,12 +119,14 @@ body {
  * 100vh fill. */
 #app {
   height: 100%;
+  overflow: hidden;
 }
 
 .overlay-root {
   height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .overlay-root > * {
