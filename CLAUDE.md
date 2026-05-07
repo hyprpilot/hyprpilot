@@ -241,6 +241,66 @@ the inline `#{skill/<slug>}` token mechanism was deleted end-to-end.
 Picked skills attach to the user turn as `UserTurnInput::Prompt {
 text, attachments }`; see the **ACP bridge** section.
 
+### `[[profiles]] skills = [...]` — per-profile skill filtering
+
+Each profile can override the global `[[skills]]` set with its own
+list of root + ignore-glob entries:
+
+```toml
+[[profiles]]
+id = "work/claude/opus"
+skills = [
+  { dir = "~/.config/nvim/utils/agents/skills/", ignore = [
+    "*-kilic", "*-kilic-*", "notion-*",
+  ] },
+]
+```
+
+**Wholesale-replace semantics**: profile's `skills = [...]` wins over
+the global `[[skills]]`; `skills = []` is the explicit "no skills"
+off-switch; unset (`None`) inherits the global. Mirrors `mcps`.
+
+**Spawn-time injection (claude-code only today).** When an instance
+is spawned with a profile that has skills configured, the daemon:
+
+1. Resolves the active filter via `effective_skills_for(profile)`
+   (`adapters/acp/instances.rs`).
+2. Builds a per-instance `SkillsRegistry` via
+   `build_skills_registry_for(profile)` — applies the per-entry
+   `ignore` globs at this point.
+3. Materialises a Claude Code [SDK plugin](https://docs.claude.com/en/docs/claude-code/plugins)
+   at `$XDG_RUNTIME_DIR/hyprpilot/instances/<id>/plugin/` containing
+   `.claude-plugin/plugin.json` + a `skills/<slug>` symlink farm
+   pointing at the surviving skill dirs.
+4. Attaches `_meta.claudeCode.options.plugins = [{ type: "local",
+   path: <plugin-dir> }]` to the `session/new` (and `session/load` /
+   `session/resume`) request via the per-vendor `AcpAgent::skills_meta`
+   hook.
+
+`@agentclientprotocol/claude-agent-acp` extracts that `_meta` block
+and spreads it into the Claude Agent SDK's `Options.plugins`. The
+SDK loads the plugin and exposes its skills to the agent — that's
+the **only path** filtered skills currently take to a spawned agent.
+
+**Cleanup.** A `SkillsPluginGuard` in `acp/instance.rs` removes the
+per-instance plugin dir when the actor's `run` future drops
+(graceful shutdown, error, or panic). Stale dirs from process
+crashes are not swept on daemon boot today — the next spawn under
+the same instance id wholesale-clears the `skills/` subdirectory
+before re-linking.
+
+**Other vendors (codex, opencode).** Default `AcpAgent::skills_meta`
+returns `None` — neither vendor consumes
+`_meta.claudeCode.options.plugins`. The actor logs a `warn!` at
+spawn time naming the gap; the per-instance registry is still
+built so future vendor support can plug in by overriding the
+trait method without other plumbing changes.
+
+**Restart-to-reconfigure.** Same as the rest of the agent config:
+edit `config.toml`, then restart the daemon. ACP fixes
+`mcp_servers` + the `_meta` payload at `session/new` time, so a
+live reload would only land for new instances anyway.
+
 ### `mcps` — JSON-file MCP catalog
 
 `mcps: Option<Vec<PathBuf>>` at the TOML root lists the JSON paths

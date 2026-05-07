@@ -15,7 +15,7 @@ pub mod commands;
 mod loader;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use anyhow::Result;
@@ -233,6 +233,70 @@ impl SkillsRegistry {
         skills.get(slug).cloned()
     }
 
+    /// Materialise a Claude Code SDK plugin at `plugin_dir` carrying
+    /// only the skills currently in this registry (post-ignore-glob
+    /// filter). The plugin layout is the upstream contract:
+    ///
+    /// ```text
+    /// <plugin_dir>/
+    ///   .claude-plugin/
+    ///     plugin.json   { "name": "...", "version": "1.0.0" }
+    ///   skills/
+    ///     <slug-a> -> <real-skill-dir-a>   (symlink)
+    ///     <slug-b> -> <real-skill-dir-b>   (symlink)
+    /// ```
+    ///
+    /// Each `<slug>` is a symlink to the real `<root>/<slug>/` dir
+    /// that holds `SKILL.md` and any companion files — the SDK reads
+    /// `SKILL.md` directly off the symlink target. Repeated calls
+    /// against the same `plugin_dir` clear the existing `skills/`
+    /// subdirectory first so a stale leftover from a crashed prior
+    /// run can't shadow the current registry's view.
+    pub fn materialize_plugin(&self, plugin_dir: &Path, plugin_name: &str) -> std::io::Result<()> {
+        let manifest_dir = plugin_dir.join(".claude-plugin");
+        let skills_dir = plugin_dir.join("skills");
+
+        if skills_dir.exists() {
+            std::fs::remove_dir_all(&skills_dir)?;
+        }
+        std::fs::create_dir_all(&manifest_dir)?;
+        std::fs::create_dir_all(&skills_dir)?;
+
+        let manifest = serde_json::json!({
+            "name": plugin_name,
+            "version": "1.0.0",
+            "description": "hyprpilot per-instance filtered skill plugin",
+        });
+        std::fs::write(
+            manifest_dir.join("plugin.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+        )?;
+
+        let skills = self.skills.read().expect("skills lock poisoned");
+        let order = self.order.read().expect("order lock poisoned");
+        let mut linked = 0usize;
+        for slug in order.iter() {
+            let Some(skill) = skills.get(slug) else { continue };
+            let Some(source_dir) = skill.path.parent() else {
+                warn!(slug = %slug, "skills materialize: skill path has no parent — skipping");
+                continue;
+            };
+            let link_target = skills_dir.join(slug.as_str());
+            #[cfg(unix)]
+            if let Err(err) = std::os::unix::fs::symlink(source_dir, &link_target) {
+                warn!(slug = %slug, %err, "skills materialize: symlink failed — skipping");
+                continue;
+            }
+            linked += 1;
+        }
+        info!(
+            plugin = %plugin_dir.display(),
+            count = linked,
+            "skills registry: materialised plugin",
+        );
+        Ok(())
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn count(&self) -> usize {
@@ -374,6 +438,66 @@ mod tests {
         assert_eq!(reg.count(), 1);
         assert!(reg.get(&SkillSlug::parse("git-commit").unwrap()).is_some());
         assert!(reg.get(&SkillSlug::parse("work-internal").unwrap()).is_none());
+    }
+
+    #[test]
+    fn materialize_plugin_writes_manifest_and_symlinks_only_visible_skills() {
+        let src = TempDir::new().unwrap();
+        seed_skill(src.path(), "git-commit", "git", "body");
+        seed_skill(src.path(), "work-internal", "work", "body");
+        seed_skill(src.path(), "work-experimental", "work", "body");
+        let reg = SkillsRegistry::new(vec![entry_with_ignore(src.path().to_path_buf(), &["work-*"])]);
+        reg.reload().unwrap();
+        assert_eq!(reg.count(), 1, "only git-commit survives the ignore filter");
+
+        let plugin_root = TempDir::new().unwrap();
+        let plugin_dir = plugin_root.path().join("plugin");
+        reg.materialize_plugin(&plugin_dir, "hyprpilot-skills-test").unwrap();
+
+        // Manifest exists and has the right shape.
+        let manifest_path = plugin_dir.join(".claude-plugin/plugin.json");
+        assert!(manifest_path.is_file(), "plugin.json was created");
+        let manifest_text = fs::read_to_string(&manifest_path).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
+        assert_eq!(manifest["name"], "hyprpilot-skills-test");
+        assert_eq!(manifest["version"], "1.0.0");
+
+        // Symlinks: only git-commit, NOT the work-* entries.
+        let skills_dir = plugin_dir.join("skills");
+        let git_commit_link = skills_dir.join("git-commit");
+        assert!(git_commit_link.is_symlink(), "git-commit symlink present");
+        assert!(!skills_dir.join("work-internal").exists(), "work-internal filtered out");
+        assert!(
+            !skills_dir.join("work-experimental").exists(),
+            "work-experimental filtered out"
+        );
+
+        // Symlink resolves to the real skill dir holding SKILL.md.
+        let resolved = fs::canonicalize(&git_commit_link).unwrap();
+        assert!(resolved.join("SKILL.md").is_file(), "symlink target carries SKILL.md");
+    }
+
+    #[test]
+    fn materialize_plugin_clears_stale_skills_subdir() {
+        let src = TempDir::new().unwrap();
+        seed_skill(src.path(), "fresh", "f", "body");
+        let reg = SkillsRegistry::new(vec![entry(src.path().to_path_buf())]);
+        reg.reload().unwrap();
+
+        let plugin_root = TempDir::new().unwrap();
+        let plugin_dir = plugin_root.path().join("plugin");
+        // Pre-seed a stale subdir entry that no longer matches the
+        // active registry — simulates a crashed prior run leaving
+        // stale state.
+        let skills_dir = plugin_dir.join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let stale = skills_dir.join("ghost-from-prior-run");
+        fs::create_dir(&stale).unwrap();
+
+        reg.materialize_plugin(&plugin_dir, "hyprpilot-skills-clear-test")
+            .unwrap();
+        assert!(!stale.exists(), "stale subdir cleared");
+        assert!(skills_dir.join("fresh").is_symlink(), "fresh skill linked");
     }
 
     #[test]

@@ -158,6 +158,29 @@ impl AcpAdapter {
         self.read_config().resolved_mcps()
     }
 
+    /// Resolved skill-root list for an instance. Profile's `skills`
+    /// wholesale-replaces the global `[[skills]]`; `None` (unset)
+    /// falls back. Mirror of `effective_mcp_files_for`. Drives the
+    /// per-instance `SkillsRegistry` that hyprpilot materialises into
+    /// a SDK-plugin symlink farm at spawn time.
+    pub(crate) fn effective_skills_for(
+        &self,
+        profile: Option<&crate::config::ProfileConfig>,
+    ) -> Vec<crate::config::ResolvedSkillEntry> {
+        if let Some(p) = profile {
+            if let Some(entries) = &p.skills {
+                return entries
+                    .iter()
+                    .map(|e| crate::config::ResolvedSkillEntry {
+                        dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
+                        ignore: e.compile_ignore(),
+                    })
+                    .collect();
+            }
+        }
+        self.read_config().resolved_skills()
+    }
+
     /// Per-instance MCP catalog as a flat `Vec<MCPDefinition>`. Drives
     /// the `mcps_list` Tauri command's preview pane: when `instance_id`
     /// resolves to a live actor we use that instance's profile to pick
@@ -196,6 +219,31 @@ impl AcpAdapter {
             return None;
         }
         Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
+    }
+
+    /// Build a per-instance `SkillsRegistry` from the resolved entry
+    /// list. Mirror of `build_mcp_registry_for`. Returns `None` when
+    /// no entries are configured (or initial reload yields zero
+    /// skills) so the spawn-time injection short-circuits and no
+    /// symlink farm is materialised.
+    fn build_skills_registry_for(
+        &self,
+        profile: Option<&crate::config::ProfileConfig>,
+    ) -> Option<Arc<crate::skills::SkillsRegistry>> {
+        let entries = self.effective_skills_for(profile);
+        if entries.is_empty() {
+            return None;
+        }
+        let registry = crate::skills::SkillsRegistry::new(entries);
+        // `reload` does the disk walk + ignore-glob filtering; failure
+        // here means the configured roots aren't readable. Warn + skip
+        // (matches the "missing root warns + skips" daemon-global rule)
+        // and still return the registry so the symlink-farm step lands
+        // an empty plugin instead of falling back to global skills.
+        if let Err(err) = registry.reload() {
+            tracing::warn!(%err, "acp::instance: per-instance skills reload failed");
+        }
+        Some(Arc::new(registry))
     }
 
     /// Handle onto the shared config. Used by the daemon wiring to
@@ -430,6 +478,7 @@ impl AcpAdapter {
         // the per-server lane short-circuits and every call falls
         // through to AskUser (or trust store).
         let mcps = self.build_mcp_registry_for(profile.as_ref());
+        let skills = self.build_skills_registry_for(profile.as_ref());
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -438,6 +487,7 @@ impl AcpAdapter {
             bootstrap,
             permissions: self.permissions.clone(),
             mcps,
+            skills,
             commands_cache: self.commands_cache(),
         });
 
@@ -622,7 +672,7 @@ impl AcpAdapter {
             // sender — drop it after the list resolves and the actor
             // shuts itself down.
             let (sink_tx, _unread_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
-            // Ephemeral list-only actor never reads MCPs; pass None.
+            // Ephemeral list-only actor never reads MCPs / skills; pass None.
             let _ = profile;
             let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
                 resolved,
@@ -632,6 +682,7 @@ impl AcpAdapter {
                 bootstrap: Bootstrap::ListOnly,
                 permissions: self.permissions.clone(),
                 mcps: None,
+                skills: None,
                 commands_cache: None,
             });
             let tx = instance.cmd_tx.clone();
@@ -806,6 +857,7 @@ impl AcpAdapter {
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id_for_instance = resolved.profile_id.clone();
         let mcps = self.build_mcp_registry_for(profile.as_ref());
+        let skills = self.build_skills_registry_for(profile.as_ref());
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -814,6 +866,7 @@ impl AcpAdapter {
             bootstrap: Bootstrap::Fresh,
             permissions: self.permissions.clone(),
             mcps,
+            skills,
             commands_cache: self.commands_cache(),
         });
         self.registry
@@ -1428,6 +1481,144 @@ agent = "claude-code"
     /// a config with a dead-child agent (so the spawn actor hits
     /// `Error` immediately) — the mode carry happens before the
     /// actor even starts, so the field is populated regardless.
+    fn config_with_skill_and_mcp_globals(skills_dir: &std::path::Path, mcp_file: &std::path::Path) -> Config {
+        toml::from_str(&format!(
+            r#"
+[agent]
+default = "claude-code"
+
+[profile]
+default = "ask"
+
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"
+command = "bunx"
+
+[[profiles]]
+id = "ask"
+agent = "claude-code"
+
+[[profiles]]
+id = "scoped"
+agent = "claude-code"
+skills = [{{ dir = "{skill_dir}", ignore = ["work-*"] }}]
+mcps   = [{{ file = "{mcp_file}",   ignore = ["work-*"] }}]
+
+[[profiles]]
+id = "empty"
+agent = "claude-code"
+skills = []
+mcps   = []
+
+[[skills]]
+dir = "{skill_dir}"
+ignore = ["scratch-*"]
+
+[[mcps]]
+file = "{mcp_file}"
+ignore = ["scratch-*"]
+"#,
+            skill_dir = skills_dir.display(),
+            mcp_file = mcp_file.display(),
+        ))
+        .expect("fixture parses")
+    }
+
+    /// Profile with `skills = [...]` wholesale-replaces global skills,
+    /// preserving the profile's ignore globs (not the global's).
+    #[test]
+    fn effective_skills_for_explicit_profile_overrides_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let mcp_file = dir.path().join("servers.json");
+        let cfg = config_with_skill_and_mcp_globals(&skills_dir, &mcp_file);
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+
+        let profile = adapter
+            .read_config()
+            .profiles
+            .iter()
+            .find(|p| p.id == "scoped")
+            .cloned();
+        let entries = adapter.effective_skills_for(profile.as_ref());
+
+        assert_eq!(entries.len(), 1, "profile override yields one root");
+        let ignore = entries[0].ignore.as_ref().expect("compiled");
+        assert!(ignore.is_match("work-internal"), "profile glob applies");
+        assert!(!ignore.is_match("scratch-pad"), "global glob does NOT apply");
+    }
+
+    /// Profile without `skills` field falls back to the global
+    /// `[[skills]]` set (matches the `mcps` semantics).
+    #[test]
+    fn effective_skills_for_unset_profile_inherits_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let mcp_file = dir.path().join("servers.json");
+        let cfg = config_with_skill_and_mcp_globals(&skills_dir, &mcp_file);
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+
+        let profile = adapter.read_config().profiles.iter().find(|p| p.id == "ask").cloned();
+        let entries = adapter.effective_skills_for(profile.as_ref());
+
+        assert_eq!(entries.len(), 1);
+        let ignore = entries[0].ignore.as_ref().expect("global glob compiled");
+        assert!(ignore.is_match("scratch-pad"), "global glob applies");
+        assert!(!ignore.is_match("work-internal"), "profile glob does NOT apply");
+    }
+
+    /// Profile with `skills = []` is the explicit "no skills"
+    /// off-switch — returns an empty vec, NOT the global default.
+    #[test]
+    fn effective_skills_for_empty_profile_disables_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let mcp_file = dir.path().join("servers.json");
+        let cfg = config_with_skill_and_mcp_globals(&skills_dir, &mcp_file);
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+
+        let profile = adapter.read_config().profiles.iter().find(|p| p.id == "empty").cloned();
+        let entries = adapter.effective_skills_for(profile.as_ref());
+
+        assert!(entries.is_empty(), "empty array means no skills");
+    }
+
+    /// Mirror coverage for the MCP path — the original missing test
+    /// noted in K-XXX ("if no tests exist for MCPs, add tests for both
+    /// at the same time"). Three fallback cases.
+    #[test]
+    fn effective_mcp_files_for_three_fallback_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        let mcp_file = dir.path().join("servers.json");
+        let cfg = config_with_skill_and_mcp_globals(&skills_dir, &mcp_file);
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+
+        let scoped = adapter
+            .read_config()
+            .profiles
+            .iter()
+            .find(|p| p.id == "scoped")
+            .cloned();
+        let scoped_files = adapter.effective_mcp_files_for(scoped.as_ref());
+        assert_eq!(scoped_files.len(), 1);
+        let scoped_ignore = scoped_files[0].ignore.as_ref().expect("compiled");
+        assert!(scoped_ignore.is_match("work-foo"));
+        assert!(!scoped_ignore.is_match("scratch-bar"));
+
+        let unset = adapter.read_config().profiles.iter().find(|p| p.id == "ask").cloned();
+        let unset_files = adapter.effective_mcp_files_for(unset.as_ref());
+        assert_eq!(unset_files.len(), 1);
+        let unset_ignore = unset_files[0].ignore.as_ref().expect("global compiled");
+        assert!(unset_ignore.is_match("scratch-bar"));
+        assert!(!unset_ignore.is_match("work-foo"));
+
+        let empty = adapter.read_config().profiles.iter().find(|p| p.id == "empty").cloned();
+        let empty_files = adapter.effective_mcp_files_for(empty.as_ref());
+        assert!(empty_files.is_empty());
+    }
+
     #[tokio::test]
     async fn spawn_threads_mode_through_to_instance_info() {
         let cfg: Config = toml::from_str(

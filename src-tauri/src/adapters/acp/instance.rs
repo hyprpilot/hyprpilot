@@ -1344,6 +1344,7 @@ impl AcpInstance {
             bootstrap,
             permissions,
             mcps,
+            skills,
             commands_cache,
         } = params;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
@@ -1387,6 +1388,7 @@ impl AcpInstance {
             bootstrap,
             permissions,
             mcps,
+            skills,
             commands_cache,
         }));
 
@@ -1452,7 +1454,50 @@ pub struct StartParams {
     pub bootstrap: Bootstrap,
     pub permissions: Arc<dyn PermissionController>,
     pub mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
+    /// Per-instance skill catalogue resolved off the active profile's
+    /// `skills = [...]`. `None` when the profile (or global) defines
+    /// none. Materialised into a SDK-plugin symlink farm at spawn
+    /// time and injected into `session/new` via `_meta.claudeCode.options.plugins`
+    /// for claude-code; other vendors get a one-line warn until they
+    /// grow analogous extension points.
+    pub skills: Option<Arc<crate::skills::SkillsRegistry>>,
     pub commands_cache: Option<crate::completion::source::commands::CommandsCache>,
+}
+
+/// RAII cleanup for the per-instance SDK-plugin symlink farm. The
+/// directory lives under `$XDG_RUNTIME_DIR/hyprpilot/instances/<id>/`
+/// and gets removed when this guard drops — i.e. when the actor's
+/// `run` future resolves regardless of how it exits (Shutdown,
+/// Cancel-then-drop, Error).
+struct SkillsPluginGuard {
+    plugin_dir: std::path::PathBuf,
+}
+
+impl SkillsPluginGuard {
+    fn new(plugin_dir: std::path::PathBuf) -> Self {
+        Self { plugin_dir }
+    }
+}
+
+impl Drop for SkillsPluginGuard {
+    fn drop(&mut self) {
+        // Walk the parent ".../instances/<id>/" so the per-instance
+        // directory disappears whole — leaves "instances/" in place
+        // for sibling actors. Errors here are non-fatal; the daemon's
+        // boot-time sweep can mop up if the process crashed mid-run.
+        let parent = self.plugin_dir.parent().map(std::path::Path::to_path_buf);
+        if let Err(err) = std::fs::remove_dir_all(&self.plugin_dir) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(plugin = %self.plugin_dir.display(), %err, "skills plugin: cleanup failed");
+            }
+        }
+        if let Some(p) = parent {
+            // Best-effort empty-parent cleanup. If sibling instances
+            // share the parent, `remove_dir` errors with ENOTEMPTY and
+            // we leave it alone.
+            let _ = std::fs::remove_dir(&p);
+        }
+    }
 }
 
 /// Internal `run` actor params — superset of `StartParams` with the
@@ -1467,6 +1512,7 @@ struct RunParams {
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
+    skills: Option<Arc<crate::skills::SkillsRegistry>>,
     commands_cache: Option<crate::completion::source::commands::CommandsCache>,
 }
 
@@ -1482,6 +1528,7 @@ async fn run(params: RunParams) {
         bootstrap,
         permissions,
         mcps,
+        skills,
         commands_cache,
     } = params;
     let agent_id = resolved.agent.id.clone();
@@ -1496,6 +1543,46 @@ async fn run(params: RunParams) {
         let mut cfg = resolved.agent.clone();
         cfg.model = resolved.model.clone();
         cfg
+    };
+
+    // Materialise the per-instance skills plugin BEFORE dispatch so
+    // the SDK can load it on `session/new`. Owned by `_skills_plugin_guard`
+    // for the actor's lifetime — drop hook removes the dir when `run`
+    // returns. `None` when the profile has no skills configured OR
+    // the active vendor has no skills-injection path (default trait
+    // impl returns None).
+    let (skills_meta_payload, _skills_plugin_guard): (
+        Option<serde_json::Map<String, serde_json::Value>>,
+        Option<SkillsPluginGuard>,
+    ) = match &skills {
+        Some(reg) => {
+            let plugin_dir = crate::paths::runtime_dir()
+                .join("instances")
+                .join(&instance_id)
+                .join("plugin");
+            let plugin_name = format!("hyprpilot-skills-{instance_id}");
+            let agent_for_meta = match_provider_agent(cfg.provider);
+            let meta = agent_for_meta.skills_meta(&plugin_dir);
+            if meta.is_none() {
+                tracing::warn!(
+                    agent = %agent_id,
+                    provider = ?cfg.provider,
+                    "acp::instance: skills configured but provider has no injection path — agent will not see filtered skills"
+                );
+                (None, None)
+            } else if let Err(err) = reg.materialize_plugin(&plugin_dir, &plugin_name) {
+                tracing::error!(
+                    agent = %agent_id,
+                    plugin = %plugin_dir.display(),
+                    %err,
+                    "acp::instance: failed to materialise skills plugin — falling through without filtered skills"
+                );
+                (None, None)
+            } else {
+                (meta, Some(SkillsPluginGuard::new(plugin_dir)))
+            }
+        }
+        None => (None, None),
     };
     // Filter the per-entry system_prompt list against the bootstrap
     // variant — entries whose `inject.on_create` (Fresh) or
@@ -1831,6 +1918,7 @@ async fn run(params: RunParams) {
                 debug!(agent = %agent_id_notif, "acp::instance: sending session/new");
                 let mut req = NewSessionRequest::new(cwd.clone());
                 req.mcp_servers = mcp_servers.clone();
+                req.meta = skills_meta_payload.clone();
                 let new_session = connection.send_request(req).block_task().await?;
                 let sid = new_session.session_id.clone();
                 info!(
@@ -2008,6 +2096,7 @@ async fn run(params: RunParams) {
                     debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
                     let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
                     load_req.mcp_servers = mcp_servers.clone();
+                    load_req.meta = skills_meta_payload.clone();
                     let load_resp = match connection.send_request(load_req).block_task().await {
                         Ok(resp) => resp,
                         Err(err) => {
@@ -2033,6 +2122,7 @@ async fn run(params: RunParams) {
                     debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/resume");
                     let mut req = ResumeSessionRequest::new(sid.clone(), cwd.clone());
                     req.mcp_servers = mcp_servers.clone();
+                    req.meta = skills_meta_payload.clone();
                     let resp = match connection.send_request(req).block_task().await {
                         Ok(resp) => resp,
                         Err(err) => {
@@ -3134,6 +3224,7 @@ mod tests {
             bootstrap: Bootstrap::Fresh,
             permissions: dummy_permissions(),
             mcps: None,
+            skills: None,
             commands_cache: None,
         }
     }

@@ -7,6 +7,9 @@
 
 pub mod formatters;
 
+use std::path::Path;
+
+use serde_json::{json, Map, Value};
 use tokio::process::Command;
 
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
@@ -27,6 +30,28 @@ impl AcpAgent for AcpAgentClaudeCode {
     /// the model today.
     fn inject_system_prompt(&self, _cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
         SystemPromptInjection::FirstMessage(prompt.to_string())
+    }
+
+    /// Hand the SDK a local plugin pointing at the per-instance
+    /// symlink farm. `claude-agent-acp@0.30.0` extracts
+    /// `_meta.claudeCode.options` and spreads it into the SDK's
+    /// `Options`; `plugins: [{ type: 'local', path }]` triggers the
+    /// SDK to load skills (and agents / commands / hooks) from
+    /// `<path>/`. Combined with the daemon's per-profile filter,
+    /// this is the only path skills take to the spawned agent today.
+    fn skills_meta(&self, plugin_dir: &Path) -> Option<Map<String, Value>> {
+        let mut meta = Map::new();
+        meta.insert(
+            "claudeCode".into(),
+            json!({
+                "options": {
+                    "plugins": [
+                        { "type": "local", "path": plugin_dir.display().to_string() }
+                    ]
+                }
+            }),
+        );
+        Some(meta)
     }
 }
 
@@ -83,6 +108,24 @@ mod tests {
         let cmd = AcpAgentClaudeCode.spawn(&entry);
         let has_key = cmd.as_std().get_envs().any(|(k, _)| k == "ANTHROPIC_MODEL");
         assert!(!has_key);
+    }
+
+    #[test]
+    fn skills_meta_returns_local_plugin_pointing_at_dir() {
+        let dir = std::path::Path::new("/tmp/hyprpilot-skills-test/instances/abc/plugin");
+        let meta = AcpAgentClaudeCode.skills_meta(dir).expect("claude-code returns Some");
+        let plugin = meta
+            .get("claudeCode")
+            .and_then(|v| v.get("options"))
+            .and_then(|v| v.get("plugins"))
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .expect("nested shape matches the SDK's expected layout");
+        assert_eq!(plugin.get("type").and_then(|v| v.as_str()), Some("local"));
+        assert_eq!(
+            plugin.get("path").and_then(|v| v.as_str()),
+            Some(dir.display().to_string()).as_deref()
+        );
     }
 
     #[test]

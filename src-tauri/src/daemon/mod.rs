@@ -660,10 +660,11 @@ fn build_completion_registry(
 /// editing `config.toml`. Then unions root-level `[[skills]]` with
 /// every `[[profiles]] skills` entry so captains who only configure
 /// skills per-profile still see them in the composer's `#`
-/// autocomplete. Per-profile skills the agent receives at session
-/// spawn are unaffected — this just widens the *display catalog* the
-/// global `SkillsRegistry` walks, not the profile→agent injection
-/// path.
+/// autocomplete. This is the *display catalog* the global
+/// `SkillsRegistry` walks; the per-spawn injection that determines
+/// what skills the agent actually sees is built separately by
+/// `AcpAdapter::build_skills_registry_for(profile)` from the
+/// active profile's `skills = [...]` set.
 fn resolve_skills_entries(cfg: &Config) -> Vec<crate::config::ResolvedSkillEntry> {
     if let Ok(raw) = std::env::var("HYPRPILOT_SKILLS_DIR") {
         if !raw.is_empty() {

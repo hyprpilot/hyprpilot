@@ -4,6 +4,9 @@ pub mod claude_code;
 pub mod codex;
 pub mod opencode;
 
+use std::path::Path;
+
+use serde_json::Map;
 use tokio::process::Command;
 
 use crate::config::{AgentConfig, AgentProvider};
@@ -115,6 +118,17 @@ pub trait AcpAgent: Send + Sync + 'static {
     fn inject_system_prompt(&self, _cmd: &mut Command, _prompt: &str) -> SystemPromptInjection {
         SystemPromptInjection::Handled
     }
+
+    /// Build the `_meta` payload that delivers a per-instance skills
+    /// plugin directory to the agent's `session/new` request. `None`
+    /// (default) means the vendor has no protocol path for skills
+    /// today — the per-instance `SkillsRegistry` is still built so
+    /// the daemon-side palette stays accurate, but the agent only
+    /// sees its native skill discovery (`~/.claude/skills/` etc.).
+    /// claude-code overrides via `_meta.claudeCode.options.plugins`.
+    fn skills_meta(&self, _plugin_dir: &Path) -> Option<Map<String, serde_json::Value>> {
+        None
+    }
 }
 
 /// `acp` provider — no-op vendor. User-supplied ACP binaries
@@ -161,6 +175,26 @@ mod tests {
             env: Default::default(),
             thinking_budget_tokens: None,
         }
+    }
+
+    #[test]
+    fn default_skills_meta_returns_none() {
+        // Codex + opencode currently inherit the default — no protocol
+        // path for skills today. Pin the default so future vendors that
+        // grow support flip this explicitly via their impl.
+        let dir = std::path::Path::new("/tmp/anywhere");
+        assert!(
+            AcpAgentCustom.skills_meta(dir).is_none(),
+            "default trait impl returns None until a vendor opts in"
+        );
+        assert!(
+            AcpAgentCodex.skills_meta(dir).is_none(),
+            "codex inherits the default — no _meta path for skills today"
+        );
+        assert!(
+            AcpAgentOpenCode.skills_meta(dir).is_none(),
+            "opencode inherits the default — no _meta path for skills today"
+        );
     }
 
     #[test]
