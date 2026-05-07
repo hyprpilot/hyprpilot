@@ -53,4 +53,11 @@ defineProps<{
   background-color: var(--tone);
   color: var(--theme-fg-on-tone);
 }
+
+@media (pointer: coarse) {
+  .cancel-toast-action {
+    min-height: 2.25rem;
+    padding: 0.5rem 0.875rem;
+  }
+}
 </style>

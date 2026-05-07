@@ -1160,6 +1160,7 @@ function onQueueSend(itemId: string): void {
     @toggle-cwd="onToggleCwd"
     @close="onCloseOverlay"
     @instances-click="openRootLeaf(PaletteLeafId.Instances)"
+    @palette-click="openRootPalette"
   >
     <template v-if="activeToast" #toast>
       <Toast :tone="activeToast.tone" :body="activeToast.body" @dismiss="dismissToast(activeToast.id)" />

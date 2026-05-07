@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { faArrowDown, faArrowUp, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faArrowDown, faArrowUp, faBars, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
 import { BreadcrumbPill, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
@@ -61,6 +61,9 @@ const emit = defineEmits<{
   /// Emitted when the captain clicks the row-1 instances pill — the
   /// parent opens the instances palette.
   instancesClick: []
+  /// Emitted when the captain taps the row-1 palette-open button —
+  /// touch surface for `palette.open` (the desktop `Ctrl+K` keybind).
+  paletteClick: []
 }>()
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
@@ -106,6 +109,11 @@ const hasGit = computed(() => Boolean(props.gitStatus))
         <button v-if="instancesCount > 1" type="button" class="frame-instances-pill" :aria-label="`${instancesCount} instances`" @click="emit('instancesClick')">
           <span class="frame-instances-count">{{ instancesCount }}</span>
           <span class="frame-instances-label">instances</span>
+        </button>
+        <!-- Palette-open button: visible only on coarse pointers
+             (phones / tablets). Desktop captains hit Ctrl+K. -->
+        <button type="button" class="frame-palette" aria-label="open command palette" @click="emit('paletteClick')">
+          <FaIcon :icon="faBars" class="frame-palette-icon" />
         </button>
         <button type="button" class="frame-close" aria-label="close" @click="emit('close')">
           <FaIcon :icon="faXmark" class="frame-close-icon" />
@@ -358,6 +366,38 @@ html:not([data-window-anchor]) .frame {
 
 .frame-close:hover {
   color: var(--theme-status-err);
+}
+
+/* Hidden on mouse — the palette has Ctrl+K. Surfaces on coarse
+ * pointers (phones / tablets) so touch users have a tap entry to
+ * the command palette. */
+.frame-palette {
+  @apply hidden shrink-0 items-center justify-center border-0 bg-transparent leading-none;
+  color: var(--theme-fg-dim);
+  cursor: pointer;
+  font-family: var(--theme-font-mono);
+}
+
+.frame-palette-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.frame-palette:hover {
+  color: var(--theme-fg);
+}
+
+@media (pointer: coarse) {
+  .frame-palette {
+    @apply inline-flex;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  .frame-close {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
 }
 
 /* Row 2 — cwd pill on the left (flex:1, accent yellow left-stripe,

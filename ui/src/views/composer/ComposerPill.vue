@@ -59,4 +59,12 @@ defineEmits<{ remove: [id: string] }>()
 .composer-pill-remove:hover {
   color: var(--theme-status-err);
 }
+
+@media (pointer: coarse) {
+  .composer-pill-remove {
+    min-width: 1.75rem;
+    min-height: 1.75rem;
+    padding: 0.25rem;
+  }
+}
 </style>

@@ -68,7 +68,7 @@ const phaseIcon = computed<PhaseIcon>(() => {
 
 .session-row {
   @apply grid w-full items-center gap-2 border-l-[0.1875rem] px-3 py-[0.375rem] text-[0.66rem];
-  grid-template-columns: 1rem 13.75rem 10.625rem 5.625rem 6.875rem;
+  grid-template-columns: 1rem minmax(0, 13.75rem) minmax(0, 10.625rem) minmax(0, 5.625rem) minmax(0, 6.875rem);
   font-family: var(--theme-font-mono);
   border-color: var(--tone);
   background-color: var(--theme-surface);

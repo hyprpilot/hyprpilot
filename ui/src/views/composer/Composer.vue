@@ -612,6 +612,10 @@ function onDragOver(e: DragEvent): void {
         class="composer-textarea"
         :placeholder="placeholder"
         :disabled="disabled"
+        autocapitalize="sentences"
+        autocorrect="on"
+        spellcheck="true"
+        enterkeyhint="send"
         data-testid="composer-textarea"
         @keydown.capture="onTextareaKeydown"
         @input="onTextareaInput"
@@ -709,7 +713,7 @@ function onDragOver(e: DragEvent): void {
   /* Cap at 50% of the viewport height so a captain pasting a long
    * spec / fenced code block can keep most of it in view while
    * editing instead of scrolling inside a stubby 25vh box. */
-  max-height: 50vh;
+  max-height: 50dvh;
 }
 
 .composer-textarea::placeholder {
@@ -799,6 +803,21 @@ function onDragOver(e: DragEvent): void {
 .composer-attach:hover:not(:disabled) {
   color: var(--theme-fg);
   border-color: var(--theme-fg-dim);
+}
+
+/* Touch hit-area floor on phones — bump the cancel + attach buttons
+ * (and let the send button grow to fill since it's `flex-1`). */
+@media (pointer: coarse) {
+  .composer-cancel,
+  .composer-attach {
+    height: auto;
+    min-height: 2.5rem;
+  }
+
+  .composer-actions {
+    width: 3.25rem;
+    gap: 0.375rem;
+  }
 }
 
 .composer-attach:disabled {

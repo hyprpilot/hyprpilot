@@ -56,7 +56,7 @@ const activeIndex = computed(() => {
   @apply flex flex-col overflow-y-auto;
   background-color: var(--theme-permission-bg);
   border-top: 0.125rem solid var(--theme-status-warn);
-  max-height: 45vh;
+  max-height: 45dvh;
 }
 
 .permission-panel-counter-strip {

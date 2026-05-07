@@ -142,6 +142,13 @@ const exitLabel = computed(() => {
   text-decoration: underline;
 }
 
+@media (pointer: coarse) {
+  .terminal-card-cancel {
+    min-height: 2.25rem;
+    padding: 0 0.625rem;
+  }
+}
+
 .terminal-card-exit {
   @apply text-[0.7rem];
   color: var(--theme-status-err);

@@ -50,7 +50,13 @@ watch(
 
     if (spec) {
       void nextTick(() => {
-        inputRef.value?.focus()
+        // On touch devices, skip auto-focus so the virtual keyboard
+        // doesn't pop up on every palette open. The captain taps the
+        // input explicitly when they want to type. Desktop / mouse
+        // users keep the existing focus-on-open behaviour.
+        if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches) {
+          inputRef.value?.focus()
+        }
         trapActive.value = true
       })
     } else {
@@ -373,6 +379,9 @@ onUnmounted(() => {
             spellcheck="false"
             autocomplete="off"
             autocapitalize="off"
+            autocorrect="off"
+            inputmode="search"
+            enterkeyhint="go"
             data-testid="palette-input"
           />
           <span class="palette-result-count">{{ visibleEntries.length }} result{{ visibleEntries.length === 1 ? '' : 's' }}</span>
@@ -445,7 +454,7 @@ onUnmounted(() => {
  * viewport. `max-width` clamps gracefully on narrow anchors. */
 .palette-frame {
   @apply flex flex-col;
-  max-height: 70vh;
+  max-height: 70dvh;
   width: 32rem;
   max-width: calc(100vw - 3rem);
   border: 1px solid var(--theme-border-soft);
@@ -600,6 +609,14 @@ onUnmounted(() => {
 @media (max-width: 560px) {
   .palette-preview {
     display: none;
+  }
+
+  /* Without the preview pane mounted, the list reverts to filling
+   * the panel — otherwise the `flex: 0 0 42%` rule above leaves a
+   * blank 58% gap on phones. */
+  .palette-frame[data-wide='true'] .palette-list {
+    flex: 1 1 100%;
+    border-right: none;
   }
 }
 

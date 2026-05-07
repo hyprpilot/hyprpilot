@@ -142,4 +142,12 @@ function RenderBody(): VNode | string | null {
 .toast-dismiss:hover {
   color: var(--theme-fg);
 }
+
+@media (pointer: coarse) {
+  .toast-dismiss {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    padding: 0.5rem;
+  }
+}
 </style>

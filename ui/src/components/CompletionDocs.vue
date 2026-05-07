@@ -23,7 +23,8 @@ defineProps<{
 
 .completion-docs {
   @apply overflow-y-auto p-3;
-  width: 22.5rem;
+  width: 100%;
+  max-width: 22.5rem;
   max-height: 15rem;
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border);

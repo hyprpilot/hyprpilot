@@ -162,4 +162,15 @@ const emit = defineEmits<{
 .queue-band-icon-btn:hover {
   filter: brightness(1.15);
 }
+
+@media (pointer: coarse) {
+  .queue-band-icon-btn {
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .queue-band-actions {
+    gap: 0.375rem;
+  }
+}
 </style>

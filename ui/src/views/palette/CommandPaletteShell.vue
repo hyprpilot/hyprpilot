@@ -57,7 +57,7 @@ const effectiveWidth = computed(() => (slots.preview ? 'wide' : props.width))
   background-color: var(--theme-surface);
   color: var(--theme-fg);
   box-shadow: 0 0.75rem 2.5rem color-mix(in srgb, var(--theme-surface-bg) 70%, transparent);
-  max-height: 70vh;
+  max-height: 70dvh;
   min-height: 0;
   /* Never exceed the overlay viewport — widths below are target sizes;
    * max-width clamps against the anchor width on small monitors. */
