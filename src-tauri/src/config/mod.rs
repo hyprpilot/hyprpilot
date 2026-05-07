@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod extensions;
 pub mod keymaps;
 pub(crate) mod merge_strategies;
+pub mod system_prompt;
 pub mod theme;
 mod validations;
 
@@ -22,6 +23,7 @@ pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
 pub use extensions::{McpFile, SkillEntry};
 pub use keymaps::{KeymapsConfig, Modifier};
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
+pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
 pub use theme::{Theme, Ui};
 use validations::{
     validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
@@ -70,16 +72,17 @@ pub struct Config {
     #[garde(skip)]
     #[merge(strategy = overwrite_some)]
     pub cwd: Option<PathBuf>,
-    /// `system_prompt` — root-level fallback every profile uses when
-    /// its own `system_prompt` isn't set. Array of markdown / text
-    /// file paths; read + concatenated (blank-line separator) at
-    /// submit time so edits land without a daemon restart. `~` +
-    /// env-var expansion mirrors `mcps`. Profile-level array
-    /// wholesale-replaces this default; `Some([])` is the explicit
-    /// "no system prompt" off-switch.
-    #[garde(custom(crate::config::validations::validate_unique_nonempty))]
+    /// `system_prompt` — root-level fallback every profile uses
+    /// when its own `system_prompt` isn't set. Array of
+    /// `{ file, inject? }` entries, mirroring `[[mcps]]` /
+    /// `[[skills]]`. Each entry's `inject.on_create` /
+    /// `inject.on_update` independently gates whether that file
+    /// rides on Bootstrap::Fresh / Bootstrap::Resume. Profile-level
+    /// `system_prompt` wholesale-replaces this default;
+    /// `system_prompt = []` is the explicit "no prompt" off-switch.
+    #[garde(dive)]
     #[merge(strategy = overwrite_some)]
-    pub system_prompt: Option<Vec<PathBuf>>,
+    pub system_prompt: Option<Vec<SystemPromptEntry>>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
@@ -661,26 +664,30 @@ submit = { modifiers = ["ctrl"], key = "enter" }
     }
 
     #[test]
-    fn root_system_prompt_parses_as_path_array() {
+    fn root_system_prompt_parses_as_array_of_tables() {
         let p = write_tmp(
             "root-prompt.toml",
             r#"
-system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/global.md"]
+system_prompt = [
+  { file = "~/.config/hyprpilot/prompts/base.md" },
+  { file = "~/.config/hyprpilot/prompts/global.md", inject = { on_update = true } },
+]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
 
-        cfg.validate().expect("root system_prompt path validates");
-        assert_eq!(
-            cfg.system_prompt.as_deref().map(|paths| paths
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect::<Vec<_>>()),
-            Some(vec![
-                "~/.config/hyprpilot/prompts/base.md".to_string(),
-                "~/.config/hyprpilot/prompts/global.md".to_string()
-            ])
+        cfg.validate().expect("root system_prompt validates");
+        let prompts = cfg.system_prompt.as_deref().expect("set");
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].file, PathBuf::from("~/.config/hyprpilot/prompts/base.md"));
+        assert!(prompts[0].inject.on_create);
+        assert!(!prompts[0].inject.on_update);
+        assert_eq!(prompts[1].file, PathBuf::from("~/.config/hyprpilot/prompts/global.md"));
+        assert!(
+            prompts[1].inject.on_create,
+            "on_create stays default-true on partial inject"
         );
+        assert!(prompts[1].inject.on_update);
         fs::remove_file(&p).ok();
     }
 }

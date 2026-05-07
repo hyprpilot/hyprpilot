@@ -313,6 +313,19 @@ pub enum InstanceEvent {
         #[serde(default)]
         mcps_count: usize,
     },
+    /// Fired once per instance start when the configured system
+    /// prompt is actually being attached to the spawn. Skipped
+    /// when `system_prompt.inject.on_create=false` (Bootstrap::Fresh)
+    /// or `inject.on_restore=false` (Bootstrap::Resume). Drives the
+    /// chat-side "system prompt attached" banner. `files` is the
+    /// resolved path list so the UI can show the captain WHAT
+    /// landed.
+    SystemPromptInjected {
+        agent_id: String,
+        instance_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+    },
 }
 
 /// Display-friendly snapshot of one ACP `SessionMode`. Mirrors
@@ -432,6 +445,7 @@ impl InstanceEvent {
             InstanceEvent::UsageUpdate { .. } => "instance.usage_update",
             InstanceEvent::ConfigOptionsUpdate { .. } => "instance.config_options_update",
             InstanceEvent::InstanceMeta { .. } => "instance.meta",
+            InstanceEvent::SystemPromptInjected { .. } => "instance.system_prompt_injected",
         }
     }
 }

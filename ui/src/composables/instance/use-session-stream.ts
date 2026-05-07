@@ -18,7 +18,7 @@ import {
   lookupModeName,
   useSessionInfo
 } from './use-session-info'
-import { closeTurn, deleteStreamByTurnId, pushConfigOptionChange, pushModeChange, pushPlan, pushThoughtChunk } from './use-stream'
+import { closeTurn, deleteStreamByTurnId, pushConfigOptionChange, pushModeChange, pushPlan, pushSystemPromptInjected, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
@@ -472,6 +472,12 @@ export async function startSessionStream(): Promise<() => void> {
       // pill: when present it replaces the profile pill so the captain
       // reads their own slug instead of the upstream profile id.
       setInstanceName(e.payload.instanceId, e.payload.name)
+    }),
+    await listen(TauriEvent.AcpSystemPromptInjected, (e) => {
+      // Daemon attached a system prompt to the spawning agent. Banner
+      // shows the captain WHICH files rode along (already filtered by
+      // the per-entry inject toggles against the live bootstrap).
+      pushSystemPromptInjected(e.payload.instanceId, { files: e.payload.files })
     }),
     await listen(TauriEvent.ComposerDraftAppend, (e) => {
       useComposer().appendDraft(e.payload.text)

@@ -84,6 +84,7 @@ describe('useSessionStream', () => {
         TauriEvent.AcpInstanceState,
         TauriEvent.AcpPermissionRequest,
         TauriEvent.AcpSessionInfoUpdate,
+        TauriEvent.AcpSystemPromptInjected,
         TauriEvent.AcpTerminal,
         TauriEvent.AcpTranscript,
         TauriEvent.AcpTurnEnded,
@@ -302,7 +303,7 @@ describe('useSessionStream', () => {
     const stop = await startSessionStream()
 
     stop()
-    expect(unlisten).toHaveBeenCalledTimes(13)
+    expect(unlisten).toHaveBeenCalledTimes(14)
   })
 
   it('pushes an ok toast when acp:instance-state transitions to running', async() => {

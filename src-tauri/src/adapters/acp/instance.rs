@@ -1497,11 +1497,34 @@ async fn run(params: RunParams) {
         cfg.model = resolved.model.clone();
         cfg
     };
-    let system_prompt = resolved.system_prompt.clone();
+    // Filter the per-entry system_prompt list against the bootstrap
+    // variant — entries whose `inject.on_create` (Fresh) or
+    // `inject.on_update` (Resume) is true survive and concatenate
+    // into the spawn prompt. Skipped entries leave nothing on the
+    // wire.
+    let prompt_for_spawn = resolved.system_prompt_for(&bootstrap);
     let resolved_mode = resolved.mode.clone();
     let resolved_profile_id = resolved.profile_id.clone();
 
-    let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_subprocess(&cfg, system_prompt.as_deref()) {
+    // Emit the captain-facing "system prompt attached" banner event
+    // when at least one entry actually injected. `files` is the
+    // resolved per-bootstrap subset — captains see WHICH files rode
+    // along, not just that something did.
+    if prompt_for_spawn.is_some() {
+        let files = resolved
+            .system_prompt_files_for(&bootstrap)
+            .into_iter()
+            .map(|f| f.display().to_string())
+            .collect::<Vec<_>>();
+        let _ = events_tx.send(InstanceEvent::SystemPromptInjected {
+            agent_id: agent_id.clone(),
+            instance_id: instance_id.clone(),
+            files,
+        });
+    }
+
+    let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_subprocess(&cfg, prompt_for_spawn.as_deref())
+    {
         Ok(spawned) => (
             spawned.child,
             spawned.stdio,
@@ -3093,7 +3116,7 @@ mod tests {
             },
             profile_id: None,
             model: None,
-            system_prompt: None,
+            system_prompt: Vec::new(),
             mode: None,
         }
     }

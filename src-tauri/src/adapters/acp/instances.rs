@@ -477,7 +477,7 @@ impl AcpAdapter {
             agent = %resolved.agent.id,
             profile = ?resolved.profile_id,
             model = ?resolved.model,
-            has_prompt = resolved.system_prompt.is_some(),
+            has_prompt = !resolved.system_prompt.is_empty(),
             attachments = attachments.len(),
             "acp::submit: resolved instance"
         );
@@ -1247,6 +1247,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::UsageUpdate { .. } => "acp:usage-update",
         GenEvt::ConfigOptionsUpdate { .. } => "acp:config-options-update",
         GenEvt::InstanceMeta { .. } => "acp:instance-meta",
+        GenEvt::SystemPromptInjected { .. } => "acp:system-prompt-injected",
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {
@@ -1339,7 +1340,7 @@ agent = "claude-code"
 id = "strict"
 agent = "claude-code"
 model = "claude-opus-4-5"
-system_prompt = ["{}"]
+system_prompt = [{{ file = "{}" }}]
 "#,
             prompt_path.display()
         ))
@@ -1350,12 +1351,15 @@ system_prompt = ["{}"]
         assert_eq!(resolved.agent.id, "claude-code");
         assert_eq!(resolved.profile_id.as_deref(), Some("strict"));
         assert_eq!(resolved.model.as_deref(), Some("claude-opus-4-5"));
-        assert_eq!(resolved.system_prompt.as_deref(), Some("be terse"));
+        assert_eq!(
+            resolved.system_prompt_for(&Bootstrap::Fresh).as_deref(),
+            Some("be terse")
+        );
 
         let resolved = adapter.resolve(None, None).expect("default profile resolves");
         assert_eq!(resolved.profile_id.as_deref(), Some("ask"));
         assert_eq!(resolved.model.as_deref(), Some("claude-sonnet-4-5"));
-        assert!(resolved.system_prompt.is_none());
+        assert!(resolved.system_prompt_for(&Bootstrap::Fresh).is_none());
     }
 
     #[tokio::test]

@@ -237,6 +237,21 @@ export interface InstanceMetaEventPayload {
 }
 
 /**
+ * `acp:system-prompt-injected` — fires once per instance start when
+ * the daemon attaches a system prompt to the spawning agent.
+ * Sessions with no configured prompt files (or every entry's inject
+ * toggle off for the bootstrap path) get nothing — silence by
+ * design. Drives the chat-side "system prompt attached" banner.
+ */
+export interface SystemPromptInjectedEventPayload {
+  agentId: string
+  instanceId: string
+  /// Files that actually rode along — already filtered by the
+  /// per-entry inject toggles against the live bootstrap variant.
+  files: string[]
+}
+
+/**
  * Captain-staged prompt — `composer:draft-append`. Emitted by the
  * `prompts/send --draft` RPC path. The composer appends `text` to its
  * existing buffer with a blank-line separator (when non-empty) and
