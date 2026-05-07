@@ -37,15 +37,27 @@ level = "info"
 # re-pairs.
 #
 # `bind` defaults to `127.0.0.1:7423` (loopback only). Set to
-# `0.0.0.0:7423` to expose on LAN. `tls_cert` / `tls_key` are
-# optional — when unset the daemon auto-generates a self-signed cert
-# at first start under $XDG_STATE_HOME/hyprpilot/remote-{cert,key}.pem.
+# `0.0.0.0:7423` to expose on LAN. TLS material lives under
+# `[remote.tls]`:
+#
+#   - `certificate` + `key` paths → BYO cert, daemon uses verbatim,
+#     no auto-generation, never writes to state dir.
+#   - Unset paths → auto-generated self-signed cert persisted under
+#     $XDG_STATE_HOME/hyprpilot/remote-{cert,key}.pem.
+#   - `sans = [...]` → captain-supplied SAN list for the
+#     auto-generated cert. Replaces auto-detected hostname + LAN
+#     IPv4 (loopback always preserved). Useful when you have a
+#     stable DNS name pointing at the daemon — cert never
+#     regenerates on IP rotation.
 #
 # [remote]
 # enabled = true
 # bind = "0.0.0.0:7423"
-# tls_cert = "~/.config/hyprpilot/remote-cert.pem"
-# tls_key  = "~/.config/hyprpilot/remote-key.pem"
+#
+# [remote.tls]
+# # certificate = "~/.config/hyprpilot/remote-cert.pem"
+# # key         = "~/.config/hyprpilot/remote-key.pem"
+# # sans = ["mydaemon.example.com"]
 [remote]
 enabled = false
 bind = "0.0.0.0:7423"

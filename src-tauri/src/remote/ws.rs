@@ -372,7 +372,12 @@ struct PendingRejection {
 ///     fall back to manual pair without action.
 ///
 /// `None` on success or non-actionable frames.
-fn handle_pending_text(text: &str, pairs: &PairStore, sessions: &SessionTokens, pending_id: &Uuid) -> Option<PendingRejection> {
+fn handle_pending_text(
+    text: &str,
+    pairs: &PairStore,
+    sessions: &SessionTokens,
+    pending_id: &Uuid,
+) -> Option<PendingRejection> {
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
     let frame_type = parsed.get("type").and_then(|v| v.as_str())?;
 

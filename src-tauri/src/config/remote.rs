@@ -13,11 +13,17 @@
 //! enabled = true            # off by default
 //! bind = "0.0.0.0:7423"     # default: 127.0.0.1:7423 when unset
 //!
+//! [remote.tls]
 //! # Optional: bring your own cert/key. When unset, the daemon
 //! # auto-generates a self-signed cert and persists it to
 //! # `$XDG_STATE_HOME/hyprpilot/remote-{cert,key}.pem` on first run.
-//! tls_cert = "~/.config/hyprpilot/remote-cert.pem"
-//! tls_key  = "~/.config/hyprpilot/remote-key.pem"
+//! certificate = "~/.config/hyprpilot/remote-cert.pem"
+//! key         = "~/.config/hyprpilot/remote-key.pem"
+//!
+//! # When generating the cert ourselves, captain-supplied SAN list.
+//! # Replaces auto-detection of OS hostname + LAN IPv4 (loopback
+//! # always preserved). Each entry parsed as IP first, fallback DNS.
+//! sans = ["mydaemon.example.com"]
 //! ```
 
 use std::path::PathBuf;
@@ -39,17 +45,57 @@ pub struct RemoteConfig {
     /// only) when unset; set to `0.0.0.0:7423` to expose on LAN.
     #[garde(skip)]
     pub bind: Option<String>,
-    /// Path to the TLS certificate (PEM). When unset, the daemon
-    /// auto-generates a self-signed cert at first start and persists
-    /// it under `state_dir()/remote-cert.pem`. `~` / env-var
-    /// expansion happens at consume time.
+    /// TLS material — bring-your-own cert/key paths and/or SAN
+    /// overrides for the auto-generated path.
+    #[garde(dive)]
+    #[merge(strategy = merge::Merge::merge)]
+    pub tls: RemoteTlsConfig,
+}
+
+/// TLS-side config sub-struct. Two related concerns:
+///
+/// 1. **Bring-your-own cert** — set `certificate` + `key` to point
+///    at PEMs. Daemon uses them verbatim; never writes to disk; never
+///    regenerates. Use this when you have a real cert (Let's Encrypt
+///    via nginx-front, internal CA, etc.) or a stable self-signed
+///    cert with the SANs you want.
+/// 2. **Override SANs of the auto-generated cert** — leave
+///    `certificate` + `key` unset, set `sans = [...]`. Daemon
+///    generates a self-signed cert containing exactly your SANs +
+///    loopback. Stable across boots since the auto-detected LAN
+///    IPv4 + OS hostname don't contribute.
+///
+/// Path fields support `~` and `${VAR}` expansion at consume time.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
+pub struct RemoteTlsConfig {
+    /// Path to a captain-supplied TLS certificate (PEM). When set,
+    /// `key` must also be set; daemon uses both verbatim and skips
+    /// auto-generation entirely.
     #[garde(skip)]
-    pub tls_cert: Option<PathBuf>,
-    /// Path to the TLS private key (PEM). Paired with `tls_cert` —
-    /// must be set when `tls_cert` is set, otherwise the daemon's
-    /// auto-generated key is used.
+    pub certificate: Option<PathBuf>,
+    /// Path to a captain-supplied TLS private key (PEM). Paired with
+    /// `certificate` — must be set together.
     #[garde(skip)]
-    pub tls_key: Option<PathBuf>,
+    pub key: Option<PathBuf>,
+    /// Captain-supplied SANs for the auto-generated cert. Each entry
+    /// is parsed as an IP address first, falling back to a DNS name
+    /// on parse failure. When set, this list **replaces** the
+    /// auto-detected LAN IPv4 + OS hostname SANs entirely; loopback
+    /// (`localhost`, `127.0.0.1`, `::1`) is always preserved so the
+    /// daemon can still talk to itself.
+    ///
+    /// Useful when the captain has a stable DNS name pointing at the
+    /// daemon (`mydaemon.example.com`, a hosts-file entry, etc.) —
+    /// the cert never regenerates on IP rotation since the
+    /// auto-detected IPv4 SAN isn't computed. When unset, the
+    /// daemon auto-detects (current behaviour).
+    ///
+    /// Ignored when `certificate` + `key` are set — captain-supplied
+    /// certs come with their own SAN list.
+    #[garde(skip)]
+    pub sans: Option<Vec<String>>,
 }
 
 impl RemoteConfig {

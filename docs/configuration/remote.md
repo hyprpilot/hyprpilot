@@ -24,27 +24,39 @@ That's the whole opt-in. Restart the daemon and the bridge is up on `https://0.0
 
 ```toml
 [remote]
-enabled  = false                                          # default; flip to true to bring up the listener
-bind     = "0.0.0.0:7423"                                 # default; all interfaces
-tls_cert = "~/.config/hyprpilot/remote-cert.pem"          # optional override
-tls_key  = "~/.config/hyprpilot/remote-key.pem"           # paired with tls_cert
+enabled = false                                            # default; flip to true to bring up the listener
+bind    = "0.0.0.0:7423"                                   # default; all interfaces
+
+[remote.tls]
+# certificate = "~/.config/hyprpilot/remote-cert.pem"      # optional BYO cert
+# key         = "~/.config/hyprpilot/remote-key.pem"       # paired with certificate
+# sans        = ["mydaemon.example.com"]                   # SAN override for auto-gen
 ```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Start the TLS axum listener. |
 | `bind` | `0.0.0.0:7423` | `host:port`. Default exposes on every interface (LAN + loopback). Set to `127.0.0.1:7423` for loopback-only; IPv6 forms work too. |
-| `tls_cert` / `tls_key` | unset | Bring your own PEM-encoded cert + private key. When unset the daemon auto-generates a self-signed cert on first start. |
+| `tls.certificate` / `tls.key` | unset | Bring your own PEM-encoded cert + private key. When unset, the daemon auto-generates a self-signed cert on first start. |
+| `tls.sans` | unset | Captain-supplied SAN list for the auto-generated cert. Replaces auto-detected hostname + LAN IPv4 (loopback always preserved). Ignored when BYO cert paths are set. Each entry is parsed as IP first, falling back to DNS. |
 
 ## TLS material
 
-When `tls_cert` / `tls_key` are unset, the daemon generates a self-signed cert at first start and persists it under `$XDG_STATE_HOME/hyprpilot/remote-{cert,key}.pem`. Subsequent starts reuse the same files.
+Two paths.
 
-The auto-generated cert's SANs cover `127.0.0.1`, `::1`, `localhost`, the OS hostname, and every detected non-loopback IPv4 — keeps the per-IP TLS warning manageable on top of the unavoidable self-signed nag. The connecting device trusts on first use and the warning never reappears for that pair `(device, daemon)` until the cert rotates.
+### BYO cert (`[remote.tls] certificate` + `key`)
 
-To rotate the cert, delete `remote-cert.pem` + `remote-key.pem` under the state dir and restart the daemon.
+Daemon reads the PEMs verbatim and uses them. Never writes to disk, never regenerates, never computes SANs. Use this when you have a real cert from a CA your devices already trust (Let's Encrypt, internal CA), or your own stable self-signed cert.
 
-To bring your own cert (e.g. one signed by a private CA your devices already trust), point `tls_cert` and `tls_key` at the PEM files. The daemon doesn't watch the files; restart to pick up changes.
+### Auto-generated self-signed (default)
+
+When the BYO paths are unset the daemon generates a self-signed cert at first start, persisting it under `$XDG_STATE_HOME/hyprpilot/remote-{cert,key}.pem` along with a `remote-cert.sans` sidecar listing the SANs the cert was generated against.
+
+By default the SANs cover `127.0.0.1`, `::1`, `localhost`, the OS hostname (`<host>` and `<host>.local` for mDNS), and every detected non-loopback IPv4. The IPv4 detection is what makes the cert drift on network changes — the daemon detects the captain has moved (compares current SANs against the sidecar) and regenerates the cert. Phone TOFUs again on the new fingerprint.
+
+If you have a stable DNS name pointing at the daemon (`mydaemon.example.com`, a hosts-file entry, etc.), set `[remote.tls] sans = ["mydaemon.example.com"]`. Auto-detection of the LAN IPv4 + OS hostname is skipped; the cert contains exactly your SANs + loopback, and **never regenerates** on IP rotation. Bookmark `https://mydaemon.example.com:7423/` on the phone.
+
+To rotate the cert manually, delete `remote-cert.pem` + `remote-key.pem` + `remote-cert.sans` under the state dir and restart the daemon.
 
 ## Pair-on-connect flow
 
