@@ -119,7 +119,8 @@ const sourceLabel = computed<string>(() => {
 
 .completion-row-label {
   @apply truncate;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 50%;
 }
 

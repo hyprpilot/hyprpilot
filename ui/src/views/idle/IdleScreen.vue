@@ -188,7 +188,7 @@ function onRowClick(session: SessionSummary): void {
 
 .idle-sessions-headrow {
   display: grid;
-  grid-template-columns: 0.875rem 1fr 10.625rem 6.875rem;
+  grid-template-columns: 0.875rem minmax(0, 1fr) minmax(0, 10.625rem) minmax(0, 6.875rem);
   column-gap: 0.75rem;
   padding: 0.25rem 0.625rem;
   font-family: var(--theme-font-mono);
@@ -201,7 +201,7 @@ function onRowClick(session: SessionSummary): void {
 
 .idle-sessions-row {
   display: grid;
-  grid-template-columns: 0.875rem 1fr 10.625rem 6.875rem;
+  grid-template-columns: 0.875rem minmax(0, 1fr) minmax(0, 10.625rem) minmax(0, 6.875rem);
   column-gap: 0.75rem;
   align-items: center;
   padding: 0.4375rem 0.625rem;

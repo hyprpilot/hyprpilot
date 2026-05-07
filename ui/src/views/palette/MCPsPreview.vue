@@ -161,6 +161,8 @@ const rawJson = computed(() => {
 }
 
 .mcp-preview-dl dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--theme-fg);
 }
 

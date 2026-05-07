@@ -41,12 +41,12 @@ defineEmits<{ remove: [id: string] }>()
 }
 
 .composer-pill-label {
-  @apply truncate;
+  @apply min-w-0 truncate;
   max-width: 24ch;
 }
 
 .composer-pill-remove {
-  @apply border-0 bg-transparent px-0 text-[0.7rem] leading-none;
+  @apply shrink-0 border-0 bg-transparent px-0 text-[0.7rem] leading-none;
   color: var(--theme-fg-dim);
   cursor: pointer;
 }

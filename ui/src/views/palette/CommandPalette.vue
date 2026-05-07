@@ -469,7 +469,7 @@ onUnmounted(() => {
 }
 
 .palette-input {
-  @apply flex-1 bg-transparent outline-none border-0 text-[0.7rem];
+  @apply min-w-0 flex-1 bg-transparent outline-none border-0 text-[0.7rem];
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
 }
@@ -537,8 +537,14 @@ onUnmounted(() => {
   color: var(--theme-accent);
 }
 
+/* `palette-name` shrinks before `palette-description` because the
+ * name is the row's identity and stays meaningful when ellipsised;
+ * description is secondary. Both yield before the trailing
+ * `palette-kind` chip, which is `shrink-0`. */
 .palette-name {
-  @apply shrink-0 font-bold;
+  @apply min-w-0 truncate font-bold;
+  flex: 0 1 auto;
+  max-width: 60%;
 }
 
 .palette-row[data-selected='true'] .palette-name {

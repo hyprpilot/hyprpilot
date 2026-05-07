@@ -187,10 +187,16 @@ function planIconFor(status: PlanStatus) {
 }
 
 .stream-card-header {
-  @apply flex items-center gap-2 text-[0.62rem] uppercase;
+  @apply flex min-w-0 items-center gap-2 text-[0.62rem] uppercase;
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
   letter-spacing: 0.025rem;
+}
+
+.stream-card-caret,
+.stream-card-label,
+.stream-card-elapsed {
+  flex-shrink: 0;
 }
 
 /* Cursor only on rows that actually expand into a body. */
@@ -219,9 +225,13 @@ function planIconFor(status: PlanStatus) {
   margin-left: auto;
 }
 
-/* Italic Inter recap — visually distinct from the mono header tag. */
+/* Italic Inter recap — visually distinct from the mono header tag.
+ * `flex: 1 1 auto` + `min-w-0` so the recap is the only column that
+ * yields when a long summary would push the elapsed chip off the
+ * right edge. */
 .stream-card-summary-inline {
-  @apply ml-1 truncate text-[0.7rem] italic normal-case;
+  @apply ml-1 min-w-0 truncate text-[0.7rem] italic normal-case;
+  flex: 1 1 auto;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-sans);
   letter-spacing: normal;

@@ -119,13 +119,19 @@ const headerBg = computed(() => toneBg(props.tone))
   @apply flex items-center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
+  min-width: 0;
   background-color: var(--theme-permission-bg);
   border-bottom: 1px solid var(--theme-border-soft);
   font-family: var(--theme-font-mono);
 }
 
+/* Tag yields when the actions row needs space — long titles (e.g.
+ * `rename · my-very-long-instance-slug`) ellipsise rather than push
+ * action buttons offscreen. */
 .modal-tag {
   @apply inline-flex items-center;
+  flex: 0 1 auto;
+  min-width: 0;
   gap: 0.375rem;
   padding: 0.1875rem 0.5625rem;
   color: var(--theme-fg-on-tone);
@@ -136,11 +142,16 @@ const headerBg = computed(() => toneBg(props.tone))
 }
 
 .modal-tag-icon {
+  flex-shrink: 0;
   width: 0.5625rem;
   height: 0.5625rem;
 }
 
 .modal-tag-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 700;
 }
 

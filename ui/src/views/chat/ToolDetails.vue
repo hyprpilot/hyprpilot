@@ -29,7 +29,7 @@ const stateTone = computed(() => toolStateTone(props.view.state))
 @reference '../../assets/styles.css';
 
 .tool-details {
-  @apply flex w-full flex-wrap items-center gap-2 border-l-[0.1875rem] px-[0.625rem] py-[0.25rem] text-[0.62rem] leading-tight;
+  @apply flex w-full items-center gap-2 border-l-[0.1875rem] px-[0.625rem] py-[0.25rem] text-[0.62rem] leading-tight;
   font-family: var(--theme-font-mono);
   border-color: var(--tone);
   color: var(--theme-fg-subtle);

@@ -727,7 +727,7 @@ function onDragOver(e: DragEvent): void {
 
 /* wireframe vertical button cluster: 44px wide, send + attach stacked. */
 .composer-actions {
-  @apply flex flex-col;
+  @apply flex shrink-0 flex-col;
   width: 2.75rem;
   gap: 0.25rem;
 }

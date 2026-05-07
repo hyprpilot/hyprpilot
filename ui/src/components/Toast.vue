@@ -92,6 +92,7 @@ function RenderBody(): VNode | string | null {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
   padding: 0.375rem 0.5rem 0.375rem 0.625rem;
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border-soft);
@@ -106,6 +107,8 @@ function RenderBody(): VNode | string | null {
 }
 
 .toast :deep(.toast-message) {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--theme-fg-subtle);
   font-size: 0.66rem;
   text-transform: none;
@@ -123,7 +126,7 @@ function RenderBody(): VNode | string | null {
 }
 
 .toast-dismiss {
-  @apply inline-flex items-center justify-center;
+  @apply inline-flex shrink-0 items-center justify-center;
   color: var(--theme-fg-dim);
   cursor: pointer;
   padding: 0 0.25rem;

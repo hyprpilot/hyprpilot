@@ -84,7 +84,7 @@ const exitLabel = computed(() => {
 }
 
 .terminal-card-label {
-  @apply font-bold;
+  @apply shrink-0 font-bold;
   color: var(--theme-kind-bash);
 }
 
@@ -101,8 +101,18 @@ const exitLabel = computed(() => {
   font-family: var(--theme-font-mono);
 }
 
+/* `cwd` shrinks before `command` (deeper paths are less informative
+ * than the command itself); both yield before the trailing status
+ * dot + cancel button, which carry hard `shrink-0`. */
 .terminal-card-cwd {
+  @apply min-w-0 shrink truncate;
+  max-width: 40%;
   color: var(--theme-fg-dim);
+}
+
+.terminal-card-cancel,
+.terminal-card-exit {
+  @apply shrink-0;
 }
 
 .terminal-card-status-dot {

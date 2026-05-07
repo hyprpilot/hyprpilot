@@ -203,6 +203,7 @@ html:not([data-window-anchor]) .frame {
   @apply flex items-center border-b;
   padding: 0.5rem 0.875rem 0.5rem 0.25rem;
   gap: 0.625rem;
+  min-width: 0;
   border-color: var(--theme-border);
 }
 
@@ -224,6 +225,10 @@ html:not([data-window-anchor]) .frame {
   color: var(--theme-fg-on-tone);
   font-family: var(--theme-font-mono);
   cursor: pointer;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Secondary profile pill (rendered to the right of a captain-set
@@ -258,6 +263,14 @@ html:not([data-window-anchor]) .frame {
   border: 1px solid var(--theme-border-soft);
   font-family: var(--theme-font-mono);
   cursor: pointer;
+  /* Long model / adapter names (e.g. claude-sonnet-4-5-20250514)
+   * truncate before squeezing the close button off-screen. Hard
+   * `shrink-0` is preserved — the pill keeps its full width when
+   * the row has room and only the inner text ellipsises. */
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .frame-adapter-pill {
