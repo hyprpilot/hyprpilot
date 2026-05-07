@@ -105,16 +105,20 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                     }
                     Some(Ok(Message::Close(_))) => break false,
                     Some(Ok(Message::Text(text))) => {
-                        let reason = handle_pending_text(
+                        let outcome = handle_pending_text(
                             text.as_str(),
                             &state.pairs,
                             &state.sessions,
                             &pending_id,
                         );
-                        if let Some(reason) = reason {
+                        if let Some(rejection) = outcome {
                             let _ = send_text(
                                 &mut sink,
-                                &json!({ "type": "confirm-rejected", "reason": reason }).to_string(),
+                                &json!({
+                                    "type": rejection.frame_type,
+                                    "reason": rejection.reason,
+                                })
+                                .to_string(),
                             )
                             .await;
                         }
@@ -338,6 +342,14 @@ async fn dispatch_line(line: &str, state: &RemoteState, already_subscribed: bool
     }
 }
 
+/// Rejection feedback the WS bridge sends back during the pending
+/// phase. `frame_type` is the wire `type` discriminator the device
+/// switches on; `reason` is the human-readable explanation.
+struct PendingRejection {
+    frame_type: &'static str,
+    reason: String,
+}
+
 /// Process a single text frame received during the pending window.
 ///
 /// Two actionable shapes:
@@ -345,17 +357,22 @@ async fn dispatch_line(line: &str, state: &RemoteState, already_subscribed: bool
 ///     this after scanning the desktop's QR. The candidate must
 ///     match the **desktop's** code.
 ///   - `{type:"hello", sessionToken:"<uuid>"}` — connecting device
-///     presenting a token from a prior pair within this daemon run.
-///     Skips the captain-confirm dance entirely on validate.
+///     presenting a token from a prior pair. Skips the captain-
+///     confirm dance entirely on validate.
 ///
 /// Anything else is silently ignored (forward-compat).
 ///
-/// Returns `Some(reason)` for confirm-rejected feedback (mismatch,
-/// expired, burned). `None` on success / hello (success there fires
-/// the oneshot directly via `PairStore::fast_confirm`; failure is
-/// silent so the captain can still confirm manually if the token's
-/// stale).
-fn handle_pending_text(text: &str, pairs: &PairStore, sessions: &SessionTokens, pending_id: &Uuid) -> Option<String> {
+/// Returns `Some(PendingRejection)` for negative feedback the device
+/// should react to:
+///   - `confirm-rejected` — typed/scanned code didn't match.
+///   - `hello-rejected` — session token is unknown (daemon restarted
+///     since the token was minted, or the token was forged). Tells
+///     the device to clear the cached token; the pair screen is
+///     already visible (rendered on `pending`), so the user can
+///     fall back to manual pair without action.
+///
+/// `None` on success or non-actionable frames.
+fn handle_pending_text(text: &str, pairs: &PairStore, sessions: &SessionTokens, pending_id: &Uuid) -> Option<PendingRejection> {
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
     let frame_type = parsed.get("type").and_then(|v| v.as_str())?;
 
@@ -364,18 +381,24 @@ fn handle_pending_text(text: &str, pairs: &PairStore, sessions: &SessionTokens, 
             let code = parsed.get("code").and_then(|v| v.as_str()).unwrap_or("");
             match pairs.confirm(pending_id, code, ConfirmSide::Device) {
                 Ok(()) => None,
-                Err(err) => Some(err.to_string()),
+                Err(err) => Some(PendingRejection {
+                    frame_type: "confirm-rejected",
+                    reason: err.to_string(),
+                }),
             }
         }
         "hello" => {
             let token = parsed.get("sessionToken").and_then(|v| v.as_str()).unwrap_or("");
 
             if !sessions.validate(token) {
-                tracing::debug!(
+                tracing::info!(
                     token_len = token.len(),
-                    "remote: hello with unknown token — falling back to manual pair"
+                    "remote: hello with unknown token — telling device to clear it"
                 );
-                return None;
+                return Some(PendingRejection {
+                    frame_type: "hello-rejected",
+                    reason: "unknown session token — pair manually".to_string(),
+                });
             }
             // Token validated → fire the same oneshot a normal
             // confirm fires. The remote address is proof of presence

@@ -304,6 +304,18 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       notifyPairListeners()
 
       return
+    case 'hello-rejected':
+      // Daemon doesn't recognise our session token (most common
+      // cause: daemon restarted since we last paired, in-memory
+      // table wiped). Drop the cached token so we don't keep
+      // silently retrying it on every reconnect; the pair screen
+      // is already on-screen because `pending` arrived first, so
+      // the user falls back to manual pair without any UI churn.
+      // Don't surface as a `lastConfirmRejection` — that's the
+      // confirm-flow error pill, this is a silent token cleanup.
+      clearSessionToken()
+
+      return
     case 'event': {
       const name = String(msg.name)
       const set = eventListeners.get(name)
