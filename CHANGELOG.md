@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.8](https://github.com/hyprpilot/hyprpilot/compare/v0.1.7...v0.1.8) (2026-05-07)
+
+
+### Features
+
+* **remote:** TLS HTTPS+WS bridge with pair-on-connect handshake ([#22](https://github.com/hyprpilot/hyprpilot/issues/22)) ([71f6d2e](https://github.com/hyprpilot/hyprpilot/commit/71f6d2e254616cd4a8c3da2fcb4f3ffae862a18a))
+* **sessions:** --restore flag + drop misleading agent/profile preview ([#20](https://github.com/hyprpilot/hyprpilot/issues/20)) ([4c57044](https://github.com/hyprpilot/hyprpilot/commit/4c57044551c208bdd2d79664ab39ad0d1df67388))
+* **system-prompt:** array-of-tables shape with per-entry inject toggles + chat banner ([#21](https://github.com/hyprpilot/hyprpilot/issues/21)) ([b44bc3b](https://github.com/hyprpilot/hyprpilot/commit/b44bc3bfec60b2454cc45f60cd4ff3a5cb3d9e1b))
+
+
+### Bug Fixes
+
+* **palette:** session-restore inherits the active profile ([#19](https://github.com/hyprpilot/hyprpilot/issues/19)) ([5fb568c](https://github.com/hyprpilot/hyprpilot/commit/5fb568c0c20b3c240f75175fb667c63c5f82e565))
+* **palette:** split active vs focus borders to opposite sides ([#17](https://github.com/hyprpilot/hyprpilot/issues/17)) ([b46b1bd](https://github.com/hyprpilot/hyprpilot/commit/b46b1bd26c7fe03fc3bcda44d6f9178bde542be2))
+
+
+### Refactor
+
+* **skills:** per-instance SkillsRegistry, drop daemon-global cache ([#25](https://github.com/hyprpilot/hyprpilot/issues/25)) ([083812d](https://github.com/hyprpilot/hyprpilot/commit/083812d1d8078879de2cb2ebb9c2bb7d72b9f6b6))
+
 ## [0.1.7](https://github.com/hyprpilot/hyprpilot/compare/v0.1.6...v0.1.7) (2026-05-07)
 
 
