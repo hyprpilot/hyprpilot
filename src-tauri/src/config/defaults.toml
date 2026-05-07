@@ -36,8 +36,8 @@ level = "info"
 # the WS upgrades to authenticated. No tokens persist; reconnect
 # re-pairs.
 #
-# `bind` defaults to `127.0.0.1:7423` (loopback only). Set to
-# `0.0.0.0:7423` to expose on LAN. TLS material lives under
+# `bind` defaults to `127.0.0.1:6262` (loopback only). Set to
+# `0.0.0.0:6262` to expose on LAN. TLS material lives under
 # `[remote.tls]`:
 #
 #   - `certificate` + `key` paths → BYO cert, daemon uses verbatim,
@@ -52,7 +52,7 @@ level = "info"
 #
 # [remote]
 # enabled = true
-# bind = "0.0.0.0:7423"
+# bind = "0.0.0.0:6262"
 #
 # [remote.tls]
 # # certificate = "~/.config/hyprpilot/remote-cert.pem"
@@ -60,7 +60,7 @@ level = "info"
 # # sans = ["mydaemon.example.com"]
 [remote]
 enabled = false
-bind = "0.0.0.0:7423"
+bind = "0.0.0.0:6262"
 
 # `[[skills]]` — array of skill catalog roots. Each entry has a
 # `dir` (where `<slug>/SKILL.md` bundles live) and an optional

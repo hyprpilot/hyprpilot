@@ -67,7 +67,7 @@ export function isRemoteHost(): boolean {
 
 /**
  * Key under which the daemon-issued session token sits in
- * `localStorage`. Per-origin (`https://<host>:7423`); two daemons on
+ * `localStorage`. Per-origin (`https://<host>:6262`); two daemons on
  * different IPs each get their own token. Lifetime is the browser's
  * localStorage policy — survives page reloads + browser restarts.
  * The daemon's own token table is in-memory though, so a daemon

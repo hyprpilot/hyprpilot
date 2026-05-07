@@ -68,8 +68,8 @@ pub async fn serve(bind: SocketAddr, tls: TlsMaterial, state: RemoteState) -> Re
     Ok(())
 }
 
-/// Resolve a `host:port` string into a `SocketAddr`. `0.0.0.0:7423`
-/// + `127.0.0.1:7423` are both valid; passes IPv6 forms too.
+/// Resolve a `host:port` string into a `SocketAddr`. `0.0.0.0:6262`
+/// + `127.0.0.1:6262` are both valid; passes IPv6 forms too.
 pub fn parse_bind(raw: &str) -> Result<SocketAddr> {
     SocketAddr::from_str(raw).map_err(|e| anyhow!("invalid bind '{raw}': {e}"))
 }

@@ -11,7 +11,7 @@
 //! ```toml
 //! [remote]
 //! enabled = true            # off by default
-//! bind = "0.0.0.0:7423"     # default: 127.0.0.1:7423 when unset
+//! bind = "0.0.0.0:6262"     # default: 127.0.0.1:6262 when unset
 //!
 //! [remote.tls]
 //! # Optional: bring your own cert/key. When unset, the daemon
@@ -41,8 +41,8 @@ pub struct RemoteConfig {
     /// Enable the remote bridge. Off by default — captains opt in.
     #[garde(skip)]
     pub enabled: Option<bool>,
-    /// `host:port` to bind. Defaults to `127.0.0.1:7423` (loopback
-    /// only) when unset; set to `0.0.0.0:7423` to expose on LAN.
+    /// `host:port` to bind. Defaults to `127.0.0.1:6262` (loopback
+    /// only) when unset; set to `0.0.0.0:6262` to expose on LAN.
     #[garde(skip)]
     pub bind: Option<String>,
     /// TLS material — bring-your-own cert/key paths and/or SAN
@@ -105,6 +105,6 @@ impl RemoteConfig {
 
     /// Resolve the bind address with the loopback-default fallback.
     pub fn resolved_bind(&self) -> String {
-        self.bind.clone().unwrap_or_else(|| "127.0.0.1:7423".to_string())
+        self.bind.clone().unwrap_or_else(|| "127.0.0.1:6262".to_string())
     }
 }

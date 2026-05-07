@@ -138,7 +138,7 @@ fn generate(sans: &[SanType]) -> Result<TlsMaterial> {
 
 fn build_sans(cfg: &crate::config::RemoteConfig) -> Vec<SanType> {
     // Loopback always preserved — without this the daemon can't even
-    // probe its own /healthz, and `wss://localhost:7423/ws` would
+    // probe its own /healthz, and `wss://localhost:6262/ws` would
     // fail TLS for desktop-loopback testing.
     let mut sans: Vec<SanType> = Vec::new();
     sans.push(SanType::DnsName(
