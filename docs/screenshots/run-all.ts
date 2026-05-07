@@ -528,7 +528,7 @@ async function main(): Promise<void> {
 
     if (shot.forceRemote === true) {
       await ctx.addInitScript(() => {
-        ;(window as { __hyprpilotForceRemote?: boolean }).__hyprpilotForceRemote = true
+        ;(window as unknown as Record<string, unknown>).__hyprpilot_force_remote = true
       })
     }
     const page = await ctx.newPage()

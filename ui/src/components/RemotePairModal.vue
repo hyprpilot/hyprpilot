@@ -276,7 +276,7 @@ useKeymap(
     </div>
 
     <p class="pair-input-hint">type the code shown on the connecting device:</p>
-    <ModalInput v-model:value="draft" placeholder="four words separated by spaces" :validate="validate.value" @submit="onAccept" />
+    <ModalInput v-model:value="draft" placeholder="four words separated by spaces" :validate="validate" @submit="onAccept" />
 
     <p v-if="lastError" class="pair-error">{{ lastError }}</p>
   </Modal>

@@ -309,7 +309,7 @@ async function exposeDevHelpers(): Promise<void> {
     openRootLeaf: palette.openRootLeaf,
     PaletteLeafId: palette.PaletteLeafId,
     seedPairPreview: (view: Parameters<typeof remoteBridge.__seedPairPreview>[0], remote = true) => {
-      ;(window as { __hyprpilotForceRemote?: boolean }).__hyprpilotForceRemote = remote
+      ;(window as unknown as Record<string, unknown>).__hyprpilot_force_remote = remote
       remoteBridge.__seedPairPreview(view)
     }
   }

@@ -65,10 +65,13 @@ export function isRemoteHost(): boolean {
   if (typeof window === 'undefined') {
     return false
   }
+
   // Dev / screenshot harness override — lets the pair preview render
   // without touching production logic. Production builds tree-shake
   // this since nothing sets the flag in normal flow.
-  if ((window as { __hyprpilotForceRemote?: boolean }).__hyprpilotForceRemote === true) {
+  const forceRemote = (window as unknown as Record<string, unknown>).__hyprpilot_force_remote === true
+
+  if (forceRemote) {
     return true
   }
 
