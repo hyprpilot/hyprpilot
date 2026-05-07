@@ -32,9 +32,12 @@ jobs:
       - name: Dispatch release.yml on new release
         # workflow_dispatch is exempt from the anti-recursion rule, so
         # this triggers release.yml even though we're calling it with
-        # GITHUB_TOKEN.
+        # GITHUB_TOKEN. `--repo` is mandatory: this job has no
+        # `actions/checkout` step, so without an explicit repo flag
+        # `gh` errors out trying to infer one from the cwd's git
+        # context (which doesn't exist on a fresh runner).
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag_name }}
-        run: gh workflow run release.yml --ref main -f tag="$TAG"
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
