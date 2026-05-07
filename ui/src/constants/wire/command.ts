@@ -265,13 +265,19 @@ export interface TauriEventPayload {
 /**
  * Payload of `remote:pair-request` — emitted on every WS upgrade
  * the daemon receives from a phone (or any browser) hitting the
- * remote bridge. The desktop overlay reads this and opens the
- * confirm modal automatically; captain types or scans the code
- * to upgrade the pending WS to authenticated.
+ * remote bridge. Carries BOTH codes: the desktop renders its own
+ * (`desktopCode`) as QR + words and expects the captain to present
+ * the device's code (`deviceCode`) — typed manually, or scanned
+ * from the device's QR. Asymmetric codes are the whole point of
+ * the pairing: presenting the same code visible on the same screen
+ * proves nothing.
  */
 export interface RemotePairRequestEventPayload {
   pendingId: string
-  code: string
+  /** Code rendered on the connecting device — desktop's expected input. */
+  deviceCode: string
+  /** Code rendered on the desktop modal — device's expected input. */
+  desktopCode: string
   remoteAddr: string
 }
 

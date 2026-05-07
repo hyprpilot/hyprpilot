@@ -70,9 +70,9 @@ fn get_keymaps(keymaps: State<'_, KeymapsConfig>) -> KeymapsConfig {
 /// selectors) — those are daemon-internal concerns.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WindowState {
-    mode: WindowMode,
-    anchor_edge: Option<Edge>,
+pub(crate) struct WindowState {
+    pub(crate) mode: WindowMode,
+    pub(crate) anchor_edge: Option<Edge>,
 }
 
 #[tauri::command]

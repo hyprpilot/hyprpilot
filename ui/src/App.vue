@@ -40,7 +40,7 @@ const showRejectedScreen = computed(() => showPairScreen.value && pair.value?.te
   <main class="overlay-root">
     <RemotePairScreen
       v-if="showPairScreen && pair?.pending"
-      :code="pair.pending.code"
+      :device-code="pair.pending.deviceCode"
       :expires-in-seconds="pair.pending.expiresInSeconds"
       :reject-reason="pair?.lastConfirmRejection"
     />

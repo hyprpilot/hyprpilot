@@ -28,25 +28,36 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::adapters::InstanceEvent;
-use crate::remote::pair::{PairStore, PAIR_EXPIRY};
+use crate::remote::pair::{ConfirmSide, CreatedPair, PairStore, PAIR_EXPIRY};
 use crate::remote::server::RemoteState;
 
 /// Per-WS task. Pair-on-connect → authenticated proxy.
 pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAddr) {
     let (mut sink, mut stream) = socket.split();
 
-    // Mint pending pair, push the welcome frame, await captain
-    // confirm. `confirm_rx` fires on `pair_store::confirm()` from
-    // EITHER the desktop side (Tauri command) OR the connecting
-    // device side (`{type:"confirm", code}` WS frame from a phone
-    // that scanned the desktop's QR).
-    let (pending_id, code, mut confirm_rx) = state.pairs.create(peer.to_string());
-    let qr_payload = code.as_str().to_string();
+    // Mint pending pair (two distinct codes, one per side), push
+    // the welcome frame, await captain confirm. `confirm_rx` fires
+    // on `pair_store::confirm()` from EITHER the desktop side (Tauri
+    // command, presenting the device's code) OR the connecting
+    // device side (`{type:"confirm", code}` WS frame, presenting the
+    // desktop's code — typically obtained by the device camera
+    // scanning the desktop modal's QR).
+    let CreatedPair {
+        pending_id,
+        device_code,
+        desktop_code,
+        confirm_rx: mut confirm_rx_owned,
+    } = state.pairs.create(peer.to_string());
+
+    // The connecting device receives BOTH codes:
+    //   - `deviceCode` is what it should display (its own identity).
+    //   - `desktopCode` is what it must obtain (by scanning) to
+    //     authenticate from this side.
     let pending_frame = json!({
         "type": "pending",
         "pendingId": pending_id.to_string(),
-        "code": code.as_str(),
-        "qrPayload": qr_payload,
+        "deviceCode": device_code.as_str(),
+        "desktopCode": desktop_code.as_str(),
         "expiresInSeconds": PAIR_EXPIRY.as_secs(),
     });
 
@@ -55,12 +66,15 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     }
 
     // Emit the desktop pair-request event. Captain's overlay listens
-    // and pops the confirm modal.
+    // and pops the confirm modal. Mirrors the WS payload — the
+    // desktop renders `desktopCode` as its own QR + words, expects
+    // `deviceCode` as input.
     let _ = state.app.emit(
         "remote:pair-request",
         json!({
             "pendingId": pending_id.to_string(),
-            "code": code.as_str(),
+            "deviceCode": device_code.as_str(),
+            "desktopCode": desktop_code.as_str(),
             "remoteAddr": peer.to_string(),
         }),
     );
@@ -79,7 +93,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     let confirmed = loop {
         tokio::select! {
             biased;
-            signal = &mut confirm_rx => break signal.is_ok(),
+            signal = &mut confirm_rx_owned => break signal.is_ok(),
             _ = &mut expire => break false,
             msg = stream.next() => {
                 match msg {
@@ -274,7 +288,7 @@ fn handle_pending_text(text: &str, pairs: &PairStore, pending_id: &Uuid) -> Opti
         return None;
     }
     let code = parsed.get("code").and_then(|v| v.as_str()).unwrap_or("");
-    match pairs.confirm(pending_id, code) {
+    match pairs.confirm(pending_id, code, ConfirmSide::Device) {
         Ok(()) => None,
         Err(err) => Some(err.to_string()),
     }

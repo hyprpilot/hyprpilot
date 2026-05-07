@@ -10,16 +10,17 @@ import { log } from '@lib'
 
 /**
  * Remote pair-confirm modal. Auto-opens on every `remote:pair-request`
- * Tauri event the daemon emits — captain reads the 4-word BIP39 code
- * off the connecting phone's screen and types it here. On match the
- * daemon upgrades the pending WS to authenticated; on mismatch the
- * input flags the error and the WS stays pending until expiry / reject.
+ * Tauri event the daemon emits. Asymmetric pair codes — this side
+ * renders `desktopCode` (its identity) as QR + readable words and
+ * expects to receive `deviceCode` (only visible on the connecting
+ * device) typed or scanned to confirm.
  *
  * Two confirm paths:
- *   1. Type the four words manually.
- *   2. Click `scan` → the laptop webcam reads the QR off the phone's
- *      pair screen and the decoded code auto-fills the input. The
- *      captain still hits confirm to commit; the scan only fills.
+ *   1. Type the four words from the connecting device's screen.
+ *   2. Click `scan` → laptop webcam reads the device's QR (which
+ *      encodes `deviceCode`); on a successful decode the modal
+ *      *auto-confirms* — no extra click. Captain pointing the
+ *      camera at the device IS the act of trust.
  */
 const props = defineProps<{
   state: RemotePairState
@@ -41,9 +42,10 @@ const scanError = ref<string | undefined>(undefined)
 const videoEl = ref<HTMLVideoElement | undefined>(undefined)
 let scanner: QrScanner | undefined
 
-// Render the same QR the connecting device shows. Side-by-side
-// visual confirmation: if the two QRs (or the two word lists)
-// don't match, the captain rejects without thinking.
+// Render this side's own code (`desktopCode`) as a QR for the
+// connecting device to scan. The captain compares the four words
+// and the QR against what's shown on the device — if either
+// doesn't match, reject.
 const qrDataUrl = ref<string | undefined>(undefined)
 const qrError = ref<string | undefined>(undefined)
 
@@ -62,11 +64,11 @@ async function regenerateQr(code: string): Promise<void> {
 }
 
 onMounted(() => {
-  void regenerateQr(props.state.code)
+  void regenerateQr(props.state.desktopCode)
 })
 
 watch(
-  () => props.state.code,
+  () => props.state.desktopCode,
   (next) => {
     void regenerateQr(next)
   }
@@ -92,21 +94,14 @@ const validate = computed<(_raw: string) => string | null>(() => (raw) => {
   return null
 })
 
-async function onAccept(): Promise<void> {
+async function commitConfirm(code: string): Promise<void> {
   if (submitting.value) {
-    return
-  }
-  const err = validate.value(draft.value)
-
-  if (err !== null) {
-    lastError.value = err
-
     return
   }
   submitting.value = true
 
   try {
-    const ok = await useRemotePair().confirm(draft.value)
+    const ok = await useRemotePair().confirm(code)
 
     if (ok) {
       emit('confirmed')
@@ -118,6 +113,17 @@ async function onAccept(): Promise<void> {
   } finally {
     submitting.value = false
   }
+}
+
+async function onAccept(): Promise<void> {
+  const err = validate.value(draft.value)
+
+  if (err !== null) {
+    lastError.value = err
+
+    return
+  }
+  await commitConfirm(draft.value)
 }
 
 async function onReject(): Promise<void> {
@@ -155,9 +161,13 @@ async function startScan(): Promise<void> {
     scanner = new QrScanner(target, (result) => {
       const decoded = result.data.trim()
 
-      log.info('remote: QR scanned', { length: decoded.length })
+      log.info('remote: QR scanned (desktop) → auto-confirming', { length: decoded.length })
       draft.value = decoded
       stopScan()
+      // Scanning the device's QR IS the act of confirmation —
+      // no extra click. Captain pointed the camera at the device,
+      // that's the proof-of-presence the pairing is checking.
+      void commitConfirm(decoded)
     }, {
       preferredCamera: 'environment',
       highlightScanRegion: true,
@@ -244,9 +254,9 @@ useKeymap(
     </template>
 
     <ModalDescription>
-      A device at <code>{{ state.remoteAddr }}</code> is requesting access. Compare the QR / words below
-      against the connecting device — if they match, type the code or click <strong>scan</strong> to
-      read it from the webcam. Re-pair on every reconnect; no tokens persist.
+      A device at <code>{{ state.remoteAddr }}</code> is requesting access. Show the QR / words below to
+      that device (it can also scan this QR with its camera), or click <strong>scan</strong> to read
+      the device's QR from this webcam — confirms automatically. Re-pair on every reconnect; no tokens persist.
     </ModalDescription>
 
     <div v-if="scanning" class="pair-scan-frame">
@@ -256,15 +266,16 @@ useKeymap(
 
     <div v-if="!scanning" class="pair-display">
       <div v-if="qrDataUrl" class="pair-qr-frame">
-        <img :src="qrDataUrl" class="pair-qr" alt="pair-code QR" />
+        <img :src="qrDataUrl" class="pair-qr" alt="desktop pair-code QR" />
       </div>
       <p v-else-if="qrError" class="pair-qr-error">QR render failed: {{ qrError }}</p>
 
       <div class="pair-words">
-        <span v-for="(word, i) in state.words" :key="`w-${i}-${word}`" class="pair-word">{{ word }}</span>
+        <span v-for="(word, i) in state.desktopWords" :key="`w-${i}-${word}`" class="pair-word">{{ word }}</span>
       </div>
     </div>
 
+    <p class="pair-input-hint">type the code shown on the connecting device:</p>
     <ModalInput v-model:value="draft" placeholder="four words separated by spaces" :validate="validate.value" @submit="onAccept" />
 
     <p v-if="lastError" class="pair-error">{{ lastError }}</p>
@@ -346,6 +357,13 @@ useKeymap(
 .pair-error {
   margin-top: 6px;
   color: var(--theme-status-err);
+  font-family: var(--theme-font-mono);
+  font-size: 0.7rem;
+}
+
+.pair-input-hint {
+  margin: 0 0 4px;
+  color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
   font-size: 0.7rem;
 }

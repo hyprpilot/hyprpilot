@@ -40,8 +40,10 @@ let terminalReason: string | undefined
 
 interface PendingFrame {
   pendingId: string
-  code: string
-  qrPayload: string
+  /** Code shown on this device — also the QR payload here. */
+  deviceCode: string
+  /** Code shown on the desktop — what we must scan / receive to authenticate from this side. */
+  desktopCode: string
   expiresInSeconds: number
 }
 
@@ -174,8 +176,8 @@ function handleFrameByType(msg: Record<string, unknown>): void {
     case 'pending':
       pendingFrame = {
         pendingId: String(msg.pendingId),
-        code: String(msg.code),
-        qrPayload: String(msg.qrPayload),
+        deviceCode: String(msg.deviceCode),
+        desktopCode: String(msg.desktopCode),
         expiresInSeconds: Number(msg.expiresInSeconds ?? 60)
       }
       // Fresh pending = fresh connection = retry succeeded; clear

@@ -1,11 +1,17 @@
 //! Pending-pair store + BIP39 code generation.
 //!
-//! Each WS connection that doesn't carry an authenticated session
-//! mints a `PairRequest`: a UUID `pending_id` + a 4-word BIP39
-//! phrase. Pending requests live in memory only — restart wipes them.
-//! The captain confirms by typing (or scanning) the phrase on the
-//! desktop; the daemon matches against the pending request and
-//! upgrades the WS to authenticated.
+//! Each WS connection mints **two** distinct 4-word phrases — one
+//! shown on the connecting device (`device_code`) and one shown on
+//! the desktop (`desktop_code`). True proof-of-presence pairing:
+//!
+//! - To confirm from the desktop side, the captain must read /
+//!   scan the **device's** code (only visible on the device).
+//! - To confirm from the device side, the captain must read /
+//!   scan the **desktop's** code (only visible on the desktop).
+//!
+//! A single shared code is what naive pairing UIs ship; that just
+//! proves the captain can read whichever screen they're already
+//! looking at, not that they have eyes on **both** devices.
 //!
 //! Expiry: 60 seconds without confirmation → auto-removed and the
 //! WS task closes the connection. Three failed confirm attempts
@@ -65,11 +71,31 @@ fn normalise(s: &str) -> String {
         .join(" ")
 }
 
+/// Which side the confirmation came from. Each side's code is the
+/// *other* side's expected input — desktop matches against the
+/// device's code, device matches against the desktop's code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmSide {
+    /// Desktop captain typed / scanned the device's code.
+    Desktop,
+    /// Connecting device sent a `{type:"confirm"}` frame carrying
+    /// the desktop's code (mostly: device camera scanned the
+    /// desktop modal's QR).
+    Device,
+}
+
 /// One pending pair request — keyed by `pending_id`. Owns a
 /// `oneshot::Sender<()>` the WS task awaits; confirming the pair
 /// fires it and the WS upgrades to authenticated.
 pub struct PairRequest {
-    pub code: PairCode,
+    /// Code rendered on the connecting device's pair screen. The
+    /// desktop must present this (typed or scanned from the device's
+    /// QR) to confirm from the desktop side.
+    pub device_code: PairCode,
+    /// Code rendered on the desktop modal. The device must present
+    /// this (typed in its own input or scanned from the desktop's
+    /// QR) to confirm from the device side.
+    pub desktop_code: PairCode,
     pub created_at: Instant,
     pub attempts: u32,
     pub remote_addr: String,
@@ -83,19 +109,32 @@ pub struct PairStore {
     inner: Arc<RwLock<HashMap<Uuid, PairRequest>>>,
 }
 
+/// Tuple returned by `PairStore::create` to make call sites readable —
+/// a long unnamed quadruple here would shift around silently when we
+/// ever extend the wire shape.
+pub struct CreatedPair {
+    pub pending_id: Uuid,
+    pub device_code: PairCode,
+    pub desktop_code: PairCode,
+    pub confirm_rx: oneshot::Receiver<()>,
+}
+
 impl PairStore {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Mint a new pending request. Caller awaits the returned
-    /// `oneshot::Receiver<()>` to know when the captain confirmed.
-    pub fn create(&self, remote_addr: String) -> (Uuid, PairCode, oneshot::Receiver<()>) {
+    /// Mint a new pending request with both codes. Caller awaits the
+    /// returned `oneshot::Receiver<()>` to know when either side
+    /// confirmed.
+    pub fn create(&self, remote_addr: String) -> CreatedPair {
         let id = Uuid::new_v4();
-        let code = PairCode::generate();
+        let device_code = PairCode::generate();
+        let desktop_code = PairCode::generate();
         let (tx, rx) = oneshot::channel();
         let req = PairRequest {
-            code: code.clone(),
+            device_code: device_code.clone(),
+            desktop_code: desktop_code.clone(),
             created_at: Instant::now(),
             attempts: 0,
             remote_addr,
@@ -105,16 +144,20 @@ impl PairStore {
             let mut map = self.inner.write().expect("PairStore poisoned");
             map.insert(id, req);
         }
-        (id, code, rx)
+        CreatedPair {
+            pending_id: id,
+            device_code,
+            desktop_code,
+            confirm_rx: rx,
+        }
     }
 
-    /// Captain submits a candidate code for `pending_id`. Returns:
-    /// - `Ok(())` on match — fires the WS task's confirm signal.
-    /// - `Err(PairError::Mismatch)` — wrong code, attempts incremented.
-    /// - `Err(PairError::Expired)` — request aged out.
-    /// - `Err(PairError::TooManyAttempts)` — burned.
-    /// - `Err(PairError::Unknown)` — pending_id not found.
-    pub fn confirm(&self, pending_id: &Uuid, candidate: &str) -> Result<(), PairError> {
+    /// Submit a candidate code for `pending_id` from `side`. The
+    /// match target depends on the side: desktop side matches against
+    /// `device_code` (proves the captain saw the device); device side
+    /// matches against `desktop_code` (proves the device's user saw
+    /// the desktop).
+    pub fn confirm(&self, pending_id: &Uuid, candidate: &str, side: ConfirmSide) -> Result<(), PairError> {
         let mut map = self.inner.write().expect("PairStore poisoned");
         let req = map.get_mut(pending_id).ok_or(PairError::Unknown)?;
 
@@ -124,7 +167,11 @@ impl PairStore {
         }
 
         req.attempts += 1;
-        if req.code.matches(candidate) {
+        let expected = match side {
+            ConfirmSide::Desktop => &req.device_code,
+            ConfirmSide::Device => &req.desktop_code,
+        };
+        if expected.matches(candidate) {
             // Fire the confirm signal. Removing the entry from the
             // map drops the sender, but we explicitly take + send so
             // the WS task observes a clean signal.
@@ -151,13 +198,15 @@ impl PairStore {
     }
 
     /// Current pending requests, snapshot. Surfaced via
-    /// `remote/pending-pairs` RPC for the desktop palette to render.
+    /// `remote_pending_pairs` Tauri command. Renders both codes so
+    /// the desktop palette can match what's on screen.
     pub fn snapshot(&self) -> Vec<PendingPairView> {
         let map = self.inner.read().expect("PairStore poisoned");
         map.iter()
             .map(|(id, r)| PendingPairView {
                 pending_id: *id,
-                code: r.code.as_str().to_string(),
+                device_code: r.device_code.as_str().to_string(),
+                desktop_code: r.desktop_code.as_str().to_string(),
                 remote_addr: r.remote_addr.clone(),
                 created_at_ms: epoch_ms(r.created_at),
             })
@@ -190,9 +239,10 @@ impl std::error::Error for PairError {}
 #[serde(rename_all = "camelCase")]
 pub struct PendingPairView {
     pub pending_id: Uuid,
-    /// Captain-facing code — surfaced so the palette modal can show
-    /// it alongside the QR for read-aloud confirmation.
-    pub code: String,
+    /// Code rendered on the connecting device.
+    pub device_code: String,
+    /// Code rendered on the desktop modal.
+    pub desktop_code: String,
     pub remote_addr: String,
     pub created_at_ms: u64,
 }
@@ -222,6 +272,22 @@ mod tests {
     }
 
     #[test]
+    fn pair_create_mints_two_distinct_codes() {
+        let store = PairStore::new();
+        let CreatedPair {
+            device_code,
+            desktop_code,
+            ..
+        } = store.create("phone".into());
+        assert_ne!(
+            device_code, desktop_code,
+            "device + desktop codes must differ — same code defeats pairing"
+        );
+        assert_eq!(device_code.as_str().split_whitespace().count(), 4);
+        assert_eq!(desktop_code.as_str().split_whitespace().count(), 4);
+    }
+
+    #[test]
     fn pair_code_match_is_case_insensitive_and_whitespace_lenient() {
         let code = PairCode("alpha bravo charlie delta".to_string());
         assert!(code.matches("alpha bravo charlie delta"));
@@ -232,34 +298,82 @@ mod tests {
     }
 
     #[test]
-    fn store_create_then_confirm_fires_signal() {
+    fn confirm_from_desktop_matches_device_code_only() {
         let store = PairStore::new();
-        let (id, code, rx) = store.create("phone".into());
-        store.confirm(&id, code.as_str()).expect("matches");
-        let _ = rx.blocking_recv();
+        let CreatedPair {
+            pending_id,
+            device_code,
+            desktop_code,
+            confirm_rx,
+        } = store.create("phone".into());
+
+        // Desktop sending the desktop's own code = wrong; that code
+        // never left the desktop, so anyone presenting it from the
+        // desktop side proves nothing.
+        assert_eq!(
+            store.confirm(&pending_id, desktop_code.as_str(), ConfirmSide::Desktop),
+            Err(PairError::Mismatch)
+        );
+
+        // Desktop sending the device's code = right; only obtainable
+        // by reading or scanning the device's screen.
+        store
+            .confirm(&pending_id, device_code.as_str(), ConfirmSide::Desktop)
+            .expect("device code from desktop side should match");
+        let _ = confirm_rx.blocking_recv();
+    }
+
+    #[test]
+    fn confirm_from_device_matches_desktop_code_only() {
+        let store = PairStore::new();
+        let CreatedPair {
+            pending_id,
+            device_code,
+            desktop_code,
+            confirm_rx,
+        } = store.create("phone".into());
+
+        assert_eq!(
+            store.confirm(&pending_id, device_code.as_str(), ConfirmSide::Device),
+            Err(PairError::Mismatch)
+        );
+
+        store
+            .confirm(&pending_id, desktop_code.as_str(), ConfirmSide::Device)
+            .expect("desktop code from device side should match");
+        let _ = confirm_rx.blocking_recv();
     }
 
     #[test]
     fn store_confirm_wrong_code_increments_attempts_then_burns() {
         let store = PairStore::new();
-        let (id, _, _rx) = store.create("phone".into());
+        let CreatedPair { pending_id, .. } = store.create("phone".into());
         for _ in 0..(PAIR_MAX_ATTEMPTS - 1) {
-            assert_eq!(store.confirm(&id, "wrong words here please"), Err(PairError::Mismatch));
+            assert_eq!(
+                store.confirm(&pending_id, "wrong words here please", ConfirmSide::Desktop),
+                Err(PairError::Mismatch)
+            );
         }
         // Final wrong attempt burns the pending state.
         assert_eq!(
-            store.confirm(&id, "still wrong words here"),
+            store.confirm(&pending_id, "still wrong words here", ConfirmSide::Desktop),
             Err(PairError::TooManyAttempts)
         );
         // Subsequent attempts return Unknown.
-        assert_eq!(store.confirm(&id, "anything goes"), Err(PairError::Unknown));
+        assert_eq!(
+            store.confirm(&pending_id, "anything goes", ConfirmSide::Desktop),
+            Err(PairError::Unknown)
+        );
     }
 
     #[test]
     fn store_reject_clears_pending_state() {
         let store = PairStore::new();
-        let (id, _, _rx) = store.create("phone".into());
-        store.reject(&id);
-        assert_eq!(store.confirm(&id, "anything"), Err(PairError::Unknown));
+        let CreatedPair { pending_id, .. } = store.create("phone".into());
+        store.reject(&pending_id);
+        assert_eq!(
+            store.confirm(&pending_id, "anything", ConfirmSide::Desktop),
+            Err(PairError::Unknown)
+        );
     }
 }

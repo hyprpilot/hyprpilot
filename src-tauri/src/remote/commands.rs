@@ -7,9 +7,13 @@ use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
 
-use crate::remote::pair::{PairError, PairStore, PendingPairView};
+use crate::remote::pair::{ConfirmSide, PairError, PairStore, PendingPairView};
 
-/// `remote_confirm_pair` — captain typed (or scanned) the pair code.
+/// `remote_confirm_pair` — captain typed (or scanned) the **device's**
+/// code on the desktop modal. The candidate is matched against the
+/// device's code only; presenting the desktop's own code (the one
+/// already visible on this side) would prove nothing and is rejected.
+///
 /// Returns `{ confirmed: true }` on match, or a structured error
 /// describing why confirmation failed (mismatch, expired, burned).
 #[tauri::command]
@@ -19,7 +23,7 @@ pub async fn remote_confirm_pair(
     code: String,
 ) -> Result<ConfirmResult, String> {
     let id = Uuid::parse_str(&pending_id).map_err(|e| format!("invalid pending_id: {e}"))?;
-    match pairs.confirm(&id, &code) {
+    match pairs.confirm(&id, &code, ConfirmSide::Desktop) {
         Ok(()) => Ok(ConfirmResult { confirmed: true }),
         Err(err) => Err(err_message(err)),
     }

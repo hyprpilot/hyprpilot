@@ -3,15 +3,19 @@
  * Mobile / remote-host pair landing. Renders before the normal overlay
  * boots when the SPA is loaded over the daemon's HTTPS bridge — the
  * phone's first WS upgrade is `pending` until the captain confirms on
- * the desktop. Shows the 4-word BIP39 code as text (read-aloud path)
- * AND as a QR (scan-from-desktop path).
+ * the desktop. Two distinct codes ride per connection: this side shows
+ * `deviceCode` (its identity) as both QR and readable words; to confirm
+ * from this side, the captain scans the **desktop's** QR (which encodes
+ * the desktop's own `desktopCode`), and the decoded value pushes back
+ * over the WS as `{type:"confirm", code}`. The daemon checks against
+ * its `desktopCode` — match → authenticated. The same code on both
+ * screens would defeat the pairing entirely (anyone with eyes on
+ * either screen could fake the proof).
  *
  * Two confirm paths from this side:
- *  1. Wait — captain types or scans the code on the desktop.
- *  2. Tap "scan" → phone webcam reads the QR off the desktop modal,
- *     pushes a `{type:"confirm", code}` frame back over the WS. The
- *     daemon checks the scanned code against this connection's pending
- *     code → match → upgrades to authenticated.
+ *  1. Wait — captain types / scans this device's code on the desktop.
+ *  2. Tap "scan" → device camera reads the desktop's QR → decoded code
+ *     pushes back as `{type:"confirm", code}` → daemon authenticates.
  *
  * Once the daemon sends `{type:"authenticated"}`, the parent flips off
  * `pending` and the regular boot continues.
@@ -25,7 +29,8 @@ import { confirmFromBrowser } from '@ipc/remote-bridge'
 import { log } from '@lib'
 
 const props = defineProps<{
-  code: string
+  /** Code shown on this device — both as readable words and QR. */
+  deviceCode: string
   expiresInSeconds: number
   /** Last `confirm-rejected` reason from the daemon, if any. */
   rejectReason?: string
@@ -39,7 +44,7 @@ const scanError = ref<string | undefined>(undefined)
 const videoEl = ref<HTMLVideoElement | undefined>(undefined)
 let scanner: QrScanner | undefined
 
-const words = computed<string[]>(() => props.code.trim().split(/\s+/u).filter(Boolean))
+const words = computed<string[]>(() => props.deviceCode.trim().split(/\s+/u).filter(Boolean))
 
 async function regenerate(code: string): Promise<void> {
   qrError.value = undefined
@@ -116,7 +121,7 @@ function stopScan(): void {
 }
 
 onMounted(() => {
-  void regenerate(props.code)
+  void regenerate(props.deviceCode)
 })
 
 onBeforeUnmount(() => {
@@ -124,7 +129,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => props.code,
+  () => props.deviceCode,
   (next) => {
     void regenerate(next)
   }

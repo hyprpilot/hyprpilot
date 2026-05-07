@@ -19,10 +19,15 @@ import { log } from '@lib'
  */
 export interface RemotePairState {
   pendingId: string
-  code: string
+  /** Code shown on the desktop modal as "your code" + QR. */
+  desktopCode: string
+  /** Code shown on the connecting device — what the desktop must present to confirm. */
+  deviceCode: string
   remoteAddr: string
-  /** Pre-formatted 4-word phrase split into individual cells. */
-  words: string[]
+  /** `desktopCode` pre-split into individual cells for rendering. */
+  desktopWords: string[]
+  /** `deviceCode` pre-split into individual cells for rendering. */
+  deviceWords: string[]
 }
 
 const active = ref<RemotePairState | undefined>(undefined)
@@ -31,9 +36,11 @@ let unlisten: UnlistenFn | undefined
 function toState(payload: RemotePairRequestEventPayload): RemotePairState {
   return {
     pendingId: payload.pendingId,
-    code: payload.code,
+    desktopCode: payload.desktopCode,
+    deviceCode: payload.deviceCode,
     remoteAddr: payload.remoteAddr,
-    words: payload.code.trim().split(/\s+/u).filter(Boolean)
+    desktopWords: payload.desktopCode.trim().split(/\s+/u).filter(Boolean),
+    deviceWords: payload.deviceCode.trim().split(/\s+/u).filter(Boolean)
   }
 }
 
