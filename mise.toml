@@ -1,6 +1,7 @@
 [tools]
 rust = "stable"
 node = "24"
+bun = "1"
 # Explicit github backend — the default `aqua:pnpm/pnpm` registry
 # tries to fetch a `pnpm-linux-x64.tar.gz` asset that doesn't exist
 # (pnpm ships standalone executables in its GitHub releases, not
