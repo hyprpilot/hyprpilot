@@ -6,22 +6,38 @@
  * the desktop. Shows the 4-word BIP39 code as text (read-aloud path)
  * AND as a QR (scan-from-desktop path).
  *
+ * Two confirm paths from this side:
+ *  1. Wait — captain types or scans the code on the desktop.
+ *  2. Tap "scan" → phone webcam reads the QR off the desktop modal,
+ *     pushes a `{type:"confirm", code}` frame back over the WS. The
+ *     daemon checks the scanned code against this connection's pending
+ *     code → match → upgrades to authenticated.
+ *
  * Once the daemon sends `{type:"authenticated"}`, the parent flips off
- * `pending` and the regular boot continues. This screen is consumer-side
- * only — it doesn't drive any IPC; just displays state from the
- * pair-frame subscription.
+ * `pending` and the regular boot continues.
  */
-import { faLock, faRotate } from '@fortawesome/free-solid-svg-icons'
+import { faCamera, faLock, faRotate, faXmark } from '@fortawesome/free-solid-svg-icons'
+import QrScanner from 'qr-scanner'
 import QRCode from 'qrcode'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+import { confirmFromBrowser } from '@ipc/remote-bridge'
+import { log } from '@lib'
 
 const props = defineProps<{
   code: string
   expiresInSeconds: number
+  /** Last `confirm-rejected` reason from the daemon, if any. */
+  rejectReason?: string
 }>()
 
 const qrDataUrl = ref<string | undefined>(undefined)
 const qrError = ref<string | undefined>(undefined)
+
+const scanning = ref(false)
+const scanError = ref<string | undefined>(undefined)
+const videoEl = ref<HTMLVideoElement | undefined>(undefined)
+let scanner: QrScanner | undefined
 
 const words = computed<string[]>(() => props.code.trim().split(/\s+/u).filter(Boolean))
 
@@ -39,8 +55,72 @@ async function regenerate(code: string): Promise<void> {
   }
 }
 
+async function startScan(): Promise<void> {
+  scanError.value = undefined
+
+  // `getUserMedia` is gated on a secure context (HTTPS or localhost).
+  // The daemon's bridge is HTTPS so the phone path is fine — guard
+  // anyway to surface a readable error if the captain ever serves
+  // the SPA from plain HTTP for testing.
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    scanError.value = 'camera unavailable in this context'
+
+    return
+  }
+
+  scanning.value = true
+  // Wait one tick for the <video> element to mount.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+  const target = videoEl.value
+
+  if (!target) {
+    scanError.value = 'video element failed to mount'
+    scanning.value = false
+
+    return
+  }
+
+  try {
+    scanner = new QrScanner(target, (result) => {
+      const decoded = result.data.trim()
+
+      log.info('remote: QR scanned (mobile)', { length: decoded.length })
+      stopScan()
+
+      try {
+        confirmFromBrowser(decoded)
+      } catch(err) {
+        scanError.value = String(err)
+      }
+    }, {
+      preferredCamera: 'environment',
+      highlightScanRegion: true,
+      highlightCodeOutline: true,
+      maxScansPerSecond: 5
+    })
+    await scanner.start()
+  } catch(err) {
+    scanError.value = String(err)
+    stopScan()
+  }
+}
+
+function stopScan(): void {
+  if (scanner) {
+    scanner.stop()
+    scanner.destroy()
+    scanner = undefined
+  }
+  scanning.value = false
+}
+
 onMounted(() => {
   void regenerate(props.code)
+})
+
+onBeforeUnmount(() => {
+  stopScan()
 })
 
 watch(
@@ -59,16 +139,34 @@ watch(
     </header>
 
     <section class="pair-screen-body">
-      <p class="pair-screen-prompt">Show this screen to the desktop. Either scan the QR or read out the four words.</p>
+      <p class="pair-screen-prompt">
+        Show this screen to the desktop, or tap <strong>scan</strong> to read the desktop's QR with this device's camera.
+      </p>
 
-      <div v-if="qrDataUrl" class="pair-qr-frame">
-        <img :src="qrDataUrl" class="pair-qr" alt="pair-code QR" />
+      <div v-if="scanning" class="pair-scan-frame">
+        <video ref="videoEl" class="pair-scan-video" muted playsinline autoplay></video>
       </div>
-      <p v-else-if="qrError" class="pair-qr-error">QR render failed: {{ qrError }}</p>
 
-      <ul class="pair-words" aria-label="pair code">
-        <li v-for="(word, i) in words" :key="`w-${i}-${word}`" class="pair-word">{{ word }}</li>
-      </ul>
+      <template v-else>
+        <div v-if="qrDataUrl" class="pair-qr-frame">
+          <img :src="qrDataUrl" class="pair-qr" alt="pair-code QR" />
+        </div>
+        <p v-else-if="qrError" class="pair-qr-error">QR render failed: {{ qrError }}</p>
+
+        <ul class="pair-words" aria-label="pair code">
+          <li v-for="(word, i) in words" :key="`w-${i}-${word}`" class="pair-word">{{ word }}</li>
+        </ul>
+      </template>
+
+      <button v-if="!scanning" type="button" class="pair-scan-btn" @click="startScan">
+        <FaIcon :icon="faCamera" /> scan desktop QR
+      </button>
+      <button v-else type="button" class="pair-scan-btn pair-scan-btn-stop" @click="stopScan">
+        <FaIcon :icon="faXmark" /> stop scanning
+      </button>
+
+      <p v-if="scanError" class="pair-error">{{ scanError }}</p>
+      <p v-if="rejectReason" class="pair-error">{{ rejectReason }}</p>
 
       <p class="pair-screen-status">
         <FaIcon :icon="faRotate" class="pair-screen-status-icon" aria-hidden="true" spin />
@@ -161,6 +259,56 @@ watch(
   font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: 0.4px;
+}
+
+.pair-scan-frame {
+  width: 100%;
+  max-width: 320px;
+  padding: 6px;
+  background-color: var(--theme-surface-alt);
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+}
+
+.pair-scan-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background-color: #000;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.pair-scan-btn {
+  @apply inline-flex items-center;
+  gap: 8px;
+  padding: 8px 16px;
+  background-color: var(--theme-accent);
+  color: var(--theme-fg-on-tone);
+  border: none;
+  border-radius: 4px;
+  font-family: var(--theme-font-mono);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  /* Touch-friendly tap target — phone first. */
+  min-height: 44px;
+}
+
+.pair-scan-btn:active {
+  filter: brightness(0.85);
+}
+
+.pair-scan-btn-stop {
+  background-color: var(--theme-status-err);
+}
+
+.pair-error {
+  margin: 0;
+  color: var(--theme-status-err);
+  font-family: var(--theme-font-mono);
+  font-size: 0.75rem;
+  text-align: center;
 }
 
 .pair-screen-status {

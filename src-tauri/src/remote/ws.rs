@@ -25,9 +25,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tauri::Emitter;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 use crate::adapters::InstanceEvent;
-use crate::remote::pair::PAIR_EXPIRY;
+use crate::remote::pair::{PairStore, PAIR_EXPIRY};
 use crate::remote::server::RemoteState;
 
 /// Per-WS task. Pair-on-connect → authenticated proxy.
@@ -36,8 +37,10 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
 
     // Mint pending pair, push the welcome frame, await captain
     // confirm. `confirm_rx` fires on `pair_store::confirm()` from
-    // the desktop side (Tauri command).
-    let (pending_id, code, confirm_rx) = state.pairs.create(peer.to_string());
+    // EITHER the desktop side (Tauri command) OR the connecting
+    // device side (`{type:"confirm", code}` WS frame from a phone
+    // that scanned the desktop's QR).
+    let (pending_id, code, mut confirm_rx) = state.pairs.create(peer.to_string());
     let qr_payload = code.as_str().to_string();
     let pending_frame = json!({
         "type": "pending",
@@ -62,15 +65,43 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
         }),
     );
 
-    // Race: captain confirms (oneshot fires) vs expiry vs phone
-    // closes the WS first.
-    let confirmed = tokio::select! {
-        biased;
-        signal = confirm_rx => signal.is_ok(),
-        _ = tokio::time::sleep(PAIR_EXPIRY) => false,
-        // Drain any phone-side messages during the pending window;
-        // none are expected, but a clean disconnect must propagate.
-        _ = drain_during_pending(&mut stream) => false,
+    // Race during the pending window:
+    // - `confirm_rx` fires (desktop confirmed via Tauri command, OR
+    //   the phone self-confirmed via a WS `{type:"confirm"}` frame
+    //   from scanning the desktop's QR — both code paths land at
+    //   `PairStore::confirm` which fires the same oneshot)
+    // - 60s expiry tick
+    // - phone closes / errors
+    // - phone sends a `{type:"confirm", code}` frame → process it
+    //   in-loop; the resulting signal lands on `confirm_rx` on the
+    //   next iteration
+    let mut expire = Box::pin(tokio::time::sleep(PAIR_EXPIRY));
+    let confirmed = loop {
+        tokio::select! {
+            biased;
+            signal = &mut confirm_rx => break signal.is_ok(),
+            _ = &mut expire => break false,
+            msg = stream.next() => {
+                match msg {
+                    None => break false,
+                    Some(Err(err)) => {
+                        tracing::warn!(%peer, %err, "remote: WS read error during pending");
+                        break false;
+                    }
+                    Some(Ok(Message::Close(_))) => break false,
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(reason) = handle_pending_text(text.as_str(), &state.pairs, &pending_id) {
+                            let _ = send_text(
+                                &mut sink,
+                                &json!({ "type": "confirm-rejected", "reason": reason }).to_string(),
+                            )
+                            .await;
+                        }
+                    }
+                    _ => {} // ping/pong/binary — ignore until pair completes
+                }
+            }
+        }
     };
 
     if !confirmed {
@@ -224,16 +255,28 @@ async fn dispatch_line(line: &str, state: &RemoteState, already_subscribed: bool
     }
 }
 
-/// During pending, drain client frames so the underlying tcp socket
-/// detects close cleanly. Phone usually sends nothing during the
-/// pending window — this exists to convert "phone closed" into the
-/// `confirm_rx` race-loser path.
-async fn drain_during_pending(stream: &mut futures_util::stream::SplitStream<WebSocket>) {
-    while let Some(msg) = stream.next().await {
-        match msg {
-            Ok(Message::Close(_)) | Err(_) => return,
-            _ => continue,
-        }
+/// Process a single text frame received during the pending window.
+///
+/// The only actionable shape is `{type: "confirm", code: "<words>"}` —
+/// the connecting device sends this after scanning the desktop's QR.
+/// Anything else is silently ignored (forward-compat for future
+/// pending-phase frames).
+///
+/// Returns `Some(reason)` when the captain-supplied code didn't match
+/// or the pending state is in an unrecoverable state — caller surfaces
+/// this back to the device as a `{type:"confirm-rejected"}` frame so
+/// the mobile UI can show feedback. `None` on success (pair store fires
+/// the oneshot, the outer `select!` picks it up next iteration) or on
+/// frames we don't care about (parse error / not a confirm shape).
+fn handle_pending_text(text: &str, pairs: &PairStore, pending_id: &Uuid) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    if parsed.get("type").and_then(|v| v.as_str()) != Some("confirm") {
+        return None;
+    }
+    let code = parsed.get("code").and_then(|v| v.as_str()).unwrap_or("");
+    match pairs.confirm(pending_id, code) {
+        Ok(()) => None,
+        Err(err) => Some(err.to_string()),
     }
 }
 

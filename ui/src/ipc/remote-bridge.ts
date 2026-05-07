@@ -28,6 +28,7 @@ let socket: WebSocket | undefined
 let connectPromise: Promise<WebSocket> | undefined
 let authenticated = false
 let pendingFrame: PendingFrame | undefined
+let lastConfirmRejection: string | undefined
 
 interface PendingFrame {
   pendingId: string
@@ -86,6 +87,7 @@ async function connect(): Promise<WebSocket> {
       socket = undefined
       authenticated = false
       pendingFrame = undefined
+      lastConfirmRejection = undefined
       notifyPairListeners()
       // Reject every in-flight RPC so callers see the disconnect.
       const queued = [...inflight.values()]
@@ -160,23 +162,35 @@ function handleFrameByType(msg: Record<string, unknown>): void {
         qrPayload: String(msg.qrPayload),
         expiresInSeconds: Number(msg.expiresInSeconds ?? 60)
       }
+      lastConfirmRejection = undefined
       notifyPairListeners()
 
       return
     case 'authenticated':
       authenticated = true
       pendingFrame = undefined
+      lastConfirmRejection = undefined
       notifyPairListeners()
 
       return
     case 'rejected':
       authenticated = false
       pendingFrame = undefined
+      lastConfirmRejection = undefined
       notifyPairListeners()
 
       if (socket) {
         socket.close()
       }
+
+      return
+    case 'confirm-rejected':
+      // Daemon refused a `{type:"confirm"}` frame the SPA pushed —
+      // most often because the captain scanned the wrong QR /
+      // desktop's QR was stale. Pending state stays alive (until
+      // expiry / attempt cap), so the user can retry the scan.
+      lastConfirmRejection = typeof msg.reason === 'string' ? msg.reason : 'pair code did not match'
+      notifyPairListeners()
 
       return
     case 'event': {
@@ -296,10 +310,23 @@ export async function remoteListen(event: string, cb: EventCallback<unknown>): P
 export interface PairView {
   pending?: PendingFrame
   authenticated: boolean
+  /**
+   * Last `confirm-rejected` reason received from the daemon. Set when
+   * a `confirmFromBrowser()` push gets refused (mostly: scan decoded
+   * the wrong QR). Cleared on the next pending/auth/rejected frame so
+   * the mobile UI can flash a one-shot error pill.
+   */
+  lastConfirmRejection?: string
+}
+
+function buildPairView(): PairView {
+  return {
+    pending: pendingFrame, authenticated, lastConfirmRejection
+  }
 }
 
 export function subscribePair(cb: (view: PairView) => void): () => void {
-  const handler = (): void => cb({ pending: pendingFrame, authenticated })
+  const handler = (): void => cb(buildPairView())
 
   pairListeners.add(handler)
   // Fire immediately so the consumer sees the current state.
@@ -311,7 +338,28 @@ export function subscribePair(cb: (view: PairView) => void): () => void {
 }
 
 export function getRemotePairView(): PairView {
-  return { pending: pendingFrame, authenticated }
+  return buildPairView()
+}
+
+/**
+ * Push a `{type:"confirm", code}` frame back over the pending WS.
+ * The daemon checks the code against the one it minted for *this*
+ * connection — match → fires the same oneshot a desktop confirm
+ * fires, WS upgrades to authenticated. Used by the mobile pair
+ * screen's webcam-scan path: phone reads the desktop's QR and
+ * pushes the decoded code back.
+ *
+ * Throws if the WS isn't open (caller already saw a `pending` frame
+ * so the connection should be live; defensive throw covers races).
+ */
+export function confirmFromBrowser(code: string): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    throw new Error('remote bridge: WS not connected')
+  }
+  // Clear any stale rejection — the user is retrying.
+  lastConfirmRejection = undefined
+  notifyPairListeners()
+  socket.send(JSON.stringify({ type: 'confirm', code: code.trim() }))
 }
 
 export function ensureRemoteConnection(): Promise<void> {

@@ -18,10 +18,11 @@ Phone-as-overlay. Browser-as-overlay. Anything on the LAN that speaks HTTPS + We
 Hyprpilot doesn't ship a trust store, doesn't manage tokens, doesn't track "known devices". Every connection re-pairs from scratch — same interaction model as Bluetooth, Chromecast, AirDrop.
 
 1. Phone opens `https://<host>:7423/` in a browser. The SPA detects it's running outside Tauri and opens a WebSocket to `wss://<host>:7423/ws`.
-2. Daemon mints a 4-word [BIP39](https://en.bitcoin.it/wiki/BIP_0039) code (one of 2048<sup>4</sup> ≈ 16 trillion phrases). Phone shows it as readable text **and** as a QR encoding the same string.
-3. Desktop overlay automatically opens a confirm modal showing the same 4 words. Two confirm paths:
-   - Type the four words.
-   - Click *scan*, hold the phone up to the laptop webcam — the QR is decoded in-browser and the input is auto-filled. Click confirm.
+2. Daemon mints a 4-word [BIP39](https://en.bitcoin.it/wiki/BIP_0039) code (one of 2048<sup>4</sup> ≈ 16 trillion phrases). Both ends show it as readable text **and** as a QR.
+3. Confirm in any of three ways:
+   - **Type** the four words into the desktop modal.
+   - **Scan from the desktop** — click *scan*, hold the phone's QR up to the laptop webcam, click confirm.
+   - **Scan from the phone** — tap *scan desktop QR*, point the phone at the desktop modal's QR. Decoded code is pushed back over the WS automatically — no further click needed.
 4. On match the WebSocket upgrades to authenticated. The phone's SPA can now drive the daemon — just like the desktop overlay does over Tauri's IPC.
 5. Disconnect → re-pair on reconnect. The contract is one connection.
 

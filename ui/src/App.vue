@@ -41,6 +41,7 @@ const showPairScreen = computed(() => remoteHost && (pair.value === undefined ||
       v-if="showPairScreen && pair?.pending"
       :code="pair.pending.code"
       :expires-in-seconds="pair.pending.expiresInSeconds"
+      :reject-reason="pair?.lastConfirmRejection"
     />
     <Overlay v-else-if="!showPairScreen" />
 
