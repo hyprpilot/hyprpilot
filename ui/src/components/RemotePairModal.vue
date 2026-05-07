@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { faCamera, faMobileScreenButton, faXmark } from '@fortawesome/free-solid-svg-icons'
 import QrScanner from 'qr-scanner'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import QRCode from 'qrcode'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { Button, ButtonTone, ButtonVariant, Modal, ModalDescription, ModalInput, ToastTone } from '@components'
 import { type RemotePairState, useRemotePair } from '@composables'
@@ -20,7 +21,7 @@ import { log } from '@lib'
  *      pair screen and the decoded code auto-fills the input. The
  *      captain still hits confirm to commit; the scan only fills.
  */
-defineProps<{
+const props = defineProps<{
   state: RemotePairState
 }>()
 
@@ -39,6 +40,37 @@ const scanning = ref(false)
 const scanError = ref<string | undefined>(undefined)
 const videoEl = ref<HTMLVideoElement | undefined>(undefined)
 let scanner: QrScanner | undefined
+
+// Render the same QR the connecting device shows. Side-by-side
+// visual confirmation: if the two QRs (or the two word lists)
+// don't match, the captain rejects without thinking.
+const qrDataUrl = ref<string | undefined>(undefined)
+const qrError = ref<string | undefined>(undefined)
+
+async function regenerateQr(code: string): Promise<void> {
+  qrError.value = undefined
+
+  try {
+    qrDataUrl.value = await QRCode.toDataURL(code, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      scale: 6
+    })
+  } catch(err) {
+    qrError.value = String(err)
+  }
+}
+
+onMounted(() => {
+  void regenerateQr(props.state.code)
+})
+
+watch(
+  () => props.state.code,
+  (next) => {
+    void regenerateQr(next)
+  }
+)
 
 watch(
   () => draft.value,
@@ -167,9 +199,9 @@ onBeforeUnmount(() => {
     </template>
 
     <ModalDescription>
-      A device at <code>{{ state.remoteAddr }}</code> is requesting access. Read the 4-word code off
-      the connecting device and type it below — or click <strong>scan</strong> to read its QR with the
-      webcam. Re-pair on every reconnect; no tokens persist.
+      A device at <code>{{ state.remoteAddr }}</code> is requesting access. Compare the QR / words below
+      against the connecting device — if they match, type the code or click <strong>scan</strong> to
+      read it from the webcam. Re-pair on every reconnect; no tokens persist.
     </ModalDescription>
 
     <div v-if="scanning" class="pair-scan-frame">
@@ -177,8 +209,15 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="scanError" class="pair-error">{{ scanError }}</p>
 
-    <div class="pair-words">
-      <span v-for="(word, i) in state.words" :key="`w-${i}-${word}`" class="pair-word">{{ word }}</span>
+    <div v-if="!scanning" class="pair-display">
+      <div v-if="qrDataUrl" class="pair-qr-frame">
+        <img :src="qrDataUrl" class="pair-qr" alt="pair-code QR" />
+      </div>
+      <p v-else-if="qrError" class="pair-qr-error">QR render failed: {{ qrError }}</p>
+
+      <div class="pair-words">
+        <span v-for="(word, i) in state.words" :key="`w-${i}-${word}`" class="pair-word">{{ word }}</span>
+      </div>
     </div>
 
     <ModalInput v-model:value="draft" placeholder="four words separated by spaces" :validate="validate.value" @submit="onAccept" />
@@ -190,14 +229,42 @@ onBeforeUnmount(() => {
 <style scoped>
 @reference '../assets/styles.css';
 
-.pair-words {
-  @apply flex flex-wrap items-center;
-  gap: 6px;
+.pair-display {
+  @apply flex items-center;
+  gap: 14px;
   margin: 10px 0 12px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background-color: var(--theme-surface-alt);
   border: 1px dashed var(--theme-border-soft);
   border-radius: 3px;
+}
+
+.pair-qr-frame {
+  flex-shrink: 0;
+  padding: 8px;
+  background-color: #ffffff;
+  border-radius: 4px;
+  border: 1px solid var(--theme-border);
+}
+
+.pair-qr {
+  display: block;
+  width: 132px;
+  height: 132px;
+  image-rendering: pixelated;
+}
+
+.pair-qr-error {
+  flex-shrink: 0;
+  color: var(--theme-status-err);
+  font-family: var(--theme-font-mono);
+  font-size: 0.7rem;
+}
+
+.pair-words {
+  @apply flex flex-wrap items-center;
+  gap: 6px;
+  flex: 1 1 auto;
   font-family: var(--theme-font-mono);
 }
 
