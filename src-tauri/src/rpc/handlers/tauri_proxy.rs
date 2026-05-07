@@ -180,7 +180,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 .try_state::<TokenHydrators>()
                 .ok_or_else(|| RpcError::internal_error("hydrators state not managed"))?;
             let mut attachments = args.attachments.unwrap_or_default();
-            let hydrated = hydrators.hydrate_all(&args.text);
+            let hydrated = hydrators.hydrate_all(&args.text).await;
             attachments.extend(hydrated);
             adapter
                 .submit_prompt(
@@ -474,7 +474,6 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 status: ctx.status,
                 adapter: ctx.adapter.clone(),
                 config: ctx.config.clone(),
-                skills: ctx.skills.clone(),
                 mcps: ctx.mcps.clone(),
                 already_subscribed: ctx.already_subscribed,
                 started_at: ctx.started_at,
@@ -560,35 +559,55 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 .map_err(|e| RpcError::internal_error(e.message))
         }
 
-        // ── skills ───────────────────────────────────────────────────
+        // ── skills (per-instance after #25) ──────────────────────────
+        // Skills are owned by the addressed instance — `instance_id`
+        // (when supplied) targets a specific live instance; unset →
+        // focused instance. No live registry → empty list / 404 on
+        // get, mirrors the desktop Tauri command's behaviour. See
+        // `crate::skills::commands` for the canonical impl.
         "skills_list" | "skills_reload" => {
-            let skills = app
-                .try_state::<Arc<SkillsRegistry>>()
-                .ok_or_else(|| RpcError::internal_error("skills registry state not managed"))?;
-            if cmd == "skills_reload" {
-                skills
-                    .reload()
-                    .map_err(|e| RpcError::internal_error(format!("skills reload failed: {e:#}")))?;
+            #[derive(Default, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                instance_id: Option<String>,
             }
-            let list: Vec<SkillSummary> = skills.list().iter().map(SkillSummary::from).collect();
+            let args: Args = params_or_default(params, "tauri/skills_list")?;
+            let adapter = adapter_arc(app)?;
+            let registry = resolve_instance_skills(&adapter, args.instance_id.as_deref()).await;
             if cmd == "skills_reload" {
+                let Some(reg) = registry else {
+                    return Ok(json!({ "count": 0, "skills": [] }));
+                };
+                reg.reload()
+                    .map_err(|e| RpcError::internal_error(format!("skills reload failed: {e:#}")))?;
+                let list: Vec<SkillSummary> = reg.list().iter().map(SkillSummary::from).collect();
                 Ok(json!({ "count": list.len(), "skills": list }))
             } else {
+                let list: Vec<SkillSummary> = match registry {
+                    Some(reg) => reg.list().iter().map(SkillSummary::from).collect(),
+                    None => Vec::new(),
+                };
                 Ok(json!({ "skills": list }))
             }
         }
         "skills_get" => {
             #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
             struct Args {
+                instance_id: Option<String>,
                 slug: String,
             }
             let args: Args = parse_params(params, "tauri/skills_get")?;
-            let skills = app
-                .try_state::<Arc<SkillsRegistry>>()
-                .ok_or_else(|| RpcError::internal_error("skills registry state not managed"))?;
             let parsed = SkillSlug::parse(&args.slug)
                 .map_err(|e| RpcError::invalid_params(format!("invalid slug '{}': {e}", args.slug)))?;
-            let skill = skills
+            let adapter = adapter_arc(app)?;
+            let Some(reg) = resolve_instance_skills(&adapter, args.instance_id.as_deref()).await else {
+                return Err(RpcError::invalid_params(format!(
+                    "no live skills registry for slug '{}'",
+                    args.slug
+                )));
+            };
+            let skill = reg
                 .get(&parsed)
                 .ok_or_else(|| RpcError::invalid_params(format!("unknown skill '{}'", args.slug)))?;
             Ok(json!({
@@ -746,7 +765,6 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 status: ctx.status,
                 adapter: ctx.adapter.clone(),
                 config: ctx.config.clone(),
-                skills: ctx.skills.clone(),
                 mcps: ctx.mcps.clone(),
                 already_subscribed: ctx.already_subscribed,
                 started_at: ctx.started_at,
@@ -771,4 +789,17 @@ fn adapter_arc(app: &tauri::AppHandle) -> Result<Arc<AcpAdapter>, RpcError> {
         .try_state::<Arc<AcpAdapter>>()
         .ok_or_else(|| RpcError::internal_error("AcpAdapter state not managed"))?;
     Ok(state.inner().clone())
+}
+
+/// Mirror of `crate::skills::commands::resolve_registry` — `instance_id`
+/// (when supplied) addresses a specific instance; an invalid / shut-
+/// down id collapses to `None` so the palette stays silent rather
+/// than erroring at the captain mid-typing. With no id the focused
+/// instance serves the call.
+async fn resolve_instance_skills(adapter: &Arc<AcpAdapter>, instance_id: Option<&str>) -> Option<Arc<SkillsRegistry>> {
+    if let Some(raw) = instance_id {
+        let key = crate::adapters::InstanceKey::parse(raw).ok()?;
+        return adapter.instance_skills(key).await;
+    }
+    adapter.focused_skills().await
 }

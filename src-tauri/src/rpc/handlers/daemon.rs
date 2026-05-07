@@ -35,25 +35,21 @@ impl RpcHandler for DaemonHandler {
 }
 
 async fn reload(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
-    let skills = ctx
-        .skills
-        .as_ref()
-        .ok_or_else(|| RpcError::internal_error("skills registry unavailable"))?;
     let mcps = ctx
         .mcps
         .as_ref()
         .ok_or_else(|| RpcError::internal_error("mcps registry unavailable"))?;
 
-    skills
-        .reload()
-        .map_err(|err| RpcError::internal_error(format!("skills reload failed: {err}")))?;
+    // Per-instance skills: fan out the reload across every live
+    // instance so the captain's "refresh skills" hits every active
+    // session at once, not just the focused one.
+    let skills_count = ctx.adapter.reload_all_skills().await;
 
     let profiles = ctx
         .config
         .as_ref()
         .map(|c| c.read().expect("config lock poisoned").profiles.len())
         .unwrap_or(0);
-    let skills_count = skills.list().len();
     let mcps_count = mcps.list().len();
 
     ctx.adapter.publish_daemon_reloaded(profiles, skills_count, mcps_count);
@@ -151,7 +147,6 @@ mod tests {
             status: &status,
             adapter,
             config: Some(config),
-            skills: None,
             mcps: None,
             already_subscribed: false,
             started_at,

@@ -326,7 +326,6 @@ async fn dispatch_line(line: &str, state: &RemoteState, already_subscribed: bool
             dispatcher: &state.dispatcher,
             adapter: state.adapter.clone(),
             config: Some(state.config.clone()),
-            skills: Some(state.skills.clone()),
             mcps: Some(state.mcps.clone()),
             connection_already_subscribed: already_subscribed,
             started_at: Some(state.started_at),

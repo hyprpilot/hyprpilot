@@ -41,7 +41,7 @@ pub async fn session_submit(
     // and projects the value into an `Attachment`. Unknown
     // schemes / unresolved values warn-and-drop. Token text stays
     // visible in the chat so the captain sees what they referenced.
-    let hydrated = hydrators.hydrate_all(&text);
+    let hydrated = hydrators.hydrate_all(&text).await;
     if !hydrated.is_empty() {
         tracing::debug!(count = hydrated.len(), "cmd::session_submit: hydrated tokens");
         attachments.extend(hydrated);

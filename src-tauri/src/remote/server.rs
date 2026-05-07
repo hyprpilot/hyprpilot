@@ -34,7 +34,6 @@ pub struct RemoteState {
     pub dispatcher: Arc<RpcDispatcher>,
     pub adapter: Arc<dyn Adapter>,
     pub config: Arc<std::sync::RwLock<crate::config::Config>>,
-    pub skills: Arc<crate::skills::SkillsRegistry>,
     pub mcps: Arc<crate::mcp::MCPsRegistry>,
     pub pairs: PairStore,
     pub sessions: SessionTokens,
