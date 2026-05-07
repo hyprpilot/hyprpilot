@@ -125,5 +125,5 @@ jobs:
       - name: Install workspace deps
         run: task install
 
-      - name: Build (debug, gold-standard verification)
+      - name: Build
         run: task build
