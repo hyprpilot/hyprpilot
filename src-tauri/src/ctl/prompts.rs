@@ -154,7 +154,7 @@ fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
             instance_id: args.instance_id,
             text: resolved,
             profile_id: args.profile,
-            cwd: args.cwd,
+            cwd: super::auto_fill_cwd(args.cwd),
             draft: args.draft,
         },
     )?;

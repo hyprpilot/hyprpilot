@@ -130,12 +130,18 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // `std::env::current_dir()` returns it for the rest of the
     // process. Expand `~` / `$VAR` so a hyprland bind like
     // `--cwd ~/projects/foo` works without a wrapper script.
-    if let Some(raw) = args.cwd.as_deref() {
+    //
+    // Resolution: `--cwd` flag wins; otherwise root-level `cwd` from
+    // config (mostly for systemd-unit invocations where there's no
+    // shell-set cwd); otherwise inherit the spawning environment's
+    // cwd (no chdir).
+    let cwd_source = args.cwd.as_deref().or(cfg.cwd.as_deref());
+    if let Some(raw) = cwd_source {
         let target = paths::resolve_user(&raw.to_string_lossy());
 
         std::env::set_current_dir(&target)
-            .with_context(|| format!("daemon: --cwd: failed to chdir to {}", target.display()))?;
-        info!(cwd = %target.display(), "daemon: --cwd applied");
+            .with_context(|| format!("daemon: cwd: failed to chdir to {}", target.display()))?;
+        info!(cwd = %target.display(), "daemon: cwd applied");
     }
 
     let socket_path = args
@@ -327,7 +333,7 @@ impl RuntimeState {
         let theme = cfg.ui.theme.clone();
         let keymaps = cfg.keymaps.clone();
         let window_cfg: Window = cfg.daemon.window.clone();
-        let skills_dirs = resolve_skills_dirs(&cfg);
+        let skills_entries = resolve_skills_entries(&cfg);
         // Share one Arc<RwLock<Config>> between AcpAdapter and RpcState so
         // both reach the same instance — config is read-only at runtime,
         // the lock is just to thread one handle through cheaply.
@@ -375,7 +381,7 @@ impl RuntimeState {
 
         // Skills registry. Captain-driven reload via the palette's
         // "reload skills" entry / `skills/reload` RPC; no fs watcher.
-        let skills = Arc::new(SkillsRegistry::new(skills_dirs));
+        let skills = Arc::new(SkillsRegistry::new(skills_entries));
         if let Err(err) = skills.reload() {
             warn!(%err, "skills registry: initial reload failed");
         }
@@ -386,12 +392,7 @@ impl RuntimeState {
         // edits + `daemon/reload` triggers a re-read; existing
         // instances keep their cached set, only restarted ones pick
         // up changes (ACP fixes mcpServers at session/new).
-        let mcps_files = shared_config
-            .read()
-            .expect("config lock poisoned")
-            .mcps
-            .clone()
-            .unwrap_or_default();
+        let mcps_files = shared_config.read().expect("config lock poisoned").resolved_mcps();
         let mcps_defs = crate::mcp::loader::load_files(&mcps_files);
         let mcps = Arc::new(MCPsRegistry::new(mcps_defs));
         let dispatcher = Arc::new(RpcDispatcher::with_defaults());
@@ -656,34 +657,38 @@ fn build_completion_registry(
 
 /// Resolve the skills roots, honouring `HYPRPILOT_SKILLS_DIR` first
 /// so manual smoke tests can point at a throwaway directory without
-/// editing `config.toml`. Then unions `[skills] dirs` (root-level)
-/// with every `[[profiles]] skills` path so captains who only
-/// configure skills per-profile still see them in the composer's
-/// `#` autocomplete. Per-profile skills the agent receives at session
+/// editing `config.toml`. Then unions root-level `[[skills]]` with
+/// every `[[profiles]] skills` entry so captains who only configure
+/// skills per-profile still see them in the composer's `#`
+/// autocomplete. Per-profile skills the agent receives at session
 /// spawn are unaffected — this just widens the *display catalog* the
 /// global `SkillsRegistry` walks, not the profile→agent injection
 /// path.
-fn resolve_skills_dirs(cfg: &Config) -> Vec<PathBuf> {
+fn resolve_skills_entries(cfg: &Config) -> Vec<crate::config::ResolvedSkillEntry> {
     if let Ok(raw) = std::env::var("HYPRPILOT_SKILLS_DIR") {
         if !raw.is_empty() {
-            return vec![PathBuf::from(raw)];
+            return vec![crate::config::ResolvedSkillEntry {
+                dir: PathBuf::from(raw),
+                ignore: None,
+            }];
         }
     }
-    let mut dirs = cfg.skills.resolved_dirs();
+    let mut entries = cfg.resolved_skills();
     for profile in &cfg.profiles {
         let Some(profile_skills) = &profile.skills else {
             continue;
         };
-        for path in profile_skills {
-            let expanded = shellexpand::full(&path.to_string_lossy())
-                .map(|s| PathBuf::from(s.into_owned()))
-                .unwrap_or_else(|_| path.clone());
-            if !dirs.contains(&expanded) {
-                dirs.push(expanded);
+        for skill in profile_skills {
+            let expanded = crate::paths::resolve_user(&skill.dir.to_string_lossy());
+            if !entries.iter().any(|e| e.dir == expanded) {
+                entries.push(crate::config::ResolvedSkillEntry {
+                    dir: expanded,
+                    ignore: skill.compile_ignore(),
+                });
             }
         }
     }
-    dirs
+    entries
 }
 
 /// Drain adapter instances, then kick Tauri's teardown. Called by

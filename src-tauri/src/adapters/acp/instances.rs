@@ -143,13 +143,19 @@ impl AcpAdapter {
     pub(crate) fn effective_mcp_files_for(
         &self,
         profile: Option<&crate::config::ProfileConfig>,
-    ) -> Vec<std::path::PathBuf> {
+    ) -> Vec<crate::config::ResolvedMcpFile> {
         if let Some(p) = profile {
             if let Some(files) = &p.mcps {
-                return files.clone();
+                return files
+                    .iter()
+                    .map(|e| crate::config::ResolvedMcpFile {
+                        file: crate::paths::resolve_user(&e.file.to_string_lossy()),
+                        ignore: e.compile_ignore(),
+                    })
+                    .collect();
             }
         }
-        self.read_config().mcps.clone().unwrap_or_default()
+        self.read_config().resolved_mcps()
     }
 
     /// Per-instance MCP catalog as a flat `Vec<MCPDefinition>`. Drives

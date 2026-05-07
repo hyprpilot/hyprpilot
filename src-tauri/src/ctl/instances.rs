@@ -187,7 +187,7 @@ impl CtlDispatch for InstancesSubcommand {
                         ensure,
                         profile_id,
                         agent_id,
-                        cwd,
+                        cwd: super::auto_fill_cwd(cwd),
                         mode,
                         model,
                     },
@@ -215,7 +215,7 @@ impl CtlDispatch for InstancesSubcommand {
                 let spawn_params = SpawnParams {
                     profile_id,
                     agent_id,
-                    cwd,
+                    cwd: super::auto_fill_cwd(cwd),
                     mode,
                     model,
                 };
@@ -251,7 +251,7 @@ impl CtlDispatch for InstancesSubcommand {
                     "instances/restart",
                     &RestartParams {
                         instance_id: instance_id.clone(),
-                        cwd,
+                        cwd: super::auto_fill_cwd(cwd),
                     },
                 )?;
                 println!("{}", serde_json::to_string_pretty(&v)?);

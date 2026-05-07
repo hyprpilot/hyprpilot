@@ -167,21 +167,19 @@ pub struct ProfileConfig {
     /// the explicit "no system prompt" off-switch.
     #[garde(custom(validate_unique_nonempty))]
     pub system_prompt: Option<Vec<PathBuf>>,
-    /// Profile-level MCP file list. `None` (unset) → fall back to the
-    /// global `mcps`. `Some(vec![path, …])` → wholesale replace the
+    /// Profile-level MCP catalog. `None` (unset) → fall back to the
+    /// global `[[mcps]]`. `Some(vec![…])` → wholesale replace the
     /// global default. `Some(vec![])` → no MCPs at all (explicit
-    /// off-switch, no fallback). `~` + env-var expansion at consume
-    /// time, mirroring `[skills] dirs` / `system_prompt`.
-    #[garde(custom(validate_unique_nonempty))]
-    pub mcps: Option<Vec<PathBuf>>,
-    /// Directory paths the skill loader scans (K-268). Follows the
-    /// claude-code skill mechanism — each entry is a folder of
-    /// manually-authored skills; the loader pulls them in at instance
-    /// spawn. `None` → use defaults; `Some([])` → no skills.
-    /// `~` expansion happens at consume time (mirrors `cwd` /
-    /// `system_prompt`).
-    #[garde(custom(validate_unique_nonempty))]
-    pub skills: Option<Vec<PathBuf>>,
+    /// off-switch, no fallback). Same `McpFile { file, ignore }`
+    /// shape as the root array.
+    #[garde(dive)]
+    pub mcps: Option<Vec<crate::config::McpFile>>,
+    /// Profile-level skills catalog. Mirrors `mcps`: `None` (unset) →
+    /// fall back to the global `[[skills]]`. `Some(vec![…])` →
+    /// wholesale replace. `Some(vec![])` → no skills. Same
+    /// `SkillEntry { dir, ignore }` shape as the root array.
+    #[garde(dive)]
+    pub skills: Option<Vec<crate::config::SkillEntry>>,
     /// Default mode id — free string today; validation against a mode
     /// catalog lands with the catalog.
     #[garde(inner(length(min = 1)))]
@@ -472,7 +470,7 @@ id = "full"
 agent = "claude-code"
 model = "claude-opus-4-5"
 system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/full.md"]
-skills = ["~/.claude/skills/rust", "~/.claude/skills/vue"]
+skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
 mode = "ask"
 cwd = "~/work"
 
@@ -495,16 +493,10 @@ BAZ = "qux"
             ])
         );
         assert_eq!(full.mcps, None, "absent mcps parses as None");
-        assert_eq!(
-            full.skills.as_deref(),
-            Some(
-                [
-                    PathBuf::from("~/.claude/skills/rust"),
-                    PathBuf::from("~/.claude/skills/vue")
-                ]
-                .as_slice()
-            )
-        );
+        let skills = full.skills.as_deref().expect("skills set");
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].dir, PathBuf::from("~/.claude/skills/rust"));
+        assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/vue"));
         assert_eq!(full.mode.as_deref(), Some("ask"));
         assert_eq!(full.cwd.as_deref(), Some(PathBuf::from("~/work")).as_deref());
         assert_eq!(full.env.get("FOO").map(String::as_str), Some("bar"));
@@ -514,28 +506,26 @@ BAZ = "qux"
     }
 
     #[test]
-    fn profile_parses_mcps_paths() {
+    fn profile_parses_mcps_array_of_tables() {
         let p = write_tmp(
             "profile-mcps-files.toml",
             r#"
 [[profiles]]
 id = "work"
 agent = "claude-code"
-mcps = ["~/.config/hyprpilot/mcps/work.json", "/etc/hyprpilot/shared.json"]
+mcps = [
+  { file = "~/.config/hyprpilot/mcps/work.json" },
+  { file = "/etc/hyprpilot/shared.json", ignore = ["scratch-*"] },
+]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         let work = cfg.profiles.iter().find(|p| p.id == "work").expect("work entry");
-        assert_eq!(
-            work.mcps.as_deref(),
-            Some(
-                [
-                    PathBuf::from("~/.config/hyprpilot/mcps/work.json"),
-                    PathBuf::from("/etc/hyprpilot/shared.json"),
-                ]
-                .as_slice()
-            )
-        );
+        let mcps = work.mcps.as_deref().expect("set");
+        assert_eq!(mcps.len(), 2);
+        assert_eq!(mcps[0].file, PathBuf::from("~/.config/hyprpilot/mcps/work.json"));
+        assert_eq!(mcps[1].file, PathBuf::from("/etc/hyprpilot/shared.json"));
+        assert_eq!(mcps[1].ignore.as_deref(), Some(&["scratch-*".to_string()][..]));
         cfg.validate().expect("valid mcps");
         fs::remove_file(&p).ok();
     }
@@ -563,40 +553,19 @@ mcps = []
     }
 
     #[test]
-    fn profile_rejects_duplicate_mcps_path() {
+    fn profile_rejects_invalid_mcps_ignore_glob() {
         let p = write_tmp(
-            "dup-mcps-files.toml",
-            r#"
-[[profiles]]
-id = "dupe"
-agent = "claude-code"
-mcps = ["~/.config/hyprpilot/mcps/work.json", "~/.config/hyprpilot/mcps/work.json"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("duplicate entry"), "{msg}");
-        assert!(msg.contains("mcps"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn profile_rejects_empty_mcps_path() {
-        let p = write_tmp(
-            "empty-mcps-files.toml",
+            "bad-mcps-glob.toml",
             r#"
 [[profiles]]
 id = "busted"
 agent = "claude-code"
-mcps = [""]
+mcps = [{ file = "/etc/hyprpilot/x.json", ignore = ["[unterminated"] }]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("empty entry"), "{msg}");
-        assert!(msg.contains("mcps"), "{msg}");
+        assert!(err.to_string().contains("not a valid glob"), "{err}");
         fs::remove_file(&p).ok();
     }
 
@@ -605,20 +574,20 @@ mcps = [""]
         let p = write_tmp(
             "mcps-global.toml",
             r#"
-mcps = ["~/.config/hyprpilot/mcps/base.json", "/etc/hyprpilot/team.json"]
+[[mcps]]
+file = "~/.config/hyprpilot/mcps/base.json"
+
+[[mcps]]
+file = "/etc/hyprpilot/team.json"
+ignore = ["work-*"]
 "#,
         );
         let cfg = load(Some(&p), None).expect("load");
-        assert_eq!(
-            cfg.mcps.as_deref(),
-            Some(
-                [
-                    PathBuf::from("~/.config/hyprpilot/mcps/base.json"),
-                    PathBuf::from("/etc/hyprpilot/team.json"),
-                ]
-                .as_slice()
-            )
-        );
+        let mcps = cfg.mcps.as_deref().expect("set");
+        assert_eq!(mcps.len(), 2);
+        assert_eq!(mcps[0].file, PathBuf::from("~/.config/hyprpilot/mcps/base.json"));
+        assert_eq!(mcps[1].file, PathBuf::from("/etc/hyprpilot/team.json"));
+        assert_eq!(mcps[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
         cfg.validate().expect("valid global mcps");
         fs::remove_file(&p).ok();
     }
@@ -634,49 +603,56 @@ mcps = ["~/.config/hyprpilot/mcps/base.json", "/etc/hyprpilot/team.json"]
         let mut base = Config::default();
         let over: Config = toml::from_str(
             r#"
-mcps = ["~/work.json"]
+[[mcps]]
+file = "~/work.json"
 "#,
         )
         .expect("over parses");
         base.merge(over);
-        assert_eq!(base.mcps.as_deref(), Some([PathBuf::from("~/work.json")].as_slice()));
+        let mcps = base.mcps.as_deref().expect("merged");
+        assert_eq!(mcps.len(), 1);
+        assert_eq!(mcps[0].file, PathBuf::from("~/work.json"));
     }
 
     #[test]
-    fn profile_rejects_duplicate_skills_path() {
+    fn profile_skills_parses_array_of_tables() {
         let p = write_tmp(
-            "dup-skills.toml",
+            "profile-skills.toml",
             r#"
 [[profiles]]
-id = "dupe"
+id = "team"
 agent = "claude-code"
-skills = ["~/.claude/skills/rust", "~/.claude/skills/rust"]
+skills = [
+  { dir = "~/.claude/skills/rust" },
+  { dir = "~/.claude/skills/all", ignore = ["work-*"] },
+]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("duplicate entry"), "{msg}");
-        assert!(msg.contains("skills"), "{msg}");
+        let team = cfg.profiles.iter().find(|p| p.id == "team").expect("team entry");
+        let skills = team.skills.as_deref().expect("set");
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].dir, PathBuf::from("~/.claude/skills/rust"));
+        assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/all"));
+        assert_eq!(skills[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
+        cfg.validate().expect("valid skills");
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn profile_rejects_empty_skills_path() {
+    fn profile_rejects_invalid_skills_ignore_glob() {
         let p = write_tmp(
-            "empty-skills.toml",
+            "bad-skills-glob.toml",
             r#"
 [[profiles]]
 id = "busted"
 agent = "claude-code"
-skills = [""]
+skills = [{ dir = "~/x", ignore = ["[unterminated"] }]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
-        let msg = err.to_string();
-        assert!(msg.contains("empty entry"), "{msg}");
-        assert!(msg.contains("skills"), "{msg}");
+        assert!(err.to_string().contains("not a valid glob"), "{err}");
         fs::remove_file(&p).ok();
     }
 

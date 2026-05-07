@@ -164,7 +164,10 @@ mod tests {
             let frontmatter = format!("---\nname: {slug}\ndescription: {slug} description\n---\n");
             std::fs::write(skill_dir.join("SKILL.md"), format!("{frontmatter}\n{body}")).unwrap();
         }
-        let registry = Arc::new(SkillsRegistry::new(vec![PathBuf::from(dir.path())]));
+        let registry = Arc::new(SkillsRegistry::new(vec![crate::config::ResolvedSkillEntry {
+            dir: PathBuf::from(dir.path()),
+            ignore: None,
+        }]));
         registry.reload().unwrap();
         // Leak the tempdir so the files survive past the function (tests own
         // their own scoped tempdirs in real callers; here we just need

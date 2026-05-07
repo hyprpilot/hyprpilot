@@ -11,42 +11,54 @@
 //! skills loader uses.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, warn};
 
 use super::{HyprpilotExtension, MCPDefinition};
+use crate::config::ResolvedMcpFile;
 
-/// Wrap `paths::resolve_user` so call sites read the same
-/// (raw-path-in / fully-resolved-out) shape and the resolution
-/// step stays consistent across mcp loader / agents / completion.
-fn expand_path(path: &Path) -> PathBuf {
-    crate::paths::resolve_user(&path.to_string_lossy())
-}
-
-/// Load + merge every file in `paths`. Returns the resolved
-/// definition list ready to hand to `MCPsRegistry::new`. Errors are
-/// per-file: a single bad file logs and is skipped; the others still
-/// load. An empty list (no files supplied) returns an empty Vec.
-pub fn load_files(paths: &[PathBuf]) -> Vec<MCPDefinition> {
+/// Load + merge every entry in `entries`. Returns the resolved
+/// definition list ready to hand to `MCPsRegistry::new`. Per-entry
+/// `ignore` glob (when present) filters the file's loaded servers
+/// by name before merging. Errors are per-file: a single bad file
+/// logs and is skipped; the others still load. An empty list returns
+/// an empty Vec.
+pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
     let mut resolved: Vec<MCPDefinition> = Vec::new();
-    for raw_path in paths {
-        let path = expand_path(raw_path);
-        let entries = match load_one(&path) {
-            Ok(entries) => entries,
+    for entry in entries {
+        let loaded = match load_one(&entry.file) {
+            Ok(loaded) => loaded,
             Err(err) => {
-                warn!(path = %path.display(), %err, "mcp loader: skipping malformed file");
+                warn!(path = %entry.file.display(), %err, "mcp loader: skipping malformed file");
                 continue;
             }
         };
-        debug!(path = %path.display(), count = entries.len(), "mcp loader: file loaded");
-        for entry in entries {
+        let kept: Vec<MCPDefinition> = match &entry.ignore {
+            Some(glob) => loaded
+                .into_iter()
+                .filter(|d| {
+                    let drop = glob.is_match(&d.name);
+                    if drop {
+                        debug!(
+                            path = %entry.file.display(),
+                            server = %d.name,
+                            "mcp loader: server name matches ignore glob — skipping"
+                        );
+                    }
+                    !drop
+                })
+                .collect(),
+            None => loaded,
+        };
+        debug!(path = %entry.file.display(), count = kept.len(), "mcp loader: file loaded");
+        for def in kept {
             // Later-wins: drop any prior definition with the same name
             // before pushing the new one.
-            resolved.retain(|d: &MCPDefinition| d.name != entry.name);
-            resolved.push(entry);
+            resolved.retain(|d: &MCPDefinition| d.name != def.name);
+            resolved.push(def);
         }
     }
     resolved
@@ -104,6 +116,8 @@ struct McpFile {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use tempfile::TempDir;
 
@@ -111,6 +125,21 @@ mod tests {
         let path = dir.path().join(name);
         fs::write(&path, body).unwrap();
         path
+    }
+
+    fn entry(file: PathBuf) -> ResolvedMcpFile {
+        ResolvedMcpFile { file, ignore: None }
+    }
+
+    fn entry_with_ignore(file: PathBuf, patterns: &[&str]) -> ResolvedMcpFile {
+        let mut builder = globset::GlobSetBuilder::new();
+        for p in patterns {
+            builder.add(globset::Glob::new(p).expect("test glob compiles"));
+        }
+        ResolvedMcpFile {
+            file,
+            ignore: Some(builder.build().expect("test glob set builds")),
+        }
     }
 
     #[test]
@@ -133,7 +162,7 @@ mod tests {
                 }
             }"#,
         );
-        let defs = load_files(std::slice::from_ref(&path));
+        let defs = load_files(&[entry(path.clone())]);
         assert_eq!(defs.len(), 1);
         let d = &defs[0];
         assert_eq!(d.name, "filesystem");
@@ -159,7 +188,7 @@ mod tests {
             "personal.json",
             r#"{ "mcpServers": { "github": { "command": "uvx", "args": ["personal"] } } }"#,
         );
-        let defs = load_files(&[base, personal.clone()]);
+        let defs = load_files(&[entry(base), entry(personal.clone())]);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "github");
         assert_eq!(defs[0].source, personal);
@@ -182,14 +211,14 @@ mod tests {
             "good.json",
             r#"{ "mcpServers": { "alpha": { "command": "echo" } } }"#,
         );
-        let defs = load_files(&[bad, good]);
+        let defs = load_files(&[entry(bad), entry(good)]);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "alpha");
     }
 
     #[test]
     fn missing_file_warns_and_skips() {
-        let defs = load_files(&[PathBuf::from("/nonexistent/path/foo.json")]);
+        let defs = load_files(&[entry(PathBuf::from("/nonexistent/path/foo.json"))]);
         assert!(defs.is_empty());
     }
 
@@ -201,13 +230,32 @@ mod tests {
             "base.json",
             r#"{ "mcpServers": { "alpha": { "command": "echo" } } }"#,
         );
-        let defs = load_files(&[path]);
+        let defs = load_files(&[entry(path)]);
         assert!(defs[0].hyprpilot.auto_accept_tools.is_empty());
         assert!(defs[0].hyprpilot.auto_reject_tools.is_empty());
     }
 
     #[test]
-    fn empty_path_list_returns_empty() {
+    fn ignore_glob_drops_matching_servers() {
+        let dir = TempDir::new().unwrap();
+        let path = write(
+            &dir,
+            "team.json",
+            r#"{
+                "mcpServers": {
+                    "github": { "command": "echo" },
+                    "linear-laravel-work": { "command": "echo" },
+                    "scratch-pad": { "command": "echo" }
+                }
+            }"#,
+        );
+        let defs = load_files(&[entry_with_ignore(path, &["*-work", "scratch-*"])]);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["github"]);
+    }
+
+    #[test]
+    fn empty_entry_list_returns_empty() {
         let defs = load_files(&[]);
         assert!(defs.is_empty());
     }
