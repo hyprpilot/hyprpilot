@@ -198,6 +198,88 @@ impl AcpAdapter {
         Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
     }
 
+    /// Resolved skill-root list for an instance. Profile's `skills`
+    /// wholesale-replaces the global `[[skills]]`; `None` (unset)
+    /// falls back. Mirror of `effective_mcp_files_for`. Drives the
+    /// per-instance `SkillsRegistry` built once at spawn time.
+    pub(crate) fn effective_skills_for(
+        &self,
+        profile: Option<&crate::config::ProfileConfig>,
+    ) -> Vec<crate::config::ResolvedSkillEntry> {
+        if let Some(p) = profile {
+            if let Some(entries) = &p.skills {
+                return entries
+                    .iter()
+                    .map(|e| crate::config::ResolvedSkillEntry {
+                        dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
+                        ignore: e.compile_ignore(),
+                    })
+                    .collect();
+            }
+        }
+        self.read_config().resolved_skills()
+    }
+
+    /// Build the per-instance `SkillsRegistry` from the resolved
+    /// entries. Calls `reload()` immediately so the registry is
+    /// ready-to-list at spawn time (no first-prompt lag while disk
+    /// walks). Empty registries are valid — captain may have
+    /// `skills = []` set explicitly. `reload()` errors are logged
+    /// and swallowed; the captain can hit `skills/reload` to retry.
+    fn build_skills_registry_for(
+        &self,
+        profile: Option<&crate::config::ProfileConfig>,
+    ) -> Arc<crate::skills::SkillsRegistry> {
+        let entries = self.effective_skills_for(profile);
+        let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
+        if let Err(err) = registry.reload() {
+            tracing::warn!(%err, "acp::adapter: per-instance skills initial reload failed");
+        }
+        registry
+    }
+
+    /// Per-instance skills registry for an addressed key. Returns
+    /// `None` when the key isn't live. The registry is the per-spawn
+    /// view filtered by the instance's profile — the only source of
+    /// truth for the palette / autocomplete / hydrator.
+    pub async fn instance_skills(&self, key: InstanceKey) -> Option<Arc<crate::skills::SkillsRegistry>> {
+        self.registry.get(key).await.map(|h| h.skills.clone())
+    }
+
+    /// Per-instance skills registry for the focused instance. `None`
+    /// when no instance is focused (boot pre-spawn / all-shutdown
+    /// states). Drives the composer autocomplete + inline-token
+    /// hydrator — both ride the focused instance's filter.
+    pub async fn focused_skills(&self) -> Option<Arc<crate::skills::SkillsRegistry>> {
+        let key = self.registry.focused_id().await?;
+        self.instance_skills(key).await
+    }
+
+    /// Reload every live instance's skills registry from disk.
+    /// Returns the aggregate skill count across all instances post-
+    /// reload — the figure the `daemon/reload` RPC surfaces in its
+    /// response. Per-instance reload errors are logged and skipped;
+    /// aggregate stays valid (the broken instance's count drops to
+    /// 0, the rest add normally).
+    pub async fn reload_all_skills(&self) -> usize {
+        let mut total = 0usize;
+        for key in self.registry.ordered_keys().await {
+            let Some(handle) = self.registry.get(key).await else {
+                continue;
+            };
+            if let Err(err) = handle.skills.reload() {
+                tracing::warn!(
+                    instance = %key,
+                    %err,
+                    "acp::adapter: per-instance skills reload failed",
+                );
+                continue;
+            }
+            total += handle.skills.list().len();
+        }
+        total
+    }
+
     /// Handle onto the shared config. Used by the daemon wiring to
     /// hand the same lock to `RpcState` so reads + writes stay
     /// coherent. Test-only consumer today (real daemon constructs the
@@ -430,6 +512,7 @@ impl AcpAdapter {
         // the per-server lane short-circuits and every call falls
         // through to AskUser (or trust store).
         let mcps = self.build_mcp_registry_for(profile.as_ref());
+        let skills = self.build_skills_registry_for(profile.as_ref());
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -438,6 +521,7 @@ impl AcpAdapter {
             bootstrap,
             permissions: self.permissions.clone(),
             mcps,
+            skills,
             commands_cache: self.commands_cache(),
         });
 
@@ -622,7 +706,10 @@ impl AcpAdapter {
             // sender — drop it after the list resolves and the actor
             // shuts itself down.
             let (sink_tx, _unread_rx) = broadcast::channel::<crate::adapters::InstanceEvent>(8);
-            // Ephemeral list-only actor never reads MCPs; pass None.
+            // Ephemeral list-only actor never reads MCPs / skills;
+            // pass empty registries so the actor body's accessors
+            // stay non-Option without paying for a disk walk on the
+            // throwaway path.
             let _ = profile;
             let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
                 resolved,
@@ -632,6 +719,7 @@ impl AcpAdapter {
                 bootstrap: Bootstrap::ListOnly,
                 permissions: self.permissions.clone(),
                 mcps: None,
+                skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
                 commands_cache: None,
             });
             let tx = instance.cmd_tx.clone();
@@ -806,6 +894,7 @@ impl AcpAdapter {
         let profile = self.profile_by_id(resolved.profile_id.as_deref());
         let profile_id_for_instance = resolved.profile_id.clone();
         let mcps = self.build_mcp_registry_for(profile.as_ref());
+        let skills = self.build_skills_registry_for(profile.as_ref());
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -814,6 +903,7 @@ impl AcpAdapter {
             bootstrap: Bootstrap::Fresh,
             permissions: self.permissions.clone(),
             mcps,
+            skills,
             commands_cache: self.commands_cache(),
         });
         self.registry
@@ -1207,6 +1297,10 @@ impl Adapter for AcpAdapter {
     fn publish_daemon_reloaded(&self, profiles: usize, skills_count: usize, mcps_count: usize) {
         AcpAdapter::publish_daemon_reloaded(self, profiles, skills_count, mcps_count);
     }
+
+    async fn reload_all_skills(&self) -> usize {
+        AcpAdapter::reload_all_skills(self).await
+    }
 }
 
 fn map_adapter_error_to_rpc(err: AdapterError) -> RpcError {
@@ -1360,6 +1454,120 @@ system_prompt = [{{ file = "{}" }}]
         assert_eq!(resolved.profile_id.as_deref(), Some("ask"));
         assert_eq!(resolved.model.as_deref(), Some("claude-sonnet-4-5"));
         assert!(resolved.system_prompt_for(&Bootstrap::Fresh).is_none());
+    }
+
+    fn skills_fixture_config(skills_dir: &std::path::Path) -> Config {
+        // Three profiles all pointing at the same skill dir with
+        // DIFFERENT ignore globs — the canonical "stale daemon-global"
+        // scenario the per-instance refactor exists to fix. Each
+        // profile's spawned instance must see its own filter, never
+        // the first-iterated profile's view leaking across.
+        toml::from_str(&format!(
+            r#"
+[agent]
+default = "claude-code"
+
+[profile]
+default = "personal"
+
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"
+command = "/bin/false"
+
+[[profiles]]
+id = "personal"
+agent = "claude-code"
+skills = [{{ dir = "{dir}", ignore = ["work-*"] }}]
+
+[[profiles]]
+id = "work"
+agent = "claude-code"
+skills = [{{ dir = "{dir}", ignore = ["personal-*"] }}]
+
+[[profiles]]
+id = "no-skills"
+agent = "claude-code"
+skills = []
+"#,
+            dir = skills_dir.display(),
+        ))
+        .expect("fixture parses")
+    }
+
+    fn seed_skill(root: &std::path::Path, slug: &str) {
+        let dir = root.join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\ndescription: {slug}\n---\n\n# {slug}\n\nbody\n"),
+        )
+        .unwrap();
+    }
+
+    /// Build a registry from the addressed profile's filter and
+    /// confirm that profile's globs apply — i.e. NOT the global /
+    /// first-profile's globs. This is the regression test for the
+    /// "stale daemon-global" bug.
+    #[test]
+    fn build_skills_registry_for_uses_addressed_profile_globs() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_skill(tmp.path(), "personal-todo");
+        seed_skill(tmp.path(), "work-internal");
+        seed_skill(tmp.path(), "shared-readme");
+        let cfg = skills_fixture_config(tmp.path());
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+
+        let personal = adapter
+            .read_config()
+            .profiles
+            .iter()
+            .find(|p| p.id == "personal")
+            .cloned();
+        let work = adapter.read_config().profiles.iter().find(|p| p.id == "work").cloned();
+        let no_skills = adapter
+            .read_config()
+            .profiles
+            .iter()
+            .find(|p| p.id == "no-skills")
+            .cloned();
+
+        let personal_reg = adapter.build_skills_registry_for(personal.as_ref());
+        let personal_slugs: Vec<String> = personal_reg.list().iter().map(|s| s.slug.to_string()).collect();
+        assert!(personal_slugs.contains(&"personal-todo".into()));
+        assert!(personal_slugs.contains(&"shared-readme".into()));
+        assert!(
+            !personal_slugs.contains(&"work-internal".into()),
+            "personal profile must filter out work-* per its own glob"
+        );
+
+        let work_reg = adapter.build_skills_registry_for(work.as_ref());
+        let work_slugs: Vec<String> = work_reg.list().iter().map(|s| s.slug.to_string()).collect();
+        assert!(work_slugs.contains(&"work-internal".into()));
+        assert!(work_slugs.contains(&"shared-readme".into()));
+        assert!(
+            !work_slugs.contains(&"personal-todo".into()),
+            "work profile must filter out personal-* per its own glob (NOT inherit personal's filter)"
+        );
+
+        let empty_reg = adapter.build_skills_registry_for(no_skills.as_ref());
+        assert_eq!(
+            empty_reg.list().len(),
+            0,
+            "skills = [] explicit off-switch yields empty registry"
+        );
+    }
+
+    /// `instance_skills` returns `None` for a key that isn't live;
+    /// `focused_skills` returns `None` when the registry is empty.
+    /// These are the safety nets the palette relies on to render an
+    /// empty list rather than panic when no instance has spawned.
+    #[tokio::test]
+    async fn instance_and_focused_skills_return_none_when_empty() {
+        let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
+        let bogus = InstanceKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert!(adapter.instance_skills(bogus).await.is_none());
+        assert!(adapter.focused_skills().await.is_none());
     }
 
     #[tokio::test]

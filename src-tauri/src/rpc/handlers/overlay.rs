@@ -181,7 +181,6 @@ mod tests {
             status: &status,
             adapter: dyn_adapter,
             config: Some(shared),
-            skills: None,
             mcps: None,
             already_subscribed: false,
             started_at: None,

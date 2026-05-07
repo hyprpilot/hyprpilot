@@ -1239,6 +1239,16 @@ pub struct AcpInstance {
     /// validated as a slug at the rename boundary so it's always
     /// safe to display verbatim. `None` until the captain renames.
     pub name: Arc<tokio::sync::RwLock<Option<String>>>,
+    /// Per-instance skills catalogue, built from the active profile's
+    /// `skills = [...]` (with profile→global fallback) at spawn time.
+    /// The palette / autocomplete / inline-token hydrator all read
+    /// from this — switching to another instance flips the visible
+    /// skill set without touching any global cache. `reload()` is
+    /// driven by the `skills/reload` RPC + the palette's "refresh
+    /// skills" entry; both are addressed at the instance level so
+    /// captains can re-walk one instance's roots without disturbing
+    /// the others.
+    pub skills: Arc<crate::skills::SkillsRegistry>,
 }
 
 impl AcpInstance {
@@ -1344,6 +1354,7 @@ impl AcpInstance {
             bootstrap,
             permissions,
             mcps,
+            skills,
             commands_cache,
         } = params;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
@@ -1376,6 +1387,7 @@ impl AcpInstance {
             cmd_tx,
             session_id: session_id.clone(),
             name: Arc::new(tokio::sync::RwLock::new(None)),
+            skills,
         };
 
         tokio::spawn(run(RunParams {
@@ -1452,6 +1464,12 @@ pub struct StartParams {
     pub bootstrap: Bootstrap,
     pub permissions: Arc<dyn PermissionController>,
     pub mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
+    /// Per-instance skills catalogue. Always set — the adapter builds
+    /// either the profile's `skills = [...]` view or the global
+    /// fallback. Empty registries are valid; the captain may have
+    /// `skills = []`. See `AcpInstance.skills` for the consumer
+    /// contract.
+    pub skills: Arc<crate::skills::SkillsRegistry>,
     pub commands_cache: Option<crate::completion::source::commands::CommandsCache>,
 }
 
@@ -3134,6 +3152,7 @@ mod tests {
             bootstrap: Bootstrap::Fresh,
             permissions: dummy_permissions(),
             mcps: None,
+            skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
             commands_cache: None,
         }
     }

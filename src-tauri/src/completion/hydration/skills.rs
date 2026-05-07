@@ -2,44 +2,42 @@
 
 use std::sync::Arc;
 
-use crate::adapters::Attachment;
-use crate::skills::SkillsRegistry;
+use async_trait::async_trait;
+
+use crate::adapters::{AcpAdapter, Attachment};
 
 use super::TokenHydrator;
 
-/// Looks the slug up against the shared `SkillsRegistry` and projects
-/// the loaded skill into an `Attachment`. Registered into the daemon's
-/// `TokenHydrators` at boot (see `daemon::mod::setup_app`).
+/// Looks the slug up against the focused instance's `SkillsRegistry`
+/// (the only authoritative skills view today — daemon-global skills
+/// are gone) and projects the loaded skill into an `Attachment`.
+/// Registered into the daemon's `TokenHydrators` at boot.
 pub struct SkillTokenHydrator {
-    registry: Arc<SkillsRegistry>,
+    adapter: Arc<AcpAdapter>,
 }
 
 impl SkillTokenHydrator {
     #[must_use]
-    pub fn new(registry: Arc<SkillsRegistry>) -> Self {
-        Self { registry }
+    pub fn new(adapter: Arc<AcpAdapter>) -> Self {
+        Self { adapter }
     }
 }
 
+#[async_trait]
 impl TokenHydrator for SkillTokenHydrator {
     fn scheme(&self) -> &'static str {
         "skills"
     }
 
-    fn hydrate(&self, value: &str) -> Option<Attachment> {
+    async fn hydrate(&self, value: &str) -> Option<Attachment> {
         use crate::skills::SkillSlug;
         let slug = SkillSlug::parse(value).ok()?;
-        let skill = self.registry.get(&slug)?;
+        let registry = self.adapter.focused_skills().await?;
+        let skill = registry.get(&slug)?;
         // Skill bundles live at `<root>/<slug>/SKILL.md`; the path's
         // basename is always the literal `SKILL.md`, which makes a
-        // useless transcript pill ("SKILL.md", "SKILL.md", "SKILL.md"
-        // for three different skill picks). The captain referenced
-        // the skill by its slug (`#{skill/git-commit}` or palette
-        // pick) — that's what they'll recognise. Prefer the
-        // frontmatter `title` when authored, fall back to slug
-        // otherwise. Empty frontmatter title (no `title:` field at
-        // all) hits the slug path; non-empty title wins for richer
-        // labels like "Git commit helper".
+        // useless transcript pill. Prefer the frontmatter `title` when
+        // authored, fall back to slug otherwise.
         let title = if skill.title.trim().is_empty() {
             slug.as_str().to_string()
         } else {

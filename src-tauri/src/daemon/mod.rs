@@ -23,7 +23,6 @@ use crate::config::{Config, Edge, KeymapsConfig, Theme, Window, WindowMode};
 use crate::mcp::MCPsRegistry;
 use crate::paths;
 use crate::rpc::{RpcDispatcher, StatusBroadcast};
-use crate::skills::SkillsRegistry;
 
 #[derive(Args, Debug, Default, Clone)]
 pub struct DaemonArgs {
@@ -318,7 +317,6 @@ struct RuntimeState {
     permissions: Arc<dyn PermissionController>,
     acp_adapter: Arc<AcpAdapter>,
     adapter: Arc<dyn Adapter>,
-    skills: Arc<SkillsRegistry>,
     mcps: Arc<MCPsRegistry>,
     dispatcher: Arc<RpcDispatcher>,
     shared_config: Arc<RwLock<Config>>,
@@ -333,7 +331,6 @@ impl RuntimeState {
         let theme = cfg.ui.theme.clone();
         let keymaps = cfg.keymaps.clone();
         let window_cfg: Window = cfg.daemon.window.clone();
-        let skills_entries = resolve_skills_entries(&cfg);
         // Share one Arc<RwLock<Config>> between AcpAdapter and RpcState so
         // both reach the same instance — config is read-only at runtime,
         // the lock is just to thread one handle through cheaply.
@@ -379,12 +376,11 @@ impl RuntimeState {
         ));
         let adapter: Arc<dyn Adapter> = acp_adapter.clone();
 
-        // Skills registry. Captain-driven reload via the palette's
-        // "reload skills" entry / `skills/reload` RPC; no fs watcher.
-        let skills = Arc::new(SkillsRegistry::new(skills_entries));
-        if let Err(err) = skills.reload() {
-            warn!(%err, "skills registry: initial reload failed");
-        }
+        // Skills are now per-instance — built at AcpInstance::start
+        // from the active profile's `skills = [...]` (with global
+        // fallback). The daemon-global registry is gone; the palette /
+        // autocomplete / hydrator all read from the focused
+        // instance's registry through `AcpAdapter::focused_skills`.
 
         // MCP registry — resolved at daemon boot from the JSON files
         // listed under top-level `mcps`. Empty when no files are
@@ -408,7 +404,6 @@ impl RuntimeState {
             permissions,
             acp_adapter,
             adapter,
-            skills,
             mcps,
             dispatcher,
             shared_config,
@@ -484,7 +479,6 @@ fn setup_app(
     app.manage(state.acp_adapter.clone());
     app.manage(state.permissions);
     app.manage(state.mcps.clone());
-    app.manage(state.skills.clone());
     app.manage(state.status.clone());
     app.manage(state.adapter.clone());
     state.acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
@@ -492,8 +486,10 @@ fn setup_app(
     // Inline-token hydration. One scheme today (`skills://`); future
     // schemes (e.g. `prompt://`, `clip://`) plug in by pushing onto
     // this registry. session_submit pulls it from managed state.
+    // The skills hydrator queries the focused instance's registry
+    // on every call — no daemon-global skills cache.
     let hydrators = crate::completion::hydration::TokenHydrators::new().with(Arc::new(
-        crate::completion::hydration::SkillTokenHydrator::new(state.skills.clone()),
+        crate::completion::hydration::SkillTokenHydrator::new(state.acp_adapter.clone()),
     ));
     app.manage(hydrators);
 
@@ -509,7 +505,8 @@ fn setup_app(
         .expect("config rwlock poisoned")
         .completion
         .clone();
-    let (completion_registry, commands_cache) = build_completion_registry(state.skills.clone(), &completion_config);
+    let (completion_registry, commands_cache) =
+        build_completion_registry(state.acp_adapter.clone(), &completion_config);
     state.acp_adapter.set_commands_cache(commands_cache);
     let completion_cancellations = Arc::new(crate::completion::CompletionCancellations::default());
     app.manage(completion_registry);
@@ -543,7 +540,6 @@ fn setup_app(
         dispatcher: state.dispatcher,
         adapter: state.adapter.clone(),
         config: state.shared_config,
-        skills: state.skills,
         mcps: state.mcps,
         started_at,
         socket_path,
@@ -630,9 +626,12 @@ fn argv_is_bare(argv: &[String]) -> bool {
 /// sources in priority order (slash → skills → path → ripgrep). The
 /// slash source's cache is shared with the ACP adapter so each
 /// instance's `available_commands_update` notification refreshes the
-/// completion list in place.
+/// completion list in place. The skills source captures the adapter
+/// so each query reads from the focused instance's per-profile
+/// registry — switching instances flips the visible skill set
+/// without rebuilding any state.
 fn build_completion_registry(
-    skills: Arc<SkillsRegistry>,
+    adapter: Arc<AcpAdapter>,
     completion_config: &crate::config::CompletionConfig,
 ) -> (
     Arc<crate::completion::CompletionRegistry>,
@@ -642,53 +641,24 @@ fn build_completion_registry(
         commands::{CommandsCache, CommandsSource},
         path::PathSource,
         ripgrep::RipgrepSource,
-        skills::SkillsSource,
+        skills::{SkillsResolver, SkillsSource},
     };
     let commands_cache: CommandsCache = Arc::new(std::sync::RwLock::new(Vec::new()));
+    let skills_resolver: SkillsResolver = {
+        let adapter = adapter.clone();
+        Arc::new(move || {
+            let adapter = adapter.clone();
+            Box::pin(async move { adapter.focused_skills().await })
+        })
+    };
     let registry = Arc::new(
         crate::completion::CompletionRegistry::new()
             .with_source(Arc::new(CommandsSource::new(commands_cache.clone())))
-            .with_source(Arc::new(SkillsSource::new(skills)))
+            .with_source(Arc::new(SkillsSource::new(skills_resolver)))
             .with_source(Arc::new(PathSource::new()))
             .with_source(Arc::new(RipgrepSource::from_config(&completion_config.ripgrep))),
     );
     (registry, commands_cache)
-}
-
-/// Resolve the skills roots, honouring `HYPRPILOT_SKILLS_DIR` first
-/// so manual smoke tests can point at a throwaway directory without
-/// editing `config.toml`. Then unions root-level `[[skills]]` with
-/// every `[[profiles]] skills` entry so captains who only configure
-/// skills per-profile still see them in the composer's `#`
-/// autocomplete. Per-profile skills the agent receives at session
-/// spawn are unaffected — this just widens the *display catalog* the
-/// global `SkillsRegistry` walks, not the profile→agent injection
-/// path.
-fn resolve_skills_entries(cfg: &Config) -> Vec<crate::config::ResolvedSkillEntry> {
-    if let Ok(raw) = std::env::var("HYPRPILOT_SKILLS_DIR") {
-        if !raw.is_empty() {
-            return vec![crate::config::ResolvedSkillEntry {
-                dir: PathBuf::from(raw),
-                ignore: None,
-            }];
-        }
-    }
-    let mut entries = cfg.resolved_skills();
-    for profile in &cfg.profiles {
-        let Some(profile_skills) = &profile.skills else {
-            continue;
-        };
-        for skill in profile_skills {
-            let expanded = crate::paths::resolve_user(&skill.dir.to_string_lossy());
-            if !entries.iter().any(|e| e.dir == expanded) {
-                entries.push(crate::config::ResolvedSkillEntry {
-                    dir: expanded,
-                    ignore: skill.compile_ignore(),
-                });
-            }
-        }
-    }
-    entries
 }
 
 /// Drain adapter instances, then kick Tauri's teardown. Called by

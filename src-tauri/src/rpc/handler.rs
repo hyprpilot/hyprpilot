@@ -34,10 +34,6 @@ pub struct HandlerCtx<'a> {
     /// briefly to clone what they need. Config is static after daemon
     /// start; restart-to-change is the model.
     pub config: Option<Arc<RwLock<Config>>>,
-    /// Shared skills registry. `daemon/reload` calls
-    /// `SkillsRegistry::reload()` to rescan on-disk catalogues.
-    /// `None` in unit tests where reload isn't exercised.
-    pub skills: Option<Arc<crate::skills::SkillsRegistry>>,
     /// Shared MCP registry. `daemon/reload` reads its `list().len()`
     /// for the response payload. `None` in unit tests.
     pub mcps: Option<Arc<crate::mcp::MCPsRegistry>>,

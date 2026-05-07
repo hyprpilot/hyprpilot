@@ -24,6 +24,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use regex::Regex;
 
 use crate::adapters::Attachment;
@@ -38,6 +39,7 @@ pub use skills::SkillTokenHydrator;
 /// `Attachment` (or `None` to drop). All higher-level parsing —
 /// scheme dispatch, token boundaries, warn-on-miss — lives in
 /// [`TokenHydrators`].
+#[async_trait]
 pub trait TokenHydrator: Send + Sync {
     /// URL scheme this hydrator owns (e.g. `"skills"`). Matched
     /// case-sensitively against the parsed token's scheme part.
@@ -45,8 +47,11 @@ pub trait TokenHydrator: Send + Sync {
 
     /// Project the value (everything between `://` and the closing
     /// `}`) into an `Attachment`. Return `None` when the value can't
-    /// be resolved — caller logs a `warn!` and drops the token.
-    fn hydrate(&self, value: &str) -> Option<Attachment>;
+    /// be resolved — caller logs a `warn!` and drops the token. Async
+    /// because the skills hydrator (the only impl today) consults
+    /// the focused-instance registry on every call, and the registry
+    /// pointer lives behind the adapter's `tokio::sync::RwLock`.
+    async fn hydrate(&self, value: &str) -> Option<Attachment>;
 }
 
 /// Registry of [`TokenHydrator`]s keyed by their scheme. Construct
@@ -73,7 +78,7 @@ impl TokenHydrators {
     /// and dispatch to the matching hydrator. Unknown schemes / unknown
     /// values warn-and-drop. Order in the output mirrors order in the
     /// source text.
-    pub fn hydrate_all(&self, text: &str) -> Vec<Attachment> {
+    pub async fn hydrate_all(&self, text: &str) -> Vec<Attachment> {
         // `#{scheme://value}` — scheme is `[a-z][a-z0-9_-]*`, value
         // captures everything up to the closing `}`. Greedy `[^}]*`
         // is safe because `}` is forbidden inside a token.
@@ -92,7 +97,7 @@ impl TokenHydrators {
                 tracing::warn!(scheme, value, "token hydrate: no hydrator for scheme");
                 continue;
             };
-            match hydrator.hydrate(value) {
+            match hydrator.hydrate(value).await {
                 Some(att) => out.push(att),
                 None => tracing::warn!(scheme, value, "token hydrate: value did not resolve"),
             }
@@ -111,11 +116,12 @@ mod tests {
         scheme: &'static str,
         accept: &'static str,
     }
+    #[async_trait]
     impl TokenHydrator for FakeHydrator {
         fn scheme(&self) -> &'static str {
             self.scheme
         }
-        fn hydrate(&self, value: &str) -> Option<Attachment> {
+        async fn hydrate(&self, value: &str) -> Option<Attachment> {
             if value == self.accept {
                 Some(Attachment {
                     slug: value.to_string(),
@@ -131,8 +137,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dispatches_to_matching_scheme() {
+    #[tokio::test]
+    async fn dispatches_to_matching_scheme() {
         let hydrators = TokenHydrators::new()
             .with(Arc::new(FakeHydrator {
                 scheme: "skills",
@@ -142,39 +148,41 @@ mod tests {
                 scheme: "prompt",
                 accept: "p1",
             }));
-        let out = hydrators.hydrate_all("see #{skills://git-commit} and #{prompt://p1} please");
+        let out = hydrators
+            .hydrate_all("see #{skills://git-commit} and #{prompt://p1} please")
+            .await;
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].slug, "git-commit");
         assert_eq!(out[1].slug, "p1");
     }
 
-    #[test]
-    fn drops_unknown_scheme() {
+    #[tokio::test]
+    async fn drops_unknown_scheme() {
         let hydrators = TokenHydrators::new().with(Arc::new(FakeHydrator {
             scheme: "skills",
             accept: "anything",
         }));
-        let out = hydrators.hydrate_all("a #{unknown://x} b");
+        let out = hydrators.hydrate_all("a #{unknown://x} b").await;
         assert!(out.is_empty());
     }
 
-    #[test]
-    fn drops_unresolved_value() {
+    #[tokio::test]
+    async fn drops_unresolved_value() {
         let hydrators = TokenHydrators::new().with(Arc::new(FakeHydrator {
             scheme: "skills",
             accept: "git-commit",
         }));
-        let out = hydrators.hydrate_all("a #{skills://nope} b");
+        let out = hydrators.hydrate_all("a #{skills://nope} b").await;
         assert!(out.is_empty());
     }
 
-    #[test]
-    fn handles_back_to_back_tokens() {
+    #[tokio::test]
+    async fn handles_back_to_back_tokens() {
         let hydrators = TokenHydrators::new().with(Arc::new(FakeHydrator {
             scheme: "skills",
             accept: "x",
         }));
-        let out = hydrators.hydrate_all("#{skills://x}#{skills://x}");
+        let out = hydrators.hydrate_all("#{skills://x}#{skills://x}").await;
         assert_eq!(out.len(), 2);
     }
 }
