@@ -19,12 +19,12 @@ model = "claude-sonnet-4-5"              # optional; overrides the agent's defau
 cwd = "~/code/hyprpilot"                 # optional; falls back to where the daemon was started
 mode = "default"                         # optional; vendor-specific (e.g. plan / default)
 system_prompt = [
-  "~/.config/hyprpilot/prompts/base.md",
-  "~/.config/hyprpilot/prompts/engineer.md"
+  { file = "~/.config/hyprpilot/prompts/base.md" },
+  { file = "~/.config/hyprpilot/prompts/engineer.md" },
 ]
 mcps = [
-  "~/.config/hyprpilot/mcps/team.json",
-  "~/.claude.json"
+  { file = "~/.config/hyprpilot/mcps/team.json" },
+  { file = "~/.claude.json" },
 ]
 ```
 
@@ -45,8 +45,8 @@ You can have multiple instances of the same profile running side-by-side — eac
 | `model` | string (optional) | Overrides the agent's default model for this profile. |
 | `cwd` | path (optional) | Where the agent operates. `~`, `${VAR}` expansion supported. |
 | `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. codex: approval modes. |
-| `system_prompt` | path[] (optional) | Files concatenated and prepended to your first prompt. `[]` = no prompt. |
-| `mcps` | path[] (optional) | MCP catalog override for this profile. `[]` = no MCPs. |
+| `system_prompt` | `{ file, inject? }[]` (optional) | Per-entry prompt files prepended to your first prompt. Each entry's `inject.on_create` / `inject.on_update` toggles which bootstrap paths it rides on. `[]` = no prompt. |
+| `mcps` | `{ file, ignore? }[]` (optional) | MCP catalog override for this profile. `[]` = no MCPs. |
 
 ## Picking the default
 
@@ -67,16 +67,38 @@ Resolution when you submit a prompt:
 
 ## System prompts
 
-`system_prompt` takes a list of file paths. The daemon reads them, concatenates with blank-line separators, and prepends the result to your first prompt. The agent treats it as context, then reads your message.
+`system_prompt` is an array of `{ file, inject? }` entries. The daemon reads each file, concatenates the surviving bodies with blank-line separators, and prepends the result to your first prompt. The agent treats it as context, then reads your message.
 
 ```toml
 system_prompt = [
-  "~/.config/hyprpilot/prompts/base.md",         # shared persona
-  "~/.config/hyprpilot/prompts/engineer.md"      # per-profile addendum
+  { file = "~/.config/hyprpilot/prompts/base.md" },        # shared persona
+  { file = "~/.config/hyprpilot/prompts/engineer.md" },    # per-profile addendum
 ]
 ```
 
-Composition lets a base persona + per-profile addendum land without juggling templates. `[]` is the explicit "no prompt" off-switch.
+Composition lets a base persona + per-profile addendum land without juggling templates. `system_prompt = []` is the explicit "no prompt" off-switch.
+
+### Per-entry inject toggles
+
+Each entry takes an optional `inject` object that gates which bootstrap paths the file rides on:
+
+```toml
+system_prompt = [
+  # Default: rides only on fresh sessions, not on resume.
+  { file = "~/.config/hyprpilot/prompts/base.md" },
+
+  # Explicit: rides on both fresh AND resume.
+  { file = "~/.config/hyprpilot/prompts/strict.md",
+    inject = { on_create = true, on_update = true } },
+]
+```
+
+| Field | Default | What it gates |
+| --- | --- | --- |
+| `inject.on_create` | `true` | Whether the file rides when the daemon spawns a fresh session. |
+| `inject.on_update` | `false` | Whether the file rides when resuming a persisted session. Default off because the resumed session already carries its own transcript context — re-injecting the prompt on top is usually redundant noise. |
+
+When at least one entry actually injects, the chat shows a `system prompt · <files>` chapter-break banner so you can see what rode along.
 
 ## MCPs
 
@@ -218,7 +240,7 @@ mcps = []
 id = "review-hyprpilot"
 agent = "claude-code"
 cwd = "~/code/hyprpilot"
-system_prompt = ["~/.config/hyprpilot/prompts/reviewer.md"]
+system_prompt = [{ file = "~/.config/hyprpilot/prompts/reviewer.md" }]
 ```
 
 ### A read-only filesystem-only profile

@@ -29,6 +29,7 @@ import type {
   InstanceRenamedEventPayload,
   PermissionRequestEventPayload,
   SessionInfoUpdateEventPayload,
+  SystemPromptInjectedEventPayload,
   TerminalEventPayload,
   TranscriptEventPayload,
   TurnEndedEventPayload,
@@ -119,6 +120,7 @@ export enum TauriEvent {
   AcpUsageUpdate = 'acp:usage-update',
   AcpConfigOptionsUpdate = 'acp:config-options-update',
   AcpInstanceMeta = 'acp:instance-meta',
+  AcpSystemPromptInjected = 'acp:system-prompt-injected',
   ComposerDraftAppend = 'composer:draft-append'
 }
 
@@ -245,5 +247,6 @@ export interface TauriEventPayload {
   [TauriEvent.AcpUsageUpdate]: UsageUpdateEventPayload
   [TauriEvent.AcpConfigOptionsUpdate]: ConfigOptionsUpdateEventPayload
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
+  [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
 }

@@ -9,7 +9,8 @@ export enum StreamItemKind {
   Plan = 'plan',
   ModeChange = 'mode_change',
   ModelChange = 'model_change',
-  ConfigOptionChange = 'config_option_change'
+  ConfigOptionChange = 'config_option_change',
+  SystemPromptInjected = 'system_prompt_injected'
 }
 
 interface BaseStream {
@@ -86,7 +87,16 @@ export interface ConfigOptionChangeStreamItem extends BaseStream {
   prevName?: string
 }
 
-export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem | ModelChangeStreamItem | ConfigOptionChangeStreamItem
+/// Fires once per instance start when the daemon actually attaches a
+/// system prompt to the spawning agent. Sessions with no configured
+/// prompt files (or every entry's inject toggle off for this
+/// bootstrap path) get nothing — silence by design.
+export interface SystemPromptInjectedStreamItem extends BaseStream {
+  kind: StreamItemKind.SystemPromptInjected
+  files: string[]
+}
+
+export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem | ModelChangeStreamItem | ConfigOptionChangeStreamItem | SystemPromptInjectedStreamItem
 
 export interface StreamState {
   items: StreamItem[]
@@ -322,6 +332,46 @@ export function pushConfigOptionChange(id: InstanceId, sessionId: string, change
     name: change.name,
     prevValue: change.prevValue,
     prevName: change.prevName
+  })
+}
+
+export interface SystemPromptInjectedPush {
+  files: string[]
+}
+
+/// Banner item for the daemon's `acp:system-prompt-injected` event.
+/// Sessions don't always carry a sessionId yet at injection time
+/// (the event fires before `session/new` resolves on Bootstrap::Fresh
+/// and during the LoadSession dance on Bootstrap::Resume), so we
+/// stamp `sessionId: ''` and let the demuxer place it before the
+/// first turn.
+export function pushSystemPromptInjected(id: InstanceId, push: SystemPromptInjectedPush): void {
+  const slot = slotFor(id)
+  const seq = nextSeq(id)
+  // Dedupe: a re-emitted event for the same instance + same files
+  // refreshes the timestamp instead of stacking a second banner.
+  const last = slot.items[slot.items.length - 1]
+
+  if (
+    last
+    && last.kind === StreamItemKind.SystemPromptInjected
+    && last.files.length === push.files.length
+    && last.files.every((f, i) => f === push.files[i])
+  ) {
+    last.updatedAt = seq
+
+    return
+  }
+  const itemId = `system-prompt-${id}-${slot.items.length}`
+
+  slot.items.push({
+    kind: StreamItemKind.SystemPromptInjected,
+    id: itemId,
+    sessionId: '',
+    turnId: undefined,
+    createdAt: seq,
+    updatedAt: seq,
+    files: [...push.files]
   })
 }
 

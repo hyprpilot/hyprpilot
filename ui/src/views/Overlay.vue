@@ -805,6 +805,23 @@ function thoughtText(call: { title?: string; content: { type?: string; text?: st
  * Order by `createdAt` so the captain sees them in the order the
  * agent emitted them. Empty result → no card rendered.
  */
+/// Resolve a SystemPromptInjected banner's "to" label. Show
+/// basename of each file, comma-joined; truncate to 3 names with a
+/// `+N more` tail to keep the banner one line at typical overlay
+/// widths.
+function systemPromptLabel(files: readonly string[]): string {
+  if (files.length === 0) {
+    return 'attached'
+  }
+  const baseNames = files.map((f) => f.split('/').pop() ?? f)
+
+  if (baseNames.length <= 3) {
+    return baseNames.join(', ')
+  }
+
+  return `${baseNames.slice(0, 3).join(', ')} +${baseNames.length - 3} more`
+}
+
 function combinedThoughtText(block: {
   thoughts: { createdAt: number; call: WireToolCall }[]
   streamEntries: { createdAt: number; item: { kind: StreamItemKind; text?: string } }[]
@@ -1208,6 +1225,11 @@ function onQueueSend(itemId: string): void {
               :kind="entry.item.categoryId"
               :to="entry.item.name ?? entry.item.value"
               :from="entry.item.prevName ?? entry.item.prevValue"
+            />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected"
+              kind="system prompt"
+              :to="systemPromptLabel(entry.item.files)"
             />
           </template>
 

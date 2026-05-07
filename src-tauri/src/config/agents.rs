@@ -11,7 +11,7 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use super::merge_strategies::{merge_agents_by_id, overwrite_some};
-use super::validations::{validate_agent_default_id, validate_agents_ids, validate_unique_nonempty};
+use super::validations::{validate_agent_default_id, validate_agents_ids};
 
 /// `[[agents]]` registry + `[agent]` global scope. Entries override
 /// by `id`; new ids append. Cross-field check on `agent.default`
@@ -157,16 +157,16 @@ pub struct ProfileConfig {
     pub agent: String,
     #[garde(inner(length(min = 1)))]
     pub model: Option<String>,
-    /// Paths to markdown / text files holding the system prompt.
-    /// Multiple files are concatenated with a blank-line separator
-    /// at resolve time so the captain can compose layered prompts
-    /// (e.g. base persona + project-specific addendum). Read at
-    /// submit time so edits land without a daemon restart. `~` +
-    /// env-var expansion mirrors `[skills] dirs` / `cwd`. Profile-
-    /// level array wholesale-replaces the root array; `Some([])` is
-    /// the explicit "no system prompt" off-switch.
-    #[garde(custom(validate_unique_nonempty))]
-    pub system_prompt: Option<Vec<PathBuf>>,
+    /// Profile-level system-prompt list. Same shape as the root
+    /// `system_prompt`: array of `{ file, inject? }` entries.
+    /// Captains compose layered prompts (base persona + project-
+    /// specific addendum) by listing multiple entries; per-entry
+    /// `inject` gates which bootstrap paths each file rides on.
+    /// Profile-level value wholesale-replaces the root
+    /// `system_prompt`; `system_prompt = []` is the explicit "no
+    /// prompt" off-switch.
+    #[garde(dive)]
+    pub system_prompt: Option<Vec<crate::config::SystemPromptEntry>>,
     /// Profile-level MCP catalog. `None` (unset) → fall back to the
     /// global `[[mcps]]`. `Some(vec![…])` → wholesale replace the
     /// global default. `Some(vec![])` → no MCPs at all (explicit
@@ -469,7 +469,10 @@ default = "ghost-profile"
 id = "full"
 agent = "claude-code"
 model = "claude-opus-4-5"
-system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/full.md"]
+system_prompt = [
+  { file = "~/.config/hyprpilot/prompts/base.md" },
+  { file = "~/.config/hyprpilot/prompts/full.md", inject = { on_create = true, on_update = true } },
+]
 skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
 mode = "ask"
 cwd = "~/work"
@@ -482,16 +485,21 @@ BAZ = "qux"
         let cfg = load(Some(&p), None).expect("load");
         let full = cfg.profiles.iter().find(|p| p.id == "full").expect("full entry");
         assert_eq!(full.model.as_deref(), Some("claude-opus-4-5"));
+        let prompts = full.system_prompt.as_deref().expect("system_prompt set");
+        assert_eq!(prompts.len(), 2);
         assert_eq!(
-            full.system_prompt.as_deref().map(|paths| paths
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect::<Vec<_>>()),
-            Some(vec![
-                "~/.config/hyprpilot/prompts/base.md".to_string(),
-                "~/.config/hyprpilot/prompts/full.md".to_string()
-            ])
+            prompts[0].file,
+            std::path::PathBuf::from("~/.config/hyprpilot/prompts/base.md")
         );
+        // Default inject: on_create=true, on_update=false.
+        assert!(prompts[0].inject.on_create);
+        assert!(!prompts[0].inject.on_update);
+        assert_eq!(
+            prompts[1].file,
+            std::path::PathBuf::from("~/.config/hyprpilot/prompts/full.md")
+        );
+        assert!(prompts[1].inject.on_create);
+        assert!(prompts[1].inject.on_update, "explicit on_update=true honoured");
         assert_eq!(full.mcps, None, "absent mcps parses as None");
         let skills = full.skills.as_deref().expect("skills set");
         assert_eq!(skills.len(), 2);

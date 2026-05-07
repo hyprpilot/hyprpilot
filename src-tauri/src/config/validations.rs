@@ -1,8 +1,6 @@
 //! Garde predicates for the `config::*` derive surface. Everything
 //! here is `pub(super)`; the outside API is `Config::validate()`.
 
-use std::path::PathBuf;
-
 use super::{AgentConfig, AgentDefaults, KeymapsConfig, Modifier, ProfileConfig, ProfileDefaults};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
@@ -73,54 +71,6 @@ pub(super) fn validate_profile_agent_references<'a>(
         }
         Ok(())
     }
-}
-
-/// Trait that lets `validate_unique_nonempty` reject empty entries +
-/// duplicates over either `String` or `PathBuf` without two copies of
-/// the validator. `is_blank` smooths over `String::is_empty` vs
-/// `PathBuf::as_os_str().is_empty()`; `display_label` powers the error
-/// message (paths use `.display()`).
-pub(super) trait ListEntry: std::hash::Hash + Eq {
-    fn is_blank(&self) -> bool;
-    fn display_label(&self) -> String;
-}
-
-impl ListEntry for String {
-    fn is_blank(&self) -> bool {
-        self.is_empty()
-    }
-    fn display_label(&self) -> String {
-        self.clone()
-    }
-}
-
-impl ListEntry for PathBuf {
-    fn is_blank(&self) -> bool {
-        self.as_os_str().is_empty()
-    }
-    fn display_label(&self) -> String {
-        self.display().to_string()
-    }
-}
-
-/// Reject empty entries + duplicates inside an `Option<Vec<T>>`.
-/// Generic over `String` / `PathBuf` (and anything else implementing
-/// the local `ListEntry` trait). `~` expansion happens at consume
-/// time so paths are compared in raw form.
-pub(super) fn validate_unique_nonempty<T: ListEntry>(list: &Option<Vec<T>>, _ctx: &()) -> garde::Result {
-    let Some(items) = list else {
-        return Ok(());
-    };
-    let mut seen: std::collections::HashSet<&T> = std::collections::HashSet::new();
-    for item in items {
-        if item.is_blank() {
-            return Err(garde::Error::new("empty entry is not valid"));
-        }
-        if !seen.insert(item) {
-            return Err(garde::Error::new(format!("duplicate entry '{}'", item.display_label())));
-        }
-    }
-    Ok(())
 }
 
 /// `[profile] default` (when set) must name a real `[[profiles]]`

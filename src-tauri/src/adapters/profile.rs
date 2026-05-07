@@ -29,7 +29,12 @@ pub struct ResolvedInstance {
     pub agent: AgentConfig,
     pub profile_id: Option<String>,
     pub model: Option<String>,
-    pub system_prompt: Option<String>,
+    /// Resolved per-entry system-prompt list. Each entry carries its
+    /// own pre-read body + inject toggles; the actor filters the
+    /// list against the bootstrap variant (Fresh vs Resume) at spawn
+    /// time and concatenates the surviving entries. `Some(vec![])` /
+    /// `None` both mean "no prompt".
+    pub system_prompt: Vec<ResolvedSystemPromptEntry>,
     /// Per-instance mode override. Populated from `SpawnSpec::mode`
     /// at resolve time (future K-275 will also let a `[[profiles]]`
     /// entry set a default). Generic layer just carries it; ACP's
@@ -38,6 +43,60 @@ pub struct ResolvedInstance {
     /// claude-code's `plan` / `edit`) happens inside the vendor
     /// agent impl.
     pub mode: Option<String>,
+}
+
+/// One pre-read system-prompt entry — body content + the per-entry
+/// inject toggles the daemon honours per bootstrap path. The actor
+/// filters its `Vec<Self>` against the live bootstrap variant
+/// (Fresh / Resume) and concatenates the surviving bodies.
+#[derive(Debug, Clone)]
+pub struct ResolvedSystemPromptEntry {
+    pub body: String,
+    pub file: std::path::PathBuf,
+    pub inject: crate::config::SystemPromptInject,
+}
+
+impl ResolvedInstance {
+    /// Filter `system_prompt` entries against the bootstrap variant
+    /// and concatenate the surviving bodies with a blank-line
+    /// separator. Returns `None` when no entry qualifies (no entries
+    /// configured, or every entry's inject toggle is off for this
+    /// path). Production path: the actor calls this at spawn time
+    /// so the per-entry inject toggles actually gate injection.
+    pub fn system_prompt_for(&self, bootstrap: &crate::adapters::Bootstrap) -> Option<String> {
+        use crate::adapters::Bootstrap;
+        let bodies: Vec<&str> = self
+            .system_prompt
+            .iter()
+            .filter(|e| match bootstrap {
+                Bootstrap::Fresh => e.inject.on_create,
+                Bootstrap::Resume(_) => e.inject.on_update,
+                Bootstrap::ListOnly => false,
+            })
+            .map(|e| e.body.as_str())
+            .collect();
+        if bodies.is_empty() {
+            None
+        } else {
+            Some(bodies.join("\n\n"))
+        }
+    }
+
+    /// Files whose inject toggle qualifies for the given bootstrap
+    /// path — the captain-facing list the "system prompt attached"
+    /// banner reads. Mirrors `system_prompt_for`'s filter.
+    pub fn system_prompt_files_for(&self, bootstrap: &crate::adapters::Bootstrap) -> Vec<std::path::PathBuf> {
+        use crate::adapters::Bootstrap;
+        self.system_prompt
+            .iter()
+            .filter(|e| match bootstrap {
+                Bootstrap::Fresh => e.inject.on_create,
+                Bootstrap::Resume(_) => e.inject.on_update,
+                Bootstrap::ListOnly => false,
+            })
+            .map(|e| e.file.clone())
+            .collect()
+    }
 }
 
 impl ResolvedInstance {
@@ -128,15 +187,15 @@ impl ResolvedInstance {
     }
 
     /// Resolve the system prompt for a profile. Profile-level
-    /// `system_prompt` (array of paths) wholesale-replaces the root
-    /// `system_prompt`; both `None` means no prompt. Files are read
-    /// in array order and concatenated with a blank-line separator
-    /// — captains compose layered prompts (base persona +
-    /// project-specific addendum) without an external preprocessor.
-    /// `Some([])` is the explicit off-switch and resolves to None.
-    fn load_system_prompt(profile: &ProfileConfig, config: &Config) -> Result<Option<String>> {
-        if let Some(paths) = &profile.system_prompt {
-            return read_prompt_files(paths, &format!("profile '{}'", profile.id));
+    /// `system_prompt` wholesale-replaces the root `system_prompt`;
+    /// both `None` means no prompt. Each entry's body is read in
+    /// list order at resolve time; the actor filters the list
+    /// against the bootstrap variant at spawn time and concatenates
+    /// the surviving bodies with a blank-line separator. `system_prompt
+    /// = []` is the explicit off-switch and resolves to an empty list.
+    fn load_system_prompt(profile: &ProfileConfig, config: &Config) -> Result<Vec<ResolvedSystemPromptEntry>> {
+        if let Some(entries) = &profile.system_prompt {
+            return read_prompt_entries(entries, &format!("profile '{}'", profile.id));
         }
         load_root_system_prompt(config)
     }
@@ -177,33 +236,33 @@ fn apply_thinking_budget(agent: &mut AgentConfig, budget: Option<u32>) {
     agent.env.insert("MAX_THINKING_TOKENS".into(), resolved.to_string());
 }
 
-fn load_root_system_prompt(config: &Config) -> Result<Option<String>> {
+fn load_root_system_prompt(config: &Config) -> Result<Vec<ResolvedSystemPromptEntry>> {
     match &config.system_prompt {
-        Some(paths) => read_prompt_files(paths, "root"),
-        None => Ok(None),
+        Some(entries) => read_prompt_entries(entries, "root"),
+        None => Ok(Vec::new()),
     }
 }
 
-/// Concatenate every readable file in `paths` with a blank-line
-/// separator. Empty list returns `None` (the explicit off-switch
-/// shape). Each path is `~`/env-expanded; missing files surface as
-/// readable errors stamped with `ctx_label`.
-fn read_prompt_files(paths: &[std::path::PathBuf], ctx_label: &str) -> Result<Option<String>> {
-    if paths.is_empty() {
-        return Ok(None);
-    }
-    let mut out = String::new();
-
-    for path in paths {
-        let expanded = crate::paths::resolve_user(&path.to_string_lossy());
+/// Read every entry's file body and pair it with the entry's
+/// inject toggles. Each path is `~`/env-expanded; missing files
+/// surface as readable errors stamped with `ctx_label`. Empty list
+/// returns an empty Vec (the explicit off-switch shape).
+fn read_prompt_entries(
+    entries: &[crate::config::SystemPromptEntry],
+    ctx_label: &str,
+) -> Result<Vec<ResolvedSystemPromptEntry>> {
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let expanded = crate::paths::resolve_user(&entry.file.to_string_lossy());
         let body = std::fs::read_to_string(&expanded)
             .with_context(|| format!("{ctx_label}: failed to read system_prompt {}", expanded.display()))?;
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(&body);
+        out.push(ResolvedSystemPromptEntry {
+            body,
+            file: expanded,
+            inject: entry.inject.clone(),
+        });
     }
-    Ok(Some(out))
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -232,7 +291,15 @@ mod tests {
             id: id.into(),
             agent: agent.into(),
             model: model.map(|s| s.to_string()),
-            system_prompt: prompt_files,
+            system_prompt: prompt_files.map(|files| {
+                files
+                    .into_iter()
+                    .map(|file| crate::config::SystemPromptEntry {
+                        file,
+                        inject: crate::config::SystemPromptInject::default(),
+                    })
+                    .collect()
+            }),
             mcps: None,
             skills: None,
             mode: None,
@@ -248,6 +315,21 @@ mod tests {
 
         write!(f, "{body}").unwrap();
         path
+    }
+
+    /// Helper: wrap a list of file paths as `SystemPromptEntry`s
+    /// using the default inject toggles (on_create=true,
+    /// on_update=false). Tests assert against `system_prompt_for`
+    /// with `Bootstrap::Fresh` (which honours on_create=true) so
+    /// the body matches the previous flat-vector shape.
+    fn prompt_entries(files: Vec<PathBuf>) -> Vec<crate::config::SystemPromptEntry> {
+        files
+            .into_iter()
+            .map(|file| crate::config::SystemPromptEntry {
+                file,
+                inject: crate::config::SystemPromptInject::default(),
+            })
+            .collect()
     }
 
     #[test]
@@ -294,7 +376,10 @@ mod tests {
         };
 
         let r = ResolvedInstance::from_config(&cfg, Some("plan")).unwrap();
-        assert_eq!(r.system_prompt.as_deref(), Some("You are a planner."));
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            Some("You are a planner.")
+        );
     }
 
     #[test]
@@ -313,7 +398,7 @@ mod tests {
         };
         let r = ResolvedInstance::from_config(&cfg, Some("layered")).unwrap();
         assert_eq!(
-            r.system_prompt.as_deref(),
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
             Some("You are an agent.\n\nWorking on hyprpilot.")
         );
     }
@@ -324,7 +409,7 @@ mod tests {
         let root_path = write_prompt(&dir, "root.md", "should not apply");
 
         let cfg = Config {
-            system_prompt: Some(vec![root_path]),
+            system_prompt: Some(prompt_entries(vec![root_path])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
@@ -334,7 +419,7 @@ mod tests {
             ..Default::default()
         };
         let r = ResolvedInstance::from_config(&cfg, Some("silent")).unwrap();
-        assert!(r.system_prompt.is_none());
+        assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
     }
 
     #[test]
@@ -383,7 +468,7 @@ mod tests {
         assert!(r.profile_id.is_none());
         assert_eq!(r.agent.id, "cc");
         assert_eq!(r.model.as_deref(), Some("sonnet"));
-        assert!(r.system_prompt.is_none());
+        assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
     }
 
     #[test]
@@ -456,7 +541,7 @@ mod tests {
         let root_path = write_prompt(&dir, "root.md", "global fallback prompt");
 
         let cfg = Config {
-            system_prompt: Some(vec![root_path]),
+            system_prompt: Some(prompt_entries(vec![root_path])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
@@ -465,7 +550,10 @@ mod tests {
             ..Default::default()
         };
         let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(r.system_prompt.as_deref(), Some("global fallback prompt"));
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            Some("global fallback prompt")
+        );
     }
 
     #[test]
@@ -476,7 +564,7 @@ mod tests {
         let c = write_prompt(&dir, "c.md", "third");
 
         let cfg = Config {
-            system_prompt: Some(vec![a, b, c]),
+            system_prompt: Some(prompt_entries(vec![a, b, c])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
@@ -485,7 +573,10 @@ mod tests {
             ..Default::default()
         };
         let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(r.system_prompt.as_deref(), Some("first\n\nsecond\n\nthird"));
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            Some("first\n\nsecond\n\nthird")
+        );
     }
 
     #[test]
@@ -495,7 +586,7 @@ mod tests {
         let profile_path = write_prompt(&dir, "profile.md", "profile-specific");
 
         let cfg = Config {
-            system_prompt: Some(vec![root_path]),
+            system_prompt: Some(prompt_entries(vec![root_path])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
@@ -504,7 +595,10 @@ mod tests {
             ..Default::default()
         };
         let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(r.system_prompt.as_deref(), Some("profile-specific"));
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            Some("profile-specific")
+        );
     }
 
     #[test]
@@ -515,7 +609,7 @@ mod tests {
         let root_path = write_prompt(&dir, "bare.md", "bare-path fallback");
 
         let cfg = Config {
-            system_prompt: Some(vec![root_path]),
+            system_prompt: Some(prompt_entries(vec![root_path])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 agent: crate::config::AgentDefaults {
@@ -526,13 +620,18 @@ mod tests {
         };
         let r = ResolvedInstance::from_config(&cfg, None).unwrap();
         assert!(r.profile_id.is_none());
-        assert_eq!(r.system_prompt.as_deref(), Some("bare-path fallback"));
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            Some("bare-path fallback")
+        );
     }
 
     #[test]
     fn root_system_prompt_missing_file_errors_with_root_context() {
         let cfg = Config {
-            system_prompt: Some(vec![PathBuf::from("/nonexistent/hyprpilot-root-prompt.md")]),
+            system_prompt: Some(prompt_entries(vec![PathBuf::from(
+                "/nonexistent/hyprpilot-root-prompt.md",
+            )])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()

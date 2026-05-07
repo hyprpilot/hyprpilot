@@ -127,7 +127,10 @@ mod tests {
             id: "ask".into(),
             agent: "claude-code".into(),
             model: None,
-            system_prompt: Some(vec![std::path::PathBuf::from("/tmp/hyprpilot-test-prompt.md")]),
+            system_prompt: Some(vec![crate::config::SystemPromptEntry {
+                file: std::path::PathBuf::from("/tmp/hyprpilot-test-prompt.md"),
+                inject: crate::config::SystemPromptInject::default(),
+            }]),
             mcps: None,
             skills: None,
             mode: None,
