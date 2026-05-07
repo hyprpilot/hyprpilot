@@ -125,7 +125,8 @@ export enum TauriEvent {
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
   ComposerDraftAppend = 'composer:draft-append',
-  RemotePairRequest = 'remote:pair-request'
+  RemotePairRequest = 'remote:pair-request',
+  RemotePairResolved = 'remote:pair-resolved'
 }
 
 /**
@@ -260,6 +261,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
   [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
+  [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload
 }
 
 /**
@@ -279,6 +281,20 @@ export interface RemotePairRequestEventPayload {
   /** Code rendered on the desktop modal — device's expected input. */
   desktopCode: string
   remoteAddr: string
+}
+
+/**
+ * Payload of `remote:pair-resolved` — emitted whenever a pending
+ * pair transitions out of `pending` (confirmed by either side, or
+ * rejected via timeout / captain-reject / attempt-cap / connection
+ * drop). The desktop modal listens for this and clears its state
+ * the moment it lands; without it the modal would stay open after
+ * the device side authenticates first (captain scanned the desktop's
+ * QR with the phone).
+ */
+export interface RemotePairResolvedEventPayload {
+  pendingId: string
+  outcome: 'confirmed' | 'rejected'
 }
 
 /**

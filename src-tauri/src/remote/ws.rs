@@ -119,6 +119,17 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     };
 
     if !confirmed {
+        // Tell the desktop modal to close — the pending it was
+        // showing is dead. Outcome `rejected` covers timeout,
+        // captain-reject, attempt-cap, and connection drop alike;
+        // the modal flips out the same way for all of them.
+        let _ = state.app.emit(
+            "remote:pair-resolved",
+            json!({
+                "pendingId": pending_id.to_string(),
+                "outcome": "rejected",
+            }),
+        );
         let _ = sink
             .send(Message::Text(
                 json!({ "type": "rejected", "reason": "pair not confirmed" })
@@ -130,6 +141,19 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
         state.pairs.reject(&pending_id);
         return;
     }
+
+    // Pair confirmed — close the desktop modal regardless of which
+    // side committed. Without this signal the modal would stay open
+    // forever when the device side authenticates first (the captain
+    // scanned the desktop's QR with the phone). Ride the same Tauri
+    // event the modal already listens for new requests on.
+    let _ = state.app.emit(
+        "remote:pair-resolved",
+        json!({
+            "pendingId": pending_id.to_string(),
+            "outcome": "confirmed",
+        }),
+    );
 
     // Tell the phone we're authenticated; stream now carries RPC.
     if !send_text(&mut sink, &json!({ "type": "authenticated" }).to_string()).await {

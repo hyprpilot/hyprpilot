@@ -31,7 +31,9 @@ export interface RemotePairState {
 }
 
 const active = ref<RemotePairState | undefined>(undefined)
+const lastResolution = ref<'confirmed' | 'rejected' | undefined>(undefined)
 let unlisten: UnlistenFn | undefined
+let unlistenResolved: UnlistenFn | undefined
 
 function toState(payload: RemotePairRequestEventPayload): RemotePairState {
   return {
@@ -107,13 +109,28 @@ async function rejectPair(): Promise<void> {
 }
 
 /**
- * Mount the `remote:pair-request` listener. Idempotent — repeat calls
- * are a no-op. Returns the unlisten thunk so `App.vue` can release the
- * binding on unmount.
+ * Mount the `remote:pair-request` + `remote:pair-resolved` listeners.
+ * Idempotent — repeat calls are a no-op. Returns a thunk that
+ * tears down BOTH listeners so `App.vue` can release them on
+ * unmount.
+ *
+ * `pair-resolved` closes the modal whenever the daemon transitions
+ * a pending pair out of `pending`, regardless of which side
+ * committed — captain confirmed on desktop, device scanned the
+ * desktop QR, timeout expired, or the WS dropped. Without this
+ * the modal stays open after the device-side confirm path because
+ * the desktop never invoked `remote_confirm_pair` itself.
  */
 export async function startRemotePairListener(): Promise<UnlistenFn> {
-  if (unlisten) {
-    return unlisten
+  if (unlisten && unlistenResolved) {
+    const teardown = (): void => {
+      unlisten?.()
+      unlistenResolved?.()
+      unlisten = undefined
+      unlistenResolved = undefined
+    }
+
+    return teardown
   }
 
   unlisten = await listen(TauriEvent.RemotePairRequest, (event) => {
@@ -122,12 +139,38 @@ export async function startRemotePairListener(): Promise<UnlistenFn> {
       remoteAddr: event.payload.remoteAddr
     })
     active.value = toState(event.payload)
+    lastResolution.value = undefined
   })
 
-  return unlisten
+  unlistenResolved = await listen(TauriEvent.RemotePairResolved, (event) => {
+    const target = active.value
+
+    if (!target || target.pendingId !== event.payload.pendingId) {
+      // Resolution for a stale / unknown pending. Common case: the
+      // desktop already cleared `active` via its own confirm path
+      // (Tauri command), then the WS task emits this for us anyway.
+      // Safe to ignore.
+      return
+    }
+    log.info('remote: pair resolved', {
+      pendingId: event.payload.pendingId,
+      outcome: event.payload.outcome
+    })
+    lastResolution.value = event.payload.outcome
+    active.value = undefined
+  })
+
+  return () => {
+    unlisten?.()
+    unlistenResolved?.()
+    unlisten = undefined
+    unlistenResolved = undefined
+  }
 }
 
 export function __resetRemotePairForTests(): void {
   active.value = undefined
+  lastResolution.value = undefined
   unlisten = undefined
+  unlistenResolved = undefined
 }
