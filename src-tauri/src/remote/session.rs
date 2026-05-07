@@ -6,10 +6,10 @@
 //! Wire shape:
 //! - On successful pair confirm, the daemon mints a fresh UUID token
 //!   and sends it in the `authenticated` frame:
-//!     `{ "type": "authenticated", "sessionToken": "<uuid>" }`
+//!   `{ "type": "authenticated", "sessionToken": "<uuid>" }`
 //! - The browser stores it in `localStorage` and on next reconnect
 //!   sends a `hello` frame during the pending window:
-//!     `{ "type": "hello", "sessionToken": "<uuid>" }`
+//!   `{ "type": "hello", "sessionToken": "<uuid>" }`
 //! - The daemon validates against the in-memory store; valid → fire
 //!   the same oneshot a normal confirm fires, WS upgrades. Invalid
 //!   tokens are silently ignored — pair flow continues, captain

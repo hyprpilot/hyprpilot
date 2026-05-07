@@ -399,6 +399,143 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             Ok(json!({ "instanceId": key.as_string() }))
         }
 
+        // ── session lookup by id (palette preview row) ──────────────
+        "sessions_info" => {
+            #[derive(Deserialize)]
+            struct Args {
+                id: String,
+            }
+            let args: Args = parse_params(params, "tauri/sessions_info")?;
+            let adapter = adapter_arc(app)?;
+            // Mirror `adapter_commands::sessions_info`: list + filter
+            // (no ACP `session/get` verb). Default agent/profile fall
+            // back to the resolved daemon defaults.
+            let resp = adapter
+                .list_sessions(None, None, None, None)
+                .await
+                .map_err(|e| RpcError::internal_error(e.message))?;
+            let info = resp
+                .sessions
+                .iter()
+                .find(|s| s.session_id.0.as_ref() == args.id.as_str())
+                .ok_or_else(|| RpcError::invalid_params(format!("no session '{}'", args.id)))?;
+            let (agent_id, profile_id) = {
+                let cfg = adapter.config.read().expect("AcpAdapter config lock poisoned");
+                let agent_id = cfg
+                    .agents
+                    .agent
+                    .default
+                    .clone()
+                    .or_else(|| cfg.agents.agents.first().map(|a| a.id.clone()))
+                    .unwrap_or_default();
+                (agent_id, cfg.profile.default.clone())
+            };
+            Ok(json!({
+                "id": info.session_id.0.to_string(),
+                "title": info.title,
+                "cwd": info.cwd.display().to_string(),
+                "lastTurnAt": info.updated_at,
+                "messageCount": Value::Null,
+                "agentId": agent_id,
+                "profileId": profile_id,
+            }))
+        }
+
+        // ── file attachment hydrator ────────────────────────────────
+        "read_file_for_attachment" => {
+            #[derive(Deserialize)]
+            struct Args {
+                path: String,
+            }
+            let args: Args = parse_params(params, "tauri/read_file_for_attachment")?;
+            crate::completion::hydration::file::read_file_for_attachment(args.path)
+                .await
+                .map_err(RpcError::internal_error)
+        }
+
+        // ── desktop palette's daemon-ops bridge ─────────────────────
+        // Recursive: routes a JSON-RPC method through the same
+        // dispatcher we're already inside. Safe — palette ships a
+        // hardcoded method whitelist (reload / shutdown / status /
+        // version / diag-snapshot / window-toggle); none of those
+        // are in the `tauri/` namespace, so no infinite-loop risk.
+        "daemon_rpc" => {
+            #[derive(Deserialize)]
+            struct Args {
+                method: String,
+                params: Option<Value>,
+            }
+            let args: Args = parse_params(params, "tauri/daemon_rpc")?;
+            let dispatcher = app
+                .try_state::<Arc<crate::rpc::RpcDispatcher>>()
+                .ok_or_else(|| RpcError::internal_error("dispatcher state not managed"))?;
+            let nested_ctx = HandlerCtx {
+                app: ctx.app,
+                status: ctx.status,
+                adapter: ctx.adapter.clone(),
+                config: ctx.config.clone(),
+                skills: ctx.skills.clone(),
+                mcps: ctx.mcps.clone(),
+                already_subscribed: ctx.already_subscribed,
+                started_at: ctx.started_at,
+                socket_path: ctx.socket_path,
+            };
+            match dispatcher
+                .dispatch(&args.method, args.params.unwrap_or(Value::Null), nested_ctx)
+                .await?
+            {
+                HandlerOutcome::Reply(v) => Ok(v),
+                HandlerOutcome::StatusSubscribed(_, _) => Err(RpcError::internal_error(
+                    "status/subscribe not supported via daemon_rpc",
+                )),
+            }
+        }
+
+        // ── remote-bridge management surface ────────────────────────
+        // Most of the time these are desktop-only (the desktop modal
+        // calls remote_confirm_pair / remote_reject_pair). Proxied
+        // for completeness — a remote SPA running on the daemon's
+        // own loopback would render the desktop modal too.
+        "remote_confirm_pair" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                pending_id: String,
+                code: String,
+            }
+            let args: Args = parse_params(params, "tauri/remote_confirm_pair")?;
+            let pairs = app
+                .try_state::<crate::remote::pair::PairStore>()
+                .ok_or_else(|| RpcError::internal_error("pair store not managed"))?;
+            let id = uuid::Uuid::parse_str(&args.pending_id)
+                .map_err(|e| RpcError::invalid_params(format!("invalid pending_id: {e}")))?;
+            match pairs.confirm(&id, &args.code, crate::remote::pair::ConfirmSide::Desktop) {
+                Ok(()) => Ok(json!({ "confirmed": true })),
+                Err(err) => Err(RpcError::internal_error(err.to_string())),
+            }
+        }
+        "remote_reject_pair" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                pending_id: String,
+            }
+            let args: Args = parse_params(params, "tauri/remote_reject_pair")?;
+            let pairs = app
+                .try_state::<crate::remote::pair::PairStore>()
+                .ok_or_else(|| RpcError::internal_error("pair store not managed"))?;
+            let id = uuid::Uuid::parse_str(&args.pending_id)
+                .map_err(|e| RpcError::invalid_params(format!("invalid pending_id: {e}")))?;
+            pairs.reject(&id);
+            Ok(Value::Null)
+        }
+        "remote_pending_pairs" => {
+            let pairs = app
+                .try_state::<crate::remote::pair::PairStore>()
+                .ok_or_else(|| RpcError::internal_error("pair store not managed"))?;
+            Ok(serde_json::to_value(pairs.snapshot()).unwrap_or(Value::Array(vec![])))
+        }
+
         // ── session listing ──────────────────────────────────────────
         "session_list" => {
             #[derive(Default, Deserialize)]

@@ -205,9 +205,8 @@ impl PairStore {
         let tx = {
             let mut map = self.inner.write().expect("PairStore poisoned");
             match map.get_mut(pending_id) {
-                Some(req) => req.confirm_tx.take().map(|tx| {
+                Some(req) => req.confirm_tx.take().inspect(|_| {
                     map.remove(pending_id);
-                    tx
                 }),
                 None => None,
             }

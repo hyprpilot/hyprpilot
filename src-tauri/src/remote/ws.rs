@@ -186,6 +186,15 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     // channels fan out to every receiver, so we just spin up another.
     let mut events_rx = subscribe_events(&state);
 
+    // A handful of events are emitted via direct `app.emit(...)` calls
+    // outside the InstanceEvent broadcast (e.g. `composer:draft-append`
+    // from the prompts handler). Subscribe to each by name through
+    // Tauri's `Listener` API and fan them into a shared mpsc the
+    // select loop drains. The guard releases the listener IDs on
+    // drop — no manual unlisten on every return path.
+    let (direct_relay_tx, mut direct_relay_rx) = tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value)>();
+    let _direct_relay_guard = DirectRelayGuard::new(&state.app, direct_relay_tx);
+
     // Proxy loop: client text frame → RpcDispatcher → response
     // text frame. Events from the InstanceEvent broadcast also push
     // out as `{ type: "event", name, payload }` frames.
@@ -253,6 +262,22 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         tracing::warn!(%peer, n, "remote: WS event subscriber lagged");
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+
+            // ── Push: direct Tauri-emit relay ────────────────────
+            // (composer:draft-append etc. — events emitted via
+            // app.emit() outside the InstanceEvent broadcast)
+            relayed = direct_relay_rx.recv() => {
+                if let Some((name, payload)) = relayed {
+                    let frame = json!({
+                        "type": "event",
+                        "name": name,
+                        "payload": payload,
+                    });
+                    if !send_text(&mut sink, &frame.to_string()).await {
+                        return;
+                    }
                 }
             }
 
@@ -379,6 +404,57 @@ fn subscribe_events(state: &RemoteState) -> broadcast::Receiver<InstanceEvent> {
     // underlying `AdapterRegistry`. Same broadcast the Tauri-event
     // bridge subscribes to.
     state.adapter.subscribe()
+}
+
+/// Tauri events emitted via direct `app.emit(...)` calls outside the
+/// `InstanceEvent` broadcast that should still reach a remote SPA.
+/// Each entry is registered as a Tauri global listener per WS task;
+/// IDs released on connection drop via `DirectRelayGuard`.
+///
+/// Currently:
+/// - `composer:draft-append` — `ctl prompts send --draft` lands a
+///   prompt in the composer without dispatching. Surfaced over the
+///   bridge so the same flow works targeting a remote overlay.
+///
+/// Pair-flow events (`remote:pair-request`, `remote:pair-resolved`)
+/// are intentionally NOT relayed — they're desktop-side modal
+/// signals, not anything a remote SPA should react to.
+const DIRECT_RELAY_EVENTS: &[&str] = &["composer:draft-append"];
+
+/// RAII handle that owns the per-WS Tauri-event listener IDs and
+/// releases them on drop. Holds a clone of the AppHandle so it can
+/// call `unlisten` without going back through `RemoteState`.
+struct DirectRelayGuard {
+    app: tauri::AppHandle,
+    ids: Vec<u32>,
+}
+
+impl DirectRelayGuard {
+    fn new(app: &tauri::AppHandle, tx: tokio::sync::mpsc::UnboundedSender<(String, serde_json::Value)>) -> Self {
+        use tauri::Listener;
+        let ids = DIRECT_RELAY_EVENTS
+            .iter()
+            .map(|name| {
+                let tx = tx.clone();
+                let event_name = (*name).to_string();
+                app.listen(*name, move |evt| {
+                    let payload: serde_json::Value =
+                        serde_json::from_str(evt.payload()).unwrap_or(serde_json::Value::Null);
+                    let _ = tx.send((event_name.clone(), payload));
+                })
+            })
+            .collect();
+        Self { app: app.clone(), ids }
+    }
+}
+
+impl Drop for DirectRelayGuard {
+    fn drop(&mut self) {
+        use tauri::Listener;
+        for id in self.ids.drain(..) {
+            self.app.unlisten(id);
+        }
+    }
 }
 
 /// Map an `InstanceEvent` variant onto the same Tauri-event name the
