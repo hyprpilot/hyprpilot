@@ -109,6 +109,21 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
       if (!pick) {
         return
       }
+      // Resolve the spawning (agent, profile) pair the same way the
+      // list-fetch above does: prefer the focused instance's
+      // sessionInfo.profileId (so a captain switching focus between
+      // instances under different profiles restores under the one
+      // they're currently looking at), fall back to the picker's
+      // value. Without this the daemon-side `load_session` calls
+      // `resolve(None, None)` and falls back to the global default
+      // profile — surprising when the captain is sitting in a
+      // non-default profile context (work/claude/opus) and resumes a
+      // session that was originally created under personal/claude/opus.
+      const { profiles, selected } = useProfiles()
+      const { info } = useSessionInfo()
+      const profileId = info.value.profileId ?? selected.value
+      const profile = profiles.value.find((p) => p.id === profileId)
+
       // Mint the target instance up-front so the restored flag keys
       // off the resumed handle, not whatever happens to be active when
       // the await resolves. Mirrors `useSessionHistory.load`.
@@ -120,7 +135,11 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
       // TurnEnded for `target`.
       setSessionRestoring(target, true)
       void invoke(TauriCommand.SessionLoad, {
-        sessionId: pick.sessionId, instanceId: target, cwd: pick.cwd
+        sessionId: pick.sessionId,
+        instanceId: target,
+        cwd: pick.cwd,
+        agentId: profile?.agent,
+        profileId: profile?.id
       })
         .then(() => {
           setSessionRestored(target, true)
