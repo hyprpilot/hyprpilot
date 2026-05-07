@@ -673,7 +673,7 @@ impl AcpAdapter {
         profile_id: Option<&str>,
         session_id: String,
         cwd: Option<PathBuf>,
-    ) -> Result<(), RpcError> {
+    ) -> Result<InstanceKey, RpcError> {
         let key = match instance_id {
             Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
             None => InstanceKey::new_v4(),
@@ -690,7 +690,7 @@ impl AcpAdapter {
         }
         self.ensure(key, resolved, Bootstrap::Resume(session_id)).await?;
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)?;
-        Ok(())
+        Ok(key)
     }
 
     /// Cleanup hook called from `daemon::shutdown` before `app.exit(0)`.
@@ -1194,7 +1194,7 @@ impl Adapter for AcpAdapter {
         profile_id: Option<&str>,
         session_id: String,
         cwd: Option<PathBuf>,
-    ) -> AdapterResult<()> {
+    ) -> AdapterResult<InstanceKey> {
         AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id, cwd)
             .await
             .map_err(rpc_to_adapter)

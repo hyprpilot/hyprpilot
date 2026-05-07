@@ -248,7 +248,7 @@ pub async fn session_load(
         Ok(_) => tracing::info!("cmd::session_load: accepted"),
         Err(err) => tracing::warn!(%err, "cmd::session_load: failed"),
     }
-    out
+    out.map(|_| ())
 }
 
 /// List every live instance the adapter knows about. Mirrors the

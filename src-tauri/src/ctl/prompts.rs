@@ -66,6 +66,13 @@ pub enum PromptsCommand {
         /// content and the appended draft.
         #[arg(long, default_value_t = false)]
         draft: bool,
+
+        /// On the auto-spawn path, resume the latest session matching
+        /// `(--profile, --cwd)` instead of spawning fresh. Falls
+        /// through to a fresh spawn when no matching session exists
+        /// or the agent doesn't support session listing.
+        #[arg(long, default_value_t = false)]
+        restore: bool,
     },
     /// Cancel the in-flight turn. Falls back to focused when
     /// `--instance` is omitted.
@@ -87,6 +94,8 @@ struct SendParams {
     cwd: Option<PathBuf>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     draft: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    restore: bool,
 }
 
 #[derive(Serialize)]
@@ -106,6 +115,7 @@ impl CtlDispatch for PromptsCommand {
                 text,
                 show,
                 draft,
+                restore,
             } => send(
                 client,
                 SendArgs {
@@ -115,6 +125,7 @@ impl CtlDispatch for PromptsCommand {
                     text,
                     show,
                     draft,
+                    restore,
                 },
             ),
             PromptsCommand::Cancel { instance_id } => cancel(client, instance_id),
@@ -129,6 +140,7 @@ struct SendArgs {
     text: Vec<String>,
     show: bool,
     draft: bool,
+    restore: bool,
 }
 
 fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
@@ -156,6 +168,7 @@ fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
             profile_id: args.profile,
             cwd: super::auto_fill_cwd(args.cwd),
             draft: args.draft,
+            restore: args.restore,
         },
     )?;
     println!("{}", serde_json::to_string_pretty(&v)?);

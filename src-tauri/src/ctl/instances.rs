@@ -49,6 +49,12 @@ pub enum InstancesSubcommand {
         /// Spawn flag — used only when `--ensure` triggers a spawn.
         #[arg(long)]
         model: Option<String>,
+        /// On the ensure-spawn path, try to resume the latest session
+        /// matching `(--profile, --agent, --cwd)` instead of spawning
+        /// fresh. Falls through to a fresh spawn when no matching
+        /// session exists.
+        #[arg(long, default_value_t = false)]
+        restore: bool,
     },
     /// Spawn a new instance against a profile / agent. Optional
     /// `--name` applies a captain-set name post-spawn.
@@ -70,6 +76,11 @@ pub enum InstancesSubcommand {
         /// after spawn (and rename, when `--name` is supplied) lands.
         #[arg(long, default_value_t = false)]
         show: bool,
+        /// Resume the latest session matching `(--profile, --agent,
+        /// --cwd)` instead of spawning fresh. Falls through to a
+        /// fresh spawn when no matching session exists.
+        #[arg(long, default_value_t = false)]
+        restore: bool,
     },
     /// Restart an instance. `--instance` accepts UUID or name;
     /// omitted falls back to focused.
@@ -130,6 +141,8 @@ struct FocusParams {
     mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    restore: bool,
 }
 
 #[derive(Serialize)]
@@ -145,6 +158,8 @@ struct SpawnParams {
     mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    restore: bool,
 }
 
 #[derive(Serialize)]
@@ -178,6 +193,7 @@ impl CtlDispatch for InstancesSubcommand {
                 cwd,
                 mode,
                 model,
+                restore,
             } => {
                 let v = request_value(
                     client,
@@ -190,6 +206,7 @@ impl CtlDispatch for InstancesSubcommand {
                         cwd: super::auto_fill_cwd(cwd),
                         mode,
                         model,
+                        restore,
                     },
                 )?;
                 println!("{}", serde_json::to_string_pretty(&v)?);
@@ -211,6 +228,7 @@ impl CtlDispatch for InstancesSubcommand {
                 model,
                 name,
                 show,
+                restore,
             } => {
                 let spawn_params = SpawnParams {
                     profile_id,
@@ -218,6 +236,7 @@ impl CtlDispatch for InstancesSubcommand {
                     cwd: super::auto_fill_cwd(cwd),
                     mode,
                     model,
+                    restore,
                 };
                 let v = request_value(client, "instances/spawn", &spawn_params)?;
                 println!("{}", serde_json::to_string_pretty(&v)?);

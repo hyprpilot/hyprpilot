@@ -52,6 +52,13 @@ struct SendParams {
     /// and the new instance lands with the prompt staged in its
     /// composer.
     draft: bool,
+    /// On the auto-spawn path, try to resume the most recently-updated
+    /// session matching `(agent_id, profile_id, cwd)` instead of
+    /// spawning fresh. Falls through to a fresh spawn when no
+    /// matching session exists or the agent doesn't support session
+    /// listing. Captain's "open my last session under this profile +
+    /// cwd" shortcut.
+    restore: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -91,6 +98,20 @@ impl RpcHandler for PromptsHandler {
                 //  3. Else (UUID-shaped or otherwise not resolvable
                 //     and not slug-shaped) → error.
                 // None → fall back to focused → spawn unnamed.
+                // `restore` flag short-circuits the spawn path. When
+                // set, both the slug-spawn and the bare-no-instance
+                // branches first try `restore_latest_session` against
+                // the same SpawnSpec; on a hit the resumed instance's
+                // key is the resolved one. On a miss we fall through
+                // to fresh-spawn via the existing path.
+                let spec = SpawnSpec {
+                    profile_id: p.profile_id.clone(),
+                    agent_id: p.agent_id.clone(),
+                    cwd: p.cwd.clone(),
+                    mode: p.mode.clone(),
+                    model: p.model.clone(),
+                };
+
                 let mut spawn_name: Option<String> = None;
                 let resolved = match &p.instance_id {
                     Some(token) => match adapter.resolve_token(token).await {
@@ -102,30 +123,32 @@ impl RpcHandler for PromptsHandler {
                                 ))
                             })?;
                             spawn_name = Some(validated);
-                            let spec = SpawnSpec {
-                                profile_id: p.profile_id.clone(),
-                                agent_id: p.agent_id.clone(),
-                                cwd: p.cwd.clone(),
-                                mode: p.mode.clone(),
-                                model: p.model.clone(),
-                            };
-                            adapter.spawn(spec).await.map_err(map_adapter_err)?
+                            if p.restore {
+                                if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
+                                    k
+                                } else {
+                                    adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
+                                }
+                            } else {
+                                adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
+                            }
                         }
                     },
                     None => match adapter.focused_id().await {
                         Some(k) => k,
                         None => {
                             // Auto-spawn path. Empty registry + no
-                            // focused — spawn with the supplied flags
-                            // (defaults fall through inside the adapter).
-                            let spec = SpawnSpec {
-                                profile_id: p.profile_id.clone(),
-                                agent_id: p.agent_id.clone(),
-                                cwd: p.cwd.clone(),
-                                mode: p.mode.clone(),
-                                model: p.model.clone(),
-                            };
-                            adapter.spawn(spec).await.map_err(map_adapter_err)?
+                            // focused — spawn (or restore + spawn-on-miss)
+                            // with the supplied flags.
+                            if p.restore {
+                                if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
+                                    k
+                                } else {
+                                    adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
+                                }
+                            } else {
+                                adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
+                            }
                         }
                     },
                 };

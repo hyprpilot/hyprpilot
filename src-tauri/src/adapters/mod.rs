@@ -217,11 +217,16 @@ pub trait Adapter: Send + Sync + 'static {
         ))
     }
 
-    /// `session/load` — resume a persisted session. `cwd` overrides
-    /// the resolved profile's cwd; ACP agents (claude-agent-acp)
-    /// scope persisted sessions by cwd, so resuming under a
-    /// different cwd than the one the session was created with
-    /// returns "Resource not found" upstream.
+    /// `session/load` — resume a persisted session. Returns the key
+    /// of the (possibly freshly-spawned) instance carrying the
+    /// resumed session — callers thread it through for follow-up
+    /// commands (prompts/send against the just-restored instance,
+    /// rename, etc.).
+    ///
+    /// `cwd` overrides the resolved profile's cwd; ACP agents
+    /// (claude-agent-acp) scope persisted sessions by cwd, so
+    /// resuming under a different cwd than the one the session was
+    /// created with returns "Resource not found" upstream.
     async fn load_session(
         &self,
         _instance_id: Option<&str>,
@@ -229,10 +234,73 @@ pub trait Adapter: Send + Sync + 'static {
         _profile_id: Option<&str>,
         _session_id: String,
         _cwd: Option<std::path::PathBuf>,
-    ) -> AdapterResult<()> {
+    ) -> AdapterResult<InstanceKey> {
         Err(AdapterError::Unsupported(
             "session/load not supported by this adapter".into(),
         ))
+    }
+
+    /// Best-effort "find the most recently-updated persisted session
+    /// matching `spec` and resume it". Returns the resumed instance's
+    /// key, or `None` when no matching session exists. Used by the
+    /// `--restore` flag on ctl spawn-shaped commands so a captain can
+    /// say "open my last session under (profile, cwd)" without
+    /// hand-picking a session id.
+    ///
+    /// Vendors that don't implement `list_sessions` get a soft `None`
+    /// — the caller falls through to fresh-spawn instead of erroring.
+    async fn restore_latest_session(&self, spec: &SpawnSpec) -> AdapterResult<Option<InstanceKey>> {
+        let resp = match self
+            .list_sessions(
+                None,
+                spec.agent_id.as_deref(),
+                spec.profile_id.as_deref(),
+                spec.cwd.clone(),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(err) => {
+                tracing::debug!(%err, "restore_latest_session: list_sessions failed — falling through to fresh spawn");
+                return Ok(None);
+            }
+        };
+
+        let sessions = resp
+            .get("sessions")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        // Pick the most recently-updated session. ISO-8601 timestamps
+        // sort lexically; a missing `updatedAt` sorts to the bottom.
+        let Some(latest_id) = sessions
+            .iter()
+            .filter_map(|s| {
+                let id = s.get("sessionId").and_then(serde_json::Value::as_str)?.to_string();
+                let updated = s
+                    .get("updatedAt")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                Some((id, updated))
+            })
+            .max_by(|a, b| a.1.cmp(&b.1))
+            .map(|(id, _)| id)
+        else {
+            return Ok(None);
+        };
+
+        let key = self
+            .load_session(
+                None,
+                spec.agent_id.as_deref(),
+                spec.profile_id.as_deref(),
+                latest_id,
+                spec.cwd.clone(),
+            )
+            .await?;
+        Ok(Some(key))
     }
 
     /// `models/set` — switch active model on a live session.

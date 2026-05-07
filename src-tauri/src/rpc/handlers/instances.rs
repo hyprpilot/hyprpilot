@@ -41,6 +41,10 @@ struct FocusParams {
     cwd: Option<PathBuf>,
     mode: Option<String>,
     model: Option<String>,
+    /// On the ensure-spawn path, try to resume the latest session
+    /// matching `(agent_id, profile_id, cwd)` first. Falls through to
+    /// a fresh spawn when no match exists.
+    restore: bool,
 }
 
 /// `instances/restart` — `instanceId` optional (falls back to
@@ -89,6 +93,10 @@ struct SpawnParams {
     cwd: Option<PathBuf>,
     mode: Option<String>,
     model: Option<String>,
+    /// Try to resume the latest session matching
+    /// `(agent_id, profile_id, cwd)` first. Falls through to a fresh
+    /// spawn when no matching session exists.
+    restore: bool,
 }
 
 /// `instances/*` namespace. Registry-level operations on the
@@ -133,12 +141,15 @@ impl RpcHandler for InstancesHandler {
                     cwd,
                     mode,
                     model,
+                    restore,
                 } = params_or_default::<FocusParams>(params, method)?;
 
                 let key = match (instance_id.as_deref(), ensure) {
                     // Ensure-mode with a token: try to resolve, else
                     // spawn-and-rename to that slug. Mirrors
-                    // `prompts/send`'s overload.
+                    // `prompts/send`'s overload. With `restore=true`
+                    // the spawn step prefers `restore_latest_session`
+                    // over a fresh spawn — falls through on a miss.
                     (Some(token), true) => match adapter.resolve_token(token).await {
                         Some(k) => k,
                         None => {
@@ -154,7 +165,15 @@ impl RpcHandler for InstancesHandler {
                                 mode,
                                 model,
                             };
-                            let spawned = adapter.spawn(spec).await.map_err(map_adapter_err)?;
+                            let spawned = if restore {
+                                if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
+                                    k
+                                } else {
+                                    adapter.spawn(spec).await.map_err(map_adapter_err)?
+                                }
+                            } else {
+                                adapter.spawn(spec).await.map_err(map_adapter_err)?
+                            };
                             adapter.rename(spawned, Some(slug)).await.map_err(map_adapter_err)?;
                             spawned
                         }
@@ -171,6 +190,7 @@ impl RpcHandler for InstancesHandler {
                     cwd,
                     mode,
                     model,
+                    restore,
                 } = params_or_default::<SpawnParams>(params, method)?;
                 let spec = SpawnSpec {
                     profile_id,
@@ -179,7 +199,15 @@ impl RpcHandler for InstancesHandler {
                     mode,
                     model,
                 };
-                let key = adapter.spawn(spec).await.map_err(map_adapter_err)?;
+                let key = if restore {
+                    if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
+                        k
+                    } else {
+                        adapter.spawn(spec).await.map_err(map_adapter_err)?
+                    }
+                } else {
+                    adapter.spawn(spec).await.map_err(map_adapter_err)?
+                };
                 Ok(HandlerOutcome::Reply(json!({ "instanceId": key.as_string() })))
             }
             "instances/restart" => {
