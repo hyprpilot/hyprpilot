@@ -498,26 +498,26 @@ onUnmounted(() => {
   border-right: 1px solid var(--theme-border);
 }
 
-/* wireframe row: 3px transparent left border (yellow on selected),
- * surface2 bg on selected, mono ink2 → fg on selected. */
+/* Two independent accent indicators on opposite sides:
+ * - LEFT border: navigation cursor (`data-selected`, moves with
+ *   arrows / hover).
+ * - RIGHT border: persistent active row (`data-active`, the
+ *   captain's currently-picked profile / model / cwd / instance).
+ * When a row is both, both borders light up. */
 .palette-row {
   @apply flex items-center gap-[10px] text-[0.7rem];
   cursor: pointer;
   padding: 6px 10px;
   border-radius: 4px;
   border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
   margin-bottom: 1px;
 }
 
-/* Active = the captain's persisted choice (matching profile / model /
- * cwd / instance). Marks the row with the accent left border so it
- * reads at a glance, independent of the fuzzy-filter cursor.
- * `data-selected` (arrow-key cursor) layers on top via the bg fill;
- * both share the same accent colour so the borders don't conflict. */
 .palette-row[data-active='true'] {
-  border-left-color: var(--theme-accent);
+  border-right-color: var(--theme-accent);
 }
 
 .palette-row[data-selected='true'] {
