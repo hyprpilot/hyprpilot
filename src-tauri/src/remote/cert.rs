@@ -102,6 +102,20 @@ fn generate(sans: &[SanType]) -> Result<TlsMaterial> {
     params.distinguished_name = dn;
     params.subject_alt_names = sans.to_vec();
 
+    // rcgen's default validity is essentially "forever" (1975 →
+    // 4096). Modern mobile browsers — iOS Safari since 13, Chrome
+    // since 85 — reject any cert with `not_after - not_before > 825
+    // days` regardless of trust state. The reject is silent at the
+    // TLS layer (the captain just sees "can't connect") so it
+    // looks for all the world like the daemon is down. Cap the
+    // validity at the 397-day "industry safe" upper bound + a one
+    // day clock-skew tolerance on `not_before`. The daemon
+    // regenerates on SAN drift anyway; the cert never gets close
+    // to expiry under normal use.
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now - time::Duration::days(1);
+    params.not_after = now + time::Duration::days(397);
+
     let key = KeyPair::generate().context("generate TLS keypair")?;
     let cert = params.self_signed(&key).context("self-sign certificate")?;
     Ok(TlsMaterial {

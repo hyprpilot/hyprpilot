@@ -2591,6 +2591,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
