@@ -754,29 +754,28 @@ impl AcpAdapter {
             }
         }
 
-        let existing = match key {
+        let live = match key {
             Some(k) => self.registry.get(k).await.map(|h| (k, h)),
             None => None,
         };
 
-        let (key, existing) = match existing {
+        let (key, existing) = match live {
             Some(pair) => pair,
             None => {
-                if ensure {
-                    return self
-                        .spawn_instance(SpawnSpec {
-                            profile_id: profile_id.map(str::to_string),
-                            agent_id: agent_id.map(str::to_string),
-                            cwd,
-                            mode: None,
-                            model: None,
-                        })
-                        .await;
-                }
-                let key_str = key.map_or_else(|| "<none>".to_string(), |k| k.to_string());
-                return Err(RpcError::invalid_params(format!(
-                    "instance '{key_str}' not found in registry"
-                )));
+                // No live handle — delegate to the shared resolve-or-
+                // spawn helper. When `ensure`, spawns under `spec`
+                // rooted at `cwd`; otherwise returns the not-found
+                // error. We don't need the spawned handle here, just
+                // its key.
+                let spec = SpawnSpec {
+                    profile_id: profile_id.map(str::to_string),
+                    agent_id: agent_id.map(str::to_string),
+                    cwd,
+                    mode: None,
+                    model: None,
+                };
+                let (new_key, _handle) = self.resolve_or_spawn(key, ensure, spec).await?;
+                return Ok(new_key);
             }
         };
 
@@ -877,28 +876,12 @@ impl AcpAdapter {
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)
     }
 
-    /// Membership check used by `modes/*`, `models/*` handlers to map
-    /// a wire-supplied `instance_id` onto the live registry. `-32602`
-    /// when the id is malformed or not in the registry — same failure
-    /// mode both paths get.
-    pub async fn contains_instance(&self, id: &str) -> Result<InstanceKey, RpcError> {
-        let key = InstanceKey::parse(id).map_err(map_adapter_error_to_rpc)?;
-        match self.registry.get(key).await {
-            Some(_) => Ok(key),
-            None => Err(RpcError::invalid_params(format!(
-                "instance '{id}' not found in registry"
-            ))),
-        }
-    }
-
     /// Resolve `instance_id` to a live `Arc<AcpInstance>` in one step.
-    /// Replaces the `contains_instance(id)` + `registry.get(key)` two-step
-    /// that 4 set_* sites used: that pattern had a TOCTOU window where
-    /// the instance could be shut down between the membership check and
-    /// the handle clone, returning a `not found in registry` error from
-    /// the second call after the first said `found`. The single
-    /// `registry.get` here closes the window — the registry's RwLock
-    /// doesn't release between parse and lookup.
+    /// The single `registry.get` here closes the TOCTOU window that a
+    /// parse + membership-check + handle-clone pattern would open:
+    /// the registry's RwLock doesn't release between parse and lookup,
+    /// so the instance can't be shut down mid-resolve. Used by the
+    /// `set_*` handlers that require an existing live actor.
     async fn require_instance(&self, instance_id: &str) -> Result<Arc<AcpInstance>, RpcError> {
         let key = InstanceKey::parse(instance_id).map_err(map_adapter_error_to_rpc)?;
         self.registry
@@ -976,6 +959,54 @@ impl AcpAdapter {
         serde_json::to_value(snap).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 
+    /// Resolve `key` to a live `(key, handle)` pair, or spawn a fresh
+    /// actor under `spec` when `ensure` is true. The freshly-spawned
+    /// actor adopts `key` if given (so caller-supplied UUIDs survive
+    /// across the spawn — important for the webview's
+    /// "push-to-store-then-RPC" pattern); otherwise mints a new UUID.
+    /// On miss + !ensure, returns the standard not-found error.
+    ///
+    /// Shared by every palette flow that needs to act on an instance
+    /// regardless of whether one was live: meta snapshot for the
+    /// picker leaves, cwd restart on empty registry, future prewarm
+    /// callers.
+    async fn resolve_or_spawn(
+        &self,
+        key: Option<InstanceKey>,
+        ensure: bool,
+        spec: SpawnSpec,
+    ) -> Result<(InstanceKey, Arc<AcpInstance>), RpcError> {
+        if let Some(k) = key {
+            if let Some(handle) = self.registry.get(k).await {
+                return Ok((k, handle));
+            }
+        }
+        if !ensure {
+            let key_str = key.map_or_else(|| "<none>".to_string(), |k| k.to_string());
+            return Err(RpcError::invalid_params(format!(
+                "instance '{key_str}' not found in registry"
+            )));
+        }
+        let mut resolved = self.resolve(spec.agent_id.as_deref(), spec.profile_id.as_deref())?;
+        if let Some(c) = spec.cwd {
+            resolved.agent.cwd = Some(c);
+        }
+        if spec.model.is_some() {
+            resolved.model = spec.model;
+        }
+        if spec.mode.is_some() {
+            resolved.mode = spec.mode;
+        }
+        let new_key = key.unwrap_or_else(InstanceKey::new_v4);
+        let new_key = self.ensure(new_key, resolved, Bootstrap::Fresh).await?;
+        let handle = self
+            .registry
+            .get(new_key)
+            .await
+            .ok_or_else(|| RpcError::internal_error("instance actor vanished after ensure"))?;
+        Ok((new_key, handle))
+    }
+
     /// Same as `instance_meta`, but transparently spawns an instance
     /// from `(agent_id, profile_id)` when `instance_id` is absent or
     /// doesn't resolve to a live actor. Drives the palette's
@@ -994,30 +1025,18 @@ impl AcpAdapter {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> Result<Value, RpcError> {
-        if let Some(id) = instance_id {
-            if let Ok(key) = self.contains_instance(id).await {
-                if let Some(handle) = self.registry.get(key).await {
-                    let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
-                    return augment_with_instance_id(snap, &key);
-                }
-            }
-        }
-
-        // No live instance for the given id (or no id given) —
-        // resolve the (agent, profile) the caller indicated and
-        // bootstrap a fresh actor. Same resolve+ensure pipeline
-        // submit_prompt uses, just without the trailing prompt send.
-        let resolved = self.resolve(agent_id, profile_id)?;
         let key = match instance_id {
-            Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
-            None => InstanceKey::new_v4(),
+            Some(s) => Some(InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?),
+            None => None,
         };
-        let key = self.ensure(key, resolved, Bootstrap::Fresh).await?;
-        let handle = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::internal_error("instance actor vanished after ensure"))?;
+        let spec = SpawnSpec {
+            profile_id: profile_id.map(str::to_string),
+            agent_id: agent_id.map(str::to_string),
+            cwd: None,
+            mode: None,
+            model: None,
+        };
+        let (key, handle) = self.resolve_or_spawn(key, true, spec).await?;
         let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
         augment_with_instance_id(snap, &key)
     }
