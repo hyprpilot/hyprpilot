@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/hyprpilot/hyprpilot/compare/v0.1.5...v0.1.6) (2026-05-07)
+
+
+### Features
+
+* **keymap:** global Ctrl+F focuses the active input ([#13](https://github.com/hyprpilot/hyprpilot/issues/13)) ([2c37b31](https://github.com/hyprpilot/hyprpilot/commit/2c37b314240c7607ee90708751feefb462b8d1f5))
+
 ## [0.1.5](https://github.com/hyprpilot/hyprpilot/compare/v0.1.4...v0.1.5) (2026-05-07)
 
 
