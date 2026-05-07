@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.5](https://github.com/hyprpilot/hyprpilot/compare/v0.1.4...v0.1.5) (2026-05-07)
+
+
+### Features
+
+* **palette:** cwd leaf prewarms instance on empty registry ([#10](https://github.com/hyprpilot/hyprpilot/issues/10)) ([33e6d09](https://github.com/hyprpilot/hyprpilot/commit/33e6d0946f2b98cc6810eedcc975852041b8612e))
+
+
+### Bug Fixes
+
+* **chat:** tool body renders description before fields ([#12](https://github.com/hyprpilot/hyprpilot/issues/12)) ([7684d82](https://github.com/hyprpilot/hyprpilot/commit/7684d82ff5cf0be9b79ca20106b51f51ca51993c))
+
 ## [0.1.4](https://github.com/hyprpilot/hyprpilot/compare/v0.1.3...v0.1.4) (2026-05-06)
 
 
