@@ -584,6 +584,7 @@ fn spawn_remote_bridge(app: tauri::AppHandle, rpc_state: &crate::rpc::RpcState) 
         }
     };
     let pairs = crate::remote::pair::PairStore::new();
+    let sessions = crate::remote::session::SessionTokens::new();
     let state = crate::remote::server::RemoteState {
         app: app.clone(),
         status: rpc_state.status.clone(),
@@ -593,9 +594,11 @@ fn spawn_remote_bridge(app: tauri::AppHandle, rpc_state: &crate::rpc::RpcState) 
         skills: rpc_state.skills.clone(),
         mcps: rpc_state.mcps.clone(),
         pairs: pairs.clone(),
+        sessions: sessions.clone(),
         started_at: rpc_state.started_at,
     };
     app.manage(pairs);
+    app.manage(sessions);
     tauri::async_runtime::spawn(async move {
         if let Err(err) = crate::remote::server::serve(bind, tls, state).await {
             warn!(%err, "remote: serve loop terminated");

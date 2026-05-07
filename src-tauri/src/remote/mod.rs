@@ -13,4 +13,5 @@ pub mod cert;
 pub mod commands;
 pub mod pair;
 pub mod server;
+pub mod session;
 pub mod ws;

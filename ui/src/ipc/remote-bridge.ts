@@ -65,6 +65,72 @@ export function isRemoteHost(): boolean {
   return typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)
 }
 
+/**
+ * Key under which the daemon-issued session token sits in
+ * `localStorage`. Per-origin (`https://<host>:7423`); two daemons on
+ * different IPs each get their own token. Lifetime is the browser's
+ * localStorage policy — survives page reloads + browser restarts.
+ * The daemon's own token table is in-memory though, so a daemon
+ * restart silently invalidates the stored token; the device falls
+ * back to manual pair on the next reconnect.
+ */
+const SESSION_TOKEN_KEY = 'hyprpilot:remote-session-token'
+
+function readSessionToken(): string | undefined {
+  if (typeof localStorage === 'undefined') {
+    return undefined
+  }
+
+  try {
+    const raw = localStorage.getItem(SESSION_TOKEN_KEY)
+
+    return raw && raw.length > 0 ? raw : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function storeSessionToken(token: string): void {
+  if (typeof localStorage === 'undefined') {
+    return
+  }
+
+  try {
+    localStorage.setItem(SESSION_TOKEN_KEY, token)
+  } catch {
+    // localStorage can throw under quota / private-browsing. Silent
+    // best-effort — the worst case is the captain re-pairs next
+    // reload, which is exactly the pre-token-cache behaviour.
+  }
+}
+
+function clearSessionToken(): void {
+  if (typeof localStorage === 'undefined') {
+    return
+  }
+
+  try {
+    localStorage.removeItem(SESSION_TOKEN_KEY)
+  } catch {
+    // Ignore — see storeSessionToken.
+  }
+}
+
+function sendHelloIfTokenPresent(): void {
+  const token = readSessionToken()
+
+  if (!token || !socket || socket.readyState !== WebSocket.OPEN) {
+    return
+  }
+
+  try {
+    socket.send(JSON.stringify({ type: 'hello', sessionToken: token }))
+  } catch {
+    // Ignore — connection just dropped, normal reconnect flow takes
+    // over.
+  }
+}
+
 function buildWsUrl(): string {
   // In production the SPA is served by the same axum server that
   // hosts the WS endpoint, so `wss://<location.host>/ws` reaches
@@ -185,6 +251,12 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       lastConfirmRejection = undefined
       terminalReason = undefined
       notifyPairListeners()
+      // Best-effort silent reauth: if we have a session token from
+      // a previous pair within this daemon run, present it. Daemon
+      // validates and either authenticates immediately (skipping the
+      // captain confirm) or silently ignores it — captain falls back
+      // to manual pair flow.
+      sendHelloIfTokenPresent()
 
       return
     case 'authenticated':
@@ -192,6 +264,14 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       pendingFrame = undefined
       lastConfirmRejection = undefined
       terminalReason = undefined
+
+      // Daemon hands back a fresh session token in the authenticated
+      // frame whenever it minted one (post-pair-confirm). Stash it for
+      // the next reconnect so the captain pairs once per daemon run
+      // rather than once per page reload.
+      if (typeof msg.sessionToken === 'string' && msg.sessionToken.length > 0) {
+        storeSessionToken(msg.sessionToken)
+      }
       notifyPairListeners()
 
       return
@@ -203,6 +283,11 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       // show a dedicated "rejected" screen instead of falling back
       // to the generic "connecting…" loader.
       terminalReason = typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : 'pair request rejected'
+      // Whatever token we had is dead — captain rejected, the pair
+      // expired, or the daemon restarted out from under us. Drop it
+      // so the next reconnect doesn't keep silently retrying with a
+      // token nobody honors.
+      clearSessionToken()
       notifyPairListeners()
 
       if (socket) {

@@ -197,6 +197,26 @@ impl PairStore {
         map.remove(pending_id);
     }
 
+    /// Fire the confirm signal without checking either code. Used
+    /// by the session-token (`hello`) reauth path: the token is the
+    /// proof-of-presence here, not the BIP39 phrase. No-op when the
+    /// pending is unknown or already burned.
+    pub fn fast_confirm(&self, pending_id: &Uuid) {
+        let tx = {
+            let mut map = self.inner.write().expect("PairStore poisoned");
+            match map.get_mut(pending_id) {
+                Some(req) => req.confirm_tx.take().map(|tx| {
+                    map.remove(pending_id);
+                    tx
+                }),
+                None => None,
+            }
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+
     /// Current pending requests, snapshot. Surfaced via
     /// `remote_pending_pairs` Tauri command. Renders both codes so
     /// the desktop palette can match what's on screen.

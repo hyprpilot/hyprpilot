@@ -19,6 +19,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use crate::adapters::Adapter;
 use crate::remote::cert::TlsMaterial;
 use crate::remote::pair::PairStore;
+use crate::remote::session::SessionTokens;
 use crate::remote::ws;
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
@@ -36,6 +37,7 @@ pub struct RemoteState {
     pub skills: Arc<crate::skills::SkillsRegistry>,
     pub mcps: Arc<crate::mcp::MCPsRegistry>,
     pub pairs: PairStore,
+    pub sessions: SessionTokens,
     pub started_at: std::time::Instant,
 }
 

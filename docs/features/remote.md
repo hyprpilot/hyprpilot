@@ -24,7 +24,7 @@ Hyprpilot doesn't ship a trust store, doesn't manage tokens, doesn't track "know
    - **Scan from the desktop** — click *scan*, hold the phone's QR up to the laptop webcam, click confirm.
    - **Scan from the phone** — tap *scan desktop QR*, point the phone at the desktop modal's QR. Decoded code is pushed back over the WS automatically — no further click needed.
 4. On match the WebSocket upgrades to authenticated. The phone's SPA can now drive the daemon — just like the desktop overlay does over Tauri's IPC.
-5. Disconnect → re-pair on reconnect. The contract is one connection.
+5. Disconnect → silent reconnect. The daemon hands back a session token in the `authenticated` frame; the device stores it and replays it on the next connection. **Pair once per daemon run.** Daemon restart wipes the token table — re-pair from scratch.
 
 The pair window expires after 60 seconds with a 3-attempt cap. Wrong code three times → daemon burns the pending state and closes the WS.
 

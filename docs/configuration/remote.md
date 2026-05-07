@@ -63,7 +63,16 @@ To bring your own cert (e.g. one signed by a private CA your devices already tru
 
 Both scan paths use [`qr-scanner`](https://github.com/nimiq/qr-scanner) — runs entirely in the browser, no external service. Camera permission is requested on first click via the Web `MediaDevices.getUserMedia()` API; deny it once and the captain falls back to typing the four words. The from-device path is the easier ergonomically — modern phones have higher-resolution rear cameras and are easier to point at the desktop screen than the reverse.
 
-State is connection-scoped. Disconnect → re-pair on reconnect. There is no trust store, no rotation, no revocation — the contract is the one connection.
+State is connection-scoped per pair. Daemon restart wipes everything; mid-run reconnects skip the captain-confirm step via an in-memory session token (see below).
+
+### Session tokens (in-memory, daemon-lifetime)
+
+After a successful pair, the daemon mints a UUID session token and ships it back inside the `authenticated` frame. The connecting device stores it in `localStorage` and presents it on every subsequent reconnect via a `{type:"hello"}` frame:
+
+- Token recognized → daemon authenticates immediately, no captain-confirm modal opens.
+- Token unrecognized (daemon restarted, captain rejected, browser cleared storage) → daemon silently ignores the hello and the normal pair flow runs.
+
+The token table is **in-memory only**. There is no disk persistence and no `revoke` UX today; the captain wipes by restarting the daemon. This survives page reloads and browser restarts within the same daemon run, which is what the captain typically wants — pair once when the daemon starts, the phone can reconnect freely until the daemon goes down.
 
 ## Troubleshooting
 
