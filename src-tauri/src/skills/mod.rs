@@ -146,39 +146,50 @@ impl From<&Skill> for SkillSummary {
 /// First-root-wins on slug collision (warn names both paths); missing
 /// roots warn + skip (no auto-mkdir, no canonicalize).
 pub struct SkillsRegistry {
-    dirs: Vec<PathBuf>,
+    entries: Vec<crate::config::ResolvedSkillEntry>,
     skills: RwLock<HashMap<SkillSlug, Skill>>,
     order: RwLock<Vec<SkillSlug>>,
 }
 
 impl SkillsRegistry {
-    /// Build a registry scanning every root in `dirs`. Does *not*
+    /// Build a registry scanning every root in `entries`. Does *not*
     /// call `reload` — callers trigger the initial load explicitly so
     /// boot-time failures surface in the daemon's logs next to the
     /// other init steps. Roots are stored as-is; `reload` skips
-    /// missing ones with a warning.
+    /// missing ones with a warning. Per-entry `ignore` glob (when
+    /// present) drops slugs matching any pattern post-load.
     #[must_use]
-    pub fn new(dirs: Vec<PathBuf>) -> Self {
+    pub fn new(entries: Vec<crate::config::ResolvedSkillEntry>) -> Self {
         Self {
-            dirs,
+            entries,
             skills: RwLock::new(HashMap::new()),
             order: RwLock::new(Vec::new()),
         }
     }
 
     /// Rescan the on-disk layout; replace the in-memory table on
-    /// success. Roots are processed in `dirs` order — earlier roots
-    /// win on slug collision.
+    /// success. Roots are processed in iteration order — earlier
+    /// roots win on slug collision.
     pub fn reload(&self) -> Result<()> {
         let mut order = Vec::new();
         let mut map: HashMap<SkillSlug, Skill> = HashMap::new();
-        for dir in &self.dirs {
-            if !dir.exists() {
-                warn!(dir = %dir.display(), "skills root does not exist — skipping");
+        for entry in &self.entries {
+            if !entry.dir.exists() {
+                warn!(dir = %entry.dir.display(), "skills root does not exist — skipping");
                 continue;
             }
-            let loaded = loader::load_skills(dir)?;
+            let loaded = loader::load_skills(&entry.dir)?;
             for skill in loaded {
+                if let Some(glob) = &entry.ignore {
+                    if glob.is_match(skill.slug.as_str()) {
+                        warn!(
+                            slug = %skill.slug,
+                            dir = %entry.dir.display(),
+                            "skills registry: slug matches ignore glob — skipping",
+                        );
+                        continue;
+                    }
+                }
                 if let Some(prev) = map.get(&skill.slug) {
                     warn!(
                         slug = %skill.slug,
@@ -199,7 +210,7 @@ impl SkillsRegistry {
             *skills = map;
             *ord = order;
         }
-        let dirs_display: Vec<String> = self.dirs.iter().map(|p| p.display().to_string()).collect();
+        let dirs_display: Vec<String> = self.entries.iter().map(|e| e.dir.display().to_string()).collect();
         info!(count, dirs = ?dirs_display, "skills registry: reloaded");
         Ok(())
     }
@@ -231,7 +242,8 @@ impl SkillsRegistry {
 
 impl std::fmt::Debug for SkillsRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SkillsRegistry").field("dirs", &self.dirs).finish()
+        let dirs: Vec<&PathBuf> = self.entries.iter().map(|e| &e.dir).collect();
+        f.debug_struct("SkillsRegistry").field("dirs", &dirs).finish()
     }
 }
 
@@ -254,8 +266,23 @@ mod tests {
         .unwrap();
     }
 
+    fn entry(dir: PathBuf) -> crate::config::ResolvedSkillEntry {
+        crate::config::ResolvedSkillEntry { dir, ignore: None }
+    }
+
+    fn entry_with_ignore(dir: PathBuf, patterns: &[&str]) -> crate::config::ResolvedSkillEntry {
+        let mut builder = globset::GlobSetBuilder::new();
+        for p in patterns {
+            builder.add(globset::Glob::new(p).expect("test glob compiles"));
+        }
+        crate::config::ResolvedSkillEntry {
+            dir,
+            ignore: Some(builder.build().expect("test glob set builds")),
+        }
+    }
+
     fn build_registry(tmp: &TempDir) -> SkillsRegistry {
-        SkillsRegistry::new(vec![tmp.path().to_path_buf()])
+        SkillsRegistry::new(vec![entry(tmp.path().to_path_buf())])
     }
 
     #[test]
@@ -304,7 +331,7 @@ mod tests {
         let b = TempDir::new().unwrap();
         seed_skill(a.path(), "a-skill", "from a", "a body");
         seed_skill(b.path(), "b-skill", "from b", "b body");
-        let reg = SkillsRegistry::new(vec![a.path().to_path_buf(), b.path().to_path_buf()]);
+        let reg = SkillsRegistry::new(vec![entry(a.path().to_path_buf()), entry(b.path().to_path_buf())]);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 2);
         assert!(reg.get(&SkillSlug::parse("a-skill").unwrap()).is_some());
@@ -317,7 +344,7 @@ mod tests {
         let b = TempDir::new().unwrap();
         seed_skill(a.path(), "shared", "from a", "FROM_A");
         seed_skill(b.path(), "shared", "from b", "FROM_B");
-        let reg = SkillsRegistry::new(vec![a.path().to_path_buf(), b.path().to_path_buf()]);
+        let reg = SkillsRegistry::new(vec![entry(a.path().to_path_buf()), entry(b.path().to_path_buf())]);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 1);
         let kept = reg.get(&SkillSlug::parse("shared").unwrap()).unwrap();
@@ -330,10 +357,23 @@ mod tests {
         let a = TempDir::new().unwrap();
         seed_skill(a.path(), "alpha", "alpha", "alpha body");
         let missing = std::path::PathBuf::from("/nonexistent-skills-root-xyz-k268");
-        let reg = SkillsRegistry::new(vec![missing, a.path().to_path_buf()]);
+        let reg = SkillsRegistry::new(vec![entry(missing), entry(a.path().to_path_buf())]);
         reg.reload().unwrap();
         assert_eq!(reg.count(), 1);
         assert!(reg.get(&SkillSlug::parse("alpha").unwrap()).is_some());
+    }
+
+    #[test]
+    fn ignore_glob_drops_matching_slugs() {
+        let tmp = TempDir::new().unwrap();
+        seed_skill(tmp.path(), "git-commit", "git", "body");
+        seed_skill(tmp.path(), "work-internal", "work", "body");
+        seed_skill(tmp.path(), "work-experimental", "work", "body");
+        let reg = SkillsRegistry::new(vec![entry_with_ignore(tmp.path().to_path_buf(), &["work-*"])]);
+        reg.reload().unwrap();
+        assert_eq!(reg.count(), 1);
+        assert!(reg.get(&SkillSlug::parse("git-commit").unwrap()).is_some());
+        assert!(reg.get(&SkillSlug::parse("work-internal").unwrap()).is_none());
     }
 
     #[test]

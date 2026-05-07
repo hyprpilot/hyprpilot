@@ -50,6 +50,18 @@ This page documents the layering. For session profiles — by far the most impor
 | `~/.local/state/hyprpilot/logs/hyprpilot.log.*` | Rolling logs. |
 | `$XDG_RUNTIME_DIR/hyprpilot.sock` | Daemon socket (one per user). |
 
+## Root-level options
+
+A handful of knobs live at the TOML root rather than under a section.
+
+```toml
+cwd = "~/code"           # default daemon working directory
+```
+
+`cwd` sets the daemon's working directory at startup when `--cwd` isn't passed on the CLI. Useful for systemd-unit invocations where there's no shell-set cwd. `--cwd` always wins; without either, the daemon inherits the spawning environment's cwd.
+
+The `[[skills]]` and `[[mcps]]` array-of-tables also live at root — see [Profiles](./profiles).
+
 ## Validation
 
 Every section validates types and rejects unknown fields at boot — typos fail fast with an error naming the offending field. Cross-field references (e.g. `[[profiles]].agent` must reference a real `[[agents]].id`) are checked too.

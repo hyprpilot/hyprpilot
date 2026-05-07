@@ -80,9 +80,20 @@ Composition lets a base persona + per-profile addendum land without juggling tem
 
 ## MCPs
 
-MCPs (Model Context Protocol servers) extend an agent with tools — filesystem, search, GitHub, custom services. Each path under `mcps` is a JSON file using the standard `mcpServers` shape that Claude Code, Codex, and Cursor all read.
+MCPs (Model Context Protocol servers) extend an agent with tools — filesystem, search, GitHub, custom services. Each `[[mcps]]` entry points at a JSON file using the standard `mcpServers` shape that Claude Code, Codex, and Cursor all read.
 
 **You can drop your existing `~/.claude.json` straight in.** It works.
+
+```toml
+[[mcps]]
+file = "~/.claude.json"
+
+[[mcps]]
+file = "~/.config/hyprpilot/mcps/team.json"
+ignore = ["scratch-*", "*-internal"]
+```
+
+Inside each file:
 
 ```json
 {
@@ -103,6 +114,10 @@ MCPs (Model Context Protocol servers) extend an agent with tools — filesystem,
 ```
 
 Files iterate in order. Same-named servers in later files override earlier ones.
+
+### Ignoring servers
+
+`ignore` is an optional glob array per `[[mcps]]` entry. Server names matching any pattern are dropped before they reach the agent. Globs anchor against the full server name — `work-*` matches `work-foo` but not `pre-work-foo`. Same matcher used for the `autoAcceptTools` / `autoRejectTools` per-server fields.
 
 ### Auto-accept / auto-reject
 
@@ -127,18 +142,32 @@ Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`. Rej
 
 ### Per-profile MCP override
 
-`[[profiles]] mcps = [...]` wholesale-replaces the global MCP set for that profile. `mcps = []` means "no MCPs at all" — handy for a sandboxed read-only profile.
+```toml
+[[profiles]]
+id = "engineer"
+agent = "claude-code"
+mcps = [
+  { file = "~/.config/hyprpilot/mcps/work.json" },
+  { file = "~/.claude.json", ignore = ["scratch-*"] },
+]
+```
+
+`[[profiles]] mcps` wholesale-replaces the global `[[mcps]]` set for that profile. `mcps = []` means "no MCPs at all" — handy for a sandboxed read-only profile.
 
 ## Skills
 
 Skills aren't picked at config time — they live in their own catalog and ride along with prompts you specifically attach them to. Configure the catalog roots once:
 
 ```toml
-[skills]
-dirs = ["~/.config/hyprpilot/skills"]
+[[skills]]
+dir = "~/.config/hyprpilot/skills"
+
+[[skills]]
+dir = "~/.team/shared-skills"
+ignore = ["work-*", "*-experimental"]
 ```
 
-Each root is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's claude-code skill convention](https://github.com/anthropics/claude-code/blob/main/skills/README.md):
+Each `dir` is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's claude-code skill convention](https://github.com/anthropics/claude-code/blob/main/skills/README.md):
 
 ```
 ~/.config/hyprpilot/skills/
@@ -151,7 +180,23 @@ Each root is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Ant
     └── SKILL.md
 ```
 
+`ignore` is the same glob shape as `[[mcps]]` — slugs matching any pattern are skipped at load time.
+
 In the composer, `Ctrl+K → skills → <slug>` (or type `#<slug>` directly) attaches a skill to your next prompt. The agent reads the skill body first, then your message. Reload after editing a `SKILL.md` via the palette's `skills → reload` action.
+
+### Per-profile skills override
+
+```toml
+[[profiles]]
+id = "engineer"
+agent = "claude-code"
+skills = [
+  { dir = "~/.config/hyprpilot/skills" },
+  { dir = "~/.engineering/skills", ignore = ["draft-*"] },
+]
+```
+
+Same shape as the root array; wholesale-replaces the global `[[skills]]` for that profile. `skills = []` disables skill loading for the profile.
 
 ## Examples
 
@@ -182,7 +227,7 @@ system_prompt = ["~/.config/hyprpilot/prompts/reviewer.md"]
 [[profiles]]
 id = "browse"
 agent = "claude-code"
-mcps = ["~/.config/hyprpilot/mcps/readonly-fs.json"]
+mcps = [{ file = "~/.config/hyprpilot/mcps/readonly-fs.json" }]
 ```
 
 …where `readonly-fs.json` lists `filesystem` with `autoRejectTools = ["write_*", "delete_*", "edit_*"]`.

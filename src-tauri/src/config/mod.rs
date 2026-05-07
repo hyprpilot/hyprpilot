@@ -1,6 +1,7 @@
 pub mod agents;
 mod autostart;
 pub mod daemon;
+pub mod extensions;
 pub mod keymaps;
 pub(crate) mod merge_strategies;
 pub mod theme;
@@ -18,6 +19,7 @@ use crate::paths;
 pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
 pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
+pub use extensions::{McpFile, SkillEntry};
 pub use keymaps::{KeymapsConfig, Modifier};
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
 pub use theme::{Theme, Ui};
@@ -40,17 +42,34 @@ pub struct Config {
     pub autostart: Autostart,
     #[garde(dive)]
     pub logging: Logging,
+    /// `[[skills]]` — global skills catalog roots. Each entry is a
+    /// directory of `<slug>/SKILL.md` bundles plus an optional
+    /// per-entry glob `ignore` array filtering slugs at load time.
+    /// Profile-level `skills` wholesale-replaces this default. None
+    /// (unset) → defaults seeded by defaults.toml; `Some(vec![])` →
+    /// explicit "no skills" override. `~` / env-var expansion at
+    /// consume time.
     #[garde(dive)]
-    pub skills: SkillsConfig,
-    /// `mcps` — global MCP file list. Each path points at a JSON file
-    /// in the standard `{ "mcpServers": { ... } }` shape; the loader
-    /// merges them in iteration order with later-wins on same-name.
-    /// Profile-level `mcps` wholesale-replaces this default. None
-    /// (unset) → no MCPs; `Some(vec![])` → explicit empty list.
-    /// `~` + env-var expansion at consume time, mirroring `[skills] dirs`.
-    #[garde(custom(crate::config::validations::validate_unique_nonempty))]
     #[merge(strategy = overwrite_some)]
-    pub mcps: Option<Vec<PathBuf>>,
+    pub skills: Option<Vec<SkillEntry>>,
+    /// `[[mcps]]` — global MCP catalog files. Each entry is a JSON
+    /// file in the standard `{ "mcpServers": { ... } }` shape plus an
+    /// optional per-entry glob `ignore` array filtering server names
+    /// at load time. The loader merges files in iteration order with
+    /// later-wins on same-name. Profile-level `mcps` wholesale-
+    /// replaces this default. None (unset) → no MCPs; `Some(vec![])`
+    /// → explicit empty list. `~` / env-var expansion at consume time.
+    #[garde(dive)]
+    #[merge(strategy = overwrite_some)]
+    pub mcps: Option<Vec<McpFile>>,
+    /// Root-level fallback cwd. Used at daemon startup as the chdir
+    /// target when `--cwd` isn't passed on the CLI. Mostly useful for
+    /// systemd-unit invocations where there's no shell-set cwd. When
+    /// neither is set, the daemon inherits the spawning environment's
+    /// cwd. `~` / `$VAR` expansion runs at consume time.
+    #[garde(skip)]
+    #[merge(strategy = overwrite_some)]
+    pub cwd: Option<PathBuf>,
     /// `system_prompt` — root-level fallback every profile uses when
     /// its own `system_prompt` isn't set. Array of markdown / text
     /// file paths; read + concatenated (blank-line separator) at
@@ -138,31 +157,54 @@ pub struct Logging {
     pub level: Option<crate::logging::LogLevel>,
 }
 
-/// `[skills]` — loader configuration. `dirs` is the list of roots
-/// scanned by `SkillsRegistry`; each `<slug>/SKILL.md` under any
-/// listed root becomes a loadable skill. Defaults seed
-/// `["~/.config/hyprpilot/skills"]`; `~` / env-var expansion runs at
-/// consume time in `resolved_dirs`. User-supplied `dirs` replaces the
-/// default list wholesale (`None` = inherit defaults; `Some(vec![])`
-/// = explicit "no skills" override).
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-#[merge(strategy = overwrite_some)]
-pub struct SkillsConfig {
-    #[garde(skip)]
-    pub dirs: Option<Vec<PathBuf>>,
+/// One resolved skill catalog entry. `dir` is fully expanded
+/// (`~` / `$VAR` collapsed); `ignore` carries the compiled glob
+/// matcher (or `None` when the entry has no ignore patterns).
+/// Built from `Config::resolved_skills` at consume time.
+#[derive(Debug, Clone)]
+pub struct ResolvedSkillEntry {
+    pub dir: PathBuf,
+    pub ignore: Option<globset::GlobSet>,
 }
 
-impl SkillsConfig {
-    /// Resolve every `dirs` entry to an absolute path via
-    /// `paths::resolve_user` (`shellexpand` for `~` / `$VAR`, then
-    /// `path-absolutize` for `./` / `../` collapse).
-    pub fn resolved_dirs(&self) -> Vec<PathBuf> {
-        let raw = self.dirs.as_deref().expect("[skills].dirs seeded by defaults.toml");
-        raw.iter()
-            .map(|p| crate::paths::resolve_user(&p.to_string_lossy()))
+impl Config {
+    /// Resolve every `[[skills]]` entry to an absolute path + compiled
+    /// ignore matcher. `~` / env-var expansion via `paths::resolve_user`.
+    pub fn resolved_skills(&self) -> Vec<ResolvedSkillEntry> {
+        self.skills
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|e| ResolvedSkillEntry {
+                dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
+                ignore: e.compile_ignore(),
+            })
             .collect()
     }
+
+    /// Resolve every `[[mcps]]` entry to an absolute path + compiled
+    /// ignore matcher. Mirrors `resolved_skills`. Profile-level
+    /// `mcps` overrides feed through the same shape via
+    /// `effective_mcps_for`.
+    pub fn resolved_mcps(&self) -> Vec<ResolvedMcpFile> {
+        self.mcps
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|e| ResolvedMcpFile {
+                file: crate::paths::resolve_user(&e.file.to_string_lossy()),
+                ignore: e.compile_ignore(),
+            })
+            .collect()
+    }
+}
+
+/// One resolved MCP catalog file. Mirror of `ResolvedSkillEntry` for
+/// the `mcps` side.
+#[derive(Debug, Clone)]
+pub struct ResolvedMcpFile {
+    pub file: PathBuf,
+    pub ignore: Option<globset::GlobSet>,
 }
 
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
@@ -331,55 +373,61 @@ level = "{lvl}"
     }
 
     #[test]
-    fn defaults_seed_skills_dirs_with_xdg_path() {
+    fn defaults_seed_skills_with_xdg_path() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
-        let dirs = cfg.skills.dirs.as_deref().expect("defaults must seed [skills] dirs");
-        assert_eq!(dirs, &[PathBuf::from("~/.config/hyprpilot/skills")]);
+        let entries = cfg.skills.as_deref().expect("defaults must seed [[skills]]");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
     }
 
     #[test]
-    fn skills_dirs_user_override_replaces_defaults_wholesale() {
+    fn skills_user_override_replaces_defaults_wholesale() {
         let p = write_tmp(
             "skills-override.toml",
             r#"
-[skills]
-dirs = ["/opt/skills/team", "~/personal/skills"]
+[[skills]]
+dir = "/opt/skills/team"
+
+[[skills]]
+dir = "~/personal/skills"
+ignore = ["work-*"]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        assert_eq!(
-            cfg.skills.dirs.as_deref(),
-            Some(&[PathBuf::from("/opt/skills/team"), PathBuf::from("~/personal/skills"),][..])
-        );
+        let entries = cfg.skills.as_deref().expect("override applied");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].dir, PathBuf::from("/opt/skills/team"));
+        assert_eq!(entries[1].dir, PathBuf::from("~/personal/skills"));
+        assert_eq!(entries[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn skills_dirs_explicit_empty_disables_loading() {
+    fn skills_explicit_empty_disables_loading() {
         let p = write_tmp(
             "skills-empty.toml",
             r#"
-[skills]
-dirs = []
+skills = []
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        assert_eq!(cfg.skills.dirs.as_deref(), Some(&[][..]));
-        assert!(cfg.skills.resolved_dirs().is_empty());
+        assert_eq!(cfg.skills.as_deref(), Some(&[][..]));
+        assert!(cfg.resolved_skills().is_empty());
         fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn skills_resolved_dirs_expand_tilde() {
+    fn skills_resolved_expands_tilde() {
         let cfg = Config {
-            skills: SkillsConfig {
-                dirs: Some(vec![PathBuf::from("~/.config/hyprpilot/skills")]),
-            },
+            skills: Some(vec![SkillEntry {
+                dir: PathBuf::from("~/.config/hyprpilot/skills"),
+                ignore: None,
+            }]),
             ..Default::default()
         };
-        let resolved = cfg.skills.resolved_dirs();
+        let resolved = cfg.resolved_skills();
         assert_eq!(resolved.len(), 1);
-        let path = resolved[0].to_string_lossy();
+        let path = resolved[0].dir.to_string_lossy();
         // Tilde expanded to a real home dir; defensive — accept either
         // resolved-form or literal if shellexpand didn't have HOME set.
         assert!(

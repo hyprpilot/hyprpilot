@@ -137,6 +137,16 @@ pub(super) fn show_after(client: &CtlClient, instance_id: Option<String>) -> Res
     Ok(())
 }
 
+/// Fill `--cwd` from `std::env::current_dir()` when the captain didn't
+/// pass one explicitly. Lets every spawn-shaped subcommand pick up the
+/// shell's PWD without the captain repeating it on every invocation —
+/// `cd ~/proj && hyprpilot ctl prompts send "..."` lands rooted there
+/// regardless of the daemon's startup cwd. Explicit `--cwd <path>`
+/// always wins.
+pub(super) fn auto_fill_cwd(opt: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    opt.or_else(|| std::env::current_dir().ok())
+}
+
 /// Connect, send `method` + `params`, return the raw `Value` from the
 /// success branch. RPC errors carry the JSON-RPC code in the error
 /// message; transport errors bubble as-is. Used by namespaces whose
