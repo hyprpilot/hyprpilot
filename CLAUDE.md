@@ -408,22 +408,34 @@ fields:
   Each is an object (`bg` today; `accent` / `border` / `fg` later). Do not
   name surfaces by elevation (`card_hi`, `card_alt`); name them by role.
 
-### UI scaling — `[ui] zoom` config knob
+### UI scaling — rem-based layout + `[ui] zoom`
 
-The overlay's "make everything bigger" knob lives in **`[ui] zoom`**
-(default `1.0`, range `[0.5, 2.0]`, override in user TOML). The
-daemon reads it after the window maps and calls
-**`WebviewWindow::set_zoom(zoom)`** — Chromium-style page zoom that
-WebKit/Chromium expose as `set_zoom_level`. This scales text +
-layout **uniformly**: paddings, widths, borders, gaps, fonts —
-everything in the rendered tree multiplies by the zoom factor.
+**Every layout primitive resolves through `rem`.** Typography,
+paddings, widths, gaps, border-radius, min-heights — everything
+that should track UI scale is written in `rem` (or via Tailwind
+utilities, which compile down to `rem`). The `:root { font-size:
+16px }` baseline in `ui/src/assets/styles.css` is the rem anchor;
+`1rem = 16px` at default. Reserve literal `px` for **hairlines**
+(1px borders that should stay device-pixel exact regardless of
+scale) and viewport media-query thresholds (which don't track UI
+scale either).
 
-A CSS `:root { font-size }` knob would only scale `rem`-based
-primitives. The codebase mixes `rem` typography with `px` paddings
-/ widths / borders / gaps; without `set_zoom` the UI scales
-text-only and looks broken. `set_zoom` is the canonical Tauri API
-for this, mirroring how browser users hit `Ctrl++` to enlarge
-everything proportionally.
+Two scaling axes compose on top of that rem-based tree:
+
+1. **`[ui] zoom`** (default `1.0`, range `[0.5, 2.0]`). The daemon
+   reads it after the window maps and calls
+   **`WebviewWindow::set_zoom(zoom)`** — Chromium-style page zoom
+   that scales text + layout **uniformly** (paddings, widths,
+   borders, gaps, fonts — everything in the rendered tree
+   multiplies by the zoom factor). This is the captain's
+   "make everything bigger" knob; works on Tauri only.
+2. **Mobile / browser baseline.** When the SPA is served over the
+   daemon's HTTPS bridge to a phone or remote browser, `set_zoom`
+   doesn't run — there's no Tauri webview to call into. Phones get
+   the rem tree at the browser's default `16px` root (or whatever
+   the device's accessibility setting overrides it to), which
+   already produces sensible touch-friendly proportions because
+   the entire layout multiplies through that baseline.
 
 Cross-platform — works the same on Hyprland, GNOME, KDE, macOS,
 Windows. Webview DPI scaling (`scale_factor()` per monitor) layers
@@ -446,20 +458,17 @@ is false (`Segoe UI 11` on Windows ≠ `Inter 11` on Hyprland). A
 config knob is the common-method replacement (mirrors how VS Code,
 Zed, Discord, Obsidian all do it).
 
-**Why not a CSS `:root { font-size }` knob?** Bumping the root
-font-size only scales primitives written in `rem` units. The
-codebase has lots of literal `px` for layout (paddings, widths,
-borders) — those wouldn't budge, and the UI would look stretched
-text in a fixed shell. `set_zoom` scales every box.
-
 **Why not `WebKitSettings::default-font-size`?** That property
 only scales the default font (unset CSS sizes); it doesn't touch
 explicit `font-size: 1rem` declarations. Wrong axis.
 
-**`text-[0.Nrem]` is still the canonical way to set a font size**
-inside a primitive — full utility aliases (`text-xs`, `text-sm`, …)
-are rem-based and fine. Avoid literal `font-size: Npx` so the rem
-baseline stays the single source of typographic scale.
+**Always use rem (or Tailwind utilities, which are rem-based) for
+new layout / typography.** `text-[0.Nrem]` is the escape hatch for
+arbitrary font sizes; `text-xs` / `text-sm` / `gap-2` / `p-3` etc.
+are rem-based and preferred. Avoid literal `Npx` for any value
+that should track UI scale — the rem baseline is the single
+source of typographic + layout scale across both Tauri (with
+zoom) and browser (mobile / remote bridge) consumers.
 
 ## Window surface (`[daemon.window]`)
 

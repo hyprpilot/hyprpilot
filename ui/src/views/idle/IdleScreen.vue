@@ -93,24 +93,24 @@ function onRowClick(session: SessionSummary): void {
   @apply flex flex-col items-center justify-center;
   flex: 1 1 auto;
   min-height: 100%;
-  padding: 24px;
+  padding: 1.5rem;
   color: var(--theme-fg-dim);
 }
 
 .idle-wordmark {
   font-family: var(--theme-font-mono);
-  font-size: 26px;
+  font-size: 1.625rem;
   font-weight: 500;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.01875rem;
   color: var(--theme-fg);
 }
 
 .idle-accent {
-  margin-top: 4px;
+  margin-top: 0.25rem;
   font-family: var(--theme-font-mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
-  letter-spacing: 1px;
+  letter-spacing: 0.0625rem;
   color: var(--theme-accent);
 }
 
@@ -121,12 +121,12 @@ function onRowClick(session: SessionSummary): void {
  * Hidden when nothing is configured (fresh daemon with no profile /
  * no agents). */
 .idle-context {
-  margin-top: 14px;
+  margin-top: 0.875rem;
   display: grid;
   grid-template-columns: auto auto;
   justify-content: center;
-  column-gap: 10px;
-  row-gap: 4px;
+  column-gap: 0.625rem;
+  row-gap: 0.25rem;
   font-family: var(--theme-font-mono);
   font-size: 0.66rem;
   max-width: 100%;
@@ -157,17 +157,17 @@ function onRowClick(session: SessionSummary): void {
 
 .idle-sessions {
   width: 100%;
-  max-width: 640px;
-  margin-top: 26px;
+  max-width: 40rem;
+  margin-top: 1.625rem;
 }
 
 .idle-sessions-header {
   @apply flex items-center;
-  margin-bottom: 6px;
+  margin-bottom: 0.375rem;
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;
   color: var(--theme-fg-subtle);
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 .idle-sessions-count {
@@ -183,30 +183,30 @@ function onRowClick(session: SessionSummary): void {
   flex: 1;
   height: 1px;
   background-color: var(--theme-border);
-  margin-left: 8px;
+  margin-left: 0.5rem;
 }
 
 .idle-sessions-headrow {
   display: grid;
-  grid-template-columns: 14px 1fr 170px 110px;
-  column-gap: 12px;
-  padding: 4px 10px;
+  grid-template-columns: 0.875rem 1fr 10.625rem 6.875rem;
+  column-gap: 0.75rem;
+  padding: 0.25rem 0.625rem;
   font-family: var(--theme-font-mono);
   font-size: 0.56rem;
   color: var(--theme-fg-dim);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.03125rem;
   border-bottom: 1px solid var(--theme-border);
 }
 
 .idle-sessions-row {
   display: grid;
-  grid-template-columns: 14px 1fr 170px 110px;
-  column-gap: 12px;
+  grid-template-columns: 0.875rem 1fr 10.625rem 6.875rem;
+  column-gap: 0.75rem;
   align-items: center;
-  padding: 7px 10px;
+  padding: 0.4375rem 0.625rem;
   border-bottom: 1px solid var(--theme-border);
-  border-left: 2px solid var(--theme-status-ok);
+  border-left: 0.125rem solid var(--theme-status-ok);
   background-color: var(--theme-surface);
   font-family: var(--theme-font-mono);
   font-size: 0.7rem;
@@ -229,13 +229,13 @@ function onRowClick(session: SessionSummary): void {
 }
 
 .idle-sessions-more {
-  padding: 6px 10px;
+  padding: 0.375rem 0.625rem;
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;
   color: var(--theme-fg-dim);
   border-top: 1px solid var(--theme-border-soft);
   background-color: var(--theme-surface);
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
 }
 
 .idle-sessions-cell {
@@ -256,6 +256,6 @@ function onRowClick(session: SessionSummary): void {
 /* Bottom anchor for the keybind hint — `<KbdHint>` carries its own
  * chrome; the wrapper just controls placement. */
 .idle-kbd-hint {
-  margin-top: 22px;
+  margin-top: 1.375rem;
 }
 </style>

@@ -29,7 +29,7 @@ defineEmits<{ remove: [id: string] }>()
 @reference '../../assets/styles.css';
 
 .composer-pill {
-  @apply inline-flex items-center gap-1 border px-2 py-[2px] text-[0.7rem] leading-tight;
+  @apply inline-flex items-center gap-1 border px-2 py-[0.125rem] text-[0.7rem] leading-tight;
   font-family: var(--theme-font-mono);
   color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-alt);
@@ -52,8 +52,8 @@ defineEmits<{ remove: [id: string] }>()
 }
 
 .composer-pill-remove-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .composer-pill-remove:hover {

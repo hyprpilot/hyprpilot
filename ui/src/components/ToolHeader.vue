@@ -55,24 +55,24 @@ const tagBg = computed(() => (props.tone === undefined ? undefined : toneBg(prop
 
 .tool-header {
   @apply flex items-center;
-  gap: 8px;
+  gap: 0.5rem;
   font-family: var(--theme-font-mono);
 }
 
 .tool-header-tag {
   @apply inline-flex shrink-0 items-center;
-  gap: 5px;
-  padding: 2px 7px;
+  gap: 0.3125rem;
+  padding: 0.125rem 0.4375rem;
   color: var(--theme-fg-on-tone);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-size: 0.62rem;
   font-weight: 700;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
 }
 
 .tool-header-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .tool-header-title {

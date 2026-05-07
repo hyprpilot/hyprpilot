@@ -144,15 +144,15 @@ const rawJson = computed(() => {
 
 .mcp-preview {
   @apply flex flex-col gap-3 overflow-y-auto;
-  padding: 12px 14px;
+  padding: 0.75rem 0.875rem;
   font-size: 0.72rem;
 }
 
 .mcp-preview-dl {
   @apply grid;
   grid-template-columns: max-content 1fr;
-  column-gap: 12px;
-  row-gap: 6px;
+  column-gap: 0.75rem;
+  row-gap: 0.375rem;
 }
 
 .mcp-preview-dl dt {
@@ -169,12 +169,12 @@ const rawJson = computed(() => {
 }
 
 .mcp-preview-list {
-  @apply flex flex-col gap-[2px];
+  @apply flex flex-col gap-[0.125rem];
 }
 
 .mcp-preview-raw {
   border-top: 1px solid var(--theme-border-soft);
-  padding-top: 10px;
+  padding-top: 0.625rem;
 }
 
 .mcp-preview-raw summary {
@@ -184,15 +184,15 @@ const rawJson = computed(() => {
 
 .mcp-preview-raw pre {
   @apply mt-2 overflow-x-auto;
-  padding: 8px;
+  padding: 0.5rem;
   background-color: var(--theme-surface-alt);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-size: 0.68rem;
 }
 
 .mcp-preview-empty {
   @apply flex items-center justify-center;
-  padding: 16px;
+  padding: 1rem;
   color: var(--theme-fg-dim);
   font-size: 0.72rem;
 }

@@ -37,9 +37,9 @@ withDefaults(
 
 .breadcrumb-pill {
   @apply inline-flex shrink-0 items-center gap-1 leading-tight;
-  padding: 1px 7px;
+  padding: 0.0625rem 0.4375rem;
   border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface);
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;

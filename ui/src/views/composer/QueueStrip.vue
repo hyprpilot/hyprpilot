@@ -64,17 +64,17 @@ const emit = defineEmits<{
   @apply flex flex-col;
   background-color: var(--theme-surface-bg);
   border-top: 1px solid var(--theme-border);
-  padding: 8px 14px 6px 4px;
-  gap: 5px;
+  padding: 0.5rem 0.875rem 0.375rem 0.25rem;
+  gap: 0.3125rem;
 }
 
 .queue-band-header {
   @apply flex items-center text-[0.56rem] uppercase;
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
-  letter-spacing: 1px;
-  padding-left: 4px;
-  gap: 8px;
+  letter-spacing: 0.0625rem;
+  padding-left: 0.25rem;
+  gap: 0.5rem;
 }
 
 .queue-band-count {
@@ -91,7 +91,7 @@ const emit = defineEmits<{
   @apply flex-1;
   height: 1px;
   background-color: var(--theme-border);
-  margin-left: 4px;
+  margin-left: 0.25rem;
 }
 
 .queue-band-list {
@@ -100,8 +100,8 @@ const emit = defineEmits<{
 
 .queue-band-row {
   @apply flex items-center gap-2;
-  padding: 3px 8px;
-  border-left: 2px solid var(--theme-accent-user);
+  padding: 0.1875rem 0.5rem;
+  border-left: 0.125rem solid var(--theme-accent-user);
   background-color: var(--theme-surface);
 }
 
@@ -111,9 +111,9 @@ const emit = defineEmits<{
   @apply inline-flex shrink-0 items-center justify-center font-bold text-[0.6rem];
   background-color: var(--theme-accent-user-soft);
   color: var(--theme-accent-user);
-  padding: 1px 6px;
-  border-radius: 3px;
-  min-width: 16px;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.1875rem;
+  min-width: 1rem;
 }
 
 .queue-band-text {
@@ -124,17 +124,17 @@ const emit = defineEmits<{
 
 .queue-band-actions {
   @apply flex shrink-0 items-center;
-  gap: 2px;
+  gap: 0.125rem;
 }
 
 /* wireframe iconBtn (22×22 ghost) — same shape as the permission panel
  * action buttons. */
 .queue-band-icon-btn {
   @apply inline-flex items-center justify-center;
-  width: 22px;
-  height: 22px;
+  width: 1.375rem;
+  height: 1.375rem;
   padding: 0;
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   background-color: transparent;
   cursor: pointer;
 }
@@ -155,8 +155,8 @@ const emit = defineEmits<{
 }
 
 .queue-band-icon {
-  width: 11px;
-  height: 11px;
+  width: 0.6875rem;
+  height: 0.6875rem;
 }
 
 .queue-band-icon-btn:hover {

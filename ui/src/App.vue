@@ -82,8 +82,8 @@ const showRejectedScreen = computed(() => showPairScreen.value && pair.value?.te
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  padding: 28px 22px;
+  gap: 1rem;
+  padding: 1.75rem 1.375rem;
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
@@ -95,7 +95,7 @@ const showRejectedScreen = computed(() => showPairScreen.value && pair.value?.te
   font-size: 1.2rem;
   font-weight: 700;
   color: var(--theme-status-err);
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
 }
 
 .pair-rejected-reason {
@@ -107,19 +107,19 @@ const showRejectedScreen = computed(() => showPairScreen.value && pair.value?.te
 }
 
 .pair-rejected-btn {
-  margin-top: 8px;
-  padding: 10px 20px;
+  margin-top: 0.5rem;
+  padding: 0.625rem 1.25rem;
   background-color: var(--theme-accent);
   color: var(--theme-fg-on-tone);
   border: none;
-  border-radius: 4px;
+  border-radius: 0.25rem;
   font-family: inherit;
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
   /* Touch-friendly tap target — same min-height as the scan button
    * on the pair screen so this view feels native to mobile. */
-  min-height: 44px;
+  min-height: 2.75rem;
 }
 
 .pair-rejected-btn:active {

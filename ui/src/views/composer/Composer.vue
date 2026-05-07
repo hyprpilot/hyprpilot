@@ -659,8 +659,8 @@ function onDragOver(e: DragEvent): void {
   @apply flex flex-col;
   background-color: var(--theme-surface);
   border-top: 1px solid var(--theme-border);
-  padding: 8px 14px;
-  gap: 5px;
+  padding: 0.5rem 0.875rem;
+  gap: 0.3125rem;
 }
 
 .composer-pills {
@@ -672,26 +672,26 @@ function onDragOver(e: DragEvent): void {
  * settles and the real pill takes its place. Spinner + lowercase
  * "attaching…" copy reads as transient. */
 .composer-pill-loading {
-  @apply inline-flex items-center gap-[6px] text-[0.62rem] uppercase;
+  @apply inline-flex items-center gap-[0.375rem] text-[0.62rem] uppercase;
   background-color: var(--theme-surface-bg);
   border: 1px dashed var(--theme-border-soft);
   color: var(--theme-fg-dim);
-  padding: 3px 8px;
-  border-radius: 3px;
-  letter-spacing: 0.5px;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 0.1875rem;
+  letter-spacing: 0.03125rem;
   font-family: var(--theme-font-mono);
 }
 
 .composer-pill-loading-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
   color: var(--theme-accent);
 }
 
 .composer-row {
   @apply flex items-stretch;
   min-width: 0;
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 /* wireframe textarea-equivalent: bg-bg, line2 border, padding 8px 10px.
@@ -703,9 +703,9 @@ function onDragOver(e: DragEvent): void {
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   border-color: var(--theme-border-soft);
-  border-radius: 4px;
-  padding: 8px 10px;
-  min-height: 96px;
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  min-height: 6rem;
   /* Cap at 50% of the viewport height so a captain pasting a long
    * spec / fenced code block can keep most of it in view while
    * editing instead of scrolling inside a stubby 25vh box. */
@@ -728,8 +728,8 @@ function onDragOver(e: DragEvent): void {
 /* wireframe vertical button cluster: 44px wide, send + attach stacked. */
 .composer-actions {
   @apply flex flex-col;
-  width: 44px;
-  gap: 4px;
+  width: 2.75rem;
+  gap: 0.25rem;
 }
 
 /* wireframe send: solid yellow accent when content, ghost otherwise. */
@@ -739,7 +739,7 @@ function onDragOver(e: DragEvent): void {
   background-color: var(--theme-accent);
   color: var(--theme-fg-on-tone);
   border: 1px solid var(--theme-accent);
-  border-radius: 4px;
+  border-radius: 0.25rem;
   cursor: pointer;
 }
 
@@ -761,8 +761,8 @@ function onDragOver(e: DragEvent): void {
  * attach). Each glyph sits in a 22px square so the buttons stack
  * cleanly without baseline jitter. */
 .composer-action-icon {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 /* Cancel — red ghost stop button. Renders only while a turn is in
@@ -770,11 +770,11 @@ function onDragOver(e: DragEvent): void {
  * shape so the button stack reads as a uniform action column. */
 .composer-cancel {
   @apply flex items-center justify-center;
-  height: 22px;
+  height: 1.375rem;
   background-color: transparent;
   color: var(--theme-status-err);
   border: 1px solid var(--theme-status-err);
-  border-radius: 4px;
+  border-radius: 0.25rem;
   cursor: pointer;
   transition: background-color 0.12s ease-out;
 }
@@ -787,11 +787,11 @@ function onDragOver(e: DragEvent): void {
 /* wireframe attach: always ghost. */
 .composer-attach {
   @apply flex items-center justify-center text-[0.7rem];
-  height: 22px;
+  height: 1.375rem;
   background-color: transparent;
   color: var(--theme-fg-dim);
   border: 1px solid var(--theme-border-soft);
-  border-radius: 4px;
+  border-radius: 0.25rem;
   font-family: var(--theme-font-mono);
   cursor: pointer;
 }

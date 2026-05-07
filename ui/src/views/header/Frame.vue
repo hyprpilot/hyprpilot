@@ -171,23 +171,23 @@ const hasGit = computed(() => Boolean(props.gitStatus))
 }
 
 html[data-window-anchor='right'] .frame {
-  border-left: 3px solid var(--frame-phase);
+  border-left: 0.1875rem solid var(--frame-phase);
 }
 
 html[data-window-anchor='left'] .frame {
-  border-right: 3px solid var(--frame-phase);
+  border-right: 0.1875rem solid var(--frame-phase);
 }
 
 html[data-window-anchor='top'] .frame {
-  border-bottom: 3px solid var(--frame-phase);
+  border-bottom: 0.1875rem solid var(--frame-phase);
 }
 
 html[data-window-anchor='bottom'] .frame {
-  border-top: 3px solid var(--frame-phase);
+  border-top: 0.1875rem solid var(--frame-phase);
 }
 
 html:not([data-window-anchor]) .frame {
-  border: 3px solid var(--frame-phase);
+  border: 0.1875rem solid var(--frame-phase);
 }
 
 .frame-header {
@@ -201,15 +201,15 @@ html:not([data-window-anchor]) .frame {
  * the divider stays attached to the row when one is hidden. */
 .frame-row-1 {
   @apply flex items-center border-b;
-  padding: 8px 14px 8px 4px;
-  gap: 10px;
+  padding: 0.5rem 0.875rem 0.5rem 0.25rem;
+  gap: 0.625rem;
   border-color: var(--theme-border);
 }
 
 .frame-row-2 {
   @apply flex items-stretch border-b;
-  padding: 5px 14px 5px 4px;
-  gap: 6px;
+  padding: 0.3125rem 0.875rem 0.3125rem 0.25rem;
+  gap: 0.375rem;
   background-color: var(--theme-surface-bg);
   border-color: var(--theme-border);
 }
@@ -217,8 +217,8 @@ html:not([data-window-anchor]) .frame {
 /* Profile pill — phase color bg + dark ink + mono. Pulse dot when the
  * session is in any active phase (working/streaming/awaiting/pending). */
 .frame-profile-pill {
-  @apply inline-flex shrink-0 items-center gap-[6px] rounded-sm border-0 leading-tight;
-  padding: 3px 11px;
+  @apply inline-flex shrink-0 items-center gap-[0.375rem] rounded-sm border-0 leading-tight;
+  padding: 0.1875rem 0.6875rem;
   font-size: 0.7rem;
   font-weight: 700;
   color: var(--theme-fg-on-tone);
@@ -236,7 +236,7 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-profile-dot {
-  @apply inline-block h-[6px] w-[6px] shrink-0 rounded-full;
+  @apply inline-block h-[0.375rem] w-[0.375rem] shrink-0 rounded-full;
   background-color: var(--theme-fg-on-tone);
 }
 
@@ -251,7 +251,7 @@ html:not([data-window-anchor]) .frame {
 .frame-model-pill,
 .frame-mode-pill {
   @apply inline-flex shrink-0 items-center rounded-sm leading-tight;
-  padding: 3px 9px;
+  padding: 0.1875rem 0.5625rem;
   font-size: 0.66rem;
   font-weight: 700;
   background-color: var(--theme-surface-alt);
@@ -280,13 +280,13 @@ html:not([data-window-anchor]) .frame {
 /* Session title — italic dashed pill, mono, ink-2, ellipsizes. */
 .frame-title {
   @apply flex-1 truncate;
-  padding: 3px 10px;
+  padding: 0.1875rem 0.625rem;
   font-size: 0.66rem;
   min-width: 0;
   color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-bg);
   border: 1px dashed var(--theme-border-soft);
-  border-radius: 4px;
+  border-radius: 0.25rem;
   font-family: var(--theme-font-mono);
   font-style: italic;
 }
@@ -300,13 +300,13 @@ html:not([data-window-anchor]) .frame {
  * fg) so the captain reads "+N" first. Hidden when the registry has
  * a single instance: nothing extra to surface. */
 .frame-instances-pill {
-  @apply inline-flex shrink-0 cursor-pointer items-center gap-[5px] border-0 leading-tight;
-  padding: 2px 8px;
+  @apply inline-flex shrink-0 cursor-pointer items-center gap-[0.3125rem] border-0 leading-tight;
+  padding: 0.125rem 0.5rem;
   font-size: 0.6rem;
   font-weight: 700;
   color: var(--theme-accent);
   background-color: color-mix(in srgb, var(--theme-accent) 18%, transparent);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-family: var(--theme-font-mono);
 }
 
@@ -321,13 +321,13 @@ html:not([data-window-anchor]) .frame {
 .frame-instances-label {
   font-weight: 500;
   text-transform: lowercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
 }
 
 .frame-cwd-git-arrow {
-  width: 7px;
-  height: 7px;
-  margin-right: 1px;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  margin-right: 0.0625rem;
 }
 
 .frame-close {
@@ -339,8 +339,8 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-close-icon {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 .frame-close:hover {
@@ -352,14 +352,14 @@ html:not([data-window-anchor]) .frame {
  * / skills / etc.) sit alongside as breadcrumb pills. */
 .frame-cwd {
   @apply inline-flex min-w-0 flex-1 items-center;
-  padding: 3px 10px;
-  gap: 6px;
+  padding: 0.1875rem 0.625rem;
+  gap: 0.375rem;
   font-size: 0.66rem;
   color: var(--theme-fg);
   background-color: var(--theme-surface);
   border: 1px solid var(--theme-border-soft);
-  border-left: 3px solid var(--theme-accent);
-  border-radius: 3px;
+  border-left: 0.1875rem solid var(--theme-accent);
+  border-radius: 0.1875rem;
   font-family: var(--theme-font-mono);
   cursor: pointer;
   overflow: hidden;
@@ -376,9 +376,9 @@ html:not([data-window-anchor]) .frame {
 
 .frame-cwd-git {
   @apply ml-auto inline-flex shrink-0 items-center;
-  padding: 1px 7px;
-  gap: 6px;
-  border-radius: 3px;
+  padding: 0.0625rem 0.4375rem;
+  gap: 0.375rem;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
 }
@@ -415,9 +415,9 @@ html:not([data-window-anchor]) .frame {
   background-color: var(--theme-surface);
 }
 
-/* Narrow-width rules. Worktree hides below 340px because its label
+/* Narrow-width rules. Worktree hides below 21.25rem because its label
  * is the longest chip on the row. */
-@container frame (max-width: 340px) {
+@container frame (max-width: 21.25rem) {
   .frame-cwd-worktree {
     display: none;
   }

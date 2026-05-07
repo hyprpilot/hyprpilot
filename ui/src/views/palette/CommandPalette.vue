@@ -422,7 +422,7 @@ onUnmounted(() => {
 .palette-overlay {
   @apply fixed inset-0 z-50 flex items-center justify-center;
   background-color: color-mix(in srgb, var(--theme-surface-bg) 60%, transparent);
-  padding: 24px;
+  padding: 1.5rem;
 }
 
 /* palette frame: surface bg + line2 border, 8px radius, big shadow.
@@ -433,12 +433,12 @@ onUnmounted(() => {
   @apply flex flex-col;
   max-height: 70vh;
   width: 32rem;
-  max-width: calc(100vw - 48px);
+  max-width: calc(100vw - 3rem);
   border: 1px solid var(--theme-border-soft);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background-color: var(--theme-surface);
   color: var(--theme-fg);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.6);
   overflow: hidden;
 }
 
@@ -453,7 +453,7 @@ onUnmounted(() => {
 /* wireframe header: title › query (caret) ... result count. */
 .palette-header {
   @apply flex items-center gap-2;
-  padding: 10px 14px;
+  padding: 0.625rem 0.875rem;
   border-bottom: 1px solid var(--theme-border);
   font-family: var(--theme-font-mono);
 }
@@ -489,7 +489,7 @@ onUnmounted(() => {
 }
 
 .palette-list {
-  @apply m-0 flex min-h-0 flex-1 list-none flex-col overflow-y-auto p-[6px];
+  @apply m-0 flex min-h-0 flex-1 list-none flex-col overflow-y-auto p-[0.375rem];
   min-width: 0;
 }
 
@@ -505,12 +505,12 @@ onUnmounted(() => {
  *   captain's currently-picked profile / model / cwd / instance).
  * When a row is both, both borders light up. */
 .palette-row {
-  @apply flex items-center gap-[10px] text-[0.7rem];
+  @apply flex items-center gap-[0.625rem] text-[0.7rem];
   cursor: pointer;
-  padding: 6px 10px;
-  border-radius: 4px;
-  border-left: 3px solid transparent;
-  border-right: 3px solid transparent;
+  padding: 0.375rem 0.625rem;
+  border-radius: 0.25rem;
+  border-left: 0.1875rem solid transparent;
+  border-right: 0.1875rem solid transparent;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
   margin-bottom: 1px;
@@ -528,7 +528,7 @@ onUnmounted(() => {
 
 .palette-tick {
   @apply inline-flex shrink-0 items-center justify-center text-[0.7rem];
-  width: 18px;
+  width: 1.125rem;
   text-align: center;
   color: var(--theme-fg-dim);
 }
@@ -558,7 +558,7 @@ onUnmounted(() => {
 
 .palette-empty {
   @apply text-[0.7rem];
-  padding: 12px 16px;
+  padding: 0.75rem 1rem;
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
 }
@@ -574,7 +574,7 @@ onUnmounted(() => {
 
 .palette-preview {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
-  padding: 12px 14px;
+  padding: 0.75rem 0.875rem;
 }
 
 @media (max-width: 560px) {
@@ -586,9 +586,9 @@ onUnmounted(() => {
 /* wireframe footer: keyboard hints, mono dim, centered. */
 .palette-footer {
   @apply flex items-center justify-center;
-  padding: 8px 14px;
+  padding: 0.5rem 0.875rem;
   border-top: 1px solid var(--theme-border);
-  gap: 18px;
+  gap: 1.125rem;
   font-family: var(--theme-font-mono);
 }
 </style>

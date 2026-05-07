@@ -63,23 +63,23 @@ const computedElapsed = computed(() => {
 
 .tool-chips {
   background-color: var(--theme-surface);
-  border-left: 3px solid var(--theme-kind-read);
+  border-left: 0.1875rem solid var(--theme-kind-read);
   border-top: 1px solid var(--theme-border-soft);
   border-right: 1px solid var(--theme-border-soft);
   border-bottom: 1px solid var(--theme-border-soft);
-  border-radius: 4px;
-  padding: 6px 10px;
+  border-radius: 0.25rem;
+  padding: 0.375rem 0.625rem;
 }
 
 .tool-chips-header {
   @apply flex items-center gap-2 text-[0.62rem] uppercase;
   font-family: var(--theme-font-mono);
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
 }
 
 .tool-chips-caret {
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
   color: var(--theme-fg);
 }
 
@@ -95,11 +95,11 @@ const computedElapsed = computed(() => {
 }
 
 .tool-chips-grid {
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 0.375rem;
+  padding-top: 0.375rem;
   border-top: 1px dashed var(--theme-border);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
+  gap: 0.1875rem;
 }
 </style>

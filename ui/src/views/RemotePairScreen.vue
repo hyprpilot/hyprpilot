@@ -189,9 +189,9 @@ watch(
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
-  gap: 18px;
+  gap: 1.125rem;
   height: 100%;
-  padding: 28px 22px 32px;
+  padding: 1.75rem 1.375rem 2rem;
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
@@ -199,17 +199,17 @@ watch(
 
 .pair-screen-header {
   @apply flex items-center;
-  gap: 8px;
-  padding-bottom: 6px;
+  gap: 0.5rem;
+  padding-bottom: 0.375rem;
   border-bottom: 1px solid var(--theme-border-soft);
   font-size: 0.85rem;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
   color: var(--theme-fg-dim);
 }
 
 .pair-screen-header-icon {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   color: var(--theme-status-warn);
 }
 
@@ -217,7 +217,7 @@ watch(
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 1rem;
 }
 
 .pair-screen-prompt {
@@ -229,16 +229,16 @@ watch(
 }
 
 .pair-qr-frame {
-  padding: 12px;
+  padding: 0.75rem;
   background-color: #ffffff;
-  border-radius: 6px;
+  border-radius: 0.375rem;
   border: 1px solid var(--theme-border);
 }
 
 .pair-qr {
   display: block;
-  width: 220px;
-  height: 220px;
+  width: 13.75rem;
+  height: 13.75rem;
   image-rendering: pixelated;
 }
 
@@ -249,30 +249,30 @@ watch(
 
 .pair-words {
   @apply flex flex-wrap items-center justify-center;
-  gap: 8px;
+  gap: 0.5rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .pair-word {
-  padding: 5px 10px;
+  padding: 0.3125rem 0.625rem;
   background-color: var(--theme-surface);
   color: var(--theme-fg);
   border: 1px solid var(--theme-border);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-size: 0.95rem;
   font-weight: 600;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.025rem;
 }
 
 .pair-scan-frame {
   width: 100%;
-  max-width: 320px;
-  padding: 6px;
+  max-width: 20rem;
+  padding: 0.375rem;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border);
-  border-radius: 4px;
+  border-radius: 0.25rem;
 }
 
 .pair-scan-video {
@@ -281,23 +281,23 @@ watch(
   aspect-ratio: 1 / 1;
   background-color: #000;
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: 0.1875rem;
 }
 
 .pair-scan-btn {
   @apply inline-flex items-center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
   background-color: var(--theme-accent);
   color: var(--theme-fg-on-tone);
   border: none;
-  border-radius: 4px;
+  border-radius: 0.25rem;
   font-family: var(--theme-font-mono);
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
   /* Touch-friendly tap target — phone first. */
-  min-height: 44px;
+  min-height: 2.75rem;
 }
 
 .pair-scan-btn:active {
@@ -318,14 +318,14 @@ watch(
 
 .pair-screen-status {
   @apply flex items-center;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
   color: var(--theme-fg-dim);
   font-size: 0.75rem;
 }
 
 .pair-screen-status-icon {
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
 }
 </style>

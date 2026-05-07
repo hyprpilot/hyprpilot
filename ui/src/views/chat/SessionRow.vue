@@ -67,8 +67,8 @@ const phaseIcon = computed<PhaseIcon>(() => {
 @reference '../../assets/styles.css';
 
 .session-row {
-  @apply grid w-full items-center gap-2 border-l-[3px] px-3 py-[6px] text-[0.66rem];
-  grid-template-columns: 16px 220px 170px 90px 110px;
+  @apply grid w-full items-center gap-2 border-l-[0.1875rem] px-3 py-[0.375rem] text-[0.66rem];
+  grid-template-columns: 1rem 13.75rem 10.625rem 5.625rem 6.875rem;
   font-family: var(--theme-font-mono);
   border-color: var(--tone);
   background-color: var(--theme-surface);
@@ -93,7 +93,7 @@ const phaseIcon = computed<PhaseIcon>(() => {
 }
 
 .session-row-title {
-  @apply truncate px-[6px] text-center;
+  @apply truncate px-[0.375rem] text-center;
   color: var(--theme-fg);
 }
 

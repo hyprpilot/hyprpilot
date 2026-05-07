@@ -71,11 +71,26 @@
   --color-theme-permission-bg-active: var(--theme-permission-bg-active);
 }
 
-/* No `font-size` declaration on html — UI scaling lives in `[ui]
- * zoom` (Rust-side config), applied via `WebviewWindow::set_zoom`
- * at boot. That scales text + layout together (Chromium page zoom),
- * which is the only way to scale our `px`-heavy primitives uniformly.
- * Browser default 16px stays as the `rem` baseline. */
+/* `:root { font-size }` — the rem baseline. Every layout primitive
+ * in the SFC tree resolves to rem (typography, paddings, widths,
+ * gaps, borders that should track scale); rems multiply against
+ * this to land in CSS pixels. 16px matches the browser default,
+ * mobile browsers' default zoom, and Tailwind's spacing scale
+ * (1rem = 16px = `4` on the spacing scale). Captains who want
+ * the whole UI bigger / smaller use `[ui] zoom` (Tauri-side
+ * `WebviewWindow::set_zoom`) which is a Chromium page-zoom
+ * multiplier on top of this — the two compose. The browser
+ * remote-host path uses 16px as-is; mobile gets a small bump
+ * via the media query at the bottom of this file.
+ *
+ * **Always use rem (or Tailwind utilities, which are rem-based)
+ * for new layout / typography. Reserve px for hairlines (1px
+ * borders) and properties that should stay device-pixel exact
+ * regardless of UI scale.** */
+:root {
+  font-size: 16px;
+}
+
 /* The overlay ALWAYS fills its window — compositor gives us a surface of
  * a fixed size (anchor width × height, or center mode rect), and the UI
  * must lay out to match. `height: 100%` on every rung of the tree so

@@ -69,7 +69,7 @@ function variantFor(opt: PermissionOptionView): ButtonVariant {
    * width and the row drifts back to the long-label-wins shape. */
   @apply flex w-full min-w-0 items-center;
   flex: 1 1 100%;
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 .permission-actions-btn {

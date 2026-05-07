@@ -1336,7 +1336,7 @@ function onQueueSend(itemId: string): void {
 
 .chat-transcript-inner {
   @apply flex min-h-0 flex-1 flex-col;
-  padding: 0 14px 0 4px;
+  padding: 0 0.875rem 0 0.25rem;
 }
 
 /* idle screen — centered wordmark + LFG accent + kbd legend +

@@ -22,7 +22,7 @@
 @reference '../assets/styles.css';
 
 .modal-description {
-  margin: 0 0 12px 0;
+  margin: 0 0 0.75rem 0;
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
   font-size: 0.7rem;
@@ -32,8 +32,8 @@
 .modal-description :deep(code) {
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
-  padding: 1px 4px;
-  border-radius: 3px;
+  padding: 0.0625rem 0.25rem;
+  border-radius: 0.1875rem;
   font-size: 0.65rem;
 }
 </style>

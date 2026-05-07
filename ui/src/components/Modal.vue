@@ -91,20 +91,20 @@ const headerBg = computed(() => toneBg(props.tone))
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 1.25rem;
   background-color: rgba(var(--theme-surface-bg-rgb), 0.85);
 }
 
 .modal {
   @apply flex flex-col;
   width: 100%;
-  max-width: 720px;
+  max-width: 45rem;
   max-height: 85%;
   background-color: var(--theme-surface);
-  border: 2px solid var(--theme-status-warn);
-  border-radius: 4px;
+  border: 0.125rem solid var(--theme-status-warn);
+  border-radius: 0.25rem;
   overflow: hidden;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.4);
 }
 
 .modal[data-tone='ok'] {
@@ -117,8 +117,8 @@ const headerBg = computed(() => toneBg(props.tone))
 
 .modal-header {
   @apply flex items-center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
   background-color: var(--theme-permission-bg);
   border-bottom: 1px solid var(--theme-border-soft);
   font-family: var(--theme-font-mono);
@@ -126,18 +126,18 @@ const headerBg = computed(() => toneBg(props.tone))
 
 .modal-tag {
   @apply inline-flex items-center;
-  gap: 6px;
-  padding: 3px 9px;
+  gap: 0.375rem;
+  padding: 0.1875rem 0.5625rem;
   color: var(--theme-fg-on-tone);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   font-size: 0.65rem;
   font-weight: 700;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.01875rem;
 }
 
 .modal-tag-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .modal-tag-label {
@@ -153,13 +153,13 @@ const headerBg = computed(() => toneBg(props.tone))
   @apply flex items-center justify-end;
   flex: 1 1 0;
   min-width: 0;
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 .modal-body {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 14px 18px;
+  padding: 0.875rem 1.125rem;
   background-color: var(--theme-surface-bg);
 }
 </style>

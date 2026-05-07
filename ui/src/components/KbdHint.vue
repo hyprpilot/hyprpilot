@@ -67,13 +67,13 @@ withDefaults(
 }
 
 .kbd-hint-key-icon {
-  width: 9px;
-  height: 9px;
+  width: 0.5625rem;
+  height: 0.5625rem;
 }
 
 .kbd-hint[data-size='md'] .kbd-hint-key-icon {
-  width: 11px;
-  height: 11px;
+  width: 0.6875rem;
+  height: 0.6875rem;
 }
 
 .kbd-hint-label {

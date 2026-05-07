@@ -77,7 +77,7 @@ const exitLabel = computed(() => {
 }
 
 .terminal-card-header {
-  @apply flex min-w-0 items-center gap-2 border-b px-2 py-[5px] text-[0.72rem];
+  @apply flex min-w-0 items-center gap-2 border-b px-2 py-[0.3125rem] text-[0.72rem];
   border-color: var(--theme-border-soft);
   background-color: var(--theme-surface-alt);
   font-family: var(--theme-font-mono);
@@ -90,8 +90,8 @@ const exitLabel = computed(() => {
 
 .terminal-card-kind {
   @apply shrink-0;
-  width: 11px;
-  height: 11px;
+  width: 0.6875rem;
+  height: 0.6875rem;
   color: var(--theme-kind-bash);
 }
 
@@ -106,7 +106,7 @@ const exitLabel = computed(() => {
 }
 
 .terminal-card-status-dot {
-  @apply inline-block h-[6px] w-[6px] shrink-0 rounded-full;
+  @apply inline-block h-[0.375rem] w-[0.375rem] shrink-0 rounded-full;
 }
 
 .terminal-card-status-dot[data-state='stream'] {

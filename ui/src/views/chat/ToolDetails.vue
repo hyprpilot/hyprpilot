@@ -29,7 +29,7 @@ const stateTone = computed(() => toolStateTone(props.view.state))
 @reference '../../assets/styles.css';
 
 .tool-details {
-  @apply flex w-full flex-wrap items-center gap-2 border-l-[3px] px-[10px] py-[4px] text-[0.62rem] leading-tight;
+  @apply flex w-full flex-wrap items-center gap-2 border-l-[0.1875rem] px-[0.625rem] py-[0.25rem] text-[0.62rem] leading-tight;
   font-family: var(--theme-font-mono);
   border-color: var(--tone);
   color: var(--theme-fg-subtle);
@@ -41,14 +41,14 @@ const stateTone = computed(() => toolStateTone(props.view.state))
 }
 
 .tool-details-dot {
-  @apply inline-block h-[5px] w-[5px] shrink-0 animate-pulse rounded-full;
+  @apply inline-block h-[0.3125rem] w-[0.3125rem] shrink-0 animate-pulse rounded-full;
   background-color: var(--tone);
 }
 
 .tool-details-kind {
   @apply shrink-0;
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
   color: var(--tone);
 }
 

@@ -51,11 +51,11 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
 
 .change-banner {
   @apply flex items-center;
-  margin: 6px 0;
-  gap: 8px;
+  margin: 0.375rem 0;
+  gap: 0.5rem;
   font-family: var(--theme-font-mono);
   font-size: 0.62rem;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.0375rem;
   color: var(--theme-fg-dim);
   text-transform: uppercase;
 }
@@ -68,17 +68,17 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
 
 .change-banner-label {
   @apply inline-flex items-center;
-  gap: 6px;
-  padding: 2px 8px;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem;
   border: 1px solid var(--theme-border-soft);
-  border-radius: 3px;
+  border-radius: 0.1875rem;
   background-color: var(--theme-surface);
   color: var(--theme-fg);
 }
 
 .change-banner-text {
   @apply inline-flex items-center;
-  gap: 5px;
+  gap: 0.3125rem;
 }
 
 .change-banner-leader {
@@ -104,8 +104,8 @@ const showFrom = computed(() => typeof props.from === 'string' && props.from.len
 }
 
 .change-banner-icon {
-  width: 8px;
-  height: 8px;
+  width: 0.5rem;
+  height: 0.5rem;
   color: var(--theme-accent);
 }
 </style>

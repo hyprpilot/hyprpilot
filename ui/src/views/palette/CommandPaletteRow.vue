@@ -40,7 +40,7 @@ const emit = defineEmits<{
 @reference '../../assets/styles.css';
 
 .palette-row {
-  @apply flex w-full items-center gap-[10px] border-l-[3px] border-transparent bg-transparent px-[10px] py-[6px] text-[0.72rem] leading-tight;
+  @apply flex w-full items-center gap-[0.625rem] border-l-[0.1875rem] border-transparent bg-transparent px-[0.625rem] py-[0.375rem] text-[0.72rem] leading-tight;
   color: var(--theme-fg-subtle);
   cursor: pointer;
 }
@@ -63,7 +63,7 @@ const emit = defineEmits<{
 }
 
 .palette-row-icon {
-  @apply inline-flex w-[18px] shrink-0 items-center justify-center text-[0.625rem];
+  @apply inline-flex w-[1.125rem] shrink-0 items-center justify-center text-[0.625rem];
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);
 }
@@ -74,7 +74,7 @@ const emit = defineEmits<{
 
 .palette-row-label {
   @apply shrink-0 text-[0.72rem];
-  width: 120px;
+  width: 7.5rem;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
 }

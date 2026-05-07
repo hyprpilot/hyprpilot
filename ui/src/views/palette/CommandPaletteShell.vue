@@ -56,7 +56,7 @@ const effectiveWidth = computed(() => (slots.preview ? 'wide' : props.width))
   border-color: var(--theme-border);
   background-color: var(--theme-surface);
   color: var(--theme-fg);
-  box-shadow: 0 12px 40px color-mix(in srgb, var(--theme-surface-bg) 70%, transparent);
+  box-shadow: 0 0.75rem 2.5rem color-mix(in srgb, var(--theme-surface-bg) 70%, transparent);
   max-height: 70vh;
   min-height: 0;
   /* Never exceed the overlay viewport — widths below are target sizes;
@@ -82,7 +82,7 @@ const effectiveWidth = computed(() => (slots.preview ? 'wide' : props.width))
 }
 
 .palette-shell-title {
-  @apply flex items-center gap-2 border-b px-3 py-[6px] text-[0.72rem] uppercase tracking-wider;
+  @apply flex items-center gap-2 border-b px-3 py-[0.375rem] text-[0.72rem] uppercase tracking-wider;
   border-color: var(--theme-border-soft);
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg-dim);
@@ -110,7 +110,7 @@ const effectiveWidth = computed(() => (slots.preview ? 'wide' : props.width))
 }
 
 .palette-shell-hints {
-  @apply flex items-center justify-center gap-[18px] border-t px-[14px] py-[8px] text-[0.7rem];
+  @apply flex items-center justify-center gap-[1.125rem] border-t px-[0.875rem] py-[0.5rem] text-[0.7rem];
   border-color: var(--theme-border);
   color: var(--theme-fg-dim);
   font-family: var(--theme-font-mono);

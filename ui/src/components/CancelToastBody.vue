@@ -33,7 +33,7 @@ defineProps<{
 
 .cancel-toast-body {
   @apply inline-flex flex-1 items-center;
-  gap: 8px;
+  gap: 0.5rem;
   min-width: 0;
 }
 
@@ -42,9 +42,9 @@ defineProps<{
   color: var(--tone);
   background-color: transparent;
   border: 1px solid var(--tone);
-  border-radius: 3px;
-  padding: 2px 8px;
-  letter-spacing: 0.6px;
+  border-radius: 0.1875rem;
+  padding: 0.125rem 0.5rem;
+  letter-spacing: 0.0375rem;
   cursor: pointer;
   font-family: var(--theme-font-mono);
 }
