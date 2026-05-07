@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType};
 
 use crate::paths;
 
@@ -102,19 +102,31 @@ fn generate(sans: &[SanType]) -> Result<TlsMaterial> {
     params.distinguished_name = dn;
     params.subject_alt_names = sans.to_vec();
 
-    // rcgen's default validity is essentially "forever" (1975 →
-    // 4096). Modern mobile browsers — iOS Safari since 13, Chrome
-    // since 85 — reject any cert with `not_after - not_before > 825
-    // days` regardless of trust state. The reject is silent at the
-    // TLS layer (the captain just sees "can't connect") so it
-    // looks for all the world like the daemon is down. Cap the
-    // validity at the 397-day "industry safe" upper bound + a one
-    // day clock-skew tolerance on `not_before`. The daemon
-    // regenerates on SAN drift anyway; the cert never gets close
-    // to expiry under normal use.
+    // Validity: rcgen's default is 1975 → 4096 (essentially
+    // forever). Modern mobile browsers — iOS Safari since 13,
+    // Chrome since 85 — reject any cert with `not_after -
+    // not_before > 825 days` regardless of trust state. Cap at
+    // 397 days (industry-safe upper bound) + 1 day clock-skew
+    // tolerance on `not_before`. SAN-drift detection regenerates
+    // on any meaningful change; cert never gets close to expiry.
     let now = time::OffsetDateTime::now_utc();
     params.not_before = now - time::Duration::days(1);
     params.not_after = now + time::Duration::days(397);
+
+    // **Required extensions for modern browser TLS validation.**
+    // rcgen's defaults leave these empty, which produces a cert
+    // that `curl -k` accepts but browsers silently reject:
+    // - `basicConstraints CA:FALSE` — declares this is a leaf
+    //   cert, not a CA. iOS / Android refuse certs without it.
+    // - `keyUsage digitalSignature + keyEncipherment` — what a
+    //   TLS server cert is allowed to do.
+    // - `extendedKeyUsage serverAuth` — Chrome / Safari REQUIRE
+    //   this; without it the cert is silently rejected as not a
+    //   valid TLS server cert (no warning prompt; the connection
+    //   just hangs at handshake).
+    params.is_ca = IsCa::ExplicitNoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature, KeyUsagePurpose::KeyEncipherment];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
 
     let key = KeyPair::generate().context("generate TLS keypair")?;
     let cert = params.self_signed(&key).context("self-sign certificate")?;
