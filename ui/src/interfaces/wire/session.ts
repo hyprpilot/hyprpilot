@@ -152,8 +152,15 @@ export interface InstanceListEntry {
 }
 
 export interface InstanceRestartArgs {
-  instanceId: string
+  instanceId?: string
   cwd?: string
+  /// When true and `instanceId` doesn't resolve to a live actor (or
+  /// is omitted), the daemon spawns a fresh instance under
+  /// `(agentId, profileId)` rooted at `cwd` instead of erroring.
+  /// Mirrors `instance_meta`'s flag.
+  ensure?: boolean
+  agentId?: string
+  profileId?: string
 }
 
 export interface InstancesFocusArgs {

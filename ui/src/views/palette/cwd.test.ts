@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import { openCwdLeaf } from './cwd'
-import { useActiveInstance, __resetCwdHistoryForTests, useCwdHistory, __resetHomeDirForTests, useHomeDir } from '@composables'
+import { useActiveInstance, __resetCwdHistoryForTests, useCwdHistory, __resetHomeDirForTests, useHomeDir, __resetUseProfilesForTests } from '@composables'
 import { __resetPaletteStackForTests, type PaletteEntry, usePalette, PaletteMode } from '@composables'
 import { TauriCommand } from '@ipc'
 
@@ -70,6 +70,7 @@ beforeEach(() => {
   __resetCwdHistoryForTests()
   __resetPaletteStackForTests()
   __resetHomeDirForTests()
+  __resetUseProfilesForTests()
   useActiveInstance().id.value = undefined
 })
 
@@ -119,7 +120,10 @@ describe('openCwdLeaf', () => {
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
       instanceId: 'inst-1',
-      cwd: '/home/cenk/dev'
+      cwd: '/home/cenk/dev',
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
     })
   })
 
@@ -135,7 +139,10 @@ describe('openCwdLeaf', () => {
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
       instanceId: 'inst-1',
-      cwd: '/srv/projects/x'
+      cwd: '/srv/projects/x',
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
     })
   })
 
@@ -151,7 +158,10 @@ describe('openCwdLeaf', () => {
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
       instanceId: 'inst-1',
-      cwd: '/home/cenk/dev/x'
+      cwd: '/home/cenk/dev/x',
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
     })
   })
 
@@ -181,15 +191,22 @@ describe('openCwdLeaf', () => {
     expect(invoke).not.toHaveBeenCalledWith(TauriCommand.InstanceRestart, expect.any(Object))
   })
 
-  it('refuses to commit when no active instance exists', async() => {
+  it('forwards ensure:true so the daemon prewarms when no active instance exists', async() => {
     mockResolveAndRestart()
 
     openCwdLeaf()
     const spec = usePalette().stack.value[0]
 
     await spec?.onCommit([], '/tmp/x')
+    await nextTick()
 
-    expect(invoke).not.toHaveBeenCalledWith(TauriCommand.InstanceRestart, expect.any(Object))
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
+      instanceId: undefined,
+      cwd: '/tmp/x',
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
+    })
   })
 
   it('resolves a relative path against the active instance cwd before invoking restart', async() => {
@@ -207,7 +224,10 @@ describe('openCwdLeaf', () => {
 
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceRestart, {
       instanceId: 'inst-1',
-      cwd: '/home/cenk/project/src/components'
+      cwd: '/home/cenk/project/src/components',
+      ensure: true,
+      agentId: undefined,
+      profileId: undefined
     })
   })
 

@@ -731,17 +731,20 @@ impl AcpAdapter {
     /// `resolved.agent.cwd` before the new actor spawns so the cwd
     /// palette can swap working directories without a full
     /// shutdown / respawn cycle.
-    pub async fn restart_instance(&self, key: InstanceKey, cwd: Option<PathBuf>) -> Result<InstanceKey, RpcError> {
-        let existing = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::invalid_params(format!("instance '{key}' not found in registry")))?;
-        let agent_id = existing.agent_id.clone();
-        let profile_id = existing.profile_id.clone();
-        let mode = existing.mode.clone();
-        drop(existing);
-
+    ///
+    /// When `ensure` is true and `key` doesn't resolve to a live
+    /// handle (or is `None`), falls through to `spawn_instance` with
+    /// `(profile_id, agent_id, cwd)` so the cwd palette gets a fresh
+    /// instance rooted at the requested cwd on empty registry. The
+    /// daemon-side ensure mirrors `instance_meta_or_ensure`.
+    pub async fn restart_instance(
+        &self,
+        key: Option<InstanceKey>,
+        cwd: Option<PathBuf>,
+        ensure: bool,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+    ) -> Result<InstanceKey, RpcError> {
         if let Some(c) = &cwd {
             if !c.is_dir() {
                 return Err(RpcError::invalid_params(format!(
@@ -751,13 +754,44 @@ impl AcpAdapter {
             }
         }
 
+        let existing = match key {
+            Some(k) => self.registry.get(k).await.map(|h| (k, h)),
+            None => None,
+        };
+
+        let (key, existing) = match existing {
+            Some(pair) => pair,
+            None => {
+                if ensure {
+                    return self
+                        .spawn_instance(SpawnSpec {
+                            profile_id: profile_id.map(str::to_string),
+                            agent_id: agent_id.map(str::to_string),
+                            cwd,
+                            mode: None,
+                            model: None,
+                        })
+                        .await;
+                }
+                let key_str = key.map_or_else(|| "<none>".to_string(), |k| k.to_string());
+                return Err(RpcError::invalid_params(format!(
+                    "instance '{key_str}' not found in registry"
+                )));
+            }
+        };
+
+        let existing_agent_id = existing.agent_id.clone();
+        let existing_profile_id = existing.profile_id.clone();
+        let mode = existing.mode.clone();
+        drop(existing);
+
         let slot = self
             .registry
             .drop_preserving_slot(key)
             .await
             .map_err(map_adapter_error_to_rpc)?;
 
-        let mut resolved = self.resolve(Some(&agent_id), profile_id.as_deref())?;
+        let mut resolved = self.resolve(Some(&existing_agent_id), existing_profile_id.as_deref())?;
         if mode.is_some() {
             resolved.mode = mode;
         }
@@ -1054,7 +1088,9 @@ impl Adapter for AcpAdapter {
     }
 
     async fn restart(&self, key: InstanceKey, cwd: Option<PathBuf>) -> AdapterResult<InstanceKey> {
-        self.restart_instance(key, cwd).await.map_err(rpc_to_adapter)
+        self.restart_instance(Some(key), cwd, false, None, None)
+            .await
+            .map_err(rpc_to_adapter)
     }
 
     async fn resolve_token(&self, token: &str) -> Option<InstanceKey> {
@@ -1310,7 +1346,7 @@ system_prompt = ["{}"]
         let adapter = AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true)));
         let key = InstanceKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let err = adapter
-            .restart_instance(key, None)
+            .restart_instance(Some(key), None, false, None, None)
             .await
             .expect_err("unknown id must fail");
         assert_eq!(err.code, -32602);
