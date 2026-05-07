@@ -17,6 +17,8 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+
       - id: release
         uses: googleapis/release-please-action@v5
         with:
@@ -32,7 +34,8 @@ jobs:
       - name: Dispatch release.yml on new release
         # workflow_dispatch is exempt from the anti-recursion rule, so
         # this triggers release.yml even though we're calling it with
-        # GITHUB_TOKEN.
+        # GITHUB_TOKEN. The checkout above gives `gh` a git context to
+        # infer the target repo from.
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

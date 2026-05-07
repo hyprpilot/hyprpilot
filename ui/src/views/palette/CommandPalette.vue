@@ -25,7 +25,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { KbdHint, Loading } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, useMultiSelect, usePalette, usePaletteFilter } from '@composables'
 
-const { stack, close } = usePalette()
+const { stack, close, registerFocusCallback } = usePalette()
 
 const top = computed<PaletteSpec | undefined>(() => stack.value[stack.value.length - 1])
 
@@ -319,10 +319,18 @@ function onRowClick(entry: PaletteEntry): void {
 
 onMounted(() => {
   document.addEventListener('keydown', onDocumentKeyDown, { capture: true })
+  // Hook the global Ctrl+F handler into our search input. The
+  // composable holds a single callback because the palette is a
+  // singleton — only one CommandPalette mounts at a time.
+  registerFocusCallback(() => {
+    inputRef.value?.focus()
+    inputRef.value?.select()
+  })
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onDocumentKeyDown, { capture: true })
+  registerFocusCallback(undefined)
 })
 </script>
 
