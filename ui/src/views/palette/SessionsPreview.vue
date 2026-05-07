@@ -105,14 +105,10 @@ function formatCwd(raw: string): string {
           <dt>last turn</dt>
           <dd>{{ info.lastTurnAt }}</dd>
         </div>
-        <div>
-          <dt>agent</dt>
-          <dd>{{ info.agentId }}</dd>
-        </div>
-        <div v-if="info.profileId">
-          <dt>profile</dt>
-          <dd>{{ info.profileId }}</dd>
-        </div>
+        <!-- agentId / profileId intentionally hidden: session restore
+             inherits the captain's currently active profile (not the
+             one the session was originally created under), so the
+             stored values are not actionable. -->
       </dl>
     </template>
   </div>
