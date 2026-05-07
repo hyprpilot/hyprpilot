@@ -102,7 +102,10 @@ export enum TauriCommand {
   CompletionCancel = 'completion_cancel',
   CompletionRank = 'completion_rank',
   GetCompletionConfig = 'get_completion_config',
-  SkillsReload = 'skills_reload'
+  SkillsReload = 'skills_reload',
+  RemoteConfirmPair = 'remote_confirm_pair',
+  RemoteRejectPair = 'remote_reject_pair',
+  RemotePendingPairs = 'remote_pending_pairs'
 }
 
 export enum TauriEvent {
@@ -121,7 +124,8 @@ export enum TauriEvent {
   AcpConfigOptionsUpdate = 'acp:config-options-update',
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
-  ComposerDraftAppend = 'composer:draft-append'
+  ComposerDraftAppend = 'composer:draft-append',
+  RemotePairRequest = 'remote:pair-request'
 }
 
 /**
@@ -170,6 +174,9 @@ export interface TauriCommandArgs {
   [TauriCommand.CompletionRank]: { query: string; candidates: CandidateItem[] }
   [TauriCommand.GetCompletionConfig]: void
   [TauriCommand.SkillsReload]: void
+  [TauriCommand.RemoteConfirmPair]: { pendingId: string; code: string }
+  [TauriCommand.RemoteRejectPair]: { pendingId: string }
+  [TauriCommand.RemotePendingPairs]: void
 }
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
@@ -215,6 +222,9 @@ export interface TauriCommandResult {
   [TauriCommand.CompletionRank]: CompletionQueryResponse
   [TauriCommand.GetCompletionConfig]: CompletionConfigSnapshot
   [TauriCommand.SkillsReload]: { count: number }
+  [TauriCommand.RemoteConfirmPair]: { confirmed: boolean }
+  [TauriCommand.RemoteRejectPair]: void
+  [TauriCommand.RemotePendingPairs]: RemotePendingPair[]
 }
 
 /**
@@ -249,4 +259,28 @@ export interface TauriEventPayload {
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
+  [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
+}
+
+/**
+ * Payload of `remote:pair-request` — emitted on every WS upgrade
+ * the daemon receives from a phone (or any browser) hitting the
+ * remote bridge. The desktop overlay reads this and opens the
+ * confirm modal automatically; captain types or scans the code
+ * to upgrade the pending WS to authenticated.
+ */
+export interface RemotePairRequestEventPayload {
+  pendingId: string
+  code: string
+  remoteAddr: string
+}
+
+/**
+ * Snapshot row from `remote_pending_pairs`. Diagnostic surface for
+ * "queue of waiting devices" UX.
+ */
+export interface RemotePendingPair {
+  pendingId: string
+  remoteAddr: string
+  expiresInSeconds: number
 }

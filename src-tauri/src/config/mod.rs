@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod extensions;
 pub mod keymaps;
 pub(crate) mod merge_strategies;
+pub mod remote;
 pub mod system_prompt;
 pub mod theme;
 mod validations;
@@ -23,6 +24,7 @@ pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
 pub use extensions::{McpFile, SkillEntry};
 pub use keymaps::{KeymapsConfig, Modifier};
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
+pub use remote::RemoteConfig;
 pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
 pub use theme::{Theme, Ui};
 use validations::{
@@ -120,6 +122,12 @@ pub struct Config {
     /// trigger (Tab / Ctrl+Space).
     #[garde(dive)]
     pub completion: CompletionConfig,
+    /// `[remote]` — TLS axum HTTP+WS server alongside the Tauri
+    /// overlay. Off by default. When enabled, lets a phone (or any
+    /// browser on the LAN) load the same Vue overlay. Per-connection
+    /// pair confirmation; no persistent tokens.
+    #[garde(dive)]
+    pub remote: RemoteConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]

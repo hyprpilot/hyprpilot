@@ -25,6 +25,31 @@ height = "50%"
 [logging]
 level = "info"
 
+# `[remote]` — TLS axum HTTP+WS server alongside the unix socket +
+# Tauri overlay. Lets a phone (or any browser on the LAN) load the
+# Vue overlay and operate the daemon as a remote. Off by default.
+#
+# Pair-on-connect: phone opens a WS to wss://<host>:<port>/ws, daemon
+# mints a 4-word BIP39 code, holds the connection in `pending` state,
+# and emits a `remote:pair-request` Tauri event. The desktop overlay
+# pops a confirm modal — captain types (or scans) the code; on match
+# the WS upgrades to authenticated. No tokens persist; reconnect
+# re-pairs.
+#
+# `bind` defaults to `127.0.0.1:7423` (loopback only). Set to
+# `0.0.0.0:7423` to expose on LAN. `tls_cert` / `tls_key` are
+# optional — when unset the daemon auto-generates a self-signed cert
+# at first start under $XDG_STATE_HOME/hyprpilot/remote-{cert,key}.pem.
+#
+# [remote]
+# enabled = true
+# bind = "0.0.0.0:7423"
+# tls_cert = "~/.config/hyprpilot/remote-cert.pem"
+# tls_key  = "~/.config/hyprpilot/remote-key.pem"
+[remote]
+enabled = false
+bind = "127.0.0.1:7423"
+
 # `[[skills]]` — array of skill catalog roots. Each entry has a
 # `dir` (where `<slug>/SKILL.md` bundles live) and an optional
 # `ignore` glob array (slugs matching are dropped). User-supplied

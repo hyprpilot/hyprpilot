@@ -42,6 +42,7 @@ import {
   Phase,
   PlanStatus,
   type QueuedMessage,
+  RemotePairModal,
   Role,
   StreamKind,
   Toast,
@@ -78,12 +79,14 @@ import {
   usePhase,
   useProfiles,
   useQueue,
+  useRemotePair,
   useSessionHistory,
   useSessionInfo,
   useTimelineBlocks,
   useToasts,
   useTurns,
   type KeymapEntry,
+  startRemotePairListener,
   startSessionStream,
   type InstanceId,
   type PlanEntry,
@@ -484,6 +487,13 @@ const { keymaps } = useKeymaps()
 const { closeAll: closeAllPalettes, isOpen: paletteIsOpen, focusInput: focusPaletteInput } = usePalette()
 const composer = useComposer()
 
+// Remote-bridge pair-confirm modal. Auto-opens whenever the daemon
+// emits `remote:pair-request` (a phone / browser hit `wss://…/ws`).
+// Captain types the 4-word code shown on the connecting device → the
+// pending WS upgrades to authenticated. No tokens persist.
+const { active: remotePairActive } = useRemotePair()
+let stopRemotePairListener: (() => void) | undefined
+
 // Singleton "rename instance" modal target. The palette's
 // `instance > rename` action populates `target`; the modal v-ifs
 // off it. Save / cancel reset to undefined → modal unmounts.
@@ -725,6 +735,12 @@ onMounted(async() => {
     log.error('invoke failed', { command: 'startSessionStream' }, err)
     pushToast(ToastTone.Err, `stream bind failed: ${String(err)}`)
   }
+
+  try {
+    stopRemotePairListener = await startRemotePairListener()
+  } catch(err) {
+    log.warn('remote: pair listener failed to mount', { err: String(err) })
+  }
 })
 
 onUnmounted(() => {
@@ -733,6 +749,8 @@ onUnmounted(() => {
   stopStream = undefined
   stopActiveInstanceStore?.()
   stopActiveInstanceStore = undefined
+  stopRemotePairListener?.()
+  stopRemotePairListener = undefined
   stopQueueDispatcher()
 })
 
@@ -1286,6 +1304,13 @@ function onQueueSend(itemId: string): void {
     <ModalDescription> Lowercase letters, digits, <code>_</code>, <code>-</code>. Up to 16 chars. Empty clears the name. </ModalDescription>
     <ModalInput v-model:value="renameDraft" placeholder="ask, plan, review…" :validate="validateInstanceName" @submit="onRenameAccept" />
   </Modal>
+
+  <!-- Remote-bridge pair confirm — auto-opens whenever a phone /
+       browser hits the daemon's `wss://…/ws` and the daemon emits
+       `remote:pair-request`. Captain types the 4-word code shown on
+       the connecting device; on match the pending WS upgrades to
+       authenticated. -->
+  <RemotePairModal v-if="remotePairActive" :state="remotePairActive" />
 
   <CommandPalette />
 </template>

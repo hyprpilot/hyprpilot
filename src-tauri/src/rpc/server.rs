@@ -164,9 +164,9 @@ async fn write_line(writer: &mut tokio::net::unix::OwnedWriteHalf, value: &impl 
 
 /// Dispatch result. Single struct so the connection loop can grow new
 /// fields without reflowing every match arm.
-struct DispatchOutput {
-    response: Response,
-    new_status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>>,
+pub(crate) struct DispatchOutput {
+    pub response: Response,
+    pub new_status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>>,
 }
 
 /// Per-connection state the dispatcher reads. Bundles every shared
@@ -183,6 +183,14 @@ pub(crate) struct DispatchInput<'a> {
     pub connection_already_subscribed: bool,
     pub started_at: Option<Instant>,
     pub socket_path: Option<&'a std::path::Path>,
+}
+
+/// Crate-public alias for `dispatch` so transports beyond the unix
+/// socket (the WS bridge in `crate::remote::ws`) reuse the same
+/// dispatcher entry point. Keeps the dispatch behaviour single-source
+/// across transports.
+pub(crate) async fn dispatch_line(line: &str, input: DispatchInput<'_>) -> DispatchOutput {
+    dispatch(line, input).await
 }
 
 /// Parse one NDJSON line → `RpcDispatcher` → JSON-RPC `Response`.
