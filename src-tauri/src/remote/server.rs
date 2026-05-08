@@ -15,6 +15,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use crate::adapters::Adapter;
 use crate::remote::cert::TlsMaterial;
@@ -93,10 +95,40 @@ async fn ws_handler(
 }
 
 /// SPA fallback — every non-WS, non-healthz request lands here.
-/// We pull bytes from Tauri's `asset_resolver` (the same source
-/// the embedded WebView uses), so the browser sees the exact same
-/// SPA bundle.
+///
+/// **Release**: pull bytes from Tauri's `asset_resolver` (the same
+/// source the embedded WebView uses) so the browser sees the exact
+/// same SPA bundle that ships with the binary.
+///
+/// **Debug** (`task run` / `tauri dev`): the asset resolver is empty
+/// — Tauri runs the embedded WebView against the Vite dev server at
+/// `http://localhost:1420`, and `ui/dist/` stays stale until somebody
+/// runs `pnpm build` by hand. A remote browser hitting the daemon
+/// in this mode used to pick up whatever ancient bundle happened to
+/// be on disk (e.g. with the dropped TanStack Vue Virtual recursion
+/// loop still in it), giving the captain "the desktop overlay works
+/// but the phone runs out of memory" — exactly the symptom that
+/// surfaced during the Vue Virtual + boot-snapshot work.
+///
+/// In debug we proxy through to the Vite dev server so the phone
+/// gets the same code the desktop overlay sees. Hot-reload chunks
+/// (`/@vite/client`, `/@id/*`, `/@fs/*`, `/.vite/*`, `?v=…` query)
+/// land back at the same path. WebSocket HMR is best-effort — the
+/// remote browser stays on `wss://<daemon>/ws` for our pair channel,
+/// which means HMR is missing on the phone, but the captain reloads
+/// to pick up changes.
 async fn asset_handler(State(state): State<RemoteState>, uri: Uri) -> Response {
+    if cfg!(debug_assertions) {
+        match proxy_to_vite(&uri).await {
+            Ok(response) => return response,
+            Err(err) => {
+                tracing::warn!(%err, path = %uri, "remote: vite dev proxy failed; falling through to asset_resolver");
+                // Fall through to the production path below. If the
+                // captain manually built `ui/dist/` it'll still work.
+            }
+        }
+    }
+
     let path = uri.path();
     let lookup = if path == "/" { "/index.html" } else { path };
 
@@ -113,4 +145,83 @@ async fn asset_handler(State(state): State<RemoteState>, uri: Uri) -> Response {
         }
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Vite dev-server endpoint. Hardcoded to the Tauri default. If the
+/// captain runs `tauri dev` against a non-default `devUrl` the proxy
+/// won't find Vite — fall through to `asset_resolver`.
+const VITE_DEV_HOST: &str = "127.0.0.1";
+const VITE_DEV_PORT: u16 = 1420;
+
+/// Forward an HTTP/1.1 GET to the Vite dev server and convert the
+/// response into an axum Response. `Connection: close` keeps the
+/// reader simple — Vite returns the body and EOFs, no chunked
+/// encoding to parse. Localhost-only, so latency overhead is
+/// negligible. No request body forwarding (Vite's static-asset
+/// surface is GET-only).
+async fn proxy_to_vite(uri: &Uri) -> anyhow::Result<Response> {
+    let path_and_query = uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or_else(|| uri.path());
+
+    let mut stream = TcpStream::connect((VITE_DEV_HOST, VITE_DEV_PORT))
+        .await
+        .with_context(|| format!("connect vite dev server at {VITE_DEV_HOST}:{VITE_DEV_PORT}"))?;
+
+    let req = format!(
+        "GET {path_and_query} HTTP/1.1\r\nHost: {VITE_DEV_HOST}:{VITE_DEV_PORT}\r\n\
+         Connection: close\r\nAccept-Encoding: identity\r\nAccept: */*\r\n\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .await
+        .context("write vite dev request")?;
+    stream.flush().await.context("flush vite dev request")?;
+
+    let mut buf = Vec::with_capacity(8 * 1024);
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .context("read vite dev response")?;
+
+    // Split header/body at the first CRLFCRLF.
+    let header_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| anyhow!("vite dev response missing header terminator"))?;
+    let head_str = std::str::from_utf8(&buf[..header_end]).context("vite dev headers not UTF-8")?;
+    let body = buf[header_end + 4..].to_vec();
+
+    let mut lines = head_str.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| anyhow!("vite dev response missing status line"))?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(200);
+
+    let mut content_type: Option<String> = None;
+    for line in lines {
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        if k.eq_ignore_ascii_case("content-type") {
+            content_type = Some(v.trim().to_string());
+        }
+    }
+
+    let mut response = Response::new(axum::body::Body::from(body));
+    *response.status_mut() = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
+    if let Some(ct) = content_type {
+        if let Ok(v) = header::HeaderValue::from_str(&ct) {
+            response.headers_mut().insert(header::CONTENT_TYPE, v);
+        }
+    }
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache"));
+    Ok(response)
 }
