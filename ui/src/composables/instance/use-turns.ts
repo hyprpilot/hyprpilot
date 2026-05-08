@@ -93,15 +93,27 @@ export interface TurnEndedRaw {
 export function pushTurnStarted(id: InstanceId, raw: TurnStartedRaw): void {
   const slot = slotFor(id)
   const seq = nextSeq(id)
+  // Idempotent on `turnId` — covers the race where a remote-side
+  // `acp:usage-update` arrived before `acp:turn-started` and
+  // synthesised a placeholder turn record (see `pushUsageUpdate`
+  // below). When the real start lands, fill in the wall-clock +
+  // sessionId on the existing entry instead of pushing a duplicate
+  // that would split the chat header chips between two phantom turns.
+  const existing = slot.turns.find((t) => t.id === raw.turnId)
 
-  slot.turns.push({
-    id: raw.turnId,
-    instanceId: id,
-    sessionId: raw.sessionId,
-    createdAt: seq,
-    startedAtMs: raw.startedAtMs,
-    thinkingMs: 0
-  })
+  if (existing) {
+    existing.sessionId = raw.sessionId
+    existing.startedAtMs = raw.startedAtMs
+  } else {
+    slot.turns.push({
+      id: raw.turnId,
+      instanceId: id,
+      sessionId: raw.sessionId,
+      createdAt: seq,
+      startedAtMs: raw.startedAtMs,
+      thinkingMs: 0
+    })
+  }
 
   // ACP's contract is one session per instance — Bootstrap::Fresh /
   // Resume each pin a single sessionId for the actor's lifetime, and
@@ -193,6 +205,18 @@ export function __resetTurnEndedListeners(): void {
 /// the most recent open turn for the session, or the latest turn
 /// in the slot, so the captain still sees a fresh reading on the
 /// nearest turn record. Idempotent — overwrites the prior reading.
+///
+/// **Race recovery for remote captains**: when the daemon broadcasts
+/// `acp:usage-update` carrying a `turnId` we haven't seen yet (the
+/// remote authenticated mid-turn, the matching `acp:turn-started`
+/// fired before the WS subscriber was wired), synthesise a minimal
+/// turn record so the reading lands somewhere visible. `startedAtMs:
+/// 0` is the "no real timing" sentinel `Viewport.elapsedFor` uses to
+/// hide the elapsed chip until a real start arrives — so the
+/// captain sees `usage` chips immediately and the `· 4s` elapsed
+/// chip joins them when the snapshot-hydration replay catches up.
+/// `pushTurnStarted` is idempotent on `id`, so the eventual real
+/// start fills in the timing without duplicating the record.
 export function pushUsageUpdate(id: InstanceId, sessionId: string, turnId: string | undefined, usage: TurnUsage): void {
   const slot = slotFor(id)
   let target = turnId ? slot.turns.find((t) => t.id === turnId) : undefined
@@ -200,10 +224,27 @@ export function pushUsageUpdate(id: InstanceId, sessionId: string, turnId: strin
   if (!target) {
     // Fall back to the open turn for the session, then the most
     // recent turn — between-turn usage updates still pin somewhere
-    // useful. Drop entirely if no turns exist.
+    // useful.
     const openId = slot.openBySession.get(sessionId)
 
     target = openId ? slot.turns.find((t) => t.id === openId) : [...slot.turns].reverse().find((t) => t.sessionId === sessionId)
+  }
+
+  if (!target && turnId) {
+    // No matching record + we have a turnId → synthesise a placeholder
+    // so the usage chip renders on the right turn block. Real timing
+    // arrives via the next `pushTurnStarted` (live or snapshot-hydrated).
+    const seq = nextSeq(id)
+
+    target = {
+      id: turnId,
+      instanceId: id,
+      sessionId,
+      createdAt: seq,
+      startedAtMs: 0,
+      thinkingMs: 0
+    }
+    slot.turns.push(target)
   }
 
   if (!target) {
