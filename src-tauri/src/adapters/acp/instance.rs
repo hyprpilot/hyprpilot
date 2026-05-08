@@ -1267,6 +1267,19 @@ pub struct AcpInstance {
     /// captains can re-walk one instance's roots without disturbing
     /// the others.
     pub skills: Arc<crate::skills::SkillsRegistry>,
+    /// Per-instance running tool-call state. Lifted from a stack-local
+    /// inside the actor's run loop so out-of-actor consumers (snapshot
+    /// RPC handlers, transcript mirror) can read the merged in-flight
+    /// state without round-tripping through the actor's command
+    /// channel. The actor task takes a write lock around every
+    /// `map_session_update` call and around the terminal-state
+    /// eviction; readers only ever take a read lock. Narrow allow:
+    /// the consumers (Phase A2 transcript mirror + Phase A5 snapshot
+    /// RPC) land in subsequent commits — keeping the field visible
+    /// here so the actor-side write plumbing is reviewable on its
+    /// own.
+    #[allow(dead_code)]
+    pub tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
 }
 
 impl AcpInstance {
@@ -1381,6 +1394,7 @@ impl AcpInstance {
             Bootstrap::Fresh | Bootstrap::ListOnly => None,
         };
         let session_id = Arc::new(tokio::sync::RwLock::new(initial));
+        let tool_calls = Arc::new(tokio::sync::RwLock::new(ToolCallCache::default()));
         let mode = resolved.mode.clone();
         let instance_id = key.as_string();
 
@@ -1406,6 +1420,7 @@ impl AcpInstance {
             session_id: session_id.clone(),
             name: Arc::new(tokio::sync::RwLock::new(None)),
             skills,
+            tool_calls: tool_calls.clone(),
         };
 
         tokio::spawn(run(RunParams {
@@ -1414,6 +1429,7 @@ impl AcpInstance {
             cmd_rx,
             events_tx,
             session_id_slot: session_id,
+            tool_calls,
             bootstrap,
             permissions,
             mcps,
@@ -1500,6 +1516,11 @@ struct RunParams {
     cmd_rx: mpsc::UnboundedReceiver<InstanceCommand>,
     events_tx: broadcast::Sender<InstanceEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
+    /// Shared running tool-call state — same `Arc` the public
+    /// `AcpInstance.tool_calls` exposes. The actor writes through it
+    /// at every `map_session_update`; out-of-actor readers (snapshot
+    /// RPC handlers) take a read lock.
+    tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
@@ -1515,6 +1536,7 @@ async fn run(params: RunParams) {
         mut cmd_rx,
         events_tx,
         session_id_slot,
+        tool_calls,
         bootstrap,
         permissions,
         mcps,
@@ -1691,9 +1713,14 @@ async fn run(params: RunParams) {
     let session_id_forward = session_id_slot.clone();
     // Per-instance running tool-call state — feeds the formatter on
     // every `tool_call_update` so the snapshot reflects merged state
-    // (not just the delta). Lives for the actor's lifetime; cleared
-    // implicitly when the actor task exits.
-    let mut tool_call_cache: ToolCallCache = ToolCallCache::default();
+    // (not just the delta). Shared with `AcpInstance.tool_calls` so
+    // out-of-actor consumers (snapshot RPC handlers, transcript
+    // mirror) can read the merged in-flight cache without round-
+    // tripping through the actor's command channel. The actor takes
+    // a write lock around every `map_session_update` call (which also
+    // owns the terminal-state eviction). The `Arc` is owned by the
+    // `AcpInstance`; this binding is just the actor's handle.
+    let tool_call_cache = tool_calls;
     // Adapter id for per-vendor formatter override dispatch — the
     // `[[agents]] provider` string (acp-claude-code / acp-codex /
     // acp-opencode / acp).
@@ -2637,8 +2664,17 @@ async fn run(params: RunParams) {
                                 payload = %update,
                                 "acp::instance: session/update raw"
                             );
-                            let MappedSessionUpdate { mapped, meta } =
-                                map_session_update(update, &mut tool_call_cache, provider_id_for_fmt.as_str());
+                            // Hold the write lock for the duration of the
+                            // formatter pass — `map_session_update` mutates
+                            // the cache (insert on `tool_call`, merge +
+                            // terminal-state evict on `tool_call_update`).
+                            // Out-of-actor readers take a read lock; they
+                            // see either pre- or post-update state, never a
+                            // half-merged delta.
+                            let MappedSessionUpdate { mapped, meta } = {
+                                let mut guard = tool_call_cache.write().await;
+                                map_session_update(update, &mut guard, provider_id_for_fmt.as_str())
+                            };
                             // Out-of-turn detection: if a transcript-shape
                             // update arrives without an open turn, mint a
                             // synthetic id + emit TurnStarted so the chat
