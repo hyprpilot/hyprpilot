@@ -73,6 +73,7 @@ watch(
       void (async() => {
         try {
           const out = await renderMarkdown(raw)
+
           // Drop stale results — a faster streamed chunk may have
           // landed and bumped `shikiSeq` past us during the await.
           if (mySeq === shikiSeq) {

@@ -100,6 +100,7 @@ watch(
       void (async() => {
         try {
           const out = await renderMarkdown(raw)
+
           if (mySeq === shikiSeq) {
             renderedHtml.value = out.html
           }

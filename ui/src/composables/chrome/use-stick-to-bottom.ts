@@ -53,6 +53,7 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
   // rAF tick per burst collapses 50 layout flushes/sec to ~60Hz max.
   let rafPending = false
   let rafHandle: number | undefined
+
   function scheduleStick(): void {
     if (rafPending) {
       return
