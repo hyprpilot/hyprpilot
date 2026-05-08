@@ -408,7 +408,11 @@ impl AcpAdapter {
                     // leave a stale "busy" entry forever. Any non-live
                     // state means there's no actor to be busy on
                     // anyway.
-                    Ok(InstanceEvent::State { instance_id, state: InstanceState::Ended | InstanceState::Error, .. }) => {
+                    Ok(InstanceEvent::State {
+                        instance_id,
+                        state: InstanceState::Ended | InstanceState::Error,
+                        ..
+                    }) => {
                         if let Ok(mut set) = busy.write() {
                             set.remove(&instance_id);
                         }

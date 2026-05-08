@@ -14,6 +14,7 @@
 pub mod acp;
 pub mod commands;
 pub mod instance;
+pub mod mirror;
 pub mod permission;
 pub mod profile;
 pub mod registry;
@@ -27,6 +28,15 @@ pub use instance::{
     SessionConfigOptionCategory, SessionConfigOptionValue, SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk,
     TerminalStream,
 };
+// Mirror re-exports — Phase A5's snapshot RPC handlers consume these.
+// Narrow allow keeps the surface visible while the consumers land.
+#[allow(unused_imports)]
+pub use mirror::{
+    ChatSnapshot, InstanceMirror, InstanceSnapshot, MetaSnapshot, MirrorInner, MirrorMetaCache, SeqTranscriptItem,
+    TerminalSnapshot, TerminalsSnapshot, TurnEventMarker, UsageSnapshot,
+};
+#[allow(unused_imports)]
+pub use permission::PermissionRequestSnapshot;
 pub use transcript::{
     Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
     ToolCallUpdateRecord, TranscriptItem, UserTurnInput,

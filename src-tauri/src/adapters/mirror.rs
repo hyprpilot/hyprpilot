@@ -1,0 +1,854 @@
+//! Per-instance state mirror — write-through cache the actor pushes
+//! every emitted [`InstanceEvent`] into so out-of-actor consumers
+//! (snapshot RPC handlers, mid-session remote brim-sync) can read the
+//! merged state without round-tripping through the command channel.
+//!
+//! The mirror is **the daemon's truth** for in-flight per-instance
+//! state — everything that today flows through the registry's
+//! `broadcast` channel and is otherwise UI-accumulated. Three snapshot
+//! flavours ride on top:
+//!
+//! - [`MetaSnapshot`] — small / cheap. Header pills, current phase
+//!   marker, pending permissions; pulled on focus-switch and on
+//!   `acp:instances-changed`.
+//! - [`ChatSnapshot`] — windowed transcript backed by a bounded ring
+//!   buffer. Default cap: [`DEFAULT_TRANSCRIPT_CAP`] entries; older
+//!   entries silently fall off the front. Pagination by internal
+//!   monotonic [`SeqTranscriptItem::seq`] cursor (`before: Option<u64>`).
+//! - [`TerminalsSnapshot`] — full per-`terminal_id` map; small enough
+//!   to ship whole today.
+//!
+//! The actor calls [`InstanceMirror::apply`] alongside every existing
+//! `events_tx.send(...)` in Phase A3. Phase A2 lands the type +
+//! struct surface only; the runtime wiring + the snapshot RPC family
+//! arrive in subsequent commits.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+use super::instance::{
+    InstanceEvent, SessionConfigOptionCategory, SessionModeInfo, SessionModelInfo, TerminalChunk, TerminalStream,
+};
+use super::permission::PermissionRequestSnapshot;
+use super::transcript::TranscriptItem;
+
+/// Bounded ring-buffer ceiling for the transcript. Older entries
+/// silently fall off the front when the cap is exceeded. The plan
+/// sets this at "sane upper bound (e.g. 5000)" — comfortably above
+/// any real session length while still capping daemon memory growth.
+/// User-visible truncation is **not** part of the contract: the
+/// captain never sees a "truncated" indicator, and the UI's windowed
+/// query asks only for visible pages anyway.
+pub const DEFAULT_TRANSCRIPT_CAP: usize = 5_000;
+
+/// Default page size when the snapshot RPC caller passes `0`.
+const DEFAULT_CHAT_LIMIT: usize = 50;
+
+/// Marker for the most-recent turn boundary the mirror has seen.
+/// UI's phase derivation reads it without re-walking the transcript.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum TurnEventMarker {
+    Started { started_at: u64 },
+    Ended { ended_at: u64 },
+}
+
+/// One transcript entry plus its monotonic sequence number. The
+/// daemon stamps `seq` at insertion time so the windowed
+/// [`InstanceMirror::chat_snapshot`] knows its pagination cursor
+/// without re-deriving it from wall-clock or array index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeqTranscriptItem {
+    pub seq: u64,
+    pub item: TranscriptItem,
+}
+
+/// Per-`terminal_id` accumulated state. Output chunks concatenate;
+/// `Exit` lands once and flips `running = false`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshot {
+    /// Concatenated stdout chunks in arrival order.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stdout: String,
+    /// Concatenated stderr chunks in arrival order.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
+    /// `true` until an `Exit` chunk lands.
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+}
+
+/// Per-turn token tally — context budget + (optional) cost.
+/// Reset on `TurnStarted`; updated on every `UsageUpdate` while a
+/// turn is live.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSnapshot {
+    pub used: u64,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<crate::adapters::acp::instance::UsageCost>,
+    /// Turn id this tally belongs to; `None` between turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+/// Inner mutable state. Wrapped in [`InstanceMirror`]'s
+/// `Arc<RwLock<…>>` so the actor's write-through pairs with concurrent
+/// snapshot reads.
+#[derive(Debug, Default)]
+pub struct MirrorInner {
+    /// Bounded ring buffer. Front drops on cap overflow.
+    pub transcript: VecDeque<SeqTranscriptItem>,
+    /// Monotonic stamp counter. Always strictly greater than every
+    /// surviving entry's `seq` — a `transcript.is_empty()` mirror
+    /// still issues `next_seq` correctly because pagination cursors
+    /// only ever read the queue's existing ids.
+    pub next_seq: u64,
+    /// Per-terminal accumulated state.
+    pub terminals: HashMap<String, TerminalSnapshot>,
+    /// Open permission rows. Cleared on resolve via the
+    /// `PermissionResolved` event arriving in Phase A4.
+    pub pending_permissions: Vec<PermissionRequestSnapshot>,
+    /// Denormalized meta cache.
+    pub meta: MirrorMetaCache,
+    /// Most-recent turn boundary marker.
+    pub last_turn_event: Option<TurnEventMarker>,
+    /// Latest usage tally.
+    pub usage: UsageSnapshot,
+}
+
+/// Mutable backing for [`MetaSnapshot`]. Mirrors the existing
+/// `acp::instance::MetaSnapshot` field set + a few additions
+/// (`profile_id`, the `current_turn_event` marker, the
+/// `pending_permissions` count, the `latest_seq` cursor) the
+/// snapshot RPC adds.
+///
+/// Dead-code-allowed at the field level: Phase A2 lands the cache
+/// shape only; Phase A5 wires the snapshot RPC handlers that read
+/// these fields back out via [`MetaSnapshot`]. Without the allow,
+/// every leaf would warn until the consumers arrive.
+#[allow(dead_code)]
+#[derive(Debug, Default, Clone)]
+pub struct MirrorMetaCache {
+    pub profile_id: Option<String>,
+    pub session_id: Option<String>,
+    pub cwd: Option<String>,
+    pub current_mode_id: Option<String>,
+    pub current_model_id: Option<String>,
+    pub available_modes: Vec<SessionModeInfo>,
+    pub available_models: Vec<SessionModelInfo>,
+    pub mcps_count: usize,
+    /// Adapter-advertised category list. Latest [`ConfigOptionsUpdate`]
+    /// wins — palette reads it via [`MetaSnapshot::config_options`].
+    pub config_options: Vec<SessionConfigOptionCategory>,
+}
+
+/// Write-through state cache for one [`super::acp::instance::AcpInstance`].
+///
+/// One mirror per instance, owned alongside the actor's command
+/// channel + the running tool-call cache. Cloning the [`Arc`] is
+/// cheap; readers (snapshot handlers) hold a read lock for the
+/// duration of a `*_snapshot()` call, the actor takes a write lock
+/// per [`apply`](Self::apply) — same shape as the existing
+/// `tool_calls: Arc<RwLock<ToolCallCache>>` plumbing.
+///
+/// Phase A2 lands the type + the wire-through plumbing on
+/// [`crate::adapters::acp::instance::AcpInstance`]. Phase A3 calls
+/// [`apply`](Self::apply) from the actor's emit lines; Phase A5
+/// adds the snapshot RPC handlers. Narrow allow until then.
+#[allow(dead_code)]
+#[derive(Debug, Default, Clone)]
+pub struct InstanceMirror {
+    inner: Arc<RwLock<MirrorInner>>,
+    cap: usize,
+}
+
+#[allow(dead_code)]
+impl InstanceMirror {
+    /// Build a mirror with the default transcript cap.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_cap(DEFAULT_TRANSCRIPT_CAP)
+    }
+
+    /// Build a mirror with an explicit cap. Tests use this to drive
+    /// ring-buffer eviction without inserting `DEFAULT_TRANSCRIPT_CAP`
+    /// items; production callers should use [`Self::new`].
+    #[must_use]
+    pub fn with_cap(cap: usize) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(MirrorInner::default())),
+            cap,
+        }
+    }
+
+    /// Write-through entry point. Match exhaustive on every
+    /// [`InstanceEvent`] variant — the compiler enforces coverage so
+    /// adding a new event variant either reaches the mirror or carries
+    /// an explicit no-op arm with a comment justifying it.
+    ///
+    /// Phase A3 wires this alongside every existing `events_tx.send(…)`
+    /// in `acp/instance.rs`. Phase A2 lands the type only; nothing
+    /// calls `apply` yet.
+    pub async fn apply(&self, event: &InstanceEvent) {
+        let mut g = self.inner.write().await;
+        match event {
+            // ── transcript firehose ──────────────────────────────
+            InstanceEvent::Transcript { item, .. } => {
+                let seq = g.next_seq;
+                g.next_seq = seq.saturating_add(1);
+                g.transcript.push_back(SeqTranscriptItem {
+                    seq,
+                    item: item.clone(),
+                });
+                while g.transcript.len() > self.cap {
+                    g.transcript.pop_front();
+                }
+            }
+
+            // ── per-turn lifecycle markers ───────────────────────
+            InstanceEvent::TurnStarted {
+                turn_id, started_at, ..
+            } => {
+                g.last_turn_event = Some(TurnEventMarker::Started {
+                    started_at: *started_at,
+                });
+                // New turn → fresh usage tally; vendors that emit
+                // `UsageUpdate` deltas mid-turn fill it back in.
+                g.usage = UsageSnapshot {
+                    used: 0,
+                    size: 0,
+                    cost: None,
+                    turn_id: Some(turn_id.clone()),
+                };
+            }
+            InstanceEvent::TurnEnded { ended_at, .. } => {
+                g.last_turn_event = Some(TurnEventMarker::Ended { ended_at: *ended_at });
+            }
+
+            // ── permission roundtrip ─────────────────────────────
+            InstanceEvent::PermissionRequest {
+                request_id,
+                instance_id,
+                tool,
+                args,
+                options,
+                ..
+            } => {
+                // Idempotent: same `request_id` arriving twice would
+                // be a wire-protocol bug, but we still tolerate it.
+                if !g.pending_permissions.iter().any(|p| p.request_id == *request_id) {
+                    g.pending_permissions.push(PermissionRequestSnapshot {
+                        request_id: request_id.clone(),
+                        instance_id: Some(instance_id.clone()),
+                        tool: tool.clone(),
+                        args: Some(args.clone()),
+                        options: options.clone(),
+                    });
+                }
+            }
+
+            // ── meta refresh ─────────────────────────────────────
+            InstanceEvent::InstanceMeta {
+                profile_id,
+                session_id,
+                cwd,
+                current_mode_id,
+                current_model_id,
+                available_modes,
+                available_models,
+                mcps_count,
+                ..
+            } => {
+                g.meta.profile_id.clone_from(profile_id);
+                g.meta.session_id.clone_from(session_id);
+                g.meta.cwd = Some(cwd.clone());
+                g.meta.current_mode_id.clone_from(current_mode_id);
+                g.meta.current_model_id.clone_from(current_model_id);
+                g.meta.available_modes.clone_from(available_modes);
+                g.meta.available_models.clone_from(available_models);
+                g.meta.mcps_count = *mcps_count;
+            }
+            InstanceEvent::CurrentModeUpdate { current_mode_id, .. } => {
+                g.meta.current_mode_id = Some(current_mode_id.clone());
+            }
+            InstanceEvent::ConfigOptionsUpdate { categories, .. } => {
+                g.meta.config_options.clone_from(categories);
+            }
+            InstanceEvent::SessionInfoUpdate { .. } => {
+                // No-op: title / updatedAt are session-storage
+                // metadata, not part of the in-flight mirror today.
+                // Phase A5's `instance/snapshot/meta` doesn't surface
+                // them; if it ever does, fold them into
+                // `MirrorMetaCache` here.
+            }
+
+            // ── usage tally ──────────────────────────────────────
+            InstanceEvent::UsageUpdate {
+                turn_id,
+                used,
+                size,
+                cost,
+                ..
+            } => {
+                g.usage = UsageSnapshot {
+                    used: *used,
+                    size: *size,
+                    cost: cost.clone(),
+                    turn_id: turn_id.clone(),
+                };
+            }
+
+            // ── terminal accumulation ───────────────────────────
+            InstanceEvent::Terminal { terminal_id, chunk, .. } => {
+                let entry = g
+                    .terminals
+                    .entry(terminal_id.clone())
+                    .or_insert_with(|| TerminalSnapshot {
+                        running: true,
+                        ..TerminalSnapshot::default()
+                    });
+                match chunk {
+                    TerminalChunk::Output { stream, data } => match stream {
+                        TerminalStream::Stdout => entry.stdout.push_str(data),
+                        TerminalStream::Stderr => entry.stderr.push_str(data),
+                    },
+                    TerminalChunk::Exit { exit_code, signal } => {
+                        entry.running = false;
+                        entry.exit_code = *exit_code;
+                        entry.signal.clone_from(signal);
+                    }
+                }
+            }
+
+            // ── lifecycle / no-ops (registry-shape, not mirror-shape) ─
+            //
+            // Each arm below is a deliberate no-op:
+            //
+            // * `State` — lifecycle transitions live on the registry's
+            //   `InstanceInfo`; the mirror is per-instance state, not
+            //   the registry view.
+            // * `InstancesChanged` / `InstancesFocused` — registry
+            //   membership / focus pointer; sibling concerns to the
+            //   mirror.
+            // * `InstanceRenamed` — name lives on the per-instance
+            //   `RwLock<Option<String>>`; not part of the snapshot
+            //   field set today.
+            // * `DaemonReloaded` — daemon-global, not per-instance.
+            // * `SystemPromptInjected` — banner-only event; the file
+            //   list isn't part of the snapshot wire shape today.
+            //
+            // Phase A4 will add `PermissionResolved` here to remove
+            // matching rows from `pending_permissions`.
+            InstanceEvent::State { .. }
+            | InstanceEvent::InstancesChanged { .. }
+            | InstanceEvent::InstancesFocused { .. }
+            | InstanceEvent::InstanceRenamed { .. }
+            | InstanceEvent::DaemonReloaded { .. }
+            | InstanceEvent::SystemPromptInjected { .. } => {}
+        }
+    }
+
+    /// Read a [`MetaSnapshot`] off the cache.
+    pub async fn meta_snapshot(&self) -> MetaSnapshot {
+        let g = self.inner.read().await;
+        let latest_seq = g.transcript.back().map(|e| e.seq);
+        MetaSnapshot {
+            profile_id: g.meta.profile_id.clone(),
+            session_id: g.meta.session_id.clone(),
+            cwd: g.meta.cwd.clone(),
+            current_mode_id: g.meta.current_mode_id.clone(),
+            current_model_id: g.meta.current_model_id.clone(),
+            available_modes: g.meta.available_modes.clone(),
+            available_models: g.meta.available_models.clone(),
+            config_options: g.meta.config_options.clone(),
+            mcps_count: g.meta.mcps_count,
+            current_turn_event: g.last_turn_event,
+            pending_permissions: g.pending_permissions.clone(),
+            usage: g.usage.clone(),
+            latest_seq,
+        }
+    }
+
+    /// Read a windowed [`ChatSnapshot`].
+    ///
+    /// `before = None` returns the latest `limit` entries (anchored at
+    /// the head). `before = Some(seq)` returns the latest `limit`
+    /// entries strictly older than `seq` — backward pagination cursor
+    /// for the UI's infinite-query.
+    ///
+    /// `limit = 0` falls through to [`DEFAULT_CHAT_LIMIT`].
+    pub async fn chat_snapshot(&self, before: Option<u64>, limit: usize) -> ChatSnapshot {
+        let limit = if limit == 0 { DEFAULT_CHAT_LIMIT } else { limit };
+        let g = self.inner.read().await;
+
+        let upper_idx = match before {
+            // Find the first index whose seq >= cursor; everything
+            // before it is strictly older.
+            Some(cursor) => g
+                .transcript
+                .iter()
+                .position(|e| e.seq >= cursor)
+                .unwrap_or(g.transcript.len()),
+            None => g.transcript.len(),
+        };
+        let lower_idx = upper_idx.saturating_sub(limit);
+
+        let items: Vec<SeqTranscriptItem> = g.transcript.range(lower_idx..upper_idx).cloned().collect();
+        let oldest_seq = items.first().map(|e| e.seq);
+        let latest_seq = items.last().map(|e| e.seq);
+        // `has_more` is true iff entries strictly older than the
+        // returned window still exist in the buffer.
+        let has_more = lower_idx > 0;
+
+        ChatSnapshot {
+            items,
+            oldest_seq,
+            latest_seq,
+            has_more,
+        }
+    }
+
+    /// Read a [`TerminalsSnapshot`].
+    pub async fn terminals_snapshot(&self) -> TerminalsSnapshot {
+        let g = self.inner.read().await;
+        TerminalsSnapshot {
+            terminals: g.terminals.clone(),
+        }
+    }
+}
+
+// ─── snapshot wire shapes ─────────────────────────────────────────
+
+/// Closed family of snapshot shapes the `instance/snapshot/*` RPC
+/// returns. Tagged enum so a single Tauri command can dispatch on
+/// `kind`. Variants differ in size (`MetaSnapshot` carries inline
+/// pending-permissions + advertised mode/model lists; `Chat`'s
+/// `Vec<SeqTranscriptItem>` is heap-stored) — boxing the largest
+/// would force a heap allocation per dispatch, costing more than
+/// the size disparity. Mirrors the same trade-off in
+/// `acp::instance::MappedUpdate`.
+#[allow(clippy::large_enum_variant)]
+#[allow(dead_code)] // Phase A5 wires the RPC handlers.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum InstanceSnapshot {
+    Meta(MetaSnapshot),
+    Chat(ChatSnapshot),
+    Terminals(TerminalsSnapshot),
+}
+
+/// Header / chrome view: cheap to fetch on focus-switch + on
+/// `acp:instances-changed`. Mirrors `instance_meta` plus the
+/// snapshot-only fields (`current_turn_event`, `pending_permissions`,
+/// `usage`, `latest_seq`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_mode_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_modes: Vec<SessionModeInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_models: Vec<SessionModelInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_options: Vec<SessionConfigOptionCategory>,
+    pub mcps_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_turn_event: Option<TurnEventMarker>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_permissions: Vec<PermissionRequestSnapshot>,
+    pub usage: UsageSnapshot,
+    /// Latest [`SeqTranscriptItem::seq`] in the mirror; `None` when
+    /// the transcript is empty. UI seeds the chat infinite-query off
+    /// this so the first page request anchors at the right cursor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_seq: Option<u64>,
+}
+
+/// Windowed transcript page. `oldest_seq` / `latest_seq` are absent
+/// when `items` is empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSnapshot {
+    pub items: Vec<SeqTranscriptItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_seq: Option<u64>,
+    pub has_more: bool,
+}
+
+/// Full per-`terminal_id` map. Small enough that windowing buys
+/// nothing for v1; revisit when a session accumulates dozens of
+/// long-running terminals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalsSnapshot {
+    pub terminals: HashMap<String, TerminalSnapshot>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::permission::PermissionOptionView;
+    use crate::adapters::transcript::TranscriptItem;
+    use serde_json::json;
+
+    fn transcript_event(text: &str) -> InstanceEvent {
+        InstanceEvent::Transcript {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            session_id: "s-1".into(),
+            turn_id: None,
+            item: TranscriptItem::AgentText { text: text.into() },
+            meta: None,
+        }
+    }
+
+    fn meta_event(cwd: &str, mode: Option<&str>, model: Option<&str>) -> InstanceEvent {
+        InstanceEvent::InstanceMeta {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            profile_id: Some("default".into()),
+            session_id: Some("s-1".into()),
+            cwd: cwd.into(),
+            current_mode_id: mode.map(str::to_string),
+            current_model_id: model.map(str::to_string),
+            available_modes: Vec::new(),
+            available_models: Vec::new(),
+            mcps_count: 3,
+        }
+    }
+
+    /// Inserting `cap + N` items drops the oldest `N` off the front
+    /// while seq numbers keep climbing monotonically. Pin: surviving
+    /// items' seqs are the last `cap` values issued.
+    #[tokio::test]
+    async fn ring_buffer_evicts_oldest_on_overflow() {
+        let cap = 50;
+        let overflow = 100;
+        let mirror = InstanceMirror::with_cap(cap);
+        for i in 0..(cap + overflow) {
+            mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
+        }
+        let snap = mirror.chat_snapshot(None, cap + overflow).await;
+        assert_eq!(snap.items.len(), cap, "ring buffer caps at `cap` entries");
+        let first_seq = snap.items.first().expect("non-empty").seq;
+        let last_seq = snap.items.last().expect("non-empty").seq;
+        // After 150 inserts capped at 50, surviving seqs are 100..=149.
+        assert_eq!(first_seq, overflow as u64, "oldest survivor's seq");
+        assert_eq!(last_seq, (cap + overflow - 1) as u64, "latest seq");
+        assert!(!snap.has_more, "no entries older than the window");
+    }
+
+    /// 200 items, page backward in 50-item windows. Pin every
+    /// boundary's `oldest_seq` / `latest_seq` / `has_more`.
+    #[tokio::test]
+    async fn chat_snapshot_paginates_backwards() {
+        let mirror = InstanceMirror::with_cap(1_000);
+        for i in 0..200 {
+            mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
+        }
+
+        // Latest 50: seqs 150..=199.
+        let page1 = mirror.chat_snapshot(None, 50).await;
+        assert_eq!(page1.items.len(), 50);
+        assert_eq!(page1.oldest_seq, Some(150));
+        assert_eq!(page1.latest_seq, Some(199));
+        assert!(page1.has_more);
+
+        // Older than 150: seqs 100..=149.
+        let page2 = mirror.chat_snapshot(Some(150), 50).await;
+        assert_eq!(page2.items.len(), 50);
+        assert_eq!(page2.oldest_seq, Some(100));
+        assert_eq!(page2.latest_seq, Some(149));
+        assert!(page2.has_more);
+
+        // Older than 50: seqs 0..=49 — last page.
+        let page4 = mirror.chat_snapshot(Some(50), 50).await;
+        assert_eq!(page4.items.len(), 50);
+        assert_eq!(page4.oldest_seq, Some(0));
+        assert_eq!(page4.latest_seq, Some(49));
+        assert!(!page4.has_more, "exhausted the buffer");
+
+        // Older than 0: empty.
+        let page5 = mirror.chat_snapshot(Some(0), 50).await;
+        assert!(page5.items.is_empty());
+        assert!(!page5.has_more);
+        assert_eq!(page5.oldest_seq, None);
+        assert_eq!(page5.latest_seq, None);
+    }
+
+    /// `limit = 0` falls through to the default page size.
+    #[tokio::test]
+    async fn chat_snapshot_zero_limit_uses_default() {
+        let mirror = InstanceMirror::new();
+        for i in 0..(DEFAULT_CHAT_LIMIT + 10) {
+            mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
+        }
+        let snap = mirror.chat_snapshot(None, 0).await;
+        assert_eq!(snap.items.len(), DEFAULT_CHAT_LIMIT);
+    }
+
+    /// No-op variants leave the mirror unchanged.
+    #[tokio::test]
+    async fn apply_noops_do_not_mutate_state() {
+        let mirror = InstanceMirror::new();
+        mirror.apply(&transcript_event("hello")).await;
+
+        let baseline_meta = mirror.meta_snapshot().await;
+        let baseline_chat = mirror.chat_snapshot(None, 100).await;
+
+        let noops = vec![
+            InstanceEvent::State {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: None,
+                state: crate::adapters::InstanceState::Running,
+            },
+            InstanceEvent::InstancesChanged {
+                instance_ids: vec!["i-1".into()],
+                focused_id: Some("i-1".into()),
+            },
+            InstanceEvent::InstancesFocused {
+                instance_id: Some("i-1".into()),
+            },
+            InstanceEvent::InstanceRenamed {
+                instance_id: "i-1".into(),
+                name: Some("alpha".into()),
+            },
+            InstanceEvent::DaemonReloaded {
+                profiles: 0,
+                skills_count: 0,
+                mcps_count: 0,
+            },
+            InstanceEvent::SystemPromptInjected {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                files: vec!["/tmp/p.md".into()],
+            },
+            InstanceEvent::SessionInfoUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                title: Some("renamed".into()),
+                updated_at: None,
+            },
+        ];
+        for ev in noops {
+            mirror.apply(&ev).await;
+        }
+
+        let after_meta = mirror.meta_snapshot().await;
+        let after_chat = mirror.chat_snapshot(None, 100).await;
+
+        // Pin every visible field — serializing makes the comparison
+        // structural without manually unpacking each enum / vec.
+        assert_eq!(
+            serde_json::to_value(&baseline_meta).unwrap(),
+            serde_json::to_value(&after_meta).unwrap(),
+            "meta snapshot unchanged after no-op events"
+        );
+        assert_eq!(
+            serde_json::to_value(&baseline_chat).unwrap(),
+            serde_json::to_value(&after_chat).unwrap(),
+            "chat snapshot unchanged after no-op events"
+        );
+    }
+
+    /// `meta_snapshot` reflects the latest applied `InstanceMeta`
+    /// event end-to-end (cwd, mode, model, mcps_count, profile_id).
+    #[tokio::test]
+    async fn meta_snapshot_reflects_latest_instance_meta() {
+        let mirror = InstanceMirror::new();
+        mirror
+            .apply(&meta_event("/tmp/proj", Some("plan"), Some("sonnet")))
+            .await;
+
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.profile_id.as_deref(), Some("default"));
+        assert_eq!(snap.session_id.as_deref(), Some("s-1"));
+        assert_eq!(snap.cwd.as_deref(), Some("/tmp/proj"));
+        assert_eq!(snap.current_mode_id.as_deref(), Some("plan"));
+        assert_eq!(snap.current_model_id.as_deref(), Some("sonnet"));
+        assert_eq!(snap.mcps_count, 3);
+
+        // Latest InstanceMeta wins.
+        mirror
+            .apply(&meta_event("/tmp/other", Some("edit"), Some("opus")))
+            .await;
+        let snap2 = mirror.meta_snapshot().await;
+        assert_eq!(snap2.cwd.as_deref(), Some("/tmp/other"));
+        assert_eq!(snap2.current_mode_id.as_deref(), Some("edit"));
+        assert_eq!(snap2.current_model_id.as_deref(), Some("opus"));
+
+        // `CurrentModeUpdate` overlays the mode without resetting cwd.
+        mirror
+            .apply(&InstanceEvent::CurrentModeUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                current_mode_id: "ask".into(),
+            })
+            .await;
+        let snap3 = mirror.meta_snapshot().await;
+        assert_eq!(snap3.current_mode_id.as_deref(), Some("ask"));
+        assert_eq!(snap3.cwd.as_deref(), Some("/tmp/other"), "cwd unchanged");
+    }
+
+    /// Permission rows accumulate; turn markers track the latest
+    /// boundary; usage tally resets per turn.
+    #[tokio::test]
+    async fn turn_permission_and_usage_state_track_correctly() {
+        let mirror = InstanceMirror::new();
+        let perm = InstanceEvent::PermissionRequest {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            session_id: "s-1".into(),
+            turn_id: Some("t-1".into()),
+            request_id: "req-1".into(),
+            tool: "Bash".into(),
+            kind: "execute".into(),
+            args: "ls".into(),
+            raw_input: Some(json!({ "command": "ls" })),
+            content: Vec::new(),
+            options: vec![PermissionOptionView {
+                option_id: "allow".into(),
+                name: "Allow".into(),
+                kind: "allow_once".into(),
+            }],
+            formatted: crate::tools::formatter::types::FormattedToolCall {
+                title: "Bash".into(),
+                stats: Vec::new(),
+                description: None,
+                output: None,
+                fields: vec![],
+            },
+        };
+        mirror.apply(&perm).await;
+        // Idempotent: re-applying the same request_id is a no-op.
+        mirror.apply(&perm).await;
+
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.pending_permissions.len(), 1);
+        assert_eq!(snap.pending_permissions[0].request_id, "req-1");
+
+        // TurnStarted sets the marker + resets usage.
+        mirror
+            .apply(&InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                started_at: 1_700_000_000_000,
+            })
+            .await;
+        let snap = mirror.meta_snapshot().await;
+        assert!(matches!(
+            snap.current_turn_event,
+            Some(TurnEventMarker::Started { started_at }) if started_at == 1_700_000_000_000
+        ));
+        assert_eq!(snap.usage.turn_id.as_deref(), Some("t-1"));
+
+        mirror
+            .apply(&InstanceEvent::UsageUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: Some("t-1".into()),
+                used: 1234,
+                size: 200_000,
+                cost: None,
+            })
+            .await;
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.usage.used, 1234);
+        assert_eq!(snap.usage.size, 200_000);
+
+        mirror
+            .apply(&InstanceEvent::TurnEnded {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                stop_reason: Some("end_turn".into()),
+                error: None,
+                ended_at: 1_700_000_001_000,
+            })
+            .await;
+        let snap = mirror.meta_snapshot().await;
+        assert!(matches!(
+            snap.current_turn_event,
+            Some(TurnEventMarker::Ended { ended_at }) if ended_at == 1_700_000_001_000
+        ));
+    }
+
+    /// Terminal output accumulates per-stream; `Exit` flips `running`.
+    #[tokio::test]
+    async fn terminal_state_accumulates_then_exits() {
+        let mirror = InstanceMirror::new();
+        let chunk_out = InstanceEvent::Terminal {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            session_id: "s-1".into(),
+            turn_id: None,
+            terminal_id: "term-1".into(),
+            chunk: TerminalChunk::Output {
+                stream: TerminalStream::Stdout,
+                data: "hello".into(),
+            },
+        };
+        mirror.apply(&chunk_out).await;
+        mirror.apply(&chunk_out).await;
+        let chunk_err = InstanceEvent::Terminal {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            session_id: "s-1".into(),
+            turn_id: None,
+            terminal_id: "term-1".into(),
+            chunk: TerminalChunk::Output {
+                stream: TerminalStream::Stderr,
+                data: "ERR".into(),
+            },
+        };
+        mirror.apply(&chunk_err).await;
+        mirror
+            .apply(&InstanceEvent::Terminal {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: None,
+                terminal_id: "term-1".into(),
+                chunk: TerminalChunk::Exit {
+                    exit_code: Some(0),
+                    signal: None,
+                },
+            })
+            .await;
+
+        let snap = mirror.terminals_snapshot().await;
+        let term = snap.terminals.get("term-1").expect("term-1 exists");
+        assert_eq!(term.stdout, "hellohello");
+        assert_eq!(term.stderr, "ERR");
+        assert!(!term.running);
+        assert_eq!(term.exit_code, Some(0));
+    }
+}

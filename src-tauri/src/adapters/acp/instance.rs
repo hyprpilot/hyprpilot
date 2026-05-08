@@ -1280,6 +1280,15 @@ pub struct AcpInstance {
     /// own.
     #[allow(dead_code)]
     pub tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
+    /// Per-instance write-through mirror of every emitted
+    /// [`InstanceEvent`]. Phase A3 wires the actor's emit lines to
+    /// call [`InstanceMirror::apply`] alongside `events_tx.send(...)`;
+    /// Phase A5 wires the snapshot RPC handlers that read off it.
+    /// Phase A2 lands the field on the struct + plumbs it through
+    /// [`StartParams`] → [`RunParams`] so the actor task already owns
+    /// its `Arc` clone. Narrow allow until the consumers arrive.
+    #[allow(dead_code)]
+    pub mirror: Arc<crate::adapters::InstanceMirror>,
 }
 
 impl AcpInstance {
@@ -1395,6 +1404,7 @@ impl AcpInstance {
         };
         let session_id = Arc::new(tokio::sync::RwLock::new(initial));
         let tool_calls = Arc::new(tokio::sync::RwLock::new(ToolCallCache::default()));
+        let mirror = Arc::new(crate::adapters::InstanceMirror::new());
         let mode = resolved.mode.clone();
         let instance_id = key.as_string();
 
@@ -1421,6 +1431,7 @@ impl AcpInstance {
             name: Arc::new(tokio::sync::RwLock::new(None)),
             skills,
             tool_calls: tool_calls.clone(),
+            mirror: mirror.clone(),
         };
 
         tokio::spawn(run(RunParams {
@@ -1430,6 +1441,7 @@ impl AcpInstance {
             events_tx,
             session_id_slot: session_id,
             tool_calls,
+            mirror,
             bootstrap,
             permissions,
             mcps,
@@ -1521,6 +1533,12 @@ struct RunParams {
     /// at every `map_session_update`; out-of-actor readers (snapshot
     /// RPC handlers) take a read lock.
     tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
+    /// Shared write-through mirror — same `Arc` the public
+    /// `AcpInstance.mirror` exposes. Phase A3 wires the actor's
+    /// `events_tx.send(...)` lines to call `mirror.apply(...)` on
+    /// every emit; Phase A2 lands the plumbing only.
+    #[allow(dead_code)]
+    mirror: Arc<crate::adapters::InstanceMirror>,
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
@@ -1537,6 +1555,7 @@ async fn run(params: RunParams) {
         events_tx,
         session_id_slot,
         tool_calls,
+        mirror: _mirror,
         bootstrap,
         permissions,
         mcps,
