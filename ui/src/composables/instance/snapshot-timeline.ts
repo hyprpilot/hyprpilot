@@ -207,6 +207,89 @@ interface ProjectedItem {
 }
 
 /**
+ * Try to merge `entry` into an existing item in `projected`. Returns
+ * true when the merge happened (caller skips the push). The wire ships
+ * one TranscriptItem per streamed chunk; the rendered view is one
+ * message per logical reply — same merge the live router does at push
+ * time, replayed here for the snapshot path.
+ */
+function tryMergeIntoExisting(
+  projected: ProjectedItem[],
+  entry: TimelineEntry,
+  it: SeqTranscriptItem
+): boolean {
+  if (entry.kind === 'turn') {
+    const prev = projected[projected.length - 1]
+
+    if (prev && prev.entry.kind === 'turn' && prev.entry.turn.role === entry.turn.role && prev.turnId === it.turnId) {
+      prev.entry.turn.text += entry.turn.text
+      prev.entry.turn.updatedAt = it.seq
+
+      if (entry.turn.attachments.length > 0) {
+        prev.entry.turn.attachments = [...prev.entry.turn.attachments, ...entry.turn.attachments]
+      }
+
+      return true
+    }
+
+    return false
+  }
+
+  if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Thought) {
+    const prev = projected[projected.length - 1]
+
+    if (prev && prev.entry.kind === 'stream' && prev.entry.item.kind === StreamItemKind.Thought && prev.turnId === it.turnId) {
+      prev.entry.item.text += entry.item.text
+      prev.entry.item.updatedAt = it.seq
+
+      return true
+    }
+
+    return false
+  }
+
+  if (entry.kind === 'tool') {
+    const existing = projected.find((p) => p.entry.kind === 'tool' && p.entry.call.toolCallId === entry.call.toolCallId)
+
+    if (existing && existing.entry.kind === 'tool') {
+      mergeToolCall(existing.entry.call, entry.call, it.seq)
+
+      return true
+    }
+  }
+
+  return false
+}
+
+function mergeToolCall(target: WireToolCall, incoming: WireToolCall, seq: number): void {
+  if (incoming.title !== undefined) {
+    target.title = incoming.title
+  }
+
+  if (incoming.status !== undefined) {
+    target.status = incoming.status
+  }
+
+  if (incoming.kind !== undefined) {
+    target.kind = incoming.kind
+  }
+
+  if (incoming.content && incoming.content.length > 0) {
+    target.content = [...(target.content ?? []), ...incoming.content]
+  }
+
+  if (incoming.rawInput !== undefined) {
+    target.rawInput = incoming.rawInput
+  }
+  target.formatted = incoming.formatted
+
+  if (incoming.completedAtMs !== undefined) {
+    target.completedAtMs = incoming.completedAtMs
+  }
+  target.updatedAt = seq
+}
+
+/**
  * Convert oldest-first SeqTranscriptItem[] into TimelineBlocks.
  * Mirrors `useTimelineBlocks`'s grouping rules:
  *
@@ -227,11 +310,16 @@ export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId
   for (const it of items) {
     const entry = projectEntry(it.seq, it.item, ctx)
 
-    if (entry) {
-      projected.push({
-        seq: it.seq, turnId: it.turnId, entry
-      })
+    if (!entry) {
+      continue
     }
+
+    if (tryMergeIntoExisting(projected, entry, it)) {
+      continue
+    }
+    projected.push({
+      seq: it.seq, turnId: it.turnId, entry
+    })
   }
 
   projected.sort((a, b) => a.seq - b.seq || KIND_ORDER[a.entry.kind] - KIND_ORDER[b.entry.kind])

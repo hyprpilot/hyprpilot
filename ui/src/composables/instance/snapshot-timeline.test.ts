@@ -60,8 +60,10 @@ describe('timelineBlocksFromSnapshot', () => {
   })
 
   it('falls back to role-run grouping for items without a turnId', () => {
-    // Two agent items with no turnId in a row should collapse into
-    // one assistant block; a user item splits the run.
+    // Two agent items with no turnId in a row collapse into one
+    // assistant block; a user item splits the run. Adjacent agent
+    // chunks merge into one turnEntry — they're a single message
+    // streamed in pieces, not two separate replies.
     const items: SeqTranscriptItem[] = [
       agentText(1, undefined, 'pre-turn agent 1'),
       agentText(2, undefined, 'pre-turn agent 2'),
@@ -72,10 +74,30 @@ describe('timelineBlocksFromSnapshot', () => {
 
     expect(blocks).toHaveLength(3)
     expect(blocks[0].role).toBe(Role.Assistant)
-    expect(blocks[0].turnEntries).toHaveLength(2)
+    expect(blocks[0].turnEntries).toHaveLength(1)
+    expect(blocks[0].turnEntries[0].turn.text).toBe('pre-turn agent 1pre-turn agent 2')
     expect(blocks[1].role).toBe(Role.User)
     expect(blocks[2].role).toBe(Role.Assistant)
     expect(blocks[2].turnEntries).toHaveLength(1)
+  })
+
+  it('merges streamed agent text chunks within a turn into one turnEntry', () => {
+    // Captain's bug: each agent_message_chunk landed as its own row
+    // because the snapshot ships one TranscriptItem per chunk and
+    // the projector did not merge. Live path merges via messageId;
+    // snapshot path merges by adjacency + turnId.
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'hey'),
+      agentText(2, 't-1', 'Hey! '),
+      agentText(3, 't-1', 'Doing well — '),
+      agentText(4, 't-1', 'what\'s on your mind?')
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+
+    expect(blocks).toHaveLength(2)
+    expect(blocks[1].role).toBe(Role.Assistant)
+    expect(blocks[1].turnEntries).toHaveLength(1)
+    expect(blocks[1].turnEntries[0].turn.text).toBe('Hey! Doing well — what\'s on your mind?')
   })
 
   it('does not collapse two distinct turnIds even when adjacent', () => {
