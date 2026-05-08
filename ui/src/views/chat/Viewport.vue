@@ -501,7 +501,7 @@ defineExpose({ scrollEl })
       <div class="chat-virtual-host" :style="{ height: `${totalSize}px` }">
         <div
           v-for="row in virtualRows"
-          :key="row.key"
+          :key="String(row.key)"
           :data-index="row.index"
           :ref="(el) => virtualizer.measureElement(el as Element | null)"
           class="chat-virtual-row"
