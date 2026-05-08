@@ -112,6 +112,36 @@ pub struct UsageSnapshot {
     pub turn_id: Option<String>,
 }
 
+/// One per-turn record the snapshot ships so the UI's `useTurns`
+/// store can hydrate without replaying the live event stream. Mirrors
+/// the UI-side `TurnRecord` field set sufficient for the chat header's
+/// elapsed + usage chips and stick-to-bottom phase derivation.
+///
+/// Built by accumulating `InstanceEvent::{TurnStarted, TurnEnded,
+/// UsageUpdate}`. Items are ordered by emission (oldest-first) — the
+/// UI reads them in arrival order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSnapshot {
+    pub id: String,
+    pub session_id: String,
+    /// Wall-clock (epoch ms) when the actor accepted the prompt.
+    pub started_at_ms: u64,
+    /// Wall-clock (epoch ms) when the prompt resolved. `None` while
+    /// the turn is mid-flight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
+    /// ACP `StopReason` wire string when the turn ended cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// ACP / transport error message when the turn errored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Latest `UsageUpdate` reading bound to this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageSnapshot>,
+}
+
 /// Inner mutable state. Wrapped in [`InstanceMirror`]'s
 /// `Arc<RwLock<…>>` so the actor's write-through pairs with concurrent
 /// snapshot reads.
@@ -135,6 +165,16 @@ pub struct MirrorInner {
     pub last_turn_event: Option<TurnEventMarker>,
     /// Latest usage tally.
     pub usage: UsageSnapshot,
+    /// Per-turn records. Oldest-first; bounded by the same eviction
+    /// the transcript ring buffer applies — when the buffer drops a
+    /// transcript item carrying a `turn_id` and that turn is no
+    /// longer represented in the surviving transcript, its record is
+    /// dropped too. Today the bound is implicit: `pushTurnStarted`
+    /// appends, `pushTurnEnded` patches in place, `UsageUpdate`
+    /// patches in place. The list grows linearly with turn count
+    /// — at typical session lengths this is bounded enough not to
+    /// warrant explicit eviction yet.
+    pub turns: Vec<TurnSnapshot>,
 }
 
 /// Mutable backing for [`MetaSnapshot`]. Mirrors the existing
@@ -229,7 +269,10 @@ impl InstanceMirror {
 
             // ── per-turn lifecycle markers ───────────────────────
             InstanceEvent::TurnStarted {
-                turn_id, started_at, ..
+                turn_id,
+                session_id,
+                started_at,
+                ..
             } => {
                 g.last_turn_event = Some(TurnEventMarker::Started {
                     started_at: *started_at,
@@ -242,9 +285,33 @@ impl InstanceMirror {
                     cost: None,
                     turn_id: Some(turn_id.clone()),
                 };
+                // Record per-turn entry. Idempotent on duplicate
+                // turn_id (replay safety).
+                if !g.turns.iter().any(|t| t.id == *turn_id) {
+                    g.turns.push(TurnSnapshot {
+                        id: turn_id.clone(),
+                        session_id: session_id.clone(),
+                        started_at_ms: *started_at,
+                        ended_at_ms: None,
+                        stop_reason: None,
+                        error: None,
+                        usage: None,
+                    });
+                }
             }
-            InstanceEvent::TurnEnded { ended_at, .. } => {
+            InstanceEvent::TurnEnded {
+                turn_id,
+                ended_at,
+                stop_reason,
+                error,
+                ..
+            } => {
                 g.last_turn_event = Some(TurnEventMarker::Ended { ended_at: *ended_at });
+                if let Some(rec) = g.turns.iter_mut().find(|t| t.id == *turn_id) {
+                    rec.ended_at_ms = Some(*ended_at);
+                    rec.stop_reason.clone_from(stop_reason);
+                    rec.error.clone_from(error);
+                }
             }
 
             // ── permission roundtrip ─────────────────────────────
@@ -318,6 +385,22 @@ impl InstanceMirror {
                     cost: cost.clone(),
                     turn_id: turn_id.clone(),
                 };
+                // Bind the latest reading to the matching turn record
+                // so a snapshot replay carries the captain's last
+                // visible usage chip per turn. Falls back to the
+                // most-recent turn when `turn_id` is absent
+                // (between-turn updates).
+                let target_id = turn_id.clone().or_else(|| g.turns.last().map(|t| t.id.clone()));
+                if let Some(id) = target_id {
+                    if let Some(rec) = g.turns.iter_mut().find(|t| t.id == id) {
+                        rec.usage = Some(UsageSnapshot {
+                            used: *used,
+                            size: *size,
+                            cost: cost.clone(),
+                            turn_id: turn_id.clone(),
+                        });
+                    }
+                }
             }
 
             // ── terminal accumulation ───────────────────────────
@@ -393,6 +476,7 @@ impl InstanceMirror {
             current_turn_event: g.last_turn_event,
             pending_permissions: g.pending_permissions.clone(),
             usage: g.usage.clone(),
+            turns: g.turns.clone(),
             latest_seq,
         }
     }
@@ -494,6 +578,12 @@ pub struct MetaSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_permissions: Vec<PermissionRequestSnapshot>,
     pub usage: UsageSnapshot,
+    /// Per-turn records (oldest-first). Hydrates the UI's `useTurns`
+    /// store on snapshot load so the chat header's elapsed + usage
+    /// chips render against the daemon's truth, not just the live
+    /// event stream that may have run before the UI mounted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<TurnSnapshot>,
     /// Latest [`SeqTranscriptItem::seq`] in the mirror; `None` when
     /// the transcript is empty. UI seeds the chat infinite-query off
     /// this so the first page request anchors at the right cursor.
@@ -896,6 +986,96 @@ mod tests {
             ],
             "turn_id stamping: pre-turn → t-1 (×2) → post-turn → t-2"
         );
+    }
+
+    /// Per-turn records accumulate across `TurnStarted` /
+    /// `UsageUpdate` / `TurnEnded` so the meta snapshot can ship them
+    /// to the UI for `useTurns` hydration.
+    #[tokio::test]
+    async fn turns_accumulate_per_lifecycle_events() {
+        let mirror = InstanceMirror::new();
+
+        // First turn opens.
+        mirror
+            .apply(&InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                started_at: 1_000,
+            })
+            .await;
+
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.turns.len(), 1);
+        assert_eq!(snap.turns[0].id, "t-1");
+        assert_eq!(snap.turns[0].started_at_ms, 1_000);
+        assert!(snap.turns[0].ended_at_ms.is_none());
+        assert!(snap.turns[0].usage.is_none());
+
+        // Mid-turn usage update.
+        mirror
+            .apply(&InstanceEvent::UsageUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: Some("t-1".into()),
+                used: 100,
+                size: 200_000,
+                cost: None,
+            })
+            .await;
+
+        let snap = mirror.meta_snapshot().await;
+        let usage = snap.turns[0].usage.as_ref().expect("usage attached");
+        assert_eq!(usage.used, 100);
+        assert_eq!(usage.size, 200_000);
+
+        // Turn closes.
+        mirror
+            .apply(&InstanceEvent::TurnEnded {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                stop_reason: Some("end_turn".into()),
+                error: None,
+                ended_at: 2_000,
+            })
+            .await;
+
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.turns[0].ended_at_ms, Some(2_000));
+        assert_eq!(snap.turns[0].stop_reason.as_deref(), Some("end_turn"));
+
+        // Second turn opens — appends without disturbing the first.
+        mirror
+            .apply(&InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-2".into(),
+                started_at: 3_000,
+            })
+            .await;
+
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.turns.len(), 2);
+        assert_eq!(snap.turns[1].id, "t-2");
+        assert_eq!(snap.turns[1].started_at_ms, 3_000);
+
+        // Idempotent: re-applying the same TurnStarted is a no-op.
+        mirror
+            .apply(&InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-2".into(),
+                started_at: 3_000,
+            })
+            .await;
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.turns.len(), 2, "duplicate TurnStarted is a no-op");
     }
 
     /// Phase A4: a `PermissionResolved` event removes the matching row

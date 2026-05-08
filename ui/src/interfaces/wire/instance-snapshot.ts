@@ -60,6 +60,22 @@ export interface UsageSnapshot {
 }
 
 /**
+ * Mirrors Rust `mirror::TurnSnapshot`. Per-turn record the daemon
+ * mirror builds from `TurnStarted` / `TurnEnded` / `UsageUpdate`
+ * events, shipped on `MetaSnapshot.turns` so the UI's `useTurns`
+ * store hydrates without replaying the live event stream.
+ */
+export interface TurnSnapshot {
+  id: string
+  sessionId: string
+  startedAtMs: number
+  endedAtMs?: number
+  stopReason?: string
+  error?: string
+  usage?: UsageSnapshot
+}
+
+/**
  * Mirrors Rust `permission::PermissionRequestSnapshot` — same shape
  * `permissions/pending` returns inline. Carried as part of
  * `MetaSnapshot.pendingPermissions`.
@@ -119,6 +135,12 @@ export interface MetaSnapshot {
   currentTurnEvent?: TurnEventMarker
   pendingPermissions?: PermissionRequestSnapshot[]
   usage: UsageSnapshot
+  /**
+   * Per-turn records, oldest-first. UI hydrates `useTurns` from this
+   * on snapshot load so elapsed + usage chips render against the
+   * daemon's truth, not just the live event stream.
+   */
+  turns?: TurnSnapshot[]
   /**
    * Latest `SeqTranscriptItem.seq` in the mirror; `undefined` when the
    * transcript is empty. UI seeds the chat infinite-query off this so

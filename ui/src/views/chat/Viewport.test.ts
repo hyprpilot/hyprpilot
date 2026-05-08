@@ -21,41 +21,6 @@ vi.mock('@ipc/bridge', async() => ({
   }
 }))
 
-// JSDOM doesn't ship `IntersectionObserver`. Stub it so the @vueuse
-// `useIntersectionObserver` initialisation inside Viewport.vue
-// doesn't throw at mount time. The stub captures observer instances
-// so a test can fire intersection events synthetically.
-class IntersectionObserverStub {
-  public static instances: IntersectionObserverStub[] = []
-  public callback: IntersectionObserverCallback
-  constructor(cb: IntersectionObserverCallback) {
-    this.callback = cb
-    IntersectionObserverStub.instances.push(this)
-  }
-  public observe(): void {}
-  public unobserve(): void {}
-  public disconnect(): void {}
-  public takeRecords(): IntersectionObserverEntry[] {
-    return []
-  }
-  public fire(target: Element): void {
-    this.callback(
-      [
-        {
-          isIntersecting: true,
-          target,
-          boundingClientRect: {} as DOMRectReadOnly,
-          intersectionRatio: 1,
-          intersectionRect: {} as DOMRectReadOnly,
-          rootBounds: null,
-          time: 0
-        }
-      ] as IntersectionObserverEntry[],
-      this as unknown as IntersectionObserver
-    )
-  }
-}
-
 // `@tanstack/vue-virtual`'s `useVirtualizer` reaches for live layout
 // (offsetHeight / scroll metrics) that JSDOM doesn't compute. We
 // stub the helper to return a tiny synchronous virtualizer that
@@ -92,7 +57,9 @@ vi.mock('@tanstack/vue-virtual', async() => {
             size: 160
           }))
         },
-        getTotalSize: () => readCount() * 160
+        getTotalSize: () => readCount() * 160,
+        measureElement: () => undefined,
+        scrollToIndex: () => undefined
       }))
     }
   }
@@ -165,8 +132,6 @@ function mountViewport(opts: MountOpts) {
 beforeEach(() => {
   invoke.mockReset()
   listeners.clear()
-  IntersectionObserverStub.instances = []
-  ;(globalThis as unknown as { IntersectionObserver: typeof IntersectionObserverStub }).IntersectionObserver = IntersectionObserverStub
   useActiveInstance().id.value = undefined
 })
 
@@ -229,12 +194,30 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
-  it('renders the load sentinel when hasNextPage is true', async() => {
-    // hasMore: true means the daemon has older pages; the sentinel
-    // (and the chip while fetching) renders. The chip's render
-    // timing under jsdom isn't deterministic enough to assert
-    // directly — `useChatViewport.test.ts` covers the
-    // `isFetchingNextPage` plumbing at the composable layer.
+  it('hides the load chip when hasNextPage is false', async() => {
+    const exhausted = chatPage(
+      [
+        {
+          seq: 5,
+          item: { kind: TranscriptItemKind.AgentText, text: 'all there is' } as never
+        }
+      ],
+      false
+    )
+
+    invoke.mockResolvedValueOnce(exhausted)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: exhausted })
+
+    await flushPromises()
+    await flushPromises()
+    // Chip only renders while `isFetchingNextPage` is true; with
+    // `hasMore: false` the next fetch never fires, so the chip stays
+    // hidden through the lifecycle.
+    expect(wrapper.find('[data-testid="chat-load-chip"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('scrolling to the top triggers fetchNextPage when hasNextPage', async() => {
     const first = chatPage(
       [
         {
@@ -252,16 +235,31 @@ describe('Viewport.vue', () => {
     await flushPromises()
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('[data-testid="chat-load-sentinel"]').exists()).toBe(true)
+    invoke.mockClear()
+    invoke.mockResolvedValueOnce(chatPage([], false))
+
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+    // Simulate a captain scrolling to the top of the chat — scrollTop
+    // crosses LOAD_MORE_THRESHOLD_PX (240) → 0.
+    Object.defineProperty(root, 'scrollTop', { configurable: true, value: 0 })
+    root.dispatchEvent(new Event('scroll'))
+
+    await flushPromises()
+    await flushPromises()
+
+    // The infinite query passed `before = oldestSeq` of the latest
+    // page (100) on the next fetch. Wider assertion: at least one
+    // call landed.
+    expect(invoke).toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('hides the sentinel + chip when hasNextPage is false', async() => {
+  it('does not refetch on scroll when there are no older pages', async() => {
     const exhausted = chatPage(
       [
         {
           seq: 5,
-          item: { kind: TranscriptItemKind.AgentText, text: 'all there is' } as never
+          item: { kind: TranscriptItemKind.AgentText, text: 'a' } as never
         }
       ],
       false
@@ -272,42 +270,17 @@ describe('Viewport.vue', () => {
 
     await flushPromises()
     await flushPromises()
-    expect(wrapper.find('[data-testid="chat-load-sentinel"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="chat-load-chip"]').exists()).toBe(false)
-    wrapper.unmount()
-  })
 
-  it('intersection on the sentinel triggers fetchNextPage', async() => {
-    const first = chatPage(
-      [
-        {
-          seq: 100,
-          item: { kind: TranscriptItemKind.AgentText, text: 'p0' } as never
-        }
-      ],
-      true
-    )
-
-    invoke.mockResolvedValueOnce(first)
-    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: first })
-
-    await flushPromises()
-    await flushPromises()
-
-    // Reset call history; record the next call (the sentinel-triggered fetch).
     invoke.mockClear()
-    invoke.mockResolvedValueOnce(chatPage([], false))
 
-    const sentinel = wrapper.find('[data-testid="chat-load-sentinel"]')
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
 
-    IntersectionObserverStub.instances.at(-1)!.fire(sentinel.element)
+    Object.defineProperty(root, 'scrollTop', { configurable: true, value: 0 })
+    root.dispatchEvent(new Event('scroll'))
+
     await flushPromises()
-    await flushPromises()
 
-    // The infinite query passed `before = oldestSeq` of the latest
-    // page (100) on the next fetch. Wider assertion: at least one
-    // call landed.
-    expect(invoke).toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

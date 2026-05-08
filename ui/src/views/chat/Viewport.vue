@@ -2,24 +2,46 @@
 /**
  * Chat transcript viewport. Reads off `useChatViewport` (which wraps
  * `useInstanceChatInfiniteQuery` + live-event patches + page-trim
- * policy) and feeds the resulting `SeqTranscriptItem[]` into the
- * same `<Turn>` / `<StreamCard>` / `<ToolChips>` / `<TerminalCard>` /
- * `<ChatBody>` leaves Overlay.vue used before.
+ * policy) and feeds the resulting blocks into the virtualized scroll
+ * surface.
  *
- * Simple plain `v-for` render — virtualization was tried and dropped:
- * the page-trim already bounds memory at a couple of pages worth of
- * data (~150 rows), and a fixed `estimateSize` virtualizer leaves
- * giant gaps between rows of varying actual height. For chat at this
- * scale a flat list reads cleaner and matches the prior layout.
+ * **Variable-height virtualization** via `@tanstack/vue-virtual`:
  *
- * Backward pagination: a sentinel renders above the first row when
- * `hasNextPage` is true. `useIntersectionObserver` fires
- * `fetchNextPage()` when the sentinel enters the viewport. While a
- * fetch is in flight, the sentinel hosts a small `animate-pulse`
- * loading chip. Once `hasMore: false`, sentinel + chip both hide.
+ * - `useVirtualizer` keyed by `block.groupKey` (stable across renders;
+ *   array-index keys would invalidate measurements on every prepend).
+ * - Each rendered row carries `data-index` + a `:ref` callback into
+ *   `virtualizer.measureElement`. Without BOTH bindings, the virtualizer
+ *   can't attach its `ResizeObserver` and every row stays at the
+ *   `estimateSize` value forever — that produces visible gaps between
+ *   short rows and overlap on tall ones.
+ * - `shouldAdjustScrollPositionOnItemSizeChange` returns `true` when the
+ *   resized item is above the current viewport: when an older page
+ *   measures in (taller than the estimate), the scroll offset
+ *   compensates by the delta so the captain's currently-visible content
+ *   stays anchored. This is the maintainer-recommended fix for the
+ *   prepend-page jump (TanStack Virtual discussion #1013).
+ * - Streaming text into an existing row: the per-row `ResizeObserver`
+ *   fires automatically — no manual `measure()` call needed.
+ *
+ * **Backward pagination**: a `@scroll` handler watches `scrollTop` and
+ * triggers `viewport.fetchNextPage()` when the captain crosses
+ * `LOAD_MORE_THRESHOLD_PX` from the top. The previous DOM-sentinel +
+ * `useIntersectionObserver` was broken because the observer's default
+ * `root` is the document, not the chat scroll container — the sentinel
+ * never intersected when the captain scrolled the chat up. A direct
+ * scrollTop check sidesteps that entirely.
+ *
+ * **Stick-to-bottom**: `useStickToBottom` provides the `stuck` boolean
+ * (the captain is at the tail). When new blocks land while stuck, we
+ * call `virtualizer.scrollToIndex(last, { align: 'end' })` in
+ * `nextTick` so the live event flows down naturally. This works
+ * alongside the observer-driven scroll the composable does internally:
+ * the virtualizer call gives us index-aware end-alignment that handles
+ * the "last row still growing post-scroll" case during streaming.
  */
-import { useIntersectionObserver, useNow } from '@vueuse/core'
-import { computed, ref, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
+import { useNow } from '@vueuse/core'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
@@ -37,6 +59,7 @@ import {
   useAgentRegistry,
   useChatViewport,
   useSessionInfo,
+  useSnapshotHydration,
   useStickToBottom,
   useTurns,
   type PlanEntry,
@@ -44,6 +67,20 @@ import {
   type InstanceId
 } from '@composables'
 import { format, formatDuration } from '@lib'
+
+/// Distance from the top (in px) at which we trigger backward
+/// pagination. Generous enough that `fetchNextPage()` resolves before
+/// the captain runs out of content; tight enough not to fire while
+/// the captain is reading mid-list.
+const LOAD_MORE_THRESHOLD_PX = 240
+
+/// Estimated row height for unmeasured blocks. Bias toward the
+/// **median** actual height so over-estimates and under-estimates
+/// roughly cancel — that minimises offset jitter as rows measure in.
+/// Real chat blocks vary from ~32px (one-line user prompt) to 1500px+
+/// (long agent reply with tool chips); 200 is the rough median across
+/// the development sessions.
+const ESTIMATE_SIZE_PX = 200
 
 const props = defineProps<{
   /// Captain's "session is restoring" gate — keeps the scoped
@@ -69,19 +106,23 @@ const { adapterFor } = useAgentRegistry()
 const { info: sessionInfo } = useSessionInfo()
 const { openTurnId, turns: turnRecords } = useTurns()
 
-// Resolve adapter for the active instance's agent. Snapshot
-// tool-call entries don't carry agentId (the daemon's wire shape
-// flattens it); we look it up off the active session's meta so
-// the formatter can produce icons + state-aware stats.
+// Hydrate `useTurns` from the snapshot meta query. Live events that
+// streamed before this component mounted (focus-switch, remote bridge
+// authenticated mid-session) are invisible to the live router; the
+// daemon mirror has them and ships them on `MetaSnapshot.turns`.
+useSnapshotHydration(instanceId)
+
+// Resolve adapter for the active instance's agent. Snapshot tool-call
+// entries don't carry agentId on the wire; we look it up off the
+// active session's meta so the formatter can produce icons +
+// state-aware stats.
 const adapterForActive = computed(() => {
   const id = sessionInfo.value.agent
 
   return id ? adapterFor(id) : undefined
 })
 
-// Scroll element + sentinel refs.
 const scrollEl = ref<HTMLElement>()
-const sentinelEl = ref<HTMLElement>()
 
 const { stuck } = useStickToBottom(scrollEl)
 
@@ -89,24 +130,64 @@ watch(stuck, (next) => {
   viewport.onStuckChange(next)
 })
 
-// Backward-pagination sentinel: triggers `fetchNextPage` when the
-// captain scrolls to the very top.
-useIntersectionObserver(sentinelEl, (entries) => {
-  for (const entry of entries) {
-    if (!entry.isIntersecting) {
-      continue
-    }
+// ── Virtualization ──────────────────────────────────────────────────
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: blocks.value.length,
+    getScrollElement: () => scrollEl.value ?? null,
+    estimateSize: () => ESTIMATE_SIZE_PX,
+    overscan: 8,
+    getItemKey: (i: number) => blocks.value[i]?.groupKey ?? i,
+    /**
+     * Compensate scroll offset when an off-screen-above row remeasures.
+     * Stops backward-page prepends from yanking the captain's content
+     * out of view (TanStack Virtual discussion #1013, default in
+     * forthcoming versions).
+     */
+    shouldAdjustScrollPositionOnItemSizeChange: (item: { start: number }, _delta: number, instance: { scrollOffset: number | null }) => {
+      const offset = instance.scrollOffset ?? 0
 
-    if (!viewport.hasNextPage.value) {
-      continue
+      return item.start < offset
     }
+  }))
+)
 
-    if (viewport.isFetchingNextPage.value) {
-      continue
+const virtualRows = computed(() => virtualizer.value.getVirtualItems())
+const totalSize = computed(() => virtualizer.value.getTotalSize())
+
+// Follow the tail when stuck and new blocks land. nextTick lets the
+// virtualizer process the count change before we ask it to scroll.
+watch(
+  () => blocks.value.length,
+  async(next) => {
+    if (!stuck.value || next === 0) {
+      return
     }
+    await nextTick()
+    virtualizer.value.scrollToIndex(next - 1, { align: 'end' })
+  }
+)
+
+// ── Backward pagination ─────────────────────────────────────────────
+function onScroll(): void {
+  const el = scrollEl.value
+
+  if (!el) {
+    return
+  }
+
+  if (!viewport.hasNextPage.value) {
+    return
+  }
+
+  if (viewport.isFetchingNextPage.value) {
+    return
+  }
+
+  if (el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
     void viewport.fetchNextPage()
   }
-})
+}
 
 const liveBlockIdx = computed<number>(() => {
   const open = openTurnId.value
@@ -328,82 +409,98 @@ defineExpose({ scrollEl })
 </script>
 
 <template>
-  <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''">
+  <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''" @scroll="onScroll">
     <Loading v-if="props.restoring" mode="scoped" status="restoring session — replaying transcript" />
 
-    <div class="chat-transcript-inner">
-      <slot v-if="isEmpty" name="empty" />
-      <template v-else>
-        <!-- Sentinel + loading chip — captain's pull-up affordance. -->
-        <div v-if="viewport.hasNextPage.value" ref="sentinelEl" class="chat-load-sentinel" data-testid="chat-load-sentinel">
-          <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
-        </div>
+    <slot v-if="isEmpty" name="empty" />
 
-        <Turn
-          v-for="(block, blockIdx) in blocks"
-          :key="block.groupKey"
-          :role="block.role"
-          :live="blockIdx === liveBlockIdx"
-          :elapsed="elapsedFor(block.turnId)"
-          :usage="usageFor(block.turnId)"
+    <template v-else>
+      <!-- Loading chip pinned at the top while a backward page is in
+           flight. Sits outside the virtualized spacer so its height
+           doesn't compete with row offsets. -->
+      <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
+
+      <!-- Virtualized spacer: total height matches the sum of
+           measured/estimated row sizes. Rows position themselves via
+           `transform: translateY(...)` inside this relative parent. -->
+      <div class="chat-virtual-host" :style="{ height: `${totalSize}px` }">
+        <div
+          v-for="row in virtualRows"
+          :key="row.key"
+          :data-index="row.index"
+          :ref="(el) => virtualizer.measureElement(el as Element | null)"
+          class="chat-virtual-row"
+          :style="{ transform: `translateY(${row.start}px)` }"
         >
-          <StreamCard
-            v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
-            :kind="StreamKind.Thinking"
-            :active="blockIdx === liveBlockIdx"
-            label="thought"
-            :elapsed="thinkingElapsedFor(block)"
-            :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
-          />
-          <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+          <Turn
+            v-if="blocks[row.index]"
+            :role="blocks[row.index]!.role"
+            :live="row.index === liveBlockIdx"
+            :elapsed="elapsedFor(blocks[row.index]!.turnId)"
+            :usage="usageFor(blocks[row.index]!.turnId)"
+          >
             <StreamCard
-              v-if="entry.item.kind === StreamItemKind.Plan"
-              :kind="StreamKind.Planning"
-              :active="blockIdx === liveBlockIdx"
-              label="plan"
-              :items="mapPlanItems(entry.item.entries)"
+              v-if="combinedThoughtText(blocks[row.index]!).length > 0 || hasThinkingSignal(blocks[row.index]!)"
+              :kind="StreamKind.Thinking"
+              :active="row.index === liveBlockIdx"
+              label="thought"
+              :elapsed="thinkingElapsedFor(blocks[row.index]!)"
+              :text="combinedThoughtText(blocks[row.index]!).length > 0 ? combinedThoughtText(blocks[row.index]!) : undefined"
             />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ModeChange"
-              kind="mode"
-              :to="entry.item.name ?? entry.item.modeId"
-              :from="entry.item.prevName ?? entry.item.prevModeId"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ModelChange"
-              kind="model"
-              :to="entry.item.name ?? entry.item.modelId"
-              :from="entry.item.prevName ?? entry.item.prevModelId"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
-              :kind="entry.item.categoryId"
-              :to="entry.item.name ?? entry.item.value"
-              :from="entry.item.prevName ?? entry.item.prevValue"
-            />
-            <ChangeBanner v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected" kind="system prompt" :to="systemPromptLabel(entry.item.files)" />
-          </template>
-
-          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterForActive))" />
-
-          <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
-            <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
-          </template>
-
-          <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-            <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
-            <template v-else>
-              <Body :role="Role.User" :text="entry.turn.text" markdown />
-              <Attachments
-                v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
-                :attachments="entry.turn.attachments"
-                @open="(att) => emit('attachment-open', att)"
+            <template v-for="entry in blocks[row.index]!.streamEntries" :key="`stream-${entry.createdAt}`">
+              <StreamCard
+                v-if="entry.item.kind === StreamItemKind.Plan"
+                :kind="StreamKind.Planning"
+                :active="row.index === liveBlockIdx"
+                label="plan"
+                :items="mapPlanItems(entry.item.entries)"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.ModeChange"
+                kind="mode"
+                :to="entry.item.name ?? entry.item.modeId"
+                :from="entry.item.prevName ?? entry.item.prevModeId"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.ModelChange"
+                kind="model"
+                :to="entry.item.name ?? entry.item.modelId"
+                :from="entry.item.prevName ?? entry.item.prevModelId"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
+                :kind="entry.item.categoryId"
+                :to="entry.item.name ?? entry.item.value"
+                :from="entry.item.prevName ?? entry.item.prevValue"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected"
+                kind="system prompt"
+                :to="systemPromptLabel(entry.item.files)"
               />
             </template>
-          </template>
-        </Turn>
-      </template>
-    </div>
+
+            <ToolChips v-if="blocks[row.index]!.toolCalls.length > 0" :views="blocks[row.index]!.toolCalls.map((t) => format(t.call, adapterForActive))" />
+
+            <template v-for="entry in blocks[row.index]!.toolCalls" :key="`term-${entry.call.toolCallId}`">
+              <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
+            </template>
+
+            <template v-for="entry in blocks[row.index]!.turnEntries" :key="`turn-${entry.createdAt}`">
+              <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
+              <template v-else>
+                <Body :role="Role.User" :text="entry.turn.text" markdown />
+                <Attachments
+                  v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+                  :attachments="entry.turn.attachments"
+                  @open="(att) => emit('attachment-open', att)"
+                />
+              </template>
+            </template>
+          </Turn>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -413,23 +510,39 @@ defineExpose({ scrollEl })
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
+  /* Stop the browser's native scroll-anchoring from fighting the
+   * virtualizer's own scroll-offset adjustment when rows above remeasure. */
+  overflow-anchor: none;
 }
 
-.chat-transcript-inner {
-  @apply flex min-h-0 flex-1 flex-col;
+.chat-virtual-host {
+  /* Inner spacer — rows are absolutely positioned within. The host's
+   * height is set inline from the virtualizer's `getTotalSize()`. */
+  position: relative;
+  width: 100%;
+}
+
+.chat-virtual-row {
+  /* Absolute children of the relative host. Padding lives on the row
+   * itself because absolute children's `width: 100%` resolves against
+   * the parent's padding-box width — padding on the parent has no
+   * effect on them. `box-sizing: border-box` keeps the width math
+   * intact so 100% means "full host width including padding". */
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0 0.875rem 0 0.25rem;
-}
-
-.chat-load-sentinel {
-  @apply flex w-full justify-center py-2;
-  min-height: 1.5rem;
 }
 
 .chat-load-chip {
   @apply rounded text-[0.7rem];
+  margin: 0.5rem auto 0.25rem;
   padding: 0.125rem 0.5rem;
   background-color: var(--theme-surface-alt);
   color: var(--theme-fg-dim);
   border: 1px solid var(--theme-border-soft);
+  align-self: center;
 }
 </style>
