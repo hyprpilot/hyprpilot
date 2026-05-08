@@ -164,21 +164,15 @@ async fn boot_snapshot(
 
     let instances_list = adapter.list().await;
     let focused_id = adapter.focused_id().await.map(|k| k.as_string());
-    let instance_entries: Vec<serde_json::Value> = instances_list
+    let instance_entries: Vec<crate::adapters::instance::InstanceListEntry> = instances_list
         .iter()
-        .map(|i| {
-            serde_json::json!({
-                "agentId": i.agent_id,
-                "profileId": i.profile_id,
-                "instanceId": i.id,
-                "sessionId": i.session_id,
-                "name": i.name,
-                "mode": i.mode,
-            })
-        })
+        .map(crate::adapters::instance::InstanceListEntry::from)
         .collect();
     let mut instances_payload = serde_json::Map::with_capacity(2);
-    instances_payload.insert("instances".into(), serde_json::Value::Array(instance_entries));
+    instances_payload.insert(
+        "instances".into(),
+        serde_json::to_value(&instance_entries).map_err(|e| format!("serialize instances: {e}"))?,
+    );
     if let Some(id) = focused_id {
         instances_payload.insert("focusedId".into(), serde_json::Value::String(id));
     }

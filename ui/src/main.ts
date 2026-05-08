@@ -175,4 +175,14 @@ async function boot(): Promise<void> {
   markBootDone()
 }
 
-void boot()
+// Drop the curtain even on failure. A `void boot()` would silently
+// swallow any uncaught throw inside the boot pipeline (e.g. a bad
+// wire shape from an out-of-date daemon), leaving `markBootDone`
+// unfired and the captain stuck on the fullscreen <Loading>. Always
+// flip `bootDone` so a broken-but-visible UI is preferable to an
+// invisible-but-broken one — the captain's reload triggers a fresh
+// boot when ready.
+boot().catch((err: unknown) => {
+  log.error('boot pipeline failed', undefined, err)
+  markBootDone()
+})

@@ -119,20 +119,25 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
     // (often only after a turn). The `useSnapshotHydration` hook
     // covers cwd / model / configOptions / mcpsCount via the meta
     // query; this covers the fields the meta snapshot doesn't.
+    // `!= null` covers null AND undefined — the wire shape is supposed
+    // to omit unset fields, but a buggy daemon build (or a spec drift)
+    // could still ship `null`. `entry.name !== undefined && null.length`
+    // would throw; the loose check defends against that regression
+    // shape silently passing through to a runtime crash.
     for (const entry of r.instances) {
       if (entry.agentId) {
         setInstanceAgent(entry.instanceId, entry.agentId)
       }
 
-      if (entry.profileId !== undefined) {
+      if (entry.profileId != null) {
         setInstanceProfile(entry.instanceId, entry.profileId)
       }
 
-      if (entry.mode !== undefined) {
+      if (entry.mode != null) {
         pushCurrentModeUpdate(entry.instanceId, { currentModeId: entry.mode })
       }
 
-      if (entry.name !== undefined && entry.name.length > 0) {
+      if (entry.name != null && entry.name.length > 0) {
         setInstanceName(entry.instanceId, entry.name)
       }
     }

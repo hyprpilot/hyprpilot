@@ -16,8 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use once_cell::sync::Lazy;
 
 use crate::adapters::Adapter;
 use crate::remote::cert::TlsMaterial;
@@ -174,75 +173,78 @@ const VITE_DEV_PORT: u16 = 1420;
 /// asset request (10+ per fresh page load) re-logs the same line.
 static VITE_PROXY_WARNED: AtomicBool = AtomicBool::new(false);
 
-/// Forward an HTTP/1.1 GET to the Vite dev server and convert the
-/// response into an axum Response. `Connection: close` keeps the
-/// reader simple — Vite returns the body and EOFs, no chunked
-/// encoding to parse. Localhost-only, so latency overhead is
-/// negligible. No request body forwarding (Vite's static-asset
-/// surface is GET-only).
+/// Shared `reqwest::Client` for the dev proxy. Connection pooling
+/// keeps successive asset requests fast; chunked decoding,
+/// header-aware framing, and content-length handling come for free
+/// (raw `tokio::TcpStream` parsing missed all three — the previous
+/// hand-rolled proxy concatenated chunk-size hex lines into the
+/// response body and stripped every header except `Content-Type`,
+/// which clobbered ETag / Cache-Control / Content-Length).
+static VITE_PROXY_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        // Cap the round-trip — Vite responses for static dev assets
+        // are local and quick. A genuine stall (Vite hung mid-build,
+        // captain on a flaky filesystem) should fall through to
+        // `asset_resolver` rather than freeze the request loop.
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
+/// Forward a GET to the Vite dev server and rewrap as an axum
+/// Response. `reqwest` handles every framing detail the previous
+/// hand-rolled raw-TCP version mishandled — chunked transfer
+/// encoding, content-length, header-aware body termination — so
+/// JS / CSS bodies arrive intact instead of laced with chunk-size
+/// hex lines. Headers other than the hop-by-hop set
+/// (`Connection` / `Transfer-Encoding` / `Keep-Alive` / `Upgrade`)
+/// are forwarded verbatim — Vite's `Cache-Control` / `ETag` /
+/// `Last-Modified` reach the browser, so its module-graph caching
+/// keeps working.
 async fn proxy_to_vite(uri: &Uri) -> anyhow::Result<Response> {
-    let path_and_query = uri
-        .path_and_query()
-        .map(|p| p.as_str())
-        .unwrap_or_else(|| uri.path());
+    let path_and_query = uri.path_and_query().map(|p| p.as_str()).unwrap_or_else(|| uri.path());
+    let url = format!("http://{VITE_DEV_HOST}:{VITE_DEV_PORT}{path_and_query}");
 
-    let mut stream = TcpStream::connect((VITE_DEV_HOST, VITE_DEV_PORT))
+    let upstream = VITE_PROXY_CLIENT
+        .get(&url)
+        .send()
         .await
-        .with_context(|| format!("connect vite dev server at {VITE_DEV_HOST}:{VITE_DEV_PORT}"))?;
+        .with_context(|| format!("vite dev fetch {url}"))?;
 
-    let req = format!(
-        "GET {path_and_query} HTTP/1.1\r\nHost: {VITE_DEV_HOST}:{VITE_DEV_PORT}\r\n\
-         Connection: close\r\nAccept-Encoding: identity\r\nAccept: */*\r\n\r\n"
-    );
-    stream
-        .write_all(req.as_bytes())
-        .await
-        .context("write vite dev request")?;
-    stream.flush().await.context("flush vite dev request")?;
+    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::OK);
 
-    let mut buf = Vec::with_capacity(8 * 1024);
-    stream
-        .read_to_end(&mut buf)
-        .await
-        .context("read vite dev response")?;
-
-    // Split header/body at the first CRLFCRLF.
-    let header_end = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| anyhow!("vite dev response missing header terminator"))?;
-    let head_str = std::str::from_utf8(&buf[..header_end]).context("vite dev headers not UTF-8")?;
-    let body = buf[header_end + 4..].to_vec();
-
-    let mut lines = head_str.split("\r\n");
-    let status_line = lines
-        .next()
-        .ok_or_else(|| anyhow!("vite dev response missing status line"))?;
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(200);
-
-    let mut content_type: Option<String> = None;
-    for line in lines {
-        let Some((k, v)) = line.split_once(':') else {
+    // Snapshot upstream headers BEFORE consuming the body — `bytes()`
+    // takes ownership.
+    let mut forwarded_headers = axum::http::HeaderMap::new();
+    for (name, value) in upstream.headers() {
+        // Skip hop-by-hop. Forwarding them confuses axum's hyper
+        // layer when it re-frames the outbound response.
+        let s = name.as_str();
+        if s.eq_ignore_ascii_case("connection")
+            || s.eq_ignore_ascii_case("transfer-encoding")
+            || s.eq_ignore_ascii_case("keep-alive")
+            || s.eq_ignore_ascii_case("upgrade")
+            || s.eq_ignore_ascii_case("content-length")
+        {
             continue;
-        };
-        if k.eq_ignore_ascii_case("content-type") {
-            content_type = Some(v.trim().to_string());
+        }
+        if let (Ok(n), Ok(v)) = (
+            header::HeaderName::from_bytes(s.as_bytes()),
+            header::HeaderValue::from_bytes(value.as_bytes()),
+        ) {
+            forwarded_headers.append(n, v);
         }
     }
+
+    let body = upstream.bytes().await.context("read vite dev response body")?;
 
     let mut response = Response::new(axum::body::Body::from(body));
-    *response.status_mut() = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
-    if let Some(ct) = content_type {
-        if let Ok(v) = header::HeaderValue::from_str(&ct) {
-            response.headers_mut().insert(header::CONTENT_TYPE, v);
-        }
+    *response.status_mut() = status;
+    *response.headers_mut() = forwarded_headers;
+    if !response.headers().contains_key(header::CACHE_CONTROL) {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache"));
     }
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache"));
     Ok(response)
 }

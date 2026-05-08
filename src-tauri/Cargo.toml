@@ -74,6 +74,11 @@ tower-http = { version = "0.6", features = ["trace"] }
 futures-util = "0.3"
 rand = "0.8"
 time = "0.3.47"
+# Used by the dev-only Vite proxy in `remote/server.rs`. Plain HTTP
+# only (no TLS, no JSON dance) — `default-features = false` keeps
+# rustls / cookies / gzip out of the binary; localhost-only means
+# none of them are needed. HTTP/1.1 is implicit when `http2` is off.
+reqwest = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

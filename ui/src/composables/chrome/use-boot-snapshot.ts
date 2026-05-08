@@ -60,20 +60,27 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   // moment Overlay.vue mounts. Without this, the captain on a remote
   // sees an empty header until brim-sync's later `instances/list`
   // round-trip lands — the very lag the boot snapshot exists to kill.
+  //
+  // Use `!= null` (covers null AND undefined) — older daemons (and
+  // a buggy build of `boot_snapshot` before the typed wire shape
+  // landed) ship `null` for the optional fields. Without this loose
+  // check, `null !== undefined` slipped through to `null.length` and
+  // threw, taking the whole boot pipeline with it (markBootDone never
+  // fired, captain stuck on the loading screen).
   for (const entry of snap.instances.instances) {
     if (entry.agentId) {
       setInstanceAgent(entry.instanceId, entry.agentId)
     }
 
-    if (entry.profileId !== undefined) {
+    if (entry.profileId != null) {
       setInstanceProfile(entry.instanceId, entry.profileId)
     }
 
-    if (entry.mode !== undefined) {
+    if (entry.mode != null) {
       pushCurrentModeUpdate(entry.instanceId, { currentModeId: entry.mode })
     }
 
-    if (entry.name !== undefined && entry.name.length > 0) {
+    if (entry.name != null && entry.name.length > 0) {
       setInstanceName(entry.instanceId, entry.name)
     }
   }

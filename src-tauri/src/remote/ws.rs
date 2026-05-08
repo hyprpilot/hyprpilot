@@ -25,12 +25,22 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tauri::Emitter;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::adapters::InstanceEvent;
 use crate::remote::pair::{ConfirmSide, CreatedPair, PairStore, PAIR_EXPIRY};
 use crate::remote::server::RemoteState;
 use crate::remote::session::SessionTokens;
+
+/// Per-connection cap on queued dispatch responses. Backpressure
+/// kicks in once the writer is more than this many frames behind —
+/// the spawn site `await`s on send, naturally serializing inflight
+/// dispatches against a peer that's blasting frames but not
+/// reading. 64 covers every realistic concurrent-invoke fanout
+/// (boot snapshot is one; brim-sync prefetches a handful) without
+/// letting a degenerate peer eat unbounded memory.
+const DISPATCH_OUTBOUND_CAPACITY: usize = 64;
 
 /// Per-WS task. Pair-on-connect → authenticated proxy.
 pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAddr) {
@@ -215,9 +225,19 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     // `outbound_rx` mpsc so per-WS write ordering stays sequential
     // (one tokio task owns the sink, never two writers racing).
     let mut status_rx: Option<Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>> = None;
-    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<DispatchOutbound>();
+    // Bounded mpsc + per-connection `JoinSet` for the spawned
+    // dispatch tasks. Bounded so a peer that floods text frames but
+    // stops reading can't OOM the daemon (each pending response sits
+    // in `outbound_rx` until the writer drains it; backpressure
+    // serializes the spawn site naturally). The JoinSet so we abort
+    // every in-flight dispatch when the connection drops, instead of
+    // leaving handlers like `session_list` (spawns + tears down a
+    // bunx agent over ~430ms) running against a dropped peer holding
+    // an `Arc<dyn Adapter>` clone.
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<DispatchOutbound>(DISPATCH_OUTBOUND_CAPACITY);
+    let mut dispatchers: JoinSet<()> = JoinSet::new();
 
-    loop {
+    'proxy: loop {
         tokio::select! {
             // `biased;` polls branches in declaration order so dispatch
             // responses always drain before events (and pings before
@@ -236,13 +256,13 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                 match outbound {
                     Some(DispatchOutbound::Response(text)) => {
                         if !send_text(&mut sink, &text).await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Some(DispatchOutbound::StatusRx(rx)) => {
                         status_rx = Some(rx);
                     }
-                    None => return,
+                    None => break 'proxy,
                 }
             }
 
@@ -252,34 +272,32 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                     Some(Ok(m)) => m,
                     Some(Err(err)) => {
                         tracing::warn!(%peer, %err, "remote: WS read error");
-                        return;
+                        break 'proxy;
                     }
-                    None => return,
+                    None => break 'proxy,
                 };
                 match frame {
                     Message::Text(text) => {
                         let line = text.to_string();
-                        // Capture the current subscription state at
-                        // dispatch time — concurrent handlers can't
-                        // read `status_rx` since it's owned by this
-                        // loop. A `status/subscribe` lands in
-                        // `DispatchOutbound::StatusRx` below; the
-                        // race where two parallel subscribes both
-                        // see `false` is benign because the second
-                        // call's `new_status_rx` arm overwrites the
-                        // first cleanly (status is a single-receiver
-                        // contract per connection).
+                        // `StatusBroadcast::subscribe` is atomic against
+                        // `set` (snapshot mutex), so a `status/subscribe`
+                        // request that lands AFTER a `set` still
+                        // observes the post-set snapshot AND every
+                        // subsequent `set` on its receiver — no missed
+                        // notifications. So we capture
+                        // `already_subscribed` here, spawn, and let the
+                        // handler do the subscribe.
                         let already_subscribed = status_rx.is_some();
                         let state_clone = state.clone();
                         let tx = outbound_tx.clone();
-                        tokio::spawn(async move {
+                        dispatchers.spawn(async move {
                             let DispatchResult { response_text, new_status_rx } =
                                 dispatch_line(&line, &state_clone, already_subscribed).await;
                             if let Some(rx) = new_status_rx {
-                                let _ = tx.send(DispatchOutbound::StatusRx(rx));
+                                let _ = tx.send(DispatchOutbound::StatusRx(rx)).await;
                             }
                             if let Some(text) = response_text {
-                                let _ = tx.send(DispatchOutbound::Response(text));
+                                let _ = tx.send(DispatchOutbound::Response(text)).await;
                             }
                         });
                     }
@@ -296,7 +314,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         let _ = sink.send(Message::Pong(p)).await;
                     }
                     Message::Close(_) | Message::Pong(_) => {
-                        return;
+                        break 'proxy;
                     }
                 }
             }
@@ -312,13 +330,13 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                             "payload": payload,
                         });
                         if !send_text(&mut sink, &frame.to_string()).await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(%peer, n, "remote: WS event subscriber lagged");
                     }
-                    Err(broadcast::error::RecvError::Closed) => return,
+                    Err(broadcast::error::RecvError::Closed) => break 'proxy,
                 }
             }
 
@@ -333,7 +351,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         "payload": payload,
                     });
                     if !send_text(&mut sink, &frame.to_string()).await {
-                        return;
+                        break 'proxy;
                     }
                 }
             }
@@ -352,7 +370,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         )
                         .unwrap_or_else(|_| "{}".to_string());
                         if !send_text(&mut sink, &frame).await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_))
@@ -361,6 +379,12 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
             }
         }
     }
+
+    // Connection closed — abort every in-flight dispatch task. Without
+    // this, a long-running handler (e.g. `session_list` spawning a
+    // bunx agent over ~430ms) keeps running against a dropped peer,
+    // holding `Arc<dyn Adapter>` clones until it returns.
+    dispatchers.shutdown().await;
 }
 
 struct DispatchResult {

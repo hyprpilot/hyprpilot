@@ -269,17 +269,9 @@ pub async fn session_load(
 pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     let items = adapter.list().await;
     let focused_id = adapter.focused_id().await.map(|k| k.as_string());
-    let wire: Vec<Value> = items
+    let wire: Vec<crate::adapters::instance::InstanceListEntry> = items
         .iter()
-        .map(|i| {
-            json!({
-                "agentId": i.agent_id,
-                "profileId": i.profile_id,
-                "instanceId": i.id,
-                "sessionId": i.session_id,
-                "mode": i.mode,
-            })
-        })
+        .map(crate::adapters::instance::InstanceListEntry::from)
         .collect();
     // Omit `focusedId` from the JSON when no instance is focused —
     // serializing `Option<String>` as `null` lets a typo-prone UI
@@ -288,7 +280,10 @@ pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> 
     // UI see `undefined`, which the `r.focusedId === undefined`
     // guards correctly handle.
     let mut payload = serde_json::Map::with_capacity(2);
-    payload.insert("instances".into(), Value::Array(wire));
+    payload.insert(
+        "instances".into(),
+        serde_json::to_value(&wire).map_err(|e| format!("serialize instances: {e}"))?,
+    );
     if let Some(id) = focused_id {
         payload.insert("focusedId".into(), Value::String(id));
     }

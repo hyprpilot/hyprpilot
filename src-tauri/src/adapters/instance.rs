@@ -495,6 +495,42 @@ pub struct InstanceInfo {
     pub mode: Option<String>,
 }
 
+/// Wire shape for instance entries on `instances/list` and
+/// `boot_snapshot`. Renames `id → instanceId` and carries
+/// `skip_serializing_if = Option::is_none` on every optional so the
+/// JSON omits the key entirely instead of emitting `null` — UI
+/// consumers branch on `entry.foo !== undefined`, and `null !==
+/// undefined` slipped through to runtime crashes (`null.length`)
+/// before this typed shape replaced the hand-rolled `json!` macro
+/// at both call sites.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceListEntry {
+    pub instance_id: String,
+    pub agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+impl From<&InstanceInfo> for InstanceListEntry {
+    fn from(i: &InstanceInfo) -> Self {
+        Self {
+            instance_id: i.id.clone(),
+            agent_id: i.agent_id.clone(),
+            profile_id: i.profile_id.clone(),
+            session_id: i.session_id.clone(),
+            name: i.name.clone(),
+            mode: i.mode.clone(),
+        }
+    }
+}
+
 /// Validate a captain-supplied instance name against the slug rule.
 ///
 /// Rule: `[a-z0-9][a-z0-9_-]*`, lowercase, ≤16 chars. Lowercase /
@@ -572,4 +608,91 @@ pub struct SpawnSpec {
     pub cwd: Option<PathBuf>,
     pub mode: Option<String>,
     pub model: Option<String>,
+}
+
+#[cfg(test)]
+mod instance_list_entry_tests {
+    use super::*;
+
+    /// Pin the wire shape — `instances/list` and `boot_snapshot`
+    /// both ship `InstanceListEntry`, and the UI consumer branches
+    /// on `entry.foo !== undefined`. Earlier hand-rolled `json!`
+    /// macros bypassed `skip_serializing_if` and emitted JSON `null`
+    /// for unset optionals, which slipped past the UI guard and
+    /// crashed at `null.length` (taking the boot pipeline with it).
+    /// This test asserts the typed serialization omits unset keys.
+    #[test]
+    fn unset_optionals_are_omitted_not_null() {
+        let entry = InstanceListEntry {
+            instance_id: "abc-123".into(),
+            agent_id: "claude-code".into(),
+            profile_id: None,
+            session_id: None,
+            name: None,
+            mode: None,
+        };
+        let value = serde_json::to_value(&entry).expect("serialize");
+        let obj = value.as_object().expect("entry is JSON object");
+        assert_eq!(
+            obj.get("instanceId"),
+            Some(&serde_json::Value::String("abc-123".into()))
+        );
+        assert_eq!(
+            obj.get("agentId"),
+            Some(&serde_json::Value::String("claude-code".into()))
+        );
+        // The whole point: unset Option<String> is OMITTED, never null.
+        assert!(
+            !obj.contains_key("profileId"),
+            "profileId must be omitted, got {:?}",
+            obj.get("profileId")
+        );
+        assert!(
+            !obj.contains_key("sessionId"),
+            "sessionId must be omitted, got {:?}",
+            obj.get("sessionId")
+        );
+        assert!(
+            !obj.contains_key("name"),
+            "name must be omitted, got {:?}",
+            obj.get("name")
+        );
+        assert!(
+            !obj.contains_key("mode"),
+            "mode must be omitted, got {:?}",
+            obj.get("mode")
+        );
+    }
+
+    #[test]
+    fn set_optionals_round_trip() {
+        let entry = InstanceListEntry {
+            instance_id: "x".into(),
+            agent_id: "claude-code".into(),
+            profile_id: Some("personal/claude/opus".into()),
+            session_id: Some("sess-1".into()),
+            name: Some("alpha".into()),
+            mode: Some("plan".into()),
+        };
+        let value = serde_json::to_value(&entry).expect("serialize");
+        assert_eq!(value["profileId"], "personal/claude/opus");
+        assert_eq!(value["sessionId"], "sess-1");
+        assert_eq!(value["name"], "alpha");
+        assert_eq!(value["mode"], "plan");
+    }
+
+    #[test]
+    fn from_instance_info_renames_id_to_instance_id() {
+        let info = InstanceInfo {
+            id: "abc-123".into(),
+            name: None,
+            agent_id: "claude-code".into(),
+            profile_id: None,
+            session_id: None,
+            mode: None,
+        };
+        let entry = InstanceListEntry::from(&info);
+        assert_eq!(entry.instance_id, "abc-123");
+        assert_eq!(entry.agent_id, "claude-code");
+    }
 }
