@@ -25,7 +25,6 @@
  *   startSessionStream  → starts the demuxed Tauri event pump
  */
 import { faPenToSquare } from '@fortawesome/free-solid-svg-icons'
-import { useNow } from '@vueuse/core'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import {
@@ -35,19 +34,14 @@ import {
   ButtonVariant,
   type ComposerPill,
   ComposerPillKind,
-  Loading,
   Modal,
   ModalDescription,
   ModalInput,
   Phase,
-  PlanStatus,
   type QueuedMessage,
   RemotePairModal,
-  Role,
-  StreamKind,
   Toast,
-  ToastTone,
-  type PlanItem
+  ToastTone
 } from '@components'
 import {
   pushToast,
@@ -58,14 +52,10 @@ import {
   pushToQueueAt,
   removeFromQueue,
   startActiveInstance,
-  useStickToBottom,
   startQueueDispatcher,
   stopQueueDispatcher,
-  StreamItemKind,
-  TurnRole,
   useActiveInstance,
   useAdapter,
-  useAgentRegistry,
   resetPermissions,
   useAttachments,
   useComposer,
@@ -82,26 +72,21 @@ import {
   useRemotePair,
   useSessionHistory,
   useSessionInfo,
-  useTimelineBlocks,
   useToasts,
-  useTurns,
   type KeymapEntry,
   startRemotePairListener,
   startSessionStream,
-  type InstanceId,
-  type PlanEntry,
-  type WireToolCall
+  type InstanceId
 } from '@composables'
 import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
-import { format, formatDuration, log } from '@lib'
-import { Attachments, Body as ChatBody, ChangeBanner, PermissionModal, StreamCard, TerminalCard, ToolChips, Turn } from '@views/chat'
+import { log } from '@lib'
+import { PermissionModal, Viewport as ChatViewport } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
 import { Frame } from '@views/header'
 import { IdleScreen } from '@views/idle'
 import { CommandPalette, commitInstanceRename, isPaletteLeafId, openRootLeaf, openRootPalette, PaletteLeafId, validateInstanceName } from '@views/palette'
 
 const { submit, cancel } = useAdapter()
-const { adapterFor } = useAgentRegistry()
 const { pending: pendingAttachments, clear: clearAttachments } = useAttachments()
 const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
@@ -164,24 +149,17 @@ function onRestoreSessionClick(sessionId: string | undefined, cwd: string): void
 }
 
 const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
-// useTranscript / useStream / useTools wired through useTimelineBlocks
-// — accessing them here would just allocate redundant computeds. The
-// idle-screen branch reads `timelineBlocks.length === 0` for the
-// no-content gate.
+// Phase C1: chat-body state (timeline blocks, virtualization,
+// stick-to-bottom) lives inside `<ChatViewport>`. Overlay reads only
+// the cross-feature stores that drive surfaces other than the body.
 const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
-const { openTurnId, turns: turnRecords } = useTurns()
 const { displayPath } = useHomeDir()
 const { daemonCwd } = useDaemonCwd()
 const { items: queuedItems, flush: flushActiveQueue } = useQueue()
-const { blocks: timelineBlocks } = useTimelineBlocks()
 const { entries: toastEntries, dismiss: dismissToast } = useToasts()
 const activeToast = computed(() => toastEntries.value[0])
 
 const queueRows = computed<QueuedMessage[]>(() => queuedItems.value.map((q) => ({ id: q.id, text: q.text })))
-
-const transcriptEl = ref<HTMLElement>()
-
-useStickToBottom(transcriptEl)
 
 const sending = ref(false)
 const composerRef = ref<InstanceType<typeof Composer>>()
@@ -277,170 +255,11 @@ async function onCloseOverlay(): Promise<void> {
   }
 }
 
-// Block grouping is driven by ACP turn ids (Rust mints one per
-// `session/prompt` and stamps every notification it emits with that
-// id; see `acp:turn-started` / `acp:turn-ended`). Assistant entries
-// carrying the same `turnId` collapse into one block; user turns —
-// which arrive before any `TurnStarted` for the reply — sit in their
-// own per-message block.
-//
-// Implementation lives in `composables/instance/use-timeline-blocks`
-// (S2 + S8). Overlay reads the block list as a hierarchy that
-// mirrors the user's mental model — "what happened during this turn".
-
-// The "live" block is the assistant block whose ACP turn id is still
-// open (`acp:turn-ended` hasn't landed for it). Once the matching
-// TurnEnded arrives, `openTurnId` clears and the pulse stops.
-const liveBlockIdx = computed<number>(() => {
-  const open = openTurnId.value
-
-  if (!open) {
-    return -1
-  }
-
-  return timelineBlocks.value.findIndex((b) => b.turnId === open)
-})
-
-// Reactive wall-clock ref that re-renders elapsed labels every second
-// while a turn / thought is in flight. Once the matching `endedAtMs`
-// (turn) or `completedAtMs` (per-tool) lands, the label converges to
-// the daemon-stamped value and stops moving — `now` keeps ticking but
-// the label expression switches branches.
-const liveNow = useNow({ interval: 1000 })
-
-function liveNowMs(): number {
-  return liveNow.value.getTime()
-}
-
-const turnDurationLabels = computed<Map<string, string>>(() => {
-  const out = new Map<string, string>()
-  const now = liveNowMs()
-
-  for (const t of turnRecords.value) {
-    // `startedAtMs === 0` is the daemon's "no real timing" signal —
-    // synthetic / replay turns don't have a meaningful wall clock.
-    // Skip them so the chip doesn't render replay-processing time as
-    // if it were the turn duration.
-    if (typeof t.startedAtMs !== 'number' || t.startedAtMs === 0) {
-      continue
-    }
-    const end = typeof t.endedAtMs === 'number' ? t.endedAtMs : now
-    const elapsed = Math.max(0, end - t.startedAtMs)
-
-    if (!Number.isFinite(elapsed)) {
-      continue
-    }
-
-    out.set(t.id, formatDuration(elapsed))
-  }
-
-  return out
-})
-
-function elapsedFor(turnId?: string): string | undefined {
-  if (!turnId) {
-    return undefined
-  }
-
-  return turnDurationLabels.value.get(turnId)
-}
-
-function usageFor(turnId?: string) {
-  if (!turnId) {
-    return undefined
-  }
-
-  return turnRecords.value.find((rec) => rec.id === turnId)?.usage
-}
-
-/// Thinking elapsed for the assistant block. Sum of:
-///   1. Per-turn stream-shape thinking — `TurnRecord.thinkingMs`
-///      (closed intervals) + `(now - thinkingOpenAtMs)` while the
-///      agent is actively reasoning. The accumulator pauses on
-///      `agent_message_chunk` / `tool_call` and resumes on the next
-///      `agent_thought_chunk`, so the captain reads true reasoning
-///      time, not "wall clock until agent finished writing".
-///   2. Per-tool kind=think durations from `block.thoughts`
-///      (codex-style: each kind=think tool call carries its own
-///      started_at / completed_at).
-/// Returns `undefined` when no thought signal exists (no card).
-interface ThinkingElapsedBlock {
-  turnId?: string
-  thoughts: { call: { startedAtMs: number; completedAtMs?: number } }[]
-}
-
-function thinkingElapsedFor(block: ThinkingElapsedBlock): string | undefined {
-  const now = liveNowMs()
-  let totalMs = 0
-  let hasSignal = false
-
-  if (block.turnId !== undefined) {
-    const turn = turnRecords.value.find((rec) => rec.id === block.turnId)
-
-    if (turn !== undefined) {
-      // Defensive: a TurnRecord pushed before this composable's
-      // HMR reload may not have `thinkingMs` set — `undefined + N`
-      // would cascade `NaN` into `formatDuration` and throw inside
-      // `intervalToDuration`, which fails the StreamCard's prop
-      // binding and silently drops the thought card.
-      const closed = typeof turn.thinkingMs === 'number' ? turn.thinkingMs : 0
-      const open = typeof turn.thinkingOpenAtMs === 'number' ? Math.max(0, now - turn.thinkingOpenAtMs) : 0
-      const stream = closed + open
-
-      if (stream > 0 || turn.thinkingOpenAtMs !== undefined) {
-        totalMs += stream
-        hasSignal = true
-      }
-    }
-  }
-
-  for (const entry of block.thoughts) {
-    const s = entry.call.startedAtMs
-
-    if (typeof s !== 'number' || s <= 0) {
-      continue
-    }
-    const c = entry.call.completedAtMs
-    const end = typeof c === 'number' ? c : now
-
-    totalMs += Math.max(0, end - s)
-    hasSignal = true
-  }
-
-  if (!hasSignal || !Number.isFinite(totalMs)) {
-    return undefined
-  }
-
-  return formatDuration(totalMs)
-}
-
-/// Render the thinking card whenever the agent is reasoning, even if
-/// every chunk so far has carried empty text (claude-agent-acp emits
-/// `agent_thought_chunk` with `text: ""` for content_block_start
-/// before any deltas land — the card should appear immediately).
-/// Two truthy signals: real prose accumulated OR the per-turn
-/// thinking interval has any time recorded / is currently open.
-function hasThinkingSignal(block: { turnId?: string; thoughts: { call: { startedAtMs: number } }[] }): boolean {
-  if (block.turnId !== undefined) {
-    const turn = turnRecords.value.find((rec) => rec.id === block.turnId)
-
-    if (turn !== undefined) {
-      const closed = typeof turn.thinkingMs === 'number' ? turn.thinkingMs : 0
-
-      if (closed > 0 || turn.thinkingOpenAtMs !== undefined) {
-        return true
-      }
-    }
-  }
-
-  for (const entry of block.thoughts) {
-    if (typeof entry.call.startedAtMs === 'number' && entry.call.startedAtMs > 0) {
-      return true
-    }
-  }
-
-  return false
-}
+// Phase C1: Block grouping, live-block index, elapsed / thinking
+// elapsed labels, and `useNow` ticker live inside `<ChatViewport>`
+// (the virtualized chat-body component). Overlay no longer assembles
+// the timeline — the body reads off the daemon snapshot directly via
+// `useChatViewport` and projects pages through `timelineBlocksFromSnapshot`.
 
 let stopStream: (() => void) | undefined
 
@@ -763,117 +582,6 @@ watch(activeInstanceId, (next, prev) => {
   }
 })
 
-// Pull the agent-supplied terminal id off a tool call's rawInput so
-// the timeline can render an inline `ChatTerminalCard` next to the
-// chip. Bash + Terminal tool variants both surface `terminal_id`
-// when the agent allocates one.
-function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string | undefined {
-  const raw = call.rawInput
-
-  if (!raw) {
-    return undefined
-  }
-  const candidate = raw.terminal_id ?? raw.terminalId
-
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
-}
-
-// claude-agent-acp serializes thinking as a `tool_call` with kind:
-// "think" rather than as `agent_thought_chunk` session-update — so
-// the thought body lives on `content[].text` (the tool-call text
-// blocks) plus the chip's `title` as a one-line summary. Stitch
-// them: title leads, content paragraphs follow.
-function thoughtText(call: { title?: string; content: { type?: string; text?: string }[]; rawInput?: Record<string, unknown> }): string {
-  const parts: string[] = []
-  const summary = call.title?.trim()
-
-  if (summary && summary.length > 0) {
-    parts.push(`**${summary}**`)
-  }
-
-  for (const c of call.content ?? []) {
-    if (typeof c.text === 'string' && c.text.trim().length > 0) {
-      parts.push(c.text)
-    }
-  }
-
-  if (parts.length === 0 && call.rawInput) {
-    const raw = call.rawInput.thought ?? call.rawInput.text ?? call.rawInput.description
-
-    if (typeof raw === 'string') {
-      parts.push(raw)
-    }
-  }
-
-  return parts.join('\n\n')
-}
-
-/**
- * Merge every thought signal in a block into a single ordered string
- * so the chat surface renders one thinking card per turn instead of
- * stacking N. Both wire shapes feed in:
- *
- *   - tool-call thoughts (`block.thoughts`) — claude-agent-acp emits
- *     each thinking-block as its own `tool_call` with `kind=think`.
- *     One turn can carry many.
- *   - stream-side thoughts (`block.streamEntries` of kind Thought) —
- *     `agent_thought_chunk` notifications; some agents prefer this
- *     channel.
- *
- * Order by `createdAt` so the captain sees them in the order the
- * agent emitted them. Empty result → no card rendered.
- */
-/// Resolve a SystemPromptInjected banner's "to" label. Show
-/// basename of each file, comma-joined; truncate to 3 names with a
-/// `+N more` tail to keep the banner one line at typical overlay
-/// widths.
-function systemPromptLabel(files: readonly string[]): string {
-  if (files.length === 0) {
-    return 'attached'
-  }
-  const baseNames = files.map((f) => f.split('/').pop() ?? f)
-
-  if (baseNames.length <= 3) {
-    return baseNames.join(', ')
-  }
-
-  return `${baseNames.slice(0, 3).join(', ')} +${baseNames.length - 3} more`
-}
-
-function combinedThoughtText(block: {
-  thoughts: { createdAt: number; call: WireToolCall }[]
-  streamEntries: { createdAt: number; item: { kind: StreamItemKind; text?: string } }[]
-}): string {
-  const merged: { createdAt: number; text: string }[] = []
-
-  for (const entry of block.thoughts) {
-    const text = thoughtText(entry.call)
-
-    if (text.length > 0) {
-      merged.push({ createdAt: entry.createdAt, text })
-    }
-  }
-
-  for (const entry of block.streamEntries) {
-    if (entry.item.kind !== StreamItemKind.Thought) {
-      continue
-    }
-    const text = entry.item.text ?? ''
-
-    // Keep whitespace-only chunks too — during streaming a thought
-    // item may briefly hold a leading newline / space that the next
-    // delta replaces. Filtering by `.trim().length` was hiding the
-    // card during those windows; the band's existence carries signal
-    // even before the prose lands.
-    if (text.length > 0) {
-      merged.push({ createdAt: entry.createdAt, text })
-    }
-  }
-  merged.sort((a, b) => a.createdAt - b.createdAt)
-
-  return merged.map((m) => m.text).join('\n\n')
-}
-
 async function onAttachmentOpen(att: Attachment): Promise<void> {
   if (!att.path) {
     return
@@ -910,23 +618,6 @@ async function onCancel(): Promise<void> {
     log.error('invoke failed', { command: 'session_cancel' }, err)
     pushToast(ToastTone.Err, `cancel failed: ${String(err)}`)
   }
-}
-
-function mapPlanStatus(raw?: string): PlanStatus {
-  switch (raw) {
-    case 'completed':
-      return PlanStatus.Completed
-
-    case 'in_progress':
-      return PlanStatus.InProgress
-
-    default:
-      return PlanStatus.Pending
-  }
-}
-
-function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
-  return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
 }
 
 /// One modal at a time — permission UI is blocking by nature, so
@@ -1166,26 +857,17 @@ function onQueueSend(itemId: string): void {
       <Toast :tone="activeToast.tone" :body="activeToast.body" @dismiss="dismissToast(activeToast.id)" />
     </template>
 
-    <div ref="transcriptEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="activeInstanceId ?? ''">
-      <!-- Scoped <Loading> overlay during `session/load` replay.
-           `sessionInfo.restoring` flips true on user-initiated
-           `loadSession` and clears on the first TurnEnded for the
-           resumed instance (daemon auto-cancels after the load,
-           guaranteeing one). The header / composer / palette stay
-           operational behind the cover so the user can still
-           cancel, switch instance, or open Ctrl+K. Sits as a
-           sibling of `.chat-transcript-inner` so the cover spans
-           the full transcript box including the gutter padding —
-           the inner div carries the gutters. -->
-      <Loading v-if="sessionInfo.restoring" mode="scoped" status="restoring session — replaying transcript" />
-      <div class="chat-transcript-inner">
-        <!-- idle landing — paints when the chat surface has no
-             timeline content. The view itself owns the wordmark +
-             accent + context block + sessions preview chrome; we
-             pass the captain-facing signals as props and wire the
-             restore action back through the emit. -->
+    <!--
+      Chat transcript viewport (Phase C1 — virtualized over daemon
+      snapshot pages). The component owns its own scroll element,
+      `useStickToBottom`, infinite-query data, page-trim policy,
+      live-event patches, and intersection-based load-more sentinel.
+      Idle landing renders inside the `empty` slot so the empty-gate
+      reads off the viewport's snapshot items, not the accumulator.
+    -->
+    <ChatViewport :restoring="sessionInfo.restoring" @cancel="onCancel" @attachment-open="onAttachmentOpen">
+      <template #empty>
         <IdleScreen
-          v-if="timelineBlocks.length === 0"
           :profile="selectedProfile"
           :agent="sessionInfo.agent ?? activeProfile?.agent"
           :model="sessionInfo.model ?? activeProfile?.model"
@@ -1195,82 +877,8 @@ function onQueueSend(itemId: string): void {
           @restore-session="onRestoreSessionClick"
           @open-palette="openRootPalette"
         />
-
-        <Turn
-          v-for="(block, blockIdx) in timelineBlocks"
-          :key="block.groupKey"
-          :role="block.role"
-          :live="blockIdx === liveBlockIdx"
-          :elapsed="elapsedFor(block.turnId)"
-          :usage="usageFor(block.turnId)"
-        >
-          <!-- Single thinking row per turn — same chrome regardless of
-               whether prose accumulated. With text, the row is
-               collapsable and reveals the reasoning trace; without
-               text (claude-agent-acp's empty extended-thinking chunks),
-               the row stays a static "thought · 13s" badge so the
-               captain still sees the agent IS reasoning. StreamCard
-               drops the chevron + click affordance when there's no
-               body to expand into. -->
-          <StreamCard
-            v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
-            :kind="StreamKind.Thinking"
-            :active="blockIdx === liveBlockIdx"
-            label="thought"
-            :elapsed="thinkingElapsedFor(block)"
-            :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
-          />
-          <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
-            <StreamCard
-              v-if="entry.item.kind === StreamItemKind.Plan"
-              :kind="StreamKind.Planning"
-              :active="blockIdx === liveBlockIdx"
-              label="plan"
-              :items="mapPlanItems(entry.item.entries)"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ModeChange"
-              kind="mode"
-              :to="entry.item.name ?? entry.item.modeId"
-              :from="entry.item.prevName ?? entry.item.prevModeId"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ModelChange"
-              kind="model"
-              :to="entry.item.name ?? entry.item.modelId"
-              :from="entry.item.prevName ?? entry.item.prevModelId"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
-              :kind="entry.item.categoryId"
-              :to="entry.item.name ?? entry.item.value"
-              :from="entry.item.prevName ?? entry.item.prevValue"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected"
-              kind="system prompt"
-              :to="systemPromptLabel(entry.item.files)"
-            />
-          </template>
-
-          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterFor(t.call.agentId)))" />
-
-          <!-- Inline terminal cards: one per tool call carrying a terminal id. -->
-          <!-- Reads live stdout / stderr / exit through useTerminals().byId(). -->
-          <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
-            <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="activeInstanceId" @cancel="onCancel" />
-          </template>
-
-          <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-            <ChatBody v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
-            <template v-else>
-              <ChatBody :role="Role.User" :text="entry.turn.text" markdown />
-              <Attachments v-if="entry.turn.attachments && entry.turn.attachments.length > 0" :attachments="entry.turn.attachments" @open="onAttachmentOpen" />
-            </template>
-          </template>
-        </Turn>
-      </div>
-    </div>
+      </template>
+    </ChatViewport>
 
     <PermissionStack :views="permissionRowQueue" @reply="(requestId, optionId) => onPermissionReply(requestId, optionId)" />
 

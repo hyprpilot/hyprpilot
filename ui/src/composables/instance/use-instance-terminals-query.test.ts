@@ -18,7 +18,9 @@ function fixture(): TerminalsSnapshot {
   return {
     terminals: {
       'term-1': {
-        stdout: 'ok\n', running: false, exitCode: 0
+        stdout: 'ok\n',
+        running: false,
+        exitCode: 0
       }
     }
   }
@@ -28,7 +30,9 @@ function buildClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        retry: false, gcTime: 0, staleTime: 0
+        retry: false,
+        gcTime: 0,
+        staleTime: 0
       }
     }
   })

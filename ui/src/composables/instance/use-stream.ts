@@ -385,12 +385,7 @@ export function pushSystemPromptInjected(id: InstanceId, push: SystemPromptInjec
   // refreshes the timestamp instead of stacking a second banner.
   const last = slot.items[slot.items.length - 1]
 
-  if (
-    last
-    && last.kind === StreamItemKind.SystemPromptInjected
-    && last.files.length === push.files.length
-    && last.files.every((f, i) => f === push.files[i])
-  ) {
+  if (last && last.kind === StreamItemKind.SystemPromptInjected && last.files.length === push.files.length && last.files.every((f, i) => f === push.files[i])) {
     last.updatedAt = seq
 
     return

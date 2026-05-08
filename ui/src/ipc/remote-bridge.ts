@@ -340,11 +340,13 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       for (const cb of set) {
         try {
           cb({
-            event: name, payload: msg.payload, id: 0
+            event: name,
+            payload: msg.payload,
+            id: 0
           } as Parameters<EventCallback<unknown>>[0])
         } catch(err) {
-        // Listener errors must not derail the multiplexer.
-        // eslint-disable-next-line no-console
+          // Listener errors must not derail the multiplexer.
+          // eslint-disable-next-line no-console
           console.warn('remote bridge: event listener threw', err)
         }
       }
@@ -352,8 +354,8 @@ function handleFrameByType(msg: Record<string, unknown>): void {
       return
     }
     default:
-    // Unknown frame types are tolerated for forward-compat; future
-    // daemon versions may add new envelope types.
+      // Unknown frame types are tolerated for forward-compat; future
+      // daemon versions may add new envelope types.
       return
   }
 }
@@ -466,7 +468,10 @@ export interface PairView {
 
 function buildPairView(): PairView {
   return {
-    pending: pendingFrame, authenticated, lastConfirmRejection, terminalReason
+    pending: pendingFrame,
+    authenticated,
+    lastConfirmRejection,
+    terminalReason
   }
 }
 

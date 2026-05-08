@@ -1,5 +1,7 @@
 export * from './cleanup'
 export * from './sequence'
+export * from './snapshot-timeline'
+export * from './use-chat-viewport'
 export * from './use-git-status'
 export * from './use-instance-chat-infinite-query'
 export * from './use-instance-meta-query'

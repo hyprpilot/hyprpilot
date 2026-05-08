@@ -28,7 +28,9 @@ function buildClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        retry: false, gcTime: 0, staleTime: 0
+        retry: false,
+        gcTime: 0,
+        staleTime: 0
       }
     }
   })
@@ -62,7 +64,9 @@ function mountWith(idRef: Ref<string | undefined>): { probe: Probe; queryClient:
   })
 
   return {
-    probe: probe as Probe, queryClient, unmount: () => wrapper.unmount()
+    probe: probe as Probe,
+    queryClient,
+    unmount: () => wrapper.unmount()
   }
 }
 

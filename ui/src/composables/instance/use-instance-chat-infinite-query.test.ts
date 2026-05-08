@@ -25,7 +25,9 @@ function buildClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        retry: false, gcTime: 0, staleTime: 0
+        retry: false,
+        gcTime: 0,
+        staleTime: 0
       }
     }
   })
@@ -93,10 +95,16 @@ describe('useInstanceChatInfiniteQuery', () => {
 
   it('fetchNextPage passes before=oldestSeq from the last page', async() => {
     const first: ChatSnapshot = {
-      items: [transcript(150)], oldestSeq: 150, latestSeq: 150, hasMore: true
+      items: [transcript(150)],
+      oldestSeq: 150,
+      latestSeq: 150,
+      hasMore: true
     }
     const second: ChatSnapshot = {
-      items: [transcript(100)], oldestSeq: 100, latestSeq: 100, hasMore: false
+      items: [transcript(100)],
+      oldestSeq: 100,
+      latestSeq: 100,
+      hasMore: false
     }
 
     invoke.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
@@ -123,7 +131,10 @@ describe('useInstanceChatInfiniteQuery', () => {
 
   it('hasNextPage reflects hasMore on the latest fetched page', async() => {
     const exhausted: ChatSnapshot = {
-      items: [transcript(0)], oldestSeq: 0, latestSeq: 0, hasMore: false
+      items: [transcript(0)],
+      oldestSeq: 0,
+      latestSeq: 0,
+      hasMore: false
     }
 
     invoke.mockResolvedValueOnce(exhausted)

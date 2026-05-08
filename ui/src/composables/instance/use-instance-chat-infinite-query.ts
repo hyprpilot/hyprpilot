@@ -32,10 +32,7 @@ export type UseInstanceChatInfiniteQueryReturn = ReturnType<
   typeof useInfiniteQuery<ChatSnapshot, Error, { pages: ChatSnapshot[]; pageParams: (number | undefined)[] }, unknown[], number | undefined>
 >
 
-export function useInstanceChatInfiniteQuery(
-  instanceId: ComputedRef<InstanceId | undefined>,
-  opts: UseInstanceChatInfiniteQueryOptions = {}
-): UseInstanceChatInfiniteQueryReturn {
+export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId | undefined>, opts: UseInstanceChatInfiniteQueryOptions = {}): UseInstanceChatInfiniteQueryReturn {
   const limit = opts.limit ?? DEFAULT_CHAT_LIMIT
 
   return useInfiniteQuery({
@@ -55,7 +52,7 @@ export function useInstanceChatInfiniteQuery(
         limit
       })
     },
-    getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.oldestSeq : undefined),
+    getNextPageParam: (lastPage) => (lastPage?.hasMore ? lastPage.oldestSeq : undefined),
     // Forward pagination doesn't exist — live events mutate the
     // latest page in place via `setQueryData`. Returning `undefined`
     // keeps `hasPreviousPage` false; callers don't need to gate on it.
