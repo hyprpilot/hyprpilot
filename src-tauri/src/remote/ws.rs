@@ -199,10 +199,23 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     let (direct_relay_tx, mut direct_relay_rx) = tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value)>();
     let _direct_relay_guard = DirectRelayGuard::new(&state.app, direct_relay_tx);
 
-    // Proxy loop: client text frame → RpcDispatcher → response
-    // text frame. Events from the InstanceEvent broadcast also push
+    // Proxy loop: client text frames → RpcDispatcher → response
+    // text frames. Events from the InstanceEvent broadcast also push
     // out as `{ type: "event", name, payload }` frames.
+    //
+    // **Each request is dispatched on its own tokio task** so a slow
+    // handler (`session_list` spawning an ephemeral agent via bunx
+    // takes ~430ms; future handlers may block longer) can't stall the
+    // WS read loop. Without this, every other invoke from the UI's
+    // boot path queues at the OS socket buffer behind the slow one
+    // — captain sees the loading screen freeze at "configuring window
+    // / reading $HOME" while the daemon was actually responding to
+    // `session_list` first. Concurrent dispatch keeps the inbound
+    // pipe drained; responses funnel back through the
+    // `outbound_rx` mpsc so per-WS write ordering stays sequential
+    // (one tokio task owns the sink, never two writers racing).
     let mut status_rx: Option<Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>> = None;
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<DispatchOutbound>();
 
     loop {
         tokio::select! {
@@ -219,16 +232,29 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                 match frame {
                     Message::Text(text) => {
                         let line = text.to_string();
-                        let DispatchResult { response_text, new_status_rx } =
-                            dispatch_line(&line, &state, status_rx.is_some()).await;
-                        if let Some(rx) = new_status_rx {
-                            status_rx = Some(rx);
-                        }
-                        if let Some(text) = response_text {
-                            if !send_text(&mut sink, &text).await {
-                                return;
+                        // Capture the current subscription state at
+                        // dispatch time — concurrent handlers can't
+                        // read `status_rx` since it's owned by this
+                        // loop. A `status/subscribe` lands in
+                        // `DispatchOutbound::StatusRx` below; the
+                        // race where two parallel subscribes both
+                        // see `false` is benign because the second
+                        // call's `new_status_rx` arm overwrites the
+                        // first cleanly (status is a single-receiver
+                        // contract per connection).
+                        let already_subscribed = status_rx.is_some();
+                        let state_clone = state.clone();
+                        let tx = outbound_tx.clone();
+                        tokio::spawn(async move {
+                            let DispatchResult { response_text, new_status_rx } =
+                                dispatch_line(&line, &state_clone, already_subscribed).await;
+                            if let Some(rx) = new_status_rx {
+                                let _ = tx.send(DispatchOutbound::StatusRx(rx));
                             }
-                        }
+                            if let Some(text) = response_text {
+                                let _ = tx.send(DispatchOutbound::Response(text));
+                            }
+                        });
                     }
                     Message::Binary(_) => {
                         let _ = sink
@@ -245,6 +271,23 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                     Message::Close(_) | Message::Pong(_) => {
                         return;
                     }
+                }
+            }
+
+            // ── Dispatch result drain ───────────────────────────
+            // Concurrent dispatch tasks (above) feed responses back
+            // here so the sink stays single-writer.
+            outbound = outbound_rx.recv() => {
+                match outbound {
+                    Some(DispatchOutbound::Response(text)) => {
+                        if !send_text(&mut sink, &text).await {
+                            return;
+                        }
+                    }
+                    Some(DispatchOutbound::StatusRx(rx)) => {
+                        status_rx = Some(rx);
+                    }
+                    None => return,
                 }
             }
 
@@ -313,6 +356,15 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
 struct DispatchResult {
     response_text: Option<String>,
     new_status_rx: Option<Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>>,
+}
+
+/// Concurrent-dispatch back-channel. Each spawned dispatch task feeds
+/// its response (and any `status/subscribe`-minted receiver) into the
+/// per-connection mpsc so the WS write loop can drain in arrival
+/// order with a single owner of the sink.
+enum DispatchOutbound {
+    Response(String),
+    StatusRx(Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>),
 }
 
 /// Dispatch one NDJSON line through `RpcDispatcher`. Reuses the same
