@@ -60,10 +60,21 @@ pub enum TurnEventMarker {
 /// daemon stamps `seq` at insertion time so the windowed
 /// [`InstanceMirror::chat_snapshot`] knows its pagination cursor
 /// without re-deriving it from wall-clock or array index.
+///
+/// `turn_id` is the active ACP turn id stamped onto the
+/// `InstanceEvent::Transcript` that produced this entry. The
+/// snapshot-driven block projector groups consecutive items by
+/// `turn_id` (when present) so the chat body lays out the same
+/// per-turn blocks the live router builds in
+/// `useTimelineBlocks`. Items emitted outside a turn (synthetic /
+/// pre-turn agent activity) carry `None`; those flow into role-run
+/// grouping in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeqTranscriptItem {
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub item: TranscriptItem,
 }
 
@@ -203,11 +214,12 @@ impl InstanceMirror {
         let mut g = self.inner.write().await;
         match event {
             // ── transcript firehose ──────────────────────────────
-            InstanceEvent::Transcript { item, .. } => {
+            InstanceEvent::Transcript { item, turn_id, .. } => {
                 let seq = g.next_seq;
                 g.next_seq = seq.saturating_add(1);
                 g.transcript.push_back(SeqTranscriptItem {
                     seq,
+                    turn_id: turn_id.clone(),
                     item: item.clone(),
                 });
                 while g.transcript.len() > self.cap {
@@ -519,11 +531,15 @@ mod tests {
     use serde_json::json;
 
     fn transcript_event(text: &str) -> InstanceEvent {
+        transcript_event_with_turn(text, None)
+    }
+
+    fn transcript_event_with_turn(text: &str, turn_id: Option<&str>) -> InstanceEvent {
         InstanceEvent::Transcript {
             agent_id: "claude-code".into(),
             instance_id: "i-1".into(),
             session_id: "s-1".into(),
-            turn_id: None,
+            turn_id: turn_id.map(str::to_string),
             item: TranscriptItem::AgentText { text: text.into() },
             meta: None,
         }
@@ -805,6 +821,81 @@ mod tests {
             snap.current_turn_event,
             Some(TurnEventMarker::Ended { ended_at }) if ended_at == 1_700_000_001_000
         ));
+    }
+
+    /// Phase C3: `SeqTranscriptItem.turn_id` mirrors the `turn_id`
+    /// stamped on the originating `InstanceEvent::Transcript`. Items
+    /// emitted between TurnStarted and TurnEnded carry the active
+    /// turn id; items emitted outside a turn carry `None`.
+    #[tokio::test]
+    async fn transcript_items_stamp_active_turn_id() {
+        let mirror = InstanceMirror::new();
+
+        // Pre-turn item — no active turn, turn_id stays None.
+        mirror.apply(&transcript_event_with_turn("pre-turn", None)).await;
+
+        // Turn opens. (The marker isn't used for stamping; the actor
+        // supplies the turn_id directly on the Transcript event.)
+        mirror
+            .apply(&InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                started_at: 1_700_000_000_000,
+            })
+            .await;
+
+        mirror
+            .apply(&transcript_event_with_turn("inside-turn-1", Some("t-1")))
+            .await;
+        mirror
+            .apply(&transcript_event_with_turn("inside-turn-2", Some("t-1")))
+            .await;
+
+        // Turn ends.
+        mirror
+            .apply(&InstanceEvent::TurnEnded {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                stop_reason: Some("end_turn".into()),
+                error: None,
+                ended_at: 1_700_000_001_000,
+            })
+            .await;
+
+        // Post-turn item — no active turn again.
+        mirror.apply(&transcript_event_with_turn("post-turn", None)).await;
+
+        // Second turn.
+        mirror
+            .apply(&InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-2".into(),
+                started_at: 1_700_000_002_000,
+            })
+            .await;
+        mirror
+            .apply(&transcript_event_with_turn("inside-turn-2-a", Some("t-2")))
+            .await;
+
+        let snap = mirror.chat_snapshot(None, 100).await;
+        let turn_ids: Vec<Option<String>> = snap.items.iter().map(|i| i.turn_id.clone()).collect();
+        assert_eq!(
+            turn_ids,
+            vec![
+                None,
+                Some("t-1".to_string()),
+                Some("t-1".to_string()),
+                None,
+                Some("t-2".to_string()),
+            ],
+            "turn_id stamping: pre-turn → t-1 (×2) → post-turn → t-2"
+        );
     }
 
     /// Phase A4: a `PermissionResolved` event removes the matching row
