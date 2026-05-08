@@ -98,7 +98,7 @@ tasks:
     cmds:
       - "{{ .tauri }} build --debug"
 
-  release:
+  build:release:
     desc: Build a release Tauri bundle.
     cmds:
       - "{{ .tauri }} build"
