@@ -36,7 +36,16 @@ import type {
   TurnStartedEventPayload,
   UsageUpdateEventPayload
 } from '@interfaces/wire/event'
+import type {
+  ChatSnapshot,
+  InstanceSnapshotChatArgs,
+  InstanceSnapshotMetaArgs,
+  InstanceSnapshotTerminalsArgs,
+  MetaSnapshot,
+  TerminalsSnapshot
+} from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
+import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
 import type {
   AgentSummary,
   CancelArgs,
@@ -96,6 +105,9 @@ export enum TauriCommand {
   ModesSet = 'modes_set',
   ConfigOptionSet = 'config_option_set',
   InstanceMeta = 'instance_meta',
+  InstanceSnapshotMeta = 'instance_snapshot_meta',
+  InstanceSnapshotChat = 'instance_snapshot_chat',
+  InstanceSnapshotTerminals = 'instance_snapshot_terminals',
   McpsList = 'mcps_list',
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
@@ -111,6 +123,7 @@ export enum TauriCommand {
 export enum TauriEvent {
   AcpTranscript = 'acp:transcript',
   AcpPermissionRequest = 'acp:permission-request',
+  AcpPermissionResolved = 'acp:permission-resolved',
   AcpInstanceState = 'acp:instance-state',
   AcpTurnStarted = 'acp:turn-started',
   AcpTurnEnded = 'acp:turn-ended',
@@ -162,6 +175,9 @@ export interface TauriCommandArgs {
   [TauriCommand.ModesSet]: ModesSetArgs
   [TauriCommand.ConfigOptionSet]: ConfigOptionSetArgs
   [TauriCommand.InstanceMeta]: InstanceMetaArgs
+  [TauriCommand.InstanceSnapshotMeta]: InstanceSnapshotMetaArgs
+  [TauriCommand.InstanceSnapshotChat]: InstanceSnapshotChatArgs
+  [TauriCommand.InstanceSnapshotTerminals]: InstanceSnapshotTerminalsArgs
   [TauriCommand.McpsList]: McpsListArgs
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
@@ -216,6 +232,9 @@ export interface TauriCommandResult {
   [TauriCommand.ModesSet]: unknown
   [TauriCommand.ConfigOptionSet]: unknown
   [TauriCommand.InstanceMeta]: InstanceMetaSnapshot
+  [TauriCommand.InstanceSnapshotMeta]: MetaSnapshot
+  [TauriCommand.InstanceSnapshotChat]: ChatSnapshot
+  [TauriCommand.InstanceSnapshotTerminals]: TerminalsSnapshot
   [TauriCommand.McpsList]: MCPListResult
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
@@ -247,6 +266,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpTranscript]: TranscriptEventPayload
   [TauriEvent.AcpInstanceState]: InstanceStateEventPayload
   [TauriEvent.AcpPermissionRequest]: PermissionRequestEventPayload
+  [TauriEvent.AcpPermissionResolved]: AcpPermissionResolvedPayload
   [TauriEvent.AcpTurnStarted]: TurnStartedEventPayload
   [TauriEvent.AcpTurnEnded]: TurnEndedEventPayload
   [TauriEvent.AcpTerminal]: TerminalEventPayload

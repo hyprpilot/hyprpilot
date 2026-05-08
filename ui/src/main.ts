@@ -1,4 +1,5 @@
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
+import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { createApp } from 'vue'
 
 import App from './App.vue'
@@ -93,6 +94,25 @@ async function boot(): Promise<void> {
   // authenticates and the Tauri-bridged boot steps run.
   const app = createApp(App)
 
+  // TanStack Query backs the per-instance snapshot composables
+  // (`useInstanceMetaQuery`, `useInstanceChatInfiniteQuery`,
+  // `useInstanceTerminalsQuery`). One QueryClient is shared across
+  // the app — sane defaults for snapshot-shaped data: server is the
+  // truth (`staleTime: 0`), keep a couple of pages around for
+  // backward pagination but evict promptly when unused
+  // (`gcTime: 5min`), and skip Tauri's noisy window-focus refetch
+  // (we have explicit `acp:instances-focused` refetch in Phase C).
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 0,
+        gcTime: 5 * 60 * 1000,
+        refetchOnWindowFocus: false
+      }
+    }
+  })
+
+  app.use(VueQueryPlugin, { queryClient })
   app.component('FaIcon', FontAwesomeIcon)
   app.config.errorHandler = (err, _instance, info) => {
     log.error('vue error', { source: 'vue.errorHandler', info }, err)
