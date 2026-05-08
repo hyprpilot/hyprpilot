@@ -40,7 +40,7 @@
  * the "last row still growing post-scroll" case during streaming.
  */
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { useNow } from '@vueuse/core'
+import { useEventListener, useNow } from '@vueuse/core'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
@@ -167,6 +167,86 @@ watch(
     virtualizer.value.scrollToIndex(next - 1, { align: 'end' })
   }
 )
+
+// ── Keyboard scroll ─────────────────────────────────────────────────
+//
+// The scroll container is a non-focusable `<div>`, so the browser's
+// native PageUp / PageDown / Home / End handling never reaches it —
+// those keys only act on the currently-focused element (or the
+// document scroll, which the overlay layout doesn't have). We hook
+// document-level keydown and translate the navigation keys into
+// scroll operations on the transcript, BUT skip when the focus is in
+// the composer / palette / any text input so editing keystrokes stay
+// untouched. ~90% of the visible scroll viewport is one "page" — that
+// matches the desktop convention (slightly less than full-screen so
+// context overlaps).
+const PAGE_OVERLAP_RATIO = 0.9
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  if (target.isContentEditable) {
+    return true
+  }
+  const tag = target.tagName
+
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
+  if (isEditableTarget(ev.target)) {
+    return
+  }
+  const el = scrollEl.value
+
+  if (!el) {
+    return
+  }
+
+  switch (ev.key) {
+    case 'PageDown': {
+      ev.preventDefault()
+      el.scrollBy({ top: el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
+
+      return
+    }
+
+    case 'PageUp': {
+      ev.preventDefault()
+      el.scrollBy({ top: -el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
+
+      return
+    }
+
+    case 'Home': {
+      // Ctrl+Home = jump to very top; bare Home is reserved for
+      // text-cursor handling (no harm here since we already skipped
+      // editable targets, but matching desktop muscle memory).
+      if (!ev.ctrlKey && !ev.metaKey) {
+        return
+      }
+      ev.preventDefault()
+      el.scrollTo({ top: 0, behavior: 'smooth' })
+
+      return
+    }
+
+    case 'End': {
+      if (!ev.ctrlKey && !ev.metaKey) {
+        return
+      }
+      ev.preventDefault()
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+
+      return
+    }
+
+    default:
+      return
+  }
+})
 
 // ── Backward pagination ─────────────────────────────────────────────
 function onScroll(): void {

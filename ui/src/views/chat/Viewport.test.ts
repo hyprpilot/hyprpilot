@@ -255,6 +255,80 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
+  it('PageDown scrolls the transcript by ~90% of the viewport height', async() => {
+    const page = chatPage(
+      [
+        {
+          seq: 1,
+          item: { kind: TranscriptItemKind.AgentText, text: 'page' } as never
+        }
+      ],
+      false
+    )
+
+    invoke.mockResolvedValueOnce(page)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: page })
+
+    await flushPromises()
+    await flushPromises()
+
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+    const scrollBy = vi.fn()
+
+    Object.defineProperty(root, 'scrollBy', { configurable: true, value: scrollBy })
+    Object.defineProperty(root, 'clientHeight', { configurable: true, value: 400 })
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
+    await flushPromises()
+
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: 360 }))
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }))
+    await flushPromises()
+
+    expect(scrollBy).toHaveBeenLastCalledWith(expect.objectContaining({ top: -360 }))
+
+    wrapper.unmount()
+  })
+
+  it('PageDown is ignored when focus is in an input / textarea', async() => {
+    const page = chatPage(
+      [
+        {
+          seq: 1,
+          item: { kind: TranscriptItemKind.AgentText, text: 'page' } as never
+        }
+      ],
+      false
+    )
+
+    invoke.mockResolvedValueOnce(page)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: page })
+
+    await flushPromises()
+    await flushPromises()
+
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+    const scrollBy = vi.fn()
+
+    Object.defineProperty(root, 'scrollBy', { configurable: true, value: scrollBy })
+
+    // Mount a textarea, focus it, and dispatch keydown from there. The
+    // handler must early-return without scrolling so the user's text
+    // editing keystrokes are untouched.
+    const ta = document.createElement('textarea')
+
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
+    await flushPromises()
+
+    expect(scrollBy).not.toHaveBeenCalled()
+
+    document.body.removeChild(ta)
+    wrapper.unmount()
+  })
+
   it('does not refetch on scroll when there are no older pages', async() => {
     const exhausted = chatPage(
       [
