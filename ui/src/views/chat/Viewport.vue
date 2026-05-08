@@ -131,26 +131,37 @@ watch(stuck, (next) => {
 })
 
 // ── Virtualization ──────────────────────────────────────────────────
+//
+// `shouldAdjustScrollPositionOnItemSizeChange` was tried and DROPPED:
+// returning `true` for above-viewport rows writes the scroll offset,
+// which triggers a re-render, which re-fires the per-row
+// `ResizeObserver`, which calls the predicate again — exactly the
+// "Maximum recursive updates exceeded" + "ResizeObserver loop
+// completed with undelivered notifications" pattern under heavy
+// session/load replay. The captain's prepend-page jump it was
+// supposed to fix is mild compared to the freeze it was causing
+// here, so leave the knob off until / unless we have a deterministic
+// way to apply the compensation outside the reactive cycle.
 const virtualizer = useVirtualizer(
   computed(() => ({
     count: blocks.value.length,
     getScrollElement: () => scrollEl.value ?? null,
     estimateSize: () => ESTIMATE_SIZE_PX,
     overscan: 8,
-    getItemKey: (i: number) => blocks.value[i]?.groupKey ?? i,
-    /**
-     * Compensate scroll offset when an off-screen-above row remeasures.
-     * Stops backward-page prepends from yanking the captain's content
-     * out of view (TanStack Virtual discussion #1013, default in
-     * forthcoming versions).
-     */
-    shouldAdjustScrollPositionOnItemSizeChange: (item: { start: number }, _delta: number, instance: { scrollOffset: number | null }) => {
-      const offset = instance.scrollOffset ?? 0
-
-      return item.start < offset
-    }
+    getItemKey: (i: number) => blocks.value[i]?.groupKey ?? i
   }))
 )
+
+// Stable `:ref` callback for the row's measureElement registration.
+// An inline arrow function `:ref="(el) => virtualizer.measureElement(el)"`
+// creates a fresh closure on every render — Vue compares ref
+// callbacks by identity and re-runs them (old ref with `null`, new
+// ref with the element), which triggers the row's ResizeObserver
+// twice per frame and feeds the loop above. A stable closure
+// captured in a const fires once on mount + once on unmount.
+function measureRow(el: Element | null): void {
+  virtualizer.value.measureElement(el)
+}
 
 const virtualRows = computed(() => virtualizer.value.getVirtualItems())
 const totalSize = computed(() => virtualizer.value.getTotalSize())
@@ -503,7 +514,7 @@ defineExpose({ scrollEl })
           v-for="row in virtualRows"
           :key="String(row.key)"
           :data-index="row.index"
-          :ref="(el) => virtualizer.measureElement(el as Element | null)"
+          :ref="measureRow"
           class="chat-virtual-row"
           :style="{ transform: `translateY(${row.start}px)` }"
         >
