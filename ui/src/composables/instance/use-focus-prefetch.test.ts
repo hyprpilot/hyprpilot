@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/vue-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { brimSync, prefetchInstanceMeta, prefetchInstanceChatFirstPage, useFocusPrefetch } from './use-focus-prefetch'
+import { __resetActiveInstanceForTests, useActiveInstance } from '../chrome/use-active-instance'
 import { TauriCommand, TauriEvent } from '@ipc'
 
 const { invoke, listeners } = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ function buildClient(): QueryClient {
 beforeEach(() => {
   invoke.mockReset()
   listeners.clear()
+  __resetActiveInstanceForTests()
 })
 
 describe('prefetchInstanceMeta', () => {
@@ -114,6 +116,71 @@ describe('brimSync', () => {
     // Chat only for the focused id.
     expect(client.getQueryData(['snapshot-chat', 'i-2'])).toBeDefined()
     expect(client.getQueryData(['snapshot-chat', 'i-1'])).toBeUndefined()
+  })
+
+  it('seeds useActiveInstance from instances/list focusedId when no local choice exists', async() => {
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.InstancesList) {
+        return Promise.resolve({
+          instances: [
+            { agentId: 'a', instanceId: 'i-1' },
+            { agentId: 'a', instanceId: 'i-2' }
+          ],
+          focusedId: 'i-2'
+        })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotMeta) {
+        return Promise.resolve({ mcpsCount: 0, usage: { used: 0, size: 0 } })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotChat) {
+        return Promise.resolve({ items: [], hasMore: false })
+      }
+
+      return Promise.reject(new Error(`unexpected command ${command}`))
+    })
+    const client = buildClient()
+
+    // No local focus → daemon's focusedId fills the slot.
+    await brimSync(client, undefined)
+
+    expect(useActiveInstance().id.value).toBe('i-2')
+    // Chat for the daemon-reported focus is also primed.
+    expect(client.getQueryData(['snapshot-chat', 'i-2'])).toBeDefined()
+  })
+
+  it('preserves caller-supplied local focus over the daemon focusedId', async() => {
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.InstancesList) {
+        return Promise.resolve({
+          instances: [
+            { agentId: 'a', instanceId: 'i-1' },
+            { agentId: 'a', instanceId: 'i-2' }
+          ],
+          focusedId: 'i-2'
+        })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotMeta) {
+        return Promise.resolve({ mcpsCount: 0, usage: { used: 0, size: 0 } })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotChat) {
+        return Promise.resolve({ items: [], hasMore: false })
+      }
+
+      return Promise.reject(new Error(`unexpected command ${command}`))
+    })
+    const client = buildClient()
+
+    await brimSync(client, 'i-1')
+
+    // Chat was prefetched for the local choice, NOT the daemon focus.
+    expect(client.getQueryData(['snapshot-chat', 'i-1'])).toBeDefined()
+    expect(client.getQueryData(['snapshot-chat', 'i-2'])).toBeUndefined()
+    // Local focus seeds the empty active-instance slot.
+    expect(useActiveInstance().id.value).toBe('i-1')
   })
 
   it('skips chat prefetch when no focused id is supplied', async() => {
