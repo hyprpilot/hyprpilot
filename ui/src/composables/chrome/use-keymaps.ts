@@ -20,6 +20,11 @@ export async function loadKeymaps(): Promise<void> {
   }
 }
 
+/** Apply a `KeymapsConfig` already in hand (boot snapshot). */
+export function applyKeymapsFromObject(keymaps: KeymapsConfig): void {
+  cache.value = keymaps
+}
+
 export function useKeymaps(): { keymaps: Ref<KeymapsConfig | undefined> } {
   return { keymaps: cache }
 }

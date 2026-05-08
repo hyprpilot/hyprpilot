@@ -112,6 +112,92 @@ async fn window_toggle(
     }
 }
 
+/// Aggregated boot payload — every field the UI needs before the
+/// fullscreen Loading overlay can drop. Replaces six sequential
+/// `invoke()` round-trips (`get_theme` / `get_keymaps` /
+/// `get_window_state` / `get_home_dir` / `get_daemon_cwd` /
+/// `get_completion_config` + `agents_list` + `profiles_list` +
+/// `instances_list`) with one. Particularly load-bearing on the
+/// remote bridge where each round-trip rides the same WS — six
+/// awaits sequentially is a 6× RTT bill the captain pays staring
+/// at "configuring window…".
+///
+/// Per-instance snapshot data (`MetaSnapshot`, `ChatSnapshot`,
+/// `TerminalsSnapshot`) stays on its own RPCs; brim-sync calls
+/// those after boot for whichever instance is focused, on demand.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BootSnapshot {
+    pub(crate) theme: Theme,
+    pub(crate) keymaps: KeymapsConfig,
+    pub(crate) window_state: WindowState,
+    pub(crate) home_dir: String,
+    pub(crate) daemon_cwd: String,
+    pub(crate) completion_config: serde_json::Value,
+    pub(crate) agents: serde_json::Value,
+    pub(crate) profiles: serde_json::Value,
+    pub(crate) instances: serde_json::Value,
+}
+
+#[tauri::command]
+async fn boot_snapshot(
+    theme: State<'_, Theme>,
+    keymaps: State<'_, KeymapsConfig>,
+    window_state: State<'_, WindowState>,
+    config: State<'_, Arc<RwLock<Config>>>,
+    adapter: State<'_, Arc<AcpAdapter>>,
+) -> Result<BootSnapshot, String> {
+    let completion_config = {
+        let cfg = config.read().map_err(|e| format!("config rwlock poisoned: {e}"))?;
+        let rg = &cfg.completion.ripgrep;
+        serde_json::json!({
+            "ripgrep": {
+                "auto": rg.auto.unwrap_or(true),
+                "debounceMs": rg.debounce_ms.unwrap_or(250),
+                "minPrefix": rg.min_prefix.unwrap_or(3),
+            }
+        })
+    };
+
+    let agents = serde_json::json!({ "agents": adapter.list_agents() });
+    let profiles = serde_json::json!({ "profiles": adapter.list_profiles() });
+
+    let instances_list = adapter.list().await;
+    let focused_id = adapter.focused_id().await.map(|k| k.as_string());
+    let instance_entries: Vec<serde_json::Value> = instances_list
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "agentId": i.agent_id,
+                "profileId": i.profile_id,
+                "instanceId": i.id,
+                "sessionId": i.session_id,
+                "name": i.name,
+                "mode": i.mode,
+            })
+        })
+        .collect();
+    let mut instances_payload = serde_json::Map::with_capacity(2);
+    instances_payload.insert("instances".into(), serde_json::Value::Array(instance_entries));
+    if let Some(id) = focused_id {
+        instances_payload.insert("focusedId".into(), serde_json::Value::String(id));
+    }
+
+    Ok(BootSnapshot {
+        theme: theme.inner().clone(),
+        keymaps: keymaps.inner().clone(),
+        window_state: window_state.inner().clone(),
+        home_dir: crate::paths::home_dir().to_string_lossy().into_owned(),
+        daemon_cwd: std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "/".to_string()),
+        completion_config,
+        agents,
+        profiles,
+        instances: serde_json::Value::Object(instances_payload),
+    })
+}
+
 /// Daemon entry point. Five phases, each its own helper:
 ///
 /// 1. Resolve socket path from cli / config / `$XDG_RUNTIME_DIR` default.
@@ -215,6 +301,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
     builder
         .invoke_handler(tauri::generate_handler![
+            boot_snapshot,
             get_theme,
             get_keymaps,
             get_window_state,

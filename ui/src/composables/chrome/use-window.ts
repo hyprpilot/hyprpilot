@@ -17,6 +17,14 @@ export async function applyWindowState(): Promise<void> {
     return
   }
 
+  applyWindowStateFromObject(state)
+}
+
+/**
+ * Apply a `WindowState` already in hand. Boot snapshot uses this so
+ * the chrome attribute lands without a second invoke.
+ */
+export function applyWindowStateFromObject(state: WindowState): void {
   const root = document.documentElement
 
   if (state.anchorEdge) {

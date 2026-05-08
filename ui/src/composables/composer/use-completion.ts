@@ -76,11 +76,16 @@ export async function loadCompletionConfig(): Promise<void> {
   try {
     const cfg = await invoke(TauriCommand.GetCompletionConfig)
 
-    if (typeof cfg?.ripgrep?.debounceMs === 'number') {
-      setCompletionDebounceMs(cfg.ripgrep.debounceMs)
-    }
+    applyCompletionConfigFromObject(cfg)
   } catch(err) {
     log.warn('get_completion_config invoke failed; using default debounce', undefined, err)
+  }
+}
+
+/** Apply a config snapshot already in hand (boot snapshot). */
+export function applyCompletionConfigFromObject(cfg: { ripgrep?: { debounceMs?: number } } | undefined): void {
+  if (typeof cfg?.ripgrep?.debounceMs === 'number') {
+    setCompletionDebounceMs(cfg.ripgrep.debounceMs)
   }
 }
 

@@ -66,6 +66,79 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
     use tauri::Manager;
 
     match cmd {
+        // ── boot path: aggregate snapshot (preferred) ────────────────
+        // One round-trip replaces theme + keymaps + window_state +
+        // home_dir + daemon_cwd + completion_config + agents + profiles
+        // + instances. The granular handlers below stay for ad-hoc
+        // refresh paths (palette reload, theme swap, etc.).
+        "boot_snapshot" => {
+            let theme = app
+                .try_state::<crate::config::Theme>()
+                .ok_or_else(|| RpcError::internal_error("theme state not managed"))?;
+            let keymaps = app
+                .try_state::<crate::config::KeymapsConfig>()
+                .ok_or_else(|| RpcError::internal_error("keymaps state not managed"))?;
+            let window_state = app
+                .try_state::<crate::daemon::WindowState>()
+                .ok_or_else(|| RpcError::internal_error("window state not managed"))?;
+            let config_state = app
+                .try_state::<Arc<std::sync::RwLock<Config>>>()
+                .ok_or_else(|| RpcError::internal_error("config state not managed"))?;
+
+            let completion_config = {
+                let cfg = config_state
+                    .read()
+                    .map_err(|e| RpcError::internal_error(format!("config rwlock poisoned: {e}")))?;
+                let rg = &cfg.completion.ripgrep;
+                json!({
+                    "ripgrep": {
+                        "auto": rg.auto.unwrap_or(true),
+                        "debounceMs": rg.debounce_ms.unwrap_or(250),
+                        "minPrefix": rg.min_prefix.unwrap_or(3),
+                    }
+                })
+            };
+
+            let adapter = adapter_arc(app)?;
+            let agents = json!({ "agents": adapter.list_agents() });
+            let profiles = json!({ "profiles": adapter.list_profiles() });
+
+            let instances_list = adapter.list().await;
+            let focused_id = adapter.focused_id().await.map(|k| k.as_string());
+            let instance_entries: Vec<Value> = instances_list
+                .iter()
+                .map(|i| {
+                    json!({
+                        "agentId": i.agent_id,
+                        "profileId": i.profile_id,
+                        "instanceId": i.id,
+                        "sessionId": i.session_id,
+                        "name": i.name,
+                        "mode": i.mode,
+                    })
+                })
+                .collect();
+            let mut instances_payload = serde_json::Map::with_capacity(2);
+            instances_payload.insert("instances".into(), Value::Array(instance_entries));
+            if let Some(id) = focused_id {
+                instances_payload.insert("focusedId".into(), Value::String(id));
+            }
+
+            Ok(json!({
+                "theme": theme.inner().clone(),
+                "keymaps": keymaps.inner().clone(),
+                "windowState": window_state.inner().clone(),
+                "homeDir": crate::paths::home_dir().to_string_lossy(),
+                "daemonCwd": std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| "/".to_string()),
+                "completionConfig": completion_config,
+                "agents": agents,
+                "profiles": profiles,
+                "instances": Value::Object(instances_payload),
+            }))
+        }
+
         // ── boot path: theme + chrome ────────────────────────────────
         "get_theme" => {
             let theme = app

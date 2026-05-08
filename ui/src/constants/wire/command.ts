@@ -78,6 +78,7 @@ import type { Theme } from '@interfaces/wire/theme'
 import type { WindowState } from '@interfaces/wire/window'
 
 export enum TauriCommand {
+  BootSnapshot = 'boot_snapshot',
   GetTheme = 'get_theme',
   GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
@@ -148,6 +149,7 @@ export enum TauriEvent {
  * commands that take no arguments.
  */
 export interface TauriCommandArgs {
+  [TauriCommand.BootSnapshot]: void
   [TauriCommand.GetTheme]: void
   [TauriCommand.GetKeymaps]: void
   [TauriCommand.GetWindowState]: void
@@ -198,6 +200,7 @@ export interface TauriCommandArgs {
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
 export interface TauriCommandResult {
+  [TauriCommand.BootSnapshot]: BootSnapshot
   [TauriCommand.GetTheme]: Theme
   [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
@@ -259,6 +262,29 @@ export interface CompletionConfigSnapshot {
     debounceMs: number
     minPrefix: number
   }
+}
+
+/**
+ * Aggregated boot payload. One `invoke('boot_snapshot')` returns
+ * everything the loading screen needs before it can drop. Replaces
+ * six sequential `await invoke(...)` round-trips — particularly
+ * load-bearing on the remote bridge where each round-trip rides the
+ * same WS, so the captain spent up to 6× RTT staring at the loader.
+ *
+ * Per-instance snapshot data (chat / terminals) stays on its own
+ * RPCs; brim-sync calls those after boot for whichever instance is
+ * focused.
+ */
+export interface BootSnapshot {
+  theme: Theme
+  keymaps: KeymapsConfig
+  windowState: WindowState
+  homeDir: string
+  daemonCwd: string
+  completionConfig: CompletionConfigSnapshot
+  agents: { agents: AgentSummary[] }
+  profiles: { profiles: ProfileSummary[] }
+  instances: { instances: InstanceListEntry[]; focusedId?: string }
 }
 
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */

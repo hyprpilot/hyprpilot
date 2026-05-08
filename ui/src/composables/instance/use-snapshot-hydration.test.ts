@@ -3,8 +3,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, defineComponent, h, nextTick, ref } from 'vue'
 
-import { useSnapshotHydration } from './use-snapshot-hydration'
 import { useSessionInfo } from './use-session-info'
+import { useSnapshotHydration } from './use-snapshot-hydration'
 import { useTurns } from './use-turns'
 import { __resetActiveInstanceForTests } from '../chrome/use-active-instance'
 import { TauriCommand, type MetaSnapshot, type TurnSnapshot } from '@ipc'
@@ -245,7 +245,7 @@ describe('useSnapshotHydration — turns replay', () => {
           id: 't-b', startedAtMs: 2000, endedAtMs: 3000, stopReason: 'end_turn'
         }),
         turnFixture({
-          id: 't-c', startedAtMs: 3000  // mid-flight
+          id: 't-c', startedAtMs: 3000 // mid-flight
         })
       ]
     })

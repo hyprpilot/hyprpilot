@@ -3,7 +3,9 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { createApp } from 'vue'
 
 import App from './App.vue'
-import { applyTheme, applyWindowState, loadCompletionConfig, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus, startGitStatus } from '@composables'
+import {
+  applyBootSnapshot, applyTheme, applyWindowState, loadCompletionConfig, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus, startGitStatus
+} from '@composables'
 import { ensureRemoteConnection, isRemoteHost, subscribePair } from '@ipc/remote-bridge'
 import { log } from '@lib'
 import '@assets/styles.css'
@@ -119,42 +121,47 @@ async function boot(): Promise<void> {
   }
   installGlobalErrorBridge()
 
+  // Single-RPC boot. `applyBootSnapshot` rolls theme + windowState +
+  // keymaps + homeDir + daemonCwd + completionConfig into one IPC and
+  // dispatches each into its existing applier. Replaces the previous
+  // 6-await sequence — particularly load-bearing on the remote bridge
+  // where each round-trip rides the same WS, so the captain spent up
+  // to 6× RTT staring at "configuring window…" while the daemon
+  // already had every answer in hand.
+  //
+  // On Tauri host the snapshot still runs before mount so FOUC stays
+  // shut. On remote, mount comes first (the pair screen needs DOM
+  // before the WS is up); the snapshot lands after authenticate.
   if (isRemoteHost()) {
     setBootStatus('connecting to daemon…')
     app.mount('#app')
     await ensureRemoteConnection()
     await waitForPairAuthenticated()
-    setBootStatus('applying theme')
-    await applyTheme()
-    setBootStatus('configuring window')
-    await applyWindowState()
+    setBootStatus('loading')
+
+    if (!(await applyBootSnapshot())) {
+      // Fallback path — older daemon binary that doesn't expose
+      // `boot_snapshot` yet. Granular loaders soft-fail individually.
+      await applyTheme()
+      await applyWindowState()
+      await loadHomeDir()
+      await loadDaemonCwd()
+      await loadKeymaps()
+      await loadCompletionConfig()
+    }
   } else {
-    // Tauri host: theme + window state apply before mount so there
-    // is no FOUC window per CLAUDE.md ("Rust is the sole source;
-    // applyTheme runs synchronously in main.ts before
-    // createApp().mount('#app')").
-    setBootStatus('applying theme')
-    await applyTheme()
-    setBootStatus('configuring window')
-    await applyWindowState()
+    setBootStatus('loading')
+
+    if (!(await applyBootSnapshot())) {
+      await applyTheme()
+      await applyWindowState()
+      await loadHomeDir()
+      await loadDaemonCwd()
+      await loadKeymaps()
+      await loadCompletionConfig()
+    }
     app.mount('#app')
   }
-
-  // Step the user through the post-mount boot work. Each
-  // setBootStatus updates the live <Loading> status pill before
-  // its IPC starts so the active step is visible rather than
-  // mysterious dead air.
-  setBootStatus('reading $HOME')
-  await loadHomeDir()
-  setBootStatus('reading daemon cwd')
-  await loadDaemonCwd()
-  setBootStatus('loading keymaps')
-  await loadKeymaps()
-  // Apply the captain's configured ripgrep debounce on the
-  // composer's auto-trigger path. The daemon-side ripgrep source
-  // already honours `auto` / `min_prefix`; only debounce_ms lives
-  // UI-side because that's where keystrokes happen.
-  await loadCompletionConfig()
 
   // Watch the active instance's cwd and pull a fresh git-status
   // snapshot on every change — drives the header `branch ↑N ↓M`
