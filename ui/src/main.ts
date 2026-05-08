@@ -139,7 +139,7 @@ async function boot(): Promise<void> {
     await waitForPairAuthenticated()
     setBootStatus('loading')
 
-    if (!(await applyBootSnapshot())) {
+    if (!(await applyBootSnapshot(queryClient))) {
       // Fallback path — older daemon binary that doesn't expose
       // `boot_snapshot` yet. Granular loaders soft-fail individually.
       await applyTheme()
@@ -152,7 +152,7 @@ async function boot(): Promise<void> {
   } else {
     setBootStatus('loading')
 
-    if (!(await applyBootSnapshot())) {
+    if (!(await applyBootSnapshot(queryClient))) {
       await applyTheme()
       await applyWindowState()
       await loadHomeDir()
