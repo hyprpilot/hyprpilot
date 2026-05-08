@@ -1,37 +1,51 @@
 /**
  * Snapshot → store hydration (Phase C2 follow-up).
  *
- * `useTurns` is populated by the live event router (`use-session-stream`)
- * for events that arrive after mount. Anything that streamed BEFORE
- * the UI subscribed (mid-session reconnect, focus-switch into an
- * instance, remote bridge that just authenticated) is invisible to
- * the live path — the daemon emits events into a `tokio::broadcast`
- * with no replay.
+ * `useTurns` AND `useSessionInfo` are populated by the live event
+ * router (`use-session-stream`) for events that arrive after mount.
+ * Anything that streamed BEFORE the UI subscribed (mid-session
+ * reconnect, focus-switch into an instance, remote bridge that just
+ * authenticated) is invisible to the live path — the daemon emits
+ * events into a `tokio::broadcast` with no replay.
  *
  * This hook closes that gap. It watches the per-instance
- * `MetaSnapshot.turns` field — populated by the daemon mirror on
- * every `TurnStarted` / `TurnEnded` / `UsageUpdate` it observes —
- * and replays each record into the `useTurns` store via the same
- * `pushTurnStarted` / `pushTurnEnded` / `pushUsageUpdate` mutation
- * surface the live router uses. Result: the chat header's elapsed +
- * usage chips render against the daemon's truth even when the live
- * stream missed every event in the session's history.
+ * `MetaSnapshot` and replays the relevant fields into both stores:
  *
- * Hydration is idempotent: each push is guarded against existing
- * records inside `use-turns.ts` (it's also idempotent there for
- * replay safety), and `pushUsageUpdate` overwrites the prior reading.
+ * - `MetaSnapshot.turns` → `pushTurnStarted` / `pushTurnEnded` /
+ *   `pushUsageUpdate` so the chat header's elapsed + usage chips
+ *   render against the daemon's truth.
+ * - `MetaSnapshot.{cwd, currentModeId, currentModelId,
+ *   availableModes, availableModels, configOptions, mcpsCount,
+ *   profileId}` → the matching `use-session-info` setters so the
+ *   header chrome (cwd / mode / model pills, mcps count, profile)
+ *   reflects the daemon's view immediately on snapshot load —
+ *   without this, a remote captain saw stale or empty pills until
+ *   the next live event for the instance landed (often only after
+ *   a turn fired).
+ *
+ * Hydration is idempotent: each `pushTurnStarted` is guarded against
+ * existing records, the session-info setters are last-write-wins.
  *
  * Run this composable wherever you need a snapshot-driven view of
- * `useTurns` — today the chat viewport's `Overlay.vue` mounts it
- * once per active instance.
+ * `useTurns` / `useSessionInfo` — today the chat viewport's
+ * `Overlay.vue` mounts it once per active instance.
  */
 
 import { watch, type ComputedRef } from 'vue'
 
 import { useInstanceMetaQuery } from './use-instance-meta-query'
+import {
+  pushConfigOptionsUpdate,
+  pushCurrentModeUpdate,
+  pushInstanceModeState,
+  pushInstanceModelState,
+  setInstanceCwd,
+  setInstanceMcpsCount,
+  setInstanceProfile
+} from './use-session-info'
 import { pushTurnEnded, pushTurnStarted, pushUsageUpdate } from './use-turns'
 import { type InstanceId } from '../chrome/use-active-instance'
-import { type TurnSnapshot } from '@ipc'
+import { type MetaSnapshot, type TurnSnapshot } from '@ipc'
 import { log } from '@lib'
 
 export interface UseSnapshotHydrationApi {
@@ -66,17 +80,25 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
         return undefined
       }
 
-      return { id, turns: data.turns ?? [] }
+      return { id, data }
     },
     (snap) => {
       if (!snap) {
         return
       }
-      const { id, turns } = snap
+      const { id, data } = snap
+
+      applySessionInfoFromMeta(id, data)
+
+      const turns = data.turns ?? []
 
       log.trace('snapshot.hydrate.meta-arrived', {
         instanceId: id,
-        turnCount: turns.length
+        turnCount: turns.length,
+        hasCwd: data.cwd !== undefined,
+        hasMode: data.currentModeId !== undefined,
+        hasModel: data.currentModelId !== undefined,
+        mcpsCount: data.mcpsCount
       })
 
       let pushed = 0
@@ -115,6 +137,60 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
 
   return {
     stop: () => stopHandle()
+  }
+}
+
+/**
+ * Push the daemon's per-instance session-info fields into the
+ * `useSessionInfo` store. Each field has a dedicated setter so the
+ * header chrome's reactive computed signals fan out exactly the way
+ * they do for live events. Last-write-wins semantics: a subsequent
+ * `pushSessionInfoUpdate` / `pushCurrentModeUpdate` / etc. from the
+ * live event router overrides our snapshot value, which is the
+ * correct behaviour (live truth beats cached snapshot).
+ */
+function applySessionInfoFromMeta(instanceId: InstanceId, data: MetaSnapshot): void {
+  if (data.cwd !== undefined) {
+    setInstanceCwd(instanceId, data.cwd)
+  }
+
+  if (data.profileId !== undefined) {
+    setInstanceProfile(instanceId, data.profileId)
+  }
+  // mcpsCount is a number on the wire — not optional. Default to 0
+  // when the daemon ever ships it as undefined; the header pill
+  // hides on `count == 0` anyway.
+  setInstanceMcpsCount(instanceId, data.mcpsCount ?? 0)
+
+  // Spawn-time mode / model state — pushed wholesale (current id +
+  // advertised list) so the palette's mode / model leaves render
+  // their current selection AND can offer the alternatives without
+  // waiting on a live event.
+  if (data.currentModeId !== undefined || (data.availableModes && data.availableModes.length > 0)) {
+    pushInstanceModeState(instanceId, {
+      currentModeId: data.currentModeId,
+      availableModes: data.availableModes ?? []
+    })
+  }
+
+  if (data.currentModelId !== undefined || (data.availableModels && data.availableModels.length > 0)) {
+    pushInstanceModelState(instanceId, {
+      currentModelId: data.currentModelId,
+      availableModels: data.availableModels ?? []
+    })
+  }
+
+  // CurrentModeUpdate overlays the active mode without touching the
+  // advertised-list. `pushInstanceModeState` already sets `mode` from
+  // currentModeId when present, but firing this too keeps parity
+  // with the live event ordering (CurrentMode arrives separately
+  // from the spawn-time state in the live wire).
+  if (data.currentModeId !== undefined) {
+    pushCurrentModeUpdate(instanceId, { currentModeId: data.currentModeId })
+  }
+
+  if (data.configOptions && data.configOptions.length > 0) {
+    pushConfigOptionsUpdate(instanceId, data.configOptions)
   }
 }
 

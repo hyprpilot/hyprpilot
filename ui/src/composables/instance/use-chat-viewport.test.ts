@@ -427,4 +427,127 @@ describe('useChatViewport', () => {
     expect(api.items.value).toHaveLength(1)
     unmount()
   })
+
+  // ── Regression tests for the burst-replay bugs ────────────────────
+  //
+  // These cover the failure modes captured in earlier tmux traces:
+  //
+  //  1. session/load replay storm — hundreds of `acp:transcript`
+  //     notifications fire in <2ms. Each must NOT trigger a separate
+  //     `setQueryData` cycle. The microtask-batched `flushPatches`
+  //     should coalesce the burst into one head-page update.
+  //
+  //  2. live-patched items must keep `payload.turnId` so
+  //     `block.turnId` resolves to the same `turn:<id>` group key
+  //     the snapshot path uses. Dropping the turnId here was what
+  //     broke header chip rendering during streaming (commit b8c695a).
+
+  it('coalesces a burst of live patches into one head-page update', async() => {
+    invoke.mockResolvedValueOnce(chatPage([transcriptText(0, 'seed')], false))
+    const id = ref<InstanceId | undefined>('i-1')
+    const { api, queryClient, unmount } = mountViewport(id)
+
+    await flushPromises()
+    await flushPromises()
+
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    expect(cb).toBeDefined()
+
+    // Spy on setQueryData so we can count actual updates to the
+    // chat-page cache key. Microtask batching should fuse the whole
+    // burst into a single setQueryData call.
+    const original = queryClient.setQueryData.bind(queryClient)
+    let chatUpdates = 0
+
+    vi.spyOn(queryClient, 'setQueryData').mockImplementation(((key: unknown, updater: unknown, opts: unknown) => {
+      if (Array.isArray(key) && key[0] === 'snapshot-chat') {
+        chatUpdates += 1
+      }
+
+      return (original as unknown as (k: unknown, u: unknown, o: unknown) => unknown)(key, updater, opts)
+    }) as unknown as typeof queryClient.setQueryData)
+
+    // Fire 100 synchronous events — replicates the session/load
+    // replay shape (hundreds of notifications in one tick).
+    const N = 100
+
+    for (let i = 0; i < N; i += 1) {
+      cb!({
+        payload: {
+          agentId: 'a',
+          instanceId: 'i-1',
+          sessionId: 's',
+          turnId: 't-1',
+          item: { kind: TranscriptItemKind.AgentText, text: `chunk-${i}` }
+        } as never
+      })
+    }
+    // Microtask boundary — flushPatches drains the queue.
+    await flushPromises()
+
+    // All items landed.
+    expect(api.items.value).toHaveLength(1 + N)
+    // ALL items came from a SINGLE setQueryData call. Without
+    // batching, this would be N (one per patch).
+    expect(chatUpdates).toBe(1)
+    unmount()
+  })
+
+  it('preserves payload.turnId on live-patched items', async() => {
+    invoke.mockResolvedValueOnce(chatPage([], false))
+    const id = ref<InstanceId | undefined>('i-1')
+    const { api, unmount } = mountViewport(id)
+
+    await flushPromises()
+    await flushPromises()
+
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 'turn-abc',
+        item: { kind: TranscriptItemKind.AgentText, text: 'hello' }
+      } as never
+    })
+    await flushPromises()
+
+    expect(api.items.value).toHaveLength(1)
+    expect(api.items.value[0]?.turnId).toBe('turn-abc')
+    unmount()
+  })
+
+  it('drops queued patches on unmount so the next microtask can\'t mutate a torn-down queryClient', async() => {
+    invoke.mockResolvedValueOnce(chatPage([], false))
+    const id = ref<InstanceId | undefined>('i-1')
+    const { unmount, queryClient } = mountViewport(id)
+
+    await flushPromises()
+    await flushPromises()
+
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+    const before = queryClient.getQueryData(['snapshot-chat', 'i-1'])
+
+    // Queue a patch but unmount BEFORE the microtask runs.
+    cb?.({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 't',
+        item: { kind: TranscriptItemKind.AgentText, text: 'after-unmount' }
+      } as never
+    })
+    unmount()
+    await flushPromises()
+
+    // Cache untouched — the flush early-returned on the stopped
+    // composable.
+    const after = queryClient.getQueryData(['snapshot-chat', 'i-1'])
+
+    expect(after).toBe(before)
+  })
 })

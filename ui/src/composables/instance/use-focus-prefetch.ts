@@ -28,6 +28,12 @@
 import { useQueryClient, type QueryClient } from '@tanstack/vue-query'
 
 import { DEFAULT_CHAT_LIMIT } from './use-instance-chat-infinite-query'
+import {
+  pushCurrentModeUpdate,
+  setInstanceAgent,
+  setInstanceName,
+  setInstanceProfile
+} from './use-session-info'
 import { type InstanceId, useActiveInstance } from '../chrome/use-active-instance'
 import {
   invoke,
@@ -104,6 +110,32 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
 
     instanceIds = r.instances.map((entry) => entry.instanceId)
     daemonFocusedId = r.focusedId
+
+    // Seed `useSessionInfo` from each instance entry. The
+    // `instances/list` payload carries `agentId` / `profileId` /
+    // `mode` / `name` per instance — without this push, a remote
+    // captain's header pills (agent / profile / mode / name) stay
+    // empty until the next live event for the instance fires
+    // (often only after a turn). The `useSnapshotHydration` hook
+    // covers cwd / model / configOptions / mcpsCount via the meta
+    // query; this covers the fields the meta snapshot doesn't.
+    for (const entry of r.instances) {
+      if (entry.agentId) {
+        setInstanceAgent(entry.instanceId, entry.agentId)
+      }
+
+      if (entry.profileId !== undefined) {
+        setInstanceProfile(entry.instanceId, entry.profileId)
+      }
+
+      if (entry.mode !== undefined) {
+        pushCurrentModeUpdate(entry.instanceId, { currentModeId: entry.mode })
+      }
+
+      if (entry.name !== undefined && entry.name.length > 0) {
+        setInstanceName(entry.instanceId, entry.name)
+      }
+    }
   } catch(err) {
     log.warn('brim-sync: instances_list failed', { err: String(err) })
 
