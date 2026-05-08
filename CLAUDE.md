@@ -681,9 +681,17 @@ Each is silent by default; enable per-target via `RUST_LOG`:
 Example one-shot for the thinking-block path:
 
 ```sh
-RUST_LOG='hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace' \
+RUST_LOG='info,hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace,webview=trace' \
   hyprpilot daemon
 ```
+
+The `webview=trace` directive is load-bearing whenever you want
+to see UI-side `log.trace(...)` calls — `tauri-plugin-log` builds
+its `log::Record`s with `target: "webview"` (or
+`"webview:<file:line>"`), so a `RUST_LOG` that only enumerates
+Rust-side targets silently drops every webview event. The bare
+`info` keeps daemon-wide info-level breadcrumbs flowing alongside
+the per-target trace overrides.
 
 Tail the live stream:
 
@@ -695,12 +703,17 @@ journalctl --user -u hyprpilot.service -f          # systemd unit
 Grep for `target: acp::wire` lines to see the raw payload of every
 `session/update` and `session/prompt`.
 
-One-shot for the snapshot pipeline (daemon-side mirror + RPC):
+One-shot for the snapshot pipeline (daemon-side mirror + RPC + UI):
 
 ```sh
-RUST_LOG='hyprpilot::adapters=info,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace' \
+RUST_LOG='info,hyprpilot::adapters=info,acp::emit=trace,tauri::emit=trace,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace,webview=trace' \
   hyprpilot daemon
 ```
+
+`webview=trace` covers the UI-side `live.*` / `snapshot.*` /
+`use-turns.*` traces — without it the daemon stderr only shows
+the Rust half and a captain debugging the live-event drop sees
+no UI signal at all.
 
 UI-side counterparts run through the structured `log.trace(...)`
 surface; the `tauri-plugin-log` plugin forwards each call into the
