@@ -2915,6 +2915,12 @@ async fn run(params: RunParams) {
                                 }
                             };
                             if let Some(evt) = evt {
+                                tracing::trace!(
+                                    target: "acp::emit",
+                                    instance = %instance_id_notif,
+                                    topic = evt.topic(),
+                                    "broadcasting InstanceEvent",
+                                );
                                 mirror_notif.apply(&evt).await;
                                 let _ = events_tx_notif.send(evt);
                             }

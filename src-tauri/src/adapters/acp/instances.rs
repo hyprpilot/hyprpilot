@@ -1394,6 +1394,12 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {
+            tracing::trace!(
+                target: "tauri::emit",
+                event = name,
+                topic = evt.topic(),
+                "emitting tauri event to webview",
+            );
             if let Err(err) = app.emit(name, v) {
                 tracing::warn!(%err, event = name, "failed to emit acp event");
             }

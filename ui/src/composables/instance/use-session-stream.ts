@@ -301,6 +301,9 @@ export async function startSessionStream(): Promise<() => void> {
     await listen(TauriEvent.AcpTurnStarted, (e) => {
       const { instanceId, sessionId, turnId, startedAt } = e.payload
 
+      log.trace('live.turn-started', {
+        instanceId, sessionId, turnId, startedAt
+      })
       // The TurnStarted signal owns the per-turn aggregation reset.
       // Each new turn opens fresh thought / plan items so chunked
       // updates within the turn merge cleanly into one block each.
@@ -389,6 +392,14 @@ export async function startSessionStream(): Promise<() => void> {
     await listen(TauriEvent.AcpUsageUpdate, (e) => {
       const { instanceId, sessionId, turnId, used, size, cost } = e.payload
 
+      log.trace('live.usage-update', {
+        instanceId,
+        sessionId,
+        turnId,
+        used,
+        size,
+        hasCost: cost !== undefined
+      })
       pushUsageUpdate(instanceId, sessionId, turnId, {
         used,
         size,

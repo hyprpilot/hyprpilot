@@ -2,6 +2,7 @@ import { computed, reactive, type ComputedRef } from 'vue'
 
 import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
+import { log } from '@lib'
 
 export interface TurnRecord {
   id: string
@@ -248,8 +249,23 @@ export function pushUsageUpdate(id: InstanceId, sessionId: string, turnId: strin
   }
 
   if (!target) {
+    log.trace('use-turns.usage-update.dropped', {
+      instanceId: id,
+      sessionId,
+      turnId,
+      reason: 'no matching turn record + no turnId to synthesise'
+    })
+
     return
   }
+  log.trace('use-turns.usage-update.applied', {
+    instanceId: id,
+    sessionId,
+    turnId: target.id,
+    used: usage.used,
+    size: usage.size,
+    matchedExistingRecord: target.startedAtMs > 0
+  })
   target.usage = usage
 }
 
