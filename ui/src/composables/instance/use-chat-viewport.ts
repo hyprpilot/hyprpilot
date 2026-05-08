@@ -257,6 +257,123 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
     return out
   })
 
+  /**
+   * Pending live-event queue. `patchLatestPage` enqueues; a single
+   * microtask-scheduled flush drains the whole burst into ONE
+   * `setQueryData` call. Without this, a `session/load` replay
+   * (hundreds of `session/update` notifications fanned out within
+   * ~2ms) would land hundreds of `setQueryData` invocations on the
+   * head page — each clones the entire `head.items` array (O(N))
+   * and re-keys the pages array (O(pages)). Total: O(N²)
+   * allocations on a hot path that drowns the renderer; under
+   * extreme bursts (long session restored on a slow box) this OOM-s
+   * the webview before the chat ever paints.
+   *
+   * Microtask scheduling collapses the burst because every
+   * `acp:transcript` event handler runs synchronously off Tauri's
+   * IPC bridge — the queue accumulates the whole batch on the
+   * current tick, and the flush runs once after the tick yields.
+   */
+  let pendingPatches: TranscriptEventPayload[] = []
+  let flushScheduled = false
+  let stopped = false
+
+  function flushPatches(): void {
+    flushScheduled = false
+
+    if (stopped) {
+      return
+    }
+    const batch = pendingPatches
+
+    pendingPatches = []
+
+    if (batch.length === 0) {
+      return
+    }
+    const id = instanceId.value
+
+    if (id === undefined) {
+      return
+    }
+    queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', id], (old) => {
+      if (!old || old.pages.length === 0) {
+        // No cached pages — the live events arrived before the first
+        // snapshot fetch resolved. Skip; the snapshot will land with
+        // the same items via the daemon mirror.
+        log.trace('snapshot.live-patch.skipped-no-cache', {
+          instanceId: id,
+          batchSize: batch.length
+        })
+
+        return old
+      }
+      const head = old.pages[0]
+
+      if (!head) {
+        return old
+      }
+      // Clone head.items ONCE for the whole batch.
+      const nextItems = [...head.items]
+      let baseSeq = (localSeq.value ?? head.latestSeq ?? 0) + 1
+      let lastSeq = head.latestSeq ?? 0
+      let applied = 0
+      let mergedCount = 0
+      let skipped = 0
+
+      for (const payload of batch) {
+        if (payload.instanceId !== id) {
+          continue
+        }
+        const incoming = liveItemFor(payload, baseSeq)
+
+        if (!incoming) {
+          skipped += 1
+          continue
+        }
+        const merged = mergeToolCallUpdate(nextItems, incoming)
+
+        if (merged) {
+          mergedCount += 1
+        } else {
+          nextItems.push(incoming)
+        }
+        baseSeq += 1
+        lastSeq = incoming.seq
+        applied += 1
+      }
+
+      if (applied === 0) {
+        return old
+      }
+
+      log.trace('snapshot.live-patch.batch-applied', {
+        instanceId: id,
+        batchSize: batch.length,
+        applied,
+        merged: mergedCount,
+        skipped,
+        headItemCount: nextItems.length
+      })
+
+      const nextHead: ChatSnapshot = {
+        items: nextItems,
+        // Live patches only ever land at the head — the oldest entry
+        // doesn't move, so preserve `head.oldestSeq`. If the head was
+        // empty it stays unset; the next backward fetch will populate.
+        oldestSeq: head.oldestSeq ?? lastSeq,
+        latestSeq: lastSeq,
+        hasMore: head.hasMore
+      }
+
+      return {
+        ...old,
+        pages: [nextHead, ...old.pages.slice(1)],
+        pageParams: old.pageParams
+      }
+    })
+  }
+
   function patchLatestPage(payload: TranscriptEventPayload): void {
     const id = instanceId.value
 
@@ -267,64 +384,12 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
     if (payload.instanceId !== id) {
       return
     }
-    queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', id], (old) => {
-      if (!old || old.pages.length === 0) {
-        // No cached pages — the live event arrived before the first
-        // snapshot fetch resolved. Skip; the snapshot will land with
-        // the same item via the daemon mirror.
-        log.trace('snapshot.live-patch.skipped-no-cache', {
-          instanceId: id,
-          itemKind: payload.item.kind
-        })
+    pendingPatches.push(payload)
 
-        return old
-      }
-      // The newest page is page 0 (daemon contract: "anchor at the
-      // latest seq").
-      const head = old.pages[0]
-
-      if (!head) {
-        return old
-      }
-      const baseSeq = (localSeq.value ?? head.latestSeq ?? 0) + 1
-      const incoming = liveItemFor(payload, baseSeq)
-
-      if (!incoming) {
-        log.trace('snapshot.live-patch.skipped-non-rendered', {
-          instanceId: id,
-          itemKind: payload.item.kind
-        })
-
-        return old
-      }
-      const nextItems = [...head.items]
-      const merged = mergeToolCallUpdate(nextItems, incoming)
-
-      if (!merged) {
-        nextItems.push(incoming)
-      }
-      const nextHead: ChatSnapshot = {
-        items: nextItems,
-        oldestSeq: head.oldestSeq ?? incoming.seq,
-        latestSeq: incoming.seq,
-        hasMore: head.hasMore
-      }
-      const nextPages = [nextHead, ...old.pages.slice(1)]
-
-      log.trace('snapshot.live-patch.applied', {
-        instanceId: id,
-        itemKind: payload.item.kind,
-        merged,
-        seq: incoming.seq,
-        headItemCount: nextItems.length
-      })
-
-      return {
-        ...old,
-        pages: nextPages,
-        pageParams: old.pageParams
-      }
-    })
+    if (!flushScheduled) {
+      flushScheduled = true
+      queueMicrotask(flushPatches)
+    }
   }
 
   function patchPermissionResolved(payload: AcpPermissionResolvedPayload): void {
@@ -369,7 +434,6 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
   // unmount via `onUnmounted` AND through the returned `stop()` so
   // tests can tear down explicitly.
   const unlisteners: UnlistenFn[] = []
-  let stopped = false
 
   function stop(): void {
     if (stopped) {
@@ -381,6 +445,12 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
       u()
     }
     unlisteners.length = 0
+    // Drop any pending batch the next microtask was about to flush —
+    // the queryClient may have been torn down by the time the flush
+    // runs, and even if it hasn't, applying live patches to a
+    // composable that the captain has already unmounted is wasted
+    // work.
+    pendingPatches = []
   }
 
   void (async() => {
