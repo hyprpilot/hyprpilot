@@ -1,13 +1,8 @@
-use std::fs;
-
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
-
-use crate::paths;
 
 /// Tracing level, shared between the `--log-level` CLI flag (via
 /// `clap::ValueEnum`) and the `[logging] level` config field (via
@@ -37,10 +32,19 @@ impl std::fmt::Display for LogLevel {
     }
 }
 
-/// Installs the tracing subscriber. Stderr in debug builds, daily-rolled files
-/// under `$XDG_STATE_HOME/hyprpilot/logs/` in release. The returned guard must
-/// live for the duration of the program so the file writer flushes on drop.
-pub fn init(level: Option<LogLevel>) -> Result<Option<WorkerGuard>> {
+/// Installs the tracing subscriber. Always writes to stderr — both
+/// debug and release builds. systemd / journald already capture
+/// stdout / stderr from the unit, and a captain running the daemon
+/// in a terminal sees output where they expect it. Daily-rolled
+/// files under `$XDG_STATE_HOME/hyprpilot/logs/` were duplicate
+/// plumbing over what every standard service supervisor already
+/// provides; removed.
+///
+/// The previous file-only release path also meant any captain who
+/// launched the release binary by hand under `RUST_LOG=...` saw an
+/// empty terminal even though traces were firing — their output was
+/// silently shoved into a log file they had to know about.
+pub fn init(level: Option<LogLevel>) -> Result<()> {
     // `log::Record` events (emitted by `tauri-plugin-log` on behalf of
     // the webview's `log.*` wrapper) route into this tracing subscriber
     // via `LogTracer`, auto-installed by `tracing-subscriber`'s
@@ -55,61 +59,26 @@ pub fn init(level: Option<LogLevel>) -> Result<Option<WorkerGuard>> {
         None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
     };
 
-    if cfg!(debug_assertions) {
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(dev_fmt_layer(std::io::stderr))
-            .try_init()
-            .context("failed to install tracing subscriber")?;
-
-        return Ok(None);
-    }
-
-    let log_dir = paths::log_dir();
-    fs::create_dir_all(&log_dir).with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
-
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "hyprpilot.log");
-    let (writer, guard) = tracing_appender::non_blocking(file_appender);
+    // ANSI on debug builds (developer terminal); off in release so
+    // journald / file capture doesn't get peppered with escape codes
+    // when the unit's stderr isn't a TTY. The other axes (target /
+    // file / line) stay on across both builds — a captain reading
+    // their journal wants the same callsite breadcrumbs the dev
+    // terminal shows.
+    let layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(cfg!(debug_assertions))
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_thread_ids(false)
+        .with_thread_names(false);
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(file_fmt_layer(writer))
+        .with(layer)
         .try_init()
         .context("failed to install tracing subscriber")?;
 
-    Ok(Some(guard))
-}
-
-/// Human-readable dev formatter with colored levels, module target, and the
-/// `file:line` callsite of each event for fast jump-to-source.
-fn dev_fmt_layer<S, W>(writer: W) -> fmt::Layer<S, fmt::format::DefaultFields, fmt::format::Format, W>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    W: for<'w> fmt::MakeWriter<'w> + 'static,
-{
-    fmt::layer()
-        .with_writer(writer)
-        .with_ansi(true)
-        .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-}
-
-/// Release file-log formatter. Same callsite info as the dev layer, ANSI
-/// colors stripped (log files don't need escape codes).
-fn file_fmt_layer<S, W>(writer: W) -> fmt::Layer<S, fmt::format::DefaultFields, fmt::format::Format, W>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    W: for<'w> fmt::MakeWriter<'w> + 'static,
-{
-    fmt::layer()
-        .with_writer(writer)
-        .with_ansi(false)
-        .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
+    Ok(())
 }

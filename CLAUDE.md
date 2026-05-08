@@ -648,13 +648,19 @@ role.
 
 ## Logging
 
-`tracing` is bootstrapped once via `logging::init`. Both the dev stderr layer
-and the release file layer tag every event with its `file:line` callsite +
-module target. Helpers:
+`tracing` is bootstrapped once via `logging::init`. **Always writes to
+stderr** — both debug and release builds. systemd / journald already
+captures stdout / stderr from a unit, and a captain running the daemon
+in a terminal sees output where they expect it. ANSI colours stay on
+in debug builds; off in release so journald / log capture isn't
+peppered with escape codes when stderr isn't a TTY. Every event tags
+its `file:line` callsite + module target on both surfaces.
 
-- `dev_fmt_layer` — ANSI on, stderr writer.
-- `file_fmt_layer` — ANSI stripped, rolling file under
-  `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.*` via `tracing-appender`.
+Captain-facing surfaces:
+- `journalctl --user -u hyprpilot.service -f` (when running as a
+  systemd unit).
+- Direct stderr in the terminal (when running by hand, e.g.
+  `RUST_LOG='…' ./target/release/hyprpilot daemon`).
 
 Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
 
@@ -679,8 +685,14 @@ RUST_LOG='hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace' \
   hyprpilot daemon
 ```
 
-Daemon log file lands under `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.<date>`;
-grep for `target: acp::wire` lines to see the raw payload of every
+Tail the live stream:
+
+```sh
+journalctl --user -u hyprpilot.service -f          # systemd unit
+./target/release/hyprpilot daemon 2>&1             # by-hand run
+```
+
+Grep for `target: acp::wire` lines to see the raw payload of every
 `session/update` and `session/prompt`.
 
 One-shot for the snapshot pipeline (daemon-side mirror + RPC):
@@ -691,9 +703,11 @@ RUST_LOG='hyprpilot::adapters=info,snapshot::mirror=trace,snapshot::meta=trace,s
 ```
 
 UI-side counterparts run through the structured `log.trace(...)`
-surface and ride the same daily-rolled file via the
-`tauri-plugin-log` plugin (Vue's `console.log` mirrors are dropped
-when the Tauri host is unreachable). Search prefixes:
+surface; the `tauri-plugin-log` plugin forwards each call into the
+Rust `log` crate, which `tracing-log` (the `tracing-subscriber`
+feature) routes into the same stderr / journald sink as the daemon's
+own events. (Vue's `console.log` mirrors are dropped when the Tauri
+host is unreachable.) Search prefixes:
 
 | Prefix | Where | What it captures |
 | --- | --- | --- |
