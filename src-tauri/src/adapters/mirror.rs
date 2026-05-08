@@ -255,10 +255,7 @@ impl InstanceMirror {
         // terminal) get their own sub-target so a captain debugging
         // lifecycle / usage doesn't drown in chunk spam at trace
         // level. Opt into chunks via `snapshot::mirror::chunk=trace`.
-        if matches!(
-            event,
-            InstanceEvent::Transcript { .. } | InstanceEvent::Terminal { .. }
-        ) {
+        if matches!(event, InstanceEvent::Transcript { .. } | InstanceEvent::Terminal { .. }) {
             tracing::trace!(
                 target: "snapshot::mirror::chunk",
                 event = event.topic(),

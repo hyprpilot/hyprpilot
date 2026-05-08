@@ -163,6 +163,15 @@ function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscript
  * Build a `SeqTranscriptItem` for a live transcript event. The local
  * `seq` is monotonically issued by the caller; the daemon-side seq
  * exists separately and isn't needed for live consumption.
+ *
+ * `turnId` MUST be carried through from the payload — the snapshot
+ * path returns items already stamped with the active turn id, and
+ * `timelineBlocksFromSnapshot` groups blocks by `turnId` to anchor
+ * the Turn header chips (elapsed / usage / cost) to a useTurns
+ * record. Dropping `turnId` here makes live-patched blocks render
+ * with `block.turnId === undefined` → `usageFor(undefined)` returns
+ * undefined → chips don't render even though the underlying turn
+ * record DOES carry the usage reading.
  */
 function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscriptItem | undefined {
   // `Unknown` payloads are forward-compat catch-alls; ignore them in
@@ -178,7 +187,9 @@ function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscrip
     return undefined
   }
 
-  return { seq, item: payload.item }
+  return {
+    seq, turnId: payload.turnId, item: payload.item
+  }
 }
 
 export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>): UseChatViewportApi {

@@ -1399,10 +1399,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
             // sub-target so the lifecycle stream stays readable at
             // trace level. Opt into chunk emits via
             // `tauri::emit::chunk=trace`.
-            if matches!(
-                evt,
-                GenEvt::Transcript { .. } | GenEvt::Terminal { .. }
-            ) {
+            if matches!(evt, GenEvt::Transcript { .. } | GenEvt::Terminal { .. }) {
                 tracing::trace!(
                     target: "tauri::emit::chunk",
                     event = name,
