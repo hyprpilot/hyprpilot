@@ -257,9 +257,18 @@ pub async fn session_load(
 /// palette leaf to drive its row list. Returns the same shape the
 /// JSON-RPC handler emits so UI code reading either surface treats
 /// them uniformly.
+///
+/// `focusedId` ships alongside the list so a remote bridge that just
+/// authenticated mid-session knows which instance the daemon is
+/// currently focused on — without it, the remote's `useActiveInstance`
+/// stays empty until the next focus-event fires (which on a
+/// long-idle desktop may be never). UI brim-sync reads the field and
+/// calls `applyFocus(focusedId, 'manual')` to seed the active-instance
+/// pointer.
 #[tauri::command]
 pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     let items = adapter.list().await;
+    let focused_id = adapter.focused_id().await.map(|k| k.as_string());
     let wire: Vec<Value> = items
         .iter()
         .map(|i| {
@@ -272,7 +281,10 @@ pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> 
             })
         })
         .collect();
-    Ok(json!({ "instances": wire }))
+    Ok(json!({
+        "instances": wire,
+        "focusedId": focused_id,
+    }))
 }
 
 #[tauri::command]

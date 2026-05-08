@@ -239,6 +239,7 @@ describe('Viewport.vue', () => {
     invoke.mockResolvedValueOnce(chatPage([], false))
 
     const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+
     // Simulate a captain scrolling to the top of the chat — scrollTop
     // crosses LOAD_MORE_THRESHOLD_PX (240) → 0.
     Object.defineProperty(root, 'scrollTop', { configurable: true, value: 0 })

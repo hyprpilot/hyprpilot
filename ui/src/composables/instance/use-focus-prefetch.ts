@@ -28,7 +28,7 @@
 import { useQueryClient, type QueryClient } from '@tanstack/vue-query'
 
 import { DEFAULT_CHAT_LIMIT } from './use-instance-chat-infinite-query'
-import { type InstanceId } from '../chrome/use-active-instance'
+import { type InstanceId, useActiveInstance } from '../chrome/use-active-instance'
 import {
   invoke,
   listen,
@@ -77,24 +77,46 @@ export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: I
 
 /**
  * Brim-sync: pull `instances/list` and prime the meta cache for every
- * instance. The optional `focusedId` also gets its first chat page
- * primed — passing `undefined` skips the chat prefetch (no instance
- * focused yet). All fetches fire in parallel and the returned promise
- * resolves only when every prefetch has settled (success OR error —
- * `prefetchQuery` swallows rejections by design so a partial sync
- * doesn't take the brim down).
+ * instance. `instances/list` now ships `focusedId` alongside the list
+ * — when `useActiveInstance` is empty (a remote that just authenticated
+ * mid-session, before any `acp:instances-focused` event has fired),
+ * the daemon's focused id seeds the active-instance pointer via
+ * `applyFocus('manual')`. The first chat page for that focused id is
+ * prefetched so the chat surface paints from the daemon's snapshot
+ * without waiting for the next live event.
+ *
+ * The caller-supplied `localFocusedId` (the captain's currently-active
+ * instance, if any) overrides the daemon-reported focus — desktop
+ * captains who clicked into a non-focused instance have their local
+ * choice preserved across re-syncs.
+ *
+ * All fetches fire in parallel; the returned promise resolves once
+ * every prefetch settles (success OR error — `prefetchQuery` swallows
+ * rejections by design so a partial sync doesn't take the brim down).
  */
-export async function brimSync(client: QueryClient, focusedId?: InstanceId): Promise<void> {
+export async function brimSync(client: QueryClient, localFocusedId?: InstanceId): Promise<void> {
   let instanceIds: InstanceId[]
+  let daemonFocusedId: InstanceId | undefined
 
   try {
     const r = await invoke(TauriCommand.InstancesList)
 
     instanceIds = r.instances.map((entry) => entry.instanceId)
+    daemonFocusedId = r.focusedId
   } catch(err) {
     log.warn('brim-sync: instances_list failed', { err: String(err) })
 
     return
+  }
+
+  // Seed `useActiveInstance` from the daemon's focus pointer when the
+  // caller has no local choice — covers the remote-authenticated-mid-
+  // session case. Captains who passed `localFocusedId` keep their
+  // choice; the daemon focus only fills the empty slot.
+  const effectiveFocus = localFocusedId ?? daemonFocusedId
+
+  if (effectiveFocus !== undefined) {
+    useActiveInstance().setIfUnset(effectiveFocus)
   }
 
   const tasks: Promise<void>[] = []
@@ -103,8 +125,8 @@ export async function brimSync(client: QueryClient, focusedId?: InstanceId): Pro
     tasks.push(prefetchInstanceMeta(client, id))
   }
 
-  if (focusedId !== undefined) {
-    tasks.push(prefetchInstanceChatFirstPage(client, focusedId))
+  if (effectiveFocus !== undefined) {
+    tasks.push(prefetchInstanceChatFirstPage(client, effectiveFocus))
   }
   await Promise.all(tasks)
 }

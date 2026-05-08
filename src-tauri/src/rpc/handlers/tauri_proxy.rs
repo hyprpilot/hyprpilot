@@ -147,6 +147,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
         "instances_list" => {
             let adapter = adapter_arc(app)?;
             let items = adapter.list().await;
+            let focused_id = adapter.focused_id().await.map(|k| k.as_string());
             let wire: Vec<Value> = items
                 .iter()
                 .map(|i| {
@@ -160,7 +161,10 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                     })
                 })
                 .collect();
-            Ok(json!({ "instances": wire }))
+            Ok(json!({
+                "instances": wire,
+                "focusedId": focused_id,
+            }))
         }
 
         // ── core interactions ────────────────────────────────────────

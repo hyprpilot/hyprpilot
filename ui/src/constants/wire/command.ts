@@ -223,7 +223,7 @@ export interface TauriCommandResult {
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
-  [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
+  [TauriCommand.InstancesList]: { instances: InstanceListEntry[]; focusedId?: string }
   [TauriCommand.InstancesFocus]: { instanceId: string }
   [TauriCommand.InstancesShutdown]: { instanceId: string }
   [TauriCommand.InstancesRename]: InstancesRenameResult
