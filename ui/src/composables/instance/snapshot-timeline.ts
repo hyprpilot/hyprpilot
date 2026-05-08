@@ -200,58 +200,72 @@ function projectEntry(seq: number, item: TranscriptItem, ctx: ProjectionContext)
   return null
 }
 
+interface ProjectedItem {
+  seq: number
+  turnId?: string
+  entry: TimelineEntry
+}
+
 /**
  * Convert oldest-first SeqTranscriptItem[] into TimelineBlocks.
- * Mirrors `useTimelineBlocks`'s grouping rules: assistant entries
- * sharing a snapshot run collapse into one block; user entries
- * always sit in their own block.
+ * Mirrors `useTimelineBlocks`'s grouping rules:
+ *
+ * - Items carrying a `turnId` group with consecutive items sharing
+ *   the same id (assistant blocks anchored on the ACP turn). The
+ *   user prompt that opened the turn lives there too — same turnId,
+ *   but lands in its own user-role block per the live router's
+ *   "user entry always solo" rule.
+ * - Items without a `turnId` (synthetic / pre-turn agent activity,
+ *   spontaneous updates) fall back to role-run grouping — every
+ *   consecutive run of assistant entries lands in one block, every
+ *   user entry in its own.
  */
 export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId = 'snapshot'): TimelineBlock[] {
   const ctx: ProjectionContext = { sessionId }
-  const entries: TimelineEntry[] = []
+  const projected: ProjectedItem[] = []
 
   for (const it of items) {
-    const projected = projectEntry(it.seq, it.item, ctx)
+    const entry = projectEntry(it.seq, it.item, ctx)
 
-    if (projected) {
-      entries.push(projected)
+    if (entry) {
+      projected.push({
+        seq: it.seq, turnId: it.turnId, entry
+      })
     }
   }
 
-  entries.sort((a, b) => a.createdAt - b.createdAt || KIND_ORDER[a.kind] - KIND_ORDER[b.kind])
+  projected.sort((a, b) => a.seq - b.seq || KIND_ORDER[a.entry.kind] - KIND_ORDER[b.entry.kind])
 
   const out: TimelineBlock[] = []
-  // The snapshot doesn't carry ACP turn ids inline (those ride on
-  // sibling `turn-started` / `turn-ended` events the mirror records
-  // separately). Group by role-run instead — every consecutive run
-  // of assistant entries lands in one block, every user entry in
-  // its own. Mirrors what the live router achieves once turn ids
-  // arrive on the events.
   let assistantRunIdx = 0
 
-  for (const entry of entries) {
+  for (const { entry, turnId } of projected) {
     const role = entry.kind === 'turn' ? (entry.turn.role === TurnRole.User ? Role.User : Role.Assistant) : Role.Assistant
-    const groupKey = role === Role.Assistant ? `snapshot-assistant:${assistantRunIdx}` : `snapshot-user:${entry.createdAt}`
+    // User entries always sit in their own block — even when they
+    // carry a turnId (the prompt that opened the turn). Mirrors the
+    // live router's `solo:user:...` keying.
+    const groupKey = role === Role.User ? `snapshot-user:${entry.createdAt}` : turnId !== undefined ? `turn:${turnId}` : `snapshot-assistant:${assistantRunIdx}`
     const last = out[out.length - 1]
     let block: TimelineBlock
 
     if (last && last.groupKey === groupKey) {
       block = last
     } else {
-      // Bump the assistant run counter when transitioning OUT of an
-      // assistant block — next assistant content opens a new block.
-      if (last && last.role === Role.Assistant && role !== Role.Assistant) {
-        assistantRunIdx += 1
-      } else if (last && last.role !== Role.Assistant && role === Role.Assistant) {
-        // Transitioning back into an assistant role bumps the run
-        // counter so the new block doesn't accidentally collapse
-        // with a prior assistant block whose entries came earlier.
-        assistantRunIdx += 1
+      // Bump the assistant run counter on every assistant→non-assistant
+      // and non-assistant→assistant transition so role-run grouping
+      // for `turnId === undefined` items doesn't collapse two
+      // separate runs that were split by an interleaving user block.
+      if (role === Role.Assistant && turnId === undefined) {
+        if (last && (last.role !== Role.Assistant || last.turnId !== undefined)) {
+          assistantRunIdx += 1
+        }
       }
+      const finalGroupKey = role === Role.User ? groupKey : turnId !== undefined ? `turn:${turnId}` : `snapshot-assistant:${assistantRunIdx}`
+
       block = {
         role,
-        groupKey: role === Role.Assistant ? `snapshot-assistant:${assistantRunIdx}` : groupKey,
-        turnId: undefined,
+        groupKey: finalGroupKey,
+        turnId: role === Role.Assistant ? turnId : undefined,
         startedAt: entry.createdAt,
         streamEntries: [],
         toolCalls: [],

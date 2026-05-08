@@ -26,11 +26,6 @@ function isRunning(status: string | undefined): boolean {
   return !TERMINAL_STATUSES.has(status.toLowerCase())
 }
 
-/// **Interim cap** — same story as `use-transcript.ts` /
-/// `use-stream.ts`. Replaced by daemon-side tool-call snapshots once
-/// the state-replay PR lands.
-const MAX_TOOL_CALLS_PER_INSTANCE = 1000
-
 const states = reactive(new Map<InstanceId, ToolsState>())
 
 /// `formatted`, `content`, `rawInput` carry diff blobs / large
@@ -68,15 +63,6 @@ function recountRunning(slot: ToolsState): void {
     }
   }
   slot.runningCount = n
-}
-
-function trimToolsSlot(slot: ToolsState): void {
-  const overflow = slot.calls.length - MAX_TOOL_CALLS_PER_INSTANCE
-
-  if (overflow > 0) {
-    slot.calls.splice(0, overflow)
-    recountRunning(slot)
-  }
 }
 
 function slotFor(id: InstanceId): ToolsState {
@@ -189,7 +175,6 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
   if (isRunning(heavy.status)) {
     slot.runningCount += 1
   }
-  trimToolsSlot(slot)
 }
 
 export function resetTools(id: InstanceId): void {

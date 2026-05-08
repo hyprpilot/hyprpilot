@@ -76,9 +76,15 @@ export interface PermissionRequestSnapshot {
  * One transcript entry with its monotonic sequence number. The daemon
  * stamps `seq` at insertion time; UI uses the oldest entry's `seq` as
  * the next-page cursor when scrolling backward.
+ *
+ * `turnId` carries the active ACP turn id stamped on the originating
+ * `InstanceEvent::Transcript`. Snapshot consumers group consecutive
+ * items by `turnId` to lay out the same per-turn blocks the live
+ * router builds; items emitted outside a turn carry `undefined`.
  */
 export interface SeqTranscriptItem {
   seq: number
+  turnId?: string
   item: TranscriptItem
 }
 
