@@ -2,46 +2,39 @@
 /**
  * Chat transcript viewport. Reads off `useChatViewport` (which wraps
  * `useInstanceChatInfiniteQuery` + live-event patches + page-trim
- * policy) and feeds the resulting blocks into the virtualized scroll
- * surface.
+ * policy) and feeds the resulting blocks into a plain `v-for` render.
  *
- * **Variable-height virtualization** via `@tanstack/vue-virtual`:
+ * **No virtualization.** TanStack Vue Virtual was tried twice and
+ * pulled out twice. Variable-height content + streaming chunks
+ * creates a tight ResizeObserver / `triggerRef` / re-measure cycle
+ * that never converges:
  *
- * - `useVirtualizer` keyed by `block.groupKey` (stable across renders;
- *   array-index keys would invalidate measurements on every prepend).
- * - Each rendered row carries `data-index` + a `:ref` callback into
- *   `virtualizer.measureElement`. Without BOTH bindings, the virtualizer
- *   can't attach its `ResizeObserver` and every row stays at the
- *   `estimateSize` value forever — that produces visible gaps between
- *   short rows and overlap on tall ones.
- * - `shouldAdjustScrollPositionOnItemSizeChange` returns `true` when the
- *   resized item is above the current viewport: when an older page
- *   measures in (taller than the estimate), the scroll offset
- *   compensates by the delta so the captain's currently-visible content
- *   stays anchored. This is the maintainer-recommended fix for the
- *   prepend-page jump (TanStack Virtual discussion #1013).
- * - Streaming text into an existing row: the per-row `ResizeObserver`
- *   fires automatically — no manual `measure()` call needed.
+ *   1. virtualizer.measureElement(row) → onChange → triggerRef(state)
+ *   2. virtualRows recomputes (positions shift)
+ *   3. Vue re-renders the row, content unchanged but ref re-fires
+ *   4. ResizeObserver fires for the changed-size row (head row keeps
+ *      growing during streaming)
+ *   5. Goto 1
+ *
+ * Vue caps the loop at 100 iterations and throws "Maximum recursive
+ * updates exceeded in component <Viewport>". The non-virtualized
+ * `v-for` is stable: page-trim already bounds the live DOM to ~150
+ * rows (`useChatViewport.MAX_PAGES_KEPT` × `DEFAULT_CHAT_LIMIT`),
+ * which Vue handles without breaking a sweat. Re-virtualize later
+ * if a real memory ceiling shows up; the bottleneck today is
+ * correctness.
  *
  * **Backward pagination**: a `@scroll` handler watches `scrollTop` and
  * triggers `viewport.fetchNextPage()` when the captain crosses
- * `LOAD_MORE_THRESHOLD_PX` from the top. The previous DOM-sentinel +
- * `useIntersectionObserver` was broken because the observer's default
- * `root` is the document, not the chat scroll container — the sentinel
- * never intersected when the captain scrolled the chat up. A direct
- * scrollTop check sidesteps that entirely.
+ * `LOAD_MORE_THRESHOLD_PX` from the top.
  *
- * **Stick-to-bottom**: `useStickToBottom` provides the `stuck` boolean
- * (the captain is at the tail). When new blocks land while stuck, we
- * call `virtualizer.scrollToIndex(last, { align: 'end' })` in
- * `nextTick` so the live event flows down naturally. This works
- * alongside the observer-driven scroll the composable does internally:
- * the virtualizer call gives us index-aware end-alignment that handles
- * the "last row still growing post-scroll" case during streaming.
+ * **Stick-to-bottom**: `useStickToBottom` already runs a
+ * MutationObserver + ResizeObserver pair on the scroll container and
+ * scrolls to the tail on every mutation while `stuck` is true. No
+ * extra Vue watcher needed.
  */
-import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useEventListener, useNow } from '@vueuse/core'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
@@ -73,14 +66,6 @@ import { format, formatDuration } from '@lib'
 /// the captain runs out of content; tight enough not to fire while
 /// the captain is reading mid-list.
 const LOAD_MORE_THRESHOLD_PX = 240
-
-/// Estimated row height for unmeasured blocks. Bias toward the
-/// **median** actual height so over-estimates and under-estimates
-/// roughly cancel — that minimises offset jitter as rows measure in.
-/// Real chat blocks vary from ~32px (one-line user prompt) to 1500px+
-/// (long agent reply with tool chips); 200 is the rough median across
-/// the development sessions.
-const ESTIMATE_SIZE_PX = 200
 
 const props = defineProps<{
   /// Captain's "session is restoring" gate — keeps the scoped
@@ -130,54 +115,30 @@ watch(stuck, (next) => {
   viewport.onStuckChange(next)
 })
 
-// ── Virtualization ──────────────────────────────────────────────────
+// ── Rendering ──────────────────────────────────────────────────────
 //
-// `shouldAdjustScrollPositionOnItemSizeChange` was tried and DROPPED:
-// returning `true` for above-viewport rows writes the scroll offset,
-// which triggers a re-render, which re-fires the per-row
-// `ResizeObserver`, which calls the predicate again — exactly the
-// "Maximum recursive updates exceeded" + "ResizeObserver loop
-// completed with undelivered notifications" pattern under heavy
-// session/load replay. The captain's prepend-page jump it was
-// supposed to fix is mild compared to the freeze it was causing
-// here, so leave the knob off until / unless we have a deterministic
-// way to apply the compensation outside the reactive cycle.
-const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: blocks.value.length,
-    getScrollElement: () => scrollEl.value ?? null,
-    estimateSize: () => ESTIMATE_SIZE_PX,
-    overscan: 8,
-    getItemKey: (i: number) => blocks.value[i]?.groupKey ?? i
-  }))
-)
-
-// Stable `:ref` callback for the row's measureElement registration.
-// An inline arrow function `:ref="(el) => virtualizer.measureElement(el)"`
-// creates a fresh closure on every render — Vue compares ref
-// callbacks by identity and re-runs them (old ref with `null`, new
-// ref with the element), which triggers the row's ResizeObserver
-// twice per frame and feeds the loop above. A stable closure
-// captured in a const fires once on mount + once on unmount.
-function measureRow(el: Element | null): void {
-  virtualizer.value.measureElement(el)
-}
-
-const virtualRows = computed(() => virtualizer.value.getVirtualItems())
-const totalSize = computed(() => virtualizer.value.getTotalSize())
-
-// Follow the tail when stuck and new blocks land. nextTick lets the
-// virtualizer process the count change before we ask it to scroll.
-watch(
-  () => blocks.value.length,
-  async(next) => {
-    if (!stuck.value || next === 0) {
-      return
-    }
-    await nextTick()
-    virtualizer.value.scrollToIndex(next - 1, { align: 'end' })
-  }
-)
+// **No virtualization.** TanStack Vue Virtual was tried twice and
+// pulled out twice for the same root cause: variable-height content
+// + streaming chunks creates a tight ResizeObserver / `triggerRef` /
+// re-measure cycle that never converges:
+//
+//   1. virtualizer.measureElement(row) → onChange → triggerRef(state)
+//   2. virtualRows recomputes (positions shift)
+//   3. Vue re-renders the row, content unchanged but ref re-fires
+//   4. ResizeObserver fires for the changed-size row (head row keeps
+//      growing during streaming)
+//   5. Goto 1
+//
+// Vue caps the loop at 100 iterations and throws "Maximum recursive
+// updates exceeded in component <Viewport>". Under streaming reply
+// or session/load replay it fires every chunk.
+//
+// The non-virtualized `v-for` over `blocks` is stable: page-trim
+// already bounds the live DOM to ~150 rows
+// (`useChatViewport.MAX_PAGES_KEPT` × `DEFAULT_CHAT_LIMIT`), and
+// modern Vue can render that without breaking a sweat. The viewport
+// can be re-virtualized later if a captain hits a real memory
+// ceiling, but the current bottleneck is correctness, not memory.
 
 // ── Keyboard scroll ─────────────────────────────────────────────────
 //
@@ -506,86 +467,76 @@ defineExpose({ scrollEl })
            doesn't compete with row offsets. -->
       <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
 
-      <!-- Virtualized spacer: total height matches the sum of
-           measured/estimated row sizes. Rows position themselves via
-           `transform: translateY(...)` inside this relative parent. -->
-      <div class="chat-virtual-host" :style="{ height: `${totalSize}px` }">
-        <div
-          v-for="row in virtualRows"
-          :key="String(row.key)"
-          :data-index="row.index"
-          :ref="measureRow"
-          class="chat-virtual-row"
-          :style="{ transform: `translateY(${row.start}px)` }"
-        >
-          <Turn
-            v-if="blocks[row.index]"
-            :role="blocks[row.index]!.role"
-            :live="row.index === liveBlockIdx"
-            :elapsed="elapsedFor(blocks[row.index]!.turnId)"
-            :usage="usageFor(blocks[row.index]!.turnId)"
-          >
-            <StreamCard
-              v-if="combinedThoughtText(blocks[row.index]!).length > 0 || hasThinkingSignal(blocks[row.index]!)"
-              :kind="StreamKind.Thinking"
-              :active="row.index === liveBlockIdx"
-              label="thought"
-              :elapsed="thinkingElapsedFor(blocks[row.index]!)"
-              :text="combinedThoughtText(blocks[row.index]!).length > 0 ? combinedThoughtText(blocks[row.index]!) : undefined"
+      <!-- Plain v-for over `blocks`. Page-trim already bounds the
+           live DOM to ~150 rows; that's well within Vue's render
+           budget for typical chat sessions. -->
+      <Turn
+        v-for="(block, blockIdx) in blocks"
+        :key="block.groupKey"
+        :role="block.role"
+        :live="blockIdx === liveBlockIdx"
+        :elapsed="elapsedFor(block.turnId)"
+        :usage="usageFor(block.turnId)"
+      >
+        <StreamCard
+          v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
+          :kind="StreamKind.Thinking"
+          :active="blockIdx === liveBlockIdx"
+          label="thought"
+          :elapsed="thinkingElapsedFor(block)"
+          :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
+        />
+        <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+          <StreamCard
+            v-if="entry.item.kind === StreamItemKind.Plan"
+            :kind="StreamKind.Planning"
+            :active="blockIdx === liveBlockIdx"
+            label="plan"
+            :items="mapPlanItems(entry.item.entries)"
+          />
+          <ChangeBanner
+            v-else-if="entry.item.kind === StreamItemKind.ModeChange"
+            kind="mode"
+            :to="entry.item.name ?? entry.item.modeId"
+            :from="entry.item.prevName ?? entry.item.prevModeId"
+          />
+          <ChangeBanner
+            v-else-if="entry.item.kind === StreamItemKind.ModelChange"
+            kind="model"
+            :to="entry.item.name ?? entry.item.modelId"
+            :from="entry.item.prevName ?? entry.item.prevModelId"
+          />
+          <ChangeBanner
+            v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
+            :kind="entry.item.categoryId"
+            :to="entry.item.name ?? entry.item.value"
+            :from="entry.item.prevName ?? entry.item.prevValue"
+          />
+          <ChangeBanner
+            v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected"
+            kind="system prompt"
+            :to="systemPromptLabel(entry.item.files)"
+          />
+        </template>
+
+        <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterForActive))" />
+
+        <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
+          <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
+        </template>
+
+        <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
+          <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
+          <template v-else>
+            <Body :role="Role.User" :text="entry.turn.text" markdown />
+            <Attachments
+              v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+              :attachments="entry.turn.attachments"
+              @open="(att) => emit('attachment-open', att)"
             />
-            <template v-for="entry in blocks[row.index]!.streamEntries" :key="`stream-${entry.createdAt}`">
-              <StreamCard
-                v-if="entry.item.kind === StreamItemKind.Plan"
-                :kind="StreamKind.Planning"
-                :active="row.index === liveBlockIdx"
-                label="plan"
-                :items="mapPlanItems(entry.item.entries)"
-              />
-              <ChangeBanner
-                v-else-if="entry.item.kind === StreamItemKind.ModeChange"
-                kind="mode"
-                :to="entry.item.name ?? entry.item.modeId"
-                :from="entry.item.prevName ?? entry.item.prevModeId"
-              />
-              <ChangeBanner
-                v-else-if="entry.item.kind === StreamItemKind.ModelChange"
-                kind="model"
-                :to="entry.item.name ?? entry.item.modelId"
-                :from="entry.item.prevName ?? entry.item.prevModelId"
-              />
-              <ChangeBanner
-                v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
-                :kind="entry.item.categoryId"
-                :to="entry.item.name ?? entry.item.value"
-                :from="entry.item.prevName ?? entry.item.prevValue"
-              />
-              <ChangeBanner
-                v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected"
-                kind="system prompt"
-                :to="systemPromptLabel(entry.item.files)"
-              />
-            </template>
-
-            <ToolChips v-if="blocks[row.index]!.toolCalls.length > 0" :views="blocks[row.index]!.toolCalls.map((t) => format(t.call, adapterForActive))" />
-
-            <template v-for="entry in blocks[row.index]!.toolCalls" :key="`term-${entry.call.toolCallId}`">
-              <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
-            </template>
-
-            <template v-for="entry in blocks[row.index]!.turnEntries" :key="`turn-${entry.createdAt}`">
-              <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
-              <template v-else>
-                <Body :role="Role.User" :text="entry.turn.text" markdown />
-                <Attachments
-                  v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
-                  :attachments="entry.turn.attachments"
-                  @open="(att) => emit('attachment-open', att)"
-                />
-              </template>
-            </template>
-          </Turn>
-        </div>
-      </div>
+          </template>
+        </template>
+      </Turn>
     </template>
   </div>
 </template>
@@ -596,29 +547,6 @@ defineExpose({ scrollEl })
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
-  /* Stop the browser's native scroll-anchoring from fighting the
-   * virtualizer's own scroll-offset adjustment when rows above remeasure. */
-  overflow-anchor: none;
-}
-
-.chat-virtual-host {
-  /* Inner spacer — rows are absolutely positioned within. The host's
-   * height is set inline from the virtualizer's `getTotalSize()`. */
-  position: relative;
-  width: 100%;
-}
-
-.chat-virtual-row {
-  /* Absolute children of the relative host. Padding lives on the row
-   * itself because absolute children's `width: 100%` resolves against
-   * the parent's padding-box width — padding on the parent has no
-   * effect on them. `box-sizing: border-box` keeps the width math
-   * intact so 100% means "full host width including padding". */
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  box-sizing: border-box;
   padding: 0 0.875rem 0 0.25rem;
 }
 
