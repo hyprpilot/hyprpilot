@@ -801,6 +801,188 @@ mod tests {
         ));
     }
 
+    /// End-to-end write-through pin: simulate the actor's emit
+    /// pattern by pairing every `mirror.apply(&event).await` with a
+    /// `broadcast.send(event)` (mirroring the
+    /// `mirror.apply(&event).await; let _ = events_tx.send(event)`
+    /// pattern wired in `acp/instance.rs::run`). A fresh mirror that
+    /// only consumes the broadcast stream MUST agree with the actor's
+    /// mirror snapshot — that's the contract Phase A3 guarantees.
+    #[tokio::test]
+    async fn write_through_matches_subscriber_replay() {
+        use tokio::sync::broadcast;
+
+        let actor_mirror = InstanceMirror::new();
+        let (events_tx, mut events_rx) = broadcast::channel::<InstanceEvent>(64);
+
+        // Stream covers every variant the mirror's apply mutates on
+        // (transcript, turn lifecycle, permission, instance meta,
+        // current-mode update, usage, terminal, plus a no-op state
+        // event to confirm noops don't desync).
+        let stream: Vec<InstanceEvent> = vec![
+            // Pre-turn meta refresh.
+            meta_event("/tmp/proj", Some("plan"), Some("sonnet")),
+            // Lifecycle (no-op for mirror, but rides the broadcast).
+            InstanceEvent::State {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: Some("s-1".into()),
+                state: crate::adapters::InstanceState::Running,
+            },
+            // Turn opens.
+            InstanceEvent::TurnStarted {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                started_at: 1_700_000_000_000,
+            },
+            // Two transcript chunks.
+            transcript_event("first thought"),
+            transcript_event("second thought"),
+            // Mid-turn usage update.
+            InstanceEvent::UsageUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: Some("t-1".into()),
+                used: 5_000,
+                size: 200_000,
+                cost: None,
+            },
+            // Permission request.
+            InstanceEvent::PermissionRequest {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: Some("t-1".into()),
+                request_id: "req-write-through".into(),
+                tool: "Bash".into(),
+                kind: "execute".into(),
+                args: "ls".into(),
+                raw_input: Some(json!({ "command": "ls" })),
+                content: Vec::new(),
+                options: vec![PermissionOptionView {
+                    option_id: "allow".into(),
+                    name: "Allow".into(),
+                    kind: "allow_once".into(),
+                }],
+                formatted: crate::tools::formatter::types::FormattedToolCall {
+                    title: "Bash".into(),
+                    stats: Vec::new(),
+                    description: None,
+                    output: None,
+                    fields: vec![],
+                },
+            },
+            // Mode-switch overlay.
+            InstanceEvent::CurrentModeUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                current_mode_id: "edit".into(),
+            },
+            // Terminal output + exit pair.
+            InstanceEvent::Terminal {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: Some("t-1".into()),
+                terminal_id: "term-write-through".into(),
+                chunk: TerminalChunk::Output {
+                    stream: TerminalStream::Stdout,
+                    data: "ok\n".into(),
+                },
+            },
+            InstanceEvent::Terminal {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: Some("t-1".into()),
+                terminal_id: "term-write-through".into(),
+                chunk: TerminalChunk::Exit {
+                    exit_code: Some(0),
+                    signal: None,
+                },
+            },
+            // Turn closes.
+            InstanceEvent::TurnEnded {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: "t-1".into(),
+                stop_reason: Some("end_turn".into()),
+                error: None,
+                ended_at: 1_700_000_001_000,
+            },
+        ];
+
+        // Same shape as `acp/instance.rs::run`: apply first (so a
+        // concurrent snapshot read sees consistent state), THEN
+        // broadcast for downstream consumers.
+        for event in &stream {
+            actor_mirror.apply(event).await;
+            events_tx.send(event.clone()).expect("subscriber alive");
+        }
+
+        // Replay through a fresh mirror exactly the way a snapshot-
+        // hydrating consumer would: drain the broadcast and apply
+        // each event in arrival order.
+        let replay_mirror = InstanceMirror::new();
+        for _ in 0..stream.len() {
+            let evt = events_rx.recv().await.expect("broadcast healthy");
+            replay_mirror.apply(&evt).await;
+        }
+
+        let actor_meta = actor_mirror.meta_snapshot().await;
+        let replay_meta = replay_mirror.meta_snapshot().await;
+        let actor_chat = actor_mirror.chat_snapshot(None, 100).await;
+        let replay_chat = replay_mirror.chat_snapshot(None, 100).await;
+        let actor_terms = actor_mirror.terminals_snapshot().await;
+        let replay_terms = replay_mirror.terminals_snapshot().await;
+
+        // Structural equality via JSON keeps the comparison stable
+        // across the enum / vec / map nesting without unpacking by
+        // hand. Same trick the no-op test uses.
+        assert_eq!(
+            serde_json::to_value(&actor_meta).unwrap(),
+            serde_json::to_value(&replay_meta).unwrap(),
+            "meta snapshot diverges between actor and replay"
+        );
+        assert_eq!(
+            serde_json::to_value(&actor_chat).unwrap(),
+            serde_json::to_value(&replay_chat).unwrap(),
+            "chat snapshot diverges between actor and replay"
+        );
+        assert_eq!(
+            serde_json::to_value(&actor_terms).unwrap(),
+            serde_json::to_value(&replay_terms).unwrap(),
+            "terminals snapshot diverges between actor and replay"
+        );
+
+        // Sanity-check the actor mirror's accumulated state matches
+        // the events that flowed through — replay agreement above is
+        // strong, but pin the load-bearing fields so a refactor
+        // can't silently turn both halves into matching no-ops.
+        assert_eq!(actor_meta.cwd.as_deref(), Some("/tmp/proj"));
+        assert_eq!(actor_meta.current_mode_id.as_deref(), Some("edit"));
+        assert_eq!(actor_meta.current_model_id.as_deref(), Some("sonnet"));
+        assert_eq!(actor_meta.usage.used, 5_000);
+        assert_eq!(actor_meta.pending_permissions.len(), 1);
+        assert!(matches!(
+            actor_meta.current_turn_event,
+            Some(TurnEventMarker::Ended { .. })
+        ));
+        assert_eq!(actor_chat.items.len(), 2, "two transcript items");
+        let term = actor_terms
+            .terminals
+            .get("term-write-through")
+            .expect("terminal recorded");
+        assert_eq!(term.stdout, "ok\n");
+        assert!(!term.running);
+        assert_eq!(term.exit_code, Some(0));
+    }
+
     /// Terminal output accumulates per-stream; `Exit` flips `running`.
     #[tokio::test]
     async fn terminal_state_accumulates_then_exits() {
