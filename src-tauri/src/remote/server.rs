@@ -6,6 +6,7 @@
 
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -122,9 +123,25 @@ async fn asset_handler(State(state): State<RemoteState>, uri: Uri) -> Response {
         match proxy_to_vite(&uri).await {
             Ok(response) => return response,
             Err(err) => {
-                tracing::warn!(%err, path = %uri, "remote: vite dev proxy failed; falling through to asset_resolver");
-                // Fall through to the production path below. If the
-                // captain manually built `ui/dist/` it'll still work.
+                // One-shot warn — without this every asset request
+                // (10+ on a fresh page load) floods the log when
+                // Vite isn't running. The likely cases are
+                // (a) captain ran daemon standalone (no `task run`),
+                // (b) `task run` died and only the daemon survived.
+                // Either way, we silently fall through to the
+                // asset_resolver which serves whatever was last
+                // `pnpm build`-ed into `ui/dist/`.
+                if !VITE_PROXY_WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        %err,
+                        "remote: vite dev proxy unreachable on \
+                         127.0.0.1:1420; falling through to ui/dist (run \
+                         `task run` for live reload, or `pnpm --filter \
+                         hyprpilot-ui build` to refresh ui/dist). Future \
+                         proxy failures this session will be silent."
+                    );
+                }
+                // Fall through to the production path below.
             }
         }
     }
@@ -152,6 +169,10 @@ async fn asset_handler(State(state): State<RemoteState>, uri: Uri) -> Response {
 /// won't find Vite — fall through to `asset_resolver`.
 const VITE_DEV_HOST: &str = "127.0.0.1";
 const VITE_DEV_PORT: u16 = 1420;
+
+/// One-shot guard for the "Vite unreachable" warn. Without this every
+/// asset request (10+ per fresh page load) re-logs the same line.
+static VITE_PROXY_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Forward an HTTP/1.1 GET to the Vite dev server and convert the
 /// response into an axum Response. `Connection: close` keeps the
