@@ -193,6 +193,19 @@ pub trait Adapter: Send + Sync + 'static {
         None
     }
 
+    /// Per-instance write-through state mirror for the addressed
+    /// instance. `None` when `key` doesn't resolve to a live actor.
+    /// Default: `None` — adapters without a mirror cache keep the
+    /// `instance/snapshot/*` RPC family returning "not found" rather
+    /// than fabricating empty snapshots. `AcpAdapter` overrides to
+    /// read from its registry.
+    async fn instance_mirror(
+        &self,
+        _key: InstanceKey,
+    ) -> Option<std::sync::Arc<crate::adapters::mirror::InstanceMirror>> {
+        None
+    }
+
     // ── wire-method dispatch surface ─────────────────────────────────
     //
     // Each method has a default that returns `AdapterError::Unsupported`.

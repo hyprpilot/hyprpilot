@@ -16,6 +16,7 @@ use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
+use super::mirror::{ChatSnapshot, MetaSnapshot, TerminalsSnapshot};
 use super::permission::PermissionController;
 use super::transcript::Attachment;
 use super::Adapter;
@@ -458,6 +459,62 @@ pub async fn permission_reply(
         }
     }
     Ok(())
+}
+
+/// Snapshot the addressed instance's `MetaSnapshot` off the
+/// per-instance write-through mirror. UI reads this on focus-switch
+/// for brim-sync hydration.
+///
+/// Coexists with `instance_meta` above: that command goes through the
+/// actor's `MetaSnapshot` command (a roundtrip to the live actor's
+/// command loop, surfacing the agent's cached `availableModels` /
+/// `availableModes` even before the first event lands). This one
+/// reads the mirror directly — same per-event state, no actor
+/// roundtrip — and complements it for the post-event hydration path.
+#[tauri::command]
+pub async fn instance_snapshot_meta(adapter: AdapterState<'_>, instance_id: String) -> Result<MetaSnapshot, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    Ok(mirror.meta_snapshot().await)
+}
+
+/// Snapshot a windowed page of the addressed instance's transcript.
+/// `before` is a strictly-older cursor (chain `before = oldestSeq`
+/// of the previous page to paginate backwards); unset → return the
+/// latest `limit` entries. `limit = 0` or unset → mirror's default
+/// page size (50).
+#[tauri::command]
+pub async fn instance_snapshot_chat(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    before: Option<u64>,
+    limit: Option<usize>,
+) -> Result<ChatSnapshot, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    Ok(mirror.chat_snapshot(before, limit.unwrap_or(0)).await)
+}
+
+/// Snapshot every per-`terminal_id` map entry. Small enough to ship
+/// whole today; revisit if a session accumulates dozens of long-
+/// running terminals.
+#[tauri::command]
+pub async fn instance_snapshot_terminals(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+) -> Result<TerminalsSnapshot, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    Ok(mirror.terminals_snapshot().await)
 }
 
 /// Read-only snapshot of the resolved MCP set for an instance. When

@@ -1394,6 +1394,31 @@ impl AcpInstance {
         rx.await.map_err(|e| e.to_string())
     }
 
+    /// Test-only stub builder. Constructs an `AcpInstance` carrying
+    /// the supplied `mirror` Arc but no live actor — `cmd_tx`'s
+    /// receiver is dropped immediately so any command send fails
+    /// closed. Used by snapshot RPC tests that only read mirror
+    /// state through [`crate::adapters::Adapter::instance_mirror`].
+    #[cfg(test)]
+    #[must_use]
+    pub fn stub_for_tests(key: InstanceKey, mirror: Arc<crate::adapters::InstanceMirror>) -> Self {
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
+        // Drop the receiver so any subsequent send fails. Tests that
+        // need a working actor go through `start` instead.
+        Self {
+            key,
+            agent_id: "test-agent".into(),
+            profile_id: None,
+            mode: None,
+            cmd_tx,
+            session_id: Arc::new(tokio::sync::RwLock::new(None)),
+            name: Arc::new(tokio::sync::RwLock::new(None)),
+            skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
+            tool_calls: Arc::new(tokio::sync::RwLock::new(ToolCallCache::default())),
+            mirror,
+        }
+    }
+
     /// Spawn the per-instance actor task and return its handle.
     /// Symmetric with [`Self::shutdown`]: the registry calls `start`
     /// to bring an instance up and `shutdown` to tear it down.

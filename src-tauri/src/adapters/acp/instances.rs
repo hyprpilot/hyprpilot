@@ -332,6 +332,23 @@ impl AcpAdapter {
         }
     }
 
+    /// Test hook: insert a stub `AcpInstance` whose `mirror` Arc is
+    /// addressable via [`Adapter::instance_mirror`]. Bypasses the
+    /// actor spawn — `cmd_tx` is bound to a dropped receiver, so
+    /// commands fail closed (good for snapshot RPC tests, which
+    /// only read the mirror). Returns the inserted key so tests can
+    /// thread it into wire-shaped params.
+    #[cfg(test)]
+    pub async fn test_install_mirror(
+        &self,
+        mirror: std::sync::Arc<crate::adapters::mirror::InstanceMirror>,
+    ) -> InstanceKey {
+        let key = InstanceKey::new_v4();
+        let handle = std::sync::Arc::new(crate::adapters::acp::instance::AcpInstance::stub_for_tests(key, mirror));
+        self.registry.insert(key, handle, None).await.expect("test insert");
+        key
+    }
+
     /// Profile config lookup by id — used when spawning an actor so
     /// the runtime carries the full allowlist definition, not just a
     /// profile id.
@@ -1275,6 +1292,13 @@ impl Adapter for AcpAdapter {
 
     fn permissions(&self) -> Option<std::sync::Arc<dyn crate::adapters::permission::PermissionController>> {
         Some(AcpAdapter::permissions(self))
+    }
+
+    async fn instance_mirror(
+        &self,
+        key: InstanceKey,
+    ) -> Option<std::sync::Arc<crate::adapters::mirror::InstanceMirror>> {
+        self.registry.get(key).await.map(|h| h.mirror.clone())
     }
 
     // ── wire-method dispatch (S3 expansion) ───────────────────────────

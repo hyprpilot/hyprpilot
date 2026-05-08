@@ -282,6 +282,68 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 .map_err(|e| RpcError::internal_error(e.to_string()))?;
             Ok(json!({ "instanceId": key.as_string(), "name": args.name }))
         }
+        "instance_snapshot_meta" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                instance_id: String,
+            }
+            let args: Args = parse_params(params, "tauri/instance_snapshot_meta")?;
+            let adapter = adapter_arc(app)?;
+            let key = crate::adapters::InstanceKey::parse(&args.instance_id)
+                .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+            let mirror = (adapter.as_ref() as &dyn Adapter)
+                .instance_mirror(key)
+                .await
+                .ok_or_else(|| {
+                    RpcError::invalid_params(format!("instance '{}' not found in registry", args.instance_id))
+                })?;
+            let snap = mirror.meta_snapshot().await;
+            serde_json::to_value(snap).map_err(|e| RpcError::internal_error(format!("serialize meta snapshot: {e}")))
+        }
+        "instance_snapshot_chat" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                instance_id: String,
+                #[serde(default)]
+                before: Option<u64>,
+                #[serde(default)]
+                limit: Option<usize>,
+            }
+            let args: Args = parse_params(params, "tauri/instance_snapshot_chat")?;
+            let adapter = adapter_arc(app)?;
+            let key = crate::adapters::InstanceKey::parse(&args.instance_id)
+                .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+            let mirror = (adapter.as_ref() as &dyn Adapter)
+                .instance_mirror(key)
+                .await
+                .ok_or_else(|| {
+                    RpcError::invalid_params(format!("instance '{}' not found in registry", args.instance_id))
+                })?;
+            let snap = mirror.chat_snapshot(args.before, args.limit.unwrap_or(0)).await;
+            serde_json::to_value(snap).map_err(|e| RpcError::internal_error(format!("serialize chat snapshot: {e}")))
+        }
+        "instance_snapshot_terminals" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                instance_id: String,
+            }
+            let args: Args = parse_params(params, "tauri/instance_snapshot_terminals")?;
+            let adapter = adapter_arc(app)?;
+            let key = crate::adapters::InstanceKey::parse(&args.instance_id)
+                .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+            let mirror = (adapter.as_ref() as &dyn Adapter)
+                .instance_mirror(key)
+                .await
+                .ok_or_else(|| {
+                    RpcError::invalid_params(format!("instance '{}' not found in registry", args.instance_id))
+                })?;
+            let snap = mirror.terminals_snapshot().await;
+            serde_json::to_value(snap)
+                .map_err(|e| RpcError::internal_error(format!("serialize terminals snapshot: {e}")))
+        }
         "instance_meta" => {
             #[derive(Default, Deserialize)]
             #[serde(rename_all = "camelCase")]
