@@ -667,6 +667,10 @@ Each is silent by default; enable per-target via `RUST_LOG`:
 | --- | --- | --- |
 | `acp::wire` | Every incoming `session/update` notification (raw JSON) AND the outgoing `session/prompt` request (raw JSON) | Diagnosing vendor wire-shape surprises (empty thought-chunk content, missing `content_block_delta`s, unexpected sessionUpdate variants) |
 | `acp::thought` | Per-`agent_thought_chunk` extraction outcome (text length on success; raw payload + `content shape not in {…}` `warn!` on empty) | Confirming what the SDK is actually shipping in the thinking field |
+| `snapshot::mirror` | Every `InstanceMirror::apply` write keyed by event topic (`instance.transcript`, `instance.turn_started`, `instance.usage_update`, …) | Tracing how live `InstanceEvent`s mutate the per-instance write-through cache; pairs with `snapshot.live-patch.*` UI-side traces |
+| `snapshot::meta` | Every served `instance/snapshot/meta` response (turn count, pending-permission count, latest_seq) | Confirming the daemon shipped meta the UI's brim-sync / per-focus prefetch / `useSnapshotHydration` is reading |
+| `snapshot::chat` | Every served `instance/snapshot/chat` page (cursor, items, has_more) | Tracing backward-pagination requests from the UI's `fetchNextPage` |
+| `snapshot::terminals` | Every served `instance/snapshot/terminals` response | Tracing terminal-card hydration |
 
 Example one-shot for the thinking-block path:
 
@@ -678,6 +682,27 @@ RUST_LOG='hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace' \
 Daemon log file lands under `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.<date>`;
 grep for `target: acp::wire` lines to see the raw payload of every
 `session/update` and `session/prompt`.
+
+One-shot for the snapshot pipeline (daemon-side mirror + RPC):
+
+```sh
+RUST_LOG='hyprpilot::adapters=info,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace' \
+  hyprpilot daemon
+```
+
+UI-side counterparts run through the structured `log.trace(...)`
+surface and ride the same daily-rolled file via the
+`tauri-plugin-log` plugin (Vue's `console.log` mirrors are dropped
+when the Tauri host is unreachable). Search prefixes:
+
+| Prefix | Where | What it captures |
+| --- | --- | --- |
+| `snapshot.brim-sync.*` | `useFocusPrefetch.brimSync` | Start / `instances/list` resolution / done — instance count, daemon vs local focus, chat-primed flag |
+| `snapshot.focus-prefetch.*` | `useFocusPrefetch.start` | `acp:instances-focused` / `acp:instances-changed` triggered prefetches |
+| `snapshot.live-patch.*` | `useChatViewport.patchLatestPage` | Live `acp:transcript` events landing on the head page (applied / merged tool-call-update / skipped variants) |
+| `snapshot.fetch-older.*` | `useChatViewport.fetchNextPage` | Backward pagination start / done with cursor + page count |
+| `snapshot.page-trim.evicted` | `useChatViewport.onStuckChange` | Cache-cap eviction when stuck-at-bottom + `pages > MAX_PAGES_KEPT` |
+| `snapshot.hydrate.*` | `useSnapshotHydration` | Meta query data arriving + per-turn replay into `useTurns` (push/skip counts) |
 
 ## Frontend testing
 

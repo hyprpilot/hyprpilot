@@ -251,6 +251,11 @@ impl InstanceMirror {
     /// in `acp/instance.rs`. Phase A2 lands the type only; nothing
     /// calls `apply` yet.
     pub async fn apply(&self, event: &InstanceEvent) {
+        tracing::trace!(
+            target: "snapshot::mirror",
+            event = event.topic(),
+            "mirror.apply",
+        );
         let mut g = self.inner.write().await;
         match event {
             // ── transcript firehose ──────────────────────────────

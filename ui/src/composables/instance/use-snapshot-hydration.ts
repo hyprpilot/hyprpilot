@@ -32,6 +32,7 @@ import { useInstanceMetaQuery } from './use-instance-meta-query'
 import { pushTurnEnded, pushTurnStarted, pushUsageUpdate } from './use-turns'
 import { type InstanceId } from '../chrome/use-active-instance'
 import { type TurnSnapshot } from '@ipc'
+import { log } from '@lib'
 
 export interface UseSnapshotHydrationApi {
   /** Stop watching — wired automatically when the host component unmounts. */
@@ -73,9 +74,32 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
       }
       const { id, turns } = snap
 
+      log.trace('snapshot.hydrate.meta-arrived', {
+        instanceId: id,
+        turnCount: turns.length
+      })
+
+      let pushed = 0
+      let skipped = 0
+
       for (const t of turns) {
+        const isNewStart = !seenTurnStarts.has(`${id}::${t.id}`)
+        const isNewEnd = t.endedAtMs !== undefined && !seenTurnEnds.has(`${id}::${t.id}`)
+
         applyTurnSnapshot(id, t, seenTurnStarts, seenTurnEnds)
+
+        if (isNewStart || isNewEnd) {
+          pushed += 1
+        } else {
+          skipped += 1
+        }
       }
+
+      log.trace('snapshot.hydrate.applied', {
+        instanceId: id,
+        pushed,
+        skipped
+      })
     },
     { immediate: true }
   )
@@ -83,7 +107,8 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
   // Reset the dedup sets on instance change — a new instance has its
   // own turn ids (UUIDs are unique, but resetting keeps the set
   // bounded across long sessions where the captain rotates instances).
-  watch(instanceId, () => {
+  watch(instanceId, (next, prev) => {
+    log.trace('snapshot.hydrate.instance-flip', { from: prev, to: next })
     seenTurnStarts.clear()
     seenTurnEnds.clear()
   })

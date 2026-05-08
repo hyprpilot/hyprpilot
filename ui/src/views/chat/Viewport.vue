@@ -221,12 +221,10 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     }
 
     case 'Home': {
-      // Ctrl+Home = jump to very top; bare Home is reserved for
-      // text-cursor handling (no harm here since we already skipped
-      // editable targets, but matching desktop muscle memory).
-      if (!ev.ctrlKey && !ev.metaKey) {
-        return
-      }
+      // Bare Home jumps to top — `isEditableTarget` already gated
+      // out inputs / textareas / contenteditable above, so the
+      // textarea-cursor case is already safe. Ctrl/Cmd modifier is
+      // also accepted for muscle memory parity with browsers.
       ev.preventDefault()
       el.scrollTo({ top: 0, behavior: 'smooth' })
 
@@ -234,9 +232,6 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     }
 
     case 'End': {
-      if (!ev.ctrlKey && !ev.metaKey) {
-        return
-      }
       ev.preventDefault()
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
 

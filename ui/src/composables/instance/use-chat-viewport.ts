@@ -50,6 +50,7 @@ import {
   type AcpPermissionResolvedPayload,
   type UnlistenFn
 } from '@ipc'
+import { log } from '@lib'
 
 /** Cache pages retained when stuck-at-bottom. */
 export const MAX_PAGES_KEPT = 3
@@ -260,6 +261,11 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
         // No cached pages — the live event arrived before the first
         // snapshot fetch resolved. Skip; the snapshot will land with
         // the same item via the daemon mirror.
+        log.trace('snapshot.live-patch.skipped-no-cache', {
+          instanceId: id,
+          itemKind: payload.item.kind
+        })
+
         return old
       }
       // The newest page is page 0 (daemon contract: "anchor at the
@@ -273,6 +279,11 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
       const incoming = liveItemFor(payload, baseSeq)
 
       if (!incoming) {
+        log.trace('snapshot.live-patch.skipped-non-rendered', {
+          instanceId: id,
+          itemKind: payload.item.kind
+        })
+
         return old
       }
       const nextItems = [...head.items]
@@ -288,6 +299,14 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
         hasMore: head.hasMore
       }
       const nextPages = [nextHead, ...old.pages.slice(1)]
+
+      log.trace('snapshot.live-patch.applied', {
+        instanceId: id,
+        itemKind: payload.item.kind,
+        merged,
+        seq: incoming.seq,
+        headItemCount: nextItems.length
+      })
 
       return {
         ...old,
@@ -411,6 +430,12 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
       const keptPages = old.pages.slice(0, MAX_PAGES_KEPT)
       const keptParams = old.pageParams.slice(0, MAX_PAGES_KEPT)
 
+      log.trace('snapshot.page-trim.evicted', {
+        instanceId: id,
+        before: old.pages.length,
+        after: keptPages.length
+      })
+
       return {
         ...old,
         pages: keptPages,
@@ -423,7 +448,23 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
   // — TanStack's typed return is hard to thread through the API
   // surface and consumers don't read it.
   async function fetchNextPage(): Promise<unknown> {
-    return query.fetchNextPage()
+    const id = instanceId.value
+    const data = query.data.value as PatchableInfiniteData | undefined
+    const before = data?.pages[data.pages.length - 1]?.oldestSeq
+
+    log.trace('snapshot.fetch-older.start', {
+      instanceId: id,
+      before,
+      pages: data?.pages.length ?? 0
+    })
+    const result = await query.fetchNextPage()
+
+    log.trace('snapshot.fetch-older.done', {
+      instanceId: id,
+      pages: (query.data.value as PatchableInfiniteData | undefined)?.pages.length ?? 0
+    })
+
+    return result
   }
 
   // Stable computeds over the underlying refs — exposing the raw

@@ -95,6 +95,7 @@ export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: I
  * rejections by design so a partial sync doesn't take the brim down).
  */
 export async function brimSync(client: QueryClient, localFocusedId?: InstanceId): Promise<void> {
+  log.trace('snapshot.brim-sync.start', { localFocusedId })
   let instanceIds: InstanceId[]
   let daemonFocusedId: InstanceId | undefined
 
@@ -119,6 +120,13 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
     useActiveInstance().setIfUnset(effectiveFocus)
   }
 
+  log.trace('snapshot.brim-sync.resolved', {
+    instanceCount: instanceIds.length,
+    daemonFocusedId,
+    localFocusedId,
+    effectiveFocus
+  })
+
   const tasks: Promise<void>[] = []
 
   for (const id of instanceIds) {
@@ -129,6 +137,10 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
     tasks.push(prefetchInstanceChatFirstPage(client, effectiveFocus))
   }
   await Promise.all(tasks)
+  log.trace('snapshot.brim-sync.done', {
+    instanceCount: instanceIds.length,
+    chatPrimed: effectiveFocus !== undefined
+  })
 }
 
 export interface UseFocusPrefetchApi {
@@ -165,6 +177,7 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
         if (next === undefined) {
           return
         }
+        log.trace('snapshot.focus-prefetch.focused', { instanceId: next })
         void prefetchInstanceMeta(queryClient, next).catch((err: unknown) => {
           log.warn('focus-prefetch: meta failed', { instanceId: next, err: String(err) })
         })
@@ -178,6 +191,11 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
         // for an actual focus event to avoid pulling pages the captain
         // never looks at. `prefetchQuery` dedupes so already-cached
         // entries short-circuit.
+        log.trace('snapshot.focus-prefetch.changed', {
+          instanceIds: e.payload.instanceIds,
+          focusedId: e.payload.focusedId
+        })
+
         for (const id of e.payload.instanceIds) {
           void prefetchInstanceMeta(queryClient, id).catch((err: unknown) => {
             log.warn('focus-prefetch: meta failed (instances-changed)', { instanceId: id, err: String(err) })

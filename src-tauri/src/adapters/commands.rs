@@ -490,7 +490,16 @@ pub async fn instance_snapshot_meta(adapter: AdapterState<'_>, instance_id: Stri
         .instance_mirror(key)
         .await
         .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
-    Ok(mirror.meta_snapshot().await)
+    let snap = mirror.meta_snapshot().await;
+    tracing::trace!(
+        target: "snapshot::meta",
+        instance_id = %instance_id,
+        turns = snap.turns.len(),
+        pending_permissions = snap.pending_permissions.len(),
+        latest_seq = ?snap.latest_seq,
+        "served meta snapshot",
+    );
+    Ok(snap)
 }
 
 /// Snapshot a windowed page of the addressed instance's transcript.
@@ -510,7 +519,18 @@ pub async fn instance_snapshot_chat(
         .instance_mirror(key)
         .await
         .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
-    Ok(mirror.chat_snapshot(before, limit.unwrap_or(0)).await)
+    let snap = mirror.chat_snapshot(before, limit.unwrap_or(0)).await;
+    tracing::trace!(
+        target: "snapshot::chat",
+        instance_id = %instance_id,
+        before = ?before,
+        items = snap.items.len(),
+        oldest_seq = ?snap.oldest_seq,
+        latest_seq = ?snap.latest_seq,
+        has_more = snap.has_more,
+        "served chat snapshot page",
+    );
+    Ok(snap)
 }
 
 /// Snapshot every per-`terminal_id` map entry. Small enough to ship
@@ -526,7 +546,14 @@ pub async fn instance_snapshot_terminals(
         .instance_mirror(key)
         .await
         .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
-    Ok(mirror.terminals_snapshot().await)
+    let snap = mirror.terminals_snapshot().await;
+    tracing::trace!(
+        target: "snapshot::terminals",
+        instance_id = %instance_id,
+        terminals = snap.terminals.len(),
+        "served terminals snapshot",
+    );
+    Ok(snap)
 }
 
 /// Read-only snapshot of the resolved MCP set for an instance. When
