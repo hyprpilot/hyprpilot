@@ -219,6 +219,33 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
 
     loop {
         tokio::select! {
+            // `biased;` polls branches in declaration order so dispatch
+            // responses always drain before events (and pings before
+            // either). Without this, an instance flooding the broadcast
+            // (transcript chunks during a streaming reply, or every
+            // `session_list` spawning a short-lived agent) randomly
+            // starves the outbound drain — boot-path invokes like
+            // `get_home_dir` get queued in `outbound_rx` forever while
+            // the select! keeps picking `events_rx.recv()`. The
+            // captain sees the loading screen freeze on whatever
+            // step's awaiting.
+            biased;
+
+            // ── Outbound drain (dispatch responses, status_rx swap) ─
+            outbound = outbound_rx.recv() => {
+                match outbound {
+                    Some(DispatchOutbound::Response(text)) => {
+                        if !send_text(&mut sink, &text).await {
+                            return;
+                        }
+                    }
+                    Some(DispatchOutbound::StatusRx(rx)) => {
+                        status_rx = Some(rx);
+                    }
+                    None => return,
+                }
+            }
+
             // ── Client message ──────────────────────────────────
             msg = stream.next() => {
                 let frame = match msg {
@@ -271,23 +298,6 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                     Message::Close(_) | Message::Pong(_) => {
                         return;
                     }
-                }
-            }
-
-            // ── Dispatch result drain ───────────────────────────
-            // Concurrent dispatch tasks (above) feed responses back
-            // here so the sink stays single-writer.
-            outbound = outbound_rx.recv() => {
-                match outbound {
-                    Some(DispatchOutbound::Response(text)) => {
-                        if !send_text(&mut sink, &text).await {
-                            return;
-                        }
-                    }
-                    Some(DispatchOutbound::StatusRx(rx)) => {
-                        status_rx = Some(rx);
-                    }
-                    None => return,
                 }
             }
 

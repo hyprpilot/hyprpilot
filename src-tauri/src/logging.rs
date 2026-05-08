@@ -59,15 +59,16 @@ pub fn init(level: Option<LogLevel>) -> Result<()> {
         None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
     };
 
-    // ANSI on debug builds (developer terminal); off in release so
-    // journald / file capture doesn't get peppered with escape codes
-    // when the unit's stderr isn't a TTY. The other axes (target /
-    // file / line) stay on across both builds — a captain reading
-    // their journal wants the same callsite breadcrumbs the dev
-    // terminal shows.
+    // ANSI always on. journald stores the raw bytes and `journalctl`
+    // passes ANSI through when its own stdout is a TTY (and strips
+    // when piped) — so a captain running `journalctl -fu hyprpilot`
+    // sees the same coloured output the dev terminal does, while a
+    // grep / log-shipper / file redirect renders plain text. The
+    // alternative — disabling ANSI in release builds — burned the
+    // colour context in journald even when it would have rendered.
     let layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(cfg!(debug_assertions))
+        .with_ansi(true)
         .with_target(true)
         .with_file(true)
         .with_line_number(true)

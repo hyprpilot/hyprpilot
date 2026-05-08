@@ -59,6 +59,43 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 
     loop {
         tokio::select! {
+            // `biased;` polls in declaration order so dispatch responses
+            // drain before fresh client lines pull more work. Without
+            // this, a busy `ctl status --watch` peer that pushes a
+            // `status/changed` notification AND a follow-up request can
+            // see its first response queued behind read-loop reactions.
+            biased;
+
+            // ── outbound drain (dispatch responses, status_rx swap) ───────
+            outbound = outbound_rx.recv() => {
+                match outbound {
+                    Some(DispatchOutbound::Response(response)) => {
+                        // Shutdown signal rides in the response payload as
+                        // `{"killed": true}` (`daemon/kill`) or
+                        // `{"exiting": true}` (`daemon/shutdown`).
+                        let kill_signalled = matches!(
+                            &response.outcome,
+                            Outcome::Success { result }
+                                if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
+                                    || result.get("exiting").and_then(|v| v.as_bool()) == Some(true)
+                        );
+
+                        if !write_line(&mut writer, &*response, "response").await {
+                            return;
+                        }
+
+                        if kill_signalled {
+                            crate::daemon::shutdown(&state.app, state.adapter.as_ref()).await;
+                            return;
+                        }
+                    }
+                    Some(DispatchOutbound::StatusRx(rx)) => {
+                        status_rx = Some(rx);
+                    }
+                    None => return,
+                }
+            }
+
             // ── incoming client line ──────────────────────────────────────
             line_result = lines.next_line() => {
                 let line = match line_result {
@@ -101,38 +138,6 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     }
                     let _ = tx.send(DispatchOutbound::Response(Box::new(response)));
                 });
-            }
-
-            // ── dispatch result drain ─────────────────────────────────────
-            // Concurrent dispatch tasks (above) feed responses back here so
-            // the writer stays single-owner.
-            outbound = outbound_rx.recv() => {
-                match outbound {
-                    Some(DispatchOutbound::Response(response)) => {
-                        // Shutdown signal rides in the response payload as
-                        // `{"killed": true}` (`daemon/kill`) or
-                        // `{"exiting": true}` (`daemon/shutdown`).
-                        let kill_signalled = matches!(
-                            &response.outcome,
-                            Outcome::Success { result }
-                                if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
-                                    || result.get("exiting").and_then(|v| v.as_bool()) == Some(true)
-                        );
-
-                        if !write_line(&mut writer, &*response, "response").await {
-                            return;
-                        }
-
-                        if kill_signalled {
-                            crate::daemon::shutdown(&state.app, state.adapter.as_ref()).await;
-                            return;
-                        }
-                    }
-                    Some(DispatchOutbound::StatusRx(rx)) => {
-                        status_rx = Some(rx);
-                    }
-                    None => return,
-                }
             }
 
             // ── outbound status/changed notification (subscriber only) ────
