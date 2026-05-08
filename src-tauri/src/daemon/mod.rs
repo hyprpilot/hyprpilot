@@ -367,7 +367,12 @@ impl RuntimeState {
         // and the permission_reply Tauri command — both resolve against
         // the same waiter map so UI replies reach the awaiting ACP
         // handler regardless of which instance issued the prompt.
-        let permissions: Arc<dyn PermissionController> = Arc::new(DefaultPermissionController::new());
+        // Hold the concrete type briefly so we can wire the registry
+        // events broadcast into the controller (see
+        // `attach_events_tx` below) before upcasting to
+        // `Arc<dyn PermissionController>` for sharing.
+        let default_permissions = Arc::new(DefaultPermissionController::new());
+        let permissions: Arc<dyn PermissionController> = default_permissions.clone();
         // ACP adapter + generic `dyn Adapter` view. Tauri managed state
         // carries both — the concrete for config-adjacent commands
         // (`agents_list`, `session_load`, …) and the generic for the RPC
@@ -377,6 +382,14 @@ impl RuntimeState {
             status.clone(),
             permissions.clone(),
         ));
+        // Now that the adapter (which owns the registry) exists, wire
+        // its event broadcast into the controller so
+        // `resolve_if_pending` / `forget` can emit
+        // `PermissionResolved` events that mirrors and remote
+        // subscribers consume — closing the desktop ↔ remote desync
+        // where one transport answered a prompt the other was still
+        // showing.
+        default_permissions.attach_events_tx(acp_adapter.events_tx());
         let adapter: Arc<dyn Adapter> = acp_adapter.clone();
 
         // Skills are now per-instance — built at AcpInstance::start

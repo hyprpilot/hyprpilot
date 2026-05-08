@@ -356,6 +356,16 @@ impl AcpAdapter {
     pub fn subscribe_events(&self) -> broadcast::Receiver<crate::adapters::InstanceEvent> {
         self.registry.subscribe()
     }
+
+    /// Sender side of the same broadcast `subscribe_events` reads
+    /// from. Used by the daemon to wire the broadcast back into the
+    /// permission controller post-construction so
+    /// `PermissionResolved` events surface alongside the rest of the
+    /// instance event stream.
+    #[must_use]
+    pub fn events_tx(&self) -> broadcast::Sender<crate::adapters::InstanceEvent> {
+        self.registry.events_tx()
+    }
 }
 
 impl AcpAdapter {
@@ -1343,6 +1353,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::State { .. } => "acp:instance-state",
         GenEvt::Transcript { .. } => "acp:transcript",
         GenEvt::PermissionRequest { .. } => "acp:permission-request",
+        GenEvt::PermissionResolved { .. } => "acp:permission-resolved",
         GenEvt::TurnStarted { .. } => "acp:turn-started",
         GenEvt::TurnEnded { .. } => "acp:turn-ended",
         GenEvt::InstancesChanged { .. } => "acp:instances-changed",

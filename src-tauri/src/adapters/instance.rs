@@ -114,6 +114,24 @@ pub enum InstanceEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         meta: Option<serde_json::Value>,
     },
+    /// Permission roundtrip closed — a waiter the controller was
+    /// holding has been resolved (either via UI / remote answer or
+    /// the 10-min `WAITER_TIMEOUT`). Mirrors / remote subscribers
+    /// drop their `pending_permissions` row keyed on `request_id` so
+    /// desktop ↔ remote stays in sync when the answer landed on the
+    /// other transport.
+    ///
+    /// `option_id == "__expired__"` is the sentinel for the timeout
+    /// path; `forget` doesn't carry an option, but the wire shape
+    /// stays uniform so consumers don't branch on a separate variant.
+    /// Captains shouldn't ever see this value in the UI — by the
+    /// time it lands the row has already been removed from the
+    /// snapshot.
+    PermissionResolved {
+        instance_id: String,
+        request_id: String,
+        option_id: String,
+    },
     PermissionRequest {
         agent_id: String,
         instance_id: String,
@@ -433,6 +451,7 @@ impl InstanceEvent {
             InstanceEvent::State { .. } => "instance.state",
             InstanceEvent::Transcript { .. } => "instance.transcript",
             InstanceEvent::PermissionRequest { .. } => "instance.permission_request",
+            InstanceEvent::PermissionResolved { .. } => "instance.permission_resolved",
             InstanceEvent::TurnStarted { .. } => "instance.turn_started",
             InstanceEvent::TurnEnded { .. } => "instance.turn_ended",
             InstanceEvent::InstancesChanged { .. } => "instances.changed",

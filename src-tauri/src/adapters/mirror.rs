@@ -330,6 +330,15 @@ impl InstanceMirror {
                 }
             }
 
+            // Permission roundtrip closed (captain-answered or
+            // 10-min `WAITER_TIMEOUT` expiry). Drop the matching row
+            // so the mirror's `pending_permissions` snapshot stays in
+            // sync regardless of which transport (desktop / remote)
+            // delivered the answer. Idempotent: missing entry → noop.
+            InstanceEvent::PermissionResolved { request_id, .. } => {
+                g.pending_permissions.retain(|p| p.request_id != *request_id);
+            }
+
             // ── lifecycle / no-ops (registry-shape, not mirror-shape) ─
             //
             // Each arm below is a deliberate no-op:
@@ -346,9 +355,6 @@ impl InstanceMirror {
             // * `DaemonReloaded` — daemon-global, not per-instance.
             // * `SystemPromptInjected` — banner-only event; the file
             //   list isn't part of the snapshot wire shape today.
-            //
-            // Phase A4 will add `PermissionResolved` here to remove
-            // matching rows from `pending_permissions`.
             InstanceEvent::State { .. }
             | InstanceEvent::InstancesChanged { .. }
             | InstanceEvent::InstancesFocused { .. }
@@ -799,6 +805,63 @@ mod tests {
             snap.current_turn_event,
             Some(TurnEventMarker::Ended { ended_at }) if ended_at == 1_700_000_001_000
         ));
+    }
+
+    /// Phase A4: a `PermissionResolved` event removes the matching row
+    /// from `pending_permissions` so desktop ↔ remote subscribers don't
+    /// keep showing a prompt the other transport already answered.
+    #[tokio::test]
+    async fn permission_resolved_removes_pending_row() {
+        let mirror = InstanceMirror::new();
+        let perm = |req_id: &str| InstanceEvent::PermissionRequest {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            session_id: "s-1".into(),
+            turn_id: Some("t-1".into()),
+            request_id: req_id.into(),
+            tool: "Bash".into(),
+            kind: "execute".into(),
+            args: "ls".into(),
+            raw_input: None,
+            content: Vec::new(),
+            options: vec![PermissionOptionView {
+                option_id: "allow".into(),
+                name: "Allow".into(),
+                kind: "allow_once".into(),
+            }],
+            formatted: crate::tools::formatter::types::FormattedToolCall {
+                title: "Bash".into(),
+                stats: Vec::new(),
+                description: None,
+                output: None,
+                fields: vec![],
+            },
+        };
+        mirror.apply(&perm("req-a")).await;
+        mirror.apply(&perm("req-b")).await;
+        assert_eq!(mirror.meta_snapshot().await.pending_permissions.len(), 2);
+
+        // Resolve req-a — only its row drops.
+        mirror
+            .apply(&InstanceEvent::PermissionResolved {
+                instance_id: "i-1".into(),
+                request_id: "req-a".into(),
+                option_id: "allow".into(),
+            })
+            .await;
+        let snap = mirror.meta_snapshot().await;
+        assert_eq!(snap.pending_permissions.len(), 1);
+        assert_eq!(snap.pending_permissions[0].request_id, "req-b");
+
+        // Idempotent: a second resolve for the same id is a no-op.
+        mirror
+            .apply(&InstanceEvent::PermissionResolved {
+                instance_id: "i-1".into(),
+                request_id: "req-a".into(),
+                option_id: "allow".into(),
+            })
+            .await;
+        assert_eq!(mirror.meta_snapshot().await.pending_permissions.len(), 1);
     }
 
     /// End-to-end write-through pin: simulate the actor's emit

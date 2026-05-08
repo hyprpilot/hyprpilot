@@ -492,6 +492,7 @@ fn event_envelope(evt: &InstanceEvent) -> (&'static str, serde_json::Value) {
         InstanceEvent::State { .. } => "acp:instance-state",
         InstanceEvent::Transcript { .. } => "acp:transcript",
         InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
+        InstanceEvent::PermissionResolved { .. } => "acp:permission-resolved",
         InstanceEvent::TurnStarted { .. } => "acp:turn-started",
         InstanceEvent::TurnEnded { .. } => "acp:turn-ended",
         InstanceEvent::InstancesChanged { .. } => "acp:instances-changed",
