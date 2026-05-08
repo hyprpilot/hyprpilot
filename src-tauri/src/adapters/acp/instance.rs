@@ -2915,12 +2915,30 @@ async fn run(params: RunParams) {
                                 }
                             };
                             if let Some(evt) = evt {
-                                tracing::trace!(
-                                    target: "acp::emit",
-                                    instance = %instance_id_notif,
-                                    topic = evt.topic(),
-                                    "broadcasting InstanceEvent",
-                                );
+                                // Split target by event topic so transcript
+                                // chunks (10-30/sec during streaming) don't
+                                // drown lifecycle / usage events at trace
+                                // level. `acp::emit=trace` enables only the
+                                // lifecycle stream; opt into the chunk
+                                // firehose with `acp::emit::chunk=trace`.
+                                if matches!(
+                                    evt,
+                                    InstanceEvent::Transcript { .. } | InstanceEvent::Terminal { .. }
+                                ) {
+                                    tracing::trace!(
+                                        target: "acp::emit::chunk",
+                                        instance = %instance_id_notif,
+                                        topic = evt.topic(),
+                                        "broadcasting InstanceEvent (chunk)",
+                                    );
+                                } else {
+                                    tracing::trace!(
+                                        target: "acp::emit",
+                                        instance = %instance_id_notif,
+                                        topic = evt.topic(),
+                                        "broadcasting InstanceEvent",
+                                    );
+                                }
                                 mirror_notif.apply(&evt).await;
                                 let _ = events_tx_notif.send(evt);
                             }

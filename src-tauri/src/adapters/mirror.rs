@@ -251,11 +251,26 @@ impl InstanceMirror {
     /// in `acp/instance.rs`. Phase A2 lands the type only; nothing
     /// calls `apply` yet.
     pub async fn apply(&self, event: &InstanceEvent) {
-        tracing::trace!(
-            target: "snapshot::mirror",
-            event = event.topic(),
-            "mirror.apply",
-        );
+        // Same split as `acp::emit` — chunk events (transcript /
+        // terminal) get their own sub-target so a captain debugging
+        // lifecycle / usage doesn't drown in chunk spam at trace
+        // level. Opt into chunks via `snapshot::mirror::chunk=trace`.
+        if matches!(
+            event,
+            InstanceEvent::Transcript { .. } | InstanceEvent::Terminal { .. }
+        ) {
+            tracing::trace!(
+                target: "snapshot::mirror::chunk",
+                event = event.topic(),
+                "mirror.apply (chunk)",
+            );
+        } else {
+            tracing::trace!(
+                target: "snapshot::mirror",
+                event = event.topic(),
+                "mirror.apply",
+            );
+        }
         let mut g = self.inner.write().await;
         match event {
             // ── transcript firehose ──────────────────────────────

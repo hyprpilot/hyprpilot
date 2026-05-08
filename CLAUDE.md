@@ -673,7 +673,12 @@ Each is silent by default; enable per-target via `RUST_LOG`:
 | --- | --- | --- |
 | `acp::wire` | Every incoming `session/update` notification (raw JSON) AND the outgoing `session/prompt` request (raw JSON) | Diagnosing vendor wire-shape surprises (empty thought-chunk content, missing `content_block_delta`s, unexpected sessionUpdate variants) |
 | `acp::thought` | Per-`agent_thought_chunk` extraction outcome (text length on success; raw payload + `content shape not in {…}` `warn!` on empty) | Confirming what the SDK is actually shipping in the thinking field |
-| `snapshot::mirror` | Every `InstanceMirror::apply` write keyed by event topic (`instance.transcript`, `instance.turn_started`, `instance.usage_update`, …) | Tracing how live `InstanceEvent`s mutate the per-instance write-through cache; pairs with `snapshot.live-patch.*` UI-side traces |
+| `acp::emit` | Every `InstanceEvent` the per-instance actor broadcasts onto the registry channel — **lifecycle only** (`turn_started`, `turn_ended`, `usage_update`, `instance.meta`, etc.). Chunk events (`transcript`, `terminal`) split into `acp::emit::chunk` to keep this stream readable. | Tracing the upstream end of the events_tx → broadcast::Sender chain |
+| `acp::emit::chunk` | High-volume chunk traffic: `instance.transcript` (one per agent_message_chunk / agent_thought_chunk / tool_call*) and `instance.terminal`. Opt-in only — flooding at ~30/sec during a streaming reply. | Verifying that chunk traffic IS reaching the broadcast channel; otherwise leave off |
+| `tauri::emit` | Every ACP event the Tauri bridge ships to the embedded webview, lifecycle only. | Tracing the downstream end (broadcast → app.emit) |
+| `tauri::emit::chunk` | Same split as `acp::emit::chunk` — transcript / terminal app.emit calls. Opt-in. | When `acp::emit` shows the event but UI doesn't react, confirm the bridge actually emitted |
+| `snapshot::mirror` | Every `InstanceMirror::apply` write keyed by event topic, lifecycle only. | Tracing how live `InstanceEvent`s mutate the per-instance write-through cache; pairs with `snapshot.live-patch.*` UI-side traces |
+| `snapshot::mirror::chunk` | Mirror.apply for transcript / terminal chunk events. Opt-in. | Same chunk-spam carve-out as the emit family |
 | `snapshot::meta` | Every served `instance/snapshot/meta` response (turn count, pending-permission count, latest_seq) | Confirming the daemon shipped meta the UI's brim-sync / per-focus prefetch / `useSnapshotHydration` is reading |
 | `snapshot::chat` | Every served `instance/snapshot/chat` page (cursor, items, has_more) | Tracing backward-pagination requests from the UI's `fetchNextPage` |
 | `snapshot::terminals` | Every served `instance/snapshot/terminals` response | Tracing terminal-card hydration |
@@ -706,9 +711,16 @@ Grep for `target: acp::wire` lines to see the raw payload of every
 One-shot for the snapshot pipeline (daemon-side mirror + RPC + UI):
 
 ```sh
-RUST_LOG='info,hyprpilot::adapters=info,acp::emit=trace,tauri::emit=trace,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace,webview=trace' \
+RUST_LOG='warn,acp::emit=trace,tauri::emit=trace,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace,webview=trace' \
   hyprpilot daemon
 ```
+
+This covers turn lifecycle + usage + UI traces only. `warn`
+baseline keeps daemon-wide output minimal so the per-target
+traces aren't drowned by INFO breadcrumbs from config / ACP /
+RPC. To also capture transcript / terminal chunk traffic, append
+`acp::emit::chunk=trace,tauri::emit::chunk=trace,snapshot::mirror::chunk=trace`
+— but be ready for ~30-line/sec spam during streaming replies.
 
 `webview=trace` covers the UI-side `live.*` / `snapshot.*` /
 `use-turns.*` traces — without it the daemon stderr only shows
