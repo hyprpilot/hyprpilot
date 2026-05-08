@@ -217,4 +217,58 @@ describe('usePermissions', () => {
 
     expect(usePermissions('A').rowQueue.value).toEqual([])
   })
+
+  it('clearById removes the matching pending entry from the rowQueue', () => {
+    pushPermissionRequest('A', 's-a', raw('keep-1'))
+    pushPermissionRequest('A', 's-a', raw('drop-me'))
+    pushPermissionRequest('A', 's-a', raw('keep-2'))
+
+    usePermissions('A').clearById('A', 'drop-me')
+
+    const queue = usePermissions('A').rowQueue.value
+
+    expect(queue.map((v) => v.request.requestId)).toEqual(['keep-1', 'keep-2'])
+  })
+
+  it('clearById removes the matching pending entry from the modalQueue', () => {
+    pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
+      requestId: 'plan-1',
+      tool: 'EditFile',
+      kind: 'edit',
+      args: '',
+      rawInput: { plan: '# Plan\n\n- step 1' },
+      options: raw('plan-1').options,
+      formatted: fmt()
+    })
+    pushPermissionRequest('A', 's-a', {
+      agentId: 'agent-A',
+      requestId: 'plan-2',
+      tool: 'EditFile',
+      kind: 'edit',
+      args: '',
+      rawInput: { plan: '# Plan\n\n- other' },
+      options: raw('plan-2').options,
+      formatted: fmt()
+    })
+
+    usePermissions('A').clearById('A', 'plan-1')
+
+    const modal = usePermissions('A').modalQueue.value
+
+    expect(modal.map((v) => v.request.requestId)).toEqual(['plan-2'])
+  })
+
+  it('clearById is a no-op when no entry matches', () => {
+    pushPermissionRequest('A', 's-a', raw('req-1'))
+
+    // Unknown requestId on a known instance.
+    usePermissions('A').clearById('A', 'unknown')
+    // Unknown instance entirely.
+    usePermissions('A').clearById('Z', 'req-1')
+
+    const queue = usePermissions('A').rowQueue.value
+
+    expect(queue.map((v) => v.request.requestId)).toEqual(['req-1'])
+  })
 })

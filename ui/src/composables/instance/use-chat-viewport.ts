@@ -37,6 +37,7 @@ import { useQueryClient, type InfiniteData } from '@tanstack/vue-query'
 import { computed, onUnmounted, watch, type ComputedRef } from 'vue'
 
 import { useInstanceChatInfiniteQuery, type UseInstanceChatInfiniteQueryReturn } from './use-instance-chat-infinite-query'
+import { usePermissions } from './use-permissions'
 import { type InstanceId } from '../chrome/use-active-instance'
 import {
   listen,
@@ -297,6 +298,14 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>)
   }
 
   function patchPermissionResolved(payload: AcpPermissionResolvedPayload): void {
+    // Drop the matching row from the per-instance permissions store
+    // regardless of whether the resolved id matches the focused
+    // viewport — a captain answering on the desktop must clear the
+    // remote's row, and vice versa, even when the captain is looking
+    // at another instance at that moment. The wire payload always
+    // carries `instanceId`, so addressing it directly is correct.
+    usePermissions().clearById(payload.instanceId, payload.requestId)
+
     const id = instanceId.value
 
     if (id === undefined) {

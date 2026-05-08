@@ -60,6 +60,7 @@ import {
   useAttachments,
   useComposer,
   useDaemonCwd,
+  useFocusPrefetch,
   useHomeDir,
   useKeymap,
   useKeymaps,
@@ -79,6 +80,7 @@ import {
   type InstanceId
 } from '@composables'
 import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
+import { isRemoteHost, subscribePair } from '@ipc/remote-bridge'
 import { log } from '@lib'
 import { PermissionModal, Viewport as ChatViewport } from '@views/chat'
 import { Composer, PermissionStack, QueueStrip } from '@views/composer'
@@ -497,6 +499,15 @@ useKeymap(
 )
 
 let stopActiveInstanceStore: (() => void) | undefined
+let stopFocusPrefetch: (() => void) | undefined
+let unsubscribePairForBrimSync: (() => void) | undefined
+
+// `useFocusPrefetch` must be invoked during setup so its
+// `useQueryClient()` injection lookup hits the active component
+// context. The actual brim-sync + listener registration runs inside
+// `onMounted` below — instantiating here only resolves the client
+// reference, no IPC calls fire yet.
+const focusPrefetch = useFocusPrefetch()
 
 /**
  * Window-level capture-phase listener for the visibility toggle. Runs
@@ -560,6 +571,37 @@ onMounted(async() => {
   } catch(err) {
     log.warn('remote: pair listener failed to mount', { err: String(err) })
   }
+
+  // Brim-sync + per-focus prefetch (Phase C2). The focus-prefetch
+  // listener registers immediately; the brim-sync runs once the
+  // bridge is authenticated. Desktop is always authenticated at
+  // mount; remote waits on the pair handshake.
+  try {
+    stopFocusPrefetch = await focusPrefetch.start()
+  } catch(err) {
+    log.warn('focus-prefetch: start failed', { err: String(err) })
+  }
+  const runBrimSync = (): void => {
+    void focusPrefetch.brimSync(activeInstanceId.value).catch((err: unknown) => {
+      log.warn('brim-sync failed', { err: String(err) })
+    })
+  }
+
+  if (!isRemoteHost()) {
+    runBrimSync()
+  } else {
+    let fired = false
+
+    unsubscribePairForBrimSync = subscribePair((view) => {
+      if (fired || !view.authenticated) {
+        return
+      }
+      fired = true
+      unsubscribePairForBrimSync?.()
+      unsubscribePairForBrimSync = undefined
+      runBrimSync()
+    })
+  }
 })
 
 onUnmounted(() => {
@@ -570,6 +612,10 @@ onUnmounted(() => {
   stopActiveInstanceStore = undefined
   stopRemotePairListener?.()
   stopRemotePairListener = undefined
+  stopFocusPrefetch?.()
+  stopFocusPrefetch = undefined
+  unsubscribePairForBrimSync?.()
+  unsubscribePairForBrimSync = undefined
   stopQueueDispatcher()
 })
 

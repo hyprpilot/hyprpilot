@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, defineComponent, h, ref, type Ref } from 'vue'
 
 import { MAX_PAGES_KEPT, useChatViewport, type UseChatViewportApi } from './use-chat-viewport'
+import { pushPermissionRequest, resetPermissions, usePermissions } from './use-permissions'
 import type { InstanceId } from '../chrome/use-active-instance'
 import { TauriEvent, TranscriptItemKind, type ChatSnapshot, type MetaSnapshot, type SeqTranscriptItem } from '@ipc'
 
@@ -331,6 +332,75 @@ describe('useChatViewport', () => {
     resolveNext(chatPage([transcriptText(50, 'p1')], false))
     await flushPromises()
     expect(api.isFetchingNextPage.value).toBe(false)
+    unmount()
+  })
+
+  it('permission-resolved clears the matching pending row from the permissions store', async() => {
+    invoke.mockResolvedValueOnce(chatPage([], false))
+    const id = ref<InstanceId | undefined>('i-1')
+    const { unmount } = mountViewport(id)
+
+    // Seed the pending permissions store on the focused instance and a sibling.
+    resetPermissions('i-1')
+    resetPermissions('i-OTHER')
+    pushPermissionRequest('i-1', 's-a', {
+      agentId: 'agent',
+      requestId: 'req-1',
+      tool: 'bash',
+      kind: 'execute',
+      args: 'echo hi',
+      options: [],
+      formatted: {
+        title: 'bash',
+        stats: [],
+        fields: []
+      }
+    })
+    pushPermissionRequest('i-OTHER', 's-b', {
+      agentId: 'agent',
+      requestId: 'req-cross',
+      tool: 'bash',
+      kind: 'execute',
+      args: 'echo on other instance',
+      options: [],
+      formatted: {
+        title: 'bash',
+        stats: [],
+        fields: []
+      }
+    })
+
+    let cb: ((p: { payload: unknown }) => void) | undefined
+
+    for (let i = 0; i < 20 && cb === undefined; i += 1) {
+      await flushPromises()
+      cb = listeners.get(TauriEvent.AcpPermissionResolved)
+    }
+    expect(cb).toBeDefined()
+
+    // Resolve the focused instance's row.
+    cb!({
+      payload: {
+        instanceId: 'i-1', requestId: 'req-1', optionId: 'allow-once'
+      }
+    })
+    await flushPromises()
+
+    expect(usePermissions('i-1').rowQueue.value).toHaveLength(0)
+    // Sibling row untouched — the listener addresses by payload.instanceId.
+    expect(usePermissions('i-OTHER').rowQueue.value.map((v) => v.request.requestId)).toEqual(['req-cross'])
+
+    // Cross-instance resolution still clears even when the viewport
+    // is focused elsewhere — captain answered on remote, desktop's
+    // store drops the row.
+    cb!({
+      payload: {
+        instanceId: 'i-OTHER', requestId: 'req-cross', optionId: 'reject-once'
+      }
+    })
+    await flushPromises()
+
+    expect(usePermissions('i-OTHER').rowQueue.value).toHaveLength(0)
     unmount()
   })
 
