@@ -281,10 +281,18 @@ pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> 
             })
         })
         .collect();
-    Ok(json!({
-        "instances": wire,
-        "focusedId": focused_id,
-    }))
+    // Omit `focusedId` from the JSON when no instance is focused —
+    // serializing `Option<String>` as `null` lets a typo-prone UI
+    // path coerce null into a `setIfUnset(null)` call, breaking the
+    // active-instance pointer. Skipping the key entirely makes the
+    // UI see `undefined`, which the `r.focusedId === undefined`
+    // guards correctly handle.
+    let mut payload = serde_json::Map::with_capacity(2);
+    payload.insert("instances".into(), Value::Array(wire));
+    if let Some(id) = focused_id {
+        payload.insert("focusedId".into(), Value::String(id));
+    }
+    Ok(Value::Object(payload))
 }
 
 #[tauri::command]

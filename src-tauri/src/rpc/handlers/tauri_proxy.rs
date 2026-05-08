@@ -161,10 +161,15 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                     })
                 })
                 .collect();
-            Ok(json!({
-                "instances": wire,
-                "focusedId": focused_id,
-            }))
+            // See `instances_list` Tauri command — omit the
+            // `focusedId` key when None so consumers see `undefined`
+            // instead of `null`.
+            let mut payload = serde_json::Map::with_capacity(2);
+            payload.insert("instances".into(), Value::Array(wire));
+            if let Some(id) = focused_id {
+                payload.insert("focusedId".into(), Value::String(id));
+            }
+            Ok(Value::Object(payload))
         }
 
         // ── core interactions ────────────────────────────────────────

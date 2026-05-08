@@ -114,9 +114,15 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
   // caller has no local choice — covers the remote-authenticated-mid-
   // session case. Captains who passed `localFocusedId` keep their
   // choice; the daemon focus only fills the empty slot.
-  const effectiveFocus = localFocusedId ?? daemonFocusedId
+  // `?? null` then truthiness check covers BOTH the new wire shape
+  // (omitted key → undefined) AND any older daemon binary that ships
+  // `null` for an empty focus pointer — without this defence,
+  // `setIfUnset(null)` would land null on the active-instance ref and
+  // every downstream `instanceId !== undefined` check would silently
+  // pass with a useless value.
+  const effectiveFocus = localFocusedId ?? daemonFocusedId ?? undefined
 
-  if (effectiveFocus !== undefined) {
+  if (effectiveFocus) {
     useActiveInstance().setIfUnset(effectiveFocus)
   }
 
@@ -133,7 +139,7 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
     tasks.push(prefetchInstanceMeta(client, id))
   }
 
-  if (effectiveFocus !== undefined) {
+  if (effectiveFocus) {
     tasks.push(prefetchInstanceChatFirstPage(client, effectiveFocus))
   }
   await Promise.all(tasks)

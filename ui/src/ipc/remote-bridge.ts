@@ -399,6 +399,22 @@ async function ensureAuthenticated(): Promise<WebSocket> {
   return ws
 }
 
+/**
+ * Per-request timeout (ms) — every `remoteInvoke` rejects after this
+ * window if the daemon hasn't responded. Without it a daemon that
+ * accepted the request but never wrote a response would silently hang
+ * the boot path's `await applyTheme()` / `await loadKeymaps()` — the
+ * fullscreen Loading would never go away because `markBootDone` is
+ * gated on every awaited call resolving (or rejecting; the boot
+ * loaders all `try/catch` the rejection and proceed with degraded
+ * state). Generous enough that a slow LAN link doesn't false-positive
+ * but tight enough that the captain sees a recovery path within a
+ * sensible window. Captains diagnosing a stuck remote can grep the
+ * file log for `target: snapshot::*` to see exactly what the daemon
+ * served vs what the UI requested.
+ */
+const REMOTE_INVOKE_TIMEOUT_MS = 30_000
+
 export async function remoteInvoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
   const ws = await ensureAuthenticated()
   const id = crypto.randomUUID()
@@ -410,11 +426,21 @@ export async function remoteInvoke(command: string, args?: Record<string, unknow
   })
 
   return new Promise<unknown>((resolve, reject) => {
-    inflight.set(id, { resolve, reject })
+    const timer = setTimeout(() => {
+      inflight.delete(id)
+      reject(new Error(`remote bridge: '${command}' timed out after ${REMOTE_INVOKE_TIMEOUT_MS}ms`))
+    }, REMOTE_INVOKE_TIMEOUT_MS)
+    const settle = (fn: (v: unknown) => void) => (v: unknown): void => {
+      clearTimeout(timer)
+      fn(v)
+    }
+
+    inflight.set(id, { resolve: settle(resolve), reject: settle(reject) })
 
     try {
       ws.send(frame)
     } catch(err) {
+      clearTimeout(timer)
       inflight.delete(id)
       reject(err)
     }
