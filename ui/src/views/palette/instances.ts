@@ -1,6 +1,6 @@
 /**
- * Instances palette leaf (K-274). Lists every live instance the
- * adapter knows about; `Enter` focuses one, `Ctrl+D` shuts it down.
+ * Instances palette leaf. Lists every live instance the adapter
+ * knows about; `Enter` focuses one, `Ctrl+D` shuts it down.
  *
  * Row shape (captain-friendly):
  *   - `name`: captain-set name when set, else profile id, else agent id
@@ -34,8 +34,8 @@ function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined
   // Headline name: captain-renamed → profile id → adapter id.
   const headline = entry.name ?? entry.profileId ?? entry.agentId
 
-  // Description groups: adapter / model first (the wireframe ask), then
-  // phase + cwd + counts so fuzzy filter still hits every signal.
+  // Description groups: adapter / model first, then phase + cwd +
+  // counts so fuzzy filter still hits every signal.
   const meta: string[] = [entry.agentId]
   const model = info.value.model
 

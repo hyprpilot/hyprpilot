@@ -360,8 +360,8 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
 
 /**
  * Reactive read-only view over the per-instance session info.
- * `mcpsCount` derives from the active profile — wired as zero
- * placeholder until K-258 surfaces the count on `ProfileSummary`.
+ * `mcpsCount` derives from the active profile — wired as zero today
+ * (a future `ProfileSummary` field will carry the live count).
  * cwd / model fall back to the active profile when the instance
  * hasn't pushed an override yet.
  */

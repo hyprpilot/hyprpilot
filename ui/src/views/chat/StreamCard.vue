@@ -188,8 +188,8 @@ function planIconFor(status: PlanStatus) {
 <style scoped>
 @reference '../../assets/styles.css';
 
-/* wireframe active: filled surface bg + line2 border; collapsed: transparent
- * + line border. 3px tone stripe on the left in both states. */
+/* Active: filled surface bg + line2 border; collapsed: transparent +
+ * line border. 3px tone stripe on the left in both states. */
 .stream-card {
   @apply flex flex-col text-[0.78rem] leading-snug;
   color: var(--theme-fg);
@@ -263,7 +263,7 @@ function planIconFor(status: PlanStatus) {
   font-weight: normal;
 }
 
-/* Body separator: dashed line above + 6px top padding, per wireframe. */
+/* Body separator: dashed line above + 6px top padding. */
 .stream-card-body {
   margin-top: 0.375rem;
   padding-top: 0.375rem;
@@ -296,7 +296,7 @@ function planIconFor(status: PlanStatus) {
   color: var(--theme-state-awaiting);
 }
 
-/* wireframe fidelity: done = dim text, NOT struck through. */
+/* done = dim text, NOT struck through. */
 .stream-card-text {
   @apply flex-1;
   color: var(--theme-fg-subtle);

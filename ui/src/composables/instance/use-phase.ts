@@ -26,7 +26,7 @@ export function pushInstanceState(id: InstanceId, state: InstanceState): void {
 
 /**
  * Computes the overlay phase for an instance from the typed-store signals
- * landed in K-255 + the instance-state events landed in K-251.
+ * + the instance-state events.
  *
  * Decision ladder (first-matching wins):
  *   1. awaiting  ← a pending permission prompt exists (live, not replayed)
@@ -49,8 +49,8 @@ export function pushInstanceState(id: InstanceId, state: InstanceState): void {
  * `openTurnId` stays undefined after restore and phase correctly
  * resolves to `idle`.
  *
- * The same gate also fixed the older K-281 queue-stuck bug where
- * phase stuck on `streaming` once the agent had ever spoken.
+ * The same gate also covers the queue-stuck failure mode where phase
+ * would stick on `streaming` once the agent had ever spoken.
  */
 export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> } {
   const { id: activeId } = useActiveInstance()

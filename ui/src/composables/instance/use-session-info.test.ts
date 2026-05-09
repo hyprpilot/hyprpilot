@@ -200,7 +200,7 @@ describe('useSessionInfo profile derivation', () => {
     expect(useSessionInfo('A').info.value.profileId).toBeUndefined()
   })
 
-  it('always reports zero mcps and skills counts (live counts land in K-258 / K-268)', () => {
+  it('always reports zero mcps count (live count not yet surfaced on ProfileSummary)', () => {
     profilesRef.value = [
       {
         id: 'ask',

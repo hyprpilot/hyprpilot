@@ -9,9 +9,9 @@
  * picker shows whatever the agent advertised most recently.
  *
  * On commit, fires `modes_set` Tauri command. Adapter stubs past
- * the membership check with a `-32603` error tied to K-251 — the
- * toast surfaces the error verbatim and the leaf lights up
- * automatically when K-251 lands.
+ * the membership check with a `-32603` error — the toast surfaces
+ * the error verbatim. The leaf lights up automatically when the
+ * runtime side is wired.
  */
 
 import { ToastTone } from '@components'

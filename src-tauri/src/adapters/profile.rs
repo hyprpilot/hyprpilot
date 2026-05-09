@@ -36,12 +36,10 @@ pub struct ResolvedInstance {
     /// `None` both mean "no prompt".
     pub system_prompt: Vec<ResolvedSystemPromptEntry>,
     /// Per-instance mode override. Populated from `SpawnSpec::mode`
-    /// at resolve time (future K-275 will also let a `[[profiles]]`
-    /// entry set a default). Generic layer just carries it; ACP's
-    /// runtime passes it into `AcpInstance` and surfaces it via
-    /// `InstanceInfo`. Vendor-specific interpretation (e.g.
-    /// claude-code's `plan` / `edit`) happens inside the vendor
-    /// agent impl.
+    /// at resolve time. Generic layer just carries it; ACP's runtime
+    /// passes it into `AcpInstance` and surfaces it via `InstanceInfo`.
+    /// Vendor-specific interpretation (e.g. claude-code's `plan` /
+    /// `edit`) happens inside the vendor agent impl.
     pub mode: Option<String>,
 }
 

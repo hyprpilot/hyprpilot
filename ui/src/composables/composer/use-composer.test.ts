@@ -95,7 +95,7 @@ describe('useComposer', () => {
     expect(attachments[0]?.mimeType).toBe('image/png')
   })
 
-  it('resolvedSubmit no longer expands #{…} tokens (deleted in K-268 pivot)', () => {
+  it('resolvedSubmit does not expand #{…} tokens (skills travel as first-class attachments)', () => {
     const c = useComposer()
 
     c.text.value = 'please #{skill/debug} this'

@@ -756,12 +756,11 @@ mod tests {
         assert!(controller.options_for("r1").await.is_none());
     }
 
-    /// Timeout enforcement moved out of the controller in the K-245
-    /// review pass — `AcpClient::request_permission` wraps `rx.await`
-    /// in `tokio::time::timeout(WAITER_TIMEOUT, rx)` and calls
-    /// `forget(request_id)` on elapsed. This test pins the `forget`
-    /// half: after the caller gives up, the waiter is gone from the
-    /// map and a late `resolve` is a no-op.
+    /// Timeout enforcement lives at the call site — `AcpClient::request_permission`
+    /// wraps `rx.await` in `tokio::time::timeout(WAITER_TIMEOUT, rx)`
+    /// and calls `forget(request_id)` on elapsed. This test pins the
+    /// `forget` half: after the caller gives up, the waiter is gone
+    /// from the map and a late `resolve` is a no-op.
     #[tokio::test]
     async fn forget_drops_waiter_without_firing_sender() {
         let controller = DefaultPermissionController::new();

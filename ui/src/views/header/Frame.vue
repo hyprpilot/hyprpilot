@@ -5,7 +5,7 @@ import { computed } from 'vue'
 import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
 
 /**
- * Overlay chrome per wireframe Frame template:
+ * Overlay chrome — Frame template:
  *
  *   row 1  [phase profile pill (·dot pulses when active)]
  *          [provider/model] [mode pill?] [session title?]   [✕]
@@ -144,10 +144,10 @@ const hasGit = computed(() => Boolean(props.gitStatus))
     </header>
 
     <div class="frame-body">
-      <!-- Toast slot — wireframe spec puts the toast card absolutely
-           positioned over the chat body, "out of the header into the
-           chat window", NOT a viewport portal. Parent passes the
-           active toast (if any) into this slot. -->
+      <!-- Toast slot — the toast card is absolutely positioned over
+           the chat body ("out of the header into the chat window"),
+           NOT a viewport portal. Parent passes the active toast (if
+           any) into this slot. -->
       <slot name="toast" />
       <slot />
     </div>
@@ -203,10 +203,10 @@ html:not([data-window-anchor]) .frame {
   background-color: var(--theme-surface);
 }
 
-/* Row 1 — wireframe spec: padding 8px 14px 8px 4px (asymmetric, 4px
- * left because the 3px phase border already lives outside the section).
- * Gap 10px between row items. Each row owns its own border-bottom so
- * the divider stays attached to the row when one is hidden. */
+/* Row 1 — padding 8px 14px 8px 4px (asymmetric, 4px left because the
+ * 3px phase border already lives outside the section). Gap 10px
+ * between row items. Each row owns its own border-bottom so the
+ * divider stays attached to the row when one is hidden. */
 .frame-row-1 {
   @apply flex items-center border-b;
   padding: 0.5rem 0.875rem 0.5rem 0.25rem;

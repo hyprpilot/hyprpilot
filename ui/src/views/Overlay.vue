@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * Overlay shell — the single page-level view the Tauri webview mounts
- * (see `App.vue`). Composes the K-250 chat primitives into the running app.
+ * (see `App.vue`). Composes the chat primitives into the running app.
  *
  * Frame slots (see `components/Frame.vue`):
  *   default slot  — transcript body. `<Turn>` blocks built from
@@ -17,7 +17,7 @@
  * State sources (all from `@composables`):
  *   useAdapter          → bind / submit / lastPermission
  *   useProfiles         → profile registry + selected profile
- *   useSessionHistory   → warms the session store for the palette (K-249)
+ *   useSessionHistory   → warms the session store for the palette
  *   useTranscript       → user/assistant turns
  *   useStream           → thought / plan stream items
  *   useTools            → tool-call records for the inline chip row
@@ -94,9 +94,9 @@ const { phase } = usePhase()
 const { profiles, selected: selectedProfile } = useProfiles()
 const { info: sessionInfo } = useSessionInfo()
 // Session history is wired but the overlay shell doesn't surface a
-// session picker yet — keeping the binding live so the backend stays
-// warm; the palette view (K-249) takes over this role. The list count
-// rides on the row-2 sessions breadcrumb pill.
+// session picker directly — the palette view owns that UX. Keeping
+// the binding live so the backend stays warm; the list count rides
+// on the row-2 sessions breadcrumb pill.
 //
 // Prefer the focused instance's spawning profile over the picker's
 // value: header chrome reads `sessionInfo.profileId` for the profile
@@ -266,8 +266,8 @@ async function onCloseOverlay(): Promise<void> {
 let stopStream: (() => void) | undefined
 
 function firePermission(action: 'allow' | 'deny'): void {
-  // TODO(K-281 follow-up): Tab = next row cycling. Today the approval
-  // keybind always addresses the oldest-active (first non-queued) prompt.
+  // TODO: Tab = next row cycling. Today the approval keybind always
+  // addresses the oldest-active (first non-queued) prompt.
   const active =
     permissionRowQueue.value.find((v) => !v.queued) ?? permissionRowQueue.value[0] ?? permissionModalQueue.value.find((v) => !v.queued) ?? permissionModalQueue.value[0]
 
@@ -740,8 +740,8 @@ const editingQueueSlot = ref<{ instanceId: InstanceId; position: number } | unde
 function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void {
   const { text, attachments } = payload
   // Skill / resource attachments live in the `useAttachments` singleton
-  // (K-268 palette pushes onto it). They snapshot at submit time so a
-  // resubmit after cancel sends the same set; submit-ack clears.
+  // (the skills palette pushes onto it). They snapshot at submit time
+  // so a resubmit after cancel sends the same set; submit-ack clears.
   const skillAttachments = [...pendingAttachments.value]
   // Image pills (paperclip / drag-drop / Ctrl+P) project onto the
   // wire `Attachment` shape with `data` + `mime` set; the daemon's

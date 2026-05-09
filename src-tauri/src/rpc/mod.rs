@@ -23,8 +23,8 @@ use crate::rpc::protocol::RpcError;
 /// handler whose `namespace()` matches, and delegate. Methods without
 /// a `/` route to the empty namespace, which has no registered
 /// handler — bare method names (`submit`, `toggle`, `kill`, etc.) all
-/// return `-32601 method not found`. That's load-bearing: the K-239
-/// renames are intentionally breaking and bare names must stay dead.
+/// return `-32601 method not found`. The namespaced renames are
+/// intentionally breaking; bare names stay dead.
 ///
 /// Extending the RPC surface means implementing `RpcHandler` and pushing
 /// a new instance onto the vector in `with_defaults`.
@@ -226,7 +226,7 @@ mod dispatcher_tests {
         }
     }
 
-    /// Bare method names (the pre-K-239 scaffold) all return
+    /// Bare method names (the pre-namespacing scaffold) all return
     /// `-32601 method_not_found`. No backwards-compat layer.
     #[tokio::test]
     async fn dispatch_bare_legacy_method_names_are_method_not_found() {

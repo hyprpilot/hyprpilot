@@ -91,7 +91,7 @@ pub async fn session_cancel(
 
 /// Mirror of the `instances/restart` JSON-RPC method for the webview.
 /// `cwd` is optional — supplying it overlays the resolved agent cwd
-/// before the post-restart actor spawns. Drives the K-266 cwd palette.
+/// before the post-restart actor spawns. Drives the cwd palette.
 ///
 /// `ensure: true` mirrors `instance_meta`'s flag — when no live actor
 /// matches `instance_id` (or none is supplied), the daemon resolves
@@ -272,10 +272,10 @@ pub async fn session_load(
 }
 
 /// List every live instance the adapter knows about. Mirrors the
-/// `instances/list` JSON-RPC method; used by the K-274 instances
-/// palette leaf to drive its row list. Returns the same shape the
-/// JSON-RPC handler emits so UI code reading either surface treats
-/// them uniformly.
+/// `instances/list` JSON-RPC method; used by the instances palette
+/// leaf to drive its row list. Returns the same shape the JSON-RPC
+/// handler emits so UI code reading either surface treats them
+/// uniformly.
 ///
 /// `focusedId` ships alongside the list so a remote bridge that just
 /// authenticated mid-session knows which instance the daemon is
@@ -342,11 +342,11 @@ pub async fn instances_rename(
     }))
 }
 
-/// Switch the active model for the addressed instance. Today
-/// returns the same `-32603`-shaped error the `models/set` wire
-/// handler does — `AcpAdapter::set_session_model` stubs past the
-/// membership check until K-251 wires the runtime side. The UI
-/// surfaces the message via toast.
+/// Switch the active model for the addressed instance. Today returns
+/// the same `-32603`-shaped error the `models/set` wire handler does —
+/// `AcpAdapter::set_session_model` stubs past the membership check
+/// until the runtime side is wired. The UI surfaces the message via
+/// toast.
 #[tauri::command]
 pub async fn models_set(adapter: AdapterState<'_>, instance_id: String, model_id: String) -> Result<Value, String> {
     tracing::info!(instance_id = %instance_id, model_id = %model_id, "cmd::models_set: entry");
@@ -361,7 +361,8 @@ pub async fn models_set(adapter: AdapterState<'_>, instance_id: String, model_id
 }
 
 /// Switch the active operational mode for the addressed instance.
-/// Mirrors `models_set` — stubbed at the adapter until K-251.
+/// Mirrors `models_set` — stubbed at the adapter until the runtime
+/// side is wired.
 #[tauri::command]
 pub async fn modes_set(adapter: AdapterState<'_>, instance_id: String, mode_id: String) -> Result<Value, String> {
     tracing::info!(instance_id = %instance_id, mode_id = %mode_id, "cmd::modes_set: entry");

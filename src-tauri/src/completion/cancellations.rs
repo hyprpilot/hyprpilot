@@ -5,8 +5,7 @@
 //!
 //! Lives in Tauri managed state alongside the `CompletionRegistry`;
 //! the Tauri command surface (`completion::commands::*`) writes to
-//! it. No socket-RPC surface — completion is webview-only and never
-//! needed a JSON-RPC mirror per the K-XXX MR review.
+//! it. No socket-RPC surface — completion is webview-only.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;

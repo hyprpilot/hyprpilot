@@ -205,11 +205,10 @@ impl RpcHandler for PromptsHandler {
                     .map(str::to_string)
                     .unwrap_or_else(|| resolved.as_string());
 
-                // Server-assigned turn ids ride a different path (K-281); the
-                // existing actor stamps a turn_id internally but it isn't
-                // surfaced through the submit reply. Returning null here
-                // keeps the wire shape stable; the UI can correlate via
-                // `acp:turn-started` events in the meantime.
+                // The existing actor stamps a turn_id internally but it
+                // isn't surfaced through the submit reply. Returning null
+                // here keeps the wire shape stable; the UI correlates via
+                // `acp:turn-started` events.
                 Ok(HandlerOutcome::Reply(json!({
                     "accepted": accepted,
                     "instanceId": resolved_instance_id,

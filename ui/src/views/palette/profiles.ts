@@ -1,16 +1,16 @@
 /**
- * Profiles palette leaf (K-263) — single-select. Lists `[[profiles]]`
- * via `useProfiles()` (which wraps `profiles/list`). Picking a row
- * persists the selection through `useProfiles().select` so the next
- * compose submit routes through the chosen profile, mirroring the
- * header-pill behavior. The currently-active profile renders with a
- * `(active)` kind tag.
+ * Profiles palette leaf — single-select. Lists `[[profiles]]` via
+ * `useProfiles()` (which wraps `profiles/list`). Picking a row persists
+ * the selection through `useProfiles().select` so the next compose
+ * submit routes through the chosen profile, mirroring the header-pill
+ * behavior. The currently-active profile renders with a `(active)`
+ * kind tag.
  *
  * Out of scope: persisting `default = true` to `[agent]
- * default_profile`. The wire surface for that is `profiles/set-default`,
- * which is intentionally absent today (the daemon is restart-to-change
- * for config). When K-280 lands, the Ctrl+D delete hook below flips
- * over to it; until then it surfaces a toast and refuses.
+ * default_profile`. The wire surface (`profiles/set-default`) is
+ * intentionally absent today — the daemon is restart-to-change for
+ * config. The Ctrl+D delete hook surfaces a toast and refuses until
+ * the wire surface lands.
  */
 
 import { ToastTone } from '@components'
@@ -98,11 +98,11 @@ export function buildProfilesPaletteSpec(args: ProfilesPaletteSpecArgs): Palette
       args.onSelect(pick.id)
     },
     onDelete(entry) {
-      // K-280: wire to `profiles/set-default`. Until that lands,
-      // surface a toast so the keystroke is observable + refuse —
-      // never fake a success.
+      // Reserved for `profiles/set-default`. Until that wire surface
+      // lands, surface a toast so the keystroke is observable +
+      // refuse — never fake a success.
       log.warn('palette-profiles: set-default not yet wired', { entry: entry.id })
-      pushToast(ToastTone.Warn, 'set-default: not yet wired (K-280)')
+      pushToast(ToastTone.Warn, 'set-default: not yet wired')
     }
   }
 }

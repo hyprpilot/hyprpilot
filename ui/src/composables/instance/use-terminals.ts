@@ -1,5 +1,5 @@
 /**
- * Live terminal store (K-257). The Rust runtime pushes one
+ * Live terminal store. The Rust runtime pushes one
  * `acp:terminal` event per stdout / stderr chunk + once on exit; this
  * module accumulates those into a per-`terminalId` view the
  * `ChatTerminalCard` reads. Output is capped at 2000 lines per

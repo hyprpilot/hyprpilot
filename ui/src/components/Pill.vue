@@ -2,7 +2,7 @@
 /**
  * Generic chip with a 3-edge border (top/right/bottom), tinted by `color`.
  * The colored 4th edge (left) is drawn by the consumer via the parent row.
- * Port of the wireframe's Pill. Stateless.
+ * Stateless.
  */
 withDefaults(
   defineProps<{

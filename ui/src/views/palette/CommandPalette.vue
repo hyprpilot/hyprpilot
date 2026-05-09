@@ -476,7 +476,7 @@ onUnmounted(() => {
   width: 56rem;
 }
 
-/* wireframe header: title › query (caret) ... result count. */
+/* Header: title › query (caret) ... result count. */
 .palette-header {
   @apply flex items-center gap-2;
   padding: 0.625rem 0.875rem;
@@ -632,8 +632,8 @@ onUnmounted(() => {
   }
 }
 
-/* wireframe footer: keyboard hints, mono dim, centered. Wraps on
- * narrow widths so 5-6 hints don't punch out of phone viewports. */
+/* Footer: keyboard hints, mono dim, centered. Wraps on narrow widths
+ * so 5-6 hints don't punch out of phone viewports. */
 .palette-footer {
   @apply flex flex-wrap items-center justify-center;
   padding: 0.5rem 0.875rem;

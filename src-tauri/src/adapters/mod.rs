@@ -139,7 +139,7 @@ pub trait Adapter: Send + Sync + 'static {
     /// Preserves `InstanceKey` (the UUID) too — callers subscribed to
     /// a specific key stay bound across the swap. Optional `cwd`
     /// overlays the resolved agent cwd before the new actor spawns —
-    /// load-bearing for the K-266 cwd palette.
+    /// load-bearing for the cwd palette.
     async fn restart(&self, key: InstanceKey, cwd: Option<std::path::PathBuf>) -> AdapterResult<InstanceKey>;
 
     /// Resolve a wire-supplied token (UUID or captain-set name) to a

@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(out["error"]["code"], -32603);
     }
 
-    /// Every bare legacy method name surfaces `-32601` after K-239's rename.
+    /// Every bare legacy method name surfaces `-32601` after the rename.
     #[tokio::test]
     async fn bare_legacy_method_names_are_method_not_found() {
         for method in ["submit", "cancel", "toggle", "kill", "session-info"] {

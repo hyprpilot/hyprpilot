@@ -1,9 +1,9 @@
 /**
  * Composer state owner — module-scope singleton. The compose row, the
- * skills palette (K-268), and the slash-commands palette (K-267) all
- * reach into the same buffer; sharing through Vue refs threaded down
- * the tree would be more ceremony than the single-window assumption
- * deserves. Per-test isolation goes through `__resetComposerForTests`,
+ * skills palette, and the slash-commands palette all reach into the
+ * same buffer; sharing through Vue refs threaded down the tree would
+ * be more ceremony than the single-window assumption deserves.
+ * Per-test isolation goes through `__resetComposerForTests`,
  * mirroring `__resetPaletteStackForTests`.
  *
  * The textarea ref is registered by `ChatComposer.vue` on mount so
@@ -12,10 +12,8 @@
  * skill-attachment store still lives in `useAttachments` — composer
  * pills here are the image-attachment list.
  *
- * Inline `#{kind/slug}` token expansion was deleted in K-268's pivot
- * to palette-only skill delivery; resources travel as first-class
- * `Attachment` entries on the user turn (`ContentBlock::Resource` on
- * the wire), not as text-inlined sections.
+ * Skills travel as first-class `Attachment` entries on the user turn
+ * (`ContentBlock::Resource` on the wire), not as text-inlined sections.
  */
 
 import { nextTick, ref, type Ref } from 'vue'

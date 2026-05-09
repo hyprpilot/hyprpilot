@@ -135,7 +135,7 @@ describe('openModelsLeaf', () => {
       availableModes: [],
       availableModels: [{ id: 'sonnet', name: 'Sonnet' }]
     })
-    invoke.mockRejectedValueOnce('models/set not implemented — ref K-251')
+    invoke.mockRejectedValueOnce('models/set not implemented')
 
     await openModelsLeaf()
     const top = usePalette().stack.value.at(-1)

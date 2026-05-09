@@ -135,7 +135,7 @@ describe('openModesLeaf', () => {
       availableModes: [{ id: 'plan', name: 'Plan' }],
       availableModels: []
     })
-    invoke.mockRejectedValueOnce('modes/set not implemented — ref K-251')
+    invoke.mockRejectedValueOnce('modes/set not implemented')
 
     await openModesLeaf()
     const top = usePalette().stack.value.at(-1)

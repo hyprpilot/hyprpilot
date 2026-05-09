@@ -122,7 +122,7 @@ export interface RootLeafContext {
  * Open one of the root leaves directly — used by header pill clicks
  * (cwd / mode / model / mcps / sessions / instances). Wired leaves
  * dispatch to their dedicated `open*Leaf()` exporter; everything else
- * falls through to the K-249 stub spec.
+ * falls through to the placeholder stub spec.
  */
 export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): void {
   switch (leafId) {
