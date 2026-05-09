@@ -93,7 +93,16 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
         <FaIcon :icon="outputExpanded ? faChevronDown : faChevronRight" class="tool-body-output-caret" aria-hidden="true" />
         <span class="tool-body-output-label">output</span>
       </header>
-      <pre v-if="outputExpanded" class="tool-body-output-body">{{ view.output }}</pre>
+      <!-- Output renders as markdown so fenced code blocks (```bash,
+           ```console, ```json, ```diff) get Shiki syntax highlighting
+           via the same component the description uses. The agent's
+           tool responses are typically narrative + fenced result
+           blocks, not raw shell streams; rendering as markdown means
+           the captain sees a clean code box instead of literal
+           ` ```console ` markup. Real streaming terminal output goes
+           through `<TerminalCard>` (terminal_id-bound calls) where
+           xterm.js renders ANSI properly — that path is unaffected. -->
+      <MarkdownBody v-if="outputExpanded" :source="view.output" class="tool-body-output-body" />
     </section>
   </div>
 </template>
@@ -197,13 +206,28 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
   letter-spacing: 0.0375rem;
 }
 
+/* MarkdownBody slot — wraps prose paragraphs and fenced code
+ * blocks. Same chrome the description path produces, kept narrow
+ * enough that long agent narratives stay readable; the inner
+ * code blocks Shiki-highlight have their own scrollers. */
 .tool-body-output-body {
-  @apply m-0 text-[0.62rem] leading-snug;
   padding: 0.375rem 0.5rem;
-  color: var(--theme-fg-subtle);
-  white-space: pre-wrap;
-  overflow-x: auto;
-  max-height: 17.5rem;
+  max-height: 24rem;
   overflow-y: auto;
+}
+
+.tool-body-output-body :deep(p) {
+  @apply my-1 text-[0.7rem] leading-relaxed;
+  color: var(--theme-fg-subtle);
+  font-family: var(--theme-font-sans);
+  overflow-wrap: anywhere;
+}
+
+.tool-body-output-body :deep(p:first-child) {
+  @apply mt-0;
+}
+
+.tool-body-output-body :deep(p:last-child) {
+  @apply mb-0;
 }
 </style>
