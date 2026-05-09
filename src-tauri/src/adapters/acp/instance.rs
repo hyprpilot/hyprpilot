@@ -231,8 +231,10 @@ impl Drop for TurnGuard {
             error: None,
             ended_at: now_epoch_ms(),
         };
-        // Drop is sync; spawn the async mirror.apply onto the runtime
-        // so the leak-path TurnEnded still lands in the mirror.
+        // The documented exception to `mirror::publish` (which is
+        // async): Drop is sync, so the apply spawns onto the runtime
+        // separately so the leak-path TurnEnded still lands in the
+        // mirror.
         let mirror = self.mirror.clone();
         let evt_for_mirror = event.clone();
         tokio::spawn(async move {

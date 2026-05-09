@@ -192,15 +192,10 @@ static VITE_PROXY_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 });
 
 /// Forward a GET to the Vite dev server and rewrap as an axum
-/// Response. `reqwest` handles every framing detail the previous
-/// hand-rolled raw-TCP version mishandled — chunked transfer
-/// encoding, content-length, header-aware body termination — so
-/// JS / CSS bodies arrive intact instead of laced with chunk-size
-/// hex lines. Headers other than the hop-by-hop set
-/// (`Connection` / `Transfer-Encoding` / `Keep-Alive` / `Upgrade`)
-/// are forwarded verbatim — Vite's `Cache-Control` / `ETag` /
-/// `Last-Modified` reach the browser, so its module-graph caching
-/// keeps working.
+/// Response. Headers other than the hop-by-hop set (`Connection` /
+/// `Transfer-Encoding` / `Keep-Alive` / `Upgrade` / `Content-Length`)
+/// are forwarded verbatim so Vite's `Cache-Control` / `ETag` /
+/// `Last-Modified` reach the browser.
 async fn proxy_to_vite(uri: &Uri) -> anyhow::Result<Response> {
     let path_and_query = uri.path_and_query().map(|p| p.as_str()).unwrap_or_else(|| uri.path());
     let url = format!("http://{VITE_DEV_HOST}:{VITE_DEV_PORT}{path_and_query}");

@@ -29,9 +29,7 @@ import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone, CancelToastBody } from '@components'
 import {
   InstanceState,
-  invoke,
   listen,
-  TauriCommand,
   TauriEvent,
   TerminalChunkKind,
   TranscriptItemKind,
@@ -41,20 +39,6 @@ import {
   type UnlistenFn
 } from '@ipc'
 import { log } from '@lib'
-
-async function seedInstanceNames(): Promise<void> {
-  try {
-    const r = await invoke(TauriCommand.InstancesList)
-
-    for (const entry of r.instances) {
-      if (entry.name !== undefined && entry.name.length > 0) {
-        setInstanceName(entry.instanceId, entry.name)
-      }
-    }
-  } catch(err) {
-    log.warn('instance-name seed: instances_list failed', { err: String(err) })
-  }
-}
 
 function routePermission(payload: PermissionRequestEventPayload): void {
   log.debug('acp:permission-request received', {
@@ -494,12 +478,6 @@ export async function startSessionStream(): Promise<() => void> {
       useComposer().appendDraft(e.payload.text)
     })
   )
-
-  // Seed names for already-running instances on overlay open. The
-  // rename event only fires on changes — without this, an instance
-  // renamed before the overlay attached would render with no name
-  // until the captain renames it again.
-  void seedInstanceNames()
 
   return () => {
     for (const u of unlisteners) {

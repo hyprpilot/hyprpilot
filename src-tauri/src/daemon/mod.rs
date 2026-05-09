@@ -139,13 +139,16 @@ pub(crate) struct BootSnapshot {
     pub(crate) instances: serde_json::Value,
 }
 
-#[tauri::command]
-async fn boot_snapshot(
-    theme: State<'_, Theme>,
-    keymaps: State<'_, KeymapsConfig>,
-    window_state: State<'_, WindowState>,
-    config: State<'_, Arc<RwLock<Config>>>,
-    adapter: State<'_, Arc<AcpAdapter>>,
+/// Single source of truth for the boot-time payload — both the
+/// `boot_snapshot` Tauri command and the `tauri/boot_snapshot` JSON-RPC
+/// mirror call this. Keeps the wire shape lock-stepped between
+/// transports without a typed-shim layer.
+pub(crate) async fn build_boot_snapshot(
+    theme: &Theme,
+    keymaps: &KeymapsConfig,
+    window_state: &WindowState,
+    config: &Arc<RwLock<Config>>,
+    adapter: &AcpAdapter,
 ) -> Result<BootSnapshot, String> {
     let completion_config = {
         let cfg = config.read().map_err(|e| format!("config rwlock poisoned: {e}"))?;
@@ -178,9 +181,9 @@ async fn boot_snapshot(
     }
 
     Ok(BootSnapshot {
-        theme: theme.inner().clone(),
-        keymaps: keymaps.inner().clone(),
-        window_state: window_state.inner().clone(),
+        theme: theme.clone(),
+        keymaps: keymaps.clone(),
+        window_state: window_state.clone(),
         home_dir: crate::paths::home_dir().to_string_lossy().into_owned(),
         daemon_cwd: std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
@@ -190,6 +193,24 @@ async fn boot_snapshot(
         profiles,
         instances: serde_json::Value::Object(instances_payload),
     })
+}
+
+#[tauri::command]
+async fn boot_snapshot(
+    theme: State<'_, Theme>,
+    keymaps: State<'_, KeymapsConfig>,
+    window_state: State<'_, WindowState>,
+    config: State<'_, Arc<RwLock<Config>>>,
+    adapter: State<'_, Arc<AcpAdapter>>,
+) -> Result<BootSnapshot, String> {
+    build_boot_snapshot(
+        theme.inner(),
+        keymaps.inner(),
+        window_state.inner(),
+        config.inner(),
+        adapter.inner(),
+    )
+    .await
 }
 
 /// Daemon entry point. Five phases, each its own helper:

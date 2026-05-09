@@ -70,7 +70,9 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
         // One round-trip replaces theme + keymaps + window_state +
         // home_dir + daemon_cwd + completion_config + agents + profiles
         // + instances. The granular handlers below stay for ad-hoc
-        // refresh paths (palette reload, theme swap, etc.).
+        // refresh paths (palette reload, theme swap, etc.). Build via
+        // the shared `daemon::build_boot_snapshot` so the JSON-RPC
+        // mirror and the Tauri command can't drift.
         "boot_snapshot" => {
             let theme = app
                 .try_state::<crate::config::Theme>()
@@ -84,54 +86,17 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             let config_state = app
                 .try_state::<Arc<std::sync::RwLock<Config>>>()
                 .ok_or_else(|| RpcError::internal_error("config state not managed"))?;
-
-            let completion_config = {
-                let cfg = config_state
-                    .read()
-                    .map_err(|e| RpcError::internal_error(format!("config rwlock poisoned: {e}")))?;
-                let rg = &cfg.completion.ripgrep;
-                json!({
-                    "ripgrep": {
-                        "auto": rg.auto.unwrap_or(true),
-                        "debounceMs": rg.debounce_ms.unwrap_or(250),
-                        "minPrefix": rg.min_prefix.unwrap_or(3),
-                    }
-                })
-            };
-
             let adapter = adapter_arc(app)?;
-            let agents = json!({ "agents": adapter.list_agents() });
-            let profiles = json!({ "profiles": adapter.list_profiles() });
-
-            let instances_list = adapter.list().await;
-            let focused_id = adapter.focused_id().await.map(|k| k.as_string());
-            let instance_entries: Vec<crate::adapters::instance::InstanceListEntry> = instances_list
-                .iter()
-                .map(crate::adapters::instance::InstanceListEntry::from)
-                .collect();
-            let mut instances_payload = serde_json::Map::with_capacity(2);
-            instances_payload.insert(
-                "instances".into(),
-                serde_json::to_value(&instance_entries)
-                    .map_err(|e| RpcError::internal_error(format!("serialize instances: {e}")))?,
-            );
-            if let Some(id) = focused_id {
-                instances_payload.insert("focusedId".into(), Value::String(id));
-            }
-
-            Ok(json!({
-                "theme": theme.inner().clone(),
-                "keymaps": keymaps.inner().clone(),
-                "windowState": window_state.inner().clone(),
-                "homeDir": crate::paths::home_dir().to_string_lossy(),
-                "daemonCwd": std::env::current_dir()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| "/".to_string()),
-                "completionConfig": completion_config,
-                "agents": agents,
-                "profiles": profiles,
-                "instances": Value::Object(instances_payload),
-            }))
+            let snap = crate::daemon::build_boot_snapshot(
+                theme.inner(),
+                keymaps.inner(),
+                window_state.inner(),
+                config_state.inner(),
+                adapter.as_ref(),
+            )
+            .await
+            .map_err(RpcError::internal_error)?;
+            serde_json::to_value(snap).map_err(|e| RpcError::internal_error(format!("serialize boot snapshot: {e}")))
         }
 
         // ── boot path: theme + chrome ────────────────────────────────

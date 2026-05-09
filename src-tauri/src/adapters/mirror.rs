@@ -204,11 +204,6 @@ pub struct MirrorInner {
 /// `pending_permissions` count, the `latest_seq` cursor) the
 /// snapshot RPC adds.
 ///
-/// Dead-code-allowed at the field level: Phase A2 lands the cache
-/// shape only; Phase A5 wires the snapshot RPC handlers that read
-/// these fields back out via [`MetaSnapshot`]. Without the allow,
-/// every leaf would warn until the consumers arrive.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct MirrorMetaCache {
     pub profile_id: Option<String>,
@@ -236,15 +231,13 @@ pub struct MirrorMetaCache {
 /// Phase A2 lands the type + the wire-through plumbing on
 /// [`crate::adapters::acp::instance::AcpInstance`]. Phase A3 calls
 /// [`apply`](Self::apply) from the actor's emit lines; Phase A5
-/// adds the snapshot RPC handlers. Narrow allow until then.
-#[allow(dead_code)]
+/// adds the snapshot RPC handlers.
 #[derive(Debug, Default, Clone)]
 pub struct InstanceMirror {
     inner: Arc<RwLock<MirrorInner>>,
     cap: usize,
 }
 
-#[allow(dead_code)]
 impl InstanceMirror {
     /// Build a mirror with the default transcript cap.
     #[must_use]
@@ -578,7 +571,6 @@ impl InstanceMirror {
 /// Use this at every actor emit site. The `Drop` path in
 /// `acp::instance::TurnGuard` is the documented exception — Drop
 /// is sync, so the apply spawns onto the runtime separately.
-#[allow(dead_code)]
 pub async fn publish(
     mirror: &InstanceMirror,
     events_tx: &tokio::sync::broadcast::Sender<InstanceEvent>,
