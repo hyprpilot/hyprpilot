@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.9](https://github.com/hyprpilot/hyprpilot/compare/v0.1.8...v0.1.9) (2026-05-09)
+
+
+### Features
+
+* daemon-owned transcript truth + windowed UI viewport (state replay + perf) ([#26](https://github.com/hyprpilot/hyprpilot/issues/26)) ([546400b](https://github.com/hyprpilot/hyprpilot/commit/546400b47647bf3bbc49599db3ff3f77885a0706))
+* **ui:** render internal-tool output via MarkdownBody (Bash et al.) ([#30](https://github.com/hyprpilot/hyprpilot/issues/30)) ([6685fe3](https://github.com/hyprpilot/hyprpilot/commit/6685fe336eddf5534b6bb9fcee84ff72ac77c239))
+
 ## [0.1.8](https://github.com/hyprpilot/hyprpilot/compare/v0.1.7...v0.1.8) (2026-05-07)
 
 
