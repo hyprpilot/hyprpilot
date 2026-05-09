@@ -1,5 +1,6 @@
 pub mod daemon;
 pub mod diag;
+pub mod events;
 pub mod instances;
 pub mod overlay;
 pub mod permissions;
@@ -10,6 +11,7 @@ pub(super) mod util;
 
 pub use self::daemon::DaemonHandler;
 pub use self::diag::DiagHandler;
+pub use self::events::EventsHandler;
 pub use self::instances::{InstanceSnapshotHandler, InstancesHandler};
 pub use self::overlay::OverlayHandler;
 pub use self::permissions::PermissionsHandler;

@@ -466,6 +466,62 @@ impl InstanceEvent {
             InstanceEvent::SystemPromptInjected { .. } => "instance.system_prompt_injected",
         }
     }
+
+    /// Colon-separated public event name — the same string the Tauri
+    /// webview listens on (`acp:transcript`, `acp:turn-started`, etc.)
+    /// and that the WS remote bridge + the unix-socket `events/subscribe`
+    /// handler both broadcast. Single source of truth across transports
+    /// so a Neovim plugin, a remote SPA, and the desktop webview all
+    /// subscribe to the same names.
+    #[must_use]
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            InstanceEvent::State { .. } => "acp:instance-state",
+            InstanceEvent::Transcript { .. } => "acp:transcript",
+            InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
+            InstanceEvent::PermissionResolved { .. } => "acp:permission-resolved",
+            InstanceEvent::TurnStarted { .. } => "acp:turn-started",
+            InstanceEvent::TurnEnded { .. } => "acp:turn-ended",
+            InstanceEvent::InstancesChanged { .. } => "acp:instances-changed",
+            InstanceEvent::InstancesFocused { .. } => "acp:instances-focused",
+            InstanceEvent::InstanceRenamed { .. } => "acp:instance-renamed",
+            InstanceEvent::Terminal { .. } => "acp:terminal",
+            InstanceEvent::DaemonReloaded { .. } => "daemon:reloaded",
+            InstanceEvent::SessionInfoUpdate { .. } => "acp:session-info-update",
+            InstanceEvent::CurrentModeUpdate { .. } => "acp:current-mode-update",
+            InstanceEvent::UsageUpdate { .. } => "acp:usage-update",
+            InstanceEvent::ConfigOptionsUpdate { .. } => "acp:config-options-update",
+            InstanceEvent::InstanceMeta { .. } => "acp:instance-meta",
+            InstanceEvent::SystemPromptInjected { .. } => "acp:system-prompt-injected",
+        }
+    }
+
+    /// Optional `instance_id` for the event — `None` for daemon-global
+    /// events (`DaemonReloaded`). Powers per-instance subscription
+    /// filters: a Neovim buffer pinned to instance X subscribes with
+    /// `{instance_id: "..."}` and gets only events tagged with that id.
+    #[must_use]
+    pub fn instance_id(&self) -> Option<&str> {
+        match self {
+            InstanceEvent::State { instance_id, .. }
+            | InstanceEvent::Transcript { instance_id, .. }
+            | InstanceEvent::PermissionRequest { instance_id, .. }
+            | InstanceEvent::PermissionResolved { instance_id, .. }
+            | InstanceEvent::TurnStarted { instance_id, .. }
+            | InstanceEvent::TurnEnded { instance_id, .. }
+            | InstanceEvent::InstanceRenamed { instance_id, .. }
+            | InstanceEvent::Terminal { instance_id, .. }
+            | InstanceEvent::SessionInfoUpdate { instance_id, .. }
+            | InstanceEvent::CurrentModeUpdate { instance_id, .. }
+            | InstanceEvent::UsageUpdate { instance_id, .. }
+            | InstanceEvent::ConfigOptionsUpdate { instance_id, .. }
+            | InstanceEvent::InstanceMeta { instance_id, .. }
+            | InstanceEvent::SystemPromptInjected { instance_id, .. } => Some(instance_id),
+            InstanceEvent::InstancesChanged { .. }
+            | InstanceEvent::InstancesFocused { .. }
+            | InstanceEvent::DaemonReloaded { .. } => None,
+        }
+    }
 }
 
 /// Flat snapshot of one live instance. Adapters surface the same
@@ -717,5 +773,57 @@ mod instance_list_entry_tests {
         let entry = InstanceListEntry::from(&info);
         assert_eq!(entry.instance_id, "abc-123");
         assert_eq!(entry.agent_id, "claude-code");
+    }
+
+    /// `event_name` is the public colon-separated string that every
+    /// frontend (Tauri webview, WS bridge, unix-socket events handler)
+    /// listens on. Single source of truth — this test pins the
+    /// canonical names so a change to a string ripples through one
+    /// site, not three.
+    #[test]
+    fn event_name_returns_canonical_strings() {
+        let cases: &[(InstanceEvent, &str)] = &[
+            (
+                InstanceEvent::DaemonReloaded {
+                    profiles: 0,
+                    skills_count: 0,
+                    mcps_count: 0,
+                },
+                "daemon:reloaded",
+            ),
+            (
+                InstanceEvent::InstancesChanged {
+                    instance_ids: Vec::new(),
+                    focused_id: None,
+                },
+                "acp:instances-changed",
+            ),
+            (
+                InstanceEvent::InstancesFocused { instance_id: None },
+                "acp:instances-focused",
+            ),
+        ];
+        for (evt, want) in cases {
+            assert_eq!(evt.event_name(), *want);
+        }
+    }
+
+    /// `instance_id` returns `None` for daemon-global events and
+    /// `Some(id)` for per-instance events. Powers the per-connection
+    /// filter in `events/subscribe`.
+    #[test]
+    fn instance_id_distinguishes_global_from_per_instance() {
+        let global = InstanceEvent::DaemonReloaded {
+            profiles: 0,
+            skills_count: 0,
+            mcps_count: 0,
+        };
+        assert_eq!(global.instance_id(), None);
+
+        let scoped = InstanceEvent::InstanceRenamed {
+            instance_id: "abc-123".into(),
+            name: None,
+        };
+        assert_eq!(scoped.instance_id(), Some("abc-123"));
     }
 }

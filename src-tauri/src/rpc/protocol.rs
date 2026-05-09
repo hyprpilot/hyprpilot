@@ -76,6 +76,89 @@ impl StatusChangedNotification {
     }
 }
 
+wire_method!(EventsChangedMethod, "events/changed");
+wire_method!(EventsLaggedMethod, "events/lagged");
+
+/// Server-push notification carrying one live `InstanceEvent` to a
+/// connection that subscribed via `events/subscribe`. The `name` field
+/// is the colon-separated public event name (`acp:transcript`,
+/// `acp:turn-started`, `daemon:reloaded`) — single source of truth
+/// across transports (Tauri webview, WS remote bridge, and this
+/// unix-socket subscription). `payload` is the variant's full
+/// serialized form. `instanceId` is hoisted to the envelope for cheap
+/// per-instance filtering on the consumer side without re-parsing the
+/// payload (mirrors the server-side filter applied before emit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventsChangedNotification {
+    pub jsonrpc: JsonRpcVersion,
+    /// Always `"events/changed"`.
+    pub method: EventsChangedMethod,
+    pub params: EventsChangedParams,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventsChangedParams {
+    /// Public event name (`acp:transcript`, etc.). Same string the
+    /// Tauri webview and WS remote bridge surface. Owned `String`
+    /// rather than `&'static str` so deserialize-from-arbitrary-input
+    /// path is well-typed; the construction path only ever feeds a
+    /// `&'static str` from `InstanceEvent::event_name()`.
+    pub name: String,
+    /// Full event payload (serialized variant).
+    pub payload: serde_json::Value,
+    /// Tagged instance id when the event is per-instance; absent
+    /// for daemon-global events (`daemon:reloaded`,
+    /// `acp:instances-changed`, `acp:instances-focused`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+}
+
+impl EventsChangedNotification {
+    pub fn new(name: &'static str, payload: serde_json::Value, instance_id: Option<String>) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion,
+            method: EventsChangedMethod,
+            params: EventsChangedParams {
+                name: name.to_string(),
+                payload,
+                instance_id,
+            },
+        }
+    }
+}
+
+/// Server-push notification surfaced when the underlying broadcast
+/// receiver lagged — the connection missed `n` events. Unlike
+/// `status/changed`, events are content (not a settled snapshot), so
+/// re-sending the latest doesn't help; the consumer typically
+/// re-fetches via `instance/snapshot/chat` to bridge the gap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventsLaggedNotification {
+    pub jsonrpc: JsonRpcVersion,
+    /// Always `"events/lagged"`.
+    pub method: EventsLaggedMethod,
+    pub params: EventsLaggedParams,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventsLaggedParams {
+    /// Number of events the broadcast skipped over before the next
+    /// `recv()` succeeded.
+    pub skipped: u64,
+}
+
+impl EventsLaggedNotification {
+    pub fn new(skipped: u64) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion,
+            method: EventsLaggedMethod,
+            params: EventsLaggedParams { skipped },
+        }
+    }
+}
+
 /// Marker type that serializes / deserializes as the literal `"2.0"`. Any
 /// other JSON-RPC version on the wire is a `-32600` invalid request.
 ///
@@ -282,6 +365,49 @@ mod tests {
     fn status_changed_method_rejects_other_strings() {
         let bad = r#""status-changed""#;
         assert!(serde_json::from_str::<StatusChangedMethod>(bad).is_err());
+    }
+
+    #[test]
+    fn events_changed_notification_serializes_with_method_and_envelope() {
+        let n = EventsChangedNotification::new(
+            "acp:transcript",
+            serde_json::json!({"foo": "bar"}),
+            Some("inst-7".into()),
+        );
+        let v: serde_json::Value = serde_json::to_value(&n).unwrap();
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["method"], "events/changed");
+        assert_eq!(v["params"]["name"], "acp:transcript");
+        assert_eq!(v["params"]["payload"]["foo"], "bar");
+        assert_eq!(v["params"]["instanceId"], "inst-7");
+    }
+
+    #[test]
+    fn events_changed_omits_instance_id_when_global() {
+        let n = EventsChangedNotification::new("daemon:reloaded", serde_json::json!({}), None);
+        let v: serde_json::Value = serde_json::to_value(&n).unwrap();
+        // Daemon-global events have no instance id; the field must
+        // not appear in the wire envelope (skip_serializing_if).
+        assert!(
+            v["params"].get("instanceId").is_none(),
+            "instanceId must be omitted: {v}"
+        );
+    }
+
+    #[test]
+    fn events_changed_method_rejects_other_strings() {
+        assert!(serde_json::from_str::<EventsChangedMethod>(r#""events-changed""#).is_err());
+        assert!(serde_json::from_str::<EventsChangedMethod>(r#""events/changed_x""#).is_err());
+        // Round-trip the canonical form.
+        assert!(serde_json::from_str::<EventsChangedMethod>(r#""events/changed""#).is_ok());
+    }
+
+    #[test]
+    fn events_lagged_notification_carries_skipped_count() {
+        let n = EventsLaggedNotification::new(42);
+        let v: serde_json::Value = serde_json::to_value(&n).unwrap();
+        assert_eq!(v["method"], "events/lagged");
+        assert_eq!(v["params"]["skipped"], 42);
     }
 
     #[test]

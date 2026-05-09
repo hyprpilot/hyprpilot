@@ -106,6 +106,7 @@ pub(crate) async fn daemon_rpc(
         config: Some(config.inner().clone()),
         mcps: None,
         already_subscribed: false,
+        already_events_subscribed: false,
         started_at: None,
         socket_path: None,
     };
@@ -115,6 +116,9 @@ pub(crate) async fn daemon_rpc(
     {
         Ok(HandlerOutcome::Reply(v)) => Ok(v),
         Ok(HandlerOutcome::StatusSubscribed(_, _)) => Err("status/subscribe not supported on the Tauri bridge".into()),
+        Ok(HandlerOutcome::EventsSubscribed(_, _, _)) => {
+            Err("events/subscribe not supported on the Tauri bridge".into())
+        }
         Err(e) => Err(format!("{}: {}", e.code, e.message)),
     }
 }

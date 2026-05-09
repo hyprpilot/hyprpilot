@@ -6,10 +6,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info, trace, warn};
 
-use crate::adapters::Adapter;
+use crate::adapters::{Adapter, InstanceEvent};
 use crate::config::Config;
-use crate::rpc::handler::{HandlerCtx, HandlerOutcome};
-use crate::rpc::protocol::{JsonRpcVersion, Outcome, RequestId, Response, RpcError, StatusChangedNotification};
+use crate::rpc::handler::{EventsFilter, HandlerCtx, HandlerOutcome};
+use crate::rpc::protocol::{
+    EventsChangedNotification, EventsLaggedNotification, JsonRpcVersion, Outcome, RequestId, Response, RpcError,
+    StatusChangedNotification,
+};
 use crate::rpc::status::StatusBroadcast;
 use crate::rpc::RpcDispatcher;
 
@@ -54,6 +57,11 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     // Set by `status/subscribe`; its presence also gates the second-
     // subscribe rejection via `HandlerCtx::already_subscribed`.
     let mut status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>> = None;
+    // Set by `events/subscribe`; its presence gates the second-
+    // subscribe rejection via `HandlerCtx::already_events_subscribed`.
+    // Filter is applied per-event before emit.
+    let mut events_rx: Option<Box<tokio::sync::broadcast::Receiver<InstanceEvent>>> = None;
+    let mut events_filter: EventsFilter = EventsFilter::default();
 
     // Bounded mpsc + per-connection `JoinSet`: bounded keeps a
     // misbehaving peer from OOMing the daemon (the spawn site
@@ -99,6 +107,10 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Some(DispatchOutbound::StatusRx(rx)) => {
                         status_rx = Some(rx);
                     }
+                    Some(DispatchOutbound::EventsRx(rx, filter)) => {
+                        events_rx = Some(rx);
+                        events_filter = filter;
+                    }
                     None => break 'proxy,
                 }
             }
@@ -118,14 +130,19 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 trace!(line = %line, "rpc: received line");
 
                 // Capture subscription state at dispatch-spawn time —
-                // concurrent handlers can't read `status_rx` (owned by
-                // this loop). A `status/subscribe` lands in
-                // `DispatchOutbound::StatusRx` below.
+                // concurrent handlers can't read the *_rx slots
+                // (owned by this loop). Subscribe outcomes land via
+                // `DispatchOutbound::{StatusRx,EventsRx}` below.
                 let already_subscribed = status_rx.is_some();
+                let already_events_subscribed = events_rx.is_some();
                 let state_clone = state.clone();
                 let tx = outbound_tx.clone();
                 dispatchers.spawn(async move {
-                    let DispatchOutput { response, new_status_rx } = dispatch_line(
+                    let DispatchOutput {
+                        response,
+                        new_status_rx,
+                        new_events_rx,
+                    } = dispatch_line(
                         &line,
                         DispatchInput {
                             app: Some(&state_clone.app),
@@ -135,6 +152,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                             config: Some(state_clone.config.clone()),
                             mcps: Some(state_clone.mcps.clone()),
                             connection_already_subscribed: already_subscribed,
+                            connection_already_events_subscribed: already_events_subscribed,
                             started_at: Some(state_clone.started_at),
                             socket_path: Some(state_clone.socket_path.as_path()),
                         },
@@ -142,6 +160,9 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
 
                     if let Some(rx) = new_status_rx {
                         let _ = tx.send(DispatchOutbound::StatusRx(rx)).await;
+                    }
+                    if let Some((rx, filter)) = new_events_rx {
+                        let _ = tx.send(DispatchOutbound::EventsRx(rx, filter)).await;
                     }
                     let _ = tx.send(DispatchOutbound::Response(Box::new(response))).await;
                 });
@@ -178,6 +199,50 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     }
                 }
             }
+
+            // ── outbound events/changed notification (subscriber only) ────
+            evt = async {
+                match &mut events_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match evt {
+                    Ok(evt) => {
+                        // Per-connection filter — daemon-global events
+                        // (`daemon:reloaded`, `acp:instances-changed`) have
+                        // no instance id and pass through unconditionally.
+                        if let Some(want) = events_filter.instance_id.as_deref() {
+                            if let Some(got) = evt.instance_id() {
+                                if got != want {
+                                    continue;
+                                }
+                            }
+                        }
+                        let name = evt.event_name();
+                        let payload = serde_json::to_value(&evt).unwrap_or(serde_json::Value::Null);
+                        let instance_id = evt.instance_id().map(str::to_string);
+                        let notif = EventsChangedNotification::new(name, payload, instance_id);
+                        if !write_line(&mut writer, &notif, "events/changed").await {
+                            break 'proxy;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Drop the lagged window. Unlike `status`, events
+                        // are content (not a settled state snapshot) so
+                        // there's no current value to re-send. Surface
+                        // the lag count to the peer as a notification so
+                        // the captain can decide whether to re-snapshot
+                        // via `instance/snapshot/chat`.
+                        warn!(n, "rpc: events subscriber lagged");
+                        let notif = EventsLaggedNotification::new(n);
+                        if !write_line(&mut writer, &notif, "events/lagged").await {
+                            break 'proxy;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break 'proxy,
+                }
+            }
         }
     }
 
@@ -196,6 +261,7 @@ const DISPATCH_OUTBOUND_CAPACITY: usize = 64;
 enum DispatchOutbound {
     Response(Box<Response>),
     StatusRx(Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>),
+    EventsRx(Box<tokio::sync::broadcast::Receiver<InstanceEvent>>, EventsFilter),
 }
 
 /// Serialize `value` as a single NDJSON line and flush it on the
@@ -225,6 +291,10 @@ async fn write_line(writer: &mut tokio::net::unix::OwnedWriteHalf, value: &impl 
 pub(crate) struct DispatchOutput {
     pub response: Response,
     pub new_status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>>,
+    /// `events/subscribe` outcome — receiver + filter to apply
+    /// per-event before emit. Connection loop pins both onto its
+    /// state and adds a select arm.
+    pub new_events_rx: Option<(Box<tokio::sync::broadcast::Receiver<InstanceEvent>>, EventsFilter)>,
 }
 
 /// Per-connection state the dispatcher reads. Bundles every shared
@@ -238,6 +308,7 @@ pub(crate) struct DispatchInput<'a> {
     pub config: Option<Arc<RwLock<Config>>>,
     pub mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
     pub connection_already_subscribed: bool,
+    pub connection_already_events_subscribed: bool,
     pub started_at: Option<Instant>,
     pub socket_path: Option<&'a std::path::Path>,
 }
@@ -308,6 +379,7 @@ pub(crate) async fn dispatch_line(line: &str, input: DispatchInput<'_>) -> Dispa
         config: input.config,
         mcps: input.mcps,
         already_subscribed: input.connection_already_subscribed,
+        already_events_subscribed: input.connection_already_events_subscribed,
         started_at: input.started_at,
         socket_path: input.socket_path,
     };
@@ -315,13 +387,16 @@ pub(crate) async fn dispatch_line(line: &str, input: DispatchInput<'_>) -> Dispa
     let outcome = input.dispatcher.dispatch(&method, params, ctx).await;
 
     match outcome {
-        Ok(HandlerOutcome::Reply(value)) => DispatchOutput {
-            response: Response::success(Some(id), value),
-            new_status_rx: None,
-        },
+        Ok(HandlerOutcome::Reply(value)) => DispatchOutput::reply(Response::success(Some(id), value)),
         Ok(HandlerOutcome::StatusSubscribed(snapshot, rx)) => DispatchOutput {
             response: Response::success(Some(id), snapshot),
             new_status_rx: Some(rx),
+            new_events_rx: None,
+        },
+        Ok(HandlerOutcome::EventsSubscribed(ack, rx, filter)) => DispatchOutput {
+            response: Response::success(Some(id), ack),
+            new_status_rx: None,
+            new_events_rx: Some((rx, filter)),
         },
         Err(err) => {
             warn!(
@@ -341,6 +416,7 @@ impl DispatchOutput {
         Self {
             response,
             new_status_rx: None,
+            new_events_rx: None,
         }
     }
 }
@@ -385,6 +461,7 @@ mod tests {
                 config: Some(config),
                 mcps: None,
                 connection_already_subscribed: false,
+                connection_already_events_subscribed: false,
                 started_at: None,
                 socket_path: None,
             },
@@ -469,7 +546,6 @@ mod tests {
         for method in [
             "session/submit",
             "session/cancel",
-            "events/subscribe",
             "agents/list",
             "config/profiles",
             "mcps/list",
@@ -548,6 +624,7 @@ mod tests {
                         config: Some(config.clone()),
                         mcps: None,
                         connection_already_subscribed: false,
+                        connection_already_events_subscribed: false,
                         started_at: None,
                         socket_path: None,
                     },
@@ -597,6 +674,7 @@ mod tests {
                 config: Some(config.clone()),
                 mcps: None,
                 connection_already_subscribed: false,
+                connection_already_events_subscribed: false,
                 started_at: None,
                 socket_path: None,
             },
@@ -616,6 +694,7 @@ mod tests {
                 config: Some(config),
                 mcps: None,
                 connection_already_subscribed: true,
+                connection_already_events_subscribed: false,
                 started_at: None,
                 socket_path: None,
             },
@@ -717,6 +796,7 @@ mod tests {
                                         config: Some(config.clone()),
                                         mcps: None,
                                         connection_already_subscribed: status_rx.is_some(),
+                                        connection_already_events_subscribed: false,
                                         started_at: None,
                                         socket_path: None,
                                     },

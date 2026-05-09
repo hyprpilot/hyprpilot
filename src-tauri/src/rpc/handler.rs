@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
-use crate::adapters::Adapter;
+use crate::adapters::{Adapter, InstanceEvent};
 use crate::config::Config;
 use crate::rpc::protocol::{RpcError, StatusResult};
 use crate::rpc::status::StatusBroadcast;
@@ -41,6 +41,11 @@ pub struct HandlerCtx<'a> {
     /// Threaded in by the server so `StatusHandler` can reject a second
     /// subscribe on the same socket with `-32600`.
     pub already_subscribed: bool,
+    /// Whether this connection has already subscribed to live
+    /// `acp:*` events. Same single-subscription semantics as
+    /// `already_subscribed` (the status one) — a peer that wants
+    /// to refresh filters reconnects.
+    pub already_events_subscribed: bool,
     /// Process start time. `daemon/status` reports `uptimeSecs` against
     /// this. `None` in unit tests where uptime is irrelevant.
     pub started_at: Option<Instant>,
@@ -50,10 +55,10 @@ pub struct HandlerCtx<'a> {
 }
 
 /// Outcome returned by a handler. Most calls are a plain `Reply(Value)`;
-/// `status/subscribe` returns the snapshot + a broadcast receiver so
-/// the server can pin the receiver onto the connection task and fan
-/// `status/changed` notifications out as they arrive. The receiver
-/// boxes to keep `Reply` (the hot path) compact.
+/// the two streaming verbs (`status/subscribe`, `events/subscribe`) ship
+/// a broadcast receiver alongside the reply so the server can pin it
+/// onto the connection task and fan notifications out as they arrive.
+/// Receivers box to keep `Reply` (the hot path) compact.
 pub enum HandlerOutcome {
     Reply(Value),
     /// `status/subscribe` — initial snapshot + a broadcast receiver
@@ -62,6 +67,28 @@ pub enum HandlerOutcome {
     /// receiver in the connection's `select!` to push `status/changed`
     /// notifications.
     StatusSubscribed(Value, Box<broadcast::Receiver<StatusResult>>),
+    /// `events/subscribe` — ack value + a broadcast receiver that
+    /// yields every live `InstanceEvent` (transcript chunks, tool
+    /// calls, permissions, terminals, instance state). The server
+    /// pins the receiver and emits each event as a JSON-RPC
+    /// notification (`{jsonrpc:"2.0", method:"events/changed",
+    /// params:{name, payload, instanceId?}}`). Optional client-side
+    /// filter on `instance_id` is applied at the server before
+    /// emitting — the receiver itself sees every event because the
+    /// underlying broadcast is shared with the WS bridge + Tauri
+    /// bridge.
+    EventsSubscribed(Value, Box<broadcast::Receiver<InstanceEvent>>, EventsFilter),
+}
+
+/// Server-side filter applied to a subscribed events stream. Empty
+/// filter (default) lets every event through.
+#[derive(Debug, Clone, Default)]
+pub struct EventsFilter {
+    /// When set, only events whose `instance_id()` matches are
+    /// emitted. Daemon-global events (no instance id) pass through
+    /// unconditionally — a peer subscribing to one instance still
+    /// wants to know about `daemon:reloaded`.
+    pub instance_id: Option<String>,
 }
 
 /// A unit of RPC work, keyed by the namespace prefix of its method names.

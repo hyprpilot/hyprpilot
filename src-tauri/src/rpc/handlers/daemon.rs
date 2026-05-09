@@ -149,6 +149,7 @@ mod tests {
             config: Some(config),
             mcps: None,
             already_subscribed: false,
+            already_events_subscribed: false,
             started_at,
             socket_path,
         };
@@ -165,7 +166,9 @@ mod tests {
             .unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::StatusSubscribed(..) => panic!("expected Reply"),
+            HandlerOutcome::StatusSubscribed(..) | HandlerOutcome::EventsSubscribed(..) => {
+                panic!("expected Reply")
+            }
         };
         assert_eq!(v["pid"], std::process::id());
         assert!(
@@ -185,7 +188,9 @@ mod tests {
             .unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::StatusSubscribed(..) => panic!("expected Reply"),
+            HandlerOutcome::StatusSubscribed(..) | HandlerOutcome::EventsSubscribed(..) => {
+                panic!("expected Reply")
+            }
         };
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     }
@@ -198,7 +203,9 @@ mod tests {
             .unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::StatusSubscribed(..) => panic!("expected Reply"),
+            HandlerOutcome::StatusSubscribed(..) | HandlerOutcome::EventsSubscribed(..) => {
+                panic!("expected Reply")
+            }
         };
         assert_eq!(v["exiting"], true);
     }
@@ -225,7 +232,9 @@ mod tests {
             .unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::StatusSubscribed(..) => panic!("expected Reply"),
+            HandlerOutcome::StatusSubscribed(..) | HandlerOutcome::EventsSubscribed(..) => {
+                panic!("expected Reply")
+            }
         };
         assert_eq!(v["exiting"], true);
     }
