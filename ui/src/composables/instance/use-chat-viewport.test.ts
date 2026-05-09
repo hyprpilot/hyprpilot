@@ -585,3 +585,48 @@ describe('viewportPageSize', () => {
     // to drift; just assert the scaling relationship and the floor.
   })
 })
+
+describe('measuredPageSize', () => {
+  it('falls back to viewportPageSize when no items rendered yet', async() => {
+    const { measuredPageSize, viewportPageSize } = await import('./use-chat-viewport')
+    const el = { clientHeight: 800, scrollHeight: 0 } as HTMLElement
+    const elRef = ref<HTMLElement | undefined>(el)
+
+    expect(measuredPageSize(elRef, 0)).toBe(viewportPageSize(elRef))
+  })
+
+  it('returns clientHeight × itemCount / scrollHeight when DOM has items', async() => {
+    const { measuredPageSize } = await import('./use-chat-viewport')
+    // 30 items rendered into 2400px of content (3 viewports of 800px each).
+    // Items-per-viewport = 30 × 800 / 2400 = 10.
+    const el = { clientHeight: 800, scrollHeight: 2400 } as HTMLElement
+
+    expect(measuredPageSize(ref<HTMLElement | undefined>(el), 30)).toBe(20)
+    // (clamped at MIN_PAGE_SIZE = 20; 10 < 20 so the floor applies)
+  })
+
+  it('returns measured value above the floor when content exceeds it', async() => {
+    const { measuredPageSize } = await import('./use-chat-viewport')
+    // 100 items packed into 2 viewports — average 1 viewport = 50 items.
+    const el = { clientHeight: 800, scrollHeight: 1600 } as HTMLElement
+
+    expect(measuredPageSize(ref<HTMLElement | undefined>(el), 100)).toBe(50)
+  })
+
+  it('shrinks the next fetch when the viewport contains tall content', async() => {
+    const { measuredPageSize } = await import('./use-chat-viewport')
+    // 6 items occupy 4800px (avg 800px/item) — 1 viewport (800px) = 1 item.
+    const el = { clientHeight: 800, scrollHeight: 4800 } as HTMLElement
+
+    // Measured says 1, floor brings it to 20.
+    expect(measuredPageSize(ref<HTMLElement | undefined>(el), 6)).toBe(20)
+  })
+
+  it('grows the next fetch when content is dense and short', async() => {
+    const { measuredPageSize } = await import('./use-chat-viewport')
+    // 200 short items in 1000px — 1 viewport (800px) = 160 items.
+    const el = { clientHeight: 800, scrollHeight: 1000 } as HTMLElement
+
+    expect(measuredPageSize(ref<HTMLElement | undefined>(el), 200)).toBe(160)
+  })
+})

@@ -60,15 +60,11 @@ import { log } from '@lib'
 export const MAX_PAGES_KEPT = 3
 
 /**
- * Conservative average chat-row height in CSS px. Real rows vary
- * (a one-line user prompt ≈ 48px; a long agent reply with tool
- * cards can run 400+px), but we only need this to size the FETCH
- * page, not the render. Underestimating means we fetch more rows
- * than strictly fit; overestimating means a backward scroll runs
- * out of content faster than the fetch resolves. 96 splits the
- * difference — comfortably small that no realistic viewport
- * fetches fewer than ~5 rows; large enough that 4K monitors
- * don't pull 200 rows per page.
+ * Fallback row-height estimate in CSS px. Used only when no items
+ * have rendered yet (initial fetch races mount). Once any items
+ * are in the DOM, [`measuredPageSize`] computes the real
+ * px-per-item from `scrollHeight / itemCount` and the fallback is
+ * irrelevant.
  */
 const ROW_HEIGHT_ESTIMATE_PX = 96
 
@@ -76,10 +72,10 @@ const ROW_HEIGHT_ESTIMATE_PX = 96
 const MIN_PAGE_SIZE = 20
 
 /**
- * Compute a viewport-relative page size. Returns the number of
- * turns to request per fetch — sized so one page roughly covers
- * the visible scroll area. Falls back to a sane default when the
- * scroll element isn't mounted yet (initial fetch races mount).
+ * **Initial-fetch** page size — used only when no items have
+ * rendered yet. Falls back to a 96-px heuristic. Once the cache
+ * has any items, [`measuredPageSize`] takes over with a
+ * data-driven estimate.
  */
 export function viewportPageSize(scrollEl: Ref<HTMLElement | undefined>): number {
   const el = scrollEl.value
@@ -90,6 +86,39 @@ export function viewportPageSize(scrollEl: Ref<HTMLElement | undefined>): number
   }
 
   return Math.max(MIN_PAGE_SIZE, Math.ceil(h / ROW_HEIGHT_ESTIMATE_PX))
+}
+
+/**
+ * **Measured** page size — uses the real DOM dimensions to
+ * compute "items per viewport" once the chat has rendered any
+ * content.
+ *
+ * Math: if `itemCount` items occupy `scrollHeight` px of rendered
+ * content, the average item is `scrollHeight / itemCount` px tall.
+ * One viewport (`clientHeight`) holds
+ * `clientHeight / pxPerItem = clientHeight × itemCount /
+ * scrollHeight` items.
+ *
+ * Self-corrects: as the captain scrolls and more items render,
+ * `scrollHeight` grows, the estimate refines. Wildly tall agent
+ * replies push the next fetch smaller; short user-prompt-only
+ * turns push it bigger. No fixed-px guess required.
+ *
+ * Falls back to [`viewportPageSize`] when no items are rendered
+ * yet (the very first fetch).
+ */
+export function measuredPageSize(scrollEl: Ref<HTMLElement | undefined>, itemCount: number): number {
+  const el = scrollEl.value
+  const h = el?.clientHeight ?? 0
+  const total = el?.scrollHeight ?? 0
+
+  if (itemCount <= 0 || h <= 0 || total <= 0) {
+    return viewportPageSize(scrollEl)
+  }
+
+  const itemsPerViewport = (itemCount * h) / total
+
+  return Math.max(MIN_PAGE_SIZE, Math.ceil(itemsPerViewport))
 }
 
 export interface UseChatViewportApi {
@@ -246,14 +275,28 @@ export interface UseChatViewportOptions {
 }
 
 export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>, opts: UseChatViewportOptions = {}): UseChatViewportApi {
-  const query: UseInstanceChatInfiniteQueryReturn = useInstanceChatInfiniteQuery(instanceId, {
-    // Getter form — every fetch (initial + every backward page)
-    // re-reads the current viewport height. A window resize
-    // between fetches scales the next pull, no special wiring
-    // needed.
-    limit: opts.scrollEl ? () => viewportPageSize(opts.scrollEl as Ref<HTMLElement | undefined>) : undefined
-  })
   const queryClient = useQueryClient()
+
+  // Limit getter — re-evaluated on every backward fetch. Reads the
+  // CURRENT cache item count + scrollEl dimensions and asks
+  // `measuredPageSize` for "items per viewport". Self-corrects: the
+  // first fetch lands on the heuristic fallback (no items rendered
+  // yet); every subsequent fetch is sized off real DOM extent, so a
+  // chat with mostly-short user prompts pulls bigger pages while
+  // one with massive agent replies pulls smaller ones.
+  const limitGetter = opts.scrollEl
+    ? (): number => {
+      const id = instanceId.value
+      const data = id !== undefined
+        ? (queryClient.getQueryData(['snapshot-chat', id]) as PatchableInfiniteData | undefined)
+        : undefined
+      const itemCount = data?.pages.reduce((sum, p) => sum + (p?.items.length ?? 0), 0) ?? 0
+
+      return measuredPageSize(opts.scrollEl as Ref<HTMLElement | undefined>, itemCount)
+    }
+    : undefined
+
+  const query: UseInstanceChatInfiniteQueryReturn = useInstanceChatInfiniteQuery(instanceId, { limit: limitGetter })
 
   // Local seq counter so live items get monotonically-increasing
   // ordinals. We don't try to mimic the daemon's actual `seq` — the
