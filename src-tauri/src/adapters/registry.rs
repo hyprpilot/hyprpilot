@@ -333,6 +333,7 @@ mod tests {
         agent_id: String,
         profile_id: Option<String>,
         mode: Option<String>,
+        name: RwLock<Option<String>>,
         shutdown_count: Arc<AtomicUsize>,
     }
 
@@ -350,10 +351,12 @@ mod tests {
         }
 
         async fn name(&self) -> Option<String> {
-            None
+            self.name.read().await.clone()
         }
 
-        async fn set_name(&self, _name: Option<String>) {}
+        async fn set_name(&self, name: Option<String>) {
+            *self.name.write().await = name;
+        }
 
         async fn shutdown(&self) {
             self.shutdown_count.fetch_add(1, Ordering::SeqCst);
@@ -366,6 +369,7 @@ mod tests {
             agent_id: agent.into(),
             profile_id: None,
             mode: None,
+            name: RwLock::new(None),
             shutdown_count: Arc::new(AtomicUsize::new(0)),
         })
     }
@@ -376,6 +380,7 @@ mod tests {
             agent_id: agent.into(),
             profile_id: None,
             mode: mode.map(str::to_string),
+            name: RwLock::new(None),
             shutdown_count: Arc::new(AtomicUsize::new(0)),
         })
     }
@@ -498,5 +503,52 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].agent_id, "agent-x");
         assert_eq!(items[0].mode.as_deref(), Some("plan"));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_uuid_form_when_registered() {
+        let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
+        let k = InstanceKey::new_v4();
+        reg.insert(k, dummy(k, "a"), None).await.unwrap();
+        assert_eq!(reg.resolve_token(&k.as_string()).await, Some(k));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_uuid_form_when_not_registered_is_none() {
+        let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
+        let stranger = InstanceKey::new_v4();
+        assert!(reg.resolve_token(&stranger.as_string()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_token_matches_captain_set_name() {
+        let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
+        let k = InstanceKey::new_v4();
+        let h = dummy(k, "a");
+        reg.insert(k, h.clone(), None).await.unwrap();
+        h.set_name(Some("debugger".into())).await;
+        assert_eq!(reg.resolve_token("debugger").await, Some(k));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_unknown_name_is_none() {
+        let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
+        let k = InstanceKey::new_v4();
+        reg.insert(k, dummy(k, "a"), None).await.unwrap();
+        assert!(reg.resolve_token("ghost").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_token_prefers_uuid_match_over_name_walk() {
+        // A captain with a UUID-shaped slug name can't shadow the
+        // real key — UUID parse short-circuits before the name walk.
+        let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
+        let k = InstanceKey::new_v4();
+        reg.insert(k, dummy(k, "a"), None).await.unwrap();
+        // Name slugs reject `-` at positions 8/13/18/23 by validation,
+        // so any name a captain CAN set will never parse as a UUID.
+        // This test pins the short-circuit: the UUID lookup wins for
+        // a real registered key.
+        assert_eq!(reg.resolve_token(&k.as_string()).await, Some(k));
     }
 }
