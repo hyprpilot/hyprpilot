@@ -91,6 +91,21 @@
   font-size: 16px;
 }
 
+/* Mobile bump — phone screens (≤480px wide, the typical remote
+ * captain). Bumping the rem baseline 6% scales every layout primitive
+ * in lockstep: each chat row gets bigger, the composer gains touch-
+ * friendly height, the header pills become readable without pinch-
+ * zoom. 17px is a measured compromise — high enough that 1rem text
+ * sits at the iOS reading-comfort threshold, low enough that the
+ * action row at the bottom of a permission modal still fits without
+ * wrapping. The Tauri host is unaffected (window width is the
+ * compositor's anchor extent, never <480px in practice). */
+@media (max-width: 480px) {
+  :root {
+    font-size: 17px;
+  }
+}
+
 /* The overlay ALWAYS fills its window — compositor gives us a surface of
  * a fixed size (anchor width × height, or center mode rect), and the UI
  * must lay out to match. `height: 100dvh` on every rung of the tree so
