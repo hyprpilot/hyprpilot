@@ -9,6 +9,7 @@
  */
 
 import type { GitStatus } from '@interfaces/ui/header'
+import type { BootSnapshot } from '@interfaces/wire/boot'
 import type {
   CandidateItem,
   CompletionCancelArgs,
@@ -18,6 +19,7 @@ import type {
   CompletionResolveArgs,
   CompletionResolveResponse
 } from '@interfaces/wire/completion'
+import type { CompletionConfigSnapshot } from '@interfaces/wire/completion-config'
 import type {
   ComposerDraftAppendEventPayload,
   ConfigOptionsUpdateEventPayload,
@@ -46,6 +48,11 @@ import type {
 } from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
 import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
+import type {
+  RemotePairRequestEventPayload,
+  RemotePairResolvedEventPayload,
+  RemotePendingPair
+} from '@interfaces/wire/remote-pair'
 import type {
   AgentSummary,
   CancelArgs,
@@ -250,43 +257,6 @@ export interface TauriCommandResult {
   [TauriCommand.RemotePendingPairs]: RemotePendingPair[]
 }
 
-/**
- * Snapshot of the daemon's `[completion]` config block. Returned by
- * the boot-time `get_completion_config` Tauri command. UI uses
- * `ripgrep.debounceMs` to slow auto-trigger queries since ripgrep
- * walks the cwd's file tree per call.
- */
-export interface CompletionConfigSnapshot {
-  ripgrep: {
-    auto: boolean
-    debounceMs: number
-    minPrefix: number
-  }
-}
-
-/**
- * Aggregated boot payload. One `invoke('boot_snapshot')` returns
- * everything the loading screen needs before it can drop. Replaces
- * six sequential `await invoke(...)` round-trips — particularly
- * load-bearing on the remote bridge where each round-trip rides the
- * same WS, so the captain spent up to 6× RTT staring at the loader.
- *
- * Per-instance snapshot data (chat / terminals) stays on its own
- * RPCs; brim-sync calls those after boot for whichever instance is
- * focused.
- */
-export interface BootSnapshot {
-  theme: Theme
-  keymaps: KeymapsConfig
-  windowState: WindowState
-  homeDir: string
-  daemonCwd: string
-  completionConfig: CompletionConfigSnapshot
-  agents: { agents: AgentSummary[] }
-  profiles: { profiles: ProfileSummary[] }
-  instances: { instances: InstanceListEntry[]; focusedId?: string }
-}
-
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */
 export interface TauriEventPayload {
   [TauriEvent.AcpTranscript]: TranscriptEventPayload
@@ -310,45 +280,3 @@ export interface TauriEventPayload {
   [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload
 }
 
-/**
- * Payload of `remote:pair-request` — emitted on every WS upgrade
- * the daemon receives from a phone (or any browser) hitting the
- * remote bridge. Carries BOTH codes: the desktop renders its own
- * (`desktopCode`) as QR + words and expects the captain to present
- * the device's code (`deviceCode`) — typed manually, or scanned
- * from the device's QR. Asymmetric codes are the whole point of
- * the pairing: presenting the same code visible on the same screen
- * proves nothing.
- */
-export interface RemotePairRequestEventPayload {
-  pendingId: string
-  /** Code rendered on the connecting device — desktop's expected input. */
-  deviceCode: string
-  /** Code rendered on the desktop modal — device's expected input. */
-  desktopCode: string
-  remoteAddr: string
-}
-
-/**
- * Payload of `remote:pair-resolved` — emitted whenever a pending
- * pair transitions out of `pending` (confirmed by either side, or
- * rejected via timeout / captain-reject / attempt-cap / connection
- * drop). The desktop modal listens for this and clears its state
- * the moment it lands; without it the modal would stay open after
- * the device side authenticates first (captain scanned the desktop's
- * QR with the phone).
- */
-export interface RemotePairResolvedEventPayload {
-  pendingId: string
-  outcome: 'confirmed' | 'rejected'
-}
-
-/**
- * Snapshot row from `remote_pending_pairs`. Diagnostic surface for
- * "queue of waiting devices" UX.
- */
-export interface RemotePendingPair {
-  pendingId: string
-  remoteAddr: string
-  expiresInSeconds: number
-}
