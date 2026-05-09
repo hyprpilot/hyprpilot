@@ -167,9 +167,9 @@ pub(crate) async fn build_boot_snapshot(
 
     let instances_list = adapter.list().await;
     let focused_id = adapter.focused_id().await.map(|k| k.as_string());
-    let instance_entries: Vec<crate::adapters::instance::InstanceListEntry> = instances_list
+    let instance_entries: Vec<crate::adapters::InstanceListEntry> = instances_list
         .iter()
-        .map(crate::adapters::instance::InstanceListEntry::from)
+        .map(crate::adapters::InstanceListEntry::from)
         .collect();
     let mut instances_payload = serde_json::Map::with_capacity(2);
     instances_payload.insert(

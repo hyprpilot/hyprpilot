@@ -954,41 +954,38 @@ impl AcpAdapter {
         Ok(key)
     }
 
-    /// Enumerate configured agents for `agents_list`.
+    /// Enumerate configured agents for `agents_list`. Typed wire
+    /// shape — `skip_serializing_if` on optional fields keeps null
+    /// off the wire, matching the no-fabrication invariant the
+    /// `InstanceListEntry` migration nailed down.
     #[must_use]
-    pub fn list_agents(&self) -> Vec<Value> {
+    pub fn list_agents(&self) -> Vec<crate::adapters::AgentSummary> {
         let cfg = self.read_config();
         let default_agent = cfg.agents.agent.default.as_deref();
         cfg.agents
             .agents
             .iter()
-            .map(|a| {
-                json!({
-                    "id": a.id,
-                    "provider": a.provider,
-                    "binding": a.command,
-                    "isDefault": default_agent == Some(a.id.as_str()),
-                })
+            .map(|a| crate::adapters::AgentSummary {
+                id: a.id.clone(),
+                provider: format!("{:?}", a.provider).to_ascii_lowercase().replace('_', "-"),
+                binding: a.command.clone(),
+                is_default: default_agent == Some(a.id.as_str()),
             })
             .collect()
     }
 
     /// Enumerate configured profiles for `config/profiles` +
-    /// `profiles/list`. Wire shape: `{ id, agent, model, is_default }`.
-    /// Caller (chat-shell picker) highlights `is_default`; `agent` +
-    /// `model` disambiguate; `id` is the registry key.
-    pub fn list_profiles(&self) -> Vec<Value> {
+    /// `profiles/list`.
+    pub fn list_profiles(&self) -> Vec<crate::adapters::ProfileSummary> {
         let cfg = self.read_config();
         let default_profile = cfg.profile.default.as_deref();
         cfg.profiles
             .iter()
-            .map(|p| {
-                json!({
-                    "id": p.id,
-                    "agent": p.agent,
-                    "model": p.model,
-                    "isDefault": default_profile == Some(p.id.as_str()),
-                })
+            .map(|p| crate::adapters::ProfileSummary {
+                id: p.id.clone(),
+                agent: p.agent.clone(),
+                model: p.model.clone(),
+                is_default: default_profile == Some(p.id.as_str()),
             })
             .collect()
     }
@@ -1303,11 +1300,11 @@ impl Adapter for AcpAdapter {
 
     // ── wire-method dispatch (S3 expansion) ───────────────────────────
 
-    async fn list_agents(&self) -> AdapterResult<Vec<Value>> {
+    async fn list_agents(&self) -> AdapterResult<Vec<crate::adapters::AgentSummary>> {
         Ok(AcpAdapter::list_agents(self))
     }
 
-    async fn list_profiles(&self) -> AdapterResult<Vec<Value>> {
+    async fn list_profiles(&self) -> AdapterResult<Vec<crate::adapters::ProfileSummary>> {
         Ok(AcpAdapter::list_profiles(self))
     }
 
@@ -1691,13 +1688,11 @@ agent = "claude-code"
         let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
         let out = adapter.list_profiles();
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0]["id"], "ask");
-        assert_eq!(out[0]["agent"], "claude-code");
-        assert_eq!(out[0]["isDefault"], true);
-        assert!(out[0].get("has_prompt").is_none());
-        assert_eq!(out[1]["id"], "strict");
-        assert_eq!(out[1]["isDefault"], false);
-        assert!(out[1].get("has_prompt").is_none());
+        assert_eq!(out[0].id, "ask");
+        assert_eq!(out[0].agent, "claude-code");
+        assert!(out[0].is_default);
+        assert_eq!(out[1].id, "strict");
+        assert!(!out[1].is_default);
     }
 
     /// Mode threading: `spawn(SpawnSpec { mode: Some("plan"), ... })`

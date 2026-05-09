@@ -131,14 +131,33 @@ pub async fn instance_restart(
     out.map(|key| serde_json::json!({ "instanceId": key.as_string() }))
 }
 
-#[tauri::command]
-pub async fn agents_list(adapter: AdapterState<'_>) -> Result<Value, String> {
-    Ok(serde_json::json!({ "agents": adapter.list_agents() }))
+/// `agents_list` / `profiles_list` ride a one-field envelope so the
+/// UI's `TauriCommandResult[AgentsList]` shape line up with the
+/// `{ agents: [...] }` / `{ profiles: [...] }` JSON the daemon
+/// emits. Typed structs over hand-rolled `json!()` keep the wire
+/// shape lock-stepped to the typed list members.
+#[derive(Debug, serde::Serialize)]
+pub struct AgentsListEnvelope {
+    pub agents: Vec<crate::adapters::AgentSummary>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ProfilesListEnvelope {
+    pub profiles: Vec<crate::adapters::ProfileSummary>,
 }
 
 #[tauri::command]
-pub async fn profiles_list(adapter: AdapterState<'_>) -> Result<Value, String> {
-    Ok(serde_json::json!({ "profiles": adapter.list_profiles() }))
+pub async fn agents_list(adapter: AdapterState<'_>) -> Result<AgentsListEnvelope, String> {
+    Ok(AgentsListEnvelope {
+        agents: adapter.list_agents(),
+    })
+}
+
+#[tauri::command]
+pub async fn profiles_list(adapter: AdapterState<'_>) -> Result<ProfilesListEnvelope, String> {
+    Ok(ProfilesListEnvelope {
+        profiles: adapter.list_profiles(),
+    })
 }
 
 #[tauri::command]
@@ -269,10 +288,8 @@ pub async fn session_load(
 pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     let items = adapter.list().await;
     let focused_id = adapter.focused_id().await.map(|k| k.as_string());
-    let wire: Vec<crate::adapters::instance::InstanceListEntry> = items
-        .iter()
-        .map(crate::adapters::instance::InstanceListEntry::from)
-        .collect();
+    let wire: Vec<crate::adapters::InstanceListEntry> =
+        items.iter().map(crate::adapters::InstanceListEntry::from).collect();
     // Omit `focusedId` from the JSON when no instance is focused —
     // serializing `Option<String>` as `null` lets a typo-prone UI
     // path coerce null into a `setIfUnset(null)` call, breaking the
