@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/hyprpilot/hyprpilot/compare/v0.1.9...v0.2.0) (2026-05-09)
+
+
+### Features
+
+* **rpc:** events/subscribe + chore(ci): fix release-please version bumps ([#31](https://github.com/hyprpilot/hyprpilot/issues/31)) ([81d7bec](https://github.com/hyprpilot/hyprpilot/commit/81d7bec228aae04e2b6357e0f741246e077fb5be))
+
 ## [0.1.9](https://github.com/hyprpilot/hyprpilot/compare/v0.1.8...v0.1.9) (2026-05-09)
 
 
