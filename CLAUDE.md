@@ -946,35 +946,67 @@ Every accept spawns a per-connection task.
 Live methods, grouped by namespace. Result shapes are abbreviated; see
 `src-tauri/src/rpc/handlers/` for authoritative types.
 
-- **`session/*`** — `submit`, `cancel`, `info`. `submit` accepts
-  `{ text, instance_id?, agent_id?, profile_id? }`; when `instance_id`
-  is given the call routes to (or adopts) that UUID, else mints a fresh
-  UUID and spawns a new instance.
-- **`window/*`** — `toggle`. Flips main window visibility.
-- **`overlay/*`** — `present { instanceId? }`, `hide`, `toggle`.
-  Race-safe across concurrent calls — every `overlay/*` entry serialises
-  through `WindowRenderer::lock_present`.
 - **`daemon/*`** — `kill` (calls `app.exit(0)` after flush; best-effort
   delivery), `status`, `version`, `reload` (re-runs `config::load` +
   `SkillsRegistry::reload()`; publishes `DaemonReloaded`),
   `shutdown { force? }` (graceful; refuses with `-32603` when any
   instance has an in-flight turn unless `force`).
-- **`diag/*`** — `snapshot` returns `{ daemon, instances, profiles,
-  skills, mcps, configPaths }`. **Redacted**: profile `env` values +
-  transcript bodies never appear.
+- **`diag/snapshot`** — read-only structural snapshot:
+  `{ daemon, instances, profiles, skills, mcps, configPaths }`.
+  **Redacted**: profile `env` values + transcript bodies never appear.
+- **`events/subscribe`** — live `InstanceEvent` stream as JSON-RPC
+  notifications. Optional `{ instanceId? }` filter scopes per-instance
+  events; daemon-global events (`daemon:reloaded`,
+  `acp:instances-changed`, `acp:instances-focused`) always pass through.
+  Single subscription per connection (`-32600` on second). Notification
+  shape: `{ method: "events/changed", params: { name, payload, instanceId? } }`
+  where `name` is the colon-separated public event name
+  (`acp:transcript`, `acp:turn-started`, etc., from
+  `InstanceEvent::event_name()`). Lag surfaces as `events/lagged`
+  with a `skipped` count — peer should re-fetch via
+  `instance/snapshot/chat`.
+- **`instance/snapshot/{meta, chat, terminals}`** — per-instance state
+  mirror reads. `meta` returns header chrome (mode, model, available
+  modes/models, cwd, mcps_count, profile id, pending permissions,
+  usage); `chat` paginates the transcript backwards via `before` cursor
+  + `limit`; `terminals` returns the full per-`terminal_id` map.
+  Powers second-frontend hydration on connect.
+- **`instances/*`** — `list`, `focus`, `spawn`, `restart`, `shutdown`,
+  `info`, `rename`. Live process management. `focus` accepts
+  `{ ensure: true }` to auto-spawn-if-missing; `spawn` accepts
+  `{ restore: true }` to resume an existing session id.
+- **`overlay/*`** — `present { instanceId? }`, `hide`, `toggle`.
+  Race-safe across concurrent calls — every `overlay/*` entry serialises
+  through `WindowRenderer::lock_present`.
+- **`permissions/{pending, respond}`** — pending list for the addressed
+  instance + decision write. Mirrors what the desktop overlay does
+  through `permission_reply` Tauri command. After `respond`, an
+  `acp:permission-resolved` event fires on the broadcast so any
+  second subscriber clears their row.
+- **`prompts/{send, cancel}`** — per-instance scripting surface.
+  `send` accepts `{ instanceId | name, text }`; the request adopts the
+  client-minted instance id verbatim. `cancel` interrupts the active
+  turn.
 - **`status/*`** — `get` (one-shot), `subscribe` (registers connection;
   server pushes `status/changed` notifications). `StatusResult`:
   `{ state: "idle" | "streaming" | "awaiting" | "error", visible, active_session }`.
-- **`config/*`** — `profiles` returns the read-only profile list for
-  the chat-shell picker.
-- Reserved: `agents/*`, `permissions/*`.
+- **`tauri/<command>`** — proxy for every Tauri webview command
+  (`session_submit`, `session_load`, `session_list`, `models_set`,
+  `modes_set`, `permission_reply`, `completion_query`,
+  `boot_snapshot`, `agents_list`, `profiles_list`, `mcps_list`,
+  `skills_list/get/reload`, `paths_resolve`, `read_file_for_attachment`,
+  `instance_snapshot_{meta,chat,terminals}`, `instance_meta`,
+  `instances_focus`, `window_toggle`, etc.). One namespace covers
+  every action verb the SPA uses, so a second frontend has full
+  parity. Source of truth: `rpc/handlers/tauri_proxy.rs`.
 
 **Namespace convention**: every method on the wire uses
 `namespace/name`, matching ACP's own methods (`session/prompt`,
 `session/new`). Bare method names are dead — they receive
 `-32601 method not found`. Methods without params omit the `params` key.
-`status/changed` is a server-push notification (no `id`). Request ids
-are per-call UUID v4 strings; server echoes them verbatim.
+`status/changed` and `events/changed` are server-push notifications
+(no `id`). Request ids are per-call UUID v4 strings; server echoes
+them verbatim.
 
 ### Error codes
 
@@ -999,6 +1031,124 @@ for hyprpilot-specific errors; none defined yet.
 - **`StatusBroadcast`** wraps a capacity-32 broadcast channel + a
   `Mutex<StatusResult>` snapshot. Slow consumers drop messages — waybar
   re-renders from the next tick.
+
+### Mirror — daemon-side state cache
+
+Every live `AcpInstance` owns an `Arc<RwLock<InstanceMirror>>`
+(`src-tauri/src/adapters/mirror.rs`, ~1500 lines). The mirror is a
+**write-through cache**: every line that emits an
+`InstanceEvent::*` onto the registry's broadcast also calls
+`mirror.write().apply(&evt)` in the same actor tick. The
+`publish()` helper (in `acp::instance`) enforces the apply-then-
+broadcast ordering so a snapshot fetched mid-burst never sees
+events the broadcast already shipped.
+
+Captured axes:
+
+- `transcript: Vec<TranscriptItem>` — user / agent / thought
+  messages, tool call records, turn markers, mode-update markers,
+  system-prompt-injection markers. Bounded ring buffer (capped per
+  instance to keep daemon memory bounded; older entries fall off
+  the front; consumers re-fetch via backward pagination).
+- `tool_calls: HashMap<ToolCallId, ToolCallRecord>` — current
+  merged state per running/completed call. Sourced from the
+  per-instance `ToolCallCache` (lifted out of the actor's local
+  vars in PR #26). `formatted` is authoritative — recomputed by
+  the formatter registry on every `tool_call_update`.
+- `terminals: HashMap<TerminalId, TerminalSnapshot>` — current
+  scrollback + running flag + exit code/signal.
+- `meta` — same shape `instance_meta` returns (mode, model,
+  available_*, cwd, mcps_count, profile id) plus `pendingPermissions`
+  + `usage` so a meta snapshot is one round-trip.
+- `last_turn_event: { TurnStarted | TurnEnded | None }` — enough
+  for the UI's phase derivation.
+
+The mirror is the single hydration source for **every** snapshot RPC
+(`instance/snapshot/{meta, chat, terminals}`) AND every Tauri
+command of the same shape. Captain's invariant: any new
+`InstanceEvent` variant must have a corresponding
+`InstanceMirror::apply` arm — a `match` on the enum keeps the
+compiler honest.
+
+### External clients — the second-frontend contract
+
+The daemon's design separates **transport** (unix socket, WS
+remote bridge, Tauri webview) from **the dispatcher**. Every
+transport reuses one `RpcDispatcher` and one event broadcast, so
+a second frontend gets full parity by speaking the wire
+contract — no daemon code changes.
+
+**Hydrate-then-subscribe** is the model. A new connection:
+
+1. Calls `instance/snapshot/meta { instanceId }` for header chrome
+   (mode, model, pending permissions, usage). One RPC.
+2. Calls `instance/snapshot/chat { instanceId, limit }` for the
+   most-recent transcript page. Backward-paginates via
+   `before: <oldestSeq>` cursors when the captain scrolls up.
+3. Calls `instance/snapshot/terminals { instanceId }` only when
+   needed (the chat snapshot mentions a terminal id).
+4. Calls `events/subscribe { instanceId? }` to start receiving
+   live `events/changed` notifications. Filter scopes per-instance
+   events; daemon-global events (`daemon:reloaded`,
+   `acp:instances-changed`, `acp:instances-focused`) always pass.
+
+After the brim-sync, the client patches its in-memory model with
+each notification's payload — same shape the Tauri webview
+processes through its accumulator stores. On `events/lagged`
+(broadcast capacity exceeded), the client re-fetches via
+`instance/snapshot/chat` to bridge the gap.
+
+**Action surface** (writes from the client back to the daemon)
+rides existing JSON-RPC verbs on the **same connection** — no
+separate write socket, no auth handshake:
+
+- Submit a prompt: `prompts/send { instanceId | name, text }` or
+  `tauri/session_submit { ... }` (full attachment surface).
+- Cancel an in-flight turn: `prompts/cancel { instanceId }` or
+  `tauri/session_cancel`.
+- Answer a permission prompt: `permissions/respond {
+  instanceId, requestId, optionId }` or `tauri/permission_reply`.
+- Switch mode / model: `tauri/modes_set` / `tauri/models_set`.
+- Resume a stored session: `tauri/session_load`.
+- Spawn / focus / restart / rename / shutdown an instance:
+  `instances/*`.
+- Read everything else (profiles, agents, skills, mcps, paths)
+  via the matching `tauri/<command>`.
+
+**Multiplexing**: each accepted unix-socket connection runs its
+own per-connection task; concurrent dispatch on a per-request
+`JoinSet`. No auth (single-user assumption). Waybar's `ctl
+status --watch`, the desktop overlay's WS bridge, a Neovim
+plugin, and a one-off `socat` pipe can all coexist.
+
+**Tool-call presentation**: `FormattedToolCall` rides on every
+`acp:transcript` and `acp:permission-request` event with
+pre-rendered `title` / `stats[]` / `description` / `output` /
+`fields[]`. The client renders these verbatim — the only
+per-frontend logic is mapping the daemon's `IconKey` enum onto
+the local icon system (FontAwesome on the SPA; nerd-fonts on a
+Neovim plugin; no icons in `ctl`). See
+`src-tauri/src/tools/formatter/types.rs::FormattedToolCall` for
+the schema.
+
+**Existing client implementations**:
+
+- `src-tauri/src/ctl/` — operator CLI. One `CtlHandler` impl per
+  subcommand, all sharing a `CtlClient` factory (so handlers
+  reconnect with back-off without holding a live connection).
+  `ctl status --watch` is the canonical `status/subscribe`
+  consumer; the same shape with `events/subscribe` is the entry
+  for `ctl events --watch` and any second frontend.
+- `src-tauri/src/remote/ws.rs` — TLS WebSocket bridge for the
+  phone / browser remote. Wraps the same dispatcher; subscribes
+  to events at handshake time (so a peer-issued
+  `events/subscribe` over WS returns -32600 — there's already a
+  stream open).
+
+**Adding a new client** = no daemon work. Open a unix socket,
+NDJSON-frame the JSON-RPC envelope, dispatch by `id` (responses)
+or `method` (notifications). The captain's `nvim-hyprpilot.lua`
+PoC plan lives at `docs/plans/2026-05-09-nvim-plugin-handoff.md`.
 
 ### Client-side handler pattern (`ctl`)
 

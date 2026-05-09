@@ -8,8 +8,8 @@ use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    DaemonHandler, DiagHandler, InstanceSnapshotHandler, InstancesHandler, OverlayHandler, PermissionsHandler,
-    PromptsHandler, StatusHandler, TauriProxyHandler,
+    DaemonHandler, DiagHandler, EventsHandler, InstanceSnapshotHandler, InstancesHandler, OverlayHandler,
+    PermissionsHandler, PromptsHandler, StatusHandler, TauriProxyHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -29,9 +29,12 @@ use crate::rpc::protocol::RpcError;
 /// Extending the RPC surface means implementing `RpcHandler` and pushing
 /// a new instance onto the vector in `with_defaults`.
 ///
-/// Wire surface today (8 namespaces, ~21 verbs):
+/// Wire surface today (9 namespaces):
 /// - `daemon/{kill, status, version, shutdown}` — operator surface.
 /// - `diag/snapshot` — read-only structural snapshot.
+/// - `events/subscribe` — live `acp:*` event stream as JSON-RPC notifications.
+///   Powers second frontends (Neovim plugin, ctl scripting). Optional
+///   `instance_id` filter; daemon-global events always pass through.
 /// - `instance/snapshot/{meta, chat, terminals}` — per-instance state mirror reads.
 /// - `instances/*` — live process management for scripting.
 /// - `overlay/{present, hide, toggle}` — hyprland-bind surface.
@@ -53,6 +56,7 @@ impl RpcDispatcher {
                 Box::new(DaemonHandler),
                 Box::new(DiagHandler),
                 Box::new(StatusHandler),
+                Box::new(EventsHandler),
                 Box::new(InstancesHandler),
                 Box::new(InstanceSnapshotHandler),
                 Box::new(PromptsHandler),
@@ -101,12 +105,14 @@ mod dispatcher_tests {
             config: Some(config),
             mcps: None,
             already_subscribed: false,
+            already_events_subscribed: false,
             started_at: None,
             socket_path: None,
         };
         match dispatcher.dispatch(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
             Ok(HandlerOutcome::StatusSubscribed(v, _rx)) => v,
+            Ok(HandlerOutcome::EventsSubscribed(v, _, _)) => v,
             Err(e) => json!({ "code": e.code, "message": e.message}),
         }
     }
@@ -211,8 +217,6 @@ mod dispatcher_tests {
             "completion/resolve",
             "completion/cancel",
             "config/profiles",
-            "events/subscribe",
-            "events/unsubscribe",
             "mcps/list",
             "models/list",
             "modes/list",
@@ -252,6 +256,7 @@ mod dispatcher_tests {
             config: Some(config),
             mcps: None,
             already_subscribed: true,
+            already_events_subscribed: false,
             started_at: None,
             socket_path: None,
         };

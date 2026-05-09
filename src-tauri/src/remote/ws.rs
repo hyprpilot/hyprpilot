@@ -403,6 +403,13 @@ enum DispatchOutbound {
 
 /// Dispatch one NDJSON line through `RpcDispatcher`. Reuses the same
 /// `dispatch_line` entry point the unix socket calls.
+///
+/// `events/subscribe` lands here as a regular handler outcome; the WS
+/// bridge already streams `InstanceEvent`s via its dedicated
+/// `events_rx` select arm (subscribed at handshake time, not per-call),
+/// so we discard the receiver from the outcome and only ack the
+/// reply. The unix-socket transport is the one that actually pins
+/// the receiver onto its connection state.
 async fn dispatch_line(line: &str, state: &RemoteState, already_subscribed: bool) -> DispatchResult {
     let result = crate::rpc::server::dispatch_line(
         line,
@@ -414,6 +421,12 @@ async fn dispatch_line(line: &str, state: &RemoteState, already_subscribed: bool
             config: Some(state.config.clone()),
             mcps: Some(state.mcps.clone()),
             connection_already_subscribed: already_subscribed,
+            // WS bridge subscribes to events at handshake time, not
+            // per-call; treating every connection as "already
+            // subscribed" makes a peer-issued `events/subscribe`
+            // return `-32600` rather than minting a duplicate
+            // receiver the loop wouldn't read from.
+            connection_already_events_subscribed: true,
             started_at: Some(state.started_at),
             socket_path: None,
         },
@@ -572,27 +585,11 @@ impl Drop for DirectRelayGuard {
 
 /// Map an `InstanceEvent` variant onto the same Tauri-event name the
 /// embedded WebView already listens on. UI consumers don't have to
-/// branch on transport — same event names everywhere.
+/// branch on transport — same event names everywhere. The name lookup
+/// itself lives on `InstanceEvent::event_name()` so the unix-socket
+/// `events/subscribe` handler shares the single source of truth.
 fn event_envelope(evt: &InstanceEvent) -> (&'static str, serde_json::Value) {
-    let name = match evt {
-        InstanceEvent::State { .. } => "acp:instance-state",
-        InstanceEvent::Transcript { .. } => "acp:transcript",
-        InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
-        InstanceEvent::PermissionResolved { .. } => "acp:permission-resolved",
-        InstanceEvent::TurnStarted { .. } => "acp:turn-started",
-        InstanceEvent::TurnEnded { .. } => "acp:turn-ended",
-        InstanceEvent::InstancesChanged { .. } => "acp:instances-changed",
-        InstanceEvent::InstancesFocused { .. } => "acp:instances-focused",
-        InstanceEvent::InstanceRenamed { .. } => "acp:instance-renamed",
-        InstanceEvent::Terminal { .. } => "acp:terminal",
-        InstanceEvent::DaemonReloaded { .. } => "daemon:reloaded",
-        InstanceEvent::SessionInfoUpdate { .. } => "acp:session-info-update",
-        InstanceEvent::CurrentModeUpdate { .. } => "acp:current-mode-update",
-        InstanceEvent::UsageUpdate { .. } => "acp:usage-update",
-        InstanceEvent::ConfigOptionsUpdate { .. } => "acp:config-options-update",
-        InstanceEvent::InstanceMeta { .. } => "acp:instance-meta",
-        InstanceEvent::SystemPromptInjected { .. } => "acp:system-prompt-injected",
-    };
+    let name = evt.event_name();
     let payload = serde_json::to_value(evt).unwrap_or(serde_json::Value::Null);
     (name, payload)
 }

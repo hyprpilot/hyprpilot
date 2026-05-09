@@ -1,4 +1,30 @@
 ---
+# Conventional Commits → version-bump table that release-please applies
+# (Angular preset, parser-baked):
+#
+#   `feat: ...`         → minor    (0.1.9 → 0.2.0)
+#   `fix: ...`          → patch    (0.1.9 → 0.1.10)
+#   `perf: ...`         → patch    (changelog: "Performance" section)
+#   `refactor: ...`     → patch    (changelog: "Refactor" section)
+#   `docs: ...`         → patch    (changelog: "Documentation" section)
+#   `chore/test/ci: ..` → no bump  (hidden in changelog)
+#
+# To force a major bump from any type, use the `!` suffix or
+# `BREAKING CHANGE:` footer:
+#
+#   `feat!: drop X`     → major    (0.1.9 → 1.0.0)
+#   `perf!: replace Y`  → major
+#   `fix!: rewire Z`    → major
+#   plain commit body containing `BREAKING CHANGE: <text>` → major
+#
+# The earlier config carried `bump-minor-pre-major: true` +
+# `bump-patch-for-minor-pre-major: true` which downshifted EVERY tier
+# by one (BREAKING → minor, feat → patch, fix → patch). That's why
+# every PR shipped as a patch bump regardless of type — feature merges
+# (#22, #20, #26, #30) all landed as 0.1.x increments. Removing the
+# flags restores the standard Angular table; pre-1.0 a major bump now
+# takes us to 1.0.0 deliberately, not by accident.
+
 name: Release Please
 
 on:

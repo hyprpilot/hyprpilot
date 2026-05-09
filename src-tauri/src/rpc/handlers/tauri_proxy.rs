@@ -580,6 +580,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 config: ctx.config.clone(),
                 mcps: ctx.mcps.clone(),
                 already_subscribed: ctx.already_subscribed,
+                already_events_subscribed: ctx.already_events_subscribed,
                 started_at: ctx.started_at,
                 socket_path: ctx.socket_path,
             };
@@ -590,6 +591,9 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 HandlerOutcome::Reply(v) => Ok(v),
                 HandlerOutcome::StatusSubscribed(_, _) => Err(RpcError::internal_error(
                     "status/subscribe not supported via daemon_rpc",
+                )),
+                HandlerOutcome::EventsSubscribed(_, _, _) => Err(RpcError::internal_error(
+                    "events/subscribe not supported via daemon_rpc",
                 )),
             }
         }
@@ -869,12 +873,16 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 config: ctx.config.clone(),
                 mcps: ctx.mcps.clone(),
                 already_subscribed: ctx.already_subscribed,
+                already_events_subscribed: ctx.already_events_subscribed,
                 started_at: ctx.started_at,
                 socket_path: ctx.socket_path,
             };
             match dispatcher.dispatch("overlay/toggle", Value::Null, nested_ctx).await? {
                 HandlerOutcome::Reply(v) => Ok(v),
                 HandlerOutcome::StatusSubscribed(_, _) => {
+                    Err(RpcError::internal_error("overlay/toggle returned subscribe"))
+                }
+                HandlerOutcome::EventsSubscribed(_, _, _) => {
                     Err(RpcError::internal_error("overlay/toggle returned subscribe"))
                 }
             }

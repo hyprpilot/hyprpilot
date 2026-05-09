@@ -396,12 +396,14 @@ mod snapshot_tests {
             config: None,
             mcps: None,
             already_subscribed: false,
+            already_events_subscribed: false,
             started_at: None,
             socket_path: None,
         };
         match InstanceSnapshotHandler.handle(method, params, ctx).await {
             Ok(HandlerOutcome::Reply(v)) => v,
             Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
+            Ok(HandlerOutcome::EventsSubscribed(v, _, _)) => v,
             Err(err) => json!({ "code": err.code, "message": err.message }),
         }
     }

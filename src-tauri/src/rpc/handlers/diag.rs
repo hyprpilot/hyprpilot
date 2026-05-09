@@ -152,13 +152,16 @@ mod tests {
             config: Some(config),
             mcps: None,
             already_subscribed: false,
+            already_events_subscribed: false,
             started_at: Some(started_at),
             socket_path: Some(socket),
         };
         let out = DiagHandler.handle("diag/snapshot", Value::Null, ctx).await.unwrap();
         let v = match out {
             HandlerOutcome::Reply(v) => v,
-            HandlerOutcome::StatusSubscribed(..) => panic!("expected Reply"),
+            HandlerOutcome::StatusSubscribed(..) | HandlerOutcome::EventsSubscribed(..) => {
+                panic!("expected Reply")
+            }
         };
 
         // Every secret must stay buried.
@@ -202,6 +205,7 @@ mod tests {
             config: Some(config),
             mcps: None,
             already_subscribed: false,
+            already_events_subscribed: false,
             started_at: None,
             socket_path: None,
         };
