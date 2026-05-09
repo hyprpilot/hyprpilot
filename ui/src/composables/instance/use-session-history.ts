@@ -1,6 +1,7 @@
-import { onMounted, ref, watch, type Ref } from 'vue'
+import { ref, watch, type Ref } from 'vue'
 
 import { setSessionRestored, setSessionRestoring } from './use-session-info'
+import { useActiveInstance } from '../chrome/use-active-instance'
 import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone } from '@components'
 import { invoke, TauriCommand, type SessionSummary } from '@ipc'
@@ -141,18 +142,33 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     }
   }
 
-  onMounted(() => {
-    void refresh()
-  })
+  // **Skip eager fetch when an active instance is set.** Each
+  // `session_list` round-trip spawns an ephemeral `Bootstrap::ListOnly`
+  // ACP actor — a bunx subprocess for `claude-agent-acp` (~430ms best
+  // case, multi-second cold-start when the package isn't cached). On
+  // a remote captain's first boot this was the dominant boot-blocker
+  // visible in the HAR (~28s gap between `boot_snapshot` returning
+  // and `acp:instance-state ended` for the ephemeral actor).
+  //
+  // The session list only feeds the idle-screen preview + the
+  // sessions palette leaf. When the captain has an active instance
+  // (boot snapshot now seeds this), the chat viewport renders
+  // instead of the idle screen — fetching the list at boot is
+  // wasted IPC + a wasted bunx spawn. Idle / palette consumers
+  // explicitly call `refresh()` when they actually render.
+  const { id: activeInstanceId } = useActiveInstance()
 
-  // Refetch when the resolved (agent, profile) pair flips — the
-  // session list is partitioned per profile so a profile switch
-  // means a different listing entirely. The cache key inside
-  // `refresh()` keys off the same pair, so this triggers a real
-  // round-trip rather than reading stale entries.
-  watch([agentId, profileId], () => {
+  watch([agentId, profileId, activeInstanceId], () => {
+    // Skip whenever an instance is active: the chat viewport is
+    // rendering, not the idle screen. The `sessions` ref stays at
+    // its prior state (empty on first boot, populated on later
+    // (agent, profile) flips); consumers that need fresh data call
+    // `refresh()` directly.
+    if (activeInstanceId.value) {
+      return
+    }
     void refresh()
-  })
+  }, { immediate: true })
 
   return {
     sessions,

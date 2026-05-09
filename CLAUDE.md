@@ -648,13 +648,19 @@ role.
 
 ## Logging
 
-`tracing` is bootstrapped once via `logging::init`. Both the dev stderr layer
-and the release file layer tag every event with its `file:line` callsite +
-module target. Helpers:
+`tracing` is bootstrapped once via `logging::init`. **Always writes to
+stderr** — both debug and release builds. systemd / journald already
+captures stdout / stderr from a unit, and a captain running the daemon
+in a terminal sees output where they expect it. ANSI colours stay on
+in debug builds; off in release so journald / log capture isn't
+peppered with escape codes when stderr isn't a TTY. Every event tags
+its `file:line` callsite + module target on both surfaces.
 
-- `dev_fmt_layer` — ANSI on, stderr writer.
-- `file_fmt_layer` — ANSI stripped, rolling file under
-  `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.*` via `tracing-appender`.
+Captain-facing surfaces:
+- `journalctl --user -u hyprpilot.service -f` (when running as a
+  systemd unit).
+- Direct stderr in the terminal (when running by hand, e.g.
+  `RUST_LOG='…' ./target/release/hyprpilot daemon`).
 
 Filter precedence: `--log-level` → `RUST_LOG` → `info` fallback.
 
@@ -667,17 +673,75 @@ Each is silent by default; enable per-target via `RUST_LOG`:
 | --- | --- | --- |
 | `acp::wire` | Every incoming `session/update` notification (raw JSON) AND the outgoing `session/prompt` request (raw JSON) | Diagnosing vendor wire-shape surprises (empty thought-chunk content, missing `content_block_delta`s, unexpected sessionUpdate variants) |
 | `acp::thought` | Per-`agent_thought_chunk` extraction outcome (text length on success; raw payload + `content shape not in {…}` `warn!` on empty) | Confirming what the SDK is actually shipping in the thinking field |
+| `acp::emit` | Every `InstanceEvent` the per-instance actor broadcasts onto the registry channel — **lifecycle only** (`turn_started`, `turn_ended`, `usage_update`, `instance.meta`, etc.). Chunk events (`transcript`, `terminal`) split into `acp::emit::chunk` to keep this stream readable. | Tracing the upstream end of the events_tx → broadcast::Sender chain |
+| `acp::emit::chunk` | High-volume chunk traffic: `instance.transcript` (one per agent_message_chunk / agent_thought_chunk / tool_call*) and `instance.terminal`. Opt-in only — flooding at ~30/sec during a streaming reply. | Verifying that chunk traffic IS reaching the broadcast channel; otherwise leave off |
+| `tauri::emit` | Every ACP event the Tauri bridge ships to the embedded webview, lifecycle only. | Tracing the downstream end (broadcast → app.emit) |
+| `tauri::emit::chunk` | Same split as `acp::emit::chunk` — transcript / terminal app.emit calls. Opt-in. | When `acp::emit` shows the event but UI doesn't react, confirm the bridge actually emitted |
+| `snapshot::mirror` | Every `InstanceMirror::apply` write keyed by event topic, lifecycle only. | Tracing how live `InstanceEvent`s mutate the per-instance write-through cache; pairs with `snapshot.live-patch.*` UI-side traces |
+| `snapshot::mirror::chunk` | Mirror.apply for transcript / terminal chunk events. Opt-in. | Same chunk-spam carve-out as the emit family |
+| `snapshot::meta` | Every served `instance/snapshot/meta` response (turn count, pending-permission count, latest_seq) | Confirming the daemon shipped meta the UI's brim-sync / per-focus prefetch / `useSnapshotHydration` is reading |
+| `snapshot::chat` | Every served `instance/snapshot/chat` page (cursor, items, has_more) | Tracing backward-pagination requests from the UI's `fetchNextPage` |
+| `snapshot::terminals` | Every served `instance/snapshot/terminals` response | Tracing terminal-card hydration |
 
 Example one-shot for the thinking-block path:
 
 ```sh
-RUST_LOG='hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace' \
+RUST_LOG='info,hyprpilot::adapters=info,acp::wire=trace,acp::thought=trace,webview=trace' \
   hyprpilot daemon
 ```
 
-Daemon log file lands under `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.<date>`;
-grep for `target: acp::wire` lines to see the raw payload of every
+The `webview=trace` directive is load-bearing whenever you want
+to see UI-side `log.trace(...)` calls — `tauri-plugin-log` builds
+its `log::Record`s with `target: "webview"` (or
+`"webview:<file:line>"`), so a `RUST_LOG` that only enumerates
+Rust-side targets silently drops every webview event. The bare
+`info` keeps daemon-wide info-level breadcrumbs flowing alongside
+the per-target trace overrides.
+
+Tail the live stream:
+
+```sh
+journalctl --user -u hyprpilot.service -f          # systemd unit
+./target/release/hyprpilot daemon 2>&1             # by-hand run
+```
+
+Grep for `target: acp::wire` lines to see the raw payload of every
 `session/update` and `session/prompt`.
+
+One-shot for the snapshot pipeline (daemon-side mirror + RPC + UI):
+
+```sh
+RUST_LOG='warn,acp::emit=trace,tauri::emit=trace,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace,webview=trace' \
+  hyprpilot daemon
+```
+
+This covers turn lifecycle + usage + UI traces only. `warn`
+baseline keeps daemon-wide output minimal so the per-target
+traces aren't drowned by INFO breadcrumbs from config / ACP /
+RPC. To also capture transcript / terminal chunk traffic, append
+`acp::emit::chunk=trace,tauri::emit::chunk=trace,snapshot::mirror::chunk=trace`
+— but be ready for ~30-line/sec spam during streaming replies.
+
+`webview=trace` covers the UI-side `live.*` / `snapshot.*` /
+`use-turns.*` traces — without it the daemon stderr only shows
+the Rust half and a captain debugging the live-event drop sees
+no UI signal at all.
+
+UI-side counterparts run through the structured `log.trace(...)`
+surface; the `tauri-plugin-log` plugin forwards each call into the
+Rust `log` crate, which `tracing-log` (the `tracing-subscriber`
+feature) routes into the same stderr / journald sink as the daemon's
+own events. (Vue's `console.log` mirrors are dropped when the Tauri
+host is unreachable.) Search prefixes:
+
+| Prefix | Where | What it captures |
+| --- | --- | --- |
+| `snapshot.brim-sync.*` | `useFocusPrefetch.brimSync` | Start / `instances/list` resolution / done — instance count, daemon vs local focus, chat-primed flag |
+| `snapshot.focus-prefetch.*` | `useFocusPrefetch.start` | `acp:instances-focused` / `acp:instances-changed` triggered prefetches |
+| `snapshot.live-patch.*` | `useChatViewport.patchLatestPage` | Live `acp:transcript` events landing on the head page (applied / merged tool-call-update / skipped variants) |
+| `snapshot.fetch-older.*` | `useChatViewport.fetchNextPage` | Backward pagination start / done with cursor + page count |
+| `snapshot.page-trim.evicted` | `useChatViewport.onStuckChange` | Cache-cap eviction when stuck-at-bottom + `pages > MAX_PAGES_KEPT` |
+| `snapshot.hydrate.*` | `useSnapshotHydration` | Meta query data arriving + per-turn replay into `useTurns` (push/skip counts) |
 
 ## Frontend testing
 

@@ -32,23 +32,31 @@ const ROLE_LABELS: Record<Role, string> = {
 const roleLabel = ROLE_LABELS[props.role]
 
 function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) {return `${(n / 1_000_000).toFixed(1)}M`}
+  if (n >= 1_000_000) {
+    return `${(n / 1_000_000).toFixed(1)}M`
+  }
 
-  if (n >= 1_000) {return `${Math.round(n / 1_000)}k`}
+  if (n >= 1_000) {
+    return `${Math.round(n / 1_000)}k`
+  }
 
   return `${n}`
 }
 const usageLabel = computed(() => {
   const u = props.usage
 
-  if (!u || u.size === 0) {return undefined}
+  if (!u || u.size === 0) {
+    return undefined
+  }
 
   return `${formatTokenCount(u.used)}/${formatTokenCount(u.size)}`
 })
 const costLabel = computed(() => {
   const c = props.usage?.cost
 
-  if (!c) {return undefined}
+  if (!c) {
+    return undefined
+  }
   // Currency-symbol mapping for the common cases; fall back to the
   // ISO code when unrecognised so the captain still sees the value.
   const symbol = c.currency === 'USD' ? '$' : c.currency === 'EUR' ? '€' : c.currency
@@ -78,12 +86,28 @@ const costLabel = computed(() => {
 <style scoped>
 @reference '../../assets/styles.css';
 
-/* turn lane: 2px stripe, padding-left 4px (per wireframe spec). */
+/* turn lane: 2px stripe, padding-left 4px (per wireframe spec).
+ *
+ * `content-visibility: auto` lets the browser skip layout + paint
+ * for off-screen turn rows, which is the chat surface's
+ * non-virtualized substitute for windowing. Together with
+ * `contain-intrinsic-size: auto Npx`, the browser keeps the
+ * scroll geometry honest by remembering each row's last-rendered
+ * size; rows that haven't been laid out yet get the placeholder
+ * height (240 px ≈ median observed turn). Verified via Phase 0
+ * probe: WebKit2GTK 4.1 + Chromium 148 both support both rules.
+ *
+ * The streaming-row failure mode that bit prior virtualizer
+ * attempts (ResizeObserver loop) doesn't apply here — the
+ * browser does the off-screen culling internally; no JS-side
+ * measure cycle exists to feed back. */
 .turn {
   @apply flex flex-col py-1;
   padding-left: 0.25rem;
   border-left: 0.125rem solid var(--theme-accent-user);
   position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
 }
 
 .turn[data-role='assistant'] {

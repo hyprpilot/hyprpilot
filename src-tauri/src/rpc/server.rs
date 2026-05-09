@@ -37,6 +37,16 @@ pub struct RpcState {
 /// One accepted connection. Reads NDJSON, dispatches, writes the
 /// response, loops. After `status/subscribe` the same loop multiplexes
 /// `status/changed` notifications via `tokio::select!`.
+///
+/// **Each request is dispatched on its own tokio task** so a slow
+/// handler (`session_list` spawning an ephemeral agent via bunx ~430ms;
+/// future handlers may block longer) can't stall the read loop. Without
+/// this, every other call from the UI's boot path queues at the OS
+/// socket buffer behind the slow one — captain sees the loading screen
+/// freeze at "configuring window / reading $HOME" while the daemon was
+/// actually responding to `session_list` first. Concurrent dispatch
+/// keeps the inbound pipe drained; responses funnel back through an
+/// mpsc so per-connection write ordering stays single-owner.
 pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -45,62 +55,96 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
     // subscribe rejection via `HandlerCtx::already_subscribed`.
     let mut status_rx: Option<Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>> = None;
 
-    loop {
+    // Bounded mpsc + per-connection `JoinSet`: bounded keeps a
+    // misbehaving peer from OOMing the daemon (the spawn site
+    // backpressures when 64 responses are queued); the JoinSet
+    // aborts in-flight dispatchers when the connection drops, so a
+    // slow handler holding `Arc<dyn Adapter>` clones doesn't run
+    // against a dropped peer.
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<DispatchOutbound>(DISPATCH_OUTBOUND_CAPACITY);
+    let mut dispatchers: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    'proxy: loop {
         tokio::select! {
+            // `biased;` polls in declaration order so dispatch responses
+            // drain before fresh client lines pull more work. Without
+            // this, a busy `ctl status --watch` peer that pushes a
+            // `status/changed` notification AND a follow-up request can
+            // see its first response queued behind read-loop reactions.
+            biased;
+
+            // ── outbound drain (dispatch responses, status_rx swap) ───────
+            outbound = outbound_rx.recv() => {
+                match outbound {
+                    Some(DispatchOutbound::Response(response)) => {
+                        // Shutdown signal rides in the response payload as
+                        // `{"killed": true}` (`daemon/kill`) or
+                        // `{"exiting": true}` (`daemon/shutdown`).
+                        let kill_signalled = matches!(
+                            &response.outcome,
+                            Outcome::Success { result }
+                                if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
+                                    || result.get("exiting").and_then(|v| v.as_bool()) == Some(true)
+                        );
+
+                        if !write_line(&mut writer, &*response, "response").await {
+                            break 'proxy;
+                        }
+
+                        if kill_signalled {
+                            crate::daemon::shutdown(&state.app, state.adapter.as_ref()).await;
+                            break 'proxy;
+                        }
+                    }
+                    Some(DispatchOutbound::StatusRx(rx)) => {
+                        status_rx = Some(rx);
+                    }
+                    None => break 'proxy,
+                }
+            }
+
             // ── incoming client line ──────────────────────────────────────
             line_result = lines.next_line() => {
                 let line = match line_result {
                     Ok(Some(l)) if l.trim().is_empty() => continue,
                     Ok(Some(l)) => l,
-                    Ok(None) => return,
+                    Ok(None) => break 'proxy,
                     Err(err) => {
                         warn!(%err, "rpc: read error, closing connection");
-                        return;
+                        break 'proxy;
                     }
                 };
 
                 trace!(line = %line, "rpc: received line");
 
-                let dispatch_result = dispatch(
-                    &line,
-                    DispatchInput {
-                        app: Some(&state.app),
-                        status: &state.status,
-                        dispatcher: &state.dispatcher,
-                        adapter: state.adapter.clone(),
-                        config: Some(state.config.clone()),
-                        mcps: Some(state.mcps.clone()),
-                        connection_already_subscribed: status_rx.is_some(),
-                        started_at: Some(state.started_at),
-                        socket_path: Some(state.socket_path.as_path()),
-                    },
-                ).await;
+                // Capture subscription state at dispatch-spawn time —
+                // concurrent handlers can't read `status_rx` (owned by
+                // this loop). A `status/subscribe` lands in
+                // `DispatchOutbound::StatusRx` below.
+                let already_subscribed = status_rx.is_some();
+                let state_clone = state.clone();
+                let tx = outbound_tx.clone();
+                dispatchers.spawn(async move {
+                    let DispatchOutput { response, new_status_rx } = dispatch(
+                        &line,
+                        DispatchInput {
+                            app: Some(&state_clone.app),
+                            status: &state_clone.status,
+                            dispatcher: &state_clone.dispatcher,
+                            adapter: state_clone.adapter.clone(),
+                            config: Some(state_clone.config.clone()),
+                            mcps: Some(state_clone.mcps.clone()),
+                            connection_already_subscribed: already_subscribed,
+                            started_at: Some(state_clone.started_at),
+                            socket_path: Some(state_clone.socket_path.as_path()),
+                        },
+                    ).await;
 
-                let DispatchOutput { response, new_status_rx } = dispatch_result;
-
-                if let Some(rx) = new_status_rx {
-                    status_rx = Some(rx);
-                }
-
-                // Shutdown signal rides in the response payload as
-                // `{"killed": true}` (`daemon/kill`) or `{"exiting": true}`
-                // (`daemon/shutdown`); captured before `response` moves so
-                // we can act after the flush.
-                let kill_signalled = matches!(
-                    &response.outcome,
-                    Outcome::Success { result }
-                        if result.get("killed").and_then(|v| v.as_bool()) == Some(true)
-                            || result.get("exiting").and_then(|v| v.as_bool()) == Some(true)
-                );
-
-                if !write_line(&mut writer, &response, "response").await {
-                    return;
-                }
-
-                if kill_signalled {
-                    crate::daemon::shutdown(&state.app, state.adapter.as_ref()).await;
-                    return;
-                }
+                    if let Some(rx) = new_status_rx {
+                        let _ = tx.send(DispatchOutbound::StatusRx(rx)).await;
+                    }
+                    let _ = tx.send(DispatchOutbound::Response(Box::new(response))).await;
+                });
             }
 
             // ── outbound status/changed notification (subscriber only) ────
@@ -114,7 +158,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                     Ok(sr) => {
                         let notif = StatusChangedNotification::new(sr);
                         if !write_line(&mut writer, &notif, "status/changed").await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -125,17 +169,33 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                         // snapshot so the peer resynchronises immediately.
                         let notif = StatusChangedNotification::new(state.status.get());
                         if !write_line(&mut writer, &notif, "status/changed (resync)").await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         // Broadcast sender dropped — nothing left to receive. Close.
-                        return;
+                        break 'proxy;
                     }
                 }
             }
         }
     }
+
+    // Connection closed — abort every in-flight dispatch task.
+    dispatchers.shutdown().await;
+}
+
+/// Per-connection cap on queued dispatch responses. See `remote::ws`'s
+/// twin constant for the rationale; same value across both transports.
+const DISPATCH_OUTBOUND_CAPACITY: usize = 64;
+
+/// Concurrent-dispatch back-channel. Each spawned dispatch task feeds
+/// its response (and any `status/subscribe`-minted receiver) into the
+/// per-connection mpsc so the write loop drains in arrival order with
+/// a single owner of the writer.
+enum DispatchOutbound {
+    Response(Box<Response>),
+    StatusRx(Box<tokio::sync::broadcast::Receiver<crate::rpc::protocol::StatusResult>>),
 }
 
 /// Serialize `value` as a single NDJSON line and flush it on the

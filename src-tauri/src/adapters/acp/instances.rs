@@ -31,7 +31,7 @@ use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::registry::AdapterRegistry;
 use crate::adapters::{
     Adapter, AdapterError, AdapterId, AdapterResult, Bootstrap, InstanceEvent, InstanceEventStream, InstanceInfo,
-    InstanceKey, SpawnSpec, UserTurnInput,
+    InstanceKey, InstanceState, SpawnSpec, UserTurnInput,
 };
 use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
@@ -332,6 +332,23 @@ impl AcpAdapter {
         }
     }
 
+    /// Test hook: insert a stub `AcpInstance` whose `mirror` Arc is
+    /// addressable via [`Adapter::instance_mirror`]. Bypasses the
+    /// actor spawn — `cmd_tx` is bound to a dropped receiver, so
+    /// commands fail closed (good for snapshot RPC tests, which
+    /// only read the mirror). Returns the inserted key so tests can
+    /// thread it into wire-shaped params.
+    #[cfg(test)]
+    pub async fn test_install_mirror(
+        &self,
+        mirror: std::sync::Arc<crate::adapters::mirror::InstanceMirror>,
+    ) -> InstanceKey {
+        let key = InstanceKey::new_v4();
+        let handle = std::sync::Arc::new(crate::adapters::acp::instance::AcpInstance::stub_for_tests(key, mirror));
+        self.registry.insert(key, handle, None).await.expect("test insert");
+        key
+    }
+
     /// Profile config lookup by id — used when spawning an actor so
     /// the runtime carries the full allowlist definition, not just a
     /// profile id.
@@ -355,6 +372,16 @@ impl AcpAdapter {
     #[must_use]
     pub fn subscribe_events(&self) -> broadcast::Receiver<crate::adapters::InstanceEvent> {
         self.registry.subscribe()
+    }
+
+    /// Sender side of the same broadcast `subscribe_events` reads
+    /// from. Used by the daemon to wire the broadcast back into the
+    /// permission controller post-construction so
+    /// `PermissionResolved` events surface alongside the rest of the
+    /// instance event stream.
+    #[must_use]
+    pub fn events_tx(&self) -> broadcast::Sender<crate::adapters::InstanceEvent> {
+        self.registry.events_tx()
     }
 }
 
@@ -399,6 +426,20 @@ impl AcpAdapter {
                         }
                     }
                     Ok(InstanceEvent::TurnEnded { instance_id, .. }) => {
+                        if let Ok(mut set) = busy.write() {
+                            set.remove(&instance_id);
+                        }
+                    }
+                    // Defensive cleanup on actor termination — covers
+                    // crash paths that bypass the `TurnGuard` drop and
+                    // leave a stale "busy" entry forever. Any non-live
+                    // state means there's no actor to be busy on
+                    // anyway.
+                    Ok(InstanceEvent::State {
+                        instance_id,
+                        state: InstanceState::Ended | InstanceState::Error,
+                        ..
+                    }) => {
                         if let Ok(mut set) = busy.write() {
                             set.remove(&instance_id);
                         }
@@ -1253,6 +1294,13 @@ impl Adapter for AcpAdapter {
         Some(AcpAdapter::permissions(self))
     }
 
+    async fn instance_mirror(
+        &self,
+        key: InstanceKey,
+    ) -> Option<std::sync::Arc<crate::adapters::mirror::InstanceMirror>> {
+        self.registry.get(key).await.map(|h| h.mirror.clone())
+    }
+
     // ── wire-method dispatch (S3 expansion) ───────────────────────────
 
     async fn list_agents(&self) -> AdapterResult<Vec<Value>> {
@@ -1329,6 +1377,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::State { .. } => "acp:instance-state",
         GenEvt::Transcript { .. } => "acp:transcript",
         GenEvt::PermissionRequest { .. } => "acp:permission-request",
+        GenEvt::PermissionResolved { .. } => "acp:permission-resolved",
         GenEvt::TurnStarted { .. } => "acp:turn-started",
         GenEvt::TurnEnded { .. } => "acp:turn-ended",
         GenEvt::InstancesChanged { .. } => "acp:instances-changed",
@@ -1345,6 +1394,26 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {
+            // Same split as `acp::emit` / `snapshot::mirror` — chunk
+            // emits (transcript / terminal output) ride their own
+            // sub-target so the lifecycle stream stays readable at
+            // trace level. Opt into chunk emits via
+            // `tauri::emit::chunk=trace`.
+            if matches!(evt, GenEvt::Transcript { .. } | GenEvt::Terminal { .. }) {
+                tracing::trace!(
+                    target: "tauri::emit::chunk",
+                    event = name,
+                    topic = evt.topic(),
+                    "emitting tauri event to webview (chunk)",
+                );
+            } else {
+                tracing::trace!(
+                    target: "tauri::emit",
+                    event = name,
+                    topic = evt.topic(),
+                    "emitting tauri event to webview",
+                );
+            }
             if let Err(err) = app.emit(name, v) {
                 tracing::warn!(%err, event = name, "failed to emit acp event");
             }

@@ -8,8 +8,8 @@ use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    DaemonHandler, DiagHandler, InstancesHandler, OverlayHandler, PermissionsHandler, PromptsHandler, StatusHandler,
-    TauriProxyHandler,
+    DaemonHandler, DiagHandler, InstanceSnapshotHandler, InstancesHandler, OverlayHandler, PermissionsHandler,
+    PromptsHandler, StatusHandler, TauriProxyHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -29,9 +29,10 @@ use crate::rpc::protocol::RpcError;
 /// Extending the RPC surface means implementing `RpcHandler` and pushing
 /// a new instance onto the vector in `with_defaults`.
 ///
-/// Wire surface today (7 namespaces, ~18 verbs):
+/// Wire surface today (8 namespaces, ~21 verbs):
 /// - `daemon/{kill, status, version, shutdown}` — operator surface.
 /// - `diag/snapshot` — read-only structural snapshot.
+/// - `instance/snapshot/{meta, chat, terminals}` — per-instance state mirror reads.
 /// - `instances/*` — live process management for scripting.
 /// - `overlay/{present, hide, toggle}` — hyprland-bind surface.
 /// - `permissions/{pending, respond}` — script-driven permission resolution.
@@ -53,6 +54,7 @@ impl RpcDispatcher {
                 Box::new(DiagHandler),
                 Box::new(StatusHandler),
                 Box::new(InstancesHandler),
+                Box::new(InstanceSnapshotHandler),
                 Box::new(PromptsHandler),
                 Box::new(PermissionsHandler),
                 Box::new(TauriProxyHandler),

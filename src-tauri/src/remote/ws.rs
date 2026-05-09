@@ -25,12 +25,22 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tauri::Emitter;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::adapters::InstanceEvent;
 use crate::remote::pair::{ConfirmSide, CreatedPair, PairStore, PAIR_EXPIRY};
 use crate::remote::server::RemoteState;
 use crate::remote::session::SessionTokens;
+
+/// Per-connection cap on queued dispatch responses. Backpressure
+/// kicks in once the writer is more than this many frames behind —
+/// the spawn site `await`s on send, naturally serializing inflight
+/// dispatches against a peer that's blasting frames but not
+/// reading. 64 covers every realistic concurrent-invoke fanout
+/// (boot snapshot is one; brim-sync prefetches a handful) without
+/// letting a degenerate peer eat unbounded memory.
+const DISPATCH_OUTBOUND_CAPACITY: usize = 64;
 
 /// Per-WS task. Pair-on-connect → authenticated proxy.
 pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAddr) {
@@ -199,36 +209,97 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
     let (direct_relay_tx, mut direct_relay_rx) = tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value)>();
     let _direct_relay_guard = DirectRelayGuard::new(&state.app, direct_relay_tx);
 
-    // Proxy loop: client text frame → RpcDispatcher → response
-    // text frame. Events from the InstanceEvent broadcast also push
+    // Proxy loop: client text frames → RpcDispatcher → response
+    // text frames. Events from the InstanceEvent broadcast also push
     // out as `{ type: "event", name, payload }` frames.
+    //
+    // **Each request is dispatched on its own tokio task** so a slow
+    // handler (`session_list` spawning an ephemeral agent via bunx
+    // takes ~430ms; future handlers may block longer) can't stall the
+    // WS read loop. Without this, every other invoke from the UI's
+    // boot path queues at the OS socket buffer behind the slow one
+    // — captain sees the loading screen freeze at "configuring window
+    // / reading $HOME" while the daemon was actually responding to
+    // `session_list` first. Concurrent dispatch keeps the inbound
+    // pipe drained; responses funnel back through the
+    // `outbound_rx` mpsc so per-WS write ordering stays sequential
+    // (one tokio task owns the sink, never two writers racing).
     let mut status_rx: Option<Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>> = None;
+    // Bounded mpsc + per-connection `JoinSet` for the spawned
+    // dispatch tasks. Bounded so a peer that floods text frames but
+    // stops reading can't OOM the daemon (each pending response sits
+    // in `outbound_rx` until the writer drains it; backpressure
+    // serializes the spawn site naturally). The JoinSet so we abort
+    // every in-flight dispatch when the connection drops, instead of
+    // leaving handlers like `session_list` (spawns + tears down a
+    // bunx agent over ~430ms) running against a dropped peer holding
+    // an `Arc<dyn Adapter>` clone.
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<DispatchOutbound>(DISPATCH_OUTBOUND_CAPACITY);
+    let mut dispatchers: JoinSet<()> = JoinSet::new();
 
-    loop {
+    'proxy: loop {
         tokio::select! {
+            // `biased;` polls branches in declaration order so dispatch
+            // responses always drain before events (and pings before
+            // either). Without this, an instance flooding the broadcast
+            // (transcript chunks during a streaming reply, or every
+            // `session_list` spawning a short-lived agent) randomly
+            // starves the outbound drain — boot-path invokes like
+            // `get_home_dir` get queued in `outbound_rx` forever while
+            // the select! keeps picking `events_rx.recv()`. The
+            // captain sees the loading screen freeze on whatever
+            // step's awaiting.
+            biased;
+
+            // ── Outbound drain (dispatch responses, status_rx swap) ─
+            outbound = outbound_rx.recv() => {
+                match outbound {
+                    Some(DispatchOutbound::Response(text)) => {
+                        if !send_text(&mut sink, &text).await {
+                            break 'proxy;
+                        }
+                    }
+                    Some(DispatchOutbound::StatusRx(rx)) => {
+                        status_rx = Some(rx);
+                    }
+                    None => break 'proxy,
+                }
+            }
+
             // ── Client message ──────────────────────────────────
             msg = stream.next() => {
                 let frame = match msg {
                     Some(Ok(m)) => m,
                     Some(Err(err)) => {
                         tracing::warn!(%peer, %err, "remote: WS read error");
-                        return;
+                        break 'proxy;
                     }
-                    None => return,
+                    None => break 'proxy,
                 };
                 match frame {
                     Message::Text(text) => {
                         let line = text.to_string();
-                        let DispatchResult { response_text, new_status_rx } =
-                            dispatch_line(&line, &state, status_rx.is_some()).await;
-                        if let Some(rx) = new_status_rx {
-                            status_rx = Some(rx);
-                        }
-                        if let Some(text) = response_text {
-                            if !send_text(&mut sink, &text).await {
-                                return;
+                        // `StatusBroadcast::subscribe` is atomic against
+                        // `set` (snapshot mutex), so a `status/subscribe`
+                        // request that lands AFTER a `set` still
+                        // observes the post-set snapshot AND every
+                        // subsequent `set` on its receiver — no missed
+                        // notifications. So we capture
+                        // `already_subscribed` here, spawn, and let the
+                        // handler do the subscribe.
+                        let already_subscribed = status_rx.is_some();
+                        let state_clone = state.clone();
+                        let tx = outbound_tx.clone();
+                        dispatchers.spawn(async move {
+                            let DispatchResult { response_text, new_status_rx } =
+                                dispatch_line(&line, &state_clone, already_subscribed).await;
+                            if let Some(rx) = new_status_rx {
+                                let _ = tx.send(DispatchOutbound::StatusRx(rx)).await;
                             }
-                        }
+                            if let Some(text) = response_text {
+                                let _ = tx.send(DispatchOutbound::Response(text)).await;
+                            }
+                        });
                     }
                     Message::Binary(_) => {
                         let _ = sink
@@ -243,7 +314,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         let _ = sink.send(Message::Pong(p)).await;
                     }
                     Message::Close(_) | Message::Pong(_) => {
-                        return;
+                        break 'proxy;
                     }
                 }
             }
@@ -259,13 +330,13 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                             "payload": payload,
                         });
                         if !send_text(&mut sink, &frame.to_string()).await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(%peer, n, "remote: WS event subscriber lagged");
                     }
-                    Err(broadcast::error::RecvError::Closed) => return,
+                    Err(broadcast::error::RecvError::Closed) => break 'proxy,
                 }
             }
 
@@ -280,7 +351,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         "payload": payload,
                     });
                     if !send_text(&mut sink, &frame.to_string()).await {
-                        return;
+                        break 'proxy;
                     }
                 }
             }
@@ -299,7 +370,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
                         )
                         .unwrap_or_else(|_| "{}".to_string());
                         if !send_text(&mut sink, &frame).await {
-                            return;
+                            break 'proxy;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_))
@@ -308,11 +379,26 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
             }
         }
     }
+
+    // Connection closed — abort every in-flight dispatch task. Without
+    // this, a long-running handler (e.g. `session_list` spawning a
+    // bunx agent over ~430ms) keeps running against a dropped peer,
+    // holding `Arc<dyn Adapter>` clones until it returns.
+    dispatchers.shutdown().await;
 }
 
 struct DispatchResult {
     response_text: Option<String>,
     new_status_rx: Option<Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>>,
+}
+
+/// Concurrent-dispatch back-channel. Each spawned dispatch task feeds
+/// its response (and any `status/subscribe`-minted receiver) into the
+/// per-connection mpsc so the WS write loop can drain in arrival
+/// order with a single owner of the sink.
+enum DispatchOutbound {
+    Response(String),
+    StatusRx(Box<broadcast::Receiver<crate::rpc::protocol::StatusResult>>),
 }
 
 /// Dispatch one NDJSON line through `RpcDispatcher`. Reuses the same
@@ -492,6 +578,7 @@ fn event_envelope(evt: &InstanceEvent) -> (&'static str, serde_json::Value) {
         InstanceEvent::State { .. } => "acp:instance-state",
         InstanceEvent::Transcript { .. } => "acp:transcript",
         InstanceEvent::PermissionRequest { .. } => "acp:permission-request",
+        InstanceEvent::PermissionResolved { .. } => "acp:permission-resolved",
         InstanceEvent::TurnStarted { .. } => "acp:turn-started",
         InstanceEvent::TurnEnded { .. } => "acp:turn-ended",
         InstanceEvent::InstancesChanged { .. } => "acp:instances-changed",

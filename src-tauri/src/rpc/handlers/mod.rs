@@ -10,7 +10,7 @@ pub(super) mod util;
 
 pub use self::daemon::DaemonHandler;
 pub use self::diag::DiagHandler;
-pub use self::instances::InstancesHandler;
+pub use self::instances::{InstanceSnapshotHandler, InstancesHandler};
 pub use self::overlay::OverlayHandler;
 pub use self::permissions::PermissionsHandler;
 pub use self::prompts::PromptsHandler;

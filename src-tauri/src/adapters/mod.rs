@@ -14,6 +14,7 @@
 pub mod acp;
 pub mod commands;
 pub mod instance;
+pub mod mirror;
 pub mod permission;
 pub mod profile;
 pub mod registry;
@@ -27,6 +28,15 @@ pub use instance::{
     SessionConfigOptionCategory, SessionConfigOptionValue, SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk,
     TerminalStream,
 };
+// Mirror re-exports — Phase A5's snapshot RPC handlers consume these.
+// Narrow allow keeps the surface visible while the consumers land.
+#[allow(unused_imports)]
+pub use mirror::{
+    publish, ChatSnapshot, InstanceMirror, InstanceSnapshot, MetaSnapshot, MirrorInner, MirrorMetaCache,
+    SeqTranscriptItem, TerminalSnapshot, TerminalsSnapshot, TurnEventMarker, UsageSnapshot,
+};
+#[allow(unused_imports)]
+pub use permission::PermissionRequestSnapshot;
 pub use transcript::{
     Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
     ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
@@ -180,6 +190,19 @@ pub trait Adapter: Send + Sync + 'static {
     /// `AcpAdapter` returns `Some(...)` so the `permissions/*` RPC
     /// handlers can list / resolve pending prompts via the trait.
     fn permissions(&self) -> Option<std::sync::Arc<dyn crate::adapters::permission::PermissionController>> {
+        None
+    }
+
+    /// Per-instance write-through state mirror for the addressed
+    /// instance. `None` when `key` doesn't resolve to a live actor.
+    /// Default: `None` — adapters without a mirror cache keep the
+    /// `instance/snapshot/*` RPC family returning "not found" rather
+    /// than fabricating empty snapshots. `AcpAdapter` overrides to
+    /// read from its registry.
+    async fn instance_mirror(
+        &self,
+        _key: InstanceKey,
+    ) -> Option<std::sync::Arc<crate::adapters::mirror::InstanceMirror>> {
         None
     }
 

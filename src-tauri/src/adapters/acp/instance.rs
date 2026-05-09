@@ -34,7 +34,7 @@ use crate::adapters::instance::{InstanceActor, InstanceInfo, InstanceKey};
 use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
-use crate::adapters::{Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
+use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
 use crate::config::AgentConfig;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
@@ -149,6 +149,7 @@ struct TurnGuard {
     agent_id: String,
     session_id: String,
     events_tx: broadcast::Sender<InstanceEvent>,
+    mirror: Arc<crate::adapters::InstanceMirror>,
     turn_state: SharedTurnState,
     completed: bool,
 }
@@ -160,22 +161,25 @@ impl TurnGuard {
         instance_id: String,
         session_id: String,
         events_tx: broadcast::Sender<InstanceEvent>,
+        mirror: Arc<crate::adapters::InstanceMirror>,
         turn_state: SharedTurnState,
     ) -> Self {
         turn_state.write().await.open_real(turn_id.clone());
-        let _ = events_tx.send(InstanceEvent::TurnStarted {
+        let event = InstanceEvent::TurnStarted {
             agent_id: agent_id.clone(),
             instance_id: instance_id.clone(),
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
             started_at: now_epoch_ms(),
-        });
+        };
+        publish(&mirror, &events_tx, event).await;
         Self {
             turn_id,
             instance_id,
             agent_id,
             session_id,
             events_tx,
+            mirror,
             turn_state,
             completed: false,
         }
@@ -189,7 +193,7 @@ impl TurnGuard {
         if !self.turn_state.write().await.close_if_current(&self.turn_id) {
             return false;
         }
-        let _ = self.events_tx.send(InstanceEvent::TurnEnded {
+        let event = InstanceEvent::TurnEnded {
             agent_id: self.agent_id.clone(),
             instance_id: self.instance_id.clone(),
             session_id: self.session_id.clone(),
@@ -197,7 +201,8 @@ impl TurnGuard {
             stop_reason,
             error,
             ended_at: now_epoch_ms(),
-        });
+        };
+        publish(&self.mirror, &self.events_tx, event).await;
         true
     }
 }
@@ -217,7 +222,7 @@ impl Drop for TurnGuard {
         if !slot.close_if_current(&self.turn_id) {
             return;
         }
-        let _ = self.events_tx.send(InstanceEvent::TurnEnded {
+        let event = InstanceEvent::TurnEnded {
             agent_id: self.agent_id.clone(),
             instance_id: self.instance_id.clone(),
             session_id: self.session_id.clone(),
@@ -225,7 +230,17 @@ impl Drop for TurnGuard {
             stop_reason: Some("cancelled".to_string()),
             error: None,
             ended_at: now_epoch_ms(),
+        };
+        // The documented exception to `mirror::publish` (which is
+        // async): Drop is sync, so the apply spawns onto the runtime
+        // separately so the leak-path TurnEnded still lands in the
+        // mirror.
+        let mirror = self.mirror.clone();
+        let evt_for_mirror = event.clone();
+        tokio::spawn(async move {
+            mirror.apply(&evt_for_mirror).await;
         });
+        let _ = self.events_tx.send(event);
     }
 }
 
@@ -247,10 +262,12 @@ impl Drop for TurnGuard {
 /// it (subsequent timers fire on stale snapshots and exit cleanly).
 /// Single-shot per-synthetic — quiet window is wall-clock, not a
 /// live activity tracker.
+#[allow(clippy::too_many_arguments)]
 fn spawn_synthetic_close_after(
     quiet_ms: u64,
     turn_state: SharedTurnState,
     events_tx: broadcast::Sender<InstanceEvent>,
+    mirror: Arc<crate::adapters::InstanceMirror>,
     agent_id: String,
     instance_id: String,
     session_id: String,
@@ -269,7 +286,7 @@ fn spawn_synthetic_close_after(
             stop_reason,
             "acp::instance: closing synthetic turn after quiet window"
         );
-        let _ = events_tx.send(InstanceEvent::TurnEnded {
+        let event = InstanceEvent::TurnEnded {
             agent_id,
             instance_id,
             session_id,
@@ -279,7 +296,8 @@ fn spawn_synthetic_close_after(
             // Pair with the synthetic TurnStarted's `started_at: 0` —
             // UI hides elapsed when either side is missing real timing.
             ended_at: 0,
-        });
+        };
+        publish(&mirror, &events_tx, event).await;
     });
 }
 
@@ -501,11 +519,12 @@ struct MetaEmitter {
     available_modes: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModeInfo>>>,
     available_models: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModelInfo>>>,
     mcps_count: usize,
+    mirror: Arc<crate::adapters::InstanceMirror>,
 }
 
 impl MetaEmitter {
     async fn emit(&self, events_tx: &broadcast::Sender<InstanceEvent>, session_id: Option<String>) {
-        let _ = events_tx.send(InstanceEvent::InstanceMeta {
+        let event = InstanceEvent::InstanceMeta {
             agent_id: self.agent_id.clone(),
             instance_id: self.instance_id.clone(),
             profile_id: self.profile_id.clone(),
@@ -516,7 +535,8 @@ impl MetaEmitter {
             available_modes: self.available_modes.read().await.clone(),
             available_models: self.available_models.read().await.clone(),
             mcps_count: self.mcps_count,
-        });
+        };
+        publish(&self.mirror, events_tx, event).await;
     }
 }
 
@@ -901,7 +921,15 @@ pub(crate) fn map_session_update(
             let formatted = format_running(adapter_id, &running);
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
-            tool_calls.insert(id.clone(), running);
+            // Some agents emit the initial `tool_call` already in a
+            // terminal state (fast tools that complete before they ever
+            // stream a running chunk). Skip the cache insert in that
+            // case so we don't leak entries the merge logic will never
+            // see again.
+            let is_terminal = matches!(state, ToolCallState::Completed | ToolCallState::Failed);
+            if !is_terminal {
+                tool_calls.insert(id.clone(), running);
+            }
             MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
                 tool_kind,
@@ -978,6 +1006,16 @@ pub(crate) fn map_session_update(
             let formatted = format_running(adapter_id, running);
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
+            // Drop the cache entry once the tool has reached a terminal
+            // state — `formatted` is already on the outgoing record so
+            // subscribers have everything they need. Holding onto every
+            // running call forever leaks the actor's memory across long
+            // sessions where each entry can carry diff blobs / large
+            // raw inputs.
+            let is_terminal = matches!(state, Some(ToolCallState::Completed) | Some(ToolCallState::Failed));
+            if is_terminal {
+                tool_calls.remove(&id);
+            }
             MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
                 tool_kind,
@@ -1249,6 +1287,28 @@ pub struct AcpInstance {
     /// captains can re-walk one instance's roots without disturbing
     /// the others.
     pub skills: Arc<crate::skills::SkillsRegistry>,
+    /// Per-instance running tool-call state. Lifted from a stack-local
+    /// inside the actor's run loop so out-of-actor consumers (snapshot
+    /// RPC handlers, transcript mirror) can read the merged in-flight
+    /// state without round-tripping through the actor's command
+    /// channel. The actor task takes a write lock around every
+    /// `map_session_update` call and around the terminal-state
+    /// eviction; readers only ever take a read lock. Narrow allow:
+    /// the consumers (Phase A2 transcript mirror + Phase A5 snapshot
+    /// RPC) land in subsequent commits — keeping the field visible
+    /// here so the actor-side write plumbing is reviewable on its
+    /// own.
+    #[allow(dead_code)]
+    pub tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
+    /// Per-instance write-through mirror of every emitted
+    /// [`InstanceEvent`]. Phase A3 wires the actor's emit lines to
+    /// call [`InstanceMirror::apply`] alongside `events_tx.send(...)`;
+    /// Phase A5 wires the snapshot RPC handlers that read off it.
+    /// Phase A2 lands the field on the struct + plumbs it through
+    /// [`StartParams`] → [`RunParams`] so the actor task already owns
+    /// its `Arc` clone. Narrow allow until the consumers arrive.
+    #[allow(dead_code)]
+    pub mirror: Arc<crate::adapters::InstanceMirror>,
 }
 
 impl AcpInstance {
@@ -1332,6 +1392,31 @@ impl AcpInstance {
         rx.await.map_err(|e| e.to_string())
     }
 
+    /// Test-only stub builder. Constructs an `AcpInstance` carrying
+    /// the supplied `mirror` Arc but no live actor — `cmd_tx`'s
+    /// receiver is dropped immediately so any command send fails
+    /// closed. Used by snapshot RPC tests that only read mirror
+    /// state through [`crate::adapters::Adapter::instance_mirror`].
+    #[cfg(test)]
+    #[must_use]
+    pub fn stub_for_tests(key: InstanceKey, mirror: Arc<crate::adapters::InstanceMirror>) -> Self {
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
+        // Drop the receiver so any subsequent send fails. Tests that
+        // need a working actor go through `start` instead.
+        Self {
+            key,
+            agent_id: "test-agent".into(),
+            profile_id: None,
+            mode: None,
+            cmd_tx,
+            session_id: Arc::new(tokio::sync::RwLock::new(None)),
+            name: Arc::new(tokio::sync::RwLock::new(None)),
+            skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
+            tool_calls: Arc::new(tokio::sync::RwLock::new(ToolCallCache::default())),
+            mirror,
+        }
+    }
+
     /// Spawn the per-instance actor task and return its handle.
     /// Symmetric with [`Self::shutdown`]: the registry calls `start`
     /// to bring an instance up and `shutdown` to tear it down.
@@ -1363,6 +1448,8 @@ impl AcpInstance {
             Bootstrap::Fresh | Bootstrap::ListOnly => None,
         };
         let session_id = Arc::new(tokio::sync::RwLock::new(initial));
+        let tool_calls = Arc::new(tokio::sync::RwLock::new(ToolCallCache::default()));
+        let mirror = Arc::new(crate::adapters::InstanceMirror::new());
         let mode = resolved.mode.clone();
         let instance_id = key.as_string();
 
@@ -1388,6 +1475,8 @@ impl AcpInstance {
             session_id: session_id.clone(),
             name: Arc::new(tokio::sync::RwLock::new(None)),
             skills,
+            tool_calls: tool_calls.clone(),
+            mirror: mirror.clone(),
         };
 
         tokio::spawn(run(RunParams {
@@ -1396,6 +1485,8 @@ impl AcpInstance {
             cmd_rx,
             events_tx,
             session_id_slot: session_id,
+            tool_calls,
+            mirror,
             bootstrap,
             permissions,
             mcps,
@@ -1482,6 +1573,17 @@ struct RunParams {
     cmd_rx: mpsc::UnboundedReceiver<InstanceCommand>,
     events_tx: broadcast::Sender<InstanceEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
+    /// Shared running tool-call state — same `Arc` the public
+    /// `AcpInstance.tool_calls` exposes. The actor writes through it
+    /// at every `map_session_update`; out-of-actor readers (snapshot
+    /// RPC handlers) take a read lock.
+    tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
+    /// Shared write-through mirror — same `Arc` the public
+    /// `AcpInstance.mirror` exposes. The actor calls `mirror.apply(...)`
+    /// alongside every `events_tx.send(...)` so out-of-actor consumers
+    /// (snapshot RPC handlers) read consistent state without round-
+    /// tripping through the actor's command channel.
+    mirror: Arc<crate::adapters::InstanceMirror>,
     bootstrap: Bootstrap,
     permissions: Arc<dyn PermissionController>,
     mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
@@ -1497,18 +1599,21 @@ async fn run(params: RunParams) {
         mut cmd_rx,
         events_tx,
         session_id_slot,
+        tool_calls,
+        mirror,
         bootstrap,
         permissions,
         mcps,
         commands_cache,
     } = params;
     let agent_id = resolved.agent.id.clone();
-    let _ = events_tx.send(InstanceEvent::State {
+    let starting_event = InstanceEvent::State {
         agent_id: agent_id.clone(),
         instance_id: instance_id.clone(),
         session_id: None,
         state: InstanceState::Starting,
-    });
+    };
+    publish(&mirror, &events_tx, starting_event).await;
 
     let cfg = {
         let mut cfg = resolved.agent.clone();
@@ -1534,11 +1639,12 @@ async fn run(params: RunParams) {
             .into_iter()
             .map(|f| f.display().to_string())
             .collect::<Vec<_>>();
-        let _ = events_tx.send(InstanceEvent::SystemPromptInjected {
+        let event = InstanceEvent::SystemPromptInjected {
             agent_id: agent_id.clone(),
             instance_id: instance_id.clone(),
             files,
-        });
+        };
+        publish(&mirror, &events_tx, event).await;
     }
 
     let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_subprocess(&cfg, prompt_for_spawn.as_deref())
@@ -1551,12 +1657,13 @@ async fn run(params: RunParams) {
         ),
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: spawn failed");
-            let _ = events_tx.send(InstanceEvent::State {
+            let event = InstanceEvent::State {
                 agent_id,
                 instance_id,
                 session_id: None,
                 state: InstanceState::Error,
-            });
+            };
+            publish(&mirror, &events_tx, event).await;
             return;
         }
     };
@@ -1655,12 +1762,13 @@ async fn run(params: RunParams) {
         Ok(c) => c,
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
-            let _ = events_tx.send(InstanceEvent::State {
+            let event = InstanceEvent::State {
                 agent_id,
                 instance_id,
                 session_id: None,
                 state: InstanceState::Error,
-            });
+            };
+            publish(&mirror, &events_tx, event).await;
             return;
         }
     };
@@ -1668,14 +1776,20 @@ async fn run(params: RunParams) {
     let transport = ByteStreams::new(stdio.stdin.compat_write(), transport_stdout.compat());
 
     let events_tx_notif = events_tx.clone();
+    let mirror_notif = mirror.clone();
     let agent_id_notif = agent_id.clone();
     let instance_id_notif = instance_id.clone();
     let session_id_forward = session_id_slot.clone();
     // Per-instance running tool-call state — feeds the formatter on
     // every `tool_call_update` so the snapshot reflects merged state
-    // (not just the delta). Lives for the actor's lifetime; cleared
-    // implicitly when the actor task exits.
-    let mut tool_call_cache: ToolCallCache = ToolCallCache::default();
+    // (not just the delta). Shared with `AcpInstance.tool_calls` so
+    // out-of-actor consumers (snapshot RPC handlers, transcript
+    // mirror) can read the merged in-flight cache without round-
+    // tripping through the actor's command channel. The actor takes
+    // a write lock around every `map_session_update` call (which also
+    // owns the terminal-state eviction). The `Arc` is owned by the
+    // `AcpInstance`; this binding is just the actor's handle.
+    let tool_call_cache = tool_calls;
     // Adapter id for per-vendor formatter override dispatch — the
     // `[[agents]] provider` string (acp-claude-code / acp-codex /
     // acp-opencode / acp).
@@ -1712,6 +1826,7 @@ async fn run(params: RunParams) {
     {
         let mut rx = client.subscribe_terminals();
         let events_tx = events_tx.clone();
+        let mirror = mirror.clone();
         let agent_id = agent_id.clone();
         let instance_id = instance_id.clone();
         let session_id_slot = session_id_slot.clone();
@@ -1737,14 +1852,15 @@ async fn run(params: RunParams) {
                                 TerminalChunk::Exit { exit_code, signal }
                             }
                         };
-                        let _ = events_tx.send(InstanceEvent::Terminal {
+                        let event = InstanceEvent::Terminal {
                             agent_id: agent_id.clone(),
                             instance_id: instance_id.clone(),
                             session_id,
                             turn_id,
                             terminal_id: evt.terminal_id,
                             chunk,
-                        });
+                        };
+                        publish(&mirror, &events_tx, event).await;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(n, instance = %instance_id, "acp::instance: terminal-event bridge lagged");
@@ -1835,6 +1951,7 @@ async fn run(params: RunParams) {
             available_modes: available_modes_meta.clone(),
             available_models: available_models_meta.clone(),
             mcps_count,
+            mirror: mirror_notif.clone(),
         };
         if !mcp_servers.is_empty() {
             info!(
@@ -1979,12 +2096,14 @@ async fn run(params: RunParams) {
                         }
                     }
                 }
-                let _ = events_tx_notif.send(InstanceEvent::State {
+                let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
                     session_id: Some(sid.0.to_string()),
                     state: InstanceState::Running,
-                });
+                };
+                mirror_notif.apply(&event).await;
+                let _ = events_tx_notif.send(event);
                 meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
                 Some(sid)
             }
@@ -2002,12 +2121,14 @@ async fn run(params: RunParams) {
                         agent = %agent_id_notif,
                         "acp::instance: neither session/resume nor session/load advertised by agent"
                     );
-                    let _ = events_tx_notif.send(InstanceEvent::State {
+                    let event = InstanceEvent::State {
                         agent_id: agent_id_notif.clone(),
                         instance_id: instance_id_notif.clone(),
                         session_id: Some(sid.0.to_string()),
                         state: InstanceState::Error,
-                    });
+                    };
+                    mirror_notif.apply(&event).await;
+                    let _ = events_tx_notif.send(event);
                     return Err(
                         agent_client_protocol::Error::method_not_found().data(serde_json::json!({
                             "reason": format!("{}: neither session/resume nor session/load supported", agent_id_notif),
@@ -2030,12 +2151,14 @@ async fn run(params: RunParams) {
                         Ok(resp) => resp,
                         Err(err) => {
                             warn!(agent = %agent_id_notif, %err, "acp::instance: session/load failed");
-                            let _ = events_tx_notif.send(InstanceEvent::State {
+                            let event = InstanceEvent::State {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: Some(sid.0.to_string()),
                                 state: InstanceState::Error,
-                            });
+                            };
+                            mirror_notif.apply(&event).await;
+                            let _ = events_tx_notif.send(event);
                             return Err(err);
                         }
                     };
@@ -2055,12 +2178,14 @@ async fn run(params: RunParams) {
                         Ok(resp) => resp,
                         Err(err) => {
                             warn!(agent = %agent_id_notif, %err, "acp::instance: session/resume failed");
-                            let _ = events_tx_notif.send(InstanceEvent::State {
+                            let event = InstanceEvent::State {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: Some(sid.0.to_string()),
                                 state: InstanceState::Error,
-                            });
+                            };
+                            mirror_notif.apply(&event).await;
+                            let _ = events_tx_notif.send(event);
                             return Err(err);
                         }
                     };
@@ -2137,6 +2262,7 @@ async fn run(params: RunParams) {
                     1500,
                     turn_state.clone(),
                     events_tx_notif.clone(),
+                    mirror_notif.clone(),
                     agent_id_notif.clone(),
                     instance_id_notif.clone(),
                     sid.0.to_string(),
@@ -2155,22 +2281,26 @@ async fn run(params: RunParams) {
                     );
                     first_message_prefix = None;
                 }
-                let _ = events_tx_notif.send(InstanceEvent::State {
+                let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
                     session_id: Some(sid.0.to_string()),
                     state: InstanceState::Running,
-                });
+                };
+                mirror_notif.apply(&event).await;
+                let _ = events_tx_notif.send(event);
                 meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
                 Some(sid)
             }
             Bootstrap::ListOnly => {
-                let _ = events_tx_notif.send(InstanceEvent::State {
+                let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
                     session_id: None,
                     state: InstanceState::Running,
-                });
+                };
+                mirror_notif.apply(&event).await;
+                let _ = events_tx_notif.send(event);
                 None
             }
         };
@@ -2220,7 +2350,7 @@ async fn run(params: RunParams) {
                                     turn = %prev,
                                     "acp::instance: closing synthetic turn before real prompt"
                                 );
-                                let _ = events_tx_notif.send(InstanceEvent::TurnEnded {
+                                let event = InstanceEvent::TurnEnded {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid.0.to_string(),
@@ -2230,7 +2360,9 @@ async fn run(params: RunParams) {
                                     stop_reason: Some("superseded".into()),
                                     error: None,
                                     ended_at: 0,
-                                });
+                                };
+                                mirror_notif.apply(&event).await;
+                                let _ = events_tx_notif.send(event);
                             }
                             let turn_id = uuid::Uuid::new_v4().to_string();
                             info!(
@@ -2248,6 +2380,7 @@ async fn run(params: RunParams) {
                                 instance_id_notif.clone(),
                                 sid.0.to_string(),
                                 events_tx_notif.clone(),
+                                mirror_notif.clone(),
                                 turn_state.clone(),
                             )
                             .await;
@@ -2257,7 +2390,7 @@ async fn run(params: RunParams) {
                             // present, is intentionally NOT included here — it's
                             // a wire-side prepend the agent sees, not something
                             // the captain typed.
-                            let _ = events_tx_notif.send(InstanceEvent::Transcript {
+                            let event = InstanceEvent::Transcript {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: sid.0.to_string(),
@@ -2271,7 +2404,9 @@ async fn run(params: RunParams) {
                                 // session/update notification — no `_meta`
                                 // envelope to forward.
                                 meta: None,
-                            });
+                            };
+                            mirror_notif.apply(&event).await;
+                            let _ = events_tx_notif.send(event);
                             // Wire blocks: [system_prompt?, ...user_attachments, user_text].
                             // Per-attachment ordering preserved through the chained iterator;
                             // `build_prompt_blocks` already lays attachments before text.
@@ -2368,7 +2503,7 @@ async fn run(params: RunParams) {
                                 .map_err(|e| e.to_string());
 
                             if let Some(turn_id) = cancelled_turn_id {
-                                let _ = events_tx_notif.send(InstanceEvent::TurnEnded {
+                                let event = InstanceEvent::TurnEnded {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid.0.to_string(),
@@ -2376,7 +2511,9 @@ async fn run(params: RunParams) {
                                     stop_reason: Some("cancelled".to_string()),
                                     error: None,
                                     ended_at: now_epoch_ms(),
-                                });
+                                };
+                                mirror_notif.apply(&event).await;
+                                let _ = events_tx_notif.send(event);
                                 // InstanceMeta refresh — same shape as the prompt-
                                 // future path, kept in sync so the header chrome
                                 // doesn't lag a stale mode / model after cancel.
@@ -2619,8 +2756,17 @@ async fn run(params: RunParams) {
                                 payload = %update,
                                 "acp::instance: session/update raw"
                             );
-                            let MappedSessionUpdate { mapped, meta } =
-                                map_session_update(update, &mut tool_call_cache, provider_id_for_fmt.as_str());
+                            // Hold the write lock for the duration of the
+                            // formatter pass — `map_session_update` mutates
+                            // the cache (insert on `tool_call`, merge +
+                            // terminal-state evict on `tool_call_update`).
+                            // Out-of-actor readers take a read lock; they
+                            // see either pre- or post-update state, never a
+                            // half-merged delta.
+                            let MappedSessionUpdate { mapped, meta } = {
+                                let mut guard = tool_call_cache.write().await;
+                                map_session_update(update, &mut guard, provider_id_for_fmt.as_str())
+                            };
                             // Out-of-turn detection: if a transcript-shape
                             // update arrives without an open turn, mint a
                             // synthetic id + emit TurnStarted so the chat
@@ -2647,13 +2793,15 @@ async fn run(params: RunParams) {
                                 // so the UI's "no real timing" gate hides the
                                 // elapsed chip instead of rendering replay
                                 // processing time as if it were the turn duration.
-                                let _ = events_tx_notif.send(InstanceEvent::TurnStarted {
+                                let event = InstanceEvent::TurnStarted {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid.clone(),
                                     turn_id: synthetic.clone(),
                                     started_at: 0,
-                                });
+                                };
+                                mirror_notif.apply(&event).await;
+                                let _ = events_tx_notif.send(event);
                                 // Synthetic turns minted from stray notifications
                                 // (post-cancel residue, agent emissions after
                                 // `EndTurn`) have no natural closer — the
@@ -2669,6 +2817,7 @@ async fn run(params: RunParams) {
                                     2500,
                                     turn_state.clone(),
                                     events_tx_notif.clone(),
+                                    mirror_notif.clone(),
                                     agent_id_notif.clone(),
                                     instance_id_notif.clone(),
                                     sid.clone(),
@@ -2759,6 +2908,31 @@ async fn run(params: RunParams) {
                                 }
                             };
                             if let Some(evt) = evt {
+                                // Split target by event topic so transcript
+                                // chunks (10-30/sec during streaming) don't
+                                // drown lifecycle / usage events at trace
+                                // level. `acp::emit=trace` enables only the
+                                // lifecycle stream; opt into the chunk
+                                // firehose with `acp::emit::chunk=trace`.
+                                if matches!(
+                                    evt,
+                                    InstanceEvent::Transcript { .. } | InstanceEvent::Terminal { .. }
+                                ) {
+                                    tracing::trace!(
+                                        target: "acp::emit::chunk",
+                                        instance = %instance_id_notif,
+                                        topic = evt.topic(),
+                                        "broadcasting InstanceEvent (chunk)",
+                                    );
+                                } else {
+                                    tracing::trace!(
+                                        target: "acp::emit",
+                                        instance = %instance_id_notif,
+                                        topic = evt.topic(),
+                                        "broadcasting InstanceEvent",
+                                    );
+                                }
+                                mirror_notif.apply(&evt).await;
                                 let _ = events_tx_notif.send(evt);
                             }
                         }
@@ -2798,7 +2972,7 @@ async fn run(params: RunParams) {
                                 };
                                 registry.dispatch(&ctx)
                             };
-                            let _ = events_tx_notif.send(InstanceEvent::PermissionRequest {
+                            let event = InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: sid,
@@ -2811,7 +2985,9 @@ async fn run(params: RunParams) {
                                 content,
                                 options,
                                 formatted,
-                            });
+                            };
+                            mirror_notif.apply(&event).await;
+                            let _ = events_tx_notif.send(event);
                         }
                     }
                 }
@@ -2908,12 +3084,13 @@ async fn run(params: RunParams) {
     if let Some(ref id) = sid {
         client.drain_terminals_for_session(id).await;
     }
-    let _ = events_tx.send(InstanceEvent::State {
+    let event = InstanceEvent::State {
         agent_id,
         instance_id,
         session_id: sid.as_ref().map(|id| id.0.to_string()),
         state: final_state,
-    });
+    };
+    publish(&mirror, &events_tx, event).await;
 }
 
 #[cfg(test)]

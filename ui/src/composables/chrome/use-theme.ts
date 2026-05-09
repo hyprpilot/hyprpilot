@@ -34,6 +34,15 @@ export async function applyTheme(): Promise<void> {
     return
   }
 
+  applyThemeFromObject(theme)
+}
+
+/**
+ * Apply a theme object that's already in hand — the boot snapshot
+ * pulls every chrome field in one round-trip and dispatches each via
+ * its existing applier. Same DOM mutation as `applyTheme`, no IPC.
+ */
+export function applyThemeFromObject(theme: Theme): void {
   const root = document.documentElement
 
   walk([], theme, (path, value) => {

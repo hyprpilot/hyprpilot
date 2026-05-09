@@ -145,6 +145,14 @@ export interface UsePermissionsApi {
    * and the agent owns "always" persistence.
    */
   respond: (requestId: string, optionId: string) => Promise<void>
+  /**
+   * Drop the matching pending entry without firing a daemon RPC.
+   * UI-side mirror of the daemon's `PermissionResolved` broadcast —
+   * fires when the captain answered on another device (or the waiter
+   * timed out). No-op when no entry matches. Pairs with the
+   * `acp:permission-resolved` listener wired in `useChatViewport`.
+   */
+  clearById: (instanceId: InstanceId, requestId: string) => void
 }
 
 export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
@@ -189,9 +197,14 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
     evictPermission(resolved, requestId)
   }
 
+  function clearById(targetId: InstanceId, requestId: string): void {
+    evictPermission(targetId, requestId)
+  }
+
   return {
     rowQueue,
     modalQueue,
-    respond
+    respond,
+    clearById
   }
 }

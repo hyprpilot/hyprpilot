@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { faSquare as farSquare } from '@fortawesome/free-regular-svg-icons'
 import { faChevronDown, faChevronRight, faCircleHalfStroke, faSquareCheck } from '@fortawesome/free-solid-svg-icons'
-import { computed, ref, useSlots, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useSlots, watch } from 'vue'
 
 import { PlanStatus, StatPill, StreamKind, type PlanItem } from '@components'
 import { log, renderMarkdown, renderMarkdownPlain } from '@lib'
@@ -60,14 +60,27 @@ const renderedHtml = ref('')
 // Two-pass render — same strategy as `<MarkdownBody>`. Plain
 // markdown-it first (synchronous, no Shiki) so the prose lands
 // instantly even on the cold path; then upgrade with the full
-// Shiki pipeline asynchronously. Without this the first turn after
-// boot renders the raw markdown source for ~200ms while Shiki's
-// WASM engine warms up.
+// Shiki pipeline asynchronously. Shiki re-tokenization is debounced
+// to a trailing 150ms window — agent thought streams emit dozens of
+// chunks per second and re-tokenizing the whole accumulated prose
+// per chunk burns a CPU core for no visual gain.
+const SHIKI_DEBOUNCE_MS = 150
+let shikiTimer: ReturnType<typeof setTimeout> | undefined
+let shikiSeq = 0
+
+function clearShikiTimer(): void {
+  if (shikiTimer !== undefined) {
+    clearTimeout(shikiTimer)
+    shikiTimer = undefined
+  }
+}
+
 watch(
   [() => props.text, useMarkdown],
-  async([raw, on]) => {
+  ([raw, on]) => {
     if (!on || !raw) {
       renderedHtml.value = ''
+      clearShikiTimer()
 
       return
     }
@@ -79,16 +92,28 @@ watch(
       renderedHtml.value = ''
     }
 
-    try {
-      const out = await renderMarkdown(raw)
+    clearShikiTimer()
+    const mySeq = ++shikiSeq
 
-      renderedHtml.value = out.html
-    } catch(err) {
-      log.warn('stream-card: shiki upgrade failed; keeping plain pass', { err: String(err) })
-    }
+    shikiTimer = setTimeout(() => {
+      shikiTimer = undefined
+      void (async() => {
+        try {
+          const out = await renderMarkdown(raw)
+
+          if (mySeq === shikiSeq) {
+            renderedHtml.value = out.html
+          }
+        } catch(err) {
+          log.warn('stream-card: shiki upgrade failed; keeping plain pass', { err: String(err) })
+        }
+      })()
+    }, SHIKI_DEBOUNCE_MS)
   },
   { immediate: true }
 )
+
+onBeforeUnmount(clearShikiTimer)
 
 // Local expanded state — seeded from the `active` prop so live cards
 // open by default. Clicking the header toggles regardless. Once the

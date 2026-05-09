@@ -87,23 +87,27 @@ async function startScan(): Promise<void> {
   }
 
   try {
-    scanner = new QrScanner(target, (result) => {
-      const decoded = result.data.trim()
+    scanner = new QrScanner(
+      target,
+      (result) => {
+        const decoded = result.data.trim()
 
-      log.info('remote: QR scanned (mobile)', { length: decoded.length })
-      stopScan()
+        log.info('remote: QR scanned (mobile)', { length: decoded.length })
+        stopScan()
 
-      try {
-        confirmFromBrowser(decoded)
-      } catch(err) {
-        scanError.value = String(err)
+        try {
+          confirmFromBrowser(decoded)
+        } catch(err) {
+          scanError.value = String(err)
+        }
+      },
+      {
+        preferredCamera: 'environment',
+        highlightScanRegion: true,
+        highlightCodeOutline: true,
+        maxScansPerSecond: 5
       }
-    }, {
-      preferredCamera: 'environment',
-      highlightScanRegion: true,
-      highlightCodeOutline: true,
-      maxScansPerSecond: 5
-    })
+    )
     await scanner.start()
   } catch(err) {
     scanError.value = String(err)
@@ -144,9 +148,7 @@ watch(
     </header>
 
     <section class="pair-screen-body">
-      <p class="pair-screen-prompt">
-        Show this screen to the desktop, or tap <strong>scan</strong> to read the desktop's QR with this device's camera.
-      </p>
+      <p class="pair-screen-prompt">Show this screen to the desktop, or tap <strong>scan</strong> to read the desktop's QR with this device's camera.</p>
 
       <div v-if="scanning" class="pair-scan-frame">
         <video ref="videoEl" class="pair-scan-video" muted playsinline autoplay></video>
@@ -163,12 +165,8 @@ watch(
         </ul>
       </template>
 
-      <button v-if="!scanning" type="button" class="pair-scan-btn" @click="startScan">
-        <FaIcon :icon="faCamera" /> scan desktop QR
-      </button>
-      <button v-else type="button" class="pair-scan-btn pair-scan-btn-stop" @click="stopScan">
-        <FaIcon :icon="faXmark" /> stop scanning
-      </button>
+      <button v-if="!scanning" type="button" class="pair-scan-btn" @click="startScan"><FaIcon :icon="faCamera" /> scan desktop QR</button>
+      <button v-else type="button" class="pair-scan-btn pair-scan-btn-stop" @click="stopScan"><FaIcon :icon="faXmark" /> stop scanning</button>
 
       <p v-if="scanError" class="pair-error">{{ scanError }}</p>
       <p v-if="rejectReason" class="pair-error">{{ rejectReason }}</p>

@@ -112,6 +112,107 @@ async fn window_toggle(
     }
 }
 
+/// Aggregated boot payload — every field the UI needs before the
+/// fullscreen Loading overlay can drop. Replaces six sequential
+/// `invoke()` round-trips (`get_theme` / `get_keymaps` /
+/// `get_window_state` / `get_home_dir` / `get_daemon_cwd` /
+/// `get_completion_config` + `agents_list` + `profiles_list` +
+/// `instances_list`) with one. Particularly load-bearing on the
+/// remote bridge where each round-trip rides the same WS — six
+/// awaits sequentially is a 6× RTT bill the captain pays staring
+/// at "configuring window…".
+///
+/// Per-instance snapshot data (`MetaSnapshot`, `ChatSnapshot`,
+/// `TerminalsSnapshot`) stays on its own RPCs; brim-sync calls
+/// those after boot for whichever instance is focused, on demand.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BootSnapshot {
+    pub(crate) theme: Theme,
+    pub(crate) keymaps: KeymapsConfig,
+    pub(crate) window_state: WindowState,
+    pub(crate) home_dir: String,
+    pub(crate) daemon_cwd: String,
+    pub(crate) completion_config: serde_json::Value,
+    pub(crate) agents: serde_json::Value,
+    pub(crate) profiles: serde_json::Value,
+    pub(crate) instances: serde_json::Value,
+}
+
+/// Single source of truth for the boot-time payload — both the
+/// `boot_snapshot` Tauri command and the `tauri/boot_snapshot` JSON-RPC
+/// mirror call this. Keeps the wire shape lock-stepped between
+/// transports without a typed-shim layer.
+pub(crate) async fn build_boot_snapshot(
+    theme: &Theme,
+    keymaps: &KeymapsConfig,
+    window_state: &WindowState,
+    config: &Arc<RwLock<Config>>,
+    adapter: &AcpAdapter,
+) -> Result<BootSnapshot, String> {
+    let completion_config = {
+        let cfg = config.read().map_err(|e| format!("config rwlock poisoned: {e}"))?;
+        let rg = &cfg.completion.ripgrep;
+        serde_json::json!({
+            "ripgrep": {
+                "auto": rg.auto.unwrap_or(true),
+                "debounceMs": rg.debounce_ms.unwrap_or(250),
+                "minPrefix": rg.min_prefix.unwrap_or(3),
+            }
+        })
+    };
+
+    let agents = serde_json::json!({ "agents": adapter.list_agents() });
+    let profiles = serde_json::json!({ "profiles": adapter.list_profiles() });
+
+    let instances_list = adapter.list().await;
+    let focused_id = adapter.focused_id().await.map(|k| k.as_string());
+    let instance_entries: Vec<crate::adapters::instance::InstanceListEntry> = instances_list
+        .iter()
+        .map(crate::adapters::instance::InstanceListEntry::from)
+        .collect();
+    let mut instances_payload = serde_json::Map::with_capacity(2);
+    instances_payload.insert(
+        "instances".into(),
+        serde_json::to_value(&instance_entries).map_err(|e| format!("serialize instances: {e}"))?,
+    );
+    if let Some(id) = focused_id {
+        instances_payload.insert("focusedId".into(), serde_json::Value::String(id));
+    }
+
+    Ok(BootSnapshot {
+        theme: theme.clone(),
+        keymaps: keymaps.clone(),
+        window_state: window_state.clone(),
+        home_dir: crate::paths::home_dir().to_string_lossy().into_owned(),
+        daemon_cwd: std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "/".to_string()),
+        completion_config,
+        agents,
+        profiles,
+        instances: serde_json::Value::Object(instances_payload),
+    })
+}
+
+#[tauri::command]
+async fn boot_snapshot(
+    theme: State<'_, Theme>,
+    keymaps: State<'_, KeymapsConfig>,
+    window_state: State<'_, WindowState>,
+    config: State<'_, Arc<RwLock<Config>>>,
+    adapter: State<'_, Arc<AcpAdapter>>,
+) -> Result<BootSnapshot, String> {
+    build_boot_snapshot(
+        theme.inner(),
+        keymaps.inner(),
+        window_state.inner(),
+        config.inner(),
+        adapter.inner(),
+    )
+    .await
+}
+
 /// Daemon entry point. Five phases, each its own helper:
 ///
 /// 1. Resolve socket path from cli / config / `$XDG_RUNTIME_DIR` default.
@@ -215,6 +316,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
 
     builder
         .invoke_handler(tauri::generate_handler![
+            boot_snapshot,
             get_theme,
             get_keymaps,
             get_window_state,
@@ -242,6 +344,9 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::modes_set,
             adapter_commands::config_option_set,
             adapter_commands::instance_meta,
+            adapter_commands::instance_snapshot_meta,
+            adapter_commands::instance_snapshot_chat,
+            adapter_commands::instance_snapshot_terminals,
             adapter_commands::mcps_list,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
@@ -367,7 +472,12 @@ impl RuntimeState {
         // and the permission_reply Tauri command — both resolve against
         // the same waiter map so UI replies reach the awaiting ACP
         // handler regardless of which instance issued the prompt.
-        let permissions: Arc<dyn PermissionController> = Arc::new(DefaultPermissionController::new());
+        // Hold the concrete type briefly so we can wire the registry
+        // events broadcast into the controller (see
+        // `attach_events_tx` below) before upcasting to
+        // `Arc<dyn PermissionController>` for sharing.
+        let default_permissions = Arc::new(DefaultPermissionController::new());
+        let permissions: Arc<dyn PermissionController> = default_permissions.clone();
         // ACP adapter + generic `dyn Adapter` view. Tauri managed state
         // carries both — the concrete for config-adjacent commands
         // (`agents_list`, `session_load`, …) and the generic for the RPC
@@ -377,6 +487,14 @@ impl RuntimeState {
             status.clone(),
             permissions.clone(),
         ));
+        // Now that the adapter (which owns the registry) exists, wire
+        // its event broadcast into the controller so
+        // `resolve_if_pending` / `forget` can emit
+        // `PermissionResolved` events that mirrors and remote
+        // subscribers consume — closing the desktop ↔ remote desync
+        // where one transport answered a prompt the other was still
+        // showing.
+        default_permissions.attach_events_tx(acp_adapter.events_tx());
         let adapter: Arc<dyn Adapter> = acp_adapter.clone();
 
         // Skills are now per-instance — built at AcpInstance::start

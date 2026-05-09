@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager'
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 
 import { log, renderMarkdown, renderMarkdownPlain } from '@lib'
 
@@ -29,11 +29,31 @@ const html = ref('')
 /// markdown source — the plain pass guarantees a usable render
 /// even when Shiki's WASM engine fails to initialise inside the
 /// Tauri WebKitGTK webview.
+///
+/// Streaming agent text mutates `props.source` per chunk. Plain pass
+/// runs every keystroke (cheap markdown-it, no language tokenization),
+/// but the Shiki pass is debounced to a trailing 150ms window — Shiki
+/// re-tokenizes the entire prose per call via WASM oniguruma which
+/// pegs a CPU core during fast streaming. The visual difference
+/// against per-chunk Shiki is imperceptible (text lands instantly
+/// from the plain pass; syntax color resolves a quarter second later).
+const SHIKI_DEBOUNCE_MS = 150
+let shikiTimer: ReturnType<typeof setTimeout> | undefined
+let shikiSeq = 0
+
+function clearShikiTimer(): void {
+  if (shikiTimer !== undefined) {
+    clearTimeout(shikiTimer)
+    shikiTimer = undefined
+  }
+}
+
 watch(
   () => props.source,
-  async(raw) => {
+  (raw) => {
     if (!raw) {
       html.value = ''
+      clearShikiTimer()
 
       return
     }
@@ -45,16 +65,30 @@ watch(
       html.value = ''
     }
 
-    try {
-      const out = await renderMarkdown(raw)
+    clearShikiTimer()
+    const mySeq = ++shikiSeq
 
-      html.value = out.html
-    } catch(err) {
-      log.warn('MarkdownBody: shiki upgrade failed; keeping plain pass', { err: String(err) })
-    }
+    shikiTimer = setTimeout(() => {
+      shikiTimer = undefined
+      void (async() => {
+        try {
+          const out = await renderMarkdown(raw)
+
+          // Drop stale results — a faster streamed chunk may have
+          // landed and bumped `shikiSeq` past us during the await.
+          if (mySeq === shikiSeq) {
+            html.value = out.html
+          }
+        } catch(err) {
+          log.warn('MarkdownBody: shiki upgrade failed; keeping plain pass', { err: String(err) })
+        }
+      })()
+    }, SHIKI_DEBOUNCE_MS)
   },
   { immediate: true }
 )
+
+onBeforeUnmount(clearShikiTimer)
 
 /**
  * Copy the fenced block's code to the OS clipboard. Tauri clipboard

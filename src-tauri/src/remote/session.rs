@@ -17,9 +17,16 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
+
+/// Tokens older than this are evicted opportunistically. Captures the
+/// "if a phone hasn't checked in for this long, the captain has either
+/// stopped using it or paired anew already" intuition. Daemon-lifetime
+/// growth from repeat reconnects compounds without this — every
+/// failed-then-retried pair leaves another stale token behind.
+const TOKEN_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Diagnostic metadata for an active token. Not used in any decision
 /// today — `validate` only checks the key — but plumbed through for
@@ -44,10 +51,13 @@ impl SessionTokens {
 
     /// Mint a fresh token bound to the (in-memory) `remote_addr` for
     /// diagnostics. Returns the opaque token string the WS handler
-    /// includes in the `authenticated` frame.
+    /// includes in the `authenticated` frame. Opportunistically prunes
+    /// stale tokens past `TOKEN_MAX_AGE` so the table doesn't grow
+    /// unbounded across daemon-lifetime reconnects.
     pub fn mint(&self, remote_addr: String) -> String {
         let token = Uuid::new_v4().to_string();
         let mut map = self.inner.write().expect("SessionTokens poisoned");
+        prune_expired(&mut map);
         map.insert(
             token.clone(),
             SessionMeta {
@@ -58,9 +68,12 @@ impl SessionTokens {
         token
     }
 
-    /// True when `token` is in the live set.
+    /// True when `token` is in the live set and within the age window.
+    /// Stale tokens are dropped on first observation so the next
+    /// `validate` after expiry already returns false.
     pub fn validate(&self, token: &str) -> bool {
-        let map = self.inner.read().expect("SessionTokens poisoned");
+        let mut map = self.inner.write().expect("SessionTokens poisoned");
+        prune_expired(&mut map);
         map.contains_key(token)
     }
 
@@ -79,6 +92,10 @@ impl SessionTokens {
         let mut map = self.inner.write().expect("SessionTokens poisoned");
         map.clear();
     }
+}
+
+fn prune_expired(map: &mut HashMap<String, SessionMeta>) {
+    map.retain(|_, meta| meta.created_at.elapsed() < TOKEN_MAX_AGE);
 }
 
 #[cfg(test)]

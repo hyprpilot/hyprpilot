@@ -58,10 +58,6 @@ pub fn socket_path() -> PathBuf {
     runtime_dir().join(format!("{APP_NAME}.sock"))
 }
 
-pub fn log_dir() -> PathBuf {
-    state_dir().join("logs")
-}
-
 /// Captain-supplied path → fully resolved `PathBuf`. Two passes:
 /// (1) `shellexpand::full` for `~` + `$VAR` / `${VAR}` substitution,
 /// (2) `path-absolutize` for `./` / `../` collapse + cwd-relative

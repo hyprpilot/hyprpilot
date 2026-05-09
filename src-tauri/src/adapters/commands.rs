@@ -16,6 +16,7 @@ use tauri::State;
 
 use super::acp::AcpAdapter;
 use super::instance::InstanceKey;
+use super::mirror::{ChatSnapshot, MetaSnapshot, TerminalsSnapshot};
 use super::permission::PermissionController;
 use super::transcript::Attachment;
 use super::Adapter;
@@ -256,22 +257,37 @@ pub async fn session_load(
 /// palette leaf to drive its row list. Returns the same shape the
 /// JSON-RPC handler emits so UI code reading either surface treats
 /// them uniformly.
+///
+/// `focusedId` ships alongside the list so a remote bridge that just
+/// authenticated mid-session knows which instance the daemon is
+/// currently focused on — without it, the remote's `useActiveInstance`
+/// stays empty until the next focus-event fires (which on a
+/// long-idle desktop may be never). UI brim-sync reads the field and
+/// calls `applyFocus(focusedId, 'manual')` to seed the active-instance
+/// pointer.
 #[tauri::command]
 pub async fn instances_list(adapter: AdapterState<'_>) -> Result<Value, String> {
     let items = adapter.list().await;
-    let wire: Vec<Value> = items
+    let focused_id = adapter.focused_id().await.map(|k| k.as_string());
+    let wire: Vec<crate::adapters::instance::InstanceListEntry> = items
         .iter()
-        .map(|i| {
-            json!({
-                "agentId": i.agent_id,
-                "profileId": i.profile_id,
-                "instanceId": i.id,
-                "sessionId": i.session_id,
-                "mode": i.mode,
-            })
-        })
+        .map(crate::adapters::instance::InstanceListEntry::from)
         .collect();
-    Ok(json!({ "instances": wire }))
+    // Omit `focusedId` from the JSON when no instance is focused —
+    // serializing `Option<String>` as `null` lets a typo-prone UI
+    // path coerce null into a `setIfUnset(null)` call, breaking the
+    // active-instance pointer. Skipping the key entirely makes the
+    // UI see `undefined`, which the `r.focusedId === undefined`
+    // guards correctly handle.
+    let mut payload = serde_json::Map::with_capacity(2);
+    payload.insert(
+        "instances".into(),
+        serde_json::to_value(&wire).map_err(|e| format!("serialize instances: {e}"))?,
+    );
+    if let Some(id) = focused_id {
+        payload.insert("focusedId".into(), Value::String(id));
+    }
+    Ok(Value::Object(payload))
 }
 
 #[tauri::command]
@@ -458,6 +474,89 @@ pub async fn permission_reply(
         }
     }
     Ok(())
+}
+
+/// Snapshot the addressed instance's `MetaSnapshot` off the
+/// per-instance write-through mirror. UI reads this on focus-switch
+/// for brim-sync hydration.
+///
+/// Coexists with `instance_meta` above: that command goes through the
+/// actor's `MetaSnapshot` command (a roundtrip to the live actor's
+/// command loop, surfacing the agent's cached `availableModels` /
+/// `availableModes` even before the first event lands). This one
+/// reads the mirror directly — same per-event state, no actor
+/// roundtrip — and complements it for the post-event hydration path.
+#[tauri::command]
+pub async fn instance_snapshot_meta(adapter: AdapterState<'_>, instance_id: String) -> Result<MetaSnapshot, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    let snap = mirror.meta_snapshot().await;
+    tracing::trace!(
+        target: "snapshot::meta",
+        instance_id = %instance_id,
+        turns = snap.turns.len(),
+        pending_permissions = snap.pending_permissions.len(),
+        latest_seq = ?snap.latest_seq,
+        "served meta snapshot",
+    );
+    Ok(snap)
+}
+
+/// Snapshot a windowed page of the addressed instance's transcript.
+/// `before` is a strictly-older cursor (chain `before = oldestSeq`
+/// of the previous page to paginate backwards); unset → return the
+/// latest `limit` entries. `limit = 0` or unset → mirror's default
+/// page size (50).
+#[tauri::command]
+pub async fn instance_snapshot_chat(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    before: Option<u64>,
+    limit: Option<usize>,
+) -> Result<ChatSnapshot, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    let snap = mirror.chat_snapshot(before, limit.unwrap_or(0)).await;
+    tracing::trace!(
+        target: "snapshot::chat",
+        instance_id = %instance_id,
+        before = ?before,
+        items = snap.items.len(),
+        oldest_seq = ?snap.oldest_seq,
+        latest_seq = ?snap.latest_seq,
+        has_more = snap.has_more,
+        "served chat snapshot page",
+    );
+    Ok(snap)
+}
+
+/// Snapshot every per-`terminal_id` map entry. Small enough to ship
+/// whole today; revisit if a session accumulates dozens of long-
+/// running terminals.
+#[tauri::command]
+pub async fn instance_snapshot_terminals(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+) -> Result<TerminalsSnapshot, String> {
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    let snap = mirror.terminals_snapshot().await;
+    tracing::trace!(
+        target: "snapshot::terminals",
+        instance_id = %instance_id,
+        terminals = snap.terminals.len(),
+        "served terminals snapshot",
+    );
+    Ok(snap)
 }
 
 /// Read-only snapshot of the resolved MCP set for an instance. When

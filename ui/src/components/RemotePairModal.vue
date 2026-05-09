@@ -158,22 +158,26 @@ async function startScan(): Promise<void> {
   }
 
   try {
-    scanner = new QrScanner(target, (result) => {
-      const decoded = result.data.trim()
+    scanner = new QrScanner(
+      target,
+      (result) => {
+        const decoded = result.data.trim()
 
-      log.info('remote: QR scanned (desktop) → auto-confirming', { length: decoded.length })
-      draft.value = decoded
-      stopScan()
-      // Scanning the device's QR IS the act of confirmation —
-      // no extra click. Captain pointed the camera at the device,
-      // that's the proof-of-presence the pairing is checking.
-      void commitConfirm(decoded)
-    }, {
-      preferredCamera: 'environment',
-      highlightScanRegion: true,
-      highlightCodeOutline: true,
-      maxScansPerSecond: 5
-    })
+        log.info('remote: QR scanned (desktop) → auto-confirming', { length: decoded.length })
+        draft.value = decoded
+        stopScan()
+        // Scanning the device's QR IS the act of confirmation —
+        // no extra click. Captain pointed the camera at the device,
+        // that's the proof-of-presence the pairing is checking.
+        void commitConfirm(decoded)
+      },
+      {
+        preferredCamera: 'environment',
+        highlightScanRegion: true,
+        highlightCodeOutline: true,
+        maxScansPerSecond: 5
+      }
+    )
     await scanner.start()
   } catch(err) {
     scanError.value = String(err)
@@ -243,20 +247,15 @@ useKeymap(
 <template>
   <Modal title="remote · pair request" :tone="ToastTone.Warn" :icon="faMobileScreenButton" :dismissable="false" @dismiss="onReject">
     <template #actions>
-      <Button v-if="!scanning" :tone="ButtonTone.Neutral" @click="startScan">
-        <FaIcon :icon="faCamera" /> scan
-      </Button>
-      <Button v-else :tone="ButtonTone.Neutral" @click="stopScan">
-        <FaIcon :icon="faXmark" /> stop
-      </Button>
+      <Button v-if="!scanning" :tone="ButtonTone.Neutral" @click="startScan"> <FaIcon :icon="faCamera" /> scan </Button>
+      <Button v-else :tone="ButtonTone.Neutral" @click="stopScan"> <FaIcon :icon="faXmark" /> stop </Button>
       <Button :tone="ButtonTone.Err" @click="onReject">reject</Button>
       <Button :tone="ButtonTone.Ok" :variant="ButtonVariant.Solid" :disabled="submitting" @click="onAccept">confirm</Button>
     </template>
 
     <ModalDescription>
-      A device at <code>{{ state.remoteAddr }}</code> is requesting access. Show the QR / words below to
-      that device (it can also scan this QR with its camera), or click <strong>scan</strong> to read
-      the device's QR from this webcam — confirms automatically. Re-pair on every reconnect; no tokens persist.
+      A device at <code>{{ state.remoteAddr }}</code> is requesting access. Show the QR / words below to that device (it can also scan this QR with its camera), or click
+      <strong>scan</strong> to read the device's QR from this webcam — confirms automatically. Re-pair on every reconnect; no tokens persist.
     </ModalDescription>
 
     <div v-if="scanning" class="pair-scan-frame">

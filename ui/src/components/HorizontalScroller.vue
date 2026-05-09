@@ -61,25 +61,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="horizontal-scroller">
-    <button
-      v-if="canScrollLeft"
-      type="button"
-      class="horizontal-scroller-arrow horizontal-scroller-arrow-left"
-      aria-label="scroll left"
-      @click="scrollBy(-step)"
-    >
+    <button v-if="canScrollLeft" type="button" class="horizontal-scroller-arrow horizontal-scroller-arrow-left" aria-label="scroll left" @click="scrollBy(-step)">
       <FaIcon :icon="faChevronLeft" />
     </button>
     <div ref="scrollEl" class="horizontal-scroller-track" @scroll="updateArrows">
       <slot />
     </div>
-    <button
-      v-if="canScrollRight"
-      type="button"
-      class="horizontal-scroller-arrow horizontal-scroller-arrow-right"
-      aria-label="scroll right"
-      @click="scrollBy(step)"
-    >
+    <button v-if="canScrollRight" type="button" class="horizontal-scroller-arrow horizontal-scroller-arrow-right" aria-label="scroll right" @click="scrollBy(step)">
       <FaIcon :icon="faChevronRight" />
     </button>
   </div>

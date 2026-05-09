@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-use crate::adapters::{validate_instance_name, SpawnSpec};
+use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, params_or_default};
 use crate::rpc::protocol::RpcError;
@@ -250,3 +250,397 @@ impl RpcHandler for InstancesHandler {
 }
 
 use super::prompts::resolve_or_focused;
+
+/// `instance/snapshot/*` namespace — read-only snapshots off each
+/// per-instance [`crate::adapters::InstanceMirror`]. Three flavours:
+///
+/// - `instance/snapshot/meta` — header chrome + pending permissions +
+///   usage tally + `latestSeq` cursor. Cheap; pulled on focus-switch.
+/// - `instance/snapshot/chat` — windowed transcript page anchored at
+///   `before` (cursor) with a default `limit` of 50. Caller paginates
+///   backward by chaining `before = oldestSeq` from the previous page.
+/// - `instance/snapshot/terminals` — full per-`terminal_id` map.
+///
+/// Coexists with the existing `instance_meta` Tauri command +
+/// `permissions/pending` RPC: those return the "live actor" view via
+/// `MetaSnapshot::meta_snapshot()` (actor command roundtrip) /
+/// the controller's waiter map. The mirror snapshots are the
+/// brim-sync surface — same underlying data, different read path
+/// (no actor roundtrip, no waiter map). UI uses `instance/snapshot/*`
+/// for focus-switch hydration; the legacy commands still serve their
+/// existing call sites (palette pickers, permission stack listing).
+pub struct InstanceSnapshotHandler;
+
+/// `instance/snapshot/meta` params. `instanceId` is a UUID;
+/// captain-set names go through `resolve_token` first if we ever
+/// need them, but the snapshot surface deliberately addresses by
+/// canonical key only — UI already knows the UUID it's hydrating.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InstanceSnapshotMetaParams {
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InstanceSnapshotChatParams {
+    instance_id: String,
+    /// Cursor: returned items are strictly older than this `seq`.
+    /// Unset → return the latest `limit` entries (head-anchored).
+    #[serde(default)]
+    before: Option<u64>,
+    /// Page size. `0` or unset → mirror's default page size (50).
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InstanceSnapshotTerminalsParams {
+    instance_id: String,
+}
+
+#[async_trait]
+impl RpcHandler for InstanceSnapshotHandler {
+    fn namespace(&self) -> &'static str {
+        "instance"
+    }
+
+    async fn handle(&self, method: &str, params: Value, ctx: HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+        let adapter = &ctx.adapter;
+        match method {
+            "instance/snapshot/meta" => {
+                let p: InstanceSnapshotMetaParams = parse_snapshot_params(params, method)?;
+                let mirror = require_mirror(adapter.as_ref(), &p.instance_id).await?;
+                let snap = mirror.meta_snapshot().await;
+                serde_json::to_value(snap)
+                    .map(HandlerOutcome::Reply)
+                    .map_err(|e| RpcError::internal_error(format!("serialize meta snapshot: {e}")))
+            }
+            "instance/snapshot/chat" => {
+                let p: InstanceSnapshotChatParams = parse_snapshot_params(params, method)?;
+                let mirror = require_mirror(adapter.as_ref(), &p.instance_id).await?;
+                let limit = p.limit.unwrap_or(0);
+                let snap = mirror.chat_snapshot(p.before, limit).await;
+                serde_json::to_value(snap)
+                    .map(HandlerOutcome::Reply)
+                    .map_err(|e| RpcError::internal_error(format!("serialize chat snapshot: {e}")))
+            }
+            "instance/snapshot/terminals" => {
+                let p: InstanceSnapshotTerminalsParams = parse_snapshot_params(params, method)?;
+                let mirror = require_mirror(adapter.as_ref(), &p.instance_id).await?;
+                let snap = mirror.terminals_snapshot().await;
+                serde_json::to_value(snap)
+                    .map(HandlerOutcome::Reply)
+                    .map_err(|e| RpcError::internal_error(format!("serialize terminals snapshot: {e}")))
+            }
+            other => Err(RpcError::method_not_found(other)),
+        }
+    }
+}
+
+/// Snapshot params share a tighter shape than the rest of the
+/// `instances/*` family — `instanceId` is required (no
+/// fall-through to focused), so a missing field is `-32602`. The
+/// inner parser is the standard `serde_json::from_value` against the
+/// param struct; null/empty params reject explicitly because the
+/// `deny_unknown_fields` derive doesn't catch a missing required
+/// field on its own.
+fn parse_snapshot_params<T: serde::de::DeserializeOwned>(params: Value, method: &str) -> Result<T, RpcError> {
+    if params.is_null() {
+        return Err(RpcError::invalid_params(format!("{method}: instanceId required")));
+    }
+    serde_json::from_value::<T>(params).map_err(|e| RpcError::invalid_params(format!("{method} params: {e}")))
+}
+
+/// Resolve `instance_id` → `Arc<InstanceMirror>`. `-32602` on either
+/// a malformed UUID (parse failure) or an unknown id (no live
+/// actor / no mirror). Mirrors the not-found shape used elsewhere
+/// in the `instances/*` family.
+async fn require_mirror(
+    adapter: &dyn crate::adapters::Adapter,
+    instance_id: &str,
+) -> Result<std::sync::Arc<crate::adapters::InstanceMirror>, RpcError> {
+    let key = InstanceKey::parse(instance_id).map_err(map_adapter_err)?;
+    adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use std::sync::{Arc, RwLock};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::adapters::permission::{DefaultPermissionController, PermissionController};
+    use crate::adapters::transcript::TranscriptItem;
+    use crate::adapters::{AcpAdapter, Adapter, InstanceEvent, InstanceMirror, TerminalChunk, TerminalStream};
+    use crate::config::Config;
+    use crate::rpc::handler::HandlerCtx;
+    use crate::rpc::status::StatusBroadcast;
+
+    /// Spin a fresh `AcpAdapter` + dispatch one snapshot call against
+    /// it. Returns the wire JSON (success) or a `{ code, message }`
+    /// projection on error. Mirrors the helper in `permissions.rs`
+    /// tests.
+    async fn dispatch_with_adapter(adapter: Arc<AcpAdapter>, method: &str, params: Value) -> Value {
+        let status = StatusBroadcast::new(true);
+        let dyn_adapter: Arc<dyn Adapter> = adapter.clone();
+        let ctx = HandlerCtx {
+            app: None,
+            status: &status,
+            adapter: dyn_adapter,
+            config: None,
+            mcps: None,
+            already_subscribed: false,
+            started_at: None,
+            socket_path: None,
+        };
+        match InstanceSnapshotHandler.handle(method, params, ctx).await {
+            Ok(HandlerOutcome::Reply(v)) => v,
+            Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
+            Err(err) => json!({ "code": err.code, "message": err.message }),
+        }
+    }
+
+    fn fresh_adapter() -> Arc<AcpAdapter> {
+        let shared = Arc::new(RwLock::new(Config::default()));
+        Arc::new(AcpAdapter::with_shared_config(
+            shared,
+            Arc::new(StatusBroadcast::new(true)),
+            Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>,
+        ))
+    }
+
+    fn transcript_event(text: &str) -> InstanceEvent {
+        InstanceEvent::Transcript {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            session_id: "s-1".into(),
+            turn_id: None,
+            item: TranscriptItem::AgentText { text: text.into() },
+            meta: None,
+        }
+    }
+
+    /// `instance/snapshot/meta` happy path: seed an `InstanceMeta`
+    /// event, expect the cwd / mode / model / mcpsCount fields to
+    /// round-trip through the wire shape.
+    #[tokio::test]
+    async fn snapshot_meta_returns_seeded_state() {
+        let adapter = fresh_adapter();
+        let mirror = Arc::new(InstanceMirror::new());
+        mirror
+            .apply(&InstanceEvent::InstanceMeta {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                profile_id: Some("strict".into()),
+                session_id: Some("sess-meta".into()),
+                cwd: "/tmp/proj".into(),
+                current_mode_id: Some("plan".into()),
+                current_model_id: Some("sonnet".into()),
+                available_modes: Vec::new(),
+                available_models: Vec::new(),
+                mcps_count: 4,
+            })
+            .await;
+        let key = adapter.test_install_mirror(mirror).await;
+
+        let v = dispatch_with_adapter(
+            adapter,
+            "instance/snapshot/meta",
+            json!({ "instanceId": key.as_string() }),
+        )
+        .await;
+        assert_eq!(v["profileId"], "strict");
+        assert_eq!(v["sessionId"], "sess-meta");
+        assert_eq!(v["cwd"], "/tmp/proj");
+        assert_eq!(v["currentModeId"], "plan");
+        assert_eq!(v["currentModelId"], "sonnet");
+        assert_eq!(v["mcpsCount"], 4);
+        assert!(v["latestSeq"].is_null(), "no transcript yet");
+    }
+
+    /// `instance/snapshot/chat` paginates backwards through 200
+    /// seeded items in 50-item windows. Pin every page boundary's
+    /// `oldestSeq` / `latestSeq` / `hasMore`. Sanity-check `before`
+    /// returns strictly-older items.
+    #[tokio::test]
+    async fn snapshot_chat_paginates_backwards() {
+        let adapter = fresh_adapter();
+        let mirror = Arc::new(InstanceMirror::with_cap(1_000));
+        for i in 0..200 {
+            mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
+        }
+        let key = adapter.test_install_mirror(mirror).await;
+        let id = key.as_string();
+
+        // Page 1: latest 50 — seqs 150..=199.
+        let p1 = dispatch_with_adapter(
+            adapter.clone(),
+            "instance/snapshot/chat",
+            json!({ "instanceId": id, "limit": 50 }),
+        )
+        .await;
+        assert_eq!(p1["items"].as_array().unwrap().len(), 50);
+        assert_eq!(p1["oldestSeq"], 150);
+        assert_eq!(p1["latestSeq"], 199);
+        assert_eq!(p1["hasMore"], true);
+
+        // Page 2: before=150 → seqs 100..=149.
+        let p2 = dispatch_with_adapter(
+            adapter.clone(),
+            "instance/snapshot/chat",
+            json!({ "instanceId": id, "before": 150, "limit": 50 }),
+        )
+        .await;
+        assert_eq!(p2["items"].as_array().unwrap().len(), 50);
+        assert_eq!(p2["oldestSeq"], 100);
+        assert_eq!(p2["latestSeq"], 149);
+        assert_eq!(p2["hasMore"], true);
+
+        // Page 3: before=100 → seqs 50..=99.
+        let p3 = dispatch_with_adapter(
+            adapter.clone(),
+            "instance/snapshot/chat",
+            json!({ "instanceId": id, "before": 100, "limit": 50 }),
+        )
+        .await;
+        assert_eq!(p3["items"].as_array().unwrap().len(), 50);
+        assert_eq!(p3["oldestSeq"], 50);
+        assert_eq!(p3["latestSeq"], 99);
+        assert_eq!(p3["hasMore"], true);
+
+        // Page 4: before=50 → seqs 0..=49 — last page.
+        let p4 = dispatch_with_adapter(
+            adapter,
+            "instance/snapshot/chat",
+            json!({ "instanceId": id, "before": 50, "limit": 50 }),
+        )
+        .await;
+        assert_eq!(p4["items"].as_array().unwrap().len(), 50);
+        assert_eq!(p4["oldestSeq"], 0);
+        assert_eq!(p4["latestSeq"], 49);
+        assert_eq!(p4["hasMore"], false, "exhausted the buffer");
+    }
+
+    /// `instance/snapshot/terminals` happy path: seed two terminal
+    /// streams, expect both keyed entries with concatenated stdout
+    /// and the running flag flipped on `Exit`.
+    #[tokio::test]
+    async fn snapshot_terminals_returns_seeded_state() {
+        let adapter = fresh_adapter();
+        let mirror = Arc::new(InstanceMirror::new());
+        mirror
+            .apply(&InstanceEvent::Terminal {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: None,
+                terminal_id: "t-running".into(),
+                chunk: TerminalChunk::Output {
+                    stream: TerminalStream::Stdout,
+                    data: "hello".into(),
+                },
+            })
+            .await;
+        mirror
+            .apply(&InstanceEvent::Terminal {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: None,
+                terminal_id: "t-done".into(),
+                chunk: TerminalChunk::Output {
+                    stream: TerminalStream::Stdout,
+                    data: "ok\n".into(),
+                },
+            })
+            .await;
+        mirror
+            .apply(&InstanceEvent::Terminal {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                turn_id: None,
+                terminal_id: "t-done".into(),
+                chunk: TerminalChunk::Exit {
+                    exit_code: Some(0),
+                    signal: None,
+                },
+            })
+            .await;
+        let key = adapter.test_install_mirror(mirror).await;
+
+        let v = dispatch_with_adapter(
+            adapter,
+            "instance/snapshot/terminals",
+            json!({ "instanceId": key.as_string() }),
+        )
+        .await;
+        let terms = v["terminals"].as_object().expect("terminals object");
+        assert_eq!(terms.len(), 2);
+        assert_eq!(terms["t-running"]["stdout"], "hello");
+        assert_eq!(terms["t-running"]["running"], true);
+        assert_eq!(terms["t-done"]["stdout"], "ok\n");
+        assert_eq!(terms["t-done"]["running"], false);
+        assert_eq!(terms["t-done"]["exitCode"], 0);
+    }
+
+    /// Missing `instanceId` field → `-32602 invalid_params` for each
+    /// of the three verbs.
+    #[tokio::test]
+    async fn snapshot_missing_instance_id_is_invalid_params() {
+        let adapter = fresh_adapter();
+        for method in [
+            "instance/snapshot/meta",
+            "instance/snapshot/chat",
+            "instance/snapshot/terminals",
+        ] {
+            let v = dispatch_with_adapter(adapter.clone(), method, Value::Null).await;
+            assert_eq!(v["code"], -32602, "{method} with null params: {v}");
+
+            let v = dispatch_with_adapter(adapter.clone(), method, json!({})).await;
+            assert_eq!(v["code"], -32602, "{method} with empty params: {v}");
+        }
+    }
+
+    /// Unknown `instanceId` → `-32602` from the `require_mirror`
+    /// not-found path.
+    #[tokio::test]
+    async fn snapshot_unknown_instance_id_is_invalid_params() {
+        let adapter = fresh_adapter();
+        let ghost = "550e8400-e29b-41d4-a716-446655440000";
+        for method in [
+            "instance/snapshot/meta",
+            "instance/snapshot/chat",
+            "instance/snapshot/terminals",
+        ] {
+            let v = dispatch_with_adapter(adapter.clone(), method, json!({ "instanceId": ghost })).await;
+            assert_eq!(v["code"], -32602, "{method} unknown id: {v}");
+            assert!(
+                v["message"].as_str().unwrap().contains("not found"),
+                "{method} message: {v}"
+            );
+        }
+    }
+
+    /// Malformed UUID → `-32602` from the `InstanceKey::parse` path.
+    #[tokio::test]
+    async fn snapshot_malformed_instance_id_is_invalid_params() {
+        let adapter = fresh_adapter();
+        let v = dispatch_with_adapter(adapter, "instance/snapshot/meta", json!({ "instanceId": "not-a-uuid" })).await;
+        assert_eq!(v["code"], -32602);
+    }
+
+    /// Unknown verb in the `instance/` namespace → `-32601`.
+    #[tokio::test]
+    async fn snapshot_unknown_verb_is_method_not_found() {
+        let adapter = fresh_adapter();
+        let v = dispatch_with_adapter(adapter, "instance/snapshot/bogus", json!({ "instanceId": "x" })).await;
+        assert_eq!(v["code"], -32601);
+    }
+}

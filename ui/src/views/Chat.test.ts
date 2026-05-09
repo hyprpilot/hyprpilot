@@ -1,9 +1,38 @@
+import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Chat from './Overlay.vue'
 import { useActiveInstance, __resetKeymapsForTests, loadKeymaps, pushPermissionRequest, resetPermissions, clearToasts, useToasts } from '@composables'
 import { Modifier, TauriCommand } from '@ipc'
+
+// Phase C1 wires `useChatViewport` inside Overlay.vue. The composable
+// calls `useQueryClient()` at setup time, so every Overlay mount
+// needs a `VueQueryPlugin` install. One per-test client keeps the
+// cache scoped — no cross-test bleed.
+function buildQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        gcTime: 0,
+        staleTime: 0
+      }
+    }
+  })
+}
+
+function chatMountOptions() {
+  // Cast to a wide type — vue-test-utils' `MountingOptions` typing
+  // for `plugins` is overly strict with positional plugin args.
+  // The runtime semantics are unchanged.
+  const plugin: [unknown, unknown] = [VueQueryPlugin, { queryClient: buildQueryClient() }]
+
+  return {
+    global: { plugins: [plugin as never] },
+    attachTo: document.body
+  }
+}
 
 const { invoke, listeners, unlisten } = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -127,7 +156,7 @@ describe('Chat.vue — permission wiring', () => {
     })
     invoke.mockResolvedValue(undefined)
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 
@@ -163,7 +192,7 @@ describe('Chat.vue — permission wiring', () => {
     })
     invoke.mockResolvedValue(undefined)
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 
@@ -196,7 +225,7 @@ describe('Chat.vue — permission wiring', () => {
     })
     invoke.mockResolvedValue(undefined)
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 
@@ -229,7 +258,7 @@ describe('Chat.vue — permission wiring', () => {
     })
     invoke.mockResolvedValue(undefined)
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 
@@ -268,7 +297,7 @@ describe('Chat.vue — permission wiring', () => {
     })
     invoke.mockRejectedValue(new Error('permission_reply not implemented (K-245)'))
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 
@@ -299,7 +328,7 @@ describe('Chat.vue — permission wiring', () => {
       formatted: FMT
     })
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 
@@ -335,7 +364,7 @@ describe('Chat.vue — permission wiring', () => {
       formatted: FMT
     })
 
-    const wrapper = mount(Chat, { attachTo: document.body })
+    const wrapper = mount(Chat, chatMountOptions())
 
     await flushMicrotasks()
 

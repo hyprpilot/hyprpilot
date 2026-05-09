@@ -19,14 +19,20 @@
 //! ACP handler.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex};
 
+use crate::adapters::instance::InstanceEvent;
 use crate::mcp::MCPsRegistry;
+
+/// Sentinel `option_id` used on the `PermissionResolved` event when
+/// the resolution path is the 10-min `WAITER_TIMEOUT` rather than a
+/// captain-supplied answer. See [`InstanceEvent::PermissionResolved`].
+pub const PERMISSION_EXPIRED_OPTION_ID: &str = "__expired__";
 
 /// How long an `AskUser` waiter stays live before the caller
 /// abandons it and treats the outcome as `Cancelled`. Matches the
@@ -251,9 +257,22 @@ pub trait PermissionController: Send + Sync + 'static {
 /// patterns each — so caching is premature; if it surfaces in a
 /// profile, swap to a precompiled cache keyed by server name +
 /// content-hash).
+///
+/// `events_tx` is wire-attached post-construction via
+/// [`Self::attach_events_tx`]: the registry that owns the broadcast
+/// channel is built by the adapter, but the controller is constructed
+/// in the daemon BEFORE the adapter exists (so the adapter can be
+/// handed an `Arc<dyn PermissionController>` at construction time).
+/// `OnceLock` carries the post-construction wire-up without forcing
+/// every test site through a sender-aware constructor.
 #[derive(Debug, Default)]
 pub struct DefaultPermissionController {
     waiters: Arc<Mutex<HashMap<String, PendingWaiter>>>,
+    /// `None` in tests / standalone units; `Some(tx)` in production
+    /// after the daemon's adapter is wired up. When `None`, resolve /
+    /// forget paths skip the broadcast — no `PermissionResolved` event
+    /// surfaces, which matches the test setup that never subscribes.
+    events_tx: OnceLock<broadcast::Sender<InstanceEvent>>,
 }
 
 #[derive(Debug)]
@@ -274,6 +293,31 @@ impl DefaultPermissionController {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Wire the registry's event broadcast in. Idempotent — calling
+    /// twice is a no-op (the `OnceLock` rejects the second set).
+    /// Production wiring lives in the daemon: build the controller →
+    /// build the adapter (which owns the registry) → call this with
+    /// `adapter.events_tx()`. Tests skip this and the resolve / forget
+    /// paths silently no-op the broadcast.
+    pub fn attach_events_tx(&self, tx: broadcast::Sender<InstanceEvent>) {
+        let _ = self.events_tx.set(tx);
+    }
+
+    /// Emit a `PermissionResolved` event when the broadcast is wired
+    /// up. Best-effort — slow subscribers drop messages on Lagged just
+    /// like every other registry event.
+    fn emit_resolved(&self, instance_id: Option<&str>, request_id: &str, option_id: &str) {
+        let Some(tx) = self.events_tx.get() else {
+            return;
+        };
+        let event = InstanceEvent::PermissionResolved {
+            instance_id: instance_id.unwrap_or_default().to_string(),
+            request_id: request_id.to_string(),
+            option_id: option_id.to_string(),
+        };
+        let _ = tx.send(event);
     }
 }
 
@@ -376,9 +420,23 @@ impl PermissionController for DefaultPermissionController {
     }
 
     async fn forget(&self, request_id: &str) {
-        let mut waiters = self.waiters.lock().await;
-        if waiters.remove(request_id).is_some() {
+        let removed = {
+            let mut waiters = self.waiters.lock().await;
+            waiters.remove(request_id)
+        };
+        if let Some(w) = removed {
             tracing::debug!(request_id, "permission::forget: waiter dropped without firing");
+            // Broadcast the drop so mirrors / remote subscribers prune
+            // their `pending_permissions` row even when no captain
+            // answer landed (typically the 10-min `WAITER_TIMEOUT`
+            // path in `AcpClient::request_permission`). Sentinel
+            // `option_id` keeps a uniform wire shape across the
+            // captain-answered + expired roundtrips.
+            self.emit_resolved(
+                w.snapshot.instance_id.as_deref(),
+                request_id,
+                PERMISSION_EXPIRED_OPTION_ID,
+            );
         }
     }
 
@@ -388,19 +446,31 @@ impl PermissionController for DefaultPermissionController {
     }
 
     async fn resolve_if_pending(&self, request_id: &str, option_id: &str) -> Option<bool> {
-        let mut waiters = self.waiters.lock().await;
-        let entry = waiters.get(request_id)?;
-        if !entry.options.iter().any(|o| o.option_id == option_id) {
-            tracing::debug!(
-                request_id,
-                option_id,
-                "permission::resolve_if_pending: option not in stored options"
-            );
-            return Some(false);
-        }
-        let removed = waiters.remove(request_id).expect("entry checked above");
+        // Lock-scoped block so the broadcast emit (which can block on
+        // a slow subscriber's drop, in theory) doesn't hold the
+        // waiters Mutex.
+        let removed = {
+            let mut waiters = self.waiters.lock().await;
+            let entry = waiters.get(request_id)?;
+            if !entry.options.iter().any(|o| o.option_id == option_id) {
+                tracing::debug!(
+                    request_id,
+                    option_id,
+                    "permission::resolve_if_pending: option not in stored options"
+                );
+                return Some(false);
+            }
+            waiters.remove(request_id).expect("entry checked above")
+        };
         let _ = removed.tx.send(PermissionOutcome::Selected(option_id.to_string()));
         tracing::debug!(request_id, option_id, "permission::resolve_if_pending: waiter fired");
+        // Single emit site for the captain-answered roundtrip:
+        // `resolve_if_pending` is the atomic membership-check + resolve
+        // both production paths funnel through (the
+        // `permissions/respond` RPC handler AND the Tauri
+        // `permission_reply` command), so the desktop ↔ remote sync
+        // event lands here exactly once per real answer.
+        self.emit_resolved(removed.snapshot.instance_id.as_deref(), request_id, option_id);
         Some(true)
     }
 
@@ -702,6 +772,92 @@ mod tests {
         assert!(controller.options_for("slow").await.is_none());
         // Second forget on the same id is a no-op (same invariant as resolve).
         controller.forget("slow").await;
+    }
+
+    #[tokio::test]
+    async fn resolve_if_pending_emits_permission_resolved_event() {
+        // Phase A4: captain answers a permission → controller broadcasts
+        // a `PermissionResolved` so the mirror (and remote subscribers)
+        // can prune their `pending_permissions` row even when the
+        // answer landed on the other transport.
+        let controller = DefaultPermissionController::new();
+        let (tx, mut rx) = broadcast::channel::<InstanceEvent>(8);
+        controller.attach_events_tx(tx);
+
+        let _waiter_rx = controller.register_pending(request("r1", "Bash")).await;
+        let res = controller.resolve_if_pending("r1", "allow-once").await;
+        assert_eq!(res, Some(true));
+
+        let evt = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("event received within 50ms")
+            .expect("broadcast not closed");
+        match evt {
+            InstanceEvent::PermissionResolved {
+                instance_id,
+                request_id,
+                option_id,
+            } => {
+                assert_eq!(request_id, "r1");
+                assert_eq!(option_id, "allow-once");
+                // `request()` carries `instance_id: Some("instance-1")`.
+                assert_eq!(instance_id, "instance-1");
+            }
+            other => panic!("expected PermissionResolved, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_if_pending_no_event_when_request_unknown_or_option_invalid() {
+        // The Some(false) and None paths must NOT emit. Mirrors / remote
+        // subscribers shouldn't see a `PermissionResolved` for a row
+        // that was never resolved.
+        let controller = DefaultPermissionController::new();
+        let (tx, mut rx) = broadcast::channel::<InstanceEvent>(8);
+        controller.attach_events_tx(tx);
+
+        // Unknown request_id (None path).
+        assert_eq!(controller.resolve_if_pending("ghost", "allow-once").await, None);
+        match rx.try_recv() {
+            Err(broadcast::error::TryRecvError::Empty) => {}
+            other => panic!("expected no event for unknown request_id, got {other:?}"),
+        }
+
+        // Registered but invalid option (Some(false) path).
+        let _waiter_rx = controller.register_pending(request("r1", "Bash")).await;
+        assert_eq!(controller.resolve_if_pending("r1", "nope").await, Some(false));
+        match rx.try_recv() {
+            Err(broadcast::error::TryRecvError::Empty) => {}
+            other => panic!("expected no event for invalid option, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forget_emits_expired_permission_resolved_event() {
+        // Timeout path: `AcpClient::request_permission`'s
+        // `WAITER_TIMEOUT` elapses → `controller.forget()` runs →
+        // mirror needs to drop the row even though no captain answer
+        // ever came. Sentinel `option_id` keeps the wire shape uniform.
+        let controller = DefaultPermissionController::new();
+        let (tx, mut rx) = broadcast::channel::<InstanceEvent>(8);
+        controller.attach_events_tx(tx);
+
+        let _waiter_rx = controller.register_pending(request("slow", "Bash")).await;
+        controller.forget("slow").await;
+
+        let evt = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("event received within 50ms")
+            .expect("broadcast not closed");
+        match evt {
+            InstanceEvent::PermissionResolved {
+                request_id, option_id, ..
+            } => {
+                assert_eq!(request_id, "slow");
+                assert_eq!(option_id, PERMISSION_EXPIRED_OPTION_ID);
+            }
+            other => panic!("expected PermissionResolved, got {other:?}"),
+        }
     }
 
     #[tokio::test]

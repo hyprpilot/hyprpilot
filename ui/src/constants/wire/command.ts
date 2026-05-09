@@ -36,7 +36,16 @@ import type {
   TurnStartedEventPayload,
   UsageUpdateEventPayload
 } from '@interfaces/wire/event'
+import type {
+  ChatSnapshot,
+  InstanceSnapshotChatArgs,
+  InstanceSnapshotMetaArgs,
+  InstanceSnapshotTerminalsArgs,
+  MetaSnapshot,
+  TerminalsSnapshot
+} from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
+import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
 import type {
   AgentSummary,
   CancelArgs,
@@ -69,6 +78,7 @@ import type { Theme } from '@interfaces/wire/theme'
 import type { WindowState } from '@interfaces/wire/window'
 
 export enum TauriCommand {
+  BootSnapshot = 'boot_snapshot',
   GetTheme = 'get_theme',
   GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
@@ -96,6 +106,9 @@ export enum TauriCommand {
   ModesSet = 'modes_set',
   ConfigOptionSet = 'config_option_set',
   InstanceMeta = 'instance_meta',
+  InstanceSnapshotMeta = 'instance_snapshot_meta',
+  InstanceSnapshotChat = 'instance_snapshot_chat',
+  InstanceSnapshotTerminals = 'instance_snapshot_terminals',
   McpsList = 'mcps_list',
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
@@ -111,6 +124,7 @@ export enum TauriCommand {
 export enum TauriEvent {
   AcpTranscript = 'acp:transcript',
   AcpPermissionRequest = 'acp:permission-request',
+  AcpPermissionResolved = 'acp:permission-resolved',
   AcpInstanceState = 'acp:instance-state',
   AcpTurnStarted = 'acp:turn-started',
   AcpTurnEnded = 'acp:turn-ended',
@@ -135,6 +149,7 @@ export enum TauriEvent {
  * commands that take no arguments.
  */
 export interface TauriCommandArgs {
+  [TauriCommand.BootSnapshot]: void
   [TauriCommand.GetTheme]: void
   [TauriCommand.GetKeymaps]: void
   [TauriCommand.GetWindowState]: void
@@ -162,6 +177,9 @@ export interface TauriCommandArgs {
   [TauriCommand.ModesSet]: ModesSetArgs
   [TauriCommand.ConfigOptionSet]: ConfigOptionSetArgs
   [TauriCommand.InstanceMeta]: InstanceMetaArgs
+  [TauriCommand.InstanceSnapshotMeta]: InstanceSnapshotMetaArgs
+  [TauriCommand.InstanceSnapshotChat]: InstanceSnapshotChatArgs
+  [TauriCommand.InstanceSnapshotTerminals]: InstanceSnapshotTerminalsArgs
   [TauriCommand.McpsList]: McpsListArgs
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
@@ -182,6 +200,7 @@ export interface TauriCommandArgs {
 
 /** Maps each command to the response type Rust emits. `invoke(cmd)` infers the result. */
 export interface TauriCommandResult {
+  [TauriCommand.BootSnapshot]: BootSnapshot
   [TauriCommand.GetTheme]: Theme
   [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
@@ -207,7 +226,7 @@ export interface TauriCommandResult {
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
-  [TauriCommand.InstancesList]: { instances: InstanceListEntry[] }
+  [TauriCommand.InstancesList]: { instances: InstanceListEntry[]; focusedId?: string }
   [TauriCommand.InstancesFocus]: { instanceId: string }
   [TauriCommand.InstancesShutdown]: { instanceId: string }
   [TauriCommand.InstancesRename]: InstancesRenameResult
@@ -216,6 +235,9 @@ export interface TauriCommandResult {
   [TauriCommand.ModesSet]: unknown
   [TauriCommand.ConfigOptionSet]: unknown
   [TauriCommand.InstanceMeta]: InstanceMetaSnapshot
+  [TauriCommand.InstanceSnapshotMeta]: MetaSnapshot
+  [TauriCommand.InstanceSnapshotChat]: ChatSnapshot
+  [TauriCommand.InstanceSnapshotTerminals]: TerminalsSnapshot
   [TauriCommand.McpsList]: MCPListResult
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
@@ -242,11 +264,35 @@ export interface CompletionConfigSnapshot {
   }
 }
 
+/**
+ * Aggregated boot payload. One `invoke('boot_snapshot')` returns
+ * everything the loading screen needs before it can drop. Replaces
+ * six sequential `await invoke(...)` round-trips — particularly
+ * load-bearing on the remote bridge where each round-trip rides the
+ * same WS, so the captain spent up to 6× RTT staring at the loader.
+ *
+ * Per-instance snapshot data (chat / terminals) stays on its own
+ * RPCs; brim-sync calls those after boot for whichever instance is
+ * focused.
+ */
+export interface BootSnapshot {
+  theme: Theme
+  keymaps: KeymapsConfig
+  windowState: WindowState
+  homeDir: string
+  daemonCwd: string
+  completionConfig: CompletionConfigSnapshot
+  agents: { agents: AgentSummary[] }
+  profiles: { profiles: ProfileSummary[] }
+  instances: { instances: InstanceListEntry[]; focusedId?: string }
+}
+
 /** Maps each event to its payload type. `listen(ev, cb)` infers `cb`'s arg. */
 export interface TauriEventPayload {
   [TauriEvent.AcpTranscript]: TranscriptEventPayload
   [TauriEvent.AcpInstanceState]: InstanceStateEventPayload
   [TauriEvent.AcpPermissionRequest]: PermissionRequestEventPayload
+  [TauriEvent.AcpPermissionResolved]: AcpPermissionResolvedPayload
   [TauriEvent.AcpTurnStarted]: TurnStartedEventPayload
   [TauriEvent.AcpTurnEnded]: TurnEndedEventPayload
   [TauriEvent.AcpTerminal]: TerminalEventPayload

@@ -37,6 +37,15 @@ export async function loadDaemonCwd(): Promise<void> {
   }
 }
 
+/** Boot-snapshot setters — apply already-known values without IPC. */
+export function setHomeDir(value: string | undefined): void {
+  homeDir.value = value
+}
+
+export function setDaemonCwd(value: string | undefined): void {
+  daemonCwd.value = value
+}
+
 export function useHomeDir(): {
   homeDir: Ref<string | undefined>
   /**
