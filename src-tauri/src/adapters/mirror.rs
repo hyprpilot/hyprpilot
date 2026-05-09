@@ -18,10 +18,31 @@
 //! - [`TerminalsSnapshot`] — full per-`terminal_id` map; small enough
 //!   to ship whole today.
 //!
-//! The actor calls [`InstanceMirror::apply`] alongside every existing
-//! `events_tx.send(...)` in Phase A3. Phase A2 lands the type +
-//! struct surface only; the runtime wiring + the snapshot RPC family
-//! arrive in subsequent commits.
+//! ## Why not a broadcast subscriber?
+//!
+//! "Couldn't the mirror just be another `events_rx.recv()` consumer of
+//! the same broadcast everyone else reads?" comes up regularly and
+//! deserves an inline answer.
+//!
+//! **The mirror is authoritative state; the broadcast is a lossy
+//! transport.** `tokio::sync::broadcast` is capacity-256 and silently
+//! drops on `RecvError::Lagged` — that's correct for UI fan-out (the
+//! next tick re-paints from a snapshot pull), but **catastrophic for
+//! a write-through cache**. A single lag during a streaming reply
+//! (~30 transcript chunks/sec is typical) would punch a hole in the
+//! mirror's `seq` cursor, and the UI's pagination would skip the
+//! gap silently — no panic, no warn, just permanently corrupt
+//! state. There's no unbounded `broadcast` in tokio, and `mpsc`
+//! doesn't fan out, so a single-channel design that holds the
+//! mirror-coherent invariant doesn't exist.
+//!
+//! The fix is structural: the **actor itself** is the single writer,
+//! and **applies to the mirror BEFORE broadcasting**. The
+//! [`publish`] helper in this module enforces the ordering at every
+//! call site so the mirror physically cannot lag its producer. Any
+//! out-of-actor reader (snapshot RPC, mid-session remote brim-sync)
+//! that queries the mirror after an emit returned is guaranteed to
+//! see a state that includes the emitted event.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -546,6 +567,27 @@ impl InstanceMirror {
     }
 }
 
+/// Apply-then-broadcast helper. Every actor-side emit pairs a
+/// [`InstanceMirror::apply`] with a `events_tx.send(...)`; the
+/// **apply must come first** so that any reader pulling a snapshot
+/// after `events_tx.send` returns sees a state that includes the
+/// just-emitted event. See the module-level "Why not a broadcast
+/// subscriber?" note for why the mirror cannot live downstream of
+/// the broadcast.
+///
+/// Use this at every actor emit site. The `Drop` path in
+/// `acp::instance::TurnGuard` is the documented exception — Drop
+/// is sync, so the apply spawns onto the runtime separately.
+#[allow(dead_code)]
+pub async fn publish(
+    mirror: &InstanceMirror,
+    events_tx: &tokio::sync::broadcast::Sender<InstanceEvent>,
+    event: InstanceEvent,
+) {
+    mirror.apply(&event).await;
+    let _ = events_tx.send(event);
+}
+
 // ─── snapshot wire shapes ─────────────────────────────────────────
 
 /// Closed family of snapshot shapes the `instance/snapshot/*` RPC
@@ -636,6 +678,52 @@ mod tests {
     use crate::adapters::permission::PermissionOptionView;
     use crate::adapters::transcript::TranscriptItem;
     use serde_json::json;
+
+    /// `publish` must apply to the mirror BEFORE broadcasting — any
+    /// reader that pulls a snapshot after the broadcast subscriber
+    /// observes the event must already see the post-apply state.
+    /// Pinning this via the only ordering observable from outside:
+    /// after `publish` returns, `mirror.chat_snapshot()` already
+    /// includes the event, AND the broadcast receiver has it queued.
+    #[tokio::test]
+    async fn publish_applies_before_broadcast() {
+        let mirror = InstanceMirror::new();
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<InstanceEvent>(8);
+        let event = transcript_event("hello");
+
+        publish(&mirror, &tx, event).await;
+
+        // Mirror has the event already.
+        let snap = mirror.chat_snapshot(None, 0).await;
+        assert_eq!(snap.items.len(), 1);
+
+        // Broadcast queued the event for any subscriber.
+        let received = rx.try_recv().expect("broadcast must have the event");
+        match received {
+            InstanceEvent::Transcript { item, .. } => match item {
+                TranscriptItem::AgentText { text } => assert_eq!(text, "hello"),
+                _ => panic!("wrong item variant"),
+            },
+            _ => panic!("wrong event variant"),
+        }
+    }
+
+    /// Broadcast send returning Err (no subscribers) must not block
+    /// the apply. The mirror is the daemon's truth; UI subscribers
+    /// are best-effort.
+    #[tokio::test]
+    async fn publish_succeeds_with_zero_subscribers() {
+        let mirror = InstanceMirror::new();
+        let (tx, _rx) = tokio::sync::broadcast::channel::<InstanceEvent>(8);
+        // Drop the subscriber — `tx.send` will return Err but `publish`
+        // ignores it (the mirror still sees the event).
+        drop(_rx);
+
+        publish(&mirror, &tx, transcript_event("only-mirror")).await;
+
+        let snap = mirror.chat_snapshot(None, 0).await;
+        assert_eq!(snap.items.len(), 1);
+    }
 
     fn transcript_event(text: &str) -> InstanceEvent {
         transcript_event_with_turn(text, None)

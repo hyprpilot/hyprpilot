@@ -32,8 +32,8 @@ pub use instance::{
 // Narrow allow keeps the surface visible while the consumers land.
 #[allow(unused_imports)]
 pub use mirror::{
-    ChatSnapshot, InstanceMirror, InstanceSnapshot, MetaSnapshot, MirrorInner, MirrorMetaCache, SeqTranscriptItem,
-    TerminalSnapshot, TerminalsSnapshot, TurnEventMarker, UsageSnapshot,
+    publish, ChatSnapshot, InstanceMirror, InstanceSnapshot, MetaSnapshot, MirrorInner, MirrorMetaCache,
+    SeqTranscriptItem, TerminalSnapshot, TerminalsSnapshot, TurnEventMarker, UsageSnapshot,
 };
 #[allow(unused_imports)]
 pub use permission::PermissionRequestSnapshot;

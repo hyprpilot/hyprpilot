@@ -34,7 +34,7 @@ use crate::adapters::instance::{InstanceActor, InstanceInfo, InstanceKey};
 use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
-use crate::adapters::{Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
+use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
 use crate::config::AgentConfig;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
@@ -172,8 +172,7 @@ impl TurnGuard {
             turn_id: turn_id.clone(),
             started_at: now_epoch_ms(),
         };
-        mirror.apply(&event).await;
-        let _ = events_tx.send(event);
+        publish(&mirror, &events_tx, event).await;
         Self {
             turn_id,
             instance_id,
@@ -203,8 +202,7 @@ impl TurnGuard {
             error,
             ended_at: now_epoch_ms(),
         };
-        self.mirror.apply(&event).await;
-        let _ = self.events_tx.send(event);
+        publish(&self.mirror, &self.events_tx, event).await;
         true
     }
 }
@@ -297,8 +295,7 @@ fn spawn_synthetic_close_after(
             // UI hides elapsed when either side is missing real timing.
             ended_at: 0,
         };
-        mirror.apply(&event).await;
-        let _ = events_tx.send(event);
+        publish(&mirror, &events_tx, event).await;
     });
 }
 
@@ -537,8 +534,7 @@ impl MetaEmitter {
             available_models: self.available_models.read().await.clone(),
             mcps_count: self.mcps_count,
         };
-        self.mirror.apply(&event).await;
-        let _ = events_tx.send(event);
+        publish(&self.mirror, events_tx, event).await;
     }
 }
 
@@ -1615,8 +1611,7 @@ async fn run(params: RunParams) {
         session_id: None,
         state: InstanceState::Starting,
     };
-    mirror.apply(&starting_event).await;
-    let _ = events_tx.send(starting_event);
+    publish(&mirror, &events_tx, starting_event).await;
 
     let cfg = {
         let mut cfg = resolved.agent.clone();
@@ -1647,8 +1642,7 @@ async fn run(params: RunParams) {
             instance_id: instance_id.clone(),
             files,
         };
-        mirror.apply(&event).await;
-        let _ = events_tx.send(event);
+        publish(&mirror, &events_tx, event).await;
     }
 
     let (mut child, stdio, stderr, mut first_message_prefix) = match spawn_subprocess(&cfg, prompt_for_spawn.as_deref())
@@ -1667,8 +1661,7 @@ async fn run(params: RunParams) {
                 session_id: None,
                 state: InstanceState::Error,
             };
-            mirror.apply(&event).await;
-            let _ = events_tx.send(event);
+            publish(&mirror, &events_tx, event).await;
             return;
         }
     };
@@ -1773,8 +1766,7 @@ async fn run(params: RunParams) {
                 session_id: None,
                 state: InstanceState::Error,
             };
-            mirror.apply(&event).await;
-            let _ = events_tx.send(event);
+            publish(&mirror, &events_tx, event).await;
             return;
         }
     };
@@ -1866,8 +1858,7 @@ async fn run(params: RunParams) {
                             terminal_id: evt.terminal_id,
                             chunk,
                         };
-                        mirror.apply(&event).await;
-                        let _ = events_tx.send(event);
+                        publish(&mirror, &events_tx, event).await;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(n, instance = %instance_id, "acp::instance: terminal-event bridge lagged");
@@ -3097,8 +3088,7 @@ async fn run(params: RunParams) {
         session_id: sid.as_ref().map(|id| id.0.to_string()),
         state: final_state,
     };
-    mirror.apply(&event).await;
-    let _ = events_tx.send(event);
+    publish(&mirror, &events_tx, event).await;
 }
 
 #[cfg(test)]
