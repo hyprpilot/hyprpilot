@@ -3,8 +3,8 @@
  * Composer row: pills (image attachments + skill attachments) +
  * autosizing textarea + send button. Owns compose text + image-pill
  * state via `useComposer`; reads skill attachments off the
- * `useAttachments` module-scope singleton (the K-268 skills palette
- * pushes there). The parent's `@submit` receives `{ text, attachments }`
+ * `useAttachments` module-scope singleton (the skills palette pushes
+ * there). The parent's `@submit` receives `{ text, attachments }`
  * — image pills go in the `attachments` slot, skill attachments
  * travel separately via `useAttachments().pending`.
  *
@@ -72,7 +72,7 @@ const composerPills = composer.pills
 
 const attachments = useAttachments()
 
-// Skill attachments (palette-driven, K-268) render as resource pills
+// Skill attachments (palette-driven) render as resource pills
 // alongside image attachment pills. The composer doesn't own the
 // pending list — it only presents and forwards the remove intent.
 const attachmentPills = computed<ComposerPill[]>(() =>
@@ -560,7 +560,7 @@ async function onDrop(e: DragEvent): Promise<void> {
 
   for (const file of Array.from(files)) {
     if (!file.type.startsWith('image/')) {
-      // Skill / reference attachments are palette-driven (K-268); the
+      // Skill / reference attachments are palette-driven; the
       // composer doesn't accept ad-hoc resource drops.
       continue
     }
@@ -698,9 +698,9 @@ function onDragOver(e: DragEvent): void {
   gap: 0.375rem;
 }
 
-/* wireframe textarea-equivalent: bg-bg, line2 border, padding 8px 10px.
- * min-height bumped past wireframe (68→96) to give the autocomplete
- * popover a bit more vertical room before it has to flip above. */
+/* Textarea: bg-bg, line2 border, padding 8px 10px. min-height 96px
+ * gives the autocomplete popover vertical room before it has to flip
+ * above. */
 .composer-textarea {
   @apply w-full min-w-0 flex-1 resize-none overflow-y-auto border text-[0.75rem] leading-snug;
   font-family: var(--theme-font-mono);
@@ -729,14 +729,14 @@ function onDragOver(e: DragEvent): void {
   opacity: 0.5;
 }
 
-/* wireframe vertical button cluster: 44px wide, send + attach stacked. */
+/* Vertical button cluster: 44px wide, send + attach stacked. */
 .composer-actions {
   @apply flex shrink-0 flex-col;
   width: 2.75rem;
   gap: 0.25rem;
 }
 
-/* wireframe send: solid yellow accent when content, ghost otherwise. */
+/* Send: solid accent when there's content, ghost otherwise. */
 .composer-submit {
   @apply flex flex-1 items-center justify-center font-bold text-[0.85rem];
   font-family: var(--theme-font-mono);
@@ -788,7 +788,7 @@ function onDragOver(e: DragEvent): void {
   color: var(--theme-fg-on-tone);
 }
 
-/* wireframe attach: always ghost. */
+/* Attach: always ghost. */
 .composer-attach {
   @apply flex items-center justify-center text-[0.7rem];
   height: 1.375rem;

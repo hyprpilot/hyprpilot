@@ -9,7 +9,6 @@ import {
   setInstanceCwd,
   setInstanceGitStatus,
   setInstanceProfile,
-  setSessionRestored,
   useActiveInstance,
   useSessionInfo
 } from '@composables'
@@ -201,7 +200,7 @@ describe('useSessionInfo profile derivation', () => {
     expect(useSessionInfo('A').info.value.profileId).toBeUndefined()
   })
 
-  it('always reports zero mcps and skills counts (live counts land in K-258 / K-268)', () => {
+  it('always reports zero mcps count (live count not yet surfaced on ProfileSummary)', () => {
     profilesRef.value = [
       {
         id: 'ask',
@@ -222,20 +221,3 @@ describe('useSessionInfo profile derivation', () => {
   })
 })
 
-describe('setSessionRestored', () => {
-  it('flips the restored flag and survives subsequent updates', () => {
-    setSessionRestored('A', true)
-    expect(useSessionInfo('A').info.value.restored).toBe(true)
-
-    pushCurrentModeUpdate('A', { currentModeId: 'plan' })
-    expect(useSessionInfo('A').info.value.restored).toBe(true)
-
-    setSessionRestored('A', false)
-    expect(useSessionInfo('A').info.value.restored).toBe(false)
-  })
-
-  it('defaults to false for instances that never saw setSessionRestored', () => {
-    pushCurrentModeUpdate('A', { currentModeId: 'plan' })
-    expect(useSessionInfo('A').info.value.restored).toBe(false)
-  })
-})

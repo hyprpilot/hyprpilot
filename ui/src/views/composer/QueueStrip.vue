@@ -105,7 +105,7 @@ const emit = defineEmits<{
   background-color: var(--theme-surface);
 }
 
-/* wireframe index badge: mono fontSize 10, fontWeight 700, user color on
+/* Index badge: mono fontSize 10, fontWeight 700, user color on
  * user-soft bg, 16px min-width centered. */
 .queue-band-index {
   @apply inline-flex shrink-0 items-center justify-center font-bold text-[0.6rem];
@@ -127,7 +127,7 @@ const emit = defineEmits<{
   gap: 0.125rem;
 }
 
-/* wireframe iconBtn (22×22 ghost) — same shape as the permission panel
+/* Icon button (22×22 ghost) — same shape as the permission panel
  * action buttons. */
 .queue-band-icon-btn {
   @apply inline-flex items-center justify-center;

@@ -441,9 +441,8 @@ pub enum TerminalStream {
 impl InstanceEvent {
     /// Dot-separated topic name. Stable contract for subscription
     /// filtering. Colon-separated Tauri event names live only in the
-    /// bridge's mapping table. K-276 (ctl-side `instances/subscribe`)
-    /// will be the first consumer; until then narrow allow keeps the
-    /// scaffold visible without spamming the build.
+    /// bridge's mapping table. Currently unused — narrow allow keeps the
+    /// scaffold visible for the future ctl-side subscribe surface.
     #[allow(dead_code)]
     #[must_use]
     pub fn topic(&self) -> &'static str {
@@ -529,6 +528,30 @@ impl From<&InstanceInfo> for InstanceListEntry {
             mode: i.mode.clone(),
         }
     }
+}
+
+/// Wire shape for `agents_list` entries. Mirrors `InstanceListEntry`
+/// in spirit — typed struct over hand-rolled `json!()` so the UI
+/// can't drift on a renamed field, and `skip_serializing_if` keeps
+/// optional fields off the wire (preserves the no-null invariant).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSummary {
+    pub id: String,
+    pub provider: String,
+    pub binding: String,
+    pub is_default: bool,
+}
+
+/// Wire shape for `profiles_list` / `config/profiles` entries.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSummary {
+    pub id: String,
+    pub agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub is_default: bool,
 }
 
 /// Validate a captain-supplied instance name against the slug rule.

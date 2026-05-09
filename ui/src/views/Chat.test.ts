@@ -295,7 +295,7 @@ describe('Chat.vue — permission wiring', () => {
       options: SAMPLE_OPTIONS,
       formatted: FMT
     })
-    invoke.mockRejectedValue(new Error('permission_reply not implemented (K-245)'))
+    invoke.mockRejectedValue(new Error('permission_reply not implemented'))
 
     const wrapper = mount(Chat, chatMountOptions())
 

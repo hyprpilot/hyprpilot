@@ -150,11 +150,11 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
  * correct behaviour (live truth beats cached snapshot).
  */
 function applySessionInfoFromMeta(instanceId: InstanceId, data: MetaSnapshot): void {
-  if (data.cwd !== undefined) {
+  if (data.cwd != null) {
     setInstanceCwd(instanceId, data.cwd)
   }
 
-  if (data.profileId !== undefined) {
+  if (data.profileId != null) {
     setInstanceProfile(instanceId, data.profileId)
   }
   // mcpsCount is a number on the wire — not optional. Default to 0
@@ -162,31 +162,32 @@ function applySessionInfoFromMeta(instanceId: InstanceId, data: MetaSnapshot): v
   // hides on `count == 0` anyway.
   setInstanceMcpsCount(instanceId, data.mcpsCount ?? 0)
 
-  // Spawn-time mode / model state — pushed wholesale (current id +
-  // advertised list) so the palette's mode / model leaves render
-  // their current selection AND can offer the alternatives without
-  // waiting on a live event.
-  if (data.currentModeId !== undefined || (data.availableModes && data.availableModes.length > 0)) {
+  // Spawn-time mode / model state — push the advertised list when
+  // present (covers both "list arrived alongside currentId" and
+  // "list-only, no current yet" cases). When NEITHER is set we'd
+  // be pushing empty noise; skip.
+  const hasModes = (data.availableModes?.length ?? 0) > 0
+  const hasCurrentMode = data.currentModeId != null
+
+  if (hasModes) {
     pushInstanceModeState(instanceId, {
       currentModeId: data.currentModeId,
       availableModes: data.availableModes ?? []
     })
+  } else if (hasCurrentMode && data.currentModeId != null) {
+    // No advertised list — push only the current mode overlay. Avoids
+    // the duplicate write the prior shape produced (set state with
+    // empty list, then set current again on the next branch).
+    pushCurrentModeUpdate(instanceId, { currentModeId: data.currentModeId })
   }
 
-  if (data.currentModelId !== undefined || (data.availableModels && data.availableModels.length > 0)) {
+  const hasModels = (data.availableModels?.length ?? 0) > 0
+
+  if (hasModels) {
     pushInstanceModelState(instanceId, {
       currentModelId: data.currentModelId,
       availableModels: data.availableModels ?? []
     })
-  }
-
-  // CurrentModeUpdate overlays the active mode without touching the
-  // advertised-list. `pushInstanceModeState` already sets `mode` from
-  // currentModeId when present, but firing this too keeps parity
-  // with the live event ordering (CurrentMode arrives separately
-  // from the spawn-time state in the live wire).
-  if (data.currentModeId !== undefined) {
-    pushCurrentModeUpdate(instanceId, { currentModeId: data.currentModeId })
   }
 
   if (data.configOptions && data.configOptions.length > 0) {

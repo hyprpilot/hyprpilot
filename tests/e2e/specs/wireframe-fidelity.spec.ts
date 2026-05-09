@@ -1,12 +1,10 @@
 import { expect, test } from '../fixtures/tauri'
 
 /**
- * wireframe fidelity specs — exercise the visual states the agent
- * verified manually via Playwright MCP. Same browser-mode harness +
- * IPC mocks as the smoke spec; what's specific here is asserting on
- * the wireframe-spec primitives (phase border, role lanes, palette shell,
- * idle wordmark, kbd legend) so a regression caught by `task test:e2e`
- * has a named owner.
+ * Visual fidelity specs — assert on the chrome primitives (phase
+ * border, role lanes, palette shell, idle wordmark, kbd legend) so
+ * a regression caught by `task test:e2e` has a named owner. Same
+ * browser-mode harness + IPC mocks as the smoke spec.
  *
  * Real-app (mode: 'tauri') gates apply once the WebKitGTK eval-stall
  * clears — see CLAUDE.md "Tauri ↔ Playwright wiring" for the

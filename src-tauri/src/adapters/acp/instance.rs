@@ -68,14 +68,6 @@ impl TurnState {
         self.current.as_deref()
     }
 
-    /// Symmetric accessor for completeness; no caller today since the
-    /// synthetic-id-only flow goes through `take_synthetic`. Narrow
-    /// allow keeps it visible — the inverse of `current()`.
-    #[allow(dead_code)]
-    fn synthetic(&self) -> Option<&str> {
-        self.synthetic.as_deref()
-    }
-
     /// Open a real (prompt-driven) turn. Clears any prior synthetic —
     /// the real prompt supersedes whatever the actor was wrapping.
     fn open_real(&mut self, turn_id: String) {
@@ -1053,16 +1045,46 @@ pub(crate) fn map_session_update(
             let tool = update.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let tool_kind = update.get("kind").and_then(|v| v.as_str()).unwrap_or("acp").to_string();
             let args = update.get("args").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let raw_input = update.get("rawInput").cloned();
+            // Raw ACP content array — the formatter consumes the
+            // wire-shape `Vec<Value>` directly (same as the live
+            // `PermissionRequested` event). UI-side parsing into
+            // `ToolCallContentItem` is a different concern.
+            let raw_content: Vec<serde_json::Value> = update
+                .get("content")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let options = update
                 .get("options")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            // Same formatter dispatch the live `InstanceEvent::PermissionRequest`
+            // emit uses (instance.rs ~2949). `started_at: 0` /
+            // `completed_at: None` so formatters that key on
+            // `completed_at.is_some()` skip emitting `Stat::Duration`
+            // — the row is for an unstarted call, duration is meaningless.
+            let formatted = {
+                use crate::tools::formatter::registry::FormatterContext;
+                let registry = crate::adapters::acp::formatter_registry();
+                let ctx = FormatterContext {
+                    wire_name: tool.as_str(),
+                    kind: tool_kind.as_str(),
+                    raw_input: raw_input.as_ref(),
+                    adapter: adapter_id,
+                    content: &raw_content,
+                    started_at: 0,
+                    completed_at: None,
+                };
+                registry.dispatch(&ctx)
+            };
             MappedUpdate::Transcript(TranscriptItem::PermissionRequest(PermissionRequestRecord {
                 request_id,
                 tool,
                 tool_kind,
                 args,
                 options,
+                formatted,
             }))
         }
         _ => MappedUpdate::Transcript(TranscriptItem::Unknown {
@@ -3137,6 +3159,52 @@ mod tests {
     /// Empty / unknown content shapes should still flow through (UI
     /// renders the thinking card with no body) — no panic, no
     /// silent drop.
+    /// PermissionRequest carries a `formatted` field so the transcript-
+    /// path replay (snapshot hydration, cross-device mirror) renders the
+    /// same description / fields / output the live `acp:permission-request`
+    /// event carries. Without this, a permission row replayed from the
+    /// daemon mirror would have an empty body while the same prompt
+    /// arriving live shows command + args. The `started_at: 0` /
+    /// `completed_at: None` path keeps `Stat::Duration` off the
+    /// permission row, matching the live emit at instance.rs:~2949.
+    #[test]
+    fn map_session_update_permission_request_carries_formatted() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "permission_request",
+            "requestId": "r-1",
+            "tool": "Bash",
+            "kind": "execute",
+            "args": "ls /tmp",
+            "rawInput": { "command": "ls /tmp" },
+            "options": [],
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+        match mapped {
+            MappedUpdate::Transcript(crate::adapters::TranscriptItem::PermissionRequest(rec)) => {
+                assert_eq!(rec.request_id, "r-1");
+                assert_eq!(rec.tool, "Bash");
+                // formatted must be populated — the formatter dispatched.
+                // bash formatter emits a non-empty title; even a fall-through
+                // formatter writes the wire name as title. Assert non-empty
+                // so a regression that drops the dispatch trips here.
+                assert!(
+                    !rec.formatted.title.is_empty(),
+                    "PermissionRequestRecord.formatted must be populated via the formatter registry"
+                );
+                // started_at: 0 / completed_at: None means no duration stat.
+                let has_duration = rec
+                    .formatted
+                    .stats
+                    .iter()
+                    .any(|s| matches!(s, crate::tools::formatter::types::Stat::Duration { .. }));
+                assert!(!has_duration, "permission row must not carry Stat::Duration");
+            }
+            _ => panic!("expected PermissionRequest variant"),
+        }
+    }
+
     #[test]
     fn map_session_update_thought_with_unknown_shape_yields_empty_text() {
         use serde_json::json;

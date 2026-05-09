@@ -5,7 +5,7 @@ import { debug as pluginDebug, error as pluginError, info as pluginInfo, trace a
  * through `@tauri-apps/plugin-log` → backend `log::Record` →
  * `tracing_log::LogTracer` (installed in `logging::init`) → the same
  * daily-rolled file at `$XDG_STATE_HOME/hyprpilot/logs/hyprpilot.log.*`
- * as the Rust side. One file, both tiers — K-283.
+ * as the Rust side. One file, both tiers.
  *
  * Plain-browser soft-fail (vitest / `vite dev` without Tauri host): the
  * plugin's `invoke` rejects with "tauri host missing"; we swallow it so

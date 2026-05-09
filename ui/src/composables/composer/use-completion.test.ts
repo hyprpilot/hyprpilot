@@ -149,4 +149,47 @@ describe('useCompletion', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.CompletionCancel, { requestId: 'r1' })
     expect(c.state.value.open).toBe(false)
   })
+
+  /**
+   * Pin the contract: when `close()` runs between an in-flight
+   * `completion/query` issue and its response (e.g. captain hits
+   * Enter to send while ripgrep is mid-walk), the response handler
+   * MUST NOT reopen the popover. Without the generation guard, the
+   * stale response races past the daemon's best-effort cancel and
+   * re-shows the previous completion items after the buffer was
+   * just submitted.
+   */
+  it('drops in-flight response when close() runs between issue and resolution', async() => {
+    let resolveQuery: (value: unknown) => void = () => {}
+
+    invoke.mockReturnValueOnce(new Promise((resolve) => { resolveQuery = resolve }))
+    const c = useCompletion()
+
+    c.query('#git', 4, { manual: true })
+    // Manual debounce is 0; advance past setTimeout(fn, 0).
+    await flushMicrotasks()
+    // Query is now mid-await. Close before the response lands.
+    c.close()
+    expect(c.state.value.open).toBe(false)
+
+    // Daemon was already past the cancel point, response races back.
+    resolveQuery({
+      requestId: 'r-stale',
+      sourceId: 'skills',
+      replacementRange: { start: 0, end: 4 },
+      items: [
+        {
+          label: 'git-commit',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 4 }, text: '#{git-commit}' }
+        }
+      ]
+    })
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    // Popover stays closed; stale items don't appear.
+    expect(c.state.value.open).toBe(false)
+    expect(c.state.value.items).toHaveLength(0)
+  })
 })

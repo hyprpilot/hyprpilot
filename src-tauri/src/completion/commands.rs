@@ -25,10 +25,10 @@ pub async fn completion_query(
     cursor: usize,
     cwd: Option<PathBuf>,
     manual: Option<bool>,
-    // `_instance_id` on the wire — Tauri infers `instanceId` (camelCase)
-    // for the JS invoke shape. Currently unused on the daemon side
-    // (the registry's `detect` is instance-agnostic) but kept on the
-    // wire for forward-compat.
+    // `instance_id` on the wire — currently unused on the daemon side
+    // (the registry's `detect` is instance-agnostic). Kept on the
+    // wire so the UI doesn't need to gate on it; future instance-
+    // scoped sources land here.
     #[allow(unused_variables)] instance_id: Option<String>,
     // Whitelist of source ids (`["path"]`) to consider. When `Some`,
     // sources whose id isn't in the list are skipped during detect.
@@ -36,7 +36,6 @@ pub async fn completion_query(
     // passes `["path"]`.
     sources: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    let _ = instance_id;
     let request_id = uuid::Uuid::new_v4().to_string();
     let manual = manual.unwrap_or(false);
     tracing::trace!(

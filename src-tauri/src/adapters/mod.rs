@@ -24,9 +24,9 @@ use async_trait::async_trait;
 
 pub use acp::AcpAdapter;
 pub use instance::{
-    validate_instance_name, InstanceEvent, InstanceEventStream, InstanceInfo, InstanceKey, InstanceState,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk,
-    TerminalStream,
+    validate_instance_name, AgentSummary, InstanceEvent, InstanceEventStream, InstanceInfo, InstanceKey,
+    InstanceListEntry, InstanceState, ProfileSummary, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionModeInfo, SessionModelInfo, SpawnSpec, TerminalChunk, TerminalStream,
 };
 // Mirror re-exports — Phase A5's snapshot RPC handlers consume these.
 // Narrow allow keeps the surface visible while the consumers land.
@@ -139,7 +139,7 @@ pub trait Adapter: Send + Sync + 'static {
     /// Preserves `InstanceKey` (the UUID) too — callers subscribed to
     /// a specific key stay bound across the swap. Optional `cwd`
     /// overlays the resolved agent cwd before the new actor spawns —
-    /// load-bearing for the K-266 cwd palette.
+    /// load-bearing for the cwd palette.
     async fn restart(&self, key: InstanceKey, cwd: Option<std::path::PathBuf>) -> AdapterResult<InstanceKey>;
 
     /// Resolve a wire-supplied token (UUID or captain-set name) to a
@@ -216,13 +216,13 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// `agents/list` — every configured agent. Default returns an
     /// empty list (adapters with no agent registry).
-    async fn list_agents(&self) -> AdapterResult<Vec<serde_json::Value>> {
+    async fn list_agents(&self) -> AdapterResult<Vec<AgentSummary>> {
         Ok(Vec::new())
     }
 
     /// `profiles/list` — every configured profile. Default returns
     /// an empty list.
-    async fn list_profiles(&self) -> AdapterResult<Vec<serde_json::Value>> {
+    async fn list_profiles(&self) -> AdapterResult<Vec<ProfileSummary>> {
         Ok(Vec::new())
     }
 

@@ -5,7 +5,7 @@
 // @agentclientprotocol/claude-agent-acp` (etc.) hits the network, needs
 // credentials, and isn't reproducible. This stub replays a fixed
 // transcript over stdio JSON-RPC so the daemon's live-session bridge
-// (K-240) has a deterministic counterpart in CI.
+// has a deterministic counterpart in CI.
 //
 // Protocol: minimal subset of agent-client-protocol needed for the
 // initialize / session.new / session.prompt / session.cancel

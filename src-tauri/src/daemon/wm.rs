@@ -3,7 +3,7 @@
 //! exposed through Tauri or GDK directly — today that's "which monitor
 //! is the user focused on". Tomorrow it may grow to cover focused
 //! workspace, focus-follows-mouse state, or active-window geometry as
-//! K-239 and later issues add richer context.
+//! richer context arrives.
 //!
 //! One implementation per WM family. `detect()` picks the right one at
 //! runtime via environment markers:

@@ -148,7 +148,7 @@ describe('buildProfilesPaletteSpec', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('onDelete surfaces a not-yet-wired toast (K-280) and never calls onSelect', () => {
+  it('onDelete surfaces a not-yet-wired toast and never calls onSelect', () => {
     const onSelect = vi.fn()
     const spec = buildProfilesPaletteSpec({
       list: [
@@ -165,7 +165,7 @@ describe('buildProfilesPaletteSpec', () => {
     spec.onDelete?.({ id: 'ask', name: 'ask' }, () => {})
     expect(onSelect).not.toHaveBeenCalled()
     expect(pushToastMock).toHaveBeenCalledTimes(1)
-    expect(pushToastMock.mock.calls[0]?.[1]).toMatch(/K-280/)
+    expect(pushToastMock.mock.calls[0]?.[1]).toMatch(/not yet wired/)
   })
 })
 

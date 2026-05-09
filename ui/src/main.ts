@@ -103,7 +103,8 @@ async function boot(): Promise<void> {
   // truth (`staleTime: 0`), keep a couple of pages around for
   // backward pagination but evict promptly when unused
   // (`gcTime: 5min`), and skip Tauri's noisy window-focus refetch
-  // (we have explicit `acp:instances-focused` refetch in Phase C).
+  // (we have explicit `acp:instances-focused` refetch wired
+  // separately).
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {

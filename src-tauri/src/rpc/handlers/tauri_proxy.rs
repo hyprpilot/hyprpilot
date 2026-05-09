@@ -733,11 +733,9 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 cursor: usize,
                 cwd: Option<PathBuf>,
                 manual: Option<bool>,
-                instance_id: Option<String>,
                 sources: Option<Vec<String>>,
             }
             let args: Args = parse_params(params, "tauri/completion_query")?;
-            let _ = args.instance_id;
             let registry = app
                 .try_state::<Arc<CompletionRegistry>>()
                 .ok_or_else(|| RpcError::internal_error("completion registry state not managed"))?;

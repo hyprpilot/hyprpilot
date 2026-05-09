@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * Breadcrumb chip — wireframe BCPill. Plain rectangular pill, line2
- * border on all sides, mono ink2 text. `color` overrides the whole
- * text (used by `↻ resumed` to glow green).
+ * Breadcrumb chip. Plain rectangular pill, line2 border on all sides,
+ * mono ink2 text. `color` overrides the whole text (used by
+ * `↻ resumed` to glow green).
  *
  * Two render modes:
  *  - prop-driven: `label` + `count` → renders `+{count} {label}` with

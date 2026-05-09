@@ -16,8 +16,8 @@ export interface SubmitOptions {
   profileId?: string
   /**
    * First-class skill / resource attachments delivered alongside
-   * `text`. Backend (K-268) maps each entry onto an ACP
-   * `ContentBlock::Resource` prepended before the prompt text block.
+   * `text`. Each entry maps onto an ACP `ContentBlock::Resource`
+   * prepended before the prompt text block.
    */
   attachments?: Attachment[]
 }

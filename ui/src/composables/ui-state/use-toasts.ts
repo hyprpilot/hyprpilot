@@ -7,7 +7,7 @@ const DEFAULT_DURATION_MS = 3000
 const MAX_STACK = 3
 
 /**
- * Toast surface — in-Frame overlay card per wireframe spec.
+ * Toast surface — in-Frame overlay card.
  *
  * Renderer: `<Frame :toast="...">` (Overlay binds the head of the
  * `entries` ref). Each entry carries a `body` describing what to

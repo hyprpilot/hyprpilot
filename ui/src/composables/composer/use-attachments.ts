@@ -1,7 +1,7 @@
 /**
  * Pending-attachment store. Module-scope singleton so the skills
- * palette (K-268) and the composer share one store without threading
- * refs through `Overlay.vue`. Submission flow:
+ * palette and the composer share one store without threading refs
+ * through `Overlay.vue`. Submission flow:
  *
  *   1. Palette tick → `add({ slug, path, body, title })`.
  *   2. Composer renders pills off `pending`.

@@ -9,8 +9,8 @@ import { computed, useSlots } from 'vue'
  *  - preview (optional side pane; presence auto-promotes width)
  *  - hints (footer keyboard-hint row)
  *
- * Port of the wireframe's PaletteShell. No fuzzy, no keyboard — presentational
- * only. K-249 builds behaviour on top.
+ * Presentational only — fuzzy filter and keyboard wiring live in the
+ * caller composables.
  */
 const props = withDefaults(
   defineProps<{

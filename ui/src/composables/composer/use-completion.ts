@@ -109,6 +109,16 @@ export function useCompletion(): UseCompletionApi {
 
   let queryDebounce: ReturnType<typeof setTimeout> | undefined
   let resolveDebounce: ReturnType<typeof setTimeout> | undefined
+  /// Generation counter — every `query()` issue and every `close()`
+  /// bumps it. In-flight `runQuery` captures the value at issue time
+  /// and compares on response; a mismatch means the call was
+  /// superseded or the popover was closed between `invoke()` issue
+  /// and resolution, so the stale response must NOT reopen the
+  /// popover. Without this, hitting Enter with a query mid-flight
+  /// re-shows the previous completion items after submit clears
+  /// the buffer — the response handler unconditionally writes
+  /// `state.open = true` and the cancel RPC is best-effort.
+  let queryGeneration = 0
 
   function query(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }): void {
     if (queryDebounce) {
@@ -131,12 +141,20 @@ export function useCompletion(): UseCompletionApi {
     // gating cheap path / skills sources too aggressively.
     const debounce = opts?.manual ? 0 : autoDebounceMs
 
+    queryGeneration += 1
+    const myGeneration = queryGeneration
+
     queryDebounce = setTimeout(() => {
-      void runQuery(text, cursor, opts)
+      void runQuery(text, cursor, myGeneration, opts)
     }, debounce)
   }
 
-  async function runQuery(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }): Promise<void> {
+  async function runQuery(
+    text: string,
+    cursor: number,
+    generation: number,
+    opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }
+  ): Promise<void> {
     let response: CompletionQueryResponse
 
     try {
@@ -150,6 +168,19 @@ export function useCompletion(): UseCompletionApi {
       })
     } catch(err) {
       log.warn('completion/query failed', { err: String(err) })
+
+      return
+    }
+
+    // Drop responses superseded by a newer query OR by a `close()`
+    // call between issue and resolution (e.g. Enter-to-send fired
+    // while ripgrep was mid-walk). Without this, the response handler
+    // would write `state.open = true` and re-show stale items.
+    if (generation !== queryGeneration) {
+      log.trace('completion: dropping superseded response', {
+        responseGeneration: generation,
+        currentGeneration: queryGeneration
+      })
 
       return
     }
@@ -179,6 +210,11 @@ export function useCompletion(): UseCompletionApi {
   }
 
   function close(): void {
+    // Bump generation so any in-flight `runQuery` whose `invoke()`
+    // already left the wire drops its response on arrival instead
+    // of reopening the popover with stale items.
+    queryGeneration += 1
+
     if (queryDebounce) {
       clearTimeout(queryDebounce)
       queryDebounce = undefined

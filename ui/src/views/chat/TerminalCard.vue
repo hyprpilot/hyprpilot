@@ -3,17 +3,18 @@
  * Inline terminal card. Binds to `useTerminals().byId(terminalId)`
  * — Rust pushes stdout / stderr / exit chunks via `acp:terminal`,
  * the composable accumulates them, and this card renders the
- * scrollback. Status dot reads as streaming → `state.stream`,
- * clean exit → `status.ok`, non-zero or signal → `status.err`.
- *
- * Output is filtered through a tiny ANSI subset (color escapes +
- * `\x1b[2K` clear-line) — pilot's behavior is the floor; we
- * deliberately don't pull a full ANSI library.
+ * scrollback through an xterm.js viewer (ANSI escape sequences
+ * render as colors / cursor moves / clear-line — the way a real
+ * terminal would). Previously we ran the output through a tiny
+ * `stripAnsi` shim and dumped it into a `<pre>`, which lost
+ * everything except the literal characters. Status dot reads as
+ * streaming → `state.stream`, clean exit → `status.ok`, non-zero
+ * or signal → `status.err`.
  */
 import { faTerminal } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
-import { stripAnsi } from './ansi'
+import { XtermView } from '@components'
 import { useTerminals } from '@composables'
 
 const props = defineProps<{
@@ -30,7 +31,7 @@ const entry = useTerminals(props.instanceId).byId(props.terminalId)
 
 const command = computed(() => entry.value?.command ?? '')
 const cwd = computed(() => entry.value?.cwd)
-const output = computed(() => stripAnsi(entry.value?.output ?? ''))
+const output = computed(() => entry.value?.output ?? '')
 const running = computed(() => entry.value?.running ?? false)
 const truncated = computed(() => entry.value?.truncated ?? false)
 const exitCode = computed(() => entry.value?.exitCode)
@@ -62,8 +63,10 @@ const exitLabel = computed(() => {
       <span v-else-if="exitLabel" class="terminal-card-exit" :data-ok="exitOk">{{ exitLabel }}</span>
     </header>
 
-    <pre class="terminal-card-stdout"><span v-if="truncated" class="terminal-card-truncated">… (older output dropped)
-</span><span class="terminal-card-stdout-text">{{ output }}</span><span v-if="running" class="terminal-card-cursor" aria-hidden="true">▊</span></pre>
+    <div class="terminal-card-body">
+      <p v-if="truncated" class="terminal-card-truncated">… (older output dropped)</p>
+      <XtermView class="terminal-card-xterm" :text="output" :running="running" :rows="16" />
+    </div>
   </section>
 </template>
 
@@ -158,22 +161,20 @@ const exitLabel = computed(() => {
   color: var(--theme-status-ok);
 }
 
-.terminal-card-stdout {
-  @apply m-0 overflow-auto px-2 py-2 text-[0.76rem] leading-snug;
-  color: var(--theme-fg-subtle);
+.terminal-card-body {
+  @apply flex min-w-0 flex-col;
   background-color: var(--theme-surface-bg);
-  font-family: var(--theme-font-mono);
-  white-space: pre-wrap;
-  max-height: 16rem;
 }
 
 .terminal-card-truncated {
+  @apply m-0 px-2 py-1 text-[0.7rem];
   color: var(--theme-fg-dim);
   font-style: italic;
+  border-bottom: 1px dashed var(--theme-border-soft);
 }
 
-.terminal-card-cursor {
-  @apply inline-block animate-pulse;
-  color: var(--theme-state-stream);
+.terminal-card-xterm {
+  /* xterm host owns its own padding + theming via the component;
+   * card-level borders come from the section wrapper. */
 }
 </style>

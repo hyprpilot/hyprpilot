@@ -7,7 +7,7 @@ use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
 
-use crate::remote::pair::{ConfirmSide, PairError, PairStore, PendingPairView};
+use crate::remote::pair::{ConfirmSide, PairStore, PendingPairView};
 
 /// `remote_confirm_pair` — captain typed (or scanned) the **device's**
 /// code on the desktop modal. The candidate is matched against the
@@ -25,7 +25,7 @@ pub async fn remote_confirm_pair(
     let id = Uuid::parse_str(&pending_id).map_err(|e| format!("invalid pending_id: {e}"))?;
     match pairs.confirm(&id, &code, ConfirmSide::Desktop) {
         Ok(()) => Ok(ConfirmResult { confirmed: true }),
-        Err(err) => Err(err_message(err)),
+        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -51,13 +51,4 @@ pub async fn remote_pending_pairs(pairs: State<'_, PairStore>) -> Result<Vec<Pen
 #[serde(rename_all = "camelCase")]
 pub struct ConfirmResult {
     pub confirmed: bool,
-}
-
-fn err_message(err: PairError) -> String {
-    match err {
-        PairError::Unknown => "unknown pending pair id".into(),
-        PairError::Mismatch => "pair code does not match".into(),
-        PairError::Expired => "pair request expired".into(),
-        PairError::TooManyAttempts => "too many failed attempts; pair request burned".into(),
-    }
 }

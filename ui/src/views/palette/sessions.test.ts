@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { buildSessionEntries, openSessionsLeaf, relativeFromNow } from './sessions'
-import { __resetPaletteStackForTests, usePalette, __resetAllSessionInfoForTests, useSessionInfo } from '@composables'
+import { __resetPaletteStackForTests, usePalette, __resetAllSessionInfoForTests } from '@composables'
 import { TauriCommand } from '@ipc'
 import { type SessionSummary } from '@ipc'
 
@@ -125,7 +125,7 @@ describe('openSessionsLeaf', () => {
     expect(stack.value[0]?.preview?.component).toBeTruthy()
   })
 
-  it('Enter dispatches SessionLoad with a fresh instanceId and marks restored', async() => {
+  it('Enter dispatches SessionLoad with a fresh instanceId', async() => {
     mockListAndLoad([
       {
         sessionId: 's-A',
@@ -149,13 +149,6 @@ describe('openSessionsLeaf', () => {
 
     expect(arg.sessionId).toBe('s-A')
     expect(arg.instanceId).toMatch(/^[0-9a-f-]{36}$/i)
-
-    // setSessionRestored runs after the SessionLoad promise resolves —
-    // poll the slot a tick later via useSessionInfo() to verify.
-    await Promise.resolve()
-    const { info } = useSessionInfo(arg.instanceId)
-
-    expect(info.value.restored).toBe(true)
   })
 
   it('onDelete surfaces a toast warning rather than calling forget', async() => {

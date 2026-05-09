@@ -24,6 +24,18 @@ const props = defineProps<{
   view: ToolCallView
 }>()
 
+/// Default-expand policy: live calls show their guts, finalized
+/// calls collapse to free chat real estate.
+///   - Running / Awaiting → expanded (the captain wants to see what's
+///     happening as it streams).
+///   - Pending / Done / Failed → collapsed. The status indicator
+///     (border tone + chevron + stat pills) tells the captain "this
+///     finished cleanly / failed / hasn't started"; expanding to read
+///     args / diff / output is the captain's drill-in.
+///
+/// Manual toggle wins. Once the captain clicks the chevron, that
+/// pill stays in their chosen state — subsequent state transitions
+/// don't override.
 function autoExpand(state: ToolState): boolean {
   return state === ToolState.Running || state === ToolState.Awaiting
 }

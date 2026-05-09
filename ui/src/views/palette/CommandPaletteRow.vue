@@ -2,10 +2,8 @@
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 
 /**
- * Single palette row. Port of the wireframe's PaletteRow.
- *
- * design-skip: no fuzzy filter, no keyboard wiring. K-249 builds behaviour
- * on top of this shell.
+ * Single palette row — presentational only. Fuzzy filter and keyboard
+ * wiring live in the palette shell + caller composables.
  */
 withDefaults(
   defineProps<{

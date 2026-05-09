@@ -7,10 +7,10 @@
  * set_mode, set_model, and turn-end.
  *
  * On commit, fires `models_set` Tauri command which dispatches
- * through `AcpAdapter::set_session_model`. Today the adapter
- * stubs past the membership check with a `-32603` error tied to
- * K-251; the toast surfaces the error verbatim. When K-251 lands
- * the leaf lights up automatically.
+ * through `AcpAdapter::set_session_model`. Today the adapter stubs
+ * past the membership check with a `-32603` error; the toast
+ * surfaces the error verbatim. When the runtime side lands, the
+ * leaf lights up automatically.
  */
 
 import { ToastTone } from '@components'

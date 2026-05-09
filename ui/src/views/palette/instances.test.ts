@@ -40,8 +40,7 @@ vi.mock('@composables', async(importOriginal) => ({
     info: computed(() => ({
       mode: undefined,
       cwd: '/home/cenk/dev',
-      mcpsCount: 0,
-      restored: false
+      mcpsCount: 0
     }))
   }),
   useTerminals: () => ({

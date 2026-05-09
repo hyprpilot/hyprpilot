@@ -20,6 +20,16 @@ import { onMounted, onUnmounted, ref, type Ref } from 'vue'
 export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options?: { threshold?: number }): { stuck: Ref<boolean>; scrollToBottom: () => void } {
   const threshold = options?.threshold ?? 64
   const stuck = ref(true)
+  /// Set when `scrollToBottom` writes `scrollTop` and the assignment
+  /// will actually move the scroll position (i.e. fire a `scroll`
+  /// event). Cleared by the next `onScroll` handler. Without this
+  /// guard, the scroll event from programmatic scroll-to-bottom races
+  /// against post-paint content growth (a ToolPill auto-expanding
+  /// when its state flips to `running` adds dozens of pixels AFTER
+  /// the assignment, but BEFORE the scroll event fires) — `nearBottom`
+  /// then sees the now-stale scrollTop vs the new scrollHeight and
+  /// flips `stuck=false`, breaking the auto-follow.
+  let suppressNextScrollUpdate = false
 
   function nearBottom(el: HTMLElement): boolean {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
@@ -31,6 +41,14 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     if (!el) {
       return
     }
+    // Only set the suppress flag when the assignment will actually
+    // change scrollTop — otherwise no scroll event fires and the flag
+    // would stick across the next user-initiated scroll.
+    const target = el.scrollHeight - el.clientHeight
+
+    if (el.scrollTop !== target) {
+      suppressNextScrollUpdate = true
+    }
 
     // jsdom test paths sometimes redefine `scrollTop` as a non-writable
     // property to simulate scroll positions; an rAF callback queued
@@ -41,7 +59,9 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     try {
       el.scrollTop = el.scrollHeight
     } catch {
-      /* swallow — read-only scrollTop in jsdom test cleanup */
+      // Assignment failed — the scroll event won't fire, so don't
+      // leave the suppress flag set.
+      suppressNextScrollUpdate = false
     }
   }
 
@@ -49,6 +69,31 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     const el = scrollEl.value
 
     if (!el) {
+      return
+    }
+
+    if (suppressNextScrollUpdate) {
+      // Programmatic scroll-to-bottom — the scroll event we're seeing
+      // here was caused by us, not the captain. Two things matter:
+      //
+      // 1. Don't let post-scroll content growth (a ToolPill auto-
+      //    expanding when state flips to `running` adds px AFTER the
+      //    assignment) flip stuck=false. That's the original race.
+      //
+      // 2. DO re-establish stuck=true. The chevron click case proves
+      //    why: when the captain is scrolled away (stuck=false) and
+      //    clicks the down arrow, `scrollToBottom()` lands them at
+      //    the foot, the suppress branch swallows the scroll event
+      //    — but if we just bailed without writing stuck, it would
+      //    stay false and the next streaming chunk's MutationObserver
+      //    would early-return in scheduleStick. Auto-follow stays
+      //    dead until the captain manually scrolls within 64px.
+      //
+      // Forcing stuck=true here matches captain intent: a programmatic
+      // scroll-to-bottom is always an explicit "follow the live tail".
+      suppressNextScrollUpdate = false
+      stuck.value = true
+
       return
     }
     stuck.value = nearBottom(el)

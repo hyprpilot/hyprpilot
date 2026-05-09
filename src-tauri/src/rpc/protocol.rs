@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Agent lifecycle state. ACP will drive transitions in K-239; for now every
-/// code path reports `Idle`. `#[serde(rename_all = "kebab-case")]` maps variants
-/// to the wire strings: `idle`, `streaming`, `awaiting`, `error`.
+/// Agent lifecycle state — ACP drives transitions. `#[serde(rename_all =
+/// "kebab-case")]` maps variants to the wire strings: `idle`, `streaming`,
+/// `awaiting`, `error`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentState {

@@ -50,7 +50,6 @@ export interface SessionModelOption {
  *  - `gitStatus` ← daemon-side enrichment (probes the cwd via
  *    `git status`; non-ACP — the agent never reports git state)
  *  - `mcpsCount` ← config-side
- *  - `restored` ← daemon-side, flipped on `session_load`
  */
 export interface SessionInfo {
   title?: string
@@ -79,9 +78,6 @@ export interface SessionInfo {
   /// `currentValue` and closed-set `options` list.
   configOptions: SessionConfigOptionCategory[]
   mcpsCount: number
-  /// Sticky tag: `true` from `setSessionRestored` onwards. Drives
-  /// the header's `↻ resumed` pill.
-  restored: boolean
   /// Transient: `true` while the daemon's `Bootstrap::Resume` is
   /// streaming replay events. Flips false on the first TurnEnded
   /// for the instance (the auto-cancel after load_session triggers
@@ -108,7 +104,6 @@ export interface SessionInfoState {
   /// every `acp:instance-meta` event. `undefined` until the first
   /// InstanceMeta lands; `useSessionInfo` falls back to 0 then.
   mcpsCount?: number
-  restored: boolean
   restoring: boolean
   gitStatus?: GitStatus
 }
@@ -157,7 +152,6 @@ function slotFor(id: InstanceId): SessionInfoState {
       availableModes: [],
       availableModels: [],
       configOptions: [],
-      restored: false,
       restoring: false
     }
     states.set(id, slot)
@@ -324,13 +318,6 @@ export function setInstanceGitStatus(id: InstanceId, gitStatus: GitStatus | unde
   slotFor(id).gitStatus = gitStatus
 }
 
-/** Toggles the restored flag for an instance — `session_load` flips this true. */
-export function setSessionRestored(id: InstanceId, restored: boolean): void {
-  const slot = slotFor(id)
-
-  slot.restored = restored
-}
-
 /**
  * Toggle the transient `restoring` flag — set to `true` when the
  * UI calls `loadSession` so the chat-transcript scoped <Loading>
@@ -373,8 +360,8 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
 
 /**
  * Reactive read-only view over the per-instance session info.
- * `mcpsCount` derives from the active profile — wired as zero
- * placeholder until K-258 surfaces the count on `ProfileSummary`.
+ * `mcpsCount` derives from the active profile — wired as zero today
+ * (a future `ProfileSummary` field will carry the live count).
  * cwd / model fall back to the active profile when the instance
  * hasn't pushed an override yet.
  */
@@ -391,9 +378,6 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
  * manual selection. `agent` / `model` fall back through the
  * instance's OWN `profileId`, not the picker's selection.
  */
-/* eslint-disable-next-line complexity -- pure projection from slot →
- * SessionInfo. Every `?? <fallback>` counts as a branch; the
- * underlying logic is a flat mapping, not control flow. */
 function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: ProfileSummary | undefined): SessionInfo {
   return {
     title: slot?.title,
@@ -408,7 +392,6 @@ function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: Pro
     availableModels: slot?.availableModels ?? [],
     configOptions: slot?.configOptions ?? [],
     mcpsCount: slot?.mcpsCount ?? 0,
-    restored: slot?.restored ?? false,
     restoring: slot?.restoring ?? false,
     gitStatus: slot?.gitStatus
   }

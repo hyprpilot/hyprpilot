@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * Compact sibling-stackable palette. Today used by Sessions preview
- * (nested recent sessions list). Port of the wireframe's MiniPalette.
+ * (nested recent sessions list).
  */
 defineProps<{
   title?: string
