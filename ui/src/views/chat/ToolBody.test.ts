@@ -22,15 +22,17 @@ function makeView(overrides: Partial<ToolCallView> = {}): ToolCallView {
 
 describe('ToolBody.vue', () => {
   /**
-   * Output collapses by default — description and fields (the HOW
-   * the tool is being called) MUST be visually primary. Output is
-   * the THEN-result; expanding it is the captain's drill-in. Without
-   * this, long stdout buries the args the captain came to read.
+   * Output expansion mirrors the parent pill's "live show, finalized
+   * hide" policy: while the tool is running / awaiting permission
+   * the captain wants to see the streaming stdout in real time;
+   * once the call finalizes (Done / Failed) output collapses so a
+   * long log doesn't dominate the chat — captain re-expands manually.
    */
-  it('renders output section collapsed by default', () => {
+  it('expands output on Running state to show streaming stdout', () => {
     const wrapper = mount(ToolBody, {
       props: {
         view: makeView({
+          state: ToolState.Running,
           description: '```bash\nls /tmp\n```',
           output: 'lots\nof\nstdout\nlines\n...'
         })
@@ -40,9 +42,38 @@ describe('ToolBody.vue', () => {
     const section = wrapper.find('.tool-body-output')
 
     expect(section.exists()).toBe(true)
+    expect(section.attributes('data-expanded')).toBe('true')
+    expect(wrapper.find('.tool-body-output-body').exists()).toBe(true)
+  })
+
+  it('collapses output on Done state to free chat real estate', () => {
+    const wrapper = mount(ToolBody, {
+      props: {
+        view: makeView({
+          state: ToolState.Done,
+          description: '```bash\nls /tmp\n```',
+          output: 'lots\nof\nstdout\nlines\n...'
+        })
+      }
+    })
+
+    const section = wrapper.find('.tool-body-output')
+
     expect(section.attributes('data-expanded')).toBe('false')
-    // The body pre is gated by v-if outputExpanded → not rendered.
     expect(wrapper.find('.tool-body-output-body').exists()).toBe(false)
+  })
+
+  it('collapses output on Failed state', () => {
+    const wrapper = mount(ToolBody, {
+      props: {
+        view: makeView({
+          state: ToolState.Failed,
+          output: 'error: out of memory'
+        })
+      }
+    })
+
+    expect(wrapper.find('.tool-body-output').attributes('data-expanded')).toBe('false')
   })
 
   it('renders description before fields before output', () => {

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
-import { MarkdownBody, type ToolCallView } from '@components'
+import { MarkdownBody, ToolState, type ToolCallView } from '@components'
 
 /**
  * Shared body for `ToolPill` (when expanded), `PermissionRow`, and
@@ -33,15 +33,31 @@ const props = defineProps<{
   view: ToolCallView
 }>()
 
-/// Output collapses by default so the description + fields (the
-/// HOW the tool is being called — command, path, args) stay
-/// visually primary. Output is the THEN-result; expanding it is
-/// an explicit drill-in. Without this, long stdout dominates the
-/// pill body and the captain has to scroll past the output to
-/// even see the args that were used.
-const outputExpanded = ref(false)
+/// Output expansion mirrors the parent pill's "live show, finalized
+/// hide" policy: while the tool is running / awaiting permission,
+/// the captain wants to see the streaming stdout in real time. Once
+/// the call finalizes (Done / Failed), output collapses so a long
+/// completed log doesn't dominate the chat — captain re-expands
+/// manually to drill in. Manual toggle pins the captain's choice
+/// across subsequent state transitions.
+function autoExpandOutput(state: ToolCallView['state']): boolean {
+  return state === ToolState.Running || state === ToolState.Awaiting
+}
+
+const outputExpanded = ref(autoExpandOutput(props.view.state))
+let manuallyToggled = false
+
+watch(
+  () => props.view.state,
+  (next) => {
+    if (!manuallyToggled) {
+      outputExpanded.value = autoExpandOutput(next)
+    }
+  }
+)
 
 function toggleOutput(): void {
+  manuallyToggled = true
   outputExpanded.value = !outputExpanded.value
 }
 

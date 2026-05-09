@@ -24,38 +24,30 @@ const props = defineProps<{
   view: ToolCallView
 }>()
 
-function hasCallContext(view: ToolCallView): boolean {
-  return Boolean(view.description) || (Array.isArray(view.fields) && view.fields.length > 0)
+/// Default-expand policy: live calls show their guts, finalized
+/// calls collapse to free chat real estate.
+///   - Running / Awaiting → expanded (the captain wants to see what's
+///     happening as it streams).
+///   - Pending / Done / Failed → collapsed. The status indicator
+///     (border tone + chevron + stat pills) tells the captain "this
+///     finished cleanly / failed / hasn't started"; expanding to read
+///     args / diff / output is the captain's drill-in.
+///
+/// Manual toggle wins. Once the captain clicks the chevron, that
+/// pill stays in their chosen state — subsequent state transitions
+/// don't override.
+function autoExpand(state: ToolState): boolean {
+  return state === ToolState.Running || state === ToolState.Awaiting
 }
 
-/// Default-expand policy:
-///   - Running / Awaiting → always expanded (live view).
-///   - Pending / Done / Failed WITH a description or fields →
-///     stay expanded so the captain reads the args (command, path,
-///     diff) without having to chase a chevron. The body shows
-///     description + fields immediately; output is the auto-collapsed
-///     section inside (see `ToolBody.vue::outputExpanded`).
-///   - Pending / Done / Failed with NEITHER description nor fields
-///     (rare — usually means the formatter only shipped output,
-///     e.g. some MCP leafs) → collapse, since the body would only
-///     hold a stdout pre block already accessible by clicking
-///     anyway.
-function autoExpand(view: ToolCallView): boolean {
-  if (view.state === ToolState.Running || view.state === ToolState.Awaiting) {
-    return true
-  }
-
-  return hasCallContext(view)
-}
-
-const expanded = ref(autoExpand(props.view))
+const expanded = ref(autoExpand(props.view.state))
 let manuallyToggled = false
 
 watch(
   () => props.view.state,
-  () => {
+  (next) => {
     if (!manuallyToggled) {
-      expanded.value = autoExpand(props.view)
+      expanded.value = autoExpand(next)
     }
   }
 )

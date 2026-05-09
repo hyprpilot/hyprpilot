@@ -39,48 +39,41 @@ describe('ToolPill.vue', () => {
   })
 
   /**
-   * Auto-expand policy: a finished tool with description / fields
-   * stays expanded so the captain reads the args (command, path,
-   * diff) without chasing a chevron. Output collapses inside the
-   * body so it doesn't dominate; description + fields ARE the
-   * "how was this called" answer the captain wants front-and-center.
+   * Auto-expand policy: live calls show their guts, finalized calls
+   * collapse. Captain wants to watch streaming output as it lands
+   * (Running / Awaiting) and reclaim chat space once the call
+   * finishes — the status indicator (border tone + stat pills)
+   * communicates the outcome at-a-glance, expanding for details
+   * is a deliberate drill-in.
    */
-  it('stays expanded on Done state when description is present', () => {
-    const wrapper = mount(ToolPill, {
-      props: {
-        view: makeView({
-          state: ToolState.Done,
-          description: '```bash\nls /tmp\n```'
-        })
-      }
-    })
+  it('expands on Running state', () => {
+    const wrapper = mount(ToolPill, { props: { view: makeView({ state: ToolState.Running }) } })
 
     expect(wrapper.attributes('data-expanded')).toBe('true')
   })
 
-  it('stays expanded on Done state when fields are present', () => {
+  it('expands on Awaiting state', () => {
+    const wrapper = mount(ToolPill, { props: { view: makeView({ state: ToolState.Awaiting }) } })
+
+    expect(wrapper.attributes('data-expanded')).toBe('true')
+  })
+
+  it('collapses on Done state regardless of description / fields content', () => {
     const wrapper = mount(ToolPill, {
       props: {
         view: makeView({
           state: ToolState.Done,
+          description: '```bash\nls /tmp\n```',
           fields: [{ label: 'path', value: '/etc/hosts' }]
         })
       }
     })
 
-    expect(wrapper.attributes('data-expanded')).toBe('true')
+    expect(wrapper.attributes('data-expanded')).toBe('false')
   })
 
-  it('collapses on Done state when neither description nor fields are present', () => {
-    const wrapper = mount(ToolPill, {
-      props: {
-        view: makeView({
-          state: ToolState.Done,
-          description: undefined,
-          fields: []
-        })
-      }
-    })
+  it('collapses on Failed state', () => {
+    const wrapper = mount(ToolPill, { props: { view: makeView({ state: ToolState.Failed }) } })
 
     expect(wrapper.attributes('data-expanded')).toBe('false')
   })
