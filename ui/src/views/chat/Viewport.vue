@@ -126,6 +126,15 @@ const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 // auto-scroll window so cache cleanup is prompt without
 // disturbing the read-history flow.
 
+/// Floating chevron click — jump to bottom AND drop extra pages
+/// in one shot. The instant-scroll path doesn't fire scroll events
+/// the way smooth-scroll does, so we evict explicitly after the
+/// jump rather than waiting for `onScroll` to react.
+function goToBottom(): void {
+  scrollToBottom()
+  viewport.evictExtraPages()
+}
+
 // ── Rendering ──────────────────────────────────────────────────────
 //
 // **No virtualization.** TanStack Vue Virtual was tried twice and
@@ -217,6 +226,13 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     case 'End': {
       ev.preventDefault()
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      // Smooth-scroll fires `scroll` events along the way, which our
+      // `onScroll` handler reacts to — but the timing is browser-
+      // dependent and on some phones the final tick lands AFTER the
+      // browser settles, leaving a brief window where eviction could
+      // be missed. Fire one more pass after a delay covering the
+      // typical smooth-scroll duration.
+      setTimeout(() => viewport.evictExtraPages(), 350)
 
       return
     }
@@ -571,15 +587,16 @@ defineExpose({ scrollEl })
          coupled to whatever sits below the viewport (composer, queue,
          permission stack). Visible only when the captain has scrolled
          away from the bottom — `stuck` flips false the moment they
-         move >64px above the foot. Animated entry / exit via Tailwind
-         transition utilities. -->
+         move >64px above the foot. Click jumps to the live area AND
+         immediately drops any extra pages the captain accumulated
+         while scrolling up. -->
     <button
       v-if="!stuck"
       type="button"
       class="scroll-to-bottom"
       data-testid="scroll-to-bottom"
       aria-label="Scroll to latest"
-      @click="scrollToBottom"
+      @click="goToBottom"
     >
       <FaIcon :icon="faChevronDown" />
     </button>
