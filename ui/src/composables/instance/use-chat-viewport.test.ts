@@ -195,6 +195,81 @@ describe('useChatViewport', () => {
     unmount()
   })
 
+  /**
+   * Pin the contract: tool_call_update events ship per-delta `content`
+   * arrays — the live-patch path must CONCAT (matching the daemon's
+   * `tool_call_cache.merge` and the snapshot-replay path), never
+   * REPLACE wholesale. Earlier wholesale-replace caused content blocks
+   * to be dropped on every chunk during live streaming.
+   */
+  it('live-event patcher concatenates tool_call_update content (does NOT replace)', async() => {
+    const initial: SeqTranscriptItem = {
+      seq: 10,
+      item: {
+        kind: TranscriptItemKind.ToolCall,
+        id: 'tc-1',
+        toolKind: 'bash',
+        title: 'echo',
+        state: 'running',
+        content: [{ kind: 'text', text: 'first' }],
+        formatted: {
+          title: 'echo', stats: [], fields: []
+        },
+        startedAtMs: 1000
+      } as never
+    }
+
+    invoke.mockResolvedValueOnce(chatPage([initial], false))
+    const id = ref<InstanceId | undefined>('i-1')
+    const { api, unmount } = mountViewport(id)
+
+    await flushPromises()
+    await flushPromises()
+
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    // Two updates land back-to-back, each with one new content block.
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        item: {
+          kind: TranscriptItemKind.ToolCallUpdate,
+          id: 'tc-1',
+          content: [{ kind: 'text', text: 'second' }],
+          formatted: {
+            title: 'echo', stats: [], fields: []
+          },
+          startedAtMs: 1000
+        } as never
+      } as never
+    })
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        item: {
+          kind: TranscriptItemKind.ToolCallUpdate,
+          id: 'tc-1',
+          content: [{ kind: 'text', text: 'third' }],
+          formatted: {
+            title: 'echo', stats: [], fields: []
+          },
+          startedAtMs: 1000
+        } as never
+      } as never
+    })
+    await flushPromises()
+
+    expect(api.items.value).toHaveLength(1)
+    const merged = api.items.value[0]!.item as { content: { text: string }[] }
+
+    expect(merged.content.map((c) => c.text)).toEqual(['first', 'second', 'third'])
+    unmount()
+  })
+
   it('permission-resolved patches the meta cache to drop the matching pending entry', async() => {
     invoke.mockResolvedValueOnce(chatPage([], false))
     const id = ref<InstanceId | undefined>('i-1')

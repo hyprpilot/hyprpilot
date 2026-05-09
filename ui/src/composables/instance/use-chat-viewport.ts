@@ -154,27 +154,24 @@ interface PatchableInfiniteData extends InfiniteData<ChatSnapshot, number | unde
 }
 
 /**
- * Merge a tool-call-update item onto an existing tool-call (or
- * tool-call-update) entry on the latest page. Returns `true` when a
- * merge happened — the caller then skips the append branch.
+ * Merge a `tool_call_update` event onto its existing tool-call
+ * entry on the latest page. Returns `true` on merge.
  *
  * Wire shape: ACP `tool_call_update` carries the same `id` as the
- * original `tool_call`; the daemon mirror holds the merged record,
- * but live patches arrive as raw deltas. Field-by-field: only
- * defined values from the update overwrite the prior record so an
- * agent can stream `formatted` updates without re-shipping
- * `rawInput` / `startedAtMs`.
+ * original `tool_call`. The daemon's `tool_call_cache.merge`
+ * concatenates `content` arrays (`acp/instance.rs`:
+ * `running.content.extend(arr.iter().cloned())`) — the wire ships
+ * per-delta `content`, so the UI must concat to reconstruct the
+ * merged view that the daemon's formatter produces. The snapshot-
+ * replay path in `snapshot-timeline.ts::mergeToolCall` does the
+ * same; this helper keeps the live-patch path in lockstep.
+ *
+ * Single-shape items.length scan from the tail finds the matching
+ * call regardless of initial vs update kind.
  */
 function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscriptItem): boolean {
   const next = incoming.item
 
-  if (next.kind !== TranscriptItemKind.ToolCallUpdate && next.kind !== TranscriptItemKind.ToolCall) {
-    return false
-  }
-
-  // Only `ToolCallUpdate` triggers a merge — initial `ToolCall`
-  // entries always append. The daemon emits the initial `ToolCall`
-  // exactly once per call.
   if (next.kind !== TranscriptItemKind.ToolCallUpdate) {
     return false
   }
@@ -189,10 +186,6 @@ function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscript
     const ex = existing.item
 
     if ((ex.kind === TranscriptItemKind.ToolCall || ex.kind === TranscriptItemKind.ToolCallUpdate) && ex.id === id) {
-      // Field-by-field overwrite: only defined values from the update
-      // replace the prior values. Mirrors the daemon's
-      // `tool_call_cache.merge` semantics so the UI's view matches the
-      // mirror's view.
       const merged: typeof ex = { ...ex }
 
       if (next.toolKind !== undefined) {
@@ -210,10 +203,11 @@ function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscript
       if (next.rawInput !== undefined) {
         merged.rawInput = next.rawInput
       }
-      // Content arrays replace wholesale — the daemon's
-      // `ToolCallContent` is treated as a snapshot per delta, not
-      // appended.
-      merged.content = next.content
+
+      // Concat content — see fn header.
+      if (next.content && next.content.length > 0) {
+        merged.content = [...(ex.content ?? []), ...next.content]
+      }
       merged.formatted = next.formatted
       merged.startedAtMs = next.startedAtMs
 
