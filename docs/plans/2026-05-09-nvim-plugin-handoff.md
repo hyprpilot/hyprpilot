@@ -229,8 +229,8 @@ live. No re-render of unchanged turns; only the live tail rewrites.
 
 1. On `acp:permission-request`, render a fold-style collapsible IN the
    chat buffer at the current insertion point — same chrome as a tool
-   call, but red border + a one-line summary line ("⚠ permission ·
-   <tool> — Tab/[g]rant/[d]eny").
+   call, but red border + a one-line summary line
+   (`⚠ permission · <tool> — Tab/[g]rant/[d]eny`).
 2. Buffer-local keybinds: `g` → `permissions/respond { optionId:
    "allow_once" }`, `d` → `... { optionId: "reject_once" }`, `<Tab>` →
    cycle through `formatted.options`. Disabled until the request is
@@ -262,11 +262,15 @@ avante implements it; we roll our own.
    `details` for the next backward fetch.
 4. `BufWinEnter` + `CursorMoved` autocmd: if the window's first
    visible line is within 50 lines of the trim boundary AND we
-   haven't already prefetched, call `tauri/instance_snapshot_chat
-   { instanceId, before: <oldest seq>, limit: 200 }`. Bracket the
-   prepend in `unlock_buf` / `lock_buf` and use `nvim_buf_set_lines(bufnr,
-   0, 0, false, prev_page_lines)`. Update the trim-boundary extmark to
-   the new top.
+   haven't already prefetched, call:
+
+   ```
+   tauri/instance_snapshot_chat { instanceId, before: <oldest seq>, limit: 200 }
+   ```
+
+   Bracket the prepend in `unlock_buf` / `lock_buf` and use
+   `nvim_buf_set_lines(bufnr, 0, 0, false, prev_page_lines)`. Update
+   the trim-boundary extmark to the new top.
 5. Cursor preservation: capture `nvim_win_get_cursor` before prepend,
    restore with `+ #prev_page_lines` row offset after — keeps the
    captain's reading position stable across the prepend.
