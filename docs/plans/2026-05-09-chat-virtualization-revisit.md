@@ -1,412 +1,532 @@
-# Chat virtualization — revisit + plan
+# Chat virtualization — finalised plan
 
-**Status:** plan-handoff for tomorrow. Don't start implementation until we
-agree on Strategy.
+**Status:** decisions resolved. Ready to execute. Each phase lands as one
+commit; rollback is `git revert` per phase.
 
-**Background context:** branch `chore/perf-leak-audit` already shipped
-viewport-relative page sizing, measured page-size from real DOM extent,
-`MAX_PAGES_KEPT = 3` cache cap, and a floating chevron. The chat surface
-runs on a plain `v-for` over `blocks` today (no virtualization). Captain's
-report: "i do not think this works at all" — measured page sizing alone
-isn't enough; we should look at virtualization again.
-
-This doc covers (1) why prior virtualization attempts failed, (2) what
-TanStack Virtual's contract actually is, (3) candidate strategies with
-trade-offs, (4) recommended path, (5) an explicit fallback if the
-recommended path also fails.
+**Background:** branch `chore/perf-leak-audit` already shipped
+viewport-relative page sizing, measured-page-size off real DOM extent,
+`MAX_PAGES_KEPT = 3` cache cap, and a floating chevron. The chat
+surface today runs a plain `v-for` over `blocks` with no
+virtualization. Captain's report: "i do not think this works at all".
+This plan resolves whether virtualization is genuinely needed and, if
+so, how to ship it without re-introducing the measure-loop failures
+that bit the prior two attempts.
 
 ---
 
-## Goals (re-stated)
+## Decisions (resolved during plan-hard interview)
+
+Every open branch from the original plan has a concrete answer. No
+"if X then Y else Z" runtime branches.
+
+### D1. Profile baseline first, do NOT leap to D
+
+**Decision: profile current status quo (E) before shipping any
+mitigation.** The captain's complaint may be about wire bytes /
+hydration latency / DOM count — three different problems with three
+different fixes. Shipping D blind risks cementing 33ms streaming lag
+without evidence it solves the real pain.
+
+**Deterministic profiling harness** (`tests/perf/streaming-harness.ts`,
+new): a Playwright MCP browser-mode script that:
+
+1. Boots Vite dev preview (`pnpm --filter hyprpilot-ui dev`).
+2. Seeds `__hyprpilot_dev` with a synthetic 200-turn fixture (mix of
+   short prompts + long agent replies + tool-call cards).
+3. Drives `pushTranscriptEvent` at 30 Hz for 30 seconds, simulating a
+   live streaming turn growing one chunk per frame.
+4. Captures via `page.metrics()` + `performance.now()`:
+   - P95 frame time during streaming.
+   - Total DOM node count (`document.querySelectorAll('*').length`).
+   - Scroll-jank index during a backward-fetch trigger
+     (frames > 50 ms within a 2-second window).
+   - Scroll-position retention across simulated prepend
+     (`scrollTop` delta after fetch settles, ±2 px tolerance).
+
+This is a **synthetic harness**, not a CI gate today — captain runs
+it manually before/after each phase and pastes numbers into the PR
+description. Promotes to CI later if the numbers warrant it.
+
+### D2. Verify Strategy B (`content-visibility: auto`) before A
+
+**Decision: yes — run a 10-minute support probe BEFORE picking A.**
+WebKit2GTK 4.1 (the daemon's pinned webview) tracks WebKit roughly 6
+months behind Safari Tech Preview; `content-visibility` shipped in
+Safari 17.4 (March 2024). The pinned webkit2gtk on Tauri 2.10 is from
+late 2024 and likely supports it.
+
+The probe lives as one Playwright MCP step:
+
+```js
+browser_evaluate(() => CSS.supports('content-visibility', 'auto'))
+```
+
+against the dev preview running inside a `task run` daemon. **If
+true**, Strategy B becomes the recommended path (lower risk, fewer
+moving parts) and Strategy A is deleted from this plan. **If false**,
+proceed to A as currently planned. The probe runs in Phase 0.
+
+### D3. `v-memo` slots in as Phase 0.5 (cheap intermediate)
+
+**Decision: ship `v-memo` BEFORE virtualization** — closes most of the
+gap for free. Apply to history rows (every block where
+`groupKey !== openTurnId`):
+
+```vue
+<Turn
+  v-for="(block, blockIdx) in blocks"
+  :key="block.groupKey"
+  v-memo="[block.groupKey, block.role, block.turnEntries.length, block.toolCalls.length, blockIdx === liveBlockIdx]"
+  …
+>
+```
+
+Rationale: history rows never change shape after their turn ends.
+Vue's render-cache short-circuits the entire subtree when the memo
+deps haven't changed, so streaming chunks into the live row don't
+re-walk the prior 150 rows' VNodes. Cheap; risk-free; might delete
+the need for Strategy A entirely.
+
+### D4. Throttle in Strategy D — measure first, named constant when shipped
+
+**Decision: do NOT ship D blind.** `flushPatches` already batches
+through `queueMicrotask`, which collapses each event-loop tick's
+events into one `setQueryData` call. A `setTimeout(33ms)` upgrade
+trades observable streaming smoothness for *theoretical* render
+savings; the harness from D1 must show the improvement before we
+commit.
+
+**If profiling proves throttling helps**, the constant is named:
+
+```ts
+/// Maximum streaming-patch flush rate (Hz). 30 Hz matches typical
+/// agent-chunk arrival; tighter rates trade smoothness for
+/// render-pressure relief. 30 Hz = 33.33 ms; we round to 34 to
+/// avoid sub-frame drift.
+const STREAMING_FLUSH_INTERVAL_MS = 34
+```
+
+`flushPatches` becomes a trailing-edge throttle (microtask coalesce
+within the 34 ms window, `setTimeout` schedules the actual flush).
+The microtask layer stays — it batches within one tick; the timeout
+caps the flush rate across ticks.
+
+### D5. Live-row carve-out keys on `openTurnId`, not head-of-array
+
+**Confirmed.** `useSnapshotHydration` can replay older `TurnStarted`
+records, briefly placing the open turn mid-list. Rule:
+
+```
+A block is "live" iff block.turnId === openTurnId.value
+```
+
+Implemented as a named composable, `useLiveTurnPin(blocks, openTurnId)
+→ { liveBlock, historyBlocks }`. Returned shape:
+
+```ts
+export interface UseLiveTurnPinApi {
+  /// The block whose turnId matches the currently-open turn, or
+  /// undefined when no turn is in flight (history-only view).
+  liveBlock: ComputedRef<TimelineBlock | undefined>
+  /// Every block except the live one, in oldest-first order.
+  historyBlocks: ComputedRef<TimelineBlock[]>
+}
+
+export function useLiveTurnPin(
+  blocks: ComputedRef<TimelineBlock[]>,
+  openTurnId: ComputedRef<string | undefined>
+): UseLiveTurnPinApi
+```
+
+History blocks feed the virtualizer; the live block renders as a
+sibling pinned to the tail. Identity is the turn id, not the array
+index — survives prepends and replay without flipping carve-out
+membership.
+
+### D6. Compensation timing — double-RAF, not double-`nextTick`
+
+**Confirmed.** `nextTick` resolves after Vue's render flush, but
+`ResizeObserver` callbacks fire in their own paint-frame phase.
+Reading `scrollHeight` after two `nextTick`s catches Vue's render
+but races the observer that drives the virtualizer's measurement
+commit. Use double-RAF instead:
+
+```ts
+async function afterPaintSettled(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve())
+    })
+  })
+}
+```
+
+Two frames: frame 1 lets layout settle; frame 2 lets the
+ResizeObserver's commit land. Vue's `nextTick` is wrong here because
+ResizeObserver isn't part of Vue's reactive cycle.
+
+### D7. Re-entrancy guard for `onScroll` during compensation
+
+Writing `el.scrollTop = newValue` synchronously dispatches a
+`scroll` event in WebKit. Without a guard, the compensation handler
+re-enters `onScroll`, which can re-fire `fetchNextPage` against a
+half-settled state.
+
+```ts
+let scrollCompensating = false
+
+function onScroll(): void {
+  if (scrollCompensating) {
+    return
+  }
+  // … existing body
+}
+
+async function compensateAfterPrepend(deltaPx: number): Promise<void> {
+  const el = scrollEl.value
+  if (!el || deltaPx === 0) {
+    return
+  }
+  scrollCompensating = true
+  el.scrollTop += deltaPx
+  // Release on the next frame so the synchronous scroll event
+  // dispatched by the assignment above is the only one that sees
+  // the guard set.
+  requestAnimationFrame(() => {
+    scrollCompensating = false
+  })
+}
+```
+
+One-frame suppression, not a full debounce — too long a window risks
+swallowing real scroll input from a captain who scrolls during fetch.
+
+### D8. Adaptive overscan for tall turns
+
+Single turn cards can exceed 5 viewports (long agent replies with
+multiple diff cards). Fixed `overscan: 2` then renders 10+ viewports
+of DOM, defeating the cap.
+
+**Decision: per-direction adaptive overscan.**
+
+```ts
+const TALL_BLOCK_VIEWPORT_RATIO = 2
+
+function computeOverscan(directionItems: TimelineBlock[], viewportPx: number): number {
+  const tall = directionItems.some(
+    (b) => measureCacheGet(b.groupKey) ?? 0 > viewportPx * TALL_BLOCK_VIEWPORT_RATIO
+  )
+  return tall ? 0 : 2
+}
+```
+
+When the next item in either direction exceeds 2× viewport, drop
+overscan to 0 in that direction. TanStack Virtual doesn't expose
+per-direction overscan natively; we approximate by feeding a
+direction-aware `overscan` getter that the virtualizer re-reads on
+each layout pass. `overscan: 0` means we render exactly the visible
+range, which is the right call when one row already eats the
+viewport.
+
+### D9. Strategy ranking — final order
+
+1. **Phase 0** — verify webkit2gtk supports `content-visibility: auto`.
+2. **Phase 0.5** — ship `v-memo` on history rows. Re-run harness.
+3. **Phase 1** — measure status quo. Decide: are the harness numbers
+   already inside budget?
+4. **Phase 2** — ship Strategy B if D2 probe passed AND Phase 1
+   showed insufficient; else Strategy A. The Phase 0 probe makes
+   this a binary, not a ladder.
+
+Strategy D (throttling) becomes a *fallback knob* the captain can
+opt into via dev flag, not a default phase. We don't ship it
+prophylactically.
+
+Strategy C (hand-rolled IntersectionObserver) is **deleted from the
+plan** — TanStack Virtual covers its design space and we don't have
+NIH-budget for it.
+
+### D10. Performance targets (named, measurable)
+
+These are the bars the harness from D1 must clear after each phase:
+
+| Metric | Target | Why |
+| --- | --- | --- |
+| P95 frame time during 30 Hz streaming | ≤ 16.6 ms (60 Hz) on desktop, ≤ 33 ms (30 Hz) on mobile remote | one missed frame per 5 seconds is acceptable; more = visible jank |
+| DOM node count at peak (200-turn synthetic) | ≤ 6000 nodes | rough-budget on mid-range mobile; below the WebKit per-page tipping point |
+| Scroll-jank index (frames > 50 ms during backward fetch) | 0 | one >50 ms frame = visible stutter |
+| Scroll-position retention across prepend | ±2 px | sub-pixel rounding tolerance |
+
+**Bar must be cleared after every phase**, not at the end. A phase
+that regresses any metric reverts.
+
+---
+
+## Goals (re-stated, unchanged)
 
 1. **Cap rendered DOM** to roughly "what the captain can see + a small
-   buffer" — currently page-trim caps to 3 pages of items, which can be
-   60-200+ DOM nodes depending on item density. We want the rendered
-   set bounded by viewport, not by cache size.
-2. **Don't break streaming.** Agent replies stream chunks at ~30Hz.
-   Virtualization must not collapse, loop, or jank under streaming.
-3. **Don't break backward pagination.** When a captain scrolls up to
-   read history, prepending older items must not yank the visible
-   content out of view.
-4. **Don't break stick-to-bottom.** New chunks at the tail keep the
-   transcript at the bottom while the captain is "stuck"; if they've
-   scrolled away, leave them alone.
-
-These are the hard constraints. Anything else (memory ceiling, CPU,
-mobile-specific concerns) is secondary.
+   buffer". Page-trim caps cache to 3 pages of items today; that is
+   60-200+ DOM nodes depending on density. Target is bounded by
+   viewport, not cache size.
+2. **Don't break streaming** at ~30 Hz chunk arrival. No measure
+   loops, no jank.
+3. **Don't break backward pagination.** Prepend must keep visible
+   content anchored within ±2 px.
+4. **Don't break stick-to-bottom.** Live area follows the tail when
+   stuck; leaves the captain alone when reading history.
 
 ---
 
-## Prior attempts — what failed and why
+## Prior attempts — root cause that informs this plan
 
-Five commits already exist on this branch / its predecessors that touched
-chat virtualization. Read each before designing the next attempt:
+| SHA | Move | Outcome |
+| --- | --- | --- |
+| `e2e2404` | fixed-height virtualizer (`estimateSize: 80`) | giant gaps; reverted |
+| `5147fb3` | drop virtualization, plain v-for | works but unbounded DOM |
+| `92f025f` | variable-height + `shouldAdjustScrollPositionOnItemSizeChange` | "Maximum recursive updates exceeded" + ResizeObserver loop under streaming |
+| `33218e4` | drop the predicate, stable `measureRow` callback | loops persisted — fundamental measure-on-resize incompatibility with continuously growing rows |
+| `6790fd3` | drop virtualization again | status quo today |
 
-| SHA | Date | Move | Outcome |
-| --- | --- | --- | --- |
-| `e2e2404` | May 8 10:58 | First attempt: fixed-height virtualizer with `estimateSize: 80` | **Giant gaps** between rows of varying actual height. Reverted. |
-| `5147fb3` | May 8 11:40 | Drop virtualization, plain v-for | **Worked** but unbounded DOM under long sessions. |
-| `92f025f` | May 8 12:32 | Re-introduce with proper variable-height setup: `getItemKey` (stable across prepends), `data-index` + `:ref="(el) => virtualizer.measureElement(el)"`, `shouldAdjustScrollPositionOnItemSizeChange`, `ESTIMATE_SIZE_PX = 200`, `overscan: 8`. Stick-to-bottom via `watch(blocks.length) + nextTick + scrollToIndex(last, 'end')` | **Maximum recursive updates exceeded** + **ResizeObserver loop completed with undelivered notifications** under streaming reply / session-load replay. |
-| `33218e4` | May 8 23:58 | Identify two loops, fix both: drop `shouldAdjustScrollPositionOnItemSizeChange` (the offset write triggered re-render → re-fire ResizeObserver → loop); replace inline `:ref="(el) => measureElement(el)"` with stable `measureRow` callback (Vue treats inline arrows as identity-changing each render → unregister/register ResizeObserver every render) | **Loops persisted.** Even with stable callbacks the streaming chunk → row resize → ResizeObserver fires → re-render → measure → loop pattern still hit Vue's 100-iteration cap. |
-| `6790fd3` | May 9 00:05 | Drop virtualization again. Page-trim alone keeps DOM bounded ~150 rows; "correctness over memory" | Where we are today (plain v-for + `MAX_PAGES_KEPT = 3`). |
-
-### Root-cause analysis of the `92f025f` → `33218e4` failures
-
-The fundamental loop, even after fixing the obvious culprits:
+The fundamental loop, which Strategy A's live-turn carve-out exists
+to break:
 
 ```
-agent_message_chunk arrives via acp:transcript
-  ↓
-patchLatestPage → setQueryData
-  ↓
-items recomputes → blocks recomputes → Vue re-renders
-  ↓
-the live (head) row's <Body> content grows (new chunk text)
-  ↓
-ResizeObserver on that row fires (height changed)
-  ↓
-virtualizer recomputes virtualItems → triggerRef(state)
-  ↓
-Vue re-renders the v-for over virtualRows
-  ↓
-the same row re-renders with the new content (still growing)
-  ↓
-ResizeObserver fires AGAIN
-  ↓
-[Vue throws "Maximum recursive updates exceeded"]
+agent_message_chunk → setQueryData → blocks recompute → row resizes →
+ResizeObserver fires → virtualizer recomputes → re-render → row
+resizes (still streaming) → ResizeObserver fires → … → Vue caps at
+100 iterations and throws.
 ```
 
-The **measure-on-resize** model is intrinsically incompatible with
-**continuously growing rows**. Streaming text into one row produces
-infinite ResizeObserver ticks; each tick recomputes virtualItems;
-each recomputation triggers re-render; re-render gives the
-ResizeObserver another size to react to. The chain only terminates
-when the chunk stops arriving.
-
-Note this isn't TanStack-specific — the loop is fundamental to any
-"measure DOM → drive layout decisions → render → measure DOM" cycle
-when one of the rendered rows keeps changing size.
+The carve-out solves it by removing the live row from the
+virtualizer's tracked range — `ResizeObserver` on a non-virtualized
+row doesn't feed back into the virtualizer's `state` ref.
 
 ---
 
-## TanStack Virtual contract — what it is and isn't
+## Strategy B (preferred if Phase 0 probe passes)
 
-[`@tanstack/vue-virtual`](https://tanstack.com/virtual/latest/docs/framework/vue/vue-virtual) wraps the same headless core
-([`@tanstack/virtual-core`](https://tanstack.com/virtual/latest/docs/api/virtualizer))
-React + Solid + Svelte use. The relevant pieces:
+`content-visibility: auto` + `contain-intrinsic-size: auto N px` per
+turn block. The browser skips layout + paint for off-screen blocks
+while keeping the DOM allocated.
 
-- **Fixed-height** (`estimateSize: () => N`): no measurement needed. Works
-  perfectly when every row is the same height. Useless for chat.
-- **Variable-height via `measureElement`**: each rendered row registers
-  with a `ResizeObserver` (managed by virtual-core) via a `data-index`
-  + `ref` callback. The observer fires on size changes, and virtual-core
-  stores measurements keyed by `getItemKey(i)`.
-- **`shouldAdjustScrollPositionOnItemSizeChange`** (predicate): when an
-  off-screen-above row measures in (taller than estimate), virtual-core
-  writes the scroll offset to compensate so visible content stays
-  anchored. **This is the predicate that triggered our loop in
-  `92f025f`** — writing scroll offset re-runs the virtualizer logic.
-- **`overscan`**: render N additional rows above/below the visible
-  range. Bigger value = smoother scroll, more DOM.
+**Pros** (vs Strategy A):
+- Zero JS measurement code.
+- No ResizeObserver loop possible.
+- Plays naturally with streaming — only the visible row pays.
+- Far smaller diff (one CSS rule + one `contain-intrinsic-size`
+  hint per block).
 
-**What TanStack Virtual is NOT designed for:**
+**Cons:**
+- DOM is still allocated. Memory ceiling = same as today (page-trim
+  bound). DOM-node-count target from D10 still requires page-trim
+  to do its job.
+- `contain-intrinsic-size` is a placeholder height; wrong value
+  → janky scrollbar. Use the `auto` keyword so the browser
+  remembers the last-rendered size:
+  ```css
+  .chat-block {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 240px;
+  }
+  ```
 
-- Rows that **continuously grow** (live streaming text). Their examples
-  ([`dynamic-rows`](https://tanstack.com/virtual/latest/docs/framework/react/examples/dynamic), [`variable`](https://tanstack.com/virtual/latest/docs/framework/react/examples/variable), [`lanes`](https://tanstack.com/virtual/latest/docs/framework/react/examples/dynamic-lanes))
-  show variable-but-stable content (markdown blocks of fixed text
-  rendered once). None of the official examples cover the
-  streaming-chunk-into-the-live-row case we have.
-- DOM additions while streaming. Even Discord / Slack-style chat virt
-  libraries (e.g. [`react-virtuoso`](https://virtuoso.dev)) explicitly
-  document trade-offs around streaming and recommend **debouncing
-  streaming updates** to ~30Hz at most.
-
-The streaming-into-the-live-row case is genuinely hard. We're not the
-first to hit it; the answer in production chat apps is either:
-- (a) Don't virtualize the **streaming row** — pin it to the tail and
-  virtualize everything else.
-- (b) Throttle live updates aggressively (60Hz+) so each batch lands as
-  one resize, not 30/sec.
-- (c) Use group-level virtualization (turns, not items) so the live
-  row's growth only triggers ONE measurement per batch.
+**Implementation lives in `Turn.vue`'s scoped style** — one rule.
+That's the entire diff for Strategy B beyond Phase 0.5's `v-memo`.
 
 ---
 
-## Candidate strategies
+## Strategy A (fallback if Phase 0 probe fails)
 
-Five candidates ranked roughly by complexity vs upside.
-
-### A — Turn-level group virtualization (RECOMMENDED)
-
-Virtualize at the **turn block** level instead of the **transcript item**
-level. Each turn is one virtual row containing all of its items
-(user prompt, agent reply, thoughts, tool cards, terminal cards).
+Turn-level group virtualization, with the live-turn carve-out as a
+permanent feature, not a safety net.
 
 ```
 Today (item-level conceptually): ~30 transcript items per ~3 turns
 After (turn-level): ~3-10 virtual rows per ~3-10 turns
 ```
 
-**Pros:**
+### Architecture
 
-- **Far fewer virtual rows.** Streaming agent chunks resize the
-  CURRENT turn's row, not multiple item rows. ResizeObserver fires
-  once per chunk per (live) row, not N times.
-- **Block grouping already exists.** `timelineBlocksFromSnapshot` already
-  produces `blocks` keyed by `turnId`; virtualizing over `blocks` is the
-  natural unit.
-- **Stable keys.** `block.groupKey` is stable across prepends + live
-  updates (grouped by turnId, derived from item content not array
-  index).
-- **Streaming impact bounded.** Only 1 virtual row resizes per chunk
-  (the live turn's). Captain reading history has ZERO measure traffic
-  on history rows because they're stable.
-
-**Cons:**
-
-- A single turn can be VERY tall (long agent reply + multiple tool
-  diffs ≈ 3-5 viewports). One virtual row taller than the viewport
-  defeats the "render only what's visible" principle for that row.
-  Mitigation: this is fine — the virtualizer still skips off-screen
-  ROWS, and a single huge row gets rendered fully but at least it's
-  the only one being rendered.
-- Backward pagination prepends OLD turns at the top. Their measured
-  heights are unknown until rendered. The
-  `shouldAdjustScrollPositionOnItemSizeChange` predicate would compensate
-  but caused our prior loop. We need a different prepend strategy
-  (see implementation below).
-
-**Implementation sketch:**
+- **Virtualizer scope:** `historyBlocks` from `useLiveTurnPin`. The
+  live block renders as a sibling.
+- **Stable keys:** `block.groupKey` (verified turn-id-stable in
+  `timelineBlocksFromSnapshot`; tool-call merges don't change the
+  key — they merge on `toolCallId`, not `groupKey`).
+- **`shouldAdjustScrollPositionOnItemSizeChange`:** OMITTED. It's
+  what triggered the `92f025f` loop. We compensate prepends
+  out-of-band (D6 + D7).
+- **Stable measure callback:** captured once in setup; `33218e4`'s
+  fix preserved.
+- **`overscan`:** adaptive per D8.
+- **`estimateSize`:** 240 px (median turn block measured from
+  screenshots; refined when `measureElement` lands).
 
 ```ts
-// useChatViewport already exposes `items` (oldest-first SeqTranscriptItem[])
-// blocks computed in Viewport.vue groups by turnId already
-// virtualize over `blocks`, NOT `items`
 const virtualizer = useVirtualizer(computed(() => ({
-  count: blocks.value.length,
+  count: historyBlocks.value.length,
   getScrollElement: () => scrollEl.value ?? null,
-  estimateSize: () => 240,           // median turn block height
-  overscan: 2,                        // 2 turn-blocks above + below
-  getItemKey: (i) => blocks.value[i]?.groupKey ?? i,
-  // shouldAdjustScrollPositionOnItemSizeChange: OMITTED (caused 92f025f loop)
+  estimateSize: () => 240,
+  overscan: computeOverscan(historyBlocks.value, scrollEl.value?.clientHeight ?? 800),
+  getItemKey: (i) => historyBlocks.value[i]?.groupKey ?? i
 })))
 
-// Each Turn block in the v-for gets a `data-index` + stable measureRow ref.
-// Avoid inline arrow refs — use a single closure captured in setup.
 function measureRow(el: Element | null): void {
-  if (el) virtualizer.value.measureElement(el)
+  if (el) {
+    virtualizer.value.measureElement(el)
+  }
 }
 ```
 
-**Mitigating the prepend-jump without `shouldAdjustScrollPositionOnItemSizeChange`:**
-
-- Capture `scrollHeight` BEFORE the fetch settles.
-- After the fetch lands AND virtual-core has measured the new top rows,
-  set `scrollTop = scrollTop + (newScrollHeight - oldScrollHeight)`.
-- Do this OUTSIDE the virtualizer's reactive cycle (e.g. in a
-  `watch(viewport.items.length, ..., { flush: 'post' })` so it runs
-  after Vue's render but before paint).
-
-This is the same compensation the predicate did, but applied
-out-of-band so it doesn't re-trigger the virtualizer's recompute.
-
-**Streaming row carve-out (if measure loops still surface):** keep the
-**newest** turn block out of the virtualizer entirely — render it
-unconditionally as a sibling of the virtual list. This eliminates the
-"row resizes while it's a virtual row" problem because the live row
-isn't virtualized. When the turn ENDS (`TurnEnded`), commit it back
-into the virtualizer's tracked range.
-
-### B — `content-visibility: auto`
-
-Modern CSS primitive that lets the browser skip layout + paint for
-off-screen elements. The DOM still contains every node; the browser
-treats them as zero-sized for layout until they enter the viewport.
-
-```css
-.chat-block {
-  content-visibility: auto;
-  contain-intrinsic-size: 0 200px; /* placeholder height before render */
-}
-```
-
-**Pros:**
-
-- **Almost zero JS.** Browser does the work.
-- **No measurement loops.** Layout decisions live entirely in the
-  browser engine.
-- Plays well with streaming — only the visible row pays the cost.
-
-**Cons:**
-
-- WebKit2GTK 4.1 (the Tauri webview on Linux) has limited support;
-  WebKit added it in 17.4 (2024) but our pinned webview lags. Need to
-  test before committing.
-- `contain-intrinsic-size` placeholder height is its own approximation
-  — same fundamental problem as `estimateSize`. Wrong placeholder
-  → janky scrollbar.
-- All DOM is still allocated (just not laid out). Memory ceiling
-  unchanged from current page-trim.
-
-**Recommended as a fallback** if Strategy A's measurement issues prove
-unavoidable. Lower upside, much lower risk.
-
-### C — IntersectionObserver-based windowing
-
-Hand-rolled "render only visible" without a virtualization library.
-Each block gets an IntersectionObserver; off-screen blocks render a
-placeholder div with last-known height; on-screen blocks render full
-content.
-
-**Pros:**
-
-- Full control over the measurement loop (or absence thereof).
-- No external dependency on TanStack Virtual.
-
-**Cons:**
-
-- We're rebuilding what TanStack Virtual already provides.
-- Placeholder height tracking is still its own subtle problem.
-- Risk of NIH; TanStack Virtual is maintained, ours wouldn't be.
-
-**Not recommended** unless A and B both fail.
-
-### D — Throttle live updates to 30Hz
-
-Don't virtualize. Just rate-limit `setQueryData` patches so streaming
-agent text updates the head page at most 30 times/sec instead of
-~per-chunk.
-
-**Pros:**
-
-- Tiny diff (just add throttling to `flushPatches`).
-- Cuts streaming render pressure by ~3-10×.
-
-**Cons:**
-
-- Doesn't address the unbounded-DOM concern (still have N items in
-  cache × N items in DOM after page-trim).
-- Visible chunk lag (~33ms) — captain might notice on faster networks.
-
-**Worth doing regardless.** Even with virtualization, throttling to
-30Hz means each batch fires one resize instead of many.
-
-### E — Status quo (no virtualization)
-
-Plain v-for over blocks; page-trim caps cache at `MAX_PAGES_KEPT × pageSize`
-items. With viewport-relative page size that's ~30 items in DOM at
-peak — 60 max during scroll-up + reading.
-
-**Pros:**
-
-- Already shipped. Stable. Tested.
-
-**Cons:**
-
-- DOM size grows linearly with cache. On a 4K monitor with a chat full
-  of long replies and tool cards, we're not bounded by viewport.
-- Captain's complaint: "still loads too much".
-
-**Acknowledged baseline.** The real question is whether A + D buys
-enough over E to be worth the complexity.
-
----
-
-## Recommendation
-
-**Strategy A + Strategy D, layered:**
-
-1. **First land Strategy D** (throttle live patches to 30Hz). Tiny
-   change. Test alone for a day to confirm streaming is smooth and the
-   captain's "loads too much" feeling is reduced.
-2. **If still wanting virtualization, then Strategy A** (turn-level
-   group virtualization) with the streaming-row carve-out as the
-   safety net.
-3. **If Strategy A regresses streaming** (any "Maximum recursive
-   updates exceeded" report from the captain), fall back to **Strategy
-   B** (`content-visibility: auto`) AFTER confirming WebKit2GTK 4.1
-   support — likely sufficient for memory bounds without JS-side
-   measurement.
-
-The ordering — D first, then A, then B — is risk-graded: D is a 5-line
-change, A is a viewport rewrite, B requires browser-support
-verification. We commit each step independently and roll back at any
-point.
-
----
-
-## Implementation steps (Strategy A; do not start until aligned)
-
-### Phase 1: Strategy D (preflight)
-
-1. Add a 30Hz throttle in `useChatViewport.flushPatches` so streaming
-   patches batch over a 33ms window. Today they batch via microtask
-   (one tick); upgrade to a setTimeout(33ms) trailing-edge flush.
-2. Run the captain's mobile remote against a streaming reply session.
-   Confirm: chat smooth, no jank, "loads too much" feeling reduced.
-3. Ship if ✓.
-
-### Phase 2: Strategy A scaffold
-
-1. Re-introduce `@tanstack/vue-virtual` (it's still in `package.json`).
-2. In `Viewport.vue`, wrap the `v-for blocks` render in a virtualizer
-   keyed by `block.groupKey`. **Use turn blocks, not transcript items.**
-3. **Stable measure callback:** capture `measureRow = (el) => virtualizer.value.measureElement(el)` once in setup. Bind via `:ref="measureRow"`.
-4. **Drop `shouldAdjustScrollPositionOnItemSizeChange`** — known
-   loop trigger. Compensate prepends out-of-band (Phase 3).
-5. **Live row carve-out:** the head block (highest `block.groupKey`
-   with an open turn) renders OUTSIDE the virtualizer as a sibling.
-   Commit it back into the virtual range only when its turn ends.
-6. `estimateSize` = 240px (median turn-block measured from screenshots).
-7. `overscan: 2` (turn blocks are big; less overscan needed).
-
-### Phase 3: Out-of-band prepend compensation
-
-Replace `shouldAdjustScrollPositionOnItemSizeChange` with a watcher
-that compensates AFTER the fetch settles + measurements complete:
+### Out-of-band prepend compensation
 
 ```ts
 let scrollHeightBeforeFetch = 0
+
 async function fetchNextPage(): Promise<unknown> {
   const el = scrollEl.value
   scrollHeightBeforeFetch = el?.scrollHeight ?? 0
   const r = await viewport.fetchNextPage()
-  await nextTick()                              // Vue's render tick
-  await nextTick()                              // virtualizer's tick
+  await afterPaintSettled()                       // double-RAF (D6)
   if (el && scrollHeightBeforeFetch > 0) {
     const delta = el.scrollHeight - scrollHeightBeforeFetch
-    el.scrollTop += delta                       // anchor visible content
+    if (delta !== 0) {
+      await compensateAfterPrepend(delta)         // re-entrant-guarded (D7)
+    }
   }
   return r
 }
 ```
 
-Crucially this happens AFTER the virtualizer's reactive cycle, so
-writing scrollTop doesn't trigger a re-measure.
+### Stick-to-bottom integration
 
-### Phase 4: Stick-to-bottom via virtualizer
+`useStickToBottom`'s `stuck` flag still gates auto-scroll. The new
+move is that "scroll to bottom" targets the live block (rendered as
+a sibling), not a virtualizer index:
 
-Replace the `useStickToBottom` watcher's auto-scroll with
-`virtualizer.scrollToIndex(blocks.length - 1, { align: 'end' })`. Fires
-inside `nextTick` after blocks length grows (live event added an item
-to the live turn → block list grew or live block resized).
+```ts
+function scrollLiveBlockIntoView(): void {
+  liveBlockEl.value?.scrollIntoView({ block: 'end', behavior: 'auto' })
+}
+```
 
-### Phase 5: Measurement audit
+`scrollToIndex(last, 'end')` is wrong here — the last virtualized
+index is the most-recent *history* block, not the live tail. The
+live block lives outside the virtualizer's measured range.
 
-For 1 hour, run the daemon under
-`RUST_LOG=info,acp::emit::chunk=trace,webview=trace` and instrument the
-virtualizer with `console.count('measure')` in dev. Confirm: streaming
-a 100-line agent reply produces O(100) measure calls, not O(10,000).
+### Concurrent prepend + streaming
 
-### Phase 6: Testing
+Streaming patches into the live block do NOT touch
+`historyBlocks` (the live block is carved out). Concurrent prepend +
+streaming therefore touch disjoint reactive surfaces — no delta
+corruption.
 
-- Existing tests in `Viewport.test.ts` cover backward fetch trigger +
-  load chip — shouldn't regress.
-- New test: `streaming row growth doesn't exceed N measure calls per
-  chunk`. Assert via `console.count` interception.
-- New test: `prepend doesn't yank visible content`. Snapshot scrollTop
-  before/after backward fetch and assert visible content stays fixed
-  (within ±2px tolerance for sub-pixel rounding).
+---
+
+## Implementation phases
+
+### Phase 0 — `content-visibility` probe (10 min, blocking)
+
+1. `task run` boots the daemon.
+2. Playwright MCP `browser_evaluate(() => CSS.supports('content-visibility', 'auto'))`
+   against the dev preview.
+3. Record the boolean in the PR description.
+
+**If true** → execute Phase 0.5 → Phase 1 → Phase 2B.
+**If false** → execute Phase 0.5 → Phase 1 → Phase 2A.
+
+### Phase 0.5 — `v-memo` on history rows (one commit)
+
+1. Identify the `<Turn>` v-for loop in `Viewport.vue`.
+2. Add `v-memo` keyed on the deps from D3.
+3. Run the synthetic harness; capture P95 frame time + DOM node
+   count.
+4. Paste numbers in PR description.
+
+**If P95 + DOM clear D10's targets after this phase**, the plan
+ends here. Strategy A and B both become unnecessary; close the PR
+as "v-memo was sufficient".
+
+### Phase 1 — measurement (no code change)
+
+1. Run synthetic harness against current state-after-0.5.
+2. Decide: are P95 + DOM + jank + retention already inside D10
+   targets?
+   - **Yes** → end of plan. Document harness numbers in
+     `docs/plans/2026-05-09-chat-virtualization-revisit.md`'s
+     outcome section + close PR.
+   - **No** → proceed to Phase 2 (A or B based on D2 probe).
+
+### Phase 2A — Strategy A (Phase 0 probe failed)
+
+One commit per sub-step so each can revert independently.
+
+1. **2A.1 — `useLiveTurnPin` composable.** New file
+   `ui/src/composables/instance/use-live-turn-pin.ts`. Pure
+   computed; no side effects. Test colocated.
+2. **2A.2 — Viewport wires `useLiveTurnPin`.** History v-for now
+   reads `historyBlocks`; live block renders as a sibling. **No
+   virtualizer yet.** This is the carve-out shape on its own; verify
+   no regression against today's behaviour first.
+3. **2A.3 — Introduce virtualizer over `historyBlocks`.**
+   `@tanstack/vue-virtual` (already in `package.json`). Stable
+   `measureRow` callback. `estimateSize: 240`. `overscan: 2`
+   (adaptive comes in 2A.5). No prepend compensation yet — backward
+   fetch will jump; that's expected and fixed in 2A.4.
+4. **2A.4 — Out-of-band prepend compensation.**
+   `afterPaintSettled` + `compensateAfterPrepend` helpers in
+   `useChatViewport`. `fetchNextPage` wrapper from D6.
+5. **2A.5 — Adaptive overscan.** `computeOverscan` reads measured
+   sizes from the virtualizer's measurement cache.
+6. **2A.6 — Stick-to-bottom wiring.** `scrollLiveBlockIntoView`
+   replaces the prior `scrollToBottom` call inside the
+   `useStickToBottom` mutation handler.
+7. **2A.7 — Harness re-run.** All four metrics from D10 must clear.
+
+### Phase 2B — Strategy B (Phase 0 probe passed)
+
+Two commits.
+
+1. **2B.1 — Apply `content-visibility: auto` to `.chat-block`** in
+   `Turn.vue`'s scoped style. `contain-intrinsic-size: auto 240px`.
+2. **2B.2 — Harness re-run.** All four metrics from D10 must clear.
+
+---
+
+## Test plan (synthetic harness shape)
+
+`tests/perf/streaming-harness.ts` (new, browser-mode Playwright MCP
+script — not a CI gate today):
+
+```ts
+// 1. Boot Vite dev server; navigate to http://localhost:1420
+// 2. Seed 200-turn fixture via __hyprpilot_dev.pushSnapshot(fixture)
+// 3. Start streaming: 30 Hz pushTranscriptEvent into open turn for 30s
+// 4. Capture P95 frame time across the 30s window
+// 5. capture DOM node count at peak (T+15s)
+// 6. Trigger backward fetch (scroll to top); capture jank index over 2s
+// 7. Capture scrollTop before fetch resolves; compare against scrollTop
+//    one second after fetch resolves; emit delta
+// 8. Print one JSON line: { p95Ms, domCount, jankIdx, retentionPx }
+```
+
+Numbers paste into the PR description per phase. Once the harness
+proves itself stable, we promote it to a Vitest perf bench (gated
+behind `pnpm test:perf`) so CI catches regressions automatically.
+
+Existing tests in `Viewport.test.ts` (backward-fetch trigger + load
+chip) must continue to pass after every phase.
+
+New unit tests:
+
+- `useLiveTurnPin.test.ts` (Phase 2A.1) — given mock blocks +
+  `openTurnId`, returns the carve-out correctly across (a) no open
+  turn, (b) open turn at tail, (c) open turn mid-list (the
+  hydration-replay case D5 calls out).
+- `Viewport.test.ts` extension (Phase 2A.4) — backward fetch
+  retains `scrollTop` within ±2 px (mock the prepend, assert the
+  delta).
+- No new test for Strategy B beyond the harness — it's a CSS
+  change.
 
 ---
 
@@ -414,53 +534,53 @@ a 100-line agent reply produces O(100) measure calls, not O(10,000).
 
 | Risk | Mitigation |
 | --- | --- |
-| Strategy A re-introduces measure loop under streaming | Live-row carve-out (Phase 2 step 5). Falls back to Strategy B. |
-| TanStack Virtual + Vue 3 reactivity quirks | The `measureRow` stable-callback fix from `33218e4` is preserved. |
-| Prepend jump | Out-of-band compensation (Phase 3); doesn't hit the predicate that caused 92f025f. |
-| WebKit2GTK 4.1 `content-visibility` partial support | Verify before Strategy B; fall back to status-quo (E) if unsupported. |
-| Stick-to-bottom drift | `scrollToIndex(last, 'end')` post-render; `useStickToBottom`'s `stuck` flag still drives the trigger. |
+| Phase 0.5 (`v-memo`) breaks reactivity for live tool-call merges | live block is excluded from the v-memo'd loop in Phase 2A.2; for the interim Phase 0.5, the `liveBlockIdx` dep in the memo array forces re-render when the live block changes identity |
+| Phase 2A.3 re-introduces measure loop | live-turn carve-out (Phase 2A.2 ships first as a no-virtualizer test) means streaming events never enter the virtualizer's reactive surface; the loop's prerequisite is gone |
+| Phase 2B browser support absent on captain's mobile remote | the Phase 0 probe runs in the daemon's webview, not desktop Chrome — the captain's mobile is a remote browser, not the daemon. Run the probe again in mobile-remote mode before declaring 2B viable for that surface |
+| Prepend jump despite compensation | D7's re-entrancy guard + D6's double-RAF; if numbers still drift, pin via `scrollIntoView(historyBlocks[0], { block: 'start' })` after compensation as a belt-and-braces |
+| Adaptive overscan misses on slow-arriving measurements | `computeOverscan` falls back to `2` when `measureCacheGet` returns undefined; the worst case is "a tall turn renders 2 viewports of overscan once before the cache populates" — bounded |
 
-**Rollback:** every commit lands as its own commit on a feature branch.
-Any regression → `git revert` the offending commit. The status quo
-(plain v-for + page-trim) is the floor; we never ship something worse.
-
----
-
-## Open questions (need to discuss before starting)
-
-1. **Is the captain's "loads too much" complaint about render perf or
-   bytes-on-wire?** If wire, viewport-relative page sizing already
-   addresses it (no virtualization needed).
-2. **What's the rendering cost target?** Frames-per-second target during
-   streaming on the captain's phone? 30fps? 60fps?
-3. **Should the live row stay non-virtualized permanently** (Strategy
-   A's carve-out as a permanent feature, not just safety net)?
-4. **Is throttling alone (Strategy D) acceptable as the final
-   answer?** It might be; we should measure before committing to A.
+**Rollback:** every phase = one commit. Each phase that fails its
+harness target gets reverted on the spot. The status-quo render
+path (plain v-for + page-trim) is the floor.
 
 ---
 
-## What I did NOT do this round
+## Style conformance
 
-- Pure render perf measurement (no DevTools profile of streaming under
-  current v-for + page-trim).
-- WebKit2GTK 4.1 `content-visibility` support test.
-- Prototype of any strategy.
-
-These are deliberately deferred — they belong to whoever picks this up
-tomorrow, with the directional choice made first.
+- Named constants: `STREAMING_FLUSH_INTERVAL_MS`,
+  `LOAD_MORE_THRESHOLD_PX` (existing), `TALL_BLOCK_VIEWPORT_RATIO`,
+  `PREPEND_RETENTION_TOLERANCE_PX`.
+- Composable shape: `useLiveTurnPin(): UseLiveTurnPinApi` — no
+  drive-by exports; tests under `tests/composables/instance/`.
+- All single-statement control flow braced.
+- No `__` in CSS class names. No `--pilot-*`. No new keyframes.
+- Comments: terse WHY only. The "why double-RAF instead of
+  nextTick" comment from D6 is a fair example; restating that the
+  function "compensates after prepend" is not.
 
 ---
 
-## Pickup checklist for tomorrow
+## What this plan does NOT include
 
-1. Read the prior commits' bodies in full: `git show e2e2404 5147fb3
-   92f025f 33218e4 6790fd3 -- ui/src/views/chat/Viewport.vue`
-2. Run a captured streaming session under `task run` with browser
-   devtools profiler. Sample DOM count + frame rate. Decide if
-   Strategy E (status quo) is genuinely insufficient.
-3. If yes: ship Strategy D first (~10 LoC). Re-test.
-4. If still insufficient: prototype Strategy A scaffold on a worktree
-   branch off this one. Validate streaming + prepend behaviour
-   in isolation before merging.
-5. Update this doc with profile numbers, decisions, and outcomes.
+- Daemon-side delta events. The reviewer flagged these as cleaner
+  than UI-side patching; agreed in principle, out of scope here.
+  File a separate plan for K-XXX if the harness numbers stay red
+  after Phase 2.
+- `shallowRef` on query.data. Marginal; revisit only if the
+  harness shows the deep-reactivity walk dominates.
+- Mobile-remote-specific tuning. The harness targets desktop today;
+  if mobile numbers diverge sharply we'll fork a per-surface phase.
+
+---
+
+## Pickup checklist
+
+1. Run Phase 0 probe (10 min). Record the boolean in PR description.
+2. Ship Phase 0.5 (`v-memo`) as one commit. Re-run harness; paste
+   numbers in PR description.
+3. Run Phase 1 (measurement). Decide: stop or continue.
+4. If continue: execute Phase 2A or 2B per Phase 0 result, one
+   commit per sub-step. Re-run harness after each.
+5. Update this doc's "outcome" section (TBD — append after Phase 2
+   completes) with final numbers and any deviations from the plan.
