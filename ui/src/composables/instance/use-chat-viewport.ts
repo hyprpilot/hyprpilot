@@ -166,6 +166,17 @@ interface PatchableInfiniteData extends InfiniteData<ChatSnapshot, number | unde
  * replay path in `snapshot-timeline.ts::mergeToolCall` does the
  * same; this helper keeps the live-patch path in lockstep.
  *
+ * `turnId` preservation: the merged `SeqTranscriptItem` MUST keep
+ * the existing `turnId` (the tool call's anchor to the active turn).
+ * Dropping it here would orphan the call out of its turn block —
+ * `timelineBlocksFromSnapshot` groups by `turnId`, so an undefined
+ * turnId falls into a phantom "snapshot-assistant:N" block instead
+ * of the `turn:X` block where the rest of the turn lives. That
+ * cascades into perceived bugs: (1) tool pills with no Turn header
+ * chips above them, (2) thought chunks that arrive after the tool
+ * landing in a separate block from the thoughts that came before
+ * (because the tool block sits between them).
+ *
  * Single-shape items.length scan from the tail finds the matching
  * call regardless of initial vs update kind.
  */
@@ -214,7 +225,16 @@ function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscript
       if (next.completedAtMs !== undefined) {
         merged.completedAtMs = next.completedAtMs
       }
-      items[i] = { seq: existing.seq, item: merged }
+      // Preserve the existing turnId — the original `tool_call` event
+      // stamped it; the wire `tool_call_update` may or may not echo
+      // the turnId in its payload, but the merged item's anchor is
+      // the original turn. Take the incoming turnId only as a fallback
+      // (the existing was undefined).
+      items[i] = {
+        seq: existing.seq,
+        turnId: existing.turnId ?? incoming.turnId,
+        item: merged
+      }
 
       return true
     }

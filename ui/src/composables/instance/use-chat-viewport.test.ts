@@ -270,6 +270,70 @@ describe('useChatViewport', () => {
     unmount()
   })
 
+  /**
+   * Pin the contract: tool_call_update merges MUST preserve the
+   * existing entry's `turnId`. Dropping it strands the merged tool
+   * call out of its turn block (timeline grouping is keyed by
+   * `turnId`), which cascades into perceived bugs: tool pills with
+   * no Turn header chips, thoughts that arrive after the tool
+   * landing in a separate block from earlier thoughts.
+   */
+  it('live-event patcher preserves turnId on tool_call_update merge', async() => {
+    const initial: SeqTranscriptItem = {
+      seq: 10,
+      turnId: 'turn-A',
+      item: {
+        kind: TranscriptItemKind.ToolCall,
+        id: 'tc-1',
+        toolKind: 'bash',
+        title: 'echo',
+        state: 'running',
+        content: [],
+        formatted: {
+          title: 'echo', stats: [], fields: []
+        },
+        startedAtMs: 1000
+      } as never
+    }
+
+    invoke.mockResolvedValueOnce(chatPage([initial], false))
+    const id = ref<InstanceId | undefined>('i-1')
+    const { api, unmount } = mountViewport(id)
+
+    await flushPromises()
+    await flushPromises()
+
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    // Update with NO turnId on the wire — the existing turnId must
+    // win so the merged tool call stays anchored to turn-A.
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        item: {
+          kind: TranscriptItemKind.ToolCallUpdate,
+          id: 'tc-1',
+          state: 'completed',
+          content: [],
+          formatted: {
+            title: 'echo', stats: [], fields: []
+          },
+          startedAtMs: 1000,
+          completedAtMs: 1100
+        } as never
+      } as never
+    })
+    await flushPromises()
+
+    const merged = api.items.value[0]!
+
+    expect(merged.turnId).toBe('turn-A')
+    expect((merged.item as { state: string }).state).toBe('completed')
+    unmount()
+  })
+
   it('permission-resolved patches the meta cache to drop the matching pending entry', async() => {
     invoke.mockResolvedValueOnce(chatPage([], false))
     const id = ref<InstanceId | undefined>('i-1')

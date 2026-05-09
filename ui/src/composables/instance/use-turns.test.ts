@@ -23,7 +23,9 @@ beforeEach(() => {
 
 describe('pushTurnStarted', () => {
   it('records a fresh turn record with sessionId + startedAtMs', () => {
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 1_000 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 1_000
+    })
 
     const turns = useTurns('A').turns.value
 
@@ -38,7 +40,9 @@ describe('pushTurnStarted', () => {
     // Race ordering: a usage_update arrived first and synthesised a placeholder
     // (startedAtMs: 0). The eventual real turn-started fills in timing in place.
     pushUsageUpdate('A', 's-1', 't-1', { used: 1, size: 100 })
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 5_000 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 5_000
+    })
 
     const turns = useTurns('A').turns.value
 
@@ -52,8 +56,12 @@ describe('pushTurnStarted', () => {
     // Open turn on session A — TurnEnded gets dropped (broadcast lag,
     // daemon panic). Next TurnStarted is on session B; the orphan must
     // clear so phase doesn't pin to the dead turn.
-    pushTurnStarted('A', { turnId: 't-old', sessionId: 's-old', startedAtMs: 1 })
-    pushTurnStarted('A', { turnId: 't-new', sessionId: 's-new', startedAtMs: 2 })
+    pushTurnStarted('A', {
+      turnId: 't-old', sessionId: 's-old', startedAtMs: 1
+    })
+    pushTurnStarted('A', {
+      turnId: 't-new', sessionId: 's-new', startedAtMs: 2
+    })
 
     expect(openTurnIdFor('A', 's-old')).toBeUndefined()
     expect(openTurnIdFor('A', 's-new')).toBe('t-new')
@@ -75,7 +83,9 @@ describe('pushUsageUpdate', () => {
   })
 
   it('binds to the open turn for the session when no turnId is supplied', () => {
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 1 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 1
+    })
     pushUsageUpdate('A', 's-1', undefined, { used: 5, size: 100 })
 
     expect(useTurns('A').turns.value[0]?.usage).toEqual({ used: 5, size: 100 })
@@ -99,7 +109,9 @@ describe('markThinkingStart / markThinkingEnd', () => {
   })
 
   it('accumulates thinking intervals across the same turn', () => {
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 0 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 0
+    })
 
     markThinkingStart('A', 's-1', 100)
     markThinkingEnd('A', 's-1', 250) // +150ms
@@ -110,7 +122,9 @@ describe('markThinkingStart / markThinkingEnd', () => {
   })
 
   it('markThinkingStart is idempotent — second call while open does not reopen', () => {
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 0 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 0
+    })
     markThinkingStart('A', 's-1', 100)
     markThinkingStart('A', 's-1', 200) // ignored — interval already open
     markThinkingEnd('A', 's-1', 300)
@@ -121,7 +135,9 @@ describe('markThinkingStart / markThinkingEnd', () => {
 
 describe('pushTurnEnded', () => {
   it('clears the open-session pointer + fires registered listeners', () => {
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 0 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 0
+    })
 
     const fired: string[] = []
 
@@ -129,7 +145,9 @@ describe('pushTurnEnded', () => {
       fired.push(`${id}/${raw.turnId}/${raw.stopReason}`)
     })
 
-    pushTurnEnded('A', { turnId: 't-1', sessionId: 's-1', endedAtMs: 1_000, stopReason: 'end_turn' })
+    pushTurnEnded('A', {
+      turnId: 't-1', sessionId: 's-1', endedAtMs: 1_000, stopReason: 'end_turn'
+    })
 
     expect(openTurnIdFor('A', 's-1')).toBeUndefined()
     expect(fired).toEqual(['A/t-1/end_turn'])
@@ -138,9 +156,13 @@ describe('pushTurnEnded', () => {
   })
 
   it('closes a still-open thinking interval', () => {
-    pushTurnStarted('A', { turnId: 't-1', sessionId: 's-1', startedAtMs: 0 })
+    pushTurnStarted('A', {
+      turnId: 't-1', sessionId: 's-1', startedAtMs: 0
+    })
     markThinkingStart('A', 's-1', 100)
-    pushTurnEnded('A', { turnId: 't-1', sessionId: 's-1', endedAtMs: 600, stopReason: 'end_turn' })
+    pushTurnEnded('A', {
+      turnId: 't-1', sessionId: 's-1', endedAtMs: 600, stopReason: 'end_turn'
+    })
 
     expect(useTurns('A').turns.value[0]?.thinkingMs).toBe(500)
     expect(useTurns('A').turns.value[0]?.thinkingOpenAtMs).toBeUndefined()

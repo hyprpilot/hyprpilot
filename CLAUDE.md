@@ -54,9 +54,25 @@ Canonical commands: `pnpm --filter hyprpilot-ui run type-check`,
 `pnpm --filter hyprpilot-ui test`. From inside `ui/`, the same scripts
 without the filter (`pnpm run lint`, etc.).
 
-`task build` is the gold-standard pre-push verification: it runs the
-UI's `pnpm build` (`vue-tsc --noEmit && vite build`) and then the Rust
-build. If `task build` exits 0, everything `main` would catch is green.
+**Pre-push verification — run all three.** `task build` covers compile
++ type-check, `task test` covers test suites, `task lint` covers `cargo
+fmt --check`, `cargo clippy -- -D warnings`, **eslint**, and `vue-tsc
+--noEmit`. **`task build` exiting 0 is NOT sufficient** — eslint runs
+ONLY through `task lint`, and CI's lint job rejects on stylistic-rule
+violations (`object-curly-newline`,
+`padding-line-between-statements`, etc.) that the build step is blind
+to. The bar is `task build && task lint && task test` exits 0; CI runs
+the three as separate jobs and any one red rejects.
+
+**Autopilot CI watch.** When operating in autopilot, after `git push`
++ `gh pr create` the agent stays attached until the latest workflow
+run on the head ref reports `conclusion = success` for every check.
+Poll with `gh pr checks <pr>` (or `gh run list --branch <branch>
+--limit 1 --json status,conclusion`); when a job fails, fetch the
+failed step's log via `gh run view <id> --log-failed`, fix
+root-cause, push the fix to the same branch, wait for re-run. The PR
+is "done" only when CI is fully green — the captain shouldn't have to
+catch CI failures.
 
 ## Running the binary locally
 
@@ -515,6 +531,24 @@ mapper is dropping a wire variant or a new ACP enum has no Tauri bridge.
 
 ## Rust conventions
 
+- **Enums whenever feasible — never `String` for a closed set.** This is
+  the load-bearing convention behind half the others. If a value can
+  only be one of N known things at compile time, it's a `#[derive(...)]
+  enum` with `#[serde(rename_all = "...")]` for wire types, NOT a
+  `String` / `&str` / `Cow<'_, str>`. Applies to: wire-protocol fields
+  (agent state, stop reasons, update kinds, tool-call statuses,
+  permission outcomes), config closed sets (window mode, anchor edge,
+  agent provider, log level, dimension flavour), dispatch keys (RPC
+  namespace, Tauri command name, palette leaf id), tone discriminators
+  (toast tone, status colour, phase), bootstrap variants (Fresh /
+  Resume), and every `match` over "what kind is this?". **Why**: the
+  compiler enforces exhaustiveness at every match site, unknown values
+  reject at TOML parse / serde deserialize time instead of slipping
+  through `validate()`, refactor renames are mechanical, and IDE
+  autocomplete tells the next reader the full set. A `String` field
+  hides those affordances. The free-form `String` is reserved for
+  user-supplied content (titles, paths, prompts) — values not bounded
+  by the protocol.
 - **No backwards-compatibility layers — ever.** The CLI, the unix-socket
   wire protocol, the config file, and the theme tree all evolve in
   lockstep with the daemon binary. When a design stops making sense,
