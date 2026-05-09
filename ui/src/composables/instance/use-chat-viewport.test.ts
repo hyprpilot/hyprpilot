@@ -551,3 +551,37 @@ describe('useChatViewport', () => {
     expect(after).toBe(before)
   })
 })
+
+describe('viewportPageSize', () => {
+  it('returns the lower-clamp when scrollEl is undefined', async() => {
+    const { viewportPageSize } = await import('./use-chat-viewport')
+    const elRef = ref<HTMLElement>()
+
+    expect(viewportPageSize(elRef)).toBeGreaterThanOrEqual(20)
+  })
+
+  it('returns the lower-clamp when clientHeight is 0 (pre-mount)', async() => {
+    const { viewportPageSize } = await import('./use-chat-viewport')
+    const fake = { clientHeight: 0 } as HTMLElement
+    const elRef = ref<HTMLElement | undefined>(fake)
+
+    expect(viewportPageSize(elRef)).toBeGreaterThanOrEqual(20)
+  })
+
+  it('scales with clientHeight past the lower-clamp', async() => {
+    const { viewportPageSize } = await import('./use-chat-viewport')
+
+    // Tight viewport — clamps to the floor (20).
+    const tight = { clientHeight: 600 } as HTMLElement
+    const tightSize = viewportPageSize(ref<HTMLElement | undefined>(tight))
+
+    // Tall (4K-ish) viewport — should exceed the floor.
+    const tall = { clientHeight: 4000 } as HTMLElement
+    const tallSize = viewportPageSize(ref<HTMLElement | undefined>(tall))
+
+    expect(tightSize).toBeGreaterThanOrEqual(20)
+    expect(tallSize).toBeGreaterThan(tightSize)
+    // Don't pin exact numbers — the row-height estimate is allowed
+    // to drift; just assert the scaling relationship and the floor.
+  })
+})

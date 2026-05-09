@@ -65,7 +65,12 @@ use super::transcript::TranscriptItem;
 /// query asks only for visible pages anyway.
 pub const DEFAULT_TRANSCRIPT_CAP: usize = 5_000;
 
-/// Default page size when the snapshot RPC caller passes `0`.
+/// Default page size when the snapshot RPC caller passes `0`. The
+/// daemon does NOT clamp caller-supplied limits — frontends own the
+/// viewport sizing axis (a 4K monitor wants different pages than a
+/// phone) and the mirror's own ring-buffer cap [`DEFAULT_TRANSCRIPT_CAP`]
+/// is the natural ceiling. Trust the frontend; the backend serves
+/// what it asks for.
 const DEFAULT_CHAT_LIMIT: usize = 50;
 
 /// Marker for the most-recent turn boundary the mirror has seen.
@@ -519,7 +524,11 @@ impl InstanceMirror {
     /// entries strictly older than `seq` — backward pagination cursor
     /// for the UI's infinite-query.
     ///
-    /// `limit = 0` falls through to [`DEFAULT_CHAT_LIMIT`].
+    /// `limit = 0` falls through to [`DEFAULT_CHAT_LIMIT`]. Any other
+    /// value is honoured verbatim — frontends compute their own
+    /// viewport-relative page size, and clamping daemon-side would
+    /// force a one-size-fits-all heuristic that doesn't suit every
+    /// consumer (phone vs 4K monitor vs neovim-side reader).
     pub async fn chat_snapshot(&self, before: Option<u64>, limit: usize) -> ChatSnapshot {
         let limit = if limit == 0 { DEFAULT_CHAT_LIMIT } else { limit };
         let g = self.inner.read().await;

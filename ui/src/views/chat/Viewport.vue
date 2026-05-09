@@ -33,6 +33,7 @@
  * scrolls to the tail on every mutation while `stuck` is true. No
  * extra Vue watcher needed.
  */
+import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { useEventListener, useNow } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
 
@@ -84,7 +85,15 @@ const emit = defineEmits<{
 
 const { id: activeInstanceId } = useActiveInstance()
 const instanceId = computed<InstanceId | undefined>(() => activeInstanceId.value)
-const viewport = useChatViewport(instanceId)
+
+// `scrollEl` declared up-front so `useChatViewport` can derive its
+// fetch page size from `clientHeight`. The ref is undefined until
+// mount; `viewportPageSize`'s fallback returns the minimum size so
+// the initial fetch races a sane lower bound, and every backward
+// page picks up the real viewport extent.
+const scrollEl = ref<HTMLElement>()
+
+const viewport = useChatViewport(instanceId, { scrollEl })
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
 
 const { adapterFor } = useAgentRegistry()
@@ -107,9 +116,7 @@ const adapterForActive = computed(() => {
   return id ? adapterFor(id) : undefined
 })
 
-const scrollEl = ref<HTMLElement>()
-
-const { stuck } = useStickToBottom(scrollEl)
+const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 
 watch(stuck, (next) => {
   viewport.onStuckChange(next)
@@ -456,12 +463,13 @@ defineExpose({ scrollEl })
 </script>
 
 <template>
-  <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''" @scroll="onScroll">
-    <Loading v-if="props.restoring" mode="scoped" status="restoring session — replaying transcript" />
+  <div class="chat-viewport-root">
+    <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''" @scroll="onScroll">
+      <Loading v-if="props.restoring" mode="scoped" status="restoring session — replaying transcript" />
 
-    <slot v-if="isEmpty" name="empty" />
+      <slot v-if="isEmpty" name="empty" />
 
-    <template v-else>
+      <template v-else>
       <!-- Loading chip pinned at the top while a backward page is in
            flight. Sits outside the virtualized spacer so its height
            doesn't compete with row offsets. -->
@@ -538,11 +546,38 @@ defineExpose({ scrollEl })
         </template>
       </Turn>
     </template>
+    </div>
+
+    <!-- Floating scroll-to-bottom chevron. Lives inside the viewport
+         (anchored to the chat scroller's bottom-right) so it's not
+         coupled to whatever sits below the viewport (composer, queue,
+         permission stack). Visible only when the captain has scrolled
+         away from the bottom — `stuck` flips false the moment they
+         move >64px above the foot. Animated entry / exit via Tailwind
+         transition utilities. -->
+    <button
+      v-if="!stuck"
+      type="button"
+      class="scroll-to-bottom"
+      data-testid="scroll-to-bottom"
+      aria-label="Scroll to latest"
+      @click="scrollToBottom"
+    >
+      <FaIcon :icon="faChevronDown" />
+    </button>
   </div>
 </template>
 
 <style scoped>
 @reference '../../assets/styles.css';
+
+/* Wrapper takes the flex-1 + min-h-0 the parent expects of the
+ * Viewport root, so the inner scroller can fill while leaving room
+ * for the absolute-positioned floating chevron without scrolling
+ * with the content. */
+.chat-viewport-root {
+  @apply relative flex min-h-0 flex-1 flex-col;
+}
 
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
@@ -558,5 +593,35 @@ defineExpose({ scrollEl })
   color: var(--theme-fg-dim);
   border: 1px solid var(--theme-border-soft);
   align-self: center;
+}
+
+/* Floating chevron — bottom-right of the chat surface. Sits above
+ * the inner scroller so it doesn't move with content. Touch-friendly
+ * size; rem-based so the mobile root-bump scales it up too. */
+.scroll-to-bottom {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.875rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background-color: var(--theme-surface-alt);
+  color: var(--theme-fg-dim);
+  border: 1px solid var(--theme-border-soft);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+  z-index: 5;
+}
+
+.scroll-to-bottom:hover {
+  background-color: var(--theme-surface);
+  color: var(--theme-fg);
+}
+
+.scroll-to-bottom:active {
+  transform: translateY(1px);
 }
 </style>

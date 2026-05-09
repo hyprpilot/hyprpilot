@@ -34,7 +34,7 @@
  */
 
 import { useQueryClient, type InfiniteData } from '@tanstack/vue-query'
-import { computed, onUnmounted, watch, type ComputedRef } from 'vue'
+import { computed, onUnmounted, watch, type ComputedRef, type Ref } from 'vue'
 
 import { useInstanceChatInfiniteQuery, type UseInstanceChatInfiniteQueryReturn } from './use-instance-chat-infinite-query'
 import { usePermissions } from './use-permissions'
@@ -52,8 +52,45 @@ import {
 } from '@ipc'
 import { log } from '@lib'
 
-/** Cache pages retained when stuck-at-bottom. */
+/**
+ * Cache pages retained when stuck-at-bottom. Each page is sized to
+ * cover the viewport (see `viewportPageSize` below), so 3 pages = 3
+ * viewports of scrollback in DOM at peak.
+ */
 export const MAX_PAGES_KEPT = 3
+
+/**
+ * Conservative average chat-row height in CSS px. Real rows vary
+ * (a one-line user prompt ≈ 48px; a long agent reply with tool
+ * cards can run 400+px), but we only need this to size the FETCH
+ * page, not the render. Underestimating means we fetch more rows
+ * than strictly fit; overestimating means a backward scroll runs
+ * out of content faster than the fetch resolves. 96 splits the
+ * difference — comfortably small that no realistic viewport
+ * fetches fewer than ~5 rows; large enough that 4K monitors
+ * don't pull 200 rows per page.
+ */
+const ROW_HEIGHT_ESTIMATE_PX = 96
+
+/** Lower clamp so even a tiny viewport gets a useful chunk. */
+const MIN_PAGE_SIZE = 20
+
+/**
+ * Compute a viewport-relative page size. Returns the number of
+ * turns to request per fetch — sized so one page roughly covers
+ * the visible scroll area. Falls back to a sane default when the
+ * scroll element isn't mounted yet (initial fetch races mount).
+ */
+export function viewportPageSize(scrollEl: Ref<HTMLElement | undefined>): number {
+  const el = scrollEl.value
+  const h = el?.clientHeight ?? 0
+
+  if (h <= 0) {
+    return MIN_PAGE_SIZE
+  }
+
+  return Math.max(MIN_PAGE_SIZE, Math.ceil(h / ROW_HEIGHT_ESTIMATE_PX))
+}
 
 export interface UseChatViewportApi {
   /** Flattened, oldest-first transcript items across every cached page. */
@@ -192,8 +229,26 @@ function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscrip
   }
 }
 
-export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>): UseChatViewportApi {
-  const query: UseInstanceChatInfiniteQueryReturn = useInstanceChatInfiniteQuery(instanceId)
+export interface UseChatViewportOptions {
+  /**
+   * The chat surface's scroll container. When provided, the
+   * fetch page size is computed dynamically from
+   * `clientHeight` so each page covers ~one viewport. Without
+   * this the query falls back to `DEFAULT_CHAT_LIMIT` (50) —
+   * fine for prefetch / brim-sync paths that don't have a
+   * viewport yet.
+   */
+  scrollEl?: Ref<HTMLElement | undefined>
+}
+
+export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>, opts: UseChatViewportOptions = {}): UseChatViewportApi {
+  const query: UseInstanceChatInfiniteQueryReturn = useInstanceChatInfiniteQuery(instanceId, {
+    // Getter form — every fetch (initial + every backward page)
+    // re-reads the current viewport height. A window resize
+    // between fetches scales the next pull, no special wiring
+    // needed.
+    limit: opts.scrollEl ? () => viewportPageSize(opts.scrollEl as Ref<HTMLElement | undefined>) : undefined
+  })
   const queryClient = useQueryClient()
 
   // Local seq counter so live items get monotonically-increasing
