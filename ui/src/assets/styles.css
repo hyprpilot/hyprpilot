@@ -102,7 +102,7 @@
  * compositor's anchor extent, never <480px in practice). */
 @media (max-width: 480px) {
   :root {
-    font-size: 17px;
+    font-size: 18px;
   }
 }
 
