@@ -275,7 +275,7 @@ describe('useChatViewport', () => {
     // mocked page) before the trim.
     expect(api.items.value.map((it) => it.seq).sort((a, b) => a - b)).toEqual([50, 100, 150, 200])
 
-    api.onStuckChange(true)
+    api.evictExtraPages()
     await flushPromises()
 
     // After the trim only the newest MAX_PAGES_KEPT pages remain —
@@ -288,7 +288,7 @@ describe('useChatViewport', () => {
     unmount()
   })
 
-  it('does not trim when stuck-at-bottom but cache is at or below MAX_PAGES_KEPT', async() => {
+  it('evictExtraPages is a no-op when cache is at or below MAX_PAGES_KEPT', async() => {
     invoke.mockResolvedValueOnce(chatPage([transcriptText(50, 'p0')], false))
     const id = ref<InstanceId | undefined>('i-1')
     const { api, unmount } = mountViewport(id)
@@ -298,7 +298,7 @@ describe('useChatViewport', () => {
 
     expect(api.items.value).toHaveLength(1)
 
-    api.onStuckChange(true)
+    api.evictExtraPages()
     await flushPromises()
 
     expect(api.items.value).toHaveLength(1)

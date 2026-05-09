@@ -106,11 +106,15 @@ export interface UseChatViewportApi {
   /** Trigger a backward fetch; safe to call when in-flight (TanStack dedupes). */
   fetchNextPage: () => Promise<unknown>
   /**
-   * Notify the viewport that the captain is stuck-at-bottom. Triggers
-   * page-trim when the cache exceeds `MAX_PAGES_KEPT`. Called by the
-   * body component from a `watch` on the `useStickToBottom` signal.
+   * Drop pages older than `MAX_PAGES_KEPT`. Idempotent — if the cache
+   * is already within budget it's a no-op. The body view calls this
+   * whenever the captain is "in the live area" (within ~one viewport
+   * of bottom) so a re-entry from history reading triggers cleanup
+   * without waiting for the strict stuck-at-bottom threshold the auto-
+   * scroll uses. Newest pages are kept; oldest get dropped — the
+   * daemon serves them again on backward scroll.
    */
-  onStuckChange: (stuck: boolean) => void
+  evictExtraPages: () => void
   /** Unsubscribe the live-event listeners — wired automatically on unmount. */
   stop: () => void
 }
@@ -543,14 +547,17 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
 
   onUnmounted(stop)
 
-  // Page-trim policy. Fires only when transitioning into stuck-at-
-  // bottom AND the cache exceeds the kept-page budget. We avoid
-  // trimming on every scroll tick — `setQueryData` is observed by
-  // every subscriber and would re-render the body on each call.
-  function onStuckChange(stuck: boolean): void {
-    if (!stuck) {
-      return
-    }
+  // Page-trim policy. Idempotent: drop pages older than the
+  // newest `MAX_PAGES_KEPT` whenever the caller signals "the
+  // captain is in the live area, dropping older pages won't yank
+  // anything they're reading." The body view calls this from its
+  // scroll handler when the captain is within ~one viewport of
+  // bottom — wider than `useStickToBottom`'s 64px threshold (which
+  // gates the auto-scroll behaviour). The wider eviction trigger
+  // means the cache cleans up promptly when the captain returns
+  // to live, instead of waiting for the strict stuck-at-bottom
+  // condition that the auto-scroll uses.
+  function evictExtraPages(): void {
     const id = instanceId.value
 
     if (id === undefined) {
@@ -628,7 +635,7 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     isFetchingNextPage,
     hasNextPage,
     fetchNextPage,
-    onStuckChange,
+    evictExtraPages,
     stop
   }
 }

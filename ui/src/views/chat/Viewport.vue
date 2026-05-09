@@ -35,7 +35,7 @@
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { useEventListener, useNow } from '@vueuse/core'
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
@@ -118,9 +118,13 @@ const adapterForActive = computed(() => {
 
 const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 
-watch(stuck, (next) => {
-  viewport.onStuckChange(next)
-})
+// `stuck` is the auto-scroll signal — strict 64px-from-bottom
+// threshold so a captain reading 1 viewport above the foot
+// doesn't get yanked back on every chunk. We do NOT use it for
+// eviction; eviction fires from `onScroll` whenever the captain
+// is within ~one viewport of the bottom, which is wider than the
+// auto-scroll window so cache cleanup is prompt without
+// disturbing the read-history flow.
 
 // ── Rendering ──────────────────────────────────────────────────────
 //
@@ -222,7 +226,21 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
   }
 })
 
-// ── Backward pagination ─────────────────────────────────────────────
+// ── Backward pagination + eviction trigger ──────────────────────────
+//
+// One scroll handler drives two policies:
+//
+// 1. **Backward fetch** when scrollTop crosses
+//    `LOAD_MORE_THRESHOLD_PX` — the captain is reading near the top
+//    edge, pull older content.
+// 2. **Page eviction** when the captain is within ~one viewport of
+//    the bottom AND the cache exceeds `MAX_PAGES_KEPT`. Wider than
+//    `useStickToBottom`'s strict 64px so eviction fires the moment
+//    the captain returns to the live area, not only at the
+//    absolute foot. The composable's eviction is idempotent — we
+//    can safely call it on every scroll tick that satisfies the
+//    near-bottom test; it's a no-op when the cache is already in
+//    budget.
 function onScroll(): void {
   const el = scrollEl.value
 
@@ -230,16 +248,16 @@ function onScroll(): void {
     return
   }
 
-  if (!viewport.hasNextPage.value) {
-    return
-  }
-
-  if (viewport.isFetchingNextPage.value) {
-    return
-  }
-
-  if (el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
+  // Backward fetch.
+  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
     void viewport.fetchNextPage()
+  }
+
+  // Eviction trigger — within one viewport of the bottom.
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+
+  if (distanceFromBottom <= el.clientHeight) {
+    viewport.evictExtraPages()
   }
 }
 
@@ -596,14 +614,15 @@ defineExpose({ scrollEl })
 }
 
 /* Floating chevron — bottom-right of the chat surface. Sits above
- * the inner scroller so it doesn't move with content. Touch-friendly
- * size; rem-based so the mobile root-bump scales it up too. */
+ * the inner scroller so it doesn't move with content. Compact so
+ * it doesn't hog vertical space on mobile; rem-based so the
+ * mobile root-bump still scales it. */
 .scroll-to-bottom {
   position: absolute;
-  bottom: 0.75rem;
-  right: 0.875rem;
-  width: 2.25rem;
-  height: 2.25rem;
+  bottom: 0.625rem;
+  right: 0.625rem;
+  width: 1.5rem;
+  height: 1.5rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -612,6 +631,7 @@ defineExpose({ scrollEl })
   color: var(--theme-fg-dim);
   border: 1px solid var(--theme-border-soft);
   cursor: pointer;
+  font-size: 0.7rem;
   transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
   z-index: 5;
 }

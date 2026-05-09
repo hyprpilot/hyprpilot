@@ -66,8 +66,16 @@ export function prefetchInstanceMeta(client: QueryClient, instanceId: InstanceId
  * `prefetchInfiniteQuery` is the right primitive — `prefetchQuery`
  * shapes the cache as a single-page result, which `useInfiniteQuery`
  * would then discard.
+ *
+ * `limit` defaults to a viewport-derived window size (proxied off
+ * `window.innerHeight` since the actual chat scroller isn't mounted
+ * yet at boot time). On a phone that's ~8 turns; on a desktop
+ * monitor ~30 — far less than the old hard-coded 50, so the captain
+ * doesn't wait on bytes they can't see.
  */
-export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: InstanceId): Promise<void> {
+export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
+  const resolvedLimit = limit ?? bootPageSize()
+
   return client.prefetchInfiniteQuery({
     queryKey: ['snapshot-chat', instanceId],
     initialPageParam: undefined as number | undefined,
@@ -75,10 +83,30 @@ export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: I
       invoke(TauriCommand.InstanceSnapshotChat, {
         instanceId,
         before: undefined,
-        limit: DEFAULT_CHAT_LIMIT
+        limit: resolvedLimit
       }),
     getNextPageParam: (lastPage: ChatSnapshot) => (lastPage?.hasMore ? lastPage.oldestSeq : undefined)
   }) as unknown as Promise<void>
+}
+
+/**
+ * Boot-time viewport proxy. The chat scroller isn't mounted yet when
+ * the boot snapshot runs, so we estimate off `window.innerHeight`. The
+ * actual chat surface is shorter than the window (header + composer
+ * subtract ~150px on the typical layout), so we trim a chunk and
+ * apply the same `~96px / row` heuristic the live viewport uses.
+ * Clamps to a 20-row floor so even tiny mobile layouts get a useful
+ * first page.
+ */
+function bootPageSize(): number {
+  if (typeof window === 'undefined') {
+    return DEFAULT_CHAT_LIMIT
+  }
+  const ROW_HEIGHT_ESTIMATE = 96
+  const CHROME_BUDGET_PX = 160 // header + composer + status row
+  const usable = Math.max(0, window.innerHeight - CHROME_BUDGET_PX)
+
+  return Math.max(20, Math.ceil(usable / ROW_HEIGHT_ESTIMATE))
 }
 
 /**
