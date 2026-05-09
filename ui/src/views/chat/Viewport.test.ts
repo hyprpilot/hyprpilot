@@ -241,8 +241,14 @@ describe('Viewport.vue', () => {
     const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
 
     // Simulate a captain scrolling to the top of the chat — scrollTop
-    // crosses LOAD_MORE_THRESHOLD_PX (240) → 0.
-    Object.defineProperty(root, 'scrollTop', { configurable: true, value: 0 })
+    // crosses LOAD_MORE_THRESHOLD_PX (240) → 0. `writable: true` so a
+    // post-test rAF callback (scheduled by `useStickToBottom`'s
+    // observers) can still assign `el.scrollTop = scrollHeight`
+    // without throwing on read-only property — real browsers never
+    // lock down scrollTop, jsdom does when this defaults to false.
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true, writable: true, value: 0
+    })
     root.dispatchEvent(new Event('scroll'))
 
     await flushPromises()

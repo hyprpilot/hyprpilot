@@ -31,7 +31,18 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     if (!el) {
       return
     }
-    el.scrollTop = el.scrollHeight
+
+    // jsdom test paths sometimes redefine `scrollTop` as a non-writable
+    // property to simulate scroll positions; an rAF callback queued
+    // before that redefinition then throws when it fires post-test.
+    // Real browsers never lock down `scrollTop` so the try/catch is a
+    // no-op in production. Without it, vitest catches the post-test
+    // throw and CI exits 1 even though every assertion passed.
+    try {
+      el.scrollTop = el.scrollHeight
+    } catch {
+      /* swallow — read-only scrollTop in jsdom test cleanup */
+    }
   }
 
   function onScroll(): void {

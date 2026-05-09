@@ -24,8 +24,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { applyBootSnapshot } from './use-boot-snapshot'
 import { __resetActiveInstanceForTests, useActiveInstance } from './use-active-instance'
+import { applyBootSnapshot } from './use-boot-snapshot'
 import { TauriCommand } from '@ipc'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
@@ -59,7 +59,11 @@ function snapshotFixture(overrides: Record<string, unknown> = {}): Record<string
     windowState: { mode: 'anchor', anchorEdge: 'right' },
     homeDir: '/home/cenk',
     daemonCwd: '/tmp',
-    completionConfig: { ripgrep: { auto: true, debounceMs: 250, minPrefix: 3 } },
+    completionConfig: {
+      ripgrep: {
+        auto: true, debounceMs: 250, minPrefix: 3
+      }
+    },
     agents: { agents: [] },
     profiles: { profiles: [] },
     instances: { instances: [] },
@@ -100,6 +104,7 @@ describe('applyBootSnapshot — null safety on instance entries', () => {
 
     // Must not throw. Pre-fix this would TypeError at `null.length`.
     const ok = await applyBootSnapshot()
+
     expect(ok).toBe(true)
 
     // Setters guarded by `!= null` should NOT have been called for the
@@ -139,7 +144,9 @@ describe('applyBootSnapshot — null safety on instance entries', () => {
     invokeMock.mockResolvedValueOnce(
       snapshotFixture({
         instances: {
-          instances: [{ instanceId: 'i-3', agentId: 'claude-code', name: '' }]
+          instances: [{
+            instanceId: 'i-3', agentId: 'claude-code', name: ''
+          }]
         }
       })
     )
@@ -196,6 +203,7 @@ describe('applyBootSnapshot — failure modes', () => {
   it('returns false when invoke rejects (no Tauri host / older daemon)', async() => {
     invokeMock.mockRejectedValueOnce(new Error('host missing'))
     const ok = await applyBootSnapshot()
+
     expect(ok).toBe(false)
   })
 
