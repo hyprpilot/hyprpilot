@@ -1,6 +1,6 @@
 import { ref, watch, type Ref } from 'vue'
 
-import { setSessionRestored, setSessionRestoring } from './use-session-info'
+import { setSessionRestoring } from './use-session-info'
 import { useActiveInstance } from '../chrome/use-active-instance'
 import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone } from '@components'
@@ -130,7 +130,6 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
         instanceId: target,
         cwd
       })
-      setSessionRestored(target, true)
       pushToast(ToastTone.Ok, 'restoring session…')
     } catch(err) {
       const message = String(err)

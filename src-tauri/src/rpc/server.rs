@@ -125,7 +125,7 @@ pub async fn handle_connection(stream: UnixStream, state: RpcState) {
                 let state_clone = state.clone();
                 let tx = outbound_tx.clone();
                 dispatchers.spawn(async move {
-                    let DispatchOutput { response, new_status_rx } = dispatch(
+                    let DispatchOutput { response, new_status_rx } = dispatch_line(
                         &line,
                         DispatchInput {
                             app: Some(&state_clone.app),
@@ -242,18 +242,12 @@ pub(crate) struct DispatchInput<'a> {
     pub socket_path: Option<&'a std::path::Path>,
 }
 
-/// Crate-public alias for `dispatch` so transports beyond the unix
-/// socket (the WS bridge in `crate::remote::ws`) reuse the same
-/// dispatcher entry point. Keeps the dispatch behaviour single-source
-/// across transports.
-pub(crate) async fn dispatch_line(line: &str, input: DispatchInput<'_>) -> DispatchOutput {
-    dispatch(line, input).await
-}
-
 /// Parse one NDJSON line → `RpcDispatcher` → JSON-RPC `Response`.
 /// Tests pass `None` for `input.app` + a stand-alone fixture so they
-/// can drive routing without a live Tauri runtime.
-async fn dispatch(line: &str, input: DispatchInput<'_>) -> DispatchOutput {
+/// can drive routing without a live Tauri runtime. `pub(crate)` so
+/// the WS bridge in `crate::remote::ws` reuses the same entry point —
+/// dispatch behaviour stays single-source across transports.
+pub(crate) async fn dispatch_line(line: &str, input: DispatchInput<'_>) -> DispatchOutput {
     // Stage 1: JSON syntax. Failure here is -32700 parse error.
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -381,7 +375,7 @@ mod tests {
         let config = Arc::new(RwLock::new(Config::default()));
         let acp = Arc::new(AcpAdapter::new(Config::default(), Arc::new(StatusBroadcast::new(true))));
         let adapter: Arc<dyn Adapter> = acp.clone();
-        let out = dispatch(
+        let out = dispatch_line(
             line,
             DispatchInput {
                 app: None,
@@ -544,7 +538,7 @@ mod tests {
                 if l.trim().is_empty() {
                     continue;
                 }
-                let out = dispatch(
+                let out = dispatch_line(
                     &l,
                     DispatchInput {
                         app: None,
@@ -593,7 +587,7 @@ mod tests {
         let adapter: Arc<dyn Adapter> = acp.clone();
 
         let _ = acp;
-        let out = dispatch(
+        let out = dispatch_line(
             r#"{"jsonrpc":"2.0","id":1,"method":"status/subscribe"}"#,
             DispatchInput {
                 app: None,
@@ -612,7 +606,7 @@ mod tests {
         assert_eq!(v["result"]["state"], "idle", "first subscribe succeeds");
         assert!(out.new_status_rx.is_some(), "first subscribe returns a receiver");
 
-        let out = dispatch(
+        let out = dispatch_line(
             r#"{"jsonrpc":"2.0","id":2,"method":"status/subscribe"}"#,
             DispatchInput {
                 app: None,
@@ -713,7 +707,7 @@ mod tests {
                             Ok(Some(l)) if l.trim().is_empty() => continue,
                             Ok(Some(l)) => {
                                 let _ = &acp;
-                                let out = dispatch(
+                                let out = dispatch_line(
                                     &l,
                                     DispatchInput {
                                         app: None,

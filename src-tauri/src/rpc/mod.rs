@@ -77,12 +77,6 @@ impl RpcDispatcher {
     }
 }
 
-impl Default for RpcDispatcher {
-    fn default() -> Self {
-        Self::with_defaults()
-    }
-}
-
 #[cfg(test)]
 mod dispatcher_tests {
     use std::sync::Arc;

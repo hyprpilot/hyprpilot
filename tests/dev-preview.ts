@@ -303,7 +303,6 @@ async function exposeDevHelpers(): Promise<void> {
     setInstanceGitStatus: composables.setInstanceGitStatus,
     setInstanceMcpsCount: composables.setInstanceMcpsCount,
     setInstanceProfile: composables.setInstanceProfile,
-    setSessionRestored: composables.setSessionRestored,
     useActiveInstance: composables.useActiveInstance,
     openRootPalette: palette.openRootPalette,
     openRootLeaf: palette.openRootLeaf,

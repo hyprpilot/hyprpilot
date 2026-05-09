@@ -18,7 +18,7 @@
 import SessionsPreview from './SessionsPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, useDaemonCwd, usePalette, useProfiles, useSessionInfo } from '@composables'
-import { setSessionRestored, setSessionRestoring, pushToast } from '@composables'
+import { setSessionRestoring, pushToast } from '@composables'
 import { invoke, TauriCommand, type SessionSummary } from '@ipc'
 import { log } from '@lib'
 
@@ -141,9 +141,6 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
         agentId: profile?.agent,
         profileId: profile?.id
       })
-        .then(() => {
-          setSessionRestored(target, true)
-        })
         .catch((err) => {
           log.warn('palette-sessions: load failed', { err })
           pushToast(ToastTone.Err, `session load failed: ${String(err)}`)

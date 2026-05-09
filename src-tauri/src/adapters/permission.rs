@@ -321,8 +321,6 @@ impl DefaultPermissionController {
     }
 }
 
-/// Compile a list of glob patterns into a `GlobSet`. Returns `None`
-
 #[async_trait]
 impl PermissionController for DefaultPermissionController {
     fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision {

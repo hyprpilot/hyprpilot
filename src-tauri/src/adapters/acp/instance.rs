@@ -68,14 +68,6 @@ impl TurnState {
         self.current.as_deref()
     }
 
-    /// Symmetric accessor for completeness; no caller today since the
-    /// synthetic-id-only flow goes through `take_synthetic`. Narrow
-    /// allow keeps it visible — the inverse of `current()`.
-    #[allow(dead_code)]
-    fn synthetic(&self) -> Option<&str> {
-        self.synthetic.as_deref()
-    }
-
     /// Open a real (prompt-driven) turn. Clears any prior synthetic —
     /// the real prompt supersedes whatever the actor was wrapping.
     fn open_real(&mut self, turn_id: String) {
