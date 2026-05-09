@@ -73,6 +73,11 @@ export interface PermissionRequestRecord {
   args: string
   rawInput?: Record<string, unknown>
   options: PermissionOptionView[]
+  /// Daemon-authored presentation view, computed via the same
+  /// formatter registry the live `acp:permission-request` event
+  /// uses. Carries description / fields / output the captain reads
+  /// to understand what the tool will do before approving.
+  formatted: FormattedToolCall
 }
 
 export type TranscriptItem =

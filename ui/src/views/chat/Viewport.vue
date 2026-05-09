@@ -126,13 +126,18 @@ const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 // auto-scroll window so cache cleanup is prompt without
 // disturbing the read-history flow.
 
-/// Floating chevron click — jump to bottom AND drop extra pages
-/// in one shot. The instant-scroll path doesn't fire scroll events
-/// the way smooth-scroll does, so we evict explicitly after the
-/// jump rather than waiting for `onScroll` to react.
+/// Floating chevron click — drop extra pages first, THEN jump to
+/// the foot. Eviction shrinks `data.pages` from the OLDEST entry,
+/// which renders at the TOP of the DOM (`use-chat-viewport.items`
+/// walks pages last→first). Doing it before the scroll means the
+/// final scrollHeight `scrollToBottom()` reads is already
+/// post-eviction, so the assignment lands at the actual bottom.
+/// Reversed order races the cache mutation against the rAF that
+/// the suppress flag was meant to ride, occasionally landing the
+/// foot a couple hundred pixels above where the captain expects.
 function goToBottom(): void {
-  scrollToBottom()
   viewport.evictExtraPages()
+  scrollToBottom()
 }
 
 // ── Rendering ──────────────────────────────────────────────────────

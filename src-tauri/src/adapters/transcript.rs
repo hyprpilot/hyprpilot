@@ -223,6 +223,15 @@ pub struct PlanStep {
 ///
 /// Field is named `tool_kind` (not `kind`) for the same
 /// discriminator-collision reason as `ToolCallRecord`.
+///
+/// `formatted` mirrors the live `InstanceEvent::PermissionRequest`
+/// payload — without it, a permission row replayed from the daemon
+/// mirror's transcript would render with no description / fields /
+/// stats while the same prompt arriving live would render rich. The
+/// transcript-side mapping populates `formatted` via the same
+/// formatter registry the live emit uses (`format_running`-shaped
+/// dispatch with `started_at: 0` / `completed_at: None` so duration
+/// stats stay off the permission row, matching the live path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestRecord {
@@ -231,6 +240,7 @@ pub struct PermissionRequestRecord {
     pub tool_kind: String,
     pub args: String,
     pub options: Vec<PermissionOptionView>,
+    pub formatted: FormattedToolCall,
 }
 
 /// User-side submit payload. Keeps the adapter's `submit` signature

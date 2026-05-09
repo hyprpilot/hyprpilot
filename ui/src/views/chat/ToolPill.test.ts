@@ -37,4 +37,51 @@ describe('ToolPill.vue', () => {
 
     expect(wrapper.attributes('data-state')).toBe('running')
   })
+
+  /**
+   * Auto-expand policy: a finished tool with description / fields
+   * stays expanded so the captain reads the args (command, path,
+   * diff) without chasing a chevron. Output collapses inside the
+   * body so it doesn't dominate; description + fields ARE the
+   * "how was this called" answer the captain wants front-and-center.
+   */
+  it('stays expanded on Done state when description is present', () => {
+    const wrapper = mount(ToolPill, {
+      props: {
+        view: makeView({
+          state: ToolState.Done,
+          description: '```bash\nls /tmp\n```'
+        })
+      }
+    })
+
+    expect(wrapper.attributes('data-expanded')).toBe('true')
+  })
+
+  it('stays expanded on Done state when fields are present', () => {
+    const wrapper = mount(ToolPill, {
+      props: {
+        view: makeView({
+          state: ToolState.Done,
+          fields: [{ label: 'path', value: '/etc/hosts' }]
+        })
+      }
+    })
+
+    expect(wrapper.attributes('data-expanded')).toBe('true')
+  })
+
+  it('collapses on Done state when neither description nor fields are present', () => {
+    const wrapper = mount(ToolPill, {
+      props: {
+        view: makeView({
+          state: ToolState.Done,
+          description: undefined,
+          fields: []
+        })
+      }
+    })
+
+    expect(wrapper.attributes('data-expanded')).toBe('false')
+  })
 })

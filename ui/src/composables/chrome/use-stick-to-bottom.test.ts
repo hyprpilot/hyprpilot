@@ -152,4 +152,38 @@ describe('useStickToBottom', () => {
     expect(api.stuck.value).toBe(false)
     unmount()
   })
+
+  /**
+   * Chevron click case: the captain has scrolled away (stuck=false),
+   * the floating chevron appears, they click it. `scrollToBottom`
+   * jumps to the foot and arms the suppress flag. The next scroll
+   * event MUST flip `stuck=true` again — without this, the suppress
+   * branch swallows the natural restick, the chevron stays
+   * permanently visible, and `scheduleStick`'s `!stuck` early-return
+   * kills auto-follow on subsequent streaming chunks.
+   */
+  it('re-establishes stuck=true after a programmatic scroll-to-bottom from a scrolled-away state', () => {
+    const { api, harness, unmount } = mountHarness()
+
+    // Captain scrolls up; stuck flips false.
+    harness.setLayout({
+      scrollHeight: 2000, clientHeight: 500, scrollTop: 100
+    })
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(false)
+
+    // Chevron click → scrollToBottom. Layout now: foot is at 1500,
+    // assignment lands there.
+    harness.setLayout({
+      scrollHeight: 2000, clientHeight: 500, scrollTop: 100
+    })
+    api.scrollToBottom()
+
+    // Browser fires the scroll event from the programmatic scroll.
+    // The suppress branch must now write stuck=true so the chevron
+    // disappears and auto-follow resumes.
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(true)
+    unmount()
+  })
 })

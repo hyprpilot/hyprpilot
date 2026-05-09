@@ -33,7 +33,13 @@ const props = defineProps<{
   view: ToolCallView
 }>()
 
-const outputExpanded = ref(true)
+/// Output collapses by default so the description + fields (the
+/// HOW the tool is being called — command, path, args) stay
+/// visually primary. Output is the THEN-result; expanding it is
+/// an explicit drill-in. Without this, long stdout dominates the
+/// pill body and the captain has to scroll past the output to
+/// even see the args that were used.
+const outputExpanded = ref(false)
 
 function toggleOutput(): void {
   outputExpanded.value = !outputExpanded.value

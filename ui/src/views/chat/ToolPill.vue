@@ -24,18 +24,38 @@ const props = defineProps<{
   view: ToolCallView
 }>()
 
-function autoExpand(state: ToolState): boolean {
-  return state === ToolState.Running || state === ToolState.Awaiting
+function hasCallContext(view: ToolCallView): boolean {
+  return Boolean(view.description) || (Array.isArray(view.fields) && view.fields.length > 0)
 }
 
-const expanded = ref(autoExpand(props.view.state))
+/// Default-expand policy:
+///   - Running / Awaiting → always expanded (live view).
+///   - Pending / Done / Failed WITH a description or fields →
+///     stay expanded so the captain reads the args (command, path,
+///     diff) without having to chase a chevron. The body shows
+///     description + fields immediately; output is the auto-collapsed
+///     section inside (see `ToolBody.vue::outputExpanded`).
+///   - Pending / Done / Failed with NEITHER description nor fields
+///     (rare — usually means the formatter only shipped output,
+///     e.g. some MCP leafs) → collapse, since the body would only
+///     hold a stdout pre block already accessible by clicking
+///     anyway.
+function autoExpand(view: ToolCallView): boolean {
+  if (view.state === ToolState.Running || view.state === ToolState.Awaiting) {
+    return true
+  }
+
+  return hasCallContext(view)
+}
+
+const expanded = ref(autoExpand(props.view))
 let manuallyToggled = false
 
 watch(
   () => props.view.state,
-  (next) => {
+  () => {
     if (!manuallyToggled) {
-      expanded.value = autoExpand(next)
+      expanded.value = autoExpand(props.view)
     }
   }
 )

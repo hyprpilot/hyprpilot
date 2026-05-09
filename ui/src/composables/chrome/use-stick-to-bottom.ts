@@ -73,10 +73,26 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     }
 
     if (suppressNextScrollUpdate) {
-      // Programmatic scroll-to-bottom — ignore so post-scroll content
-      // growth doesn't unstick. The next mutation observer fire will
-      // re-trigger scheduleStick and we'll catch up to the new bottom.
+      // Programmatic scroll-to-bottom — the scroll event we're seeing
+      // here was caused by us, not the captain. Two things matter:
+      //
+      // 1. Don't let post-scroll content growth (a ToolPill auto-
+      //    expanding when state flips to `running` adds px AFTER the
+      //    assignment) flip stuck=false. That's the original race.
+      //
+      // 2. DO re-establish stuck=true. The chevron click case proves
+      //    why: when the captain is scrolled away (stuck=false) and
+      //    clicks the down arrow, `scrollToBottom()` lands them at
+      //    the foot, the suppress branch swallows the scroll event
+      //    — but if we just bailed without writing stuck, it would
+      //    stay false and the next streaming chunk's MutationObserver
+      //    would early-return in scheduleStick. Auto-follow stays
+      //    dead until the captain manually scrolls within 64px.
+      //
+      // Forcing stuck=true here matches captain intent: a programmatic
+      // scroll-to-bottom is always an explicit "follow the live tail".
       suppressNextScrollUpdate = false
+      stuck.value = true
 
       return
     }
