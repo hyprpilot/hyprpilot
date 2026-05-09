@@ -313,6 +313,59 @@ const turnDurationLabels = computed<Map<string, string>>(() => {
   return out
 })
 
+/// Latest `updatedAt` across every entry in a block — turn / stream
+/// / tool. The `tryMergeIntoExisting` path mutates the existing
+/// entry in-place when streaming chunks arrive (`prev.entry.turn.text
+/// += chunk; prev.entry.turn.updatedAt = it.seq`), so a v-memo dep
+/// based purely on array LENGTH wouldn't change per chunk and the
+/// live row's text would freeze. The latest `updatedAt` advances on
+/// every merge — for the live block it ticks per chunk; for history
+/// blocks it stays stable post-turn-end so v-memo skips render.
+interface UpdatedAtBlock {
+  turnEntries: { turn: { updatedAt?: number } }[]
+  streamEntries: { item: { updatedAt?: number } }[]
+  toolCalls: { call: { updatedAt?: number } }[]
+  thoughts: { call: { updatedAt?: number } }[]
+}
+
+function latestUpdatedAt(block: UpdatedAtBlock): number {
+  let max = 0
+
+  for (const t of block.turnEntries) {
+    const u = t.turn.updatedAt ?? 0
+
+    if (u > max) {
+      max = u
+    }
+  }
+
+  for (const s of block.streamEntries) {
+    const u = s.item.updatedAt ?? 0
+
+    if (u > max) {
+      max = u
+    }
+  }
+
+  for (const tc of block.toolCalls) {
+    const u = tc.call.updatedAt ?? 0
+
+    if (u > max) {
+      max = u
+    }
+  }
+
+  for (const th of block.thoughts) {
+    const u = th.call.updatedAt ?? 0
+
+    if (u > max) {
+      max = u
+    }
+  }
+
+  return max
+}
+
 function elapsedFor(turnId?: string): string | undefined {
   if (!turnId) {
     return undefined
@@ -509,12 +562,30 @@ defineExpose({ scrollEl })
            doesn't compete with row offsets. -->
       <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
 
-      <!-- Plain v-for over `blocks`. Page-trim already bounds the
-           live DOM to ~150 rows; that's well within Vue's render
-           budget for typical chat sessions. -->
+      <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
+           re-renders for history rows. Live row keeps re-rendering
+           every chunk because `latestUpdatedAt(block)` advances per
+           streaming merge (every chunk bumps the corresponding
+           entry's `updatedAt` to the new seq). History rows have a
+           stable `latestUpdatedAt` post-turn-end so v-memo skips
+           their VNode walk entirely under streaming.
+           Deps cover: turn identity, role, content-shape counts,
+           per-chunk freshness via `latestUpdatedAt`, live flag,
+           elapsed/usage labels. -->
       <Turn
         v-for="(block, blockIdx) in blocks"
         :key="block.groupKey"
+        v-memo="[
+          block.groupKey,
+          block.role,
+          block.turnEntries.length,
+          block.toolCalls.length,
+          block.streamEntries.length,
+          latestUpdatedAt(block),
+          blockIdx === liveBlockIdx,
+          elapsedFor(block.turnId),
+          usageFor(block.turnId)
+        ]"
         :role="block.role"
         :live="blockIdx === liveBlockIdx"
         :elapsed="elapsedFor(block.turnId)"
