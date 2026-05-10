@@ -245,7 +245,7 @@ pub async fn handle_socket(socket: WebSocket, state: RemoteState, peer: SocketAd
             // (transcript chunks during a streaming reply, or every
             // `session_list` spawning a short-lived agent) randomly
             // starves the outbound drain — boot-path invokes like
-            // `get_home_dir` get queued in `outbound_rx` forever while
+            // `boot_snapshot` get queued in `outbound_rx` forever while
             // the select! keeps picking `events_rx.recv()`. The
             // captain sees the loading screen freeze on whatever
             // step's awaiting.

@@ -61,7 +61,6 @@ import {
   useComposer,
   useDaemonCwd,
   useFocusPrefetch,
-  useHomeDir,
   useKeymap,
   useKeymaps,
   usePalette,
@@ -155,7 +154,6 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 // stick-to-bottom) lives inside `<ChatViewport>`. Overlay reads only
 // the cross-feature stores that drive surfaces other than the body.
 const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
-const { displayPath } = useHomeDir()
 const { daemonCwd } = useDaemonCwd()
 const { items: queuedItems, flush: flushActiveQueue } = useQueue()
 const { entries: toastEntries, dismiss: dismissToast } = useToasts()
@@ -176,15 +174,12 @@ const activeProfile = computed(() => profiles.value.find((p) => p.id === selecte
  * the entire pre-first-turn window — captain reads that as "no cwd
  * configured" instead of "I'll spawn where the daemon was started".
  *
- * `displayPath` does the `home → ~` substitution (read-only inverse
- * of the daemon's `paths_resolve`); chrome's CSS `text-overflow:
- * ellipsis` handles overflow.
+ * Both wire fields ship pre-formatted display strings (`~/proj/foo`)
+ * — the daemon collapses `$HOME` server-side via
+ * `tools::path::display_cwd`. The UI renders verbatim; chrome's CSS
+ * `text-overflow: ellipsis` handles overflow.
  */
-const cwdDisplay = computed<string | undefined>(() => {
-  const raw = sessionInfo.value.cwd ?? daemonCwd.value
-
-  return raw ? displayPath(raw) : undefined
-})
+const cwdDisplay = computed<string | undefined>(() => sessionInfo.value.cwd ?? daemonCwd.value)
 const headerCwd = cwdDisplay
 const headerCwdFull = cwdDisplay
 const idleCwd = cwdDisplay

@@ -124,10 +124,6 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             Ok(serde_json::to_value(state.inner().clone())
                 .map_err(|e| RpcError::internal_error(format!("serialize window state: {e}")))?)
         }
-        "get_home_dir" => Ok(json!(crate::paths::home_dir().to_string_lossy())),
-        "get_daemon_cwd" => Ok(json!(std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/".to_string()))),
         "get_completion_config" => {
             let config = app
                 .try_state::<Arc<std::sync::RwLock<Config>>>()
@@ -850,7 +846,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                             "autoAcceptTools": m.hyprpilot.auto_accept_tools,
                             "autoRejectTools": m.hyprpilot.auto_reject_tools,
                         },
-                        "source": m.source.display().to_string(),
+                        "source": crate::tools::path::display_cwd(&m.source.to_string_lossy()),
                     })
                 })
                 .collect();

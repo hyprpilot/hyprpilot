@@ -15,7 +15,7 @@
 import InstancesPreview from './InstancesPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useActiveInstance, type InstanceId } from '@composables'
-import { useHomeDir, usePhase, useQueue, useSessionInfo, useTerminals, pushToast } from '@composables'
+import { usePhase, useQueue, useSessionInfo, useTerminals, pushToast } from '@composables'
 import { TauriCommand } from '@ipc'
 import { type InstanceListEntry } from '@ipc'
 import { invoke } from '@ipc/bridge'
@@ -25,7 +25,7 @@ interface InstanceRow extends PaletteEntry {
   raw: InstanceListEntry
 }
 
-function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined) => string, activeInstanceId: string | undefined): InstanceRow {
+function rowFor(entry: InstanceListEntry, activeInstanceId: string | undefined): InstanceRow {
   const { info } = useSessionInfo(entry.instanceId)
   const { items } = useQueue(entry.instanceId)
   const { all: terminals } = useTerminals(entry.instanceId)
@@ -46,9 +46,10 @@ function rowFor(entry: InstanceListEntry, displayPath: (path: string | undefined
   const cwd = info.value.cwd
 
   if (cwd) {
-    // Display-friendly: home → ~ substitution. Chrome's CSS
-    // `text-overflow: ellipsis` handles overflow at row width.
-    meta.push(displayPath(cwd))
+    // Already display-formatted server-side (`tools::path::display_cwd`)
+    // — chrome's CSS `text-overflow: ellipsis` handles overflow at
+    // row width.
+    meta.push(cwd)
   }
 
   if (info.value.mode) {
@@ -110,7 +111,6 @@ export async function shutdownInstance(id: InstanceId): Promise<void> {
 
 export async function openInstancesLeaf(): Promise<void> {
   const palette = usePalette()
-  const { displayPath } = useHomeDir()
   const { id: activeId } = useActiveInstance()
   const activeInstanceId = activeId.value
 
@@ -132,7 +132,7 @@ export async function openInstancesLeaf(): Promise<void> {
     return
   }
 
-  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, displayPath, activeInstanceId))
+  const entries: PaletteEntry[] = instances.map((i) => rowFor(i, activeInstanceId))
   const spec = {
     mode: PaletteMode.Select,
     title: 'instances',
@@ -171,7 +171,7 @@ export async function openInstancesLeaf(): Promise<void> {
 
         return
       }
-      update(next.map((i) => rowFor(i, displayPath, activeInstanceId)))
+      update(next.map((i) => rowFor(i, activeInstanceId)))
       // Preview's a separate component instance bound via spec.preview;
       // its data lands through `props` which already reads from
       // `instances` via the InstancesPreview component. Re-binding

@@ -16,15 +16,12 @@
 import { computed } from 'vue'
 
 import { type PaletteEntry } from '@composables'
-import { useHomeDir } from '@composables'
 import type { MCPItem } from '@ipc'
 
 const props = defineProps<{
   entry?: PaletteEntry
   items: MCPItem[]
 }>()
-
-const { homeDir } = useHomeDir()
 
 const active = computed<MCPItem | undefined>(() => {
   if (!props.entry) {
@@ -34,19 +31,10 @@ const active = computed<MCPItem | undefined>(() => {
   return props.items.find((m) => m.name === props.entry?.id)
 })
 
-const sourceDisplay = computed(() => {
-  const src = active.value?.source
-
-  if (!src) {
-    return ''
-  }
-
-  if (homeDir.value && src.startsWith(homeDir.value)) {
-    return `~${src.slice(homeDir.value.length)}`
-  }
-
-  return src
-})
+// `source` ships pre-formatted from the daemon
+// (`tools::path::display_cwd`) — render verbatim. Empty string when
+// no entry is highlighted; chrome's CSS handles overflow.
+const sourceDisplay = computed(() => active.value?.source ?? '')
 
 const commandStr = computed<string | undefined>(() => {
   const raw = active.value?.raw

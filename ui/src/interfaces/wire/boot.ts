@@ -18,7 +18,8 @@ export interface BootSnapshot {
   theme: Theme
   keymaps: KeymapsConfig
   windowState: WindowState
-  homeDir: string
+  /// Daemon working directory in display form (`$HOME` collapsed
+  /// to `~`). The daemon owns formatting; the UI renders verbatim.
   daemonCwd: string
   completionConfig: CompletionConfigSnapshot
   agents: { agents: AgentSummary[] }

@@ -598,7 +598,7 @@ pub async fn mcps_list(adapter: AdapterState<'_>, instance_id: Option<String>) -
                     "autoAcceptTools": m.hyprpilot.auto_accept_tools,
                     "autoRejectTools": m.hyprpilot.auto_reject_tools,
                 },
-                "source": m.source.display().to_string(),
+                "source": crate::tools::path::display_cwd(&m.source.to_string_lossy()),
             })
         })
         .collect();

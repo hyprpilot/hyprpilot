@@ -14,12 +14,16 @@
  *
  * Path resolution (`~` expansion, `${VAR}` interpolation, relative→
  * absolute against the active-instance cwd) lives daemon-side via
- * `paths_resolve`. The frontend just reads the resolved value back
- * and the home-substituted display form.
+ * `paths_resolve` for the relative-against-cwdBase pre-resolution
+ * step (the daemon also re-normalizes at the actor boundary, so the
+ * round-trip is purely so the captain's MRU history records a single
+ * canonical form for ranking). The daemon ships pre-formatted display
+ * strings (`~/proj/foo`) on every wire surface — the frontend renders
+ * verbatim and never reaches for `$HOME`.
  */
 
 import { ToastTone } from '@components'
-import { useActiveInstance, useCwdHistory, useHomeDir, usePalette, useProfiles, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
+import { useActiveInstance, useCwdHistory, usePalette, useProfiles, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -30,7 +34,6 @@ const COMPLETION_DEBOUNCE_MS = 120
 async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
   const { id: activeId } = useActiveInstance()
   const { profiles, selected } = useProfiles()
-  const { displayPath } = useHomeDir()
   const { push } = useCwdHistory()
   const toasts = useToasts()
 
@@ -66,7 +69,11 @@ async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
       profileId
     })
     push(absolute)
-    toasts.push(ToastTone.Ok, `cwd → ${displayPath(absolute)}`)
+    // The daemon will emit `acp:instance-meta` with the
+    // display-formatted form once the new actor reaches Running;
+    // the toast quotes the captain's typed input verbatim until then
+    // so the feedback isn't blocked on a wire round-trip.
+    toasts.push(ToastTone.Ok, `cwd → ${rawPath.trim()}`)
   } catch(err) {
     log.warn('palette-cwd: instance_restart failed', { err: String(err) })
     toasts.push(ToastTone.Err, `cwd failed: ${String(err)}`)
@@ -135,13 +142,22 @@ async function fetchPathCompletions(query: string, cwdBase?: string): Promise<Pa
  * caller-supplied candidate list lands on; identical ranking
  * across UI / Neovim plugin / future frontends.
  */
-async function rankRecents(query: string, recents: string[], displayPath: (p: string | undefined) => string): Promise<PaletteEntry[]> {
+async function rankRecents(query: string, recents: string[]): Promise<PaletteEntry[]> {
   if (recents.length === 0) {
     return []
   }
+  // Recents are stored in absolute form (the byte-canonical key for
+  // the MRU dedupe); render them in display form for the row label
+  // by passing the absolute through the daemon's display helper. We
+  // skip the round-trip here — the captain's own typed shape is
+  // already canonical (`~/proj` → typed as `~/proj`), and absolutes
+  // collapse only if they sit under `$HOME` (which the UI no longer
+  // tracks). Showing the absolute is acceptable; the home prefix
+  // collapse round-trip happens at next reload via the daemon-emitted
+  // session.cwd.
   const candidates = recents.map((cwd) => ({
     id: cwd,
-    label: displayPath(cwd),
+    label: cwd,
     description: cwd
   }))
 
@@ -168,16 +184,18 @@ async function rankRecents(query: string, recents: string[], displayPath: (p: st
 export function openCwdLeaf(): void {
   const { open } = usePalette()
   const { history } = useCwdHistory()
-  const { displayPath } = useHomeDir()
   const { info: sessionInfo } = useSessionInfo()
 
   // Initial state: recents in MRU order, projected synchronously
   // so first paint has rows. Empty-query rank is identity, so we
   // skip the round-trip — captain hasn't typed anything to fuzzy-
-  // match against.
+  // match against. Render the stored cwd verbatim; the daemon's
+  // wire shape collapses `$HOME` already on subsequent emits, so
+  // the moment the captain commits a recent + the agent reports
+  // back, the row label updates to the display form on next open.
   const initialRecents: PaletteEntry[] = history.value.map((cwd) => ({
     id: `${RECENT_ROW_PREFIX}${cwd}`,
-    name: displayPath(cwd),
+    name: cwd,
     description: cwd
   }))
 
@@ -211,7 +229,7 @@ export function openCwdLeaf(): void {
         // cwd" (path source) and "/home/cenk/work/proj" from MRU
         // (recents source). Paths render first since they're more
         // immediately actionable.
-        const recentsP = rankRecents(trimmed, history.value, displayPath)
+        const recentsP = rankRecents(trimmed, history.value)
         const pathsP = fetchPathCompletions(trimmed, sessionInfo.value.cwd)
 
         void Promise.all([pathsP, recentsP]).then(([paths, recents]) => {

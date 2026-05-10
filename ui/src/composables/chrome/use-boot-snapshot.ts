@@ -2,9 +2,9 @@
  * Boot snapshot — one IPC call returns every chrome / config field
  * the loading screen needs before mount drops.
  *
- * Replaces six sequential `await invoke(...)` round-trips
- * (`get_theme` / `get_window_state` / `get_home_dir` / `get_daemon_cwd`
- * / `get_keymaps` / `get_completion_config` + `agents_list` /
+ * Replaces five sequential `await invoke(...)` round-trips
+ * (`get_theme` / `get_window_state` / `get_daemon_cwd` /
+ * `get_keymaps` / `get_completion_config` + `agents_list` /
  * `profiles_list` / `instances_list`) with one. The remote bridge
  * makes the round-trip cost particularly visible — every invoke rides
  * the same WS, so the captain spent up to 6× RTT staring at
@@ -22,7 +22,7 @@
 import { type QueryClient } from '@tanstack/vue-query'
 
 import { useActiveInstance } from './use-active-instance'
-import { setDaemonCwd, setHomeDir } from './use-home-dir'
+import { setDaemonCwd } from './use-daemon-cwd'
 import { applyKeymapsFromObject } from './use-keymaps'
 import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
@@ -52,7 +52,6 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   applyWindowStateFromObject(snap.windowState)
   applyKeymapsFromObject(snap.keymaps)
   applyCompletionConfigFromObject(snap.completionConfig)
-  setHomeDir(snap.homeDir)
   setDaemonCwd(snap.daemonCwd)
 
   // Seed per-instance session-info from the registry list so the

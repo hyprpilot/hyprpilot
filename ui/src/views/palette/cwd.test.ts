@@ -2,11 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import { openCwdLeaf } from './cwd'
-import { useActiveInstance, __resetCwdHistoryForTests, useCwdHistory, __resetHomeDirForTests, useHomeDir, __resetUseProfilesForTests } from '@composables'
+import { useActiveInstance, __resetCwdHistoryForTests, useCwdHistory, __resetUseProfilesForTests } from '@composables'
 import { __resetPaletteStackForTests, type PaletteEntry, usePalette, PaletteMode } from '@composables'
 import { TauriCommand } from '@ipc'
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
+
+/// Fixed home for `paths_resolve` mock — the daemon-side resolver
+/// reads `$HOME` from the process; the UI just trusts whatever the
+/// daemon returns. Using a hardcoded value here makes the mock
+/// behaviour stable across CI environments.
+const TEST_HOME = '/home/cenk'
 
 vi.mock('@ipc/bridge', async() => ({
   ...(await vi.importActual<object>('@ipc/bridge')),
@@ -35,13 +41,7 @@ function mockResolveAndRestart(): void {
       }
 
       if (raw === '~' || raw.startsWith('~/')) {
-        const home = useHomeDir().homeDir.value
-
-        if (!home) {
-          return Promise.resolve(null)
-        }
-
-        return Promise.resolve(raw === '~' ? home : `${home}${raw.slice(1)}`)
+        return Promise.resolve(raw === '~' ? TEST_HOME : `${TEST_HOME}${raw.slice(1)}`)
       }
 
       if (!cwdBase) {
@@ -69,7 +69,6 @@ beforeEach(() => {
   invoke.mockReset()
   __resetCwdHistoryForTests()
   __resetPaletteStackForTests()
-  __resetHomeDirForTests()
   __resetUseProfilesForTests()
   useActiveInstance().id.value = undefined
 })
@@ -148,7 +147,6 @@ describe('openCwdLeaf', () => {
 
   it('expands `~/path` against the resolved home dir before submit', async() => {
     useActiveInstance().set('inst-1')
-    useHomeDir().homeDir.value = '/home/cenk'
     mockResolveAndRestart()
 
     openCwdLeaf()

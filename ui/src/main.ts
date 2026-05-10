@@ -3,9 +3,7 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { createApp } from 'vue'
 
 import App from './App.vue'
-import {
-  applyBootSnapshot, applyTheme, applyWindowState, loadCompletionConfig, loadDaemonCwd, loadHomeDir, loadKeymaps, markBootDone, setBootStatus, startGitStatus
-} from '@composables'
+import { applyBootSnapshot, applyTheme, applyWindowState, loadCompletionConfig, loadKeymaps, markBootDone, setBootStatus, startGitStatus } from '@composables'
 import { ensureRemoteConnection, isRemoteHost, subscribePair } from '@ipc/remote-bridge'
 import { log } from '@lib'
 import '@assets/styles.css'
@@ -123,12 +121,12 @@ async function boot(): Promise<void> {
   installGlobalErrorBridge()
 
   // Single-RPC boot. `applyBootSnapshot` rolls theme + windowState +
-  // keymaps + homeDir + daemonCwd + completionConfig into one IPC and
-  // dispatches each into its existing applier. Replaces the previous
-  // 6-await sequence — particularly load-bearing on the remote bridge
-  // where each round-trip rides the same WS, so the captain spent up
-  // to 6× RTT staring at "configuring window…" while the daemon
-  // already had every answer in hand.
+  // keymaps + daemonCwd + completionConfig into one IPC and dispatches
+  // each into its existing applier. Replaces the previous 5-await
+  // sequence — particularly load-bearing on the remote bridge where
+  // each round-trip rides the same WS, so the captain spent up to 5×
+  // RTT staring at "configuring window…" while the daemon already had
+  // every answer in hand.
   //
   // On Tauri host the snapshot still runs before mount so FOUC stays
   // shut. On remote, mount comes first (the pair screen needs DOM
@@ -145,8 +143,6 @@ async function boot(): Promise<void> {
       // `boot_snapshot` yet. Granular loaders soft-fail individually.
       await applyTheme()
       await applyWindowState()
-      await loadHomeDir()
-      await loadDaemonCwd()
       await loadKeymaps()
       await loadCompletionConfig()
     }
@@ -156,8 +152,6 @@ async function boot(): Promise<void> {
     if (!(await applyBootSnapshot(queryClient))) {
       await applyTheme()
       await applyWindowState()
-      await loadHomeDir()
-      await loadDaemonCwd()
       await loadKeymaps()
       await loadCompletionConfig()
     }

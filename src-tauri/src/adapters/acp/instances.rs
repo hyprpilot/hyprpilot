@@ -772,13 +772,27 @@ impl AcpAdapter {
             .send(InstanceCommand::ListSessions { cwd, reply: reply_tx })
             .map_err(|_| RpcError::internal_error("instance actor closed before accepting list request"))?;
 
-        let response = reply_rx
+        let mut response = reply_rx
             .await
             .map_err(|_| RpcError::internal_error("instance actor dropped list reply"))?
             .map_err(|err| RpcError::internal_error(format!("session/list failed: {err}")));
 
         if let Some(handle) = ephemeral {
             handle.shutdown().await;
+        }
+
+        // Display-format every session's cwd so the wire shape matches
+        // `InstanceMeta { cwd }` byte-for-byte. Without this the UI's
+        // `s.cwd === activeInstance.cwd` filter compares the agent-
+        // persisted absolute against our display-formatted (`~/...`)
+        // active cwd and yields the spurious "no sessions" the
+        // captain hit. Mutating `cwd` on the non-exhaustive struct is
+        // allowed since fields stay public.
+        if let Ok(ref mut r) = response {
+            for s in r.sessions.iter_mut() {
+                let display = crate::tools::path::display_cwd(&s.cwd.to_string_lossy());
+                s.cwd = display.into();
+            }
         }
 
         response

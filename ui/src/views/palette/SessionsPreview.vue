@@ -15,14 +15,11 @@ import { ref, watch } from 'vue'
 
 import { Loading } from '@components'
 import { type PaletteEntry } from '@composables'
-import { useHomeDir } from '@composables'
 import { invoke, TauriCommand, type SessionInfoResult } from '@ipc'
 
 const props = defineProps<{
   entry?: PaletteEntry
 }>()
-
-const { displayPath } = useHomeDir()
 
 const info = ref<SessionInfoResult>()
 const loading = ref(false)
@@ -77,10 +74,6 @@ watch(
   },
   { immediate: true }
 )
-
-function formatCwd(raw: string): string {
-  return displayPath(raw)
-}
 </script>
 
 <template>
@@ -99,7 +92,7 @@ function formatCwd(raw: string): string {
         </div>
         <div>
           <dt>cwd</dt>
-          <dd>{{ formatCwd(info.cwd) }}</dd>
+          <dd>{{ info.cwd }}</dd>
         </div>
         <div v-if="info.lastTurnAt">
           <dt>last turn</dt>
