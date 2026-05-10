@@ -11,6 +11,7 @@
 //! `runtime.rs` / `spawn.rs` files; consolidated so the actor's
 //! lifecycle reads top-to-bottom in one place.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1770,9 +1771,10 @@ async fn run(params: RunParams) {
     };
 
     let (client_events_tx, mut client_events_rx) = mpsc::unbounded_channel::<ClientEvent>();
-    let sandbox_root = cfg
+    let sandbox_root: PathBuf = cfg
         .cwd
         .clone()
+        .map(|p| crate::tools::path::normalize_cwd(&p.to_string_lossy()).into())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
     let client = match AcpClient::with_instance_id(
         client_events_tx,
@@ -1924,9 +1926,20 @@ async fn run(params: RunParams) {
             "acp::instance: initialized"
         );
 
-        let cwd = cfg
+        // Normalize the configured cwd at the actor boundary so
+        // every downstream sink (the spawn `current_dir`, the
+        // `InstanceMeta { cwd }` display, the agent-persisted
+        // `session.cwd` byte-compare in the sessions palette filter)
+        // agrees on the same absolute path. Without this, a
+        // captain-typed `~/proj/foo` lands raw in `cfg.cwd`, the
+        // spawn separately re-expands it, and the UI's sessions
+        // filter compares the raw `~/...` form against the agent's
+        // already-absolute `session.cwd` — yielding the spurious
+        // "no sessions" the captain hit when changing cwd.
+        let cwd: PathBuf = cfg
             .cwd
             .clone()
+            .map(|p| crate::tools::path::normalize_cwd(&p.to_string_lossy()).into())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let load_supported = init.agent_capabilities.load_session;
 
@@ -1934,8 +1947,11 @@ async fn run(params: RunParams) {
         // `InstanceEvent::InstanceMeta` because claude-agent-acp doesn't
         // proactively send `SessionInfoUpdate` / `CurrentModeUpdate`
         // notifications — the UI would otherwise never see cwd / mode
-        // / model values.
-        let cwd_str = cwd.display().to_string();
+        // / model values. Display-formatted (home → `~`) here so
+        // every wire consumer renders the same shape — frontends
+        // never need to know the captain's `$HOME` to do their
+        // own collapse.
+        let cwd_str = crate::tools::path::display_cwd(&cwd.to_string_lossy());
         let current_mode_meta: Arc<tokio::sync::RwLock<Option<String>>> =
             Arc::new(tokio::sync::RwLock::new(resolved_mode.clone()));
         let current_model_meta: Arc<tokio::sync::RwLock<Option<String>>> =
