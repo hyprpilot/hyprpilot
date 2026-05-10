@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/hyprpilot/hyprpilot/compare/v0.2.0...v0.2.1) (2026-05-10)
+
+
+### Bug Fixes
+
+* **adapters:** cwd "no sessions" + backend-owned path display ([#34](https://github.com/hyprpilot/hyprpilot/issues/34)) ([bb97049](https://github.com/hyprpilot/hyprpilot/commit/bb97049701266232f603d3c3c75fa3e8fb1d23d9))
+
 ## [0.2.0](https://github.com/hyprpilot/hyprpilot/compare/v0.1.9...v0.2.0) (2026-05-09)
 
 
