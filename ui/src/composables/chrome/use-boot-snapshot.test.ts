@@ -57,8 +57,7 @@ function snapshotFixture(overrides: Record<string, unknown> = {}): Record<string
     theme: { surface: { default: '#000000' } },
     keymaps: {},
     windowState: { mode: 'anchor', anchorEdge: 'right' },
-    homeDir: '/home/cenk',
-    daemonCwd: '/tmp',
+    daemonCwd: '~/tmp',
     completionConfig: {
       ripgrep: {
         auto: true, debounceMs: 250, minPrefix: 3

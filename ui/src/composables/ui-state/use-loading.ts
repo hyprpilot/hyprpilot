@@ -9,9 +9,9 @@ import { computed, type ComputedRef, ref, type Ref } from 'vue'
  *
  * Anyone can `setBootStatus("doing X")` while boot is in progress —
  * the boot sequence updates this as it walks `applyTheme` →
- * `applyWindowState` → `loadHomeDir` →
- * `loadKeymaps` so the user follows what's happening rather than
- * staring at an inscrutable spinner during the first paint.
+ * `applyWindowState` → `loadKeymaps` so the user follows what's
+ * happening rather than staring at an inscrutable spinner during the
+ * first paint.
  */
 const bootStatus = ref<string>('starting…')
 const bootDone = ref(false)

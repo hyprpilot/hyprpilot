@@ -115,7 +115,7 @@ async fn window_toggle(
 /// Aggregated boot payload — every field the UI needs before the
 /// fullscreen Loading overlay can drop. Replaces six sequential
 /// `invoke()` round-trips (`get_theme` / `get_keymaps` /
-/// `get_window_state` / `get_home_dir` / `get_daemon_cwd` /
+/// `get_window_state` / `get_daemon_cwd` /
 /// `get_completion_config` + `agents_list` + `profiles_list` +
 /// `instances_list`) with one. Particularly load-bearing on the
 /// remote bridge where each round-trip rides the same WS — six
@@ -131,7 +131,10 @@ pub(crate) struct BootSnapshot {
     pub(crate) theme: Theme,
     pub(crate) keymaps: KeymapsConfig,
     pub(crate) window_state: WindowState,
-    pub(crate) home_dir: String,
+    /// Daemon working directory in display form (`$HOME` collapsed
+    /// to `~`). The captain's mental model is the displayed path; we
+    /// don't ship the absolute form because no UI consumer needs it
+    /// and shipping it would force every frontend to re-collapse.
     pub(crate) daemon_cwd: String,
     pub(crate) completion_config: serde_json::Value,
     pub(crate) agents: serde_json::Value,
@@ -180,14 +183,15 @@ pub(crate) async fn build_boot_snapshot(
         instances_payload.insert("focusedId".into(), serde_json::Value::String(id));
     }
 
+    let daemon_cwd_abs = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/".to_string());
+
     Ok(BootSnapshot {
         theme: theme.clone(),
         keymaps: keymaps.clone(),
         window_state: window_state.clone(),
-        home_dir: crate::paths::home_dir().to_string_lossy().into_owned(),
-        daemon_cwd: std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/".to_string()),
+        daemon_cwd: crate::tools::path::display_cwd(&daemon_cwd_abs),
         completion_config,
         agents,
         profiles,
@@ -321,8 +325,6 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_keymaps,
             get_window_state,
             window_toggle,
-            desktop::get_home_dir,
-            desktop::get_daemon_cwd,
             desktop::get_git_status,
             desktop::paths_resolve,
             desktop::daemon_rpc,

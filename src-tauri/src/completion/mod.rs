@@ -219,8 +219,15 @@ pub(crate) fn token_before_cursor<'a>(text: &'a str, cursor: usize, allowed_punc
 /// own cwd if none was provided. Sources that need a base directory
 /// (path, ripgrep) call this so they don't have to re-implement
 /// the fallback.
+///
+/// Normalizes the input so a UI-supplied display form (`~/proj` —
+/// the cwd palette ships display-formatted strings now that the
+/// daemon owns formatting) becomes a filesystem-resolvable absolute
+/// path before the directory walk. Without this the path source
+/// silently returns "no completions" against any home-relative
+/// active cwd.
 pub(crate) fn resolve_cwd(cwd: Option<&Path>) -> PathBuf {
-    cwd.map(Path::to_path_buf)
+    cwd.map(|p| crate::tools::path::normalize_cwd(&p.to_string_lossy()).into())
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("/"))
 }

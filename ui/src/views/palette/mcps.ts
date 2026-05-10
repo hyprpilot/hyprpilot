@@ -14,7 +14,7 @@
  */
 
 import MCPsPreview from './MCPsPreview.vue'
-import { type PaletteEntry, PaletteMode, useHomeDir, usePalette } from '@composables'
+import { type PaletteEntry, PaletteMode, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 
 export interface OpenMcpsLeafOptions {
@@ -28,13 +28,14 @@ export interface OpenMcpsLeafOptions {
  */
 export async function openMcpsLeaf(opts: OpenMcpsLeafOptions = {}): Promise<void> {
   const { open } = usePalette()
-  const { displayPath } = useHomeDir()
   const result = await invoke(TauriCommand.McpsList, { instanceId: opts.instanceId })
   const items = result.mcps
+  // `m.source` arrives pre-formatted (`~/...`) from the daemon —
+  // render verbatim.
   const entries: PaletteEntry[] = items.map((m) => ({
     id: m.name,
     name: m.name,
-    description: displayPath(m.source)
+    description: m.source
   }))
 
   open({

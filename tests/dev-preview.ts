@@ -102,7 +102,6 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
   get_theme: {},
   get_window_state: { mode: 'center', anchorEdge: undefined },
   get_gtk_font: {},
-  get_home_dir: '/home/dev',
   get_keymaps: {
     chat: {
       submit: { modifiers: [], key: 'enter' },

@@ -90,8 +90,6 @@ export enum TauriCommand {
   GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
   WindowToggle = 'window_toggle',
-  GetHomeDir = 'get_home_dir',
-  GetDaemonCwd = 'get_daemon_cwd',
   GetGitStatus = 'get_git_status',
   PathsResolve = 'paths_resolve',
   DaemonRpc = 'daemon_rpc',
@@ -161,8 +159,6 @@ export interface TauriCommandArgs {
   [TauriCommand.GetKeymaps]: void
   [TauriCommand.GetWindowState]: void
   [TauriCommand.WindowToggle]: void
-  [TauriCommand.GetHomeDir]: void
-  [TauriCommand.GetDaemonCwd]: void
   [TauriCommand.GetGitStatus]: { path: string }
   [TauriCommand.PathsResolve]: { raw: string; cwdBase?: string }
   [TauriCommand.DaemonRpc]: { method: string; params?: unknown }
@@ -212,8 +208,6 @@ export interface TauriCommandResult {
   [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.WindowToggle]: boolean
-  [TauriCommand.GetHomeDir]: string
-  [TauriCommand.GetDaemonCwd]: string
   [TauriCommand.GetGitStatus]: GitStatus | null
   /**
    * Captain-typed → absolute resolution. `null` when the input is empty

@@ -69,7 +69,6 @@ export const { test, expect } = createTauriTest({
     get_theme: () => ONEDARK_THEME,
     get_window_state: () => ({ mode: 'center', anchorEdge: null }),
     get_gtk_font: () => ({}),
-    get_home_dir: () => '/home/dev',
     get_keymaps: () => ({
       chat: {
         submit: { modifiers: [], key: 'enter' },

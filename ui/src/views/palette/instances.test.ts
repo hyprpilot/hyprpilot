@@ -20,16 +20,6 @@ vi.mock('@composables', async(importOriginal) => ({
   useActiveInstance: () => ({
     id: activeInstanceRef
   }),
-  useHomeDir: () => ({
-    homeDir: ref('/home/cenk'),
-    displayPath: (path: string | undefined) => {
-      if (!path) {
-        return ''
-      }
-
-      return path.startsWith('/home/cenk') ? `~${path.slice('/home/cenk'.length)}` : path
-    }
-  }),
   usePhase: () => ({
     phase: computed(() => 'idle')
   }),
