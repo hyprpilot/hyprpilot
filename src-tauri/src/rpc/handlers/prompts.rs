@@ -15,8 +15,9 @@
 //! `prompts/cancel` is the same resolve-or-focused shape minus the
 //! spawn — you can't cancel an instance that doesn't exist.
 //!
-//! Attachment plumbing is intentionally absent from this surface;
-//! palette-picked skills attach via `session/submit` instead.
+//! Attachments piggyback on the same `Attachment` struct
+//! `tauri/session_submit` accepts. The field is optional — captains
+//! who send bare `text` keep working unchanged.
 
 use std::path::PathBuf;
 
@@ -24,6 +25,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::adapters::transcript::Attachment;
 use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec, UserTurnInput};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, parse_params};
@@ -59,6 +61,12 @@ struct SendParams {
     /// listing. Captain's "open my last session under this profile +
     /// cwd" shortcut.
     restore: bool,
+    /// Attachments staged by the caller — same shape as
+    /// `tauri/session_submit` accepts. Flow into
+    /// `UserTurnInput::with_attachments`; the daemon's encoder emits
+    /// them as ACP content blocks (resource / image per
+    /// `build_prompt_blocks`). Optional, default empty.
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -189,7 +197,7 @@ impl RpcHandler for PromptsHandler {
 
                 let v = adapter
                     .submit(
-                        UserTurnInput::with_attachments(p.text, Vec::new()),
+                        UserTurnInput::with_attachments(p.text, p.attachments),
                         Some(resolved.as_string().as_str()),
                         None,
                         None,
@@ -315,10 +323,34 @@ mod tests {
         assert_eq!(v["code"], -32601);
     }
 
-    /// Unknown wire fields (e.g. a stale client shipping `attachments`)
-    /// reject at parse time via `deny_unknown_fields`.
+    /// Unknown wire fields reject at parse time via
+    /// `deny_unknown_fields`. `attachments` is now a known field —
+    /// see `send_accepts_empty_attachments` / `send_accepts_attachments`
+    /// — so the stray here is a different stale field.
     #[tokio::test]
     async fn send_rejects_unknown_field() {
+        let v = dispatch(
+            "prompts/send",
+            json!({
+                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "text": "hi",
+                "bogusField": true,
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602);
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("prompts/send params:"), "shape error expected: {v}");
+    }
+
+    /// Empty `attachments` parses and falls through to the same
+    /// resolve-or-spawn path as a bare prompt. Empty registry +
+    /// UUID-shaped id is not slug-validatable, so the call rejects at
+    /// the resolution step with the standard not-found message — not
+    /// at the parse step. Pinning the resolution-error path (not the
+    /// parse-error path) is what proves `attachments: []` is accepted.
+    #[tokio::test]
+    async fn send_accepts_empty_attachments() {
         let v = dispatch(
             "prompts/send",
             json!({
@@ -330,6 +362,57 @@ mod tests {
         .await;
         assert_eq!(v["code"], -32602);
         let msg = v["message"].as_str().unwrap_or_default();
-        assert!(msg.contains("prompts/send params:"), "shape error expected: {v}");
+        assert!(
+            msg.contains("not a valid name slug"),
+            "expected resolution-step error, got: {v}"
+        );
+    }
+
+    /// Populated `attachments` parses (same field shape as
+    /// `tauri/session_submit`). Reaches the resolution step, where
+    /// the synthetic UUID-shape id rejects.
+    #[tokio::test]
+    async fn send_accepts_attachments() {
+        let v = dispatch(
+            "prompts/send",
+            json!({
+                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "text": "see attached",
+                "attachments": [
+                    {
+                        "slug": "diagram-png",
+                        "path": "/tmp/diagram.png",
+                        "title": "Architecture",
+                        "data": "iVBORw0KGgo=",
+                        "mime": "image/png",
+                    }
+                ],
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602);
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("not a valid name slug"),
+            "expected resolution-step error, got: {v}"
+        );
+    }
+
+    /// Malformed `attachments` entry (missing required `slug`) rejects
+    /// at parse time — pins that the field is typed, not opaque JSON.
+    #[tokio::test]
+    async fn send_rejects_malformed_attachment() {
+        let v = dispatch(
+            "prompts/send",
+            json!({
+                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "text": "hi",
+                "attachments": [{ "path": "/tmp/x" }],
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602);
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("prompts/send params:"), "parse-error expected: {v}");
     }
 }
