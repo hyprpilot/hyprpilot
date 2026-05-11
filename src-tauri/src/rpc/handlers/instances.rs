@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
-use crate::rpc::handlers::util::{map_adapter_err, params_or_default};
+use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_params};
 use crate::rpc::protocol::RpcError;
 
 /// `instances/shutdown` / `instances/info` — `instanceId` accepts
@@ -99,8 +99,40 @@ struct SpawnParams {
     restore: bool,
 }
 
+/// `instances/setMode` — switch active operational mode on a live
+/// instance. Mode ids are wire ids advertised on
+/// `MetaSnapshot::available_modes[].id` (i.e. the
+/// `acp:instance-meta` / `instance/snapshot/meta` payload).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SetModeParams {
+    instance_id: String,
+    mode_id: String,
+}
+
+/// `instances/setModel` — switch active model on a live instance.
+/// Model ids come from `MetaSnapshot::available_models[].id`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SetModelParams {
+    instance_id: String,
+    model_id: String,
+}
+
+/// `instances/setOption` — set an ACP `configOptions[]` value
+/// (e.g. `effort = "high"`). `configId` is the option id; `value`
+/// is one of the option's advertised `options[].value` strings.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SetOptionParams {
+    instance_id: String,
+    config_id: String,
+    value: String,
+}
+
 /// `instances/*` namespace. Registry-level operations on the
-/// adapter: list, spawn, focus, restart, shutdown, info. Delegates
+/// adapter: list, spawn, focus, restart, shutdown, info, plus
+/// per-session setters (mode / model / config option). Delegates
 /// every method through the `Adapter` trait; param validation +
 /// error-mapping only.
 pub struct InstancesHandler;
@@ -243,6 +275,34 @@ impl RpcHandler for InstancesHandler {
                     "instanceId": key.as_string(),
                     "name": name,
                 })))
+            }
+            "instances/setMode" => {
+                let SetModeParams { instance_id, mode_id } = parse_params::<SetModeParams>(params, method)?;
+                adapter
+                    .set_session_mode(&instance_id, &mode_id)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
+            }
+            "instances/setModel" => {
+                let SetModelParams { instance_id, model_id } = parse_params::<SetModelParams>(params, method)?;
+                adapter
+                    .set_session_model(&instance_id, &model_id)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
+            }
+            "instances/setOption" => {
+                let SetOptionParams {
+                    instance_id,
+                    config_id,
+                    value,
+                } = parse_params::<SetOptionParams>(params, method)?;
+                adapter
+                    .set_session_config_option(&instance_id, &config_id, &value)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
             }
             other => Err(RpcError::method_not_found(other)),
         }
@@ -644,5 +704,144 @@ mod snapshot_tests {
         let adapter = fresh_adapter();
         let v = dispatch_with_adapter(adapter, "instance/snapshot/bogus", json!({ "instanceId": "x" })).await;
         assert_eq!(v["code"], -32601);
+    }
+}
+
+/// Setter-verb coverage on the `instances/*` namespace. Happy-path
+/// dispatch requires a live actor (the inherent setters call
+/// `require_instance`), so unit coverage here pins the wire-shape
+/// validation lanes only: missing-required-field → `-32602`,
+/// unknown-instance → `-32602` (via `AdapterError::InvalidRequest`),
+/// unknown verb under the namespace → `-32601`. End-to-end happy
+/// path is exercised by the manual smoke documented in the PR.
+#[cfg(test)]
+mod setters_tests {
+    use std::sync::{Arc, RwLock};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::adapters::permission::{DefaultPermissionController, PermissionController};
+    use crate::adapters::{AcpAdapter, Adapter};
+    use crate::config::Config;
+    use crate::rpc::handler::HandlerCtx;
+    use crate::rpc::status::StatusBroadcast;
+
+    async fn dispatch(method: &str, params: Value) -> Value {
+        let shared = Arc::new(RwLock::new(Config::default()));
+        let adapter = Arc::new(AcpAdapter::with_shared_config(
+            shared,
+            Arc::new(StatusBroadcast::new(true)),
+            Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>,
+        ));
+        let status = StatusBroadcast::new(true);
+        let dyn_adapter: Arc<dyn Adapter> = adapter;
+        let ctx = HandlerCtx {
+            app: None,
+            status: &status,
+            adapter: dyn_adapter,
+            config: None,
+            mcps: None,
+            already_subscribed: false,
+            already_events_subscribed: false,
+            started_at: None,
+            socket_path: None,
+        };
+        match InstancesHandler.handle(method, params, ctx).await {
+            Ok(HandlerOutcome::Reply(v)) => v,
+            Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
+            Ok(HandlerOutcome::EventsSubscribed(v, _, _)) => v,
+            Err(err) => json!({ "code": err.code, "message": err.message }),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_mode_missing_instance_id_is_invalid_params() {
+        let v = dispatch("instances/setMode", json!({ "modeId": "plan" })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_mode_missing_mode_id_is_invalid_params() {
+        let v = dispatch(
+            "instances/setMode",
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_mode_unknown_instance_is_invalid_params() {
+        let ghost = "550e8400-e29b-41d4-a716-446655440000";
+        let v = dispatch("instances/setMode", json!({ "instanceId": ghost, "modeId": "plan" })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+        assert!(v["message"].as_str().unwrap_or_default().contains("not found"), "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_model_missing_model_id_is_invalid_params() {
+        let v = dispatch(
+            "instances/setModel",
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_model_unknown_instance_is_invalid_params() {
+        let ghost = "550e8400-e29b-41d4-a716-446655440000";
+        let v = dispatch(
+            "instances/setModel",
+            json!({ "instanceId": ghost, "modelId": "sonnet" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_option_missing_value_is_invalid_params() {
+        let v = dispatch(
+            "instances/setOption",
+            json!({
+                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "configId": "effort"
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_option_unknown_instance_is_invalid_params() {
+        let ghost = "550e8400-e29b-41d4-a716-446655440000";
+        let v = dispatch(
+            "instances/setOption",
+            json!({ "instanceId": ghost, "configId": "effort", "value": "high" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_option_unknown_field_is_invalid_params() {
+        let v = dispatch(
+            "instances/setOption",
+            json!({
+                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "configId": "effort",
+                "value": "high",
+                "stray": true,
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn instances_unknown_verb_is_method_not_found() {
+        let v = dispatch("instances/setBogus", json!({})).await;
+        assert_eq!(v["code"], -32601, "{v}");
     }
 }
