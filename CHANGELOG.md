@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/hyprpilot/hyprpilot/compare/v0.2.1...v0.3.0) (2026-05-11)
+
+
+### Features
+
+* **rpc:** accept attachments on prompts/send ([#37](https://github.com/hyprpilot/hyprpilot/issues/37)) ([2662eda](https://github.com/hyprpilot/hyprpilot/commit/2662edaf75d4576148411a75ce1ddc543679b46c))
+* **rpc:** expose mode/model/option setters on instances namespace ([#36](https://github.com/hyprpilot/hyprpilot/issues/36)) ([87c2de6](https://github.com/hyprpilot/hyprpilot/commit/87c2de6b050bf6d8c2ef0160e72f1adb7c90369d))
+
 ## [0.2.1](https://github.com/hyprpilot/hyprpilot/compare/v0.2.0...v0.2.1) (2026-05-10)
 
 
