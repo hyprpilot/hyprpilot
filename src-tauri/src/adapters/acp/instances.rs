@@ -1322,6 +1322,29 @@ impl Adapter for AcpAdapter {
         Ok(AcpAdapter::list_profiles(self))
     }
 
+    async fn set_session_model(&self, instance_id: &str, model_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_session_model(self, instance_id, model_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn set_session_mode(&self, instance_id: &str, mode_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_session_mode(self, instance_id, mode_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn set_session_config_option(
+        &self,
+        instance_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_session_config_option(self, instance_id, config_id, value)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
     async fn list_sessions(
         &self,
         instance_id: Option<&str>,
