@@ -93,7 +93,7 @@ const sourceLabel = computed<string>(() => {
 @reference '../assets/styles.css';
 
 .completion-row {
-  @apply flex w-full items-center gap-2 border-0 bg-transparent px-3 py-1 text-left;
+  @apply flex w-full items-center gap-2 overflow-hidden border-0 bg-transparent px-3 py-1 text-left;
   font-family: var(--theme-font-mono);
   font-size: 0.78rem;
   color: var(--theme-fg-subtle);
@@ -117,19 +117,22 @@ const sourceLabel = computed<string>(() => {
   color: var(--theme-accent);
 }
 
+/* Label is the primary identifier — render at natural width and
+ * never yield space to the description. When the label alone
+ * exceeds the row, the parent's `overflow: hidden` clips it. */
 .completion-row-label {
-  @apply truncate;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 50%;
+  flex: 0 0 auto;
 }
 
-/* Inline parenthesised description, dim and same-line as the label.
- * `flex: 1 1 auto; min-width: 0` lets it absorb the slack between
- * label and source tag while truncating cleanly. */
+/* Inline parenthesised description — packs directly after the label
+ * and truncates to whatever width remains before the right-aligned
+ * source tag. `flex: 0 1 auto + min-width: 0 + truncate` is the
+ * truncate-only-shrink-only recipe; basis stays at content size so
+ * a short description doesn't get stretched into the slack between
+ * label and source. */
 .completion-row-detail {
   @apply truncate;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   color: var(--theme-fg-faint);
 }
