@@ -47,7 +47,7 @@ task test:e2e:live          # cargo build + ui build + Playwright in tauri mode
 
 ## Mock agent
 
-`support/mock-agent/` ships a scripted ACP-speaking Node process so the Tauri mode never depends on `bunx @agentclientprotocol/claude-agent-acp` (or any network-bound vendor runtime). `e2e-config.toml` points the daemon at this binary via `command = "node"` + `args = ["tests/e2e/support/mock-agent/index.mjs"]` so once the live ACP bridge (K-240 follow-up) wires real sessions every spec sees deterministic replies.
+`support/mock-agent/` ships a scripted ACP-speaking process so the Tauri mode never depends on `bunx @agentclientprotocol/claude-agent-acp` (or any network-bound vendor runtime). `e2e-config.toml` points the daemon at this binary via `command = "bun"` + `args = ["tests/e2e/support/mock-agent/index.ts"]` so once the live ACP bridge (K-240 follow-up) wires real sessions every spec sees deterministic replies.
 
 `HYPRPILOT_MOCK_SCRIPT=<file.json>` swaps the scripted transcript per spec; the default bundled script emits a single assistant message and ignores `session/cancel`.
 

@@ -31,14 +31,15 @@ updating this file.
 | Task | Purpose |
 | ---- | ------- |
 | `task install` | `cargo fetch` + `pnpm install` at the workspace root (installs `ui`, `tests/e2e`, `tests/e2e/support/mock-agent`). |
-| `task dev` | `./node_modules/.bin/tauri dev` — full dev cycle with Vite + Tauri. |
+| `task run` | `./node_modules/.bin/tauri dev` — full dev cycle with Vite + Tauri. |
+| `task cli` | Invoke the built debug binary (`./target/debug/hyprpilot`) with `{{.CLI_ARGS}}`. |
 | `task test` | `task test:ui` + `cargo nextest run --all-targets`. E2E stays out of the inner loop. |
 | `task test:ui` | `pnpm --filter hyprpilot-ui test` — Vitest over every colocated `src/**/*.test.ts`. |
 | `task test:e2e` | overlay-build → `pnpm --filter hyprpilot-ui build` → `pnpm --filter hyprpilot-e2e test`. Browser mode by default; `HYPRPILOT_E2E_MODE=tauri` for the Playwright bridge path. |
-| `task format` | `cargo fmt --all` + `pnpm --filter hyprpilot-ui format`. |
-| `task lint` | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + eslint + `vue-tsc --noEmit`. |
+| `task format` | `cargo fmt --all` + `pnpm --filter hyprpilot-ui format` (`prettier --write` then `eslint --fix` — order matters; eslint stylistic rules disagree with prettier on `space-before-function-paren` etc. and eslint wins because it goes second). |
+| `task lint` | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + eslint + `vue-tsc --noEmit`. **Note:** prettier has no `--check` gate; eslint is the formatting authority. Run `task format` before pushing — eslint catches actual violations but doesn't catch every prettier-style drift. |
 | `task build` | Debug build via `./node_modules/.bin/tauri build --debug`. |
-| `task "build:release"` | Release build via `./node_modules/.bin/tauri build`. |
+| `task release` | Release build via `./node_modules/.bin/tauri build`. |
 
 ### Verifying UI changes — use named scripts, never `pnpm exec`
 
@@ -102,7 +103,7 @@ the CLI escape hatch for popping the overlay when no Hyprland keybind is
 bound. `hyprpilot ctl …` invocations stay out of this path.
 
 The daemon boots **hidden by default** (`[daemon.window] visible = false`).
-First user-visible map happens via a Hyprland keybind (`overlay/present`),
+First user-visible map happens via a Hyprland keybind (`overlay/show`),
 the system tray icon, or the bare `hyprpilot` escape hatch above. Set
 `visible = true` to glue the overlay on at boot. See `docs/autostart.md`
 for the autostart story.
@@ -498,7 +499,7 @@ debugging:
   belong in `tests/e2e/`.
 
 The dev preview pulls a non-Tauri theme + window-state shim from
-`tests/dev-preview` (env-gated by `VITE_HYPRPILOT_DEV_PREVIEW=1`).
+`tests/dev-preview.ts` (env-gated by `VITE_HYPRPILOT_DEV_PREVIEW=1`).
 Production builds tree-shake it out.
 
 #### Hybrid daemon-driven verification
@@ -877,7 +878,7 @@ icon system.
 
 ### Dev preview shim lives in `tests/`, gated by env var
 
-Browser-mode theme + window-state shim lives in `tests/dev-preview` —
+Browser-mode theme + window-state shim lives in `tests/dev-preview.ts` —
 its consumers are the test harness and the Vite dev preview only,
 never production. `main.ts` gates the import on
 `VITE_HYPRPILOT_DEV_PREVIEW === '1'`. The dev script sets the var; prod
@@ -975,7 +976,7 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   `info`, `rename`. Live process management. `focus` accepts
   `{ ensure: true }` to auto-spawn-if-missing; `spawn` accepts
   `{ restore: true }` to resume an existing session id.
-- **`overlay/*`** — `present { instanceId? }`, `hide`, `toggle`.
+- **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle`.
   Race-safe across concurrent calls — every `overlay/*` entry serialises
   through `WindowRenderer::lock_present`.
 - **`permissions/{pending, respond}`** — pending list for the addressed
@@ -1425,7 +1426,6 @@ first, then user instructions. Body snapshots at palette-pick time.
   in-memory).
 - Real branding icon — `src-tauri/icons/icon.png` is a placeholder.
 - Release bundling (`bundle.active = false` in `tauri.conf.json`).
-- CI / `.gitlab-ci.yml`.
 
 ## Upstream migration runway
 
@@ -1468,7 +1468,7 @@ trades compile-time pain for a feature already prioritized.
   (likely with the GTK4 + webkit2gtk-6.0 migration above).
 - **Release bundling.** `bundle.active = false`. Lifting it needs real
   icons + the pipelines issue.
-- **CI / `.gitlab-ci.yml`.** Not yet created.
+- **CI runs on GitHub Actions** (`.github/workflows/ci.yml` — lint + test + build) with `docs.yml`, `package.yml`, `release-please.yml`, and `release.yml` covering docs, AUR packaging, and release flow. Open gaps: no `Swatinem/rust-cache` for the Cargo registry, no pnpm-store cache, apt-installs rerun on every job — each lint/test/build job re-downloads the full dep tree.
 - **Real branding icon.** Programmatic 32×32 placeholder.
 
 ## Manual verification patterns
