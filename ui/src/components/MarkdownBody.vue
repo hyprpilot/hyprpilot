@@ -321,13 +321,24 @@ function onRootKeydown(event: KeyboardEvent): void {
 
 /* Fallback prose <pre> when a fence couldn't be highlighted (unknown
  * language). The .md-codeblock chrome below replaces it for known
- * languages. */
+ * languages.
+ *
+ * Wrap long lines instead of horizontal-scrolling. The overlay is
+ * narrow (~40% of the screen by default) and a 200-char `cargo
+ * clippy` line or a wide `bash` invocation otherwise pushes the
+ * scroll bar deep into the transcript. `pre-wrap` keeps source
+ * indentation; `overflow-wrap: anywhere` breaks long unbroken
+ * tokens (URLs, hex strings, kebab-case symbol names). `overflow-x: auto`
+ * stays as a safety net for non-wrappable content (e.g. tables nested
+ * inside a fence). */
 .markdown-body :deep(pre) {
   margin: 0.5rem 0;
   padding: 0.5rem 0.625rem;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
   border-radius: 0.1875rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   overflow-x: auto;
 }
 
@@ -403,6 +414,11 @@ function onRootKeydown(event: KeyboardEvent): void {
 
 .markdown-body :deep(.md-codeblock pre) {
   margin: 0;
+  /* Wrap long lines instead of horizontal-scroll (see fallback
+   * <pre> rule above for the rationale). `overflow-x: auto`
+   * stays as the safety lane for unwrappable content. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   overflow-x: auto;
   padding: 0.5rem 0.75rem;
   font-size: 0.82rem;
