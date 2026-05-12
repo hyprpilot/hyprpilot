@@ -1,8 +1,11 @@
 //! Tauri `#[command]` surface for the composer-autocomplete dropdown.
-//! Mirrors the JSON-RPC `completion/{query,resolve,cancel}` methods
-//! so the webview can `invoke()` directly without going through the
-//! socket. Both call paths share the same `CompletionRegistry` +
-//! `CompletionCancellations` from managed state.
+//! Mirrors the JSON-RPC `completion/{query,resolve,cancel,rank}`
+//! methods so the in-process webview can `invoke()` directly without
+//! going through the socket. Both call paths share the same
+//! `CompletionRegistry` + `CompletionCancellations` from managed
+//! state, and both route through `completion::dispatch::run_*` so
+//! detection / cancellation / ranking semantics can't drift between
+//! the in-process and JSON-RPC transports.
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -10,7 +13,8 @@ use std::sync::{Arc, RwLock};
 use serde_json::{json, Value};
 use tauri::State;
 
-use crate::completion::{CompletionCancellations, CompletionRegistry, ReplacementRange};
+use crate::completion::dispatch;
+use crate::completion::{CompletionCancellations, CompletionRegistry};
 use crate::config::Config;
 
 type RegistryState<'a> = State<'a, Arc<CompletionRegistry>>;
@@ -36,48 +40,25 @@ pub async fn completion_query(
     // passes `["path"]`.
     sources: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    let request_id = uuid::Uuid::new_v4().to_string();
     let manual = manual.unwrap_or(false);
     tracing::trace!(
-        request_id,
         text_len = text.len(),
         cursor,
         manual,
         sources = ?sources,
         "cmd::completion_query"
     );
-
-    let detected = registry.detect_filtered(&text, cursor, manual, sources.as_deref());
-    let (source, ctx) = match detected {
-        Some(d) => d,
-        None => {
-            return Ok(json!({
-                "requestId": request_id,
-                "sourceId": null,
-                "replacementRange": null,
-                "items": [],
-            }));
-        }
-    };
-
-    let cancel = cancellations.new_token(&request_id);
-    let range = ReplacementRange {
-        start: ctx.trigger_offset,
-        end: ctx.cursor,
-    };
-    let source_id = source.id();
-    // Forget unconditionally — leaving the token in the table on error
-    // would make a follow-up `completion/cancel` look like a stale hit.
-    let result = source.fetch(ctx, cwd.as_deref(), cancel).await;
-    cancellations.forget(&request_id);
-    let items = result.map_err(|e| format!("completion/query: {e}"))?;
-
-    Ok(json!({
-        "requestId": request_id,
-        "sourceId": source_id,
-        "replacementRange": range,
-        "items": items,
-    }))
+    dispatch::run_query(
+        registry.inner(),
+        cancellations.inner(),
+        &text,
+        cursor,
+        cwd.as_deref(),
+        manual,
+        sources.as_deref(),
+    )
+    .await
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
@@ -86,20 +67,14 @@ pub async fn completion_resolve(
     resolve_id: String,
     source_id: String,
 ) -> Result<Value, String> {
-    let source = registry
-        .source_by_id(&source_id)
-        .ok_or_else(|| format!("unknown source_id: {source_id}"))?;
-    let documentation = source
-        .resolve(&resolve_id)
+    dispatch::run_resolve(registry.inner(), &resolve_id, &source_id)
         .await
-        .map_err(|e| format!("completion/resolve: {e}"))?;
-    Ok(json!({ "documentation": documentation }))
+        .map_err(|e| e.message)
 }
 
 #[tauri::command]
 pub async fn completion_cancel(cancellations: CancellationsState<'_>, request_id: String) -> Result<Value, String> {
-    let cancelled = cancellations.cancel(&request_id);
-    Ok(json!({ "cancelled": cancelled }))
+    Ok(dispatch::run_cancel(cancellations.inner(), &request_id))
 }
 
 /// Rank `candidates` against `query` via the candidates source.
@@ -112,14 +87,7 @@ pub async fn completion_rank(
     query: String,
     candidates: Vec<crate::completion::source::candidates::CandidateItem>,
 ) -> Result<Value, String> {
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let items = crate::completion::source::candidates::rank_candidates(&query, &candidates);
-    Ok(json!({
-        "requestId": request_id,
-        "sourceId": "candidates",
-        "replacementRange": null,
-        "items": items,
-    }))
+    Ok(dispatch::run_rank(&query, &candidates))
 }
 
 /// Snapshot of the captain's `[completion]` config block. UI reads

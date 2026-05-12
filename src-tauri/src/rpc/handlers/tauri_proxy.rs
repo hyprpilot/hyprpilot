@@ -29,8 +29,9 @@ use serde_json::{json, Value};
 
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{AcpAdapter, Adapter};
+use crate::completion::dispatch as completion_dispatch;
 use crate::completion::hydration::TokenHydrators;
-use crate::completion::{CompletionCancellations, CompletionRegistry, ReplacementRange};
+use crate::completion::{CompletionCancellations, CompletionRegistry};
 use crate::config::Config;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{params_or_default, parse_params};
@@ -742,39 +743,16 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             let cancellations = app
                 .try_state::<Arc<CompletionCancellations>>()
                 .ok_or_else(|| RpcError::internal_error("completion cancellations state not managed"))?;
-            let request_id = uuid::Uuid::new_v4().to_string();
-            let detected = registry.detect_filtered(
+            completion_dispatch::run_query(
+                registry.inner(),
+                cancellations.inner(),
                 &args.text,
                 args.cursor,
+                args.cwd.as_deref(),
                 args.manual.unwrap_or(false),
                 args.sources.as_deref(),
-            );
-            let (source, cctx) = match detected {
-                Some(d) => d,
-                None => {
-                    return Ok(json!({
-                        "requestId": request_id,
-                        "sourceId": null,
-                        "replacementRange": null,
-                        "items": [],
-                    }));
-                }
-            };
-            let cancel = cancellations.new_token(&request_id);
-            let range = ReplacementRange {
-                start: cctx.trigger_offset,
-                end: cctx.cursor,
-            };
-            let source_id = source.id();
-            let result = source.fetch(cctx, args.cwd.as_deref(), cancel).await;
-            cancellations.forget(&request_id);
-            let items = result.map_err(|e| RpcError::internal_error(format!("completion/query: {e}")))?;
-            Ok(json!({
-                "requestId": request_id,
-                "sourceId": source_id,
-                "replacementRange": range,
-                "items": items,
-            }))
+            )
+            .await
         }
         "completion_resolve" => {
             #[derive(Deserialize)]
@@ -787,14 +765,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             let registry = app
                 .try_state::<Arc<CompletionRegistry>>()
                 .ok_or_else(|| RpcError::internal_error("completion registry state not managed"))?;
-            let source = registry
-                .source_by_id(&args.source_id)
-                .ok_or_else(|| RpcError::invalid_params(format!("unknown source_id: {}", args.source_id)))?;
-            let documentation = source
-                .resolve(&args.resolve_id)
-                .await
-                .map_err(|e| RpcError::internal_error(format!("completion/resolve: {e}")))?;
-            Ok(json!({ "documentation": documentation }))
+            completion_dispatch::run_resolve(registry.inner(), &args.resolve_id, &args.source_id).await
         }
         "completion_cancel" => {
             #[derive(Deserialize)]
@@ -806,8 +777,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             let cancellations = app
                 .try_state::<Arc<CompletionCancellations>>()
                 .ok_or_else(|| RpcError::internal_error("completion cancellations state not managed"))?;
-            let cancelled = cancellations.cancel(&args.request_id);
-            Ok(json!({ "cancelled": cancelled }))
+            Ok(completion_dispatch::run_cancel(cancellations.inner(), &args.request_id))
         }
         "completion_rank" => {
             #[derive(Deserialize)]
@@ -816,14 +786,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 candidates: Vec<crate::completion::source::candidates::CandidateItem>,
             }
             let args: Args = parse_params(params, "tauri/completion_rank")?;
-            let request_id = uuid::Uuid::new_v4().to_string();
-            let items = crate::completion::source::candidates::rank_candidates(&args.query, &args.candidates);
-            Ok(json!({
-                "requestId": request_id,
-                "sourceId": "candidates",
-                "replacementRange": null,
-                "items": items,
-            }))
+            Ok(completion_dispatch::run_rank(&args.query, &args.candidates))
         }
 
         // ── mcps ─────────────────────────────────────────────────────

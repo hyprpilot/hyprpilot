@@ -537,10 +537,11 @@ mod tests {
 
     /// Pruned namespaces (`session/*`, `events/*`, `agents/*`,
     /// `commands/*`, `config/*`, `mcps/*`, `models/*`, `modes/*`,
-    /// `profiles/*`, `sessions/*`, `skills/*`, `window/*`) all return
-    /// `-32601`. Webview consumers go through Tauri commands;
-    /// hyprland-bind users use `overlay/toggle` instead of
-    /// `window/toggle`.
+    /// `profiles/*`, `skills/*`, `window/*`) all return `-32601`.
+    /// Webview consumers go through Tauri commands; hyprland-bind
+    /// users use `overlay/toggle` instead of `window/toggle`.
+    /// `sessions/*` and `completion/*` were lifted onto real
+    /// namespaces in a later PR — they're no longer pruned.
     #[tokio::test]
     async fn pruned_namespaces_return_method_not_found() {
         for method in [
@@ -552,7 +553,6 @@ mod tests {
             "models/list",
             "modes/list",
             "profiles/list",
-            "sessions/list",
             "skills/list",
             "window/toggle",
         ] {
