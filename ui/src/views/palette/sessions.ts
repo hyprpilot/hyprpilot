@@ -198,24 +198,29 @@ export async function openSessionsLeaf(): Promise<void> {
   const profileId = info.value.profileId ?? selected.value
   const profile = profiles.value.find((p) => p.id === profileId)
   const cwd = resolveFilterCwd()
-  const args: { agentId?: string; profileId?: string; cwd?: string } = {}
+  const args: { agentId?: string; profileId?: string } = {}
 
   if (profile) {
     args.agentId = profile.agent
     args.profileId = profile.id
   }
 
-  if (cwd) {
-    args.cwd = cwd
-  }
-
+  // **Intentionally do NOT pass `cwd` to the daemon.** Some vendors
+  // (claude-agent-acp) honour the ACP `cwd` arg with a strict
+  // path-encoding match — sessions whose stored cwd differs only by
+  // trailing-slash / symlink-vs-canonical / casing land outside the
+  // returned set. The idle-screen path (`useSessionHistory`) fetches
+  // without `cwd` and filters client-side via `s.cwd === cwd`, so
+  // the badge ("+67 sessions") reflects an unfiltered server set.
+  // Mirror that here — fetch the full set + apply the same
+  // client-side filter — so the badge and the palette stay in sync.
+  // A future server-side filter that matches by canonical path
+  // could re-enable the wire arg.
   try {
     const sessions = (await invoke(TauriCommand.SessionList, args)).sessions
-    // Server-side cwd filter is best-effort — vendors that don't honour
-    // the ACP `cwd` arg return their full set, so we apply a
-    // client-side prefix-equal pass too. Sessions with no `cwd` are
-    // dropped from the filtered view (a directory-less session can't
-    // match the addressed root).
+    // Sessions with no `cwd` field are dropped from the filtered
+    // view — a directory-less session can't match the addressed
+    // root.
     const filtered = cwd ? sessions.filter((s) => s.cwd === cwd) : sessions
     const entries = buildSessionEntries(filtered)
     const title = entries.length === 0 ? 'sessions — empty' : cwd ? `sessions · ${shortenCwd(cwd)}` : 'sessions'
