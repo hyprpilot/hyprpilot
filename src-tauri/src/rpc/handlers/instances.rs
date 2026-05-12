@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
-use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_params};
+use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_params, spawn_or_restore};
 use crate::rpc::protocol::RpcError;
 
 /// `instances/shutdown` / `instances/info` — `instanceId` accepts
@@ -197,15 +197,7 @@ impl RpcHandler for InstancesHandler {
                                 mode,
                                 model,
                             };
-                            let spawned = if restore {
-                                if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
-                                    k
-                                } else {
-                                    adapter.spawn(spec).await.map_err(map_adapter_err)?
-                                }
-                            } else {
-                                adapter.spawn(spec).await.map_err(map_adapter_err)?
-                            };
+                            let spawned = spawn_or_restore(adapter.as_ref(), spec, restore).await?;
                             adapter.rename(spawned, Some(slug)).await.map_err(map_adapter_err)?;
                             spawned
                         }
@@ -231,15 +223,7 @@ impl RpcHandler for InstancesHandler {
                     mode,
                     model,
                 };
-                let key = if restore {
-                    if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
-                        k
-                    } else {
-                        adapter.spawn(spec).await.map_err(map_adapter_err)?
-                    }
-                } else {
-                    adapter.spawn(spec).await.map_err(map_adapter_err)?
-                };
+                let key = spawn_or_restore(adapter.as_ref(), spec, restore).await?;
                 Ok(HandlerOutcome::Reply(json!({ "instanceId": key.as_string() })))
             }
             "instances/restart" => {
