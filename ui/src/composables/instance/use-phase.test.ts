@@ -163,7 +163,7 @@ describe('usePhase', () => {
         {
           optionId: 'allow',
           name: 'Allow',
-          kind: 'y'
+          kind: 'allow_once'
         }
       ],
       formatted: fmt

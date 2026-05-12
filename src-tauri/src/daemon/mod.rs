@@ -304,7 +304,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             // Bare `hyprpilot` (no subcommand, or just `daemon`) from a
             // second invocation pops the overlay — captain's CLI escape
             // hatch when their hyprland keybind isn't bound yet. Same
-            // path the tray "show" item + the overlay/present RPC use.
+            // path the tray "show" item + the overlay/show RPC use.
             if argv_is_bare(&argv) {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -432,7 +432,7 @@ struct RuntimeState {
     shared_config: Arc<RwLock<Config>>,
     /// Resolved boot visibility from `--hidden`. `true` → map the
     /// surface at setup; `false` → configure-only, wait for
-    /// `overlay/present`.
+    /// `overlay/show`.
     start_visible: bool,
 }
 
@@ -466,7 +466,7 @@ impl RuntimeState {
 
         // Initial visible bit tracks `--hidden` (false → visible at boot,
         // true → hidden). Waybar's `custom/hyprpilot` block reads this;
-        // the bit flips on every overlay/present / overlay/hide
+        // the bit flips on every overlay/show / overlay/hide
         // transition afterwards.
         let status = Arc::new(StatusBroadcast::new(start_visible));
         // Single PermissionController shared between AcpClient (one per
@@ -564,7 +564,7 @@ fn setup_app(
     //
     // `--hidden` flow (`start_visible = false`): configure the
     // layer-shell role + size but don't map the surface. First
-    // user-visible map happens through `overlay/present` (Hyprland
+    // user-visible map happens through `overlay/show` (Hyprland
     // keybind, the tray "show" action, or the bare-`hyprpilot`
     // escape hatch). Configuring the role early avoids the
     // "init_layer_shell on a realized window" failure that surfaces
@@ -575,7 +575,7 @@ fn setup_app(
         state.renderer.show(&main)?;
     } else {
         state.renderer.configure_hidden(&main)?;
-        info!("--hidden: surface configured but not mapped; waits on overlay/present");
+        info!("--hidden: surface configured but not mapped; waits on overlay/show");
     }
 
     // Apply the configured page zoom. Chromium-style page zoom via

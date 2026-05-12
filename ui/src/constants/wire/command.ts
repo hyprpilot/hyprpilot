@@ -48,11 +48,7 @@ import type {
 } from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
 import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
-import type {
-  RemotePairRequestEventPayload,
-  RemotePairResolvedEventPayload,
-  RemotePendingPair
-} from '@interfaces/wire/remote-pair'
+import type { RemotePairRequestEventPayload, RemotePairResolvedEventPayload, RemotePendingPair } from '@interfaces/wire/remote-pair'
 import type {
   AgentSummary,
   CancelArgs,
@@ -273,4 +269,3 @@ export interface TauriEventPayload {
   [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
   [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload
 }
-

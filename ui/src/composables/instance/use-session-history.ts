@@ -157,17 +157,21 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
   // explicitly call `refresh()` when they actually render.
   const { id: activeInstanceId } = useActiveInstance()
 
-  watch([agentId, profileId, activeInstanceId], () => {
-    // Skip whenever an instance is active: the chat viewport is
-    // rendering, not the idle screen. The `sessions` ref stays at
-    // its prior state (empty on first boot, populated on later
-    // (agent, profile) flips); consumers that need fresh data call
-    // `refresh()` directly.
-    if (activeInstanceId.value) {
-      return
-    }
-    void refresh()
-  }, { immediate: true })
+  watch(
+    [agentId, profileId, activeInstanceId],
+    () => {
+      // Skip whenever an instance is active: the chat viewport is
+      // rendering, not the idle screen. The `sessions` ref stays at
+      // its prior state (empty on first boot, populated on later
+      // (agent, profile) flips); consumers that need fresh data call
+      // `refresh()` directly.
+      if (activeInstanceId.value) {
+        return
+      }
+      void refresh()
+    },
+    { immediate: true }
+  )
 
   return {
     sessions,

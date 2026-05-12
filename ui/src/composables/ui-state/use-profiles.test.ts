@@ -10,8 +10,8 @@ const invokeMock = vi.fn()
 // The composable calls `invoke(TauriCommand.ProfilesList)` and reads
 // `r.profiles` off the response. Mock the bridge directly so the
 // typed barrel imports keep their TauriCommand re-export visible.
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: (...args: unknown[]) => invokeMock(...args)
 }))
 

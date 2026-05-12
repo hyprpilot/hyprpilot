@@ -165,11 +165,13 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     }
 }
 
-/// Wire string for `PermissionOptionKind` — mirrors the serde
-/// `rename_all = "snake_case"` shape upstream uses. Closed match;
-/// the catch-all guards against future additive variants on the
-/// `#[non_exhaustive]` upstream enum (returns `"unknown"` so the
-/// UI sees something rather than panicking).
+/// Wire string for `PermissionOptionKind` — mirrors the upstream
+/// serde `rename_all = "snake_case"` shape. Closed match against the
+/// known variants; the catch-all guards against future additive
+/// variants on the `#[non_exhaustive]` upstream enum by emitting
+/// `"unknown"` (which the controller's prefix-match classification
+/// treats as neither allow nor reject — falls through to the
+/// name/id substring fallback in `pick_*_option_id`).
 fn permission_option_kind_wire(k: &PermissionOptionKind) -> &'static str {
     match k {
         PermissionOptionKind::AllowOnce => "allow_once",

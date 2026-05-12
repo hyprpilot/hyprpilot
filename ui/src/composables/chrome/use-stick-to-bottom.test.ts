@@ -35,26 +35,38 @@ function mountHarness(): { api: { stuck: Ref<boolean>; scrollToBottom: () => voi
 
   // Default layout: tiny container, parked at bottom.
   Object.defineProperty(el, 'scrollHeight', {
-    value: 1000, configurable: true, writable: true
+    value: 1000,
+    configurable: true,
+    writable: true
   })
   Object.defineProperty(el, 'clientHeight', {
-    value: 500, configurable: true, writable: true
+    value: 500,
+    configurable: true,
+    writable: true
   })
   Object.defineProperty(el, 'scrollTop', {
-    value: 500, configurable: true, writable: true
+    value: 500,
+    configurable: true,
+    writable: true
   })
 
   const harness: ScrollHarness = {
     el,
     setLayout({ scrollHeight, clientHeight, scrollTop }) {
       Object.defineProperty(el, 'scrollHeight', {
-        value: scrollHeight, configurable: true, writable: true
+        value: scrollHeight,
+        configurable: true,
+        writable: true
       })
       Object.defineProperty(el, 'clientHeight', {
-        value: clientHeight, configurable: true, writable: true
+        value: clientHeight,
+        configurable: true,
+        writable: true
       })
       Object.defineProperty(el, 'scrollTop', {
-        value: scrollTop, configurable: true, writable: true
+        value: scrollTop,
+        configurable: true,
+        writable: true
       })
     },
     dispatchScroll() {
@@ -81,14 +93,18 @@ describe('useStickToBottom', () => {
     // for the programmatic scroll AFTER content has grown further
     // (e.g. ToolPill auto-expanding inline).
     harness.setLayout({
-      scrollHeight: 1500, clientHeight: 500, scrollTop: 500
+      scrollHeight: 1500,
+      clientHeight: 500,
+      scrollTop: 500
     })
     api.scrollToBottom() // sets scrollTop = scrollHeight = 1500
 
     // Between the assignment and the scroll event firing, MORE
     // content lands (ToolPill body unfurled).
     harness.setLayout({
-      scrollHeight: 1700, clientHeight: 500, scrollTop: 1500
+      scrollHeight: 1700,
+      clientHeight: 500,
+      scrollTop: 1500
     })
 
     // NOW the scroll event from the programmatic scroll fires.
@@ -108,7 +124,9 @@ describe('useStickToBottom', () => {
 
     // User scrolls up to the middle.
     harness.setLayout({
-      scrollHeight: 1000, clientHeight: 500, scrollTop: 100
+      scrollHeight: 1000,
+      clientHeight: 500,
+      scrollTop: 100
     })
     harness.dispatchScroll()
 
@@ -121,14 +139,18 @@ describe('useStickToBottom', () => {
 
     // First programmatic scroll — moves scrollTop, sets suppress.
     harness.setLayout({
-      scrollHeight: 1500, clientHeight: 500, scrollTop: 500
+      scrollHeight: 1500,
+      clientHeight: 500,
+      scrollTop: 500
     })
     api.scrollToBottom()
     harness.dispatchScroll() // suppress consumed
 
     // Next user scroll-away should NOT be ignored.
     harness.setLayout({
-      scrollHeight: 1500, clientHeight: 500, scrollTop: 100
+      scrollHeight: 1500,
+      clientHeight: 500,
+      scrollTop: 100
     })
     harness.dispatchScroll()
 
@@ -145,7 +167,9 @@ describe('useStickToBottom', () => {
 
     // A user scroll away should NOT be swallowed by a stale flag.
     harness.setLayout({
-      scrollHeight: 1000, clientHeight: 500, scrollTop: 100
+      scrollHeight: 1000,
+      clientHeight: 500,
+      scrollTop: 100
     })
     harness.dispatchScroll()
 
@@ -167,7 +191,9 @@ describe('useStickToBottom', () => {
 
     // Captain scrolls up; stuck flips false.
     harness.setLayout({
-      scrollHeight: 2000, clientHeight: 500, scrollTop: 100
+      scrollHeight: 2000,
+      clientHeight: 500,
+      scrollTop: 100
     })
     harness.dispatchScroll()
     expect(api.stuck.value).toBe(false)
@@ -175,7 +201,9 @@ describe('useStickToBottom', () => {
     // Chevron click → scrollToBottom. Layout now: foot is at 1500,
     // assignment lands there.
     harness.setLayout({
-      scrollHeight: 2000, clientHeight: 500, scrollTop: 100
+      scrollHeight: 2000,
+      clientHeight: 500,
+      scrollTop: 100
     })
     api.scrollToBottom()
 

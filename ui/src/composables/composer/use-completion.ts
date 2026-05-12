@@ -204,7 +204,7 @@ export function useCompletion(): UseCompletionApi {
     state.value.open = true
     state.value.items = response.items
     state.value.selectedIndex = 0
-    state.value.sourceId = response.sourceId
+    state.value.sourceId = response.sourceId ?? null
     state.value.documentation = null
     scheduleResolve()
   }
@@ -295,7 +295,7 @@ export function useCompletion(): UseCompletionApi {
     try {
       response = await invoke(TauriCommand.CompletionResolve, {
         resolveId,
-        sourceId: sourceId as 'skills' | 'path' | 'ripgrep' | 'commands'
+        sourceId: sourceId as CompletionSourceId
       })
     } catch(err) {
       log.warn('completion/resolve failed', { err: String(err) })

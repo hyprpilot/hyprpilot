@@ -11,8 +11,8 @@ const { invoke, listeners } = vi.hoisted(() => ({
   listeners: new Map<string, (payload: { payload: unknown }) => void>()
 }))
 
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
   listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
     listeners.set(event, cb)
@@ -142,7 +142,9 @@ describe('Viewport.vue', () => {
         {
           seq: 1,
           item: {
-            kind: TranscriptItemKind.UserPrompt, text: 'hi', attachments: []
+            kind: TranscriptItemKind.UserPrompt,
+            text: 'hi',
+            attachments: []
           } as never
         },
         {
@@ -247,7 +249,9 @@ describe('Viewport.vue', () => {
     // without throwing on read-only property — real browsers never
     // lock down scrollTop, jsdom does when this defaults to false.
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 0
+      configurable: true,
+      writable: true,
+      value: 0
     })
     root.dispatchEvent(new Event('scroll'))
 

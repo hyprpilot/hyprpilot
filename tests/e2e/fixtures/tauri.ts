@@ -27,10 +27,15 @@ const ONEDARK_THEME = {
     }
   },
   fg: {
-    default: '#abb2bf', subtle: '#979eab', dim: '#7c8a9d', faint: '#5c6370'
+    default: '#abb2bf',
+    subtle: '#979eab',
+    dim: '#7c8a9d',
+    faint: '#5c6370'
   },
   border: {
-    default: '#2c333d', soft: '#38404b', focus: '#e5c07b'
+    default: '#2c333d',
+    soft: '#38404b',
+    focus: '#e5c07b'
   },
   accent: {
     default: '#e5c07b',
@@ -57,7 +62,9 @@ const ONEDARK_THEME = {
     acp: '#98caf6'
   },
   status: {
-    ok: '#98c379', warn: '#d19a66', err: '#e06c75'
+    ok: '#98c379',
+    warn: '#d19a66',
+    err: '#e06c75'
   },
   permission: { bg: '#2c2009', bg_active: '#3a2a0c' }
 }

@@ -7,8 +7,8 @@ import { __resetPaletteStackForTests, PaletteMode, type PaletteSpec, usePalette 
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
 
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
   listen: vi.fn()
 }))

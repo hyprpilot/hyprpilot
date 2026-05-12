@@ -25,8 +25,12 @@ pub struct ToolField {
 /// (`{ "kind": "diff", "added": 12, "removed": 3 }`). Frontends
 /// switch on `kind` and render each variant via its own chrome —
 /// `Text` as a dim mono pill, `Diff` as a +N / −M two-pill pair,
-/// `Duration` formatted via the UI's `formatDuration` helper,
-/// `Matches` (defined for future use; no tool currently emits it).
+/// `Duration` formatted via the UI's `formatDuration` helper.
+///
+/// Adding a variant requires a paired update on the TS mirror at
+/// `ui/src/interfaces/wire/formatted-tool-call.ts::Stat` — the union
+/// there must list every `kind` so a `switch` over it stays
+/// exhaustive on the consumer side.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Stat {

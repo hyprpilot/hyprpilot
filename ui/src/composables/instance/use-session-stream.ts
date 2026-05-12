@@ -286,7 +286,10 @@ export async function startSessionStream(): Promise<() => void> {
       const { instanceId, sessionId, turnId, startedAt } = e.payload
 
       log.trace('live.turn-started', {
-        instanceId, sessionId, turnId, startedAt
+        instanceId,
+        sessionId,
+        turnId,
+        startedAt
       })
       // The TurnStarted signal owns the per-turn aggregation reset.
       // Each new turn opens fresh thought / plan items so chunked

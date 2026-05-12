@@ -26,7 +26,7 @@ import { ToastTone, ComposerPillKind, type ComposerPill } from '@components'
 import {
   type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo
 } from '@composables'
-import { invoke, Modifier, TauriCommand } from '@ipc'
+import { CompletionKind, invoke, Modifier, TauriCommand } from '@ipc'
 import { blobToDataUrl, formatSize, getCaretCoordinates, log, rgbaToPngBlob } from '@lib'
 
 const props = withDefaults(
@@ -312,7 +312,7 @@ function applyCompletion(): void {
   // next turn. Directory commits fall through to the regular insert
   // path (paste it so the captain can pick deeper).
   const trigger = before.endsWith('@') ? '@' : ''
-  const isFileLeaf = item.kind === 'path' && item.detail === 'file'
+  const isFileLeaf = item.kind === CompletionKind.Path && item.detail === 'file'
 
   if (trigger && isFileLeaf) {
     const path = item.replacement.text

@@ -1029,8 +1029,13 @@ pub(crate) fn map_session_update(
                     arr.iter()
                         .map(|entry| PlanStep {
                             content: entry.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            priority: entry.get("priority").and_then(|v| v.as_str()).map(str::to_string),
-                            status: entry.get("status").and_then(|v| v.as_str()).map(str::to_string),
+                            // Unknown wire strings deserialize to None
+                            // (tolerant) — agents shipping a future
+                            // variant won't crash the mapping.
+                            priority: entry
+                                .get("priority")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                            status: entry.get("status").and_then(|v| serde_json::from_value(v.clone()).ok()),
                         })
                         .collect()
                 })
@@ -1084,6 +1089,7 @@ pub(crate) fn map_session_update(
                 tool,
                 tool_kind,
                 args,
+                raw_input,
                 options,
                 formatted,
             }))
@@ -1316,21 +1322,17 @@ pub struct AcpInstance {
     /// state without round-tripping through the actor's command
     /// channel. The actor task takes a write lock around every
     /// `map_session_update` call and around the terminal-state
-    /// eviction; readers only ever take a read lock. Narrow allow:
-    /// the consumers (Phase A2 transcript mirror + Phase A5 snapshot
-    /// RPC) land in subsequent commits — keeping the field visible
-    /// here so the actor-side write plumbing is reviewable on its
-    /// own.
+    /// Per-instance running tool-call cache, shared with the actor
+    /// task via `RunParams`. Plumbed through the struct so future
+    /// out-of-actor consumers (e.g. a tool-call snapshot RPC) can
+    /// read it without an actor round-trip. No external readers
+    /// today; the actor writes through its `RunParams` clone.
     #[allow(dead_code)]
     pub tool_calls: Arc<tokio::sync::RwLock<ToolCallCache>>,
     /// Per-instance write-through mirror of every emitted
-    /// [`InstanceEvent`]. Phase A3 wires the actor's emit lines to
-    /// call [`InstanceMirror::apply`] alongside `events_tx.send(...)`;
-    /// Phase A5 wires the snapshot RPC handlers that read off it.
-    /// Phase A2 lands the field on the struct + plumbs it through
-    /// [`StartParams`] → [`RunParams`] so the actor task already owns
-    /// its `Arc` clone. Narrow allow until the consumers arrive.
-    #[allow(dead_code)]
+    /// [`InstanceEvent`]. Read by the `Adapter::instance_mirror`
+    /// path that powers the snapshot RPC. Writes go through
+    /// `mirror::publish` to enforce apply-then-broadcast ordering.
     pub mirror: Arc<crate::adapters::InstanceMirror>,
 }
 

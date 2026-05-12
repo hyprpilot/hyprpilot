@@ -27,8 +27,7 @@ import { computed, ref, type ComputedRef, type Ref } from 'vue'
 import { peekSessionInfo } from '../instance/use-session-info'
 import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone } from '@components'
-import { TauriEvent, InstanceState } from '@ipc'
-import { listen, type UnlistenFn } from '@ipc/bridge'
+import { TauriEvent, InstanceState, listen, type UnlistenFn } from '@ipc'
 
 export type InstanceId = string
 

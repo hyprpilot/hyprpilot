@@ -36,8 +36,8 @@ const { handlers, unlisten } = vi.hoisted(() => ({
 // `listen` re-export binds at evaluation time, so mocking `@ipc`
 // alone leaves bridge.ts's `tauriListen` pinned through. Same
 // pattern as `use-home-dir.test.ts`.
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: vi.fn(),
   listen: (event: string, cb: Handler) => {
     handlers.set(event, cb)

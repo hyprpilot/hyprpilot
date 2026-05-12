@@ -12,6 +12,15 @@ import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcri
 export interface PermissionOptionView {
   optionId: string
   name: string
+  /**
+   * Wire-normalised snake-case string from the agent (`'allow_once'`,
+   * `'allow_always'`, `'reject_once'`, `'reject_always'` today;
+   * vendors are free to introduce new variants). The daemon only
+   * classifies allow vs reject via prefix-match; other dispatch
+   * keeps the string opaque so unknown vendor kinds pass through.
+   * UI consumers that care about allow/reject branching should
+   * prefix-match (`kind.startsWith('allow')`) for the same reason.
+   */
   kind: string
 }
 
@@ -56,10 +65,24 @@ export interface ToolCallUpdateRecord {
   completedAtMs?: number
 }
 
+/** Mirror of Rust `adapters::transcript::PlanPriority`. */
+export enum PlanPriority {
+  Low = 'low',
+  Medium = 'medium',
+  High = 'high'
+}
+
+/** Mirror of Rust `adapters::transcript::PlanStepStatus`. */
+export enum PlanStepStatus {
+  Pending = 'pending',
+  InProgress = 'in_progress',
+  Completed = 'completed'
+}
+
 export interface PlanStep {
   content: string
-  priority?: string
-  status?: string
+  priority?: PlanPriority
+  status?: PlanStepStatus
 }
 
 export interface PlanRecord {

@@ -51,11 +51,31 @@ pub const WAITER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub struct PermissionOptionView {
     pub option_id: String,
     pub name: String,
-    /// Normalised wire name: `"allow_once" | "allow_always" |
-    /// "reject_once" | "reject_always"` today. Closed set once the
-    /// crate's upstream enum stabilises; `String` keeps the UI
-    /// tolerant to new-variant drift today.
+    /// Wire-normalised snake-case string from the agent (`"allow_once"`,
+    /// `"allow_always"`, `"reject_once"`, `"reject_always"` today;
+    /// vendors are free to introduce new variants the controller
+    /// doesn't classify). The trust-store fallback only classifies
+    /// into allow/reject via `is_allow_kind` / `is_reject_kind`; any
+    /// other dispatch keeps the string opaque so unknown vendor
+    /// kinds pass through unchanged.
     pub kind: String,
+}
+
+/// `true` for any kind whose wire string begins with `allow` (today:
+/// `allow_once` / `allow_always`; future variants like `allow_session`
+/// are auto-classified). Used by `pick_allow_option_id` to drive the
+/// trust-store auto-allow fallback without freezing the set of
+/// recognised allow flavours.
+#[must_use]
+pub fn is_allow_kind(kind: &str) -> bool {
+    kind.starts_with("allow")
+}
+
+/// `true` for any kind whose wire string begins with `reject`. See
+/// [`is_allow_kind`] for the design rationale.
+#[must_use]
+pub fn is_reject_kind(kind: &str) -> bool {
+    kind.starts_with("reject")
 }
 
 /// Identity projection of the tool behind a permission request. The
@@ -486,10 +506,14 @@ impl PermissionController for DefaultPermissionController {
 /// the first option overall.
 #[must_use]
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
+    // Prefer `allow_once` over `allow_always` over any other allow-shaped
+    // variant; falls back to a name/id "allow" substring match for
+    // vendors that ship custom labels; final fallback to the first option.
     let picked = options
         .iter()
         .find(|o| o.kind == "allow_once")
         .or_else(|| options.iter().find(|o| o.kind == "allow_always"))
+        .or_else(|| options.iter().find(|o| is_allow_kind(&o.kind)))
         .or_else(|| {
             options.iter().find(|o| {
                 o.option_id.to_ascii_lowercase().contains("allow") || o.name.to_ascii_lowercase().contains("allow")
@@ -516,6 +540,7 @@ pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String>
         .iter()
         .find(|o| o.kind == "reject_once")
         .or_else(|| options.iter().find(|o| o.kind == "reject_always"))
+        .or_else(|| options.iter().find(|o| is_reject_kind(&o.kind)))
         .or_else(|| {
             options.iter().find(|o| {
                 o.option_id.to_ascii_lowercase().contains("reject")
@@ -883,6 +908,12 @@ mod tests {
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("o2"));
     }
 
+    /// When neither `allow_once` nor `allow_always` exists, the
+    /// function falls back to a case-insensitive `name`/`option_id`
+    /// substring match on "allow". Uses a kind string that isn't
+    /// classified as allow OR reject (`"unknown"`, e.g. a future
+    /// vendor variant the controller hasn't taught yet) so the kind-
+    /// based dispatch falls through and the name-match wins.
     #[test]
     fn pick_allow_option_falls_back_to_name_match() {
         let opts = vec![

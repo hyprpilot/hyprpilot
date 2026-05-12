@@ -213,11 +213,7 @@ interface ProjectedItem {
  * message per logical reply — same merge the live router does at push
  * time, replayed here for the snapshot path.
  */
-function tryMergeIntoExisting(
-  projected: ProjectedItem[],
-  entry: TimelineEntry,
-  it: SeqTranscriptItem
-): boolean {
+function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, it: SeqTranscriptItem): boolean {
   if (entry.kind === 'turn') {
     const prev = projected[projected.length - 1]
 
@@ -318,7 +314,9 @@ export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId
       continue
     }
     projected.push({
-      seq: it.seq, turnId: it.turnId, entry
+      seq: it.seq,
+      turnId: it.turnId,
+      entry
     })
   }
 

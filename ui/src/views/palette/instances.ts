@@ -16,9 +16,7 @@ import InstancesPreview from './InstancesPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useActiveInstance, type InstanceId } from '@composables'
 import { usePhase, useQueue, useSessionInfo, useTerminals, pushToast } from '@composables'
-import { TauriCommand } from '@ipc'
-import { type InstanceListEntry } from '@ipc'
-import { invoke } from '@ipc/bridge'
+import { invoke, TauriCommand, type InstanceListEntry } from '@ipc'
 import { log } from '@lib'
 
 interface InstanceRow extends PaletteEntry {

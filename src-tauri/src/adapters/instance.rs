@@ -441,9 +441,7 @@ pub enum TerminalStream {
 impl InstanceEvent {
     /// Dot-separated topic name. Stable contract for subscription
     /// filtering. Colon-separated Tauri event names live only in the
-    /// bridge's mapping table. Currently unused — narrow allow keeps the
-    /// scaffold visible for the future ctl-side subscribe surface.
-    #[allow(dead_code)]
+    /// bridge's mapping table.
     #[must_use]
     pub fn topic(&self) -> &'static str {
         match self {

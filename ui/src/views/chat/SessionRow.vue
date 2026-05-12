@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+import { faCircle as farCircle } from '@fortawesome/free-regular-svg-icons'
+import { faCircle, faCircleHalfStroke } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
 import { Phase, phaseToCssSuffix, type SessionRowData } from '@components'
@@ -18,35 +21,22 @@ const emit = defineEmits<{
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.session.phase)})`)
 
-interface PhaseIcon {
-  pack: 'fas' | 'far'
-  name: string
-  spin: boolean
-}
-
-const phaseIcon = computed<PhaseIcon>(() => {
+/**
+ * Direct icon imports keep Vite tree-shaking on (per CLAUDE.md rule
+ * 22). The previous `<FaIcon :icon="[pack, name]" />` tuple form
+ * pulled the entire FontAwesome library at build time.
+ */
+const phaseIcon = computed<IconDefinition>(() => {
   switch (props.session.phase) {
     case Phase.Streaming:
     case Phase.Working:
-      return {
-        pack: 'fas',
-        name: 'circle',
-        spin: false
-      }
+      return faCircle
     case Phase.Awaiting:
-      return {
-        pack: 'fas',
-        name: 'circle-half-stroke',
-        spin: false
-      }
+      return faCircleHalfStroke
     case Phase.Pending:
     case Phase.Idle:
     default:
-      return {
-        pack: 'far',
-        name: 'circle',
-        spin: false
-      }
+      return farCircle
   }
 })
 </script>
@@ -54,7 +44,7 @@ const phaseIcon = computed<PhaseIcon>(() => {
 <template>
   <button type="button" class="session-row" :data-phase="session.phase" :style="{ '--tone': phaseColor }" @click="emit('focus', session.id)">
     <span class="session-row-dot" aria-hidden="true">
-      <FaIcon :icon="[phaseIcon.pack, phaseIcon.name]" :class="{ 'fa-spin': phaseIcon.spin }" />
+      <FaIcon :icon="phaseIcon" />
     </span>
     <span class="session-row-title">{{ session.title }}</span>
     <span class="session-row-cwd">{{ session.cwd }}</span>

@@ -27,7 +27,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 
 import { PermissionUi } from '@constants/ui'
-import type { Presentation } from '@lib/tools/presentation'
+import type { Presentation } from '@lib'
 
 const Row = PermissionUi.Row
 const Modal = PermissionUi.Modal

@@ -162,7 +162,7 @@ impl WindowRenderer {
     /// Configure the surface (layer-shell init + sizing) without
     /// mapping it visible. Used at boot when `[daemon.window] visible
     /// = false` so the layer-shell role is set up early — later
-    /// `overlay/present` calls `show()` to actually map the
+    /// `overlay/show` calls `show()` to actually map the
     /// already-roled surface, which avoids the "init_layer_shell on a
     /// realized window" failure mode.
     pub fn configure_hidden(&self, window: &WebviewWindow) -> Result<()> {
@@ -328,7 +328,7 @@ impl WindowRenderer {
         // layer-shell protocol instead of xdg_shell.
         //
         // `map_visible = false` (boot-hidden mode): skip the actual map.
-        // The layer-shell role is configured; later `overlay/present`
+        // The layer-shell role is configured; later `overlay/show`
         // calls back into `apply_anchor` with `map_visible = true` to
         // bring the surface up. Keeping the role configured early
         // avoids the "init_layer_shell on a realized window" failure
@@ -394,7 +394,7 @@ impl WindowRenderer {
             .context("failed to position window")?;
 
         // Boot-hidden mode (`map_visible = false`): leave the window
-        // unmapped after layout — `overlay/present` re-runs this path
+        // unmapped after layout — `overlay/show` re-runs this path
         // with `map_visible = true` to bring the surface up.
         if map_visible {
             window
