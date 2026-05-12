@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec, UserTurnInput};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
-use crate::rpc::handlers::util::{map_adapter_err, parse_params};
+use crate::rpc::handlers::util::{map_adapter_err, parse_params, spawn_or_restore};
 use crate::rpc::protocol::RpcError;
 
 #[derive(Debug, Default, Deserialize)]
@@ -131,15 +131,7 @@ impl RpcHandler for PromptsHandler {
                                 ))
                             })?;
                             spawn_name = Some(validated);
-                            if p.restore {
-                                if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
-                                    k
-                                } else {
-                                    adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
-                                }
-                            } else {
-                                adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
-                            }
+                            spawn_or_restore(adapter.as_ref(), spec.clone(), p.restore).await?
                         }
                     },
                     None => match adapter.focused_id().await {
@@ -148,15 +140,7 @@ impl RpcHandler for PromptsHandler {
                             // Auto-spawn path. Empty registry + no
                             // focused — spawn (or restore + spawn-on-miss)
                             // with the supplied flags.
-                            if p.restore {
-                                if let Some(k) = adapter.restore_latest_session(&spec).await.map_err(map_adapter_err)? {
-                                    k
-                                } else {
-                                    adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
-                                }
-                            } else {
-                                adapter.spawn(spec.clone()).await.map_err(map_adapter_err)?
-                            }
+                            spawn_or_restore(adapter.as_ref(), spec.clone(), p.restore).await?
                         }
                     },
                 };
