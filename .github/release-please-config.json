@@ -28,6 +28,11 @@
           "jsonpath": "$.version"
         },
         {
+          "type": "json",
+          "path": "src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        {
           "type": "generic",
           "path": "packaging/aur/hyprpilot-bin/PKGBUILD"
         }
