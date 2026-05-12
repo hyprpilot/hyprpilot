@@ -120,16 +120,21 @@ export function presentationFor(
     }
   }
 
-  // claude-code's switch_mode tool — title varies (`Ready to code?`,
-  // `EnterPlanMode`, …) so neither the snake'd-wireName lookup nor the
-  // kind classification (`other`) routes to the modal-permission UI.
-  // Detect on the rawInput shape (`plan` is a non-empty string), same
-  // signal the daemon-side PlanExitFormatter matcher uses. Adapter
-  // gate keeps other vendors out — only claude-agent-acp ships
-  // switch_mode this way today.
-  if (adapter === AdapterId.ClaudeCode && typeof rawInput?.plan === 'string' && rawInput.plan.length > 0) {
-    const overrides = adapterOverrides[adapter]
-    const planExit = overrides?.switch_mode ?? overrides?.exit_plan_mode
+  // claude-code's plan-exit tool — title varies (`Ready to code?`,
+  // `EnterPlanMode`, claude-agent-acp ≥0.32's `switch_mode`, …) so
+  // neither the snake'd-wireName lookup nor the kind classification
+  // (`other`) routes to the modal-permission UI. Detect on the
+  // rawInput shape (`plan` is a non-empty string), same signal the
+  // daemon-side PlanExitFormatter matcher uses. Intentionally
+  // **not** gated on adapter id — the `agents/list` lookup is
+  // async-lazy and a permission can land before the registry
+  // resolves, leaving `adapter === undefined` and dropping the
+  // modal route. `rawInput.plan: string` is specific enough on its
+  // own that no other tool ships one, so dispatching to the
+  // claude-code override unconditionally is safe.
+  if (typeof rawInput?.plan === 'string' && rawInput.plan.length > 0) {
+    const cc = adapterOverrides[AdapterId.ClaudeCode]
+    const planExit = cc?.switch_mode ?? cc?.exit_plan_mode
 
     if (planExit) {
       return planExit
