@@ -46,6 +46,7 @@ import ToolChips from './ToolChips.vue'
 import Turn from './Turn.vue'
 import { Loading, Role, StreamKind, PlanStatus, type PlanItem } from '@components'
 import {
+  isEditableTarget,
   StreamItemKind,
   TurnRole,
   timelineBlocksFromSnapshot,
@@ -178,19 +179,6 @@ function goToBottom(): void {
 // matches the desktop convention (slightly less than full-screen so
 // context overlaps).
 const PAGE_OVERLAP_RATIO = 0.9
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
-
-  if (target.isContentEditable) {
-    return true
-  }
-  const tag = target.tagName
-
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-}
 
 useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
   if (isEditableTarget(ev.target)) {

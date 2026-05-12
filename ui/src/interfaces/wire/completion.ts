@@ -11,7 +11,18 @@ export enum CompletionKind {
   Command = 'command'
 }
 
-export type CompletionSourceId = 'skills' | 'path' | 'ripgrep' | 'commands'
+/**
+ * Closed set of daemon-registered completion sources. Mirrors the
+ * Rust `CompletionSource::id()` values in `src-tauri/src/completion/`.
+ * Modelled as an enum (not a union literal) so palette modes filter
+ * via `[CompletionSourceId.Path]` instead of stringy literals.
+ */
+export enum CompletionSourceId {
+  Skills = 'skills',
+  Path = 'path',
+  Ripgrep = 'ripgrep',
+  Commands = 'commands'
+}
 
 export interface ReplacementRange {
   start: number
@@ -63,8 +74,15 @@ export interface CandidateItem {
 
 export interface CompletionQueryResponse {
   requestId: string
-  sourceId: CompletionSourceId | null
-  replacementRange: ReplacementRange | null
+  /**
+   * `undefined` when no source claimed the cursor position (the
+   * daemon returns `sourceId: null` on the wire — `?` is the
+   * standard hyprpilot mapping for Rust-side `Option<T>` serialising
+   * to `null`).
+   */
+  sourceId?: CompletionSourceId
+  /** `undefined` mirrors a daemon-side `null` — same rationale as `sourceId`. */
+  replacementRange?: ReplacementRange
   items: CompletionItem[]
 }
 

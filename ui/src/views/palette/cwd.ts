@@ -24,7 +24,7 @@
 
 import { ToastTone } from '@components'
 import { useActiveInstance, useCwdHistory, usePalette, useProfiles, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
-import { invoke, TauriCommand } from '@ipc'
+import { CompletionKind, CompletionSourceId, invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
 const COMPLETION_ROW_PREFIX = 'cwd-complete:'
@@ -108,7 +108,7 @@ async function fetchPathCompletions(query: string, cwdBase?: string): Promise<Pa
       // Restrict the daemon walk to the `path` source — cwd palette
       // never wants skills / commands / ripgrep matches even when
       // the typed query happens to look like one of their sigils.
-      sources: ['path']
+      sources: [CompletionSourceId.Path]
     })
 
     if (!r || !Array.isArray(r.items)) {
@@ -119,7 +119,7 @@ async function fetchPathCompletions(query: string, cwdBase?: string): Promise<Pa
       r.items
         // Path source emits `detail: "dir"` for directories — cwd must
         // be a directory so files are filtered out.
-        .filter((item) => item.kind === 'path' && item.detail === 'dir')
+        .filter((item) => item.kind === CompletionKind.Path && item.detail === 'dir')
         .slice(0, 30)
         .map((item) => ({
           id: `${COMPLETION_ROW_PREFIX}${item.replacement.text}`,
