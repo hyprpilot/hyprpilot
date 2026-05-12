@@ -142,7 +142,9 @@ describe('Viewport.vue', () => {
         {
           seq: 1,
           item: {
-            kind: TranscriptItemKind.UserPrompt, text: 'hi', attachments: []
+            kind: TranscriptItemKind.UserPrompt,
+            text: 'hi',
+            attachments: []
           } as never
         },
         {
@@ -247,7 +249,9 @@ describe('Viewport.vue', () => {
     // without throwing on read-only property — real browsers never
     // lock down scrollTop, jsdom does when this defaults to false.
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 0
+      configurable: true,
+      writable: true,
+      value: 0
     })
     root.dispatchEvent(new Event('scroll'))
 

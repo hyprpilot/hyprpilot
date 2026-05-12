@@ -562,12 +562,12 @@ defineExpose({ scrollEl })
       <slot v-if="isEmpty" name="empty" />
 
       <template v-else>
-      <!-- Loading chip pinned at the top while a backward page is in
+        <!-- Loading chip pinned at the top while a backward page is in
            flight. Sits outside the virtualized spacer so its height
            doesn't compete with row offsets. -->
-      <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
+        <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
 
-      <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
+        <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
            re-renders for history rows. Live row keeps re-rendering
            every chunk because `latestUpdatedAt(block)` advances per
            streaming merge (every chunk bumps the corresponding
@@ -577,85 +577,81 @@ defineExpose({ scrollEl })
            Deps cover: turn identity, role, content-shape counts,
            per-chunk freshness via `latestUpdatedAt`, live flag,
            elapsed/usage labels. -->
-      <Turn
-        v-for="(block, blockIdx) in blocks"
-        :key="block.groupKey"
-        v-memo="[
-          block.groupKey,
-          block.role,
-          block.turnEntries.length,
-          block.toolCalls.length,
-          block.streamEntries.length,
-          latestUpdatedAt(block),
-          blockIdx === liveBlockIdx,
-          elapsedFor(block.turnId),
-          usageFor(block.turnId)
-        ]"
-        :role="block.role"
-        :live="blockIdx === liveBlockIdx"
-        :elapsed="elapsedFor(block.turnId)"
-        :usage="usageFor(block.turnId)"
-      >
-        <StreamCard
-          v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
-          :kind="StreamKind.Thinking"
-          :active="blockIdx === liveBlockIdx"
-          label="thought"
-          :elapsed="thinkingElapsedFor(block)"
-          :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
-        />
-        <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+        <Turn
+          v-for="(block, blockIdx) in blocks"
+          :key="block.groupKey"
+          v-memo="[
+            block.groupKey,
+            block.role,
+            block.turnEntries.length,
+            block.toolCalls.length,
+            block.streamEntries.length,
+            latestUpdatedAt(block),
+            blockIdx === liveBlockIdx,
+            elapsedFor(block.turnId),
+            usageFor(block.turnId)
+          ]"
+          :role="block.role"
+          :live="blockIdx === liveBlockIdx"
+          :elapsed="elapsedFor(block.turnId)"
+          :usage="usageFor(block.turnId)"
+        >
           <StreamCard
-            v-if="entry.item.kind === StreamItemKind.Plan"
-            :kind="StreamKind.Planning"
+            v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
+            :kind="StreamKind.Thinking"
             :active="blockIdx === liveBlockIdx"
-            label="plan"
-            :items="mapPlanItems(entry.item.entries)"
+            label="thought"
+            :elapsed="thinkingElapsedFor(block)"
+            :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
           />
-          <ChangeBanner
-            v-else-if="entry.item.kind === StreamItemKind.ModeChange"
-            kind="mode"
-            :to="entry.item.name ?? entry.item.modeId"
-            :from="entry.item.prevName ?? entry.item.prevModeId"
-          />
-          <ChangeBanner
-            v-else-if="entry.item.kind === StreamItemKind.ModelChange"
-            kind="model"
-            :to="entry.item.name ?? entry.item.modelId"
-            :from="entry.item.prevName ?? entry.item.prevModelId"
-          />
-          <ChangeBanner
-            v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
-            :kind="entry.item.categoryId"
-            :to="entry.item.name ?? entry.item.value"
-            :from="entry.item.prevName ?? entry.item.prevValue"
-          />
-          <ChangeBanner
-            v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected"
-            kind="system prompt"
-            :to="systemPromptLabel(entry.item.files)"
-          />
-        </template>
-
-        <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterForActive))" />
-
-        <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
-          <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
-        </template>
-
-        <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-          <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
-          <template v-else>
-            <Body :role="Role.User" :text="entry.turn.text" markdown />
-            <Attachments
-              v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
-              :attachments="entry.turn.attachments"
-              @open="(att) => emit('attachment-open', att)"
+          <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+            <StreamCard
+              v-if="entry.item.kind === StreamItemKind.Plan"
+              :kind="StreamKind.Planning"
+              :active="blockIdx === liveBlockIdx"
+              label="plan"
+              :items="mapPlanItems(entry.item.entries)"
             />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.ModeChange"
+              kind="mode"
+              :to="entry.item.name ?? entry.item.modeId"
+              :from="entry.item.prevName ?? entry.item.prevModeId"
+            />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.ModelChange"
+              kind="model"
+              :to="entry.item.name ?? entry.item.modelId"
+              :from="entry.item.prevName ?? entry.item.prevModelId"
+            />
+            <ChangeBanner
+              v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
+              :kind="entry.item.categoryId"
+              :to="entry.item.name ?? entry.item.value"
+              :from="entry.item.prevName ?? entry.item.prevValue"
+            />
+            <ChangeBanner v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected" kind="system prompt" :to="systemPromptLabel(entry.item.files)" />
           </template>
-        </template>
-      </Turn>
-    </template>
+
+          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterForActive))" />
+
+          <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
+            <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
+          </template>
+
+          <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
+            <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
+            <template v-else>
+              <Body :role="Role.User" :text="entry.turn.text" markdown />
+              <Attachments
+                v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+                :attachments="entry.turn.attachments"
+                @open="(att) => emit('attachment-open', att)"
+              />
+            </template>
+          </template>
+        </Turn>
+      </template>
     </div>
 
     <!-- Floating scroll-to-bottom chevron. Lives inside the viewport
@@ -666,14 +662,7 @@ defineExpose({ scrollEl })
          move >64px above the foot. Click jumps to the live area AND
          immediately drops any extra pages the captain accumulated
          while scrolling up. -->
-    <button
-      v-if="!stuck"
-      type="button"
-      class="scroll-to-bottom"
-      data-testid="scroll-to-bottom"
-      aria-label="Scroll to latest"
-      @click="goToBottom"
-    >
+    <button v-if="!stuck" type="button" class="scroll-to-bottom" data-testid="scroll-to-bottom" aria-label="Scroll to latest" @click="goToBottom">
       <FaIcon :icon="faChevronDown" />
     </button>
   </div>
@@ -725,7 +714,10 @@ defineExpose({ scrollEl })
   border: 1px solid var(--theme-border-soft);
   cursor: pointer;
   font-size: 0.7rem;
-  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
   z-index: 5;
 }
 

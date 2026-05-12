@@ -10,7 +10,9 @@ function userPrompt(seq: number, turnId: string | undefined, text: string): SeqT
     seq,
     turnId,
     item: {
-      kind: TranscriptItemKind.UserPrompt, text, attachments: []
+      kind: TranscriptItemKind.UserPrompt,
+      text,
+      attachments: []
     }
   }
 }

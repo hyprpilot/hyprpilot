@@ -272,7 +272,9 @@ function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscrip
   }
 
   return {
-    seq, turnId: payload.turnId, item: payload.item
+    seq,
+    turnId: payload.turnId,
+    item: payload.item
   }
 }
 
@@ -301,9 +303,7 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
   const limitGetter = opts.scrollEl
     ? (): number => {
       const id = instanceId.value
-      const data = id !== undefined
-        ? (queryClient.getQueryData(['snapshot-chat', id]) as PatchableInfiniteData | undefined)
-        : undefined
+      const data = id !== undefined ? (queryClient.getQueryData(['snapshot-chat', id]) as PatchableInfiniteData | undefined) : undefined
       const itemCount = data?.pages.reduce((sum, p) => sum + (p?.items.length ?? 0), 0) ?? 0
 
       return measuredPageSize(opts.scrollEl as Ref<HTMLElement | undefined>, itemCount)

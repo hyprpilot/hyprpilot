@@ -162,7 +162,11 @@ describe('useCompletion', () => {
   it('drops in-flight response when close() runs between issue and resolution', async() => {
     let resolveQuery: (value: unknown) => void = () => {}
 
-    invoke.mockReturnValueOnce(new Promise((resolve) => { resolveQuery = resolve }))
+    invoke.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveQuery = resolve
+      })
+    )
     const c = useCompletion()
 
     c.query('#git', 4, { manual: true })

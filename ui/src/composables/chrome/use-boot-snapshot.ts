@@ -28,12 +28,7 @@ import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
 import { applyCompletionConfigFromObject } from '../composer/use-completion'
 import { prefetchInstanceChatFirstPage, prefetchInstanceMeta } from '../instance/use-focus-prefetch'
-import {
-  pushCurrentModeUpdate,
-  setInstanceAgent,
-  setInstanceName,
-  setInstanceProfile
-} from '../instance/use-session-info'
+import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from '../instance/use-session-info'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 

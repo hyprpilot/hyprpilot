@@ -38,7 +38,6 @@ interface E2EState {
 }
 
 declare global {
-
   var __HYPRPILOT_E2E__: E2EState | undefined
 }
 

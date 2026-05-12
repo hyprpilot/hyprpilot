@@ -220,4 +220,3 @@ describe('useSessionInfo profile derivation', () => {
     expect(useSessionInfo('A').info.value.availableModels).toEqual([])
   })
 })
-

@@ -140,12 +140,11 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
         cwd: pick.cwd,
         agentId: profile?.agent,
         profileId: profile?.id
+      }).catch((err) => {
+        log.warn('palette-sessions: load failed', { err })
+        pushToast(ToastTone.Err, `session load failed: ${String(err)}`)
+        setSessionRestoring(target, false)
       })
-        .catch((err) => {
-          log.warn('palette-sessions: load failed', { err })
-          pushToast(ToastTone.Err, `session load failed: ${String(err)}`)
-          setSessionRestoring(target, false)
-        })
     },
     onDelete() {
       // Per CLAUDE.md "stubs panic, they don't pretend": the wire

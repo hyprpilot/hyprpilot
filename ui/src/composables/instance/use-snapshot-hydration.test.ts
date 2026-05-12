@@ -21,7 +21,9 @@ function buildClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        retry: false, gcTime: 60_000, staleTime: 0
+        retry: false,
+        gcTime: 60_000,
+        staleTime: 0
       }
     }
   })
@@ -65,25 +67,30 @@ function metaSnapshotFixture(overrides: Partial<MetaSnapshot> = {}): MetaSnapsho
     currentModelId: 'claude-opus-4',
     availableModes: [
       {
-        id: 'plan', name: 'Plan'
+        id: 'plan',
+        name: 'Plan'
       },
       {
-        id: 'edit', name: 'Edit'
+        id: 'edit',
+        name: 'Edit'
       }
     ],
     availableModels: [
       {
-        id: 'claude-opus-4', name: 'Opus'
+        id: 'claude-opus-4',
+        name: 'Opus'
       },
       {
-        id: 'claude-sonnet-4', name: 'Sonnet'
+        id: 'claude-sonnet-4',
+        name: 'Sonnet'
       }
     ],
     configOptions: [],
     mcpsCount: 3,
     pendingPermissions: [],
     usage: {
-      used: 0, size: 0
+      used: 0,
+      size: 0
     },
     turns: [],
     ...overrides
@@ -159,7 +166,8 @@ describe('useSnapshotHydration — session-info hydration', () => {
       mcpsCount: 0,
       pendingPermissions: [],
       usage: {
-        used: 0, size: 0
+        used: 0,
+        size: 0
       },
       turns: []
     }
@@ -199,10 +207,12 @@ describe('useSnapshotHydration — session-info hydration', () => {
           currentValue: 'high',
           options: [
             {
-              value: 'low', name: 'Low'
+              value: 'low',
+              name: 'Low'
             },
             {
-              value: 'high', name: 'High'
+              value: 'high',
+              name: 'High'
             }
           ]
         }
@@ -239,13 +249,20 @@ describe('useSnapshotHydration — turns replay', () => {
     const meta = metaSnapshotFixture({
       turns: [
         turnFixture({
-          id: 't-a', startedAtMs: 1000, endedAtMs: 2000, stopReason: 'end_turn'
+          id: 't-a',
+          startedAtMs: 1000,
+          endedAtMs: 2000,
+          stopReason: 'end_turn'
         }),
         turnFixture({
-          id: 't-b', startedAtMs: 2000, endedAtMs: 3000, stopReason: 'end_turn'
+          id: 't-b',
+          startedAtMs: 2000,
+          endedAtMs: 3000,
+          stopReason: 'end_turn'
         }),
         turnFixture({
-          id: 't-c', startedAtMs: 3000 // mid-flight
+          id: 't-c',
+          startedAtMs: 3000 // mid-flight
         })
       ]
     })
@@ -281,9 +298,13 @@ describe('useSnapshotHydration — turns replay', () => {
 
   it('replaying the same meta data twice does not duplicate records', async() => {
     const meta = metaSnapshotFixture({
-      turns: [turnFixture({
-        id: 't-1', startedAtMs: 1000, endedAtMs: 2000
-      })]
+      turns: [
+        turnFixture({
+          id: 't-1',
+          startedAtMs: 1000,
+          endedAtMs: 2000
+        })
+      ]
     })
     const client = buildClient()
 
@@ -315,10 +336,12 @@ describe('useSnapshotHydration — turns replay', () => {
 describe('useSnapshotHydration — instance flip', () => {
   it('replays the new instance\'s meta when the watched id changes', async() => {
     const metaA = metaSnapshotFixture({
-      cwd: '/repo-a', mcpsCount: 1
+      cwd: '/repo-a',
+      mcpsCount: 1
     })
     const metaB = metaSnapshotFixture({
-      cwd: '/repo-b', mcpsCount: 2
+      cwd: '/repo-b',
+      mcpsCount: 2
     })
 
     invoke.mockImplementation((command, args) => {

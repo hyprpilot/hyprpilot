@@ -28,21 +28,9 @@
 import { useQueryClient, type QueryClient } from '@tanstack/vue-query'
 
 import { DEFAULT_CHAT_LIMIT } from './use-instance-chat-infinite-query'
-import {
-  pushCurrentModeUpdate,
-  setInstanceAgent,
-  setInstanceName,
-  setInstanceProfile
-} from './use-session-info'
+import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from './use-session-info'
 import { type InstanceId, useActiveInstance } from '../chrome/use-active-instance'
-import {
-  invoke,
-  listen,
-  TauriCommand,
-  TauriEvent,
-  type ChatSnapshot,
-  type UnlistenFn
-} from '@ipc'
+import { invoke, listen, TauriCommand, TauriEvent, type ChatSnapshot, type UnlistenFn } from '@ipc'
 import { log } from '@lib'
 
 /**

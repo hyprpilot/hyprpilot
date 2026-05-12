@@ -149,7 +149,9 @@ describe('useChatViewport', () => {
         state: 'running',
         content: [],
         formatted: {
-          title: 'echo', stats: [], fields: []
+          title: 'echo',
+          stats: [],
+          fields: []
         },
         startedAtMs: 1000
       } as never
@@ -177,7 +179,9 @@ describe('useChatViewport', () => {
           state: 'completed',
           content: [{ kind: 'text', text: 'hi' }],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000,
           completedAtMs: 1100
@@ -213,7 +217,9 @@ describe('useChatViewport', () => {
         state: 'running',
         content: [{ kind: 'text', text: 'first' }],
         formatted: {
-          title: 'echo', stats: [], fields: []
+          title: 'echo',
+          stats: [],
+          fields: []
         },
         startedAtMs: 1000
       } as never
@@ -239,7 +245,9 @@ describe('useChatViewport', () => {
           id: 'tc-1',
           content: [{ kind: 'text', text: 'second' }],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000
         } as never
@@ -255,7 +263,9 @@ describe('useChatViewport', () => {
           id: 'tc-1',
           content: [{ kind: 'text', text: 'third' }],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000
         } as never
@@ -290,7 +300,9 @@ describe('useChatViewport', () => {
         state: 'running',
         content: [],
         formatted: {
-          title: 'echo', stats: [], fields: []
+          title: 'echo',
+          stats: [],
+          fields: []
         },
         startedAtMs: 1000
       } as never
@@ -318,7 +330,9 @@ describe('useChatViewport', () => {
           state: 'completed',
           content: [],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000,
           completedAtMs: 1100
@@ -379,7 +393,9 @@ describe('useChatViewport', () => {
 
     cb!({
       payload: {
-        instanceId: 'i-1', requestId: 'r-1', optionId: 'allow-once'
+        instanceId: 'i-1',
+        requestId: 'r-1',
+        optionId: 'allow-once'
       }
     })
     await flushPromises()
@@ -520,7 +536,9 @@ describe('useChatViewport', () => {
     // Resolve the focused instance's row.
     cb!({
       payload: {
-        instanceId: 'i-1', requestId: 'req-1', optionId: 'allow-once'
+        instanceId: 'i-1',
+        requestId: 'req-1',
+        optionId: 'allow-once'
       }
     })
     await flushPromises()
@@ -534,7 +552,9 @@ describe('useChatViewport', () => {
     // store drops the row.
     cb!({
       payload: {
-        instanceId: 'i-OTHER', requestId: 'req-cross', optionId: 'reject-once'
+        instanceId: 'i-OTHER',
+        requestId: 'req-cross',
+        optionId: 'reject-once'
       }
     })
     await flushPromises()

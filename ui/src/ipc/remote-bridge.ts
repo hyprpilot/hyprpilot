@@ -430,10 +430,12 @@ export async function remoteInvoke(command: string, args?: Record<string, unknow
       inflight.delete(id)
       reject(new Error(`remote bridge: '${command}' timed out after ${REMOTE_INVOKE_TIMEOUT_MS}ms`))
     }, REMOTE_INVOKE_TIMEOUT_MS)
-    const settle = (fn: (v: unknown) => void) => (v: unknown): void => {
-      clearTimeout(timer)
-      fn(v)
-    }
+    const settle =
+      (fn: (v: unknown) => void) =>
+        (v: unknown): void => {
+          clearTimeout(timer)
+          fn(v)
+        }
 
     inflight.set(id, { resolve: settle(resolve), reject: settle(reject) })
 

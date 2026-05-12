@@ -136,11 +136,14 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.text, syncText)
-watch(() => props.rows, (next) => {
-  if (term) {
-    term.resize(term.cols, next)
+watch(
+  () => props.rows,
+  (next) => {
+    if (term) {
+      term.resize(term.cols, next)
+    }
   }
-})
+)
 </script>
 
 <template>

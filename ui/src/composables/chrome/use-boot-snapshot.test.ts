@@ -60,7 +60,9 @@ function snapshotFixture(overrides: Record<string, unknown> = {}): Record<string
     daemonCwd: '~/tmp',
     completionConfig: {
       ripgrep: {
-        auto: true, debounceMs: 250, minPrefix: 3
+        auto: true,
+        debounceMs: 250,
+        minPrefix: 3
       }
     },
     agents: { agents: [] },
@@ -143,9 +145,13 @@ describe('applyBootSnapshot — null safety on instance entries', () => {
     invokeMock.mockResolvedValueOnce(
       snapshotFixture({
         instances: {
-          instances: [{
-            instanceId: 'i-3', agentId: 'claude-code', name: ''
-          }]
+          instances: [
+            {
+              instanceId: 'i-3',
+              agentId: 'claude-code',
+              name: ''
+            }
+          ]
         }
       })
     )
