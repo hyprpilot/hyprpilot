@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { pushThoughtChunk, pushTurnStarted, resetStream, resetTurns, StreamItemKind, useStream, useTimelineBlocks } from '@composables'
-import { useActiveInstance } from '@composables/chrome/use-active-instance'
+import { pushThoughtChunk, pushTurnStarted, resetStream, resetTurns, StreamItemKind, useActiveInstance, useStream, useTimelineBlocks } from '@composables'
 
 beforeEach(() => {
   resetStream('A')
