@@ -4,7 +4,9 @@
 //! captain reads the change inline.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, pick, short_path, text_blocks, wire_title_or_fallback};
+use crate::tools::formatter::shared::{
+    format_diff_hunk, format_git_diff, pick, short_path, text_blocks, wire_title_or_fallback,
+};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct EditFormatter;
@@ -30,11 +32,17 @@ impl ToolFormatter for EditFormatter {
         // Prefer agent-supplied diff content blocks (populated as the
         // tool runs); fall back to the rawInput's `old_string` /
         // `new_string` so the captain sees the impending change at
-        // permission time, before content blocks are streamed.
-        let description = render_diff_blocks(ctx.content, path.as_deref()).or_else(|| {
+        // permission time, before content blocks are streamed. Both
+        // surfaces (Shiki-marker markdown + plain git-diff) are
+        // produced in parallel from the same source pair, so they
+        // can't go out of sync.
+        let (description, diff) = render_diff_blocks(ctx.content, path.as_deref()).unwrap_or_else(|| {
             let old_text = pick::<String>(ctx.raw_input, "old_string").unwrap_or_default();
             let new_text = pick::<String>(ctx.raw_input, "new_string").unwrap_or_default();
-            format_diff_hunk(path.as_deref(), &old_text, &new_text)
+            (
+                format_diff_hunk(path.as_deref(), &old_text, &new_text),
+                format_git_diff(path.as_deref(), &old_text, &new_text),
+            )
         });
 
         let output_text = text_blocks(ctx.content);
@@ -48,17 +56,26 @@ impl ToolFormatter for EditFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff,
             output,
             fields: Vec::new(),
         }
     }
 }
 
-/// Project diff content blocks into Shiki-friendly markdown fences.
-/// Per-block path lets each block infer its own language; falls back
-/// to the tool-level `path` arg when the block omits one.
-fn render_diff_blocks(content: &[serde_json::Value], fallback_path: Option<&str>) -> Option<String> {
+/// Project diff content blocks into two parallel surfaces:
+/// Shiki-marker markdown (`description`) AND unified git-diff
+/// (`diff`). Per-block path lets each block infer its own
+/// language / file header; falls back to the tool-level `path`
+/// arg when the block omits one. Returns
+/// `None` when no `diff`-typed content blocks are present so the
+/// caller falls through to the rawInput-based path.
+fn render_diff_blocks(
+    content: &[serde_json::Value],
+    fallback_path: Option<&str>,
+) -> Option<(Option<String>, Option<String>)> {
     let mut hunks: Vec<String> = Vec::new();
+    let mut git_hunks: Vec<String> = Vec::new();
     for block in content {
         if block.get("type").and_then(|v| v.as_str()) != Some("diff") {
             continue;
@@ -69,12 +86,24 @@ fn render_diff_blocks(content: &[serde_json::Value], fallback_path: Option<&str>
         if let Some(hunk) = format_diff_hunk(block_path, old_text, new_text) {
             hunks.push(hunk);
         }
+        if let Some(g) = format_git_diff(block_path, old_text, new_text) {
+            git_hunks.push(g);
+        }
     }
-    if hunks.is_empty() {
+    if hunks.is_empty() && git_hunks.is_empty() {
+        return None;
+    }
+    let description = if hunks.is_empty() {
         None
     } else {
         Some(hunks.join("\n\n"))
-    }
+    };
+    let diff = if git_hunks.is_empty() {
+        None
+    } else {
+        Some(git_hunks.join("\n"))
+    };
+    Some((description, diff))
 }
 
 pub fn register(reg: &mut FormatterRegistry, adapter: &str) {

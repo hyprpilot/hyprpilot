@@ -33,6 +33,7 @@ impl ToolFormatter for ToolSearchFormatter {
             title,
             stats: Vec::new(),
             description: None,
+            diff: None,
             output,
             fields,
         }

@@ -55,6 +55,7 @@ impl ToolFormatter for PatchFormatter {
             title,
             stats,
             description,
+            diff: None,
             output,
             fields: Vec::<ToolField>::new(),
         }

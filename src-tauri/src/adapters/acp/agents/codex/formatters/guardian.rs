@@ -25,6 +25,7 @@ impl ToolFormatter for GuardianFormatter {
             title: "guardian review".to_string(),
             stats: Vec::new(),
             description,
+            diff: None,
             output: None,
             fields,
         }

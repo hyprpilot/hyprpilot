@@ -42,6 +42,7 @@ impl ToolFormatter for TaskFormatter {
             title,
             stats: Vec::new(),
             description: body,
+            diff: None,
             output,
             fields,
         }

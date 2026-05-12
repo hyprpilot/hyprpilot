@@ -35,6 +35,7 @@ impl ToolFormatter for PlanExitFormatter {
             title: "plan ready for review".to_string(),
             stats: Vec::new(),
             description: plan,
+            diff: None,
             output: None,
             fields,
         }

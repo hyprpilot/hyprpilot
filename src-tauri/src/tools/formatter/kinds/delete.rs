@@ -32,6 +32,7 @@ impl ToolFormatter for DeleteFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output: None,
             fields,
         }

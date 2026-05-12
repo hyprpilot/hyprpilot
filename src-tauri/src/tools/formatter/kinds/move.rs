@@ -51,6 +51,7 @@ impl ToolFormatter for MoveFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output: None,
             fields,
         }

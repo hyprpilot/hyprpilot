@@ -44,6 +44,7 @@ impl ToolFormatter for WebFetchFormatter {
             title,
             stats,
             description: None,
+            diff: None,
             output,
             fields,
         }

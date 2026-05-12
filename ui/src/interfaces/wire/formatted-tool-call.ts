@@ -27,6 +27,16 @@ export interface FormattedToolCall {
   title: string
   stats: Stat[]
   description?: string
+  /**
+   * Plain unified git-diff patch (`--- a/path` + `+++ b/path` +
+   * `@@ -1,N +1,M @@` + `+/-` lines). Parallel to `description`
+   * (which is Shiki-marker markdown for the desktop overlay); this
+   * field is for consumers that can't drive the Shiki transformer
+   * pipeline — Neovim, plain markdown renderers, GitHub paste,
+   * `patch -p1`-style tooling. `undefined` when the tool doesn't
+   * produce a diff (read / glob / bash / …).
+   */
+  diff?: string
   output?: string
   fields: ToolField[]
 }

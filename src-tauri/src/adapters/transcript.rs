@@ -398,6 +398,7 @@ mod tests {
                 title: "read · package.json".into(),
                 stats: Vec::new(),
                 description: None,
+                diff: None,
                 output: None,
                 fields: vec![],
             },

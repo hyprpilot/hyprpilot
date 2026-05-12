@@ -47,6 +47,7 @@ impl ToolFormatter for ToolFormatterCodex {
             title,
             stats,
             description: None,
+            diff: None,
             output,
             fields,
         }

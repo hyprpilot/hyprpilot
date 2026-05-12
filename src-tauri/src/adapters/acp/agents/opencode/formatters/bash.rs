@@ -66,6 +66,7 @@ impl ToolFormatter for BashFormatter {
             title,
             stats,
             description,
+            diff: None,
             output,
             fields,
         }

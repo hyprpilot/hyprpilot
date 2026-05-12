@@ -31,6 +31,7 @@ impl ToolFormatter for ApproveFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output: None,
             fields,
         }

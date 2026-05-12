@@ -35,6 +35,7 @@ impl ToolFormatter for McpFormatter {
             title,
             stats,
             description,
+            diff: None,
             output,
             fields,
         }

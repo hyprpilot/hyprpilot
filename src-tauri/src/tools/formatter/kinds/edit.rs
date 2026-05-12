@@ -99,6 +99,7 @@ impl ToolFormatter for EditFormatter {
             title,
             stats,
             description,
+            diff: None,
             output,
             fields,
         }

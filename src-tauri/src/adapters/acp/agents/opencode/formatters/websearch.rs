@@ -45,6 +45,7 @@ impl ToolFormatter for WebSearchFormatter {
             title,
             stats,
             description: None,
+            diff: None,
             output,
             fields,
         }

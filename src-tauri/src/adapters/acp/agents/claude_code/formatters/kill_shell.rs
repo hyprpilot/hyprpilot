@@ -16,6 +16,7 @@ impl ToolFormatter for KillShellFormatter {
             title,
             stats: Vec::new(),
             description: None,
+            diff: None,
             output: None,
             fields: Vec::new(),
         }

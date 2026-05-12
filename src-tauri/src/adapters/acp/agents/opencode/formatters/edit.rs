@@ -4,7 +4,7 @@
 //! extension resolves; `\`\`\`diff` fallback otherwise).
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, pick, short_path, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct EditFormatter;
@@ -22,6 +22,7 @@ impl ToolFormatter for EditFormatter {
         };
 
         let description = format_diff_hunk(path.as_deref(), &old_text, &new_text);
+        let diff = format_git_diff(path.as_deref(), &old_text, &new_text);
 
         let mut fields: Vec<ToolField> = Vec::new();
         if let Some(p) = path {
@@ -49,6 +50,7 @@ impl ToolFormatter for EditFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff,
             output,
             fields,
         }

@@ -62,6 +62,7 @@ impl ToolFormatter for TodoFormatter {
             title,
             stats,
             description: None,
+            diff: None,
             output,
             fields,
         }

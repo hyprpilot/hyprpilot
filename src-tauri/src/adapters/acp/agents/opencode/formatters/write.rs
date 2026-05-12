@@ -1,7 +1,7 @@
 //! opencode's `write` tool. RawInput: `{ filePath, content }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, line_magnitudes, pick, short_path};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, line_magnitudes, pick, short_path};
 use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct WriteFormatter;
@@ -25,9 +25,14 @@ impl ToolFormatter for WriteFormatter {
         // Render the new content as a diff (all-add) so the captain
         // reviews the file before granting write permission. `content`
         // is consumed here; not dumped as a redundant field.
+        // `description` is Shiki-marker markdown; `diff` is the
+        // parallel plain git-diff for Neovim / raw-markdown consumers.
         let description = body
             .as_deref()
             .and_then(|new_text| format_diff_hunk(path.as_deref(), "", new_text));
+        let diff = body
+            .as_deref()
+            .and_then(|new_text| format_git_diff(path.as_deref(), "", new_text));
 
         let mut fields: Vec<ToolField> = Vec::new();
         if let Some(p) = path {
@@ -41,6 +46,7 @@ impl ToolFormatter for WriteFormatter {
             title,
             stats,
             description,
+            diff,
             output: None,
             fields,
         }

@@ -35,6 +35,7 @@ impl ToolFormatter for FetchFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output,
             fields,
         }

@@ -233,6 +233,63 @@ fn cheap_diff_hunk(old_text: &str, new_text: &str) -> String {
     out
 }
 
+/// Project an `(old_text, new_text)` pair onto a unified git-diff
+/// patch string — `--- a/<path>` + `+++ b/<path>` + `@@ -1,N +1,M @@`
+/// headers followed by `+/-` lines. Distinct from
+/// `format_diff_hunk` (which emits Shiki-marker markdown);
+/// consumers that can't run the Shiki transformer pipeline (plain
+/// markdown renderers, Neovim, GitHub paste, `patch -p1`-style
+/// tooling) read this field instead.
+///
+/// Hunk offsets are synthesised at `1` because Edit's old/new
+/// snippets aren't anchored to source line numbers — the agent
+/// supplies free-form text, not a file-offset patch. Consumers that
+/// need real anchoring still have `raw_input.old_string` /
+/// `new_string` and can compute their own.
+///
+/// `path = None` skips the file headers and emits just
+/// `@@ ... @@` + `+/-` lines (suitable for embedding in markdown
+/// without a file identity).
+///
+/// Both old and new empty → `None` so the caller drops it.
+pub fn format_git_diff(path: Option<&str>, old_text: &str, new_text: &str) -> Option<String> {
+    if old_text.is_empty() && new_text.is_empty() {
+        return None;
+    }
+    let removed = old_text.lines().count();
+    let added = new_text.lines().count();
+    let old_start = if removed == 0 { 0 } else { 1 };
+    let new_start = if added == 0 { 0 } else { 1 };
+
+    let mut out = String::new();
+    if let Some(p) = path.filter(|s| !s.is_empty()) {
+        let p = p.trim_start_matches('/');
+        out.push_str("diff --git a/");
+        out.push_str(p);
+        out.push_str(" b/");
+        out.push_str(p);
+        out.push('\n');
+        out.push_str("--- a/");
+        out.push_str(p);
+        out.push('\n');
+        out.push_str("+++ b/");
+        out.push_str(p);
+        out.push('\n');
+    }
+    out.push_str(&format!("@@ -{old_start},{removed} +{new_start},{added} @@\n"));
+    for line in old_text.lines() {
+        out.push('-');
+        out.push_str(line);
+        out.push('\n');
+    }
+    for line in new_text.lines() {
+        out.push('+');
+        out.push_str(line);
+        out.push('\n');
+    }
+    Some(out)
+}
+
 /// Comment style for `transformerNotationDiff` markers. Languages
 /// where end-of-line line-comments don't exist (`html` / `xml` /
 /// `markdown` / `plaintext`) return `None`; the caller then falls
@@ -359,5 +416,89 @@ mod tests {
         // reading.
         let (added, _) = line_magnitudes("", "a\n");
         assert_eq!(added, 1);
+    }
+
+    #[test]
+    fn format_git_diff_with_path_emits_file_headers_and_hunk() {
+        let patch = format_git_diff(Some("src/foo.rs"), "let x = 1;", "let x = 2;").expect("patch");
+        assert!(patch.starts_with("diff --git a/src/foo.rs b/src/foo.rs\n"), "{patch}");
+        assert!(patch.contains("--- a/src/foo.rs\n"), "{patch}");
+        assert!(patch.contains("+++ b/src/foo.rs\n"), "{patch}");
+        assert!(patch.contains("@@ -1,1 +1,1 @@\n"), "{patch}");
+        assert!(patch.contains("-let x = 1;\n"), "{patch}");
+        assert!(patch.contains("+let x = 2;\n"), "{patch}");
+    }
+
+    #[test]
+    fn format_git_diff_strips_leading_slash_from_path() {
+        // Git patches use repo-relative paths under `a/` and `b/`;
+        // a leading slash on the source would produce `a//abs/path`.
+        let patch = format_git_diff(Some("/abs/path.rs"), "old", "new").expect("patch");
+        assert!(patch.contains("a/abs/path.rs"), "{patch}");
+        assert!(!patch.contains("a//abs/path.rs"), "double slash: {patch}");
+    }
+
+    #[test]
+    fn format_git_diff_without_path_skips_file_headers() {
+        let patch = format_git_diff(None, "old", "new").expect("patch");
+        assert!(!patch.contains("diff --git"), "{patch}");
+        assert!(!patch.contains("---"), "{patch}");
+        assert!(!patch.contains("+++"), "{patch}");
+        assert!(patch.starts_with("@@ -1,1 +1,1 @@\n"), "{patch}");
+        assert!(patch.contains("-old\n"));
+        assert!(patch.contains("+new\n"));
+    }
+
+    /// Split a patch into its hunk body (everything after the
+    /// `@@ ... @@` header line). Tests use this to assert per-line
+    /// `+/-` presence without false-matching on the `--- a/` /
+    /// `+++ b/` file headers that also start with `-` / `+`.
+    fn hunk_body(patch: &str) -> &str {
+        let (_, rest) = patch.split_once("@@\n").expect("hunk header");
+        rest
+    }
+
+    #[test]
+    fn format_git_diff_write_pattern_uses_zero_old_offset() {
+        // Empty old + non-empty new = "new file" pattern. Git's
+        // convention is `@@ -0,0 +1,M @@`.
+        let patch = format_git_diff(Some("new.txt"), "", "first line\nsecond line").expect("patch");
+        assert!(patch.contains("@@ -0,0 +1,2 @@\n"), "{patch}");
+        let body = hunk_body(&patch);
+        assert!(body.contains("+first line\n"));
+        assert!(body.contains("+second line\n"));
+        // No `-` lines in the hunk body since old is empty.
+        for line in body.lines() {
+            assert!(!line.starts_with('-'), "spurious removal line: {line}");
+        }
+    }
+
+    #[test]
+    fn format_git_diff_delete_pattern_uses_zero_new_offset() {
+        let patch = format_git_diff(Some("gone.txt"), "first\nsecond", "").expect("patch");
+        assert!(patch.contains("@@ -1,2 +0,0 @@\n"), "{patch}");
+        let body = hunk_body(&patch);
+        assert!(body.contains("-first\n"));
+        assert!(body.contains("-second\n"));
+        for line in body.lines() {
+            assert!(!line.starts_with('+'), "spurious addition line: {line}");
+        }
+    }
+
+    #[test]
+    fn format_git_diff_empty_inputs_return_none() {
+        assert!(format_git_diff(Some("foo.rs"), "", "").is_none());
+        assert!(format_git_diff(None, "", "").is_none());
+    }
+
+    #[test]
+    fn format_git_diff_orders_removals_before_additions() {
+        // The hunk emits all `-` lines first, then all `+` lines —
+        // matches the rich/cheap Shiki helpers and what `patch -p1`
+        // expects for non-anchored hunks.
+        let patch = format_git_diff(Some("a.rs"), "a\nb", "c\nd").expect("patch");
+        let minus_a = patch.find("-a").expect("removal line");
+        let plus_c = patch.find("+c").expect("addition line");
+        assert!(minus_a < plus_c, "removals must precede additions: {patch}");
     }
 }
