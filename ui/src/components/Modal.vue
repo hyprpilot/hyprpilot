@@ -127,11 +127,14 @@ const headerBg = computed(() => toneBg(props.tone))
 
 /* Tag yields when the actions row needs space — long titles (e.g.
  * `rename · my-very-long-instance-slug`) ellipsise rather than push
- * action buttons offscreen. */
+ * action buttons offscreen. `min-width: 8rem` keeps a readable
+ * chunk of the title visible even after the row's flex squeeze
+ * resolves — without it, modals with multiple long-labelled
+ * buttons could shrink the tag down to the icon. */
 .modal-tag {
   @apply inline-flex items-center;
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: 8rem;
   gap: 0.375rem;
   padding: 0.1875rem 0.5625rem;
   color: var(--theme-fg-on-tone);
