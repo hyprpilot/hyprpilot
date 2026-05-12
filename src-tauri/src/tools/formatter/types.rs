@@ -63,6 +63,15 @@ pub struct FormattedToolCall {
     /// as markdown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Plain unified git-diff patch (`--- a/path` + `+++ b/path` +
+    /// `@@ -1,N +1,M @@` + `+/-` lines). Distinct from
+    /// `description` (Shiki-marker markdown for the desktop overlay's
+    /// rich highlighter); this field is for consumers that can't
+    /// drive the Shiki transformer pipeline — Neovim, plain markdown
+    /// renderers, GitHub paste, `patch -p1`-style tooling. `None`
+    /// when the tool doesn't produce a diff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
     /// Tool execution result rendered as preformatted plain text
     /// (stdout / diff / file content).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +121,7 @@ mod tests {
             title: "bash".into(),
             stats: Vec::new(),
             description: None,
+            diff: None,
             output: None,
             fields: Vec::new(),
         };

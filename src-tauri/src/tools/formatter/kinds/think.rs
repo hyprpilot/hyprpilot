@@ -24,6 +24,7 @@ impl ToolFormatter for ThinkFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output: None,
             fields: Vec::new(),
         }

@@ -36,6 +36,7 @@ impl ToolFormatter for SkillFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output: None,
             fields,
         }

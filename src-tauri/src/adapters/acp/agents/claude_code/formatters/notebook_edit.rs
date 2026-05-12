@@ -65,6 +65,7 @@ impl ToolFormatter for NotebookEditFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output,
             fields,
         }

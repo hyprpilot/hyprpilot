@@ -43,6 +43,7 @@ impl ToolFormatter for GlobFormatter {
             title,
             stats: Vec::new(),
             description: None,
+            diff: None,
             output,
             fields,
         }

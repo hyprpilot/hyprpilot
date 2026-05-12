@@ -36,6 +36,7 @@ impl ToolFormatter for ReadFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output,
             fields,
         }

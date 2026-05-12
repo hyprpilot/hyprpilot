@@ -46,6 +46,7 @@ impl ToolFormatter for SearchFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output,
             fields,
         }

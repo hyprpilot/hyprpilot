@@ -75,6 +75,7 @@ impl ToolFormatter for GrepFormatter {
             title,
             stats: Vec::new(),
             description: None,
+            diff: None,
             output,
             fields,
         }

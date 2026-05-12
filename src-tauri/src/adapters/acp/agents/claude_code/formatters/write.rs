@@ -2,7 +2,9 @@
 //! surfaces the byte count of the new content.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, line_magnitudes, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{
+    format_diff_hunk, format_git_diff, line_magnitudes, pick, short_path, text_blocks,
+};
 use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct WriteFormatter;
@@ -28,11 +30,16 @@ impl ToolFormatter for WriteFormatter {
 
         // Render the new content as a diff (empty old → all-add) so
         // the captain reviews the file before granting write
-        // permission. Same per-language Shiki rendering as Edit;
+        // permission. `description` is per-language Shiki rendering;
+        // `diff` is the parallel plain git-diff for consumers that
+        // can't run the Shiki transformer (Neovim, raw markdown).
         // `content` is consumed here, not dumped as a redundant field.
         let description = body
             .as_deref()
             .and_then(|new_text| format_diff_hunk(path.as_deref(), "", new_text));
+        let diff = body
+            .as_deref()
+            .and_then(|new_text| format_git_diff(path.as_deref(), "", new_text));
 
         let output_text = text_blocks(ctx.content);
         let output = if output_text.is_empty() {
@@ -45,6 +52,7 @@ impl ToolFormatter for WriteFormatter {
             title,
             stats,
             description,
+            diff,
             output,
             fields: Vec::new(),
         }

@@ -42,6 +42,7 @@ impl ToolFormatter for ExecuteFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output,
             fields,
         }

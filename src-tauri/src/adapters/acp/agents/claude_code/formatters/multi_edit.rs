@@ -4,7 +4,9 @@
 use serde_json::Value;
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, line_magnitudes, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{
+    format_diff_hunk, format_git_diff, line_magnitudes, pick, short_path, text_blocks,
+};
 use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct MultiEditFormatter;
@@ -26,6 +28,7 @@ impl ToolFormatter for MultiEditFormatter {
         let mut total_added: u32 = 0;
         let mut total_removed: u32 = 0;
         let mut hunks: Vec<String> = Vec::new();
+        let mut git_hunks: Vec<String> = Vec::new();
         for edit in &edits {
             let old_text = edit.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
             let new_text = edit.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
@@ -34,6 +37,9 @@ impl ToolFormatter for MultiEditFormatter {
             total_removed = total_removed.saturating_add(r);
             if let Some(hunk) = format_diff_hunk(path.as_deref(), old_text, new_text) {
                 hunks.push(hunk);
+            }
+            if let Some(g) = format_git_diff(path.as_deref(), old_text, new_text) {
+                git_hunks.push(g);
             }
         }
 
@@ -50,6 +56,11 @@ impl ToolFormatter for MultiEditFormatter {
         } else {
             Some(hunks.join("\n\n"))
         };
+        let diff = if git_hunks.is_empty() {
+            None
+        } else {
+            Some(git_hunks.join("\n"))
+        };
 
         let output_text = text_blocks(ctx.content);
         let output = if output_text.is_empty() {
@@ -62,6 +73,7 @@ impl ToolFormatter for MultiEditFormatter {
             title,
             stats,
             description,
+            diff,
             output,
             fields: Vec::new(),
         }

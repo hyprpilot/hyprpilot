@@ -61,6 +61,7 @@ impl ToolFormatter for WebFetchFormatter {
             title,
             stats,
             description,
+            diff: None,
             output,
             fields: Vec::new(),
         }

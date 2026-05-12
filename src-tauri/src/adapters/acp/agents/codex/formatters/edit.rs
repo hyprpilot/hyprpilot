@@ -40,6 +40,7 @@ impl ToolFormatter for EditFormatter {
             title,
             stats: Vec::new(),
             description: None,
+            diff: None,
             output: None,
             fields,
         }

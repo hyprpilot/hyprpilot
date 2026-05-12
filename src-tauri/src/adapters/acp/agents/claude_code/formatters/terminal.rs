@@ -50,6 +50,7 @@ impl ToolFormatter for TerminalFormatter {
             title,
             stats,
             description,
+            diff: None,
             output,
             fields,
         }

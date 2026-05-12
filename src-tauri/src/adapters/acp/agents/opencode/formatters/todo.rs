@@ -59,6 +59,7 @@ impl ToolFormatter for TodoFormatter {
             } else {
                 Some(description)
             },
+            diff: None,
             output: None,
             fields,
         }

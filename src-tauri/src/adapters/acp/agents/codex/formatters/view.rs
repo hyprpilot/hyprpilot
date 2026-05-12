@@ -31,6 +31,7 @@ impl ToolFormatter for ViewFormatter {
             title,
             stats: Vec::new(),
             description: None,
+            diff: None,
             output: None,
             fields,
         }

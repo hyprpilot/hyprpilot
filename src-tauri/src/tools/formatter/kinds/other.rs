@@ -26,6 +26,7 @@ impl ToolFormatter for OtherFormatter {
             title,
             stats: Vec::new(),
             description,
+            diff: None,
             output,
             fields,
         }

@@ -58,6 +58,7 @@ impl ToolFormatter for ExecFormatter {
             title,
             stats,
             description: None,
+            diff: None,
             output,
             fields,
         }
