@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Chat from './Overlay.vue'
 import { useActiveInstance, __resetKeymapsForTests, loadKeymaps, pushPermissionRequest, resetPermissions, clearToasts, useToasts } from '@composables'
-import { Modifier, PermissionOptionKind, TauriCommand } from '@ipc'
+import { Modifier, TauriCommand } from '@ipc'
 
 // Phase C1 wires `useChatViewport` inside Overlay.vue. The composable
 // calls `useQueryClient()` at setup time, so every Overlay mount
@@ -123,17 +123,17 @@ const SAMPLE_OPTIONS = [
   {
     optionId: 'allow-once-id',
     name: 'Allow once',
-    kind: PermissionOptionKind.AllowOnce
+    kind: 'allow_once'
   },
   {
     optionId: 'allow-always-id',
     name: 'Allow always',
-    kind: PermissionOptionKind.AllowAlways
+    kind: 'allow_always'
   },
   {
     optionId: 'reject-once-id',
     name: 'Reject once',
-    kind: PermissionOptionKind.RejectOnce
+    kind: 'reject_once'
   }
 ]
 
@@ -353,12 +353,12 @@ describe('Chat.vue — permission wiring', () => {
         {
           optionId: 'allow-always-id',
           name: 'Allow always',
-          kind: PermissionOptionKind.AllowAlways
+          kind: 'allow_always'
         },
         {
           optionId: 'reject-always-id',
           name: 'Reject always',
-          kind: PermissionOptionKind.RejectAlways
+          kind: 'reject_always'
         }
       ],
       formatted: FMT

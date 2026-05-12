@@ -9,22 +9,19 @@ import type { FormattedToolCall } from './formatted-tool-call'
 import type { Attachment } from './session'
 import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
 
-/**
- * Mirror of the Rust `adapters::permission::PermissionOptionKind`
- * closed set — wire shape is snake-case strings, this enum makes the
- * `switch (kind)` paths exhaustive on the consumer side.
- */
-export enum PermissionOptionKind {
-  AllowOnce = 'allow_once',
-  AllowAlways = 'allow_always',
-  RejectOnce = 'reject_once',
-  RejectAlways = 'reject_always'
-}
-
 export interface PermissionOptionView {
   optionId: string
   name: string
-  kind: PermissionOptionKind
+  /**
+   * Wire-normalised snake-case string from the agent (`'allow_once'`,
+   * `'allow_always'`, `'reject_once'`, `'reject_always'` today;
+   * vendors are free to introduce new variants). The daemon only
+   * classifies allow vs reject via prefix-match; other dispatch
+   * keeps the string opaque so unknown vendor kinds pass through.
+   * UI consumers that care about allow/reject branching should
+   * prefix-match (`kind.startsWith('allow')`) for the same reason.
+   */
+  kind: string
 }
 
 export type ToolCallContentItem = { kind: 'text'; text: string } | { kind: 'file'; path: string; snippet?: string } | { kind: 'json'; value: unknown }

@@ -51,26 +51,31 @@ pub const WAITER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub struct PermissionOptionView {
     pub option_id: String,
     pub name: String,
-    /// Mirrors the upstream `agent_client_protocol::schema::PermissionOptionKind`
-    /// closed set. Modelled as an enum so allow/reject classification
-    /// at `pick_allow_option_id` / `pick_reject_option_id` is a
-    /// pattern match instead of a string compare — typo-safe.
-    pub kind: PermissionOptionKind,
+    /// Wire-normalised snake-case string from the agent (`"allow_once"`,
+    /// `"allow_always"`, `"reject_once"`, `"reject_always"` today;
+    /// vendors are free to introduce new variants the controller
+    /// doesn't classify). The trust-store fallback only classifies
+    /// into allow/reject via `is_allow_kind` / `is_reject_kind`; any
+    /// other dispatch keeps the string opaque so unknown vendor
+    /// kinds pass through unchanged.
+    pub kind: String,
 }
 
-/// Normalised permission-option kind. Wire shape: snake-case strings
-/// (`"allow_once" | "allow_always" | "reject_once" | "reject_always"`),
-/// matching the upstream ACP `PermissionOptionKind` serde
-/// representation. Local mirror so the controller layer doesn't
-/// depend on the upstream type and so callers can pattern-match
-/// against allow/reject without grepping for strings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionOptionKind {
-    AllowOnce,
-    AllowAlways,
-    RejectOnce,
-    RejectAlways,
+/// `true` for any kind whose wire string begins with `allow` (today:
+/// `allow_once` / `allow_always`; future variants like `allow_session`
+/// are auto-classified). Used by `pick_allow_option_id` to drive the
+/// trust-store auto-allow fallback without freezing the set of
+/// recognised allow flavours.
+#[must_use]
+pub fn is_allow_kind(kind: &str) -> bool {
+    kind.starts_with("allow")
+}
+
+/// `true` for any kind whose wire string begins with `reject`. See
+/// [`is_allow_kind`] for the design rationale.
+#[must_use]
+pub fn is_reject_kind(kind: &str) -> bool {
+    kind.starts_with("reject")
 }
 
 /// Identity projection of the tool behind a permission request. The
@@ -501,10 +506,14 @@ impl PermissionController for DefaultPermissionController {
 /// the first option overall.
 #[must_use]
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
+    // Prefer `allow_once` over `allow_always` over any other allow-shaped
+    // variant; falls back to a name/id "allow" substring match for
+    // vendors that ship custom labels; final fallback to the first option.
     let picked = options
         .iter()
-        .find(|o| o.kind == PermissionOptionKind::AllowOnce)
-        .or_else(|| options.iter().find(|o| o.kind == PermissionOptionKind::AllowAlways))
+        .find(|o| o.kind == "allow_once")
+        .or_else(|| options.iter().find(|o| o.kind == "allow_always"))
+        .or_else(|| options.iter().find(|o| is_allow_kind(&o.kind)))
         .or_else(|| {
             options.iter().find(|o| {
                 o.option_id.to_ascii_lowercase().contains("allow") || o.name.to_ascii_lowercase().contains("allow")
@@ -514,7 +523,7 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
-            kind = ?opt.kind,
+            kind = %opt.kind,
             offered = options.len(),
             "permission::pick_allow: option selected"
         );
@@ -529,8 +538,9 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
 pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String> {
     let picked = options
         .iter()
-        .find(|o| o.kind == PermissionOptionKind::RejectOnce)
-        .or_else(|| options.iter().find(|o| o.kind == PermissionOptionKind::RejectAlways))
+        .find(|o| o.kind == "reject_once")
+        .or_else(|| options.iter().find(|o| o.kind == "reject_always"))
+        .or_else(|| options.iter().find(|o| is_reject_kind(&o.kind)))
         .or_else(|| {
             options.iter().find(|o| {
                 o.option_id.to_ascii_lowercase().contains("reject")
@@ -542,7 +552,7 @@ pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String>
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
-            kind = ?opt.kind,
+            kind = %opt.kind,
             offered = options.len(),
             "permission::pick_reject: option selected"
         );
@@ -575,12 +585,12 @@ mod tests {
                 PermissionOptionView {
                     option_id: "allow-once".into(),
                     name: "Allow".into(),
-                    kind: PermissionOptionKind::AllowOnce,
+                    kind: "allow_once".into(),
                 },
                 PermissionOptionView {
                     option_id: "reject-once".into(),
                     name: "Reject".into(),
-                    kind: PermissionOptionKind::RejectOnce,
+                    kind: "reject_once".into(),
                 },
             ],
         }
@@ -887,12 +897,12 @@ mod tests {
             PermissionOptionView {
                 option_id: "o1".into(),
                 name: "Allow Always".into(),
-                kind: PermissionOptionKind::AllowAlways,
+                kind: "allow_always".into(),
             },
             PermissionOptionView {
                 option_id: "o2".into(),
                 name: "Allow Once".into(),
-                kind: PermissionOptionKind::AllowOnce,
+                kind: "allow_once".into(),
             },
         ];
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("o2"));
@@ -900,24 +910,22 @@ mod tests {
 
     /// When neither `allow_once` nor `allow_always` exists, the
     /// function falls back to a case-insensitive `name`/`option_id`
-    /// substring match on "allow". Reject-tagged options carrying an
-    /// "Allow" in their human-facing name (unlikely but plausible
-    /// across vendors) still land at this path. Pre-enum-conversion
-    /// this used a `kind: "unknown"` sentinel; the new enum has no
-    /// such variant so the test uses `RejectOnce` to keep the kind
-    /// path missing while exercising the name-match fallback.
+    /// substring match on "allow". Uses a kind string that isn't
+    /// classified as allow OR reject (`"unknown"`, e.g. a future
+    /// vendor variant the controller hasn't taught yet) so the kind-
+    /// based dispatch falls through and the name-match wins.
     #[test]
     fn pick_allow_option_falls_back_to_name_match() {
         let opts = vec![
             PermissionOptionView {
                 option_id: "yes".into(),
                 name: "Allow This".into(),
-                kind: PermissionOptionKind::RejectOnce,
+                kind: "unknown".into(),
             },
             PermissionOptionView {
                 option_id: "other".into(),
                 name: "Skip".into(),
-                kind: PermissionOptionKind::RejectOnce,
+                kind: "unknown".into(),
             },
         ];
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("yes"));
@@ -929,12 +937,12 @@ mod tests {
             PermissionOptionView {
                 option_id: "r1".into(),
                 name: "Reject Always".into(),
-                kind: PermissionOptionKind::RejectAlways,
+                kind: "reject_always".into(),
             },
             PermissionOptionView {
                 option_id: "r2".into(),
                 name: "Reject Once".into(),
-                kind: PermissionOptionKind::RejectOnce,
+                kind: "reject_once".into(),
             },
         ];
         assert_eq!(pick_reject_option_id(&opts).as_deref(), Some("r2"));
@@ -945,7 +953,7 @@ mod tests {
         let opts = vec![PermissionOptionView {
             option_id: "allow-once".into(),
             name: "Allow".into(),
-            kind: PermissionOptionKind::AllowOnce,
+            kind: "allow_once".into(),
         }];
         assert!(pick_reject_option_id(&opts).is_none());
     }

@@ -16,7 +16,7 @@ import {
   pushTurnStarted,
   resetTurns
 } from '@composables'
-import { InstanceState, PermissionOptionKind } from '@ipc'
+import { InstanceState } from '@ipc'
 
 const fmt = {
   title: 'bash',
@@ -163,7 +163,7 @@ describe('usePhase', () => {
         {
           optionId: 'allow',
           name: 'Allow',
-          kind: PermissionOptionKind.AllowOnce
+          kind: 'allow_once'
         }
       ],
       formatted: fmt
