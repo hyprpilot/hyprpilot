@@ -7,8 +7,8 @@ import { __resetPaletteStackForTests, usePalette } from '@composables'
 const invokeMock = vi.fn()
 const pushToastMock = vi.fn()
 
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: (command: string, args?: Record<string, unknown>) => invokeMock(command, args),
   listen: vi.fn()
 }))

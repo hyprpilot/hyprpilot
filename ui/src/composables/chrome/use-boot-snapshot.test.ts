@@ -30,8 +30,8 @@ import { TauriCommand } from '@ipc'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: (...args: unknown[]) => invokeMock(...args)
 }))
 

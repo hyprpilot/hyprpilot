@@ -19,8 +19,8 @@ const { handlers, unlisten, invokeCalls, invokeImpl } = vi.hoisted(() => ({
   invokeImpl: { fn: undefined as ((cmd: TauriCommand, args?: InvokeArgs) => Promise<unknown>) | undefined }
 }))
 
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: vi.fn((cmd: TauriCommand, args?: InvokeArgs) => {
     invokeCalls.push({ cmd, args })
 

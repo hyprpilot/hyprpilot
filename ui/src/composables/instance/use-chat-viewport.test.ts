@@ -13,8 +13,8 @@ const { invoke, listeners } = vi.hoisted(() => ({
   listeners: new Map<string, (payload: { payload: unknown }) => void>()
 }))
 
-vi.mock('@ipc/bridge', async() => ({
-  ...(await vi.importActual<object>('@ipc/bridge')),
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
   invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
   listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
     listeners.set(event, cb)
