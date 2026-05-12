@@ -77,8 +77,8 @@ mod tests {
 
     use super::*;
     use crate::adapters::permission::{
-        DefaultPermissionController, PermissionController, PermissionOptionKind, PermissionOptionView, PermissionOutcome,
-        PermissionRequest, ToolCallRef,
+        DefaultPermissionController, PermissionController, PermissionOptionKind, PermissionOptionView,
+        PermissionOutcome, PermissionRequest, ToolCallRef,
     };
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
