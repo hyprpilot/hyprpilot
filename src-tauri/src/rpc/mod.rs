@@ -8,8 +8,8 @@ use serde_json::Value;
 
 pub use handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 pub use handlers::{
-    DaemonHandler, DiagHandler, EventsHandler, InstanceSnapshotHandler, InstancesHandler, OverlayHandler,
-    PermissionsHandler, PromptsHandler, StatusHandler, TauriProxyHandler,
+    CompletionHandler, DaemonHandler, DiagHandler, EventsHandler, InstanceSnapshotHandler, InstancesHandler,
+    OverlayHandler, PermissionsHandler, PromptsHandler, SessionsHandler, StatusHandler, TauriProxyHandler,
 };
 pub use server::{handle_connection, RpcState};
 pub use status::StatusBroadcast;
@@ -61,6 +61,8 @@ impl RpcDispatcher {
                 Box::new(InstanceSnapshotHandler),
                 Box::new(PromptsHandler),
                 Box::new(PermissionsHandler),
+                Box::new(SessionsHandler),
+                Box::new(CompletionHandler),
                 Box::new(TauriProxyHandler),
             ],
         }
@@ -197,12 +199,12 @@ mod dispatcher_tests {
     }
 
     /// Dropped namespaces (`session/*`, `agents/*`, `commands/*`,
-    /// `completion/*`, `config/*`, `events/*`, `mcps/*`, `models/*`,
-    /// `modes/*`, `profiles/*`, `sessions/*`, `skills/*`, `window/*`)
-    /// all return `-32601`. Webview consumers go through Tauri commands;
-    /// hyprland-bind users move from `window/toggle` to
-    /// `overlay/toggle`. Completion is webview-only — no socket
-    /// scripting story exists for it.
+    /// `config/*`, `events/*`, `mcps/*`, `models/*`, `modes/*`,
+    /// `profiles/*`, `skills/*`, `window/*`) all return `-32601`.
+    /// Webview consumers go through Tauri commands; hyprland-bind
+    /// users move from `window/toggle` to `overlay/toggle`.
+    /// `sessions/*` and `completion/*` were lifted onto real
+    /// namespaces in a later PR — they're no longer pruned.
     #[tokio::test]
     async fn dispatch_pruned_namespaces_are_method_not_found() {
         let dispatcher = RpcDispatcher::with_defaults();
@@ -213,15 +215,11 @@ mod dispatcher_tests {
             "session/info",
             "agents/list",
             "commands/list",
-            "completion/query",
-            "completion/resolve",
-            "completion/cancel",
             "config/profiles",
             "mcps/list",
             "models/list",
             "modes/list",
             "profiles/list",
-            "sessions/list",
             "skills/list",
             "window/toggle",
         ] {

@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 mod cancellations;
 pub mod commands;
+pub mod dispatch;
 pub mod hydration;
 pub mod source;
 
