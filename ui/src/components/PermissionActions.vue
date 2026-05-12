@@ -75,7 +75,12 @@ function variantFor(opt: PermissionOptionView): ButtonVariant {
 .permission-actions-btn {
   @apply justify-start;
   flex: 1 1 0;
-  min-width: 0;
+  /* Floor each button at a readable width — the modal's title tag
+   * shrinks first (it has its own min-width), and once the title
+   * hits its floor the buttons share the remaining row. Below this
+   * floor the inner `.permission-actions-label` ellipsises rather
+   * than the button collapsing to its icon. */
+  min-width: 5rem;
   max-width: 100%;
   /* Constrain the button to its flex share + clip overflowing label
    * text. The actual ellipsis happens on the inner label span (an
