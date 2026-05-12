@@ -345,9 +345,11 @@ function handleFrameByType(msg: Record<string, unknown>): void {
             id: 0
           } as Parameters<EventCallback<unknown>>[0])
         } catch(err) {
-          // Listener errors must not derail the multiplexer.
-          // eslint-disable-next-line no-console
-          console.warn('remote bridge: event listener threw', err)
+          // Listener errors must not derail the multiplexer. Lazy-
+          // import `log` to avoid an `@lib` ↔ `@ipc` cyclic dep at
+          // module load — same pattern bridge.ts uses for invoke
+          // failures.
+          void import('@lib').then(({ log }) => log.warn('remote bridge: event listener threw', { err: String(err) }))
         }
       }
 
