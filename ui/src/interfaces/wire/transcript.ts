@@ -9,10 +9,22 @@ import type { FormattedToolCall } from './formatted-tool-call'
 import type { Attachment } from './session'
 import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
 
+/**
+ * Mirror of the Rust `adapters::permission::PermissionOptionKind`
+ * closed set — wire shape is snake-case strings, this enum makes the
+ * `switch (kind)` paths exhaustive on the consumer side.
+ */
+export enum PermissionOptionKind {
+  AllowOnce = 'allow_once',
+  AllowAlways = 'allow_always',
+  RejectOnce = 'reject_once',
+  RejectAlways = 'reject_always'
+}
+
 export interface PermissionOptionView {
   optionId: string
   name: string
-  kind: string
+  kind: PermissionOptionKind
 }
 
 export type ToolCallContentItem = { kind: 'text'; text: string } | { kind: 'file'; path: string; snippet?: string } | { kind: 'json'; value: unknown }
@@ -56,10 +68,24 @@ export interface ToolCallUpdateRecord {
   completedAtMs?: number
 }
 
+/** Mirror of Rust `adapters::transcript::PlanPriority`. */
+export enum PlanPriority {
+  Low = 'low',
+  Medium = 'medium',
+  High = 'high'
+}
+
+/** Mirror of Rust `adapters::transcript::PlanStepStatus`. */
+export enum PlanStepStatus {
+  Pending = 'pending',
+  InProgress = 'in_progress',
+  Completed = 'completed'
+}
+
 export interface PlanStep {
   content: string
-  priority?: string
-  status?: string
+  priority?: PlanPriority
+  status?: PlanStepStatus
 }
 
 export interface PlanRecord {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useActiveInstance, evictPermission, pushPermissionRequest, resetPermissions, usePermissions } from '@composables'
-import { TauriCommand } from '@ipc'
+import { PermissionOptionKind, TauriCommand } from '@ipc'
 
 function fmt() {
   return {
@@ -37,17 +37,17 @@ function raw(requestId: string, overrides: Partial<{ tool: string; args: string;
       {
         optionId: 'allow-once-id',
         name: 'Allow once',
-        kind: 'allow_once'
+        kind: PermissionOptionKind.AllowOnce
       },
       {
         optionId: 'allow-always-id',
         name: 'Allow always',
-        kind: 'allow_always'
+        kind: PermissionOptionKind.AllowAlways
       },
       {
         optionId: 'reject-once-id',
         name: 'Reject once',
-        kind: 'reject_once'
+        kind: PermissionOptionKind.RejectOnce
       }
     ],
     formatted: fmt()

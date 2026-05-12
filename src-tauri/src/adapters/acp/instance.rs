@@ -1029,8 +1029,13 @@ pub(crate) fn map_session_update(
                     arr.iter()
                         .map(|entry| PlanStep {
                             content: entry.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            priority: entry.get("priority").and_then(|v| v.as_str()).map(str::to_string),
-                            status: entry.get("status").and_then(|v| v.as_str()).map(str::to_string),
+                            // Unknown wire strings deserialize to None
+                            // (tolerant) — agents shipping a future
+                            // variant won't crash the mapping.
+                            priority: entry
+                                .get("priority")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                            status: entry.get("status").and_then(|v| serde_json::from_value(v.clone()).ok()),
                         })
                         .collect()
                 })
@@ -1084,6 +1089,7 @@ pub(crate) fn map_session_update(
                 tool,
                 tool_kind,
                 args,
+                raw_input,
                 options,
                 formatted,
             }))

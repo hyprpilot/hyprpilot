@@ -676,7 +676,7 @@ pub struct TerminalsSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::permission::PermissionOptionView;
+    use crate::adapters::permission::{PermissionOptionKind, PermissionOptionView};
     use crate::adapters::transcript::TranscriptItem;
     use serde_json::json;
 
@@ -951,7 +951,7 @@ mod tests {
             options: vec![PermissionOptionView {
                 option_id: "allow".into(),
                 name: "Allow".into(),
-                kind: "allow_once".into(),
+                kind: PermissionOptionKind::AllowOnce,
             }],
             formatted: crate::tools::formatter::types::FormattedToolCall {
                 title: "Bash".into(),
@@ -1205,7 +1205,7 @@ mod tests {
             options: vec![PermissionOptionView {
                 option_id: "allow".into(),
                 name: "Allow".into(),
-                kind: "allow_once".into(),
+                kind: PermissionOptionKind::AllowOnce,
             }],
             formatted: crate::tools::formatter::types::FormattedToolCall {
                 title: "Bash".into(),
@@ -1307,7 +1307,7 @@ mod tests {
                 options: vec![PermissionOptionView {
                     option_id: "allow".into(),
                     name: "Allow".into(),
-                    kind: "allow_once".into(),
+                    kind: PermissionOptionKind::AllowOnce,
                 }],
                 formatted: crate::tools::formatter::types::FormattedToolCall {
                     title: "Bash".into(),

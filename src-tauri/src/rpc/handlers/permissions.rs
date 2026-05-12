@@ -77,8 +77,8 @@ mod tests {
 
     use super::*;
     use crate::adapters::permission::{
-        DefaultPermissionController, PermissionController, PermissionOptionView, PermissionOutcome, PermissionRequest,
-        ToolCallRef,
+        DefaultPermissionController, PermissionController, PermissionOptionKind, PermissionOptionView, PermissionOutcome,
+        PermissionRequest, ToolCallRef,
     };
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
@@ -91,12 +91,12 @@ mod tests {
             PermissionOptionView {
                 option_id: "allow-once".into(),
                 name: "Allow".into(),
-                kind: "allow_once".into(),
+                kind: PermissionOptionKind::AllowOnce,
             },
             PermissionOptionView {
                 option_id: "reject-once".into(),
                 name: "Reject".into(),
-                kind: "reject_once".into(),
+                kind: PermissionOptionKind::RejectOnce,
             },
         ]
     }

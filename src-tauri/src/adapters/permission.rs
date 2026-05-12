@@ -51,11 +51,26 @@ pub const WAITER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub struct PermissionOptionView {
     pub option_id: String,
     pub name: String,
-    /// Normalised wire name: `"allow_once" | "allow_always" |
-    /// "reject_once" | "reject_always"` today. Closed set once the
-    /// crate's upstream enum stabilises; `String` keeps the UI
-    /// tolerant to new-variant drift today.
-    pub kind: String,
+    /// Mirrors the upstream `agent_client_protocol::schema::PermissionOptionKind`
+    /// closed set. Modelled as an enum so allow/reject classification
+    /// at `pick_allow_option_id` / `pick_reject_option_id` is a
+    /// pattern match instead of a string compare — typo-safe.
+    pub kind: PermissionOptionKind,
+}
+
+/// Normalised permission-option kind. Wire shape: snake-case strings
+/// (`"allow_once" | "allow_always" | "reject_once" | "reject_always"`),
+/// matching the upstream ACP `PermissionOptionKind` serde
+/// representation. Local mirror so the controller layer doesn't
+/// depend on the upstream type and so callers can pattern-match
+/// against allow/reject without grepping for strings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionOptionKind {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
 }
 
 /// Identity projection of the tool behind a permission request. The
@@ -488,8 +503,8 @@ impl PermissionController for DefaultPermissionController {
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
     let picked = options
         .iter()
-        .find(|o| o.kind == "allow_once")
-        .or_else(|| options.iter().find(|o| o.kind == "allow_always"))
+        .find(|o| o.kind == PermissionOptionKind::AllowOnce)
+        .or_else(|| options.iter().find(|o| o.kind == PermissionOptionKind::AllowAlways))
         .or_else(|| {
             options.iter().find(|o| {
                 o.option_id.to_ascii_lowercase().contains("allow") || o.name.to_ascii_lowercase().contains("allow")
@@ -499,7 +514,7 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
-            kind = %opt.kind,
+            kind = ?opt.kind,
             offered = options.len(),
             "permission::pick_allow: option selected"
         );
@@ -514,8 +529,8 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
 pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String> {
     let picked = options
         .iter()
-        .find(|o| o.kind == "reject_once")
-        .or_else(|| options.iter().find(|o| o.kind == "reject_always"))
+        .find(|o| o.kind == PermissionOptionKind::RejectOnce)
+        .or_else(|| options.iter().find(|o| o.kind == PermissionOptionKind::RejectAlways))
         .or_else(|| {
             options.iter().find(|o| {
                 o.option_id.to_ascii_lowercase().contains("reject")
@@ -527,7 +542,7 @@ pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String>
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
-            kind = %opt.kind,
+            kind = ?opt.kind,
             offered = options.len(),
             "permission::pick_reject: option selected"
         );
@@ -560,12 +575,12 @@ mod tests {
                 PermissionOptionView {
                     option_id: "allow-once".into(),
                     name: "Allow".into(),
-                    kind: "allow_once".into(),
+                    kind: PermissionOptionKind::AllowOnce,
                 },
                 PermissionOptionView {
                     option_id: "reject-once".into(),
                     name: "Reject".into(),
-                    kind: "reject_once".into(),
+                    kind: PermissionOptionKind::RejectOnce,
                 },
             ],
         }
@@ -872,29 +887,37 @@ mod tests {
             PermissionOptionView {
                 option_id: "o1".into(),
                 name: "Allow Always".into(),
-                kind: "allow_always".into(),
+                kind: PermissionOptionKind::AllowAlways,
             },
             PermissionOptionView {
                 option_id: "o2".into(),
                 name: "Allow Once".into(),
-                kind: "allow_once".into(),
+                kind: PermissionOptionKind::AllowOnce,
             },
         ];
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("o2"));
     }
 
+    /// When neither `allow_once` nor `allow_always` exists, the
+    /// function falls back to a case-insensitive `name`/`option_id`
+    /// substring match on "allow". Reject-tagged options carrying an
+    /// "Allow" in their human-facing name (unlikely but plausible
+    /// across vendors) still land at this path. Pre-enum-conversion
+    /// this used a `kind: "unknown"` sentinel; the new enum has no
+    /// such variant so the test uses `RejectOnce` to keep the kind
+    /// path missing while exercising the name-match fallback.
     #[test]
     fn pick_allow_option_falls_back_to_name_match() {
         let opts = vec![
             PermissionOptionView {
                 option_id: "yes".into(),
                 name: "Allow This".into(),
-                kind: "unknown".into(),
+                kind: PermissionOptionKind::RejectOnce,
             },
             PermissionOptionView {
                 option_id: "other".into(),
                 name: "Skip".into(),
-                kind: "unknown".into(),
+                kind: PermissionOptionKind::RejectOnce,
             },
         ];
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("yes"));
@@ -906,12 +929,12 @@ mod tests {
             PermissionOptionView {
                 option_id: "r1".into(),
                 name: "Reject Always".into(),
-                kind: "reject_always".into(),
+                kind: PermissionOptionKind::RejectAlways,
             },
             PermissionOptionView {
                 option_id: "r2".into(),
                 name: "Reject Once".into(),
-                kind: "reject_once".into(),
+                kind: PermissionOptionKind::RejectOnce,
             },
         ];
         assert_eq!(pick_reject_option_id(&opts).as_deref(), Some("r2"));
@@ -922,7 +945,7 @@ mod tests {
         let opts = vec![PermissionOptionView {
             option_id: "allow-once".into(),
             name: "Allow".into(),
-            kind: "allow_once".into(),
+            kind: PermissionOptionKind::AllowOnce,
         }];
         assert!(pick_reject_option_id(&opts).is_none());
     }

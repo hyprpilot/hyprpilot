@@ -209,12 +209,34 @@ pub struct PlanRecord {
 #[serde(rename_all = "camelCase")]
 pub struct PlanStep {
     pub content: String,
-    /// `low` / `medium` / `high` — wire string from the agent.
+    /// Closed set: `low` / `medium` / `high`. `None` when the agent
+    /// didn't tag the step with a priority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<String>,
-    /// `pending` / `in_progress` / `completed` — wire string.
+    pub priority: Option<PlanPriority>,
+    /// Closed set: `pending` / `in_progress` / `completed`. `None`
+    /// when the agent didn't tag the step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: Option<PlanStepStatus>,
+}
+
+/// Plan-step priority hint. Wire shape: snake-case strings
+/// (`"low" / "medium" / "high"`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanPriority {
+    Low,
+    Medium,
+    High,
+}
+
+/// Plan-step status. Wire shape: snake-case strings
+/// (`"pending" / "in_progress" / "completed"`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
 }
 
 /// Permission prompt embedded in the transcript. Same fields as
@@ -239,6 +261,15 @@ pub struct PermissionRequestRecord {
     pub tool: String,
     pub tool_kind: String,
     pub args: String,
+    /// Agent's raw `tool_call.rawInput` JSON object, passed through
+    /// verbatim. Mirrors `ToolCallRecord::raw_input` so the
+    /// transcript-snapshot path carries the same data the live
+    /// `acp:permission-request` event does — a second frontend that
+    /// brim-syncs via `instance/snapshot/chat` and then patches with
+    /// live events sees a stable `rawInput` on permission records
+    /// across both paths. `None` when the agent didn't attach one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<serde_json::Value>,
     pub options: Vec<PermissionOptionView>,
     pub formatted: FormattedToolCall,
 }

@@ -85,7 +85,7 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
     PermissionOptionView {
         option_id: v.option_id.0.to_string(),
         name: v.name.clone(),
-        kind: permission_option_kind_wire(&v.kind).to_string(),
+        kind: permission_option_kind_local(&v.kind),
     }
 }
 
@@ -165,18 +165,20 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     }
 }
 
-/// Wire string for `PermissionOptionKind` — mirrors the serde
-/// `rename_all = "snake_case"` shape upstream uses. Closed match;
-/// the catch-all guards against future additive variants on the
-/// `#[non_exhaustive]` upstream enum (returns `"unknown"` so the
-/// UI sees something rather than panicking).
-fn permission_option_kind_wire(k: &PermissionOptionKind) -> &'static str {
+/// Convert upstream ACP `PermissionOptionKind` to our local
+/// closed-set `permission::PermissionOptionKind`. Upstream is
+/// `#[non_exhaustive]`, so the catch-all path defaults unknown
+/// variants to `RejectOnce` — safe-by-default: an unrecognised
+/// option falls into the "reject" lane rather than being treated as
+/// allow.
+fn permission_option_kind_local(k: &PermissionOptionKind) -> crate::adapters::permission::PermissionOptionKind {
+    use crate::adapters::permission::PermissionOptionKind as Local;
     match k {
-        PermissionOptionKind::AllowOnce => "allow_once",
-        PermissionOptionKind::AllowAlways => "allow_always",
-        PermissionOptionKind::RejectOnce => "reject_once",
-        PermissionOptionKind::RejectAlways => "reject_always",
-        _ => "unknown",
+        PermissionOptionKind::AllowOnce => Local::AllowOnce,
+        PermissionOptionKind::AllowAlways => Local::AllowAlways,
+        PermissionOptionKind::RejectOnce => Local::RejectOnce,
+        PermissionOptionKind::RejectAlways => Local::RejectAlways,
+        _ => Local::RejectOnce,
     }
 }
 
@@ -733,15 +735,16 @@ mod tests {
 
     #[test]
     fn permission_option_view_maps_all_kinds() {
-        for (kind, wire) in [
-            (PermissionOptionKind::AllowOnce, "allow_once"),
-            (PermissionOptionKind::AllowAlways, "allow_always"),
-            (PermissionOptionKind::RejectOnce, "reject_once"),
-            (PermissionOptionKind::RejectAlways, "reject_always"),
+        use crate::adapters::permission::PermissionOptionKind as Local;
+        for (upstream, expected) in [
+            (PermissionOptionKind::AllowOnce, Local::AllowOnce),
+            (PermissionOptionKind::AllowAlways, Local::AllowAlways),
+            (PermissionOptionKind::RejectOnce, Local::RejectOnce),
+            (PermissionOptionKind::RejectAlways, Local::RejectAlways),
         ] {
-            let opt = PermissionOption::new(PermissionOptionId::new("x"), "X", kind);
+            let opt = PermissionOption::new(PermissionOptionId::new("x"), "X", upstream);
             let view = option_view_from(&opt);
-            assert_eq!(view.kind, wire);
+            assert_eq!(view.kind, expected);
         }
     }
 
