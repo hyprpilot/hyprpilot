@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::adapters::permission::is_reject_kind;
+use crate::adapters::UserTurnInput;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{params_or_default, parse_params};
 use crate::rpc::protocol::RpcError;
@@ -27,6 +29,19 @@ struct RespondParams {
     /// the captain's pick verbatim. "Always" persistence is the
     /// agent's concern.
     option_id: String,
+    /// Captain-supplied feedback explaining the decision. Ignored
+    /// unless the picked option is reject-shaped AND the string is
+    /// non-empty after trim. When both hold, the daemon dispatches
+    /// a synthetic follow-up turn carrying the feedback as user
+    /// text so the agent sees the rejection's "why" on its next
+    /// turn — the captain's reason rides the wire as a normal
+    /// `session/prompt` to the same instance.
+    ///
+    /// `serde` accepts `null` as `None`, so external clients can
+    /// always send the field; the daemon does the right thing
+    /// regardless of payload shape.
+    #[serde(default)]
+    feedback: Option<String>,
 }
 
 pub struct PermissionsHandler;
@@ -53,16 +68,96 @@ impl RpcHandler for PermissionsHandler {
                 Ok(HandlerOutcome::Reply(json!({ "pending": snapshots })))
             }
             "permissions/respond" => {
-                let RespondParams { request_id, option_id } = parse_params(params, method)?;
-                match controller.resolve_if_pending(&request_id, &option_id).await {
-                    None => Err(RpcError::invalid_params(format!(
-                        "no pending permission for request_id '{request_id}'"
-                    ))),
-                    Some(false) => Err(RpcError::invalid_params(format!(
-                        "option_id '{option_id}' not in permitted set for request_id '{request_id}'"
-                    ))),
-                    Some(true) => Ok(HandlerOutcome::Reply(json!({ "resolved": true }))),
+                let RespondParams {
+                    request_id,
+                    option_id,
+                    feedback,
+                } = parse_params(params, method)?;
+
+                // Snapshot the pending request BEFORE resolving so we
+                // capture the option's `kind` + the instance id. The
+                // post-resolve feedback dispatch needs both — the
+                // resolve path consumes the waiter, after which the
+                // metadata is gone.
+                let snapshot = controller.snapshot_for(&request_id).await;
+
+                let resolved = controller.resolve_if_pending(&request_id, &option_id).await;
+                match resolved {
+                    None => {
+                        return Err(RpcError::invalid_params(format!(
+                            "no pending permission for request_id '{request_id}'"
+                        )));
+                    }
+                    Some(false) => {
+                        return Err(RpcError::invalid_params(format!(
+                            "option_id '{option_id}' not in permitted set for request_id '{request_id}'"
+                        )));
+                    }
+                    Some(true) => {}
                 }
+
+                if let Some(snap) = snapshot {
+                    let feedback_trimmed = feedback.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                    if let Some(text) = feedback_trimmed {
+                        let picked_kind = snap
+                            .options
+                            .iter()
+                            .find(|o| o.option_id == option_id)
+                            .map(|o| o.kind.clone());
+                        let is_reject = picked_kind.as_deref().is_some_and(is_reject_kind);
+                        if is_reject {
+                            if let Some(instance_id) = snap.instance_id.as_deref() {
+                                // Submit a synthetic follow-up turn
+                                // carrying the captain's reason — the
+                                // agent reads it as a normal user
+                                // message on the next turn. Detached:
+                                // the RPC reply returns immediately;
+                                // the dispatch races toward the actor's
+                                // mpsc and lands behind any in-flight
+                                // turn (same backpressure as a real
+                                // `prompts/send`).
+                                let adapter = ctx.adapter.clone();
+                                let instance_id_owned = instance_id.to_string();
+                                let text_owned = text.to_string();
+                                tokio::spawn(async move {
+                                    match adapter
+                                        .submit(
+                                            UserTurnInput::Prompt {
+                                                text: text_owned,
+                                                attachments: Vec::new(),
+                                            },
+                                            Some(instance_id_owned.as_str()),
+                                            None,
+                                            None,
+                                        )
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            tracing::info!(
+                                                instance_id = %instance_id_owned,
+                                                "permissions/respond: reject feedback dispatched as follow-up turn"
+                                            );
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                instance_id = %instance_id_owned,
+                                                error = ?err,
+                                                "permissions/respond: feedback follow-up failed"
+                                            );
+                                        }
+                                    }
+                                });
+                            } else {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    "permissions/respond: reject feedback supplied but no instance id on the snapshot — dropped"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                Ok(HandlerOutcome::Reply(json!({ "resolved": true })))
             }
             other => Err(RpcError::method_not_found(other)),
         }
