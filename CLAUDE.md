@@ -975,7 +975,30 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
 - **`instances/*`** — `list`, `focus`, `spawn`, `restart`, `shutdown`,
   `info`, `rename`. Live process management. `focus` accepts
   `{ ensure: true }` to auto-spawn-if-missing; `spawn` accepts
-  `{ restore: true }` to resume an existing session id.
+  `{ restore: true }` to resume an existing session id. Spawn-shaped
+  verbs (`spawn`, `restart`, `focus { ensure: true }`, `prompts/send`
+  when it auto-spawns) accept `withConfig: Array<object>` —
+  kustomize-style overlay patches the daemon folds onto its resolved
+  `Config` before the spawn. Patches apply in declaration order and
+  are stored on the spawned instance so `restart` replays them
+  against whatever config the daemon currently has. See
+  `config/patch.rs` for `$patch` directive semantics
+  (`replace` / `delete` / `deleteFromPrimitiveList/<field>`); the
+  `ctl` flag is `--with-config <path|@inline|->` paired with
+  `--with-config-format toml|json|yaml` (default: `json`). **Three
+  input shapes**: a file path (extension drives format —
+  `.toml` / `.json` / `.yaml` / `.yml`; extensions outside that set
+  fall back to `--with-config-format`); `@<inline body>` for an
+  inline literal under the current format; `-` for stdin. The
+  flag is repeatable for all shapes — except `-`, which can be
+  used **at most once** per invocation (stdin can only be drained
+  once); the second `-` errors out up-front with a helpful
+  message. **Authoring shape**:
+  patches address the daemon's serialized `Config` directly — note
+  that `Config.agents` is `#[serde(flatten)]`, so `[[agents]]`
+  entries live at the top level under `agents` (not nested under
+  `agents.agents`). When in doubt, serialize `Config::default()`
+  and inspect the JSON layout.
 - **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle`.
   Race-safe across concurrent calls — every `overlay/*` entry serialises
   through `WindowRenderer::lock_present`.

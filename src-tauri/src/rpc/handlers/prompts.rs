@@ -67,6 +67,11 @@ struct SendParams {
     /// them as ACP content blocks (resource / image per
     /// `build_prompt_blocks`). Optional, default empty.
     attachments: Vec<Attachment>,
+    /// Kustomize-style overlay patches for the auto-spawn path.
+    /// Ignored when `instance_id` resolves to a live instance (the
+    /// instance's config is already frozen). Applied in declaration
+    /// order; stored on the spawned instance for restart replay.
+    with_config: Vec<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -118,6 +123,7 @@ impl RpcHandler for PromptsHandler {
                     cwd: p.cwd.clone(),
                     mode: p.mode.clone(),
                     model: p.model.clone(),
+                    config_patches: p.with_config.clone(),
                 };
 
                 let mut spawn_name: Option<String> = None;

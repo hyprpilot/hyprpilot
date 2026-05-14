@@ -13,7 +13,9 @@ use clap::Subcommand;
 use serde::Serialize;
 
 use crate::ctl::client::CtlClient;
+use crate::ctl::with_config::WithConfigArgs;
 use crate::ctl::{emit, request_value, show_after, CtlDispatch};
+use serde_json::Value;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum PromptsCommand {
@@ -73,6 +75,8 @@ pub enum PromptsCommand {
         /// or the agent doesn't support session listing.
         #[arg(long, default_value_t = false)]
         restore: bool,
+        #[command(flatten)]
+        with_config: WithConfigArgs,
     },
     /// Cancel the in-flight turn. Falls back to focused when
     /// `--instance` is omitted.
@@ -96,6 +100,8 @@ struct SendParams {
     draft: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     restore: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    with_config: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +122,7 @@ impl CtlDispatch for PromptsCommand {
                 show,
                 draft,
                 restore,
+                with_config,
             } => send(
                 client,
                 SendArgs {
@@ -126,6 +133,7 @@ impl CtlDispatch for PromptsCommand {
                     show,
                     draft,
                     restore,
+                    with_config: with_config.into_patches()?,
                 },
             ),
             PromptsCommand::Cancel { instance_id } => cancel(client, instance_id),
@@ -141,6 +149,7 @@ struct SendArgs {
     show: bool,
     draft: bool,
     restore: bool,
+    with_config: Vec<Value>,
 }
 
 fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
@@ -169,6 +178,7 @@ fn send(client: &CtlClient, args: SendArgs) -> Result<()> {
             cwd: super::auto_fill_cwd(args.cwd),
             draft: args.draft,
             restore: args.restore,
+            with_config: args.with_config,
         },
     )?;
     println!("{}", serde_json::to_string_pretty(&v)?);

@@ -6,6 +6,7 @@ mod overlay;
 mod permissions;
 mod prompts;
 mod status;
+mod with_config;
 
 use std::process::ExitCode;
 
