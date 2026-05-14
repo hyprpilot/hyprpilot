@@ -187,7 +187,7 @@ impl<'de> Deserialize<'de> for Key {
                     return Err(E::custom(format!("key must be lowercase (got '{value}')")));
                 }
                 let mut chars = value.chars();
-                let first = chars.next().unwrap();
+                let first = chars.next().expect("non-empty after the is_empty guard above");
                 if chars.next().is_none() {
                     return Ok(Key::Char(first));
                 }

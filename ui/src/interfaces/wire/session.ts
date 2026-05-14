@@ -19,6 +19,24 @@ export interface SubmitResult {
   profileId?: string
   sessionId?: string
   instanceId?: string
+  /**
+   * Disposition of this submit at the moment the daemon dispatched
+   * the actor command:
+   * - `sent` — actor was idle, this turn becomes the active one.
+   * - `queued` — actor was already mid-turn; this submit landed in
+   *   the actor's mpsc behind the active turn and will run when
+   *   the prior turn drains. Captains rendering a queue strip
+   *   should branch on this.
+   * - `drafted` — the daemon emitted `composer:draft-append` for
+   *   the resolved instance instead of dispatching. `accepted` is
+   *   `false` in this case.
+   *
+   * `wasBusy` is the same signal as a typed bool — `true` iff the
+   * disposition is `queued`. Carried alongside so callers preferring
+   * a binary branch don't string-compare the enum.
+   */
+  disposition?: 'sent' | 'queued' | 'drafted'
+  wasBusy?: boolean
 }
 
 export interface CancelArgs {
