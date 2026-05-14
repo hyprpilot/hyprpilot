@@ -984,12 +984,16 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   against whatever config the daemon currently has. See
   `config/patch.rs` for `$patch` directive semantics
   (`replace` / `delete` / `deleteFromPrimitiveList/<field>`); the
-  `ctl` flag is `--with-config <path|->` paired with
-  `--with-config-format toml|json|yaml` (default: `json`). **Format
-  detection**: file paths with `.toml` / `.json` / `.yaml` / `.yml`
-  extensions auto-detect the parser; `-` reads stdin (uses
-  `--with-config-format`); paths without a recognised extension
-  fall back to `--with-config-format` too. **Authoring shape**:
+  `ctl` flag is `--with-config <path|@inline|->` paired with
+  `--with-config-format toml|json|yaml` (default: `json`). **Three
+  input shapes**: a file path (extension drives format —
+  `.toml` / `.json` / `.yaml` / `.yml`; extensions outside that set
+  fall back to `--with-config-format`); `@<inline body>` for an
+  inline literal under the current format; `-` for stdin. The
+  flag is repeatable for all shapes — except `-`, which can be
+  used **at most once** per invocation (stdin can only be drained
+  once); the second `-` errors out up-front with a helpful
+  message. **Authoring shape**:
   patches address the daemon's serialized `Config` directly — note
   that `Config.agents` is `#[serde(flatten)]`, so `[[agents]]`
   entries live at the top level under `agents` (not nested under
