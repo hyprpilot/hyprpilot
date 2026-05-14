@@ -985,7 +985,16 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   `config/patch.rs` for `$patch` directive semantics
   (`replace` / `delete` / `deleteFromPrimitiveList/<field>`); the
   `ctl` flag is `--with-config <path|->` paired with
-  `--with-config-format toml|json|yaml` (default: `json`).
+  `--with-config-format toml|json|yaml` (default: `json`). **Format
+  detection**: file paths with `.toml` / `.json` / `.yaml` / `.yml`
+  extensions auto-detect the parser; `-` reads stdin (uses
+  `--with-config-format`); paths without a recognised extension
+  fall back to `--with-config-format` too. **Authoring shape**:
+  patches address the daemon's serialized `Config` directly — note
+  that `Config.agents` is `#[serde(flatten)]`, so `[[agents]]`
+  entries live at the top level under `agents` (not nested under
+  `agents.agents`). When in doubt, serialize `Config::default()`
+  and inspect the JSON layout.
 - **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle`.
   Race-safe across concurrent calls — every `overlay/*` entry serialises
   through `WindowRenderer::lock_present`.

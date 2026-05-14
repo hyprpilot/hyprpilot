@@ -332,6 +332,22 @@ mod tests {
         assert_eq!(merge_values(json!("a"), json!("b")), json!("b"));
     }
 
+    /// `Option<Vec<T>>` clear-by-null — when a captain writes
+    /// `{"skills": null}` in a patch, the merger replaces the
+    /// existing array with `null` (right wins on type mismatch).
+    /// After serde round-trip, `Config.skills` deserializes to
+    /// `None` — the explicit "clear this field" semantic the
+    /// captain expects from a patch, distinct from config-layer
+    /// `overwrite_some` which keeps the left when the right is
+    /// `None` (because `None` there means "layer didn't mention
+    /// it" — opposite intent from a patch's explicit null).
+    #[test]
+    fn option_vec_null_clears_existing_array() {
+        let base = serde_json::json!({ "skills": [{ "dir": "/tmp/a" }] });
+        let patch = serde_json::json!({ "skills": null });
+        assert_eq!(merge_values(base, patch), serde_json::json!({ "skills": null }));
+    }
+
     #[test]
     fn merge_patches_folds_left_to_right() {
         let base = json!({ "a": 1 });
