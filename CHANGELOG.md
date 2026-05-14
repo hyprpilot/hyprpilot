@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/hyprpilot/hyprpilot/compare/v0.4.0...v0.5.0) (2026-05-14)
+
+
+### Features
+
+* **config:** accept .toml/.json/.yaml on-disk config + profile files ([#55](https://github.com/hyprpilot/hyprpilot/issues/55)) ([4b5b406](https://github.com/hyprpilot/hyprpilot/commit/4b5b406b1659ad77e6e319812f68a88bcb8b1b70))
+* **sessions:** accept withConfig on session-resume ([#57](https://github.com/hyprpilot/hyprpilot/issues/57)) ([4d87f3c](https://github.com/hyprpilot/hyprpilot/commit/4d87f3c35753e3cb499c0a1e2972f9faf16e5a53))
+
 ## [0.4.0](https://github.com/hyprpilot/hyprpilot/compare/v0.3.0...v0.4.0) (2026-05-14)
 
 
