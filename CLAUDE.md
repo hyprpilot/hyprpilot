@@ -951,7 +951,12 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   delivery), `status`, `version`, `reload` (re-runs `config::load` +
   `SkillsRegistry::reload()`; publishes `DaemonReloaded`),
   `shutdown { force? }` (graceful; refuses with `-32603` when any
-  instance has an in-flight turn unless `force`).
+  instance has an in-flight turn unless `force`),
+  `boot_snapshot` (aggregate theme + keymaps + window state + cwd +
+  completion config + agents + profiles + instances in one
+  round-trip; the canonical hydration shape for second-frontends
+  on connect — desktop SPA still goes through the Tauri command
+  binding for the same payload).
 - **`diag/snapshot`** — read-only structural snapshot:
   `{ daemon, instances, profiles, skills, mcps, configPaths }`.
   **Redacted**: profile `env` values + transcript bodies never appear.
@@ -1010,7 +1015,13 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
 - **`prompts/{send, cancel}`** — per-instance scripting surface.
   `send` accepts `{ instanceId | name, text }`; the request adopts the
   client-minted instance id verbatim. `cancel` interrupts the active
-  turn.
+  turn. **Reply shape**: `{ accepted, disposition: "sent" | "queued"
+  | "drafted", wasBusy, instanceId, sessionId, turnId? }`.
+  `disposition: "queued"` (with `wasBusy: true`) means the prompt
+  landed in the actor's command channel behind an existing turn —
+  second-frontends use this to render a "queued behind running
+  turn" UI without re-implementing busy detection. `"drafted"`
+  short-circuits the dispatch and emits `composer:draft-append`.
 - **`status/*`** — `get` (one-shot), `subscribe` (registers connection;
   server pushes `status/changed` notifications). `StatusResult`:
   `{ state: "idle" | "streaming" | "awaiting" | "error", visible, active_session }`.

@@ -754,6 +754,64 @@ mod setters_tests {
         }
     }
 
+    /// `instances/focus { ensure: true }` against an unknown slug
+    /// spawns + names the instance to that slug, then focuses it.
+    /// Pins T2 from the audit: the existing dispatcher had no test
+    /// for this branch, so a regression in spawn-and-rename ordering
+    /// (a near miss in PR #43) wouldn't have surfaced.
+    #[tokio::test]
+    async fn focus_ensure_spawns_and_names_unknown_slug() {
+        let cfg: Config = toml::from_str(
+            r#"
+[agent]
+default = "dead"
+
+[[agents]]
+id = "dead"
+provider = "acp-claude-code"
+command = "/bin/false"
+"#,
+        )
+        .expect("config parses");
+        let adapter = Arc::new(AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true))));
+        let status = StatusBroadcast::new(true);
+        let dyn_adapter: Arc<dyn Adapter> = adapter.clone();
+        let ctx = HandlerCtx {
+            app: None,
+            status: &status,
+            adapter: dyn_adapter,
+            config: None,
+            mcps: None,
+            already_subscribed: false,
+            already_events_subscribed: false,
+            started_at: None,
+            socket_path: None,
+        };
+        let outcome = InstancesHandler
+            .handle(
+                "instances/focus",
+                json!({ "instanceId": "feat-test", "ensure": true }),
+                ctx,
+            )
+            .await
+            .expect("focus ensure ok");
+        let v = match outcome {
+            HandlerOutcome::Reply(v) => v,
+            _ => panic!("expected Reply"),
+        };
+        let minted = v["instanceId"].as_str().expect("instanceId on reply").to_string();
+        assert!(!minted.is_empty(), "ensure spawn must mint an instance id: {v}");
+
+        // The spawned instance must be reachable by its newly-set
+        // slug name, not just its mint UUID — proves the rename
+        // happened after spawn.
+        let by_name = adapter.resolve_token("feat-test").await;
+        assert!(
+            by_name.is_some(),
+            "spawn-and-rename: 'feat-test' must resolve post-ensure"
+        );
+    }
+
     #[tokio::test]
     async fn set_mode_missing_instance_id_is_invalid_params() {
         let v = dispatch("instances/setMode", json!({ "modeId": "plan" })).await;

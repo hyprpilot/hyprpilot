@@ -178,7 +178,9 @@ impl RpcHandler for PromptsHandler {
                     }
                     return Ok(HandlerOutcome::Reply(json!({
                         "accepted": false,
+                        "disposition": "drafted",
                         "drafted": true,
+                        "wasBusy": false,
                         "instanceId": resolved.as_string(),
                         "turnId": Value::Null,
                         "sessionId": Value::Null,
@@ -196,6 +198,12 @@ impl RpcHandler for PromptsHandler {
                     .map_err(map_adapter_err)?;
 
                 let accepted = v.get("accepted").and_then(Value::as_bool).unwrap_or(false);
+                let disposition = v
+                    .get("disposition")
+                    .and_then(Value::as_str)
+                    .unwrap_or("sent")
+                    .to_string();
+                let was_busy = v.get("wasBusy").and_then(Value::as_bool).unwrap_or(false);
                 let session_id = v.get("sessionId").cloned().unwrap_or(Value::Null);
                 let resolved_instance_id = v
                     .get("instanceId")
@@ -203,12 +211,20 @@ impl RpcHandler for PromptsHandler {
                     .map(str::to_string)
                     .unwrap_or_else(|| resolved.as_string());
 
-                // The existing actor stamps a turn_id internally but it
-                // isn't surfaced through the submit reply. Returning null
-                // here keeps the wire shape stable; the UI correlates via
-                // `acp:turn-started` events.
+                // `disposition` distinguishes immediate-send from
+                // landed-behind-an-active-turn so external frontends
+                // (nvim plugin, ws remote) can render queue-ish UI on
+                // the latter without re-implementing busy detection.
+                // `wasBusy` is the same signal as a typed bool for
+                // callers that prefer to branch on it. The existing
+                // actor stamps a turn_id internally but it isn't
+                // surfaced through the submit reply — returning null
+                // here keeps the wire shape stable; clients correlate
+                // via `acp:turn-started` events.
                 Ok(HandlerOutcome::Reply(json!({
                     "accepted": accepted,
+                    "disposition": disposition,
+                    "wasBusy": was_busy,
                     "instanceId": resolved_instance_id,
                     "turnId": Value::Null,
                     "sessionId": session_id,
@@ -386,6 +402,98 @@ mod tests {
             msg.contains("not a valid name slug"),
             "expected resolution-step error, got: {v}"
         );
+    }
+
+    /// Dispatch helper for tests that need a real adapter (not the
+    /// default zero-config one). Pairs with the dead-child agent
+    /// pattern from `adapters/acp/instances.rs:spawn_threads_mode_…`
+    /// so the actor reaches `Error` immediately without depending on
+    /// a real ACP vendor binary.
+    async fn dispatch_with_adapter(adapter: Arc<AcpAdapter>, method: &str, params: Value) -> Value {
+        let status = StatusBroadcast::new(true);
+        let dyn_adapter: Arc<dyn Adapter> = adapter.clone();
+        let ctx = HandlerCtx {
+            app: None,
+            status: &status,
+            adapter: dyn_adapter,
+            config: None,
+            mcps: None,
+            already_subscribed: false,
+            already_events_subscribed: false,
+            started_at: None,
+            socket_path: None,
+        };
+        match PromptsHandler.handle(method, params, ctx).await {
+            Ok(HandlerOutcome::Reply(v)) => v,
+            Ok(HandlerOutcome::StatusSubscribed(v, _)) => v,
+            Ok(HandlerOutcome::EventsSubscribed(v, _, _)) => v,
+            Err(err) => json!({ "code": err.code, "message": err.message }),
+        }
+    }
+
+    fn dead_child_adapter() -> Arc<AcpAdapter> {
+        let cfg: Config = toml::from_str(
+            r#"
+[agent]
+default = "dead"
+
+[[agents]]
+id = "dead"
+provider = "acp-claude-code"
+command = "/bin/false"
+"#,
+        )
+        .expect("config parses");
+        Arc::new(AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true))))
+    }
+
+    /// `prompts/send` against a slug-shaped instance id with an empty
+    /// registry auto-spawns AND renames. Reply carries the spawned
+    /// instance id + `disposition: "sent"` + `wasBusy: false` (no
+    /// prior turn). Pinning the `disposition` shape matters for
+    /// second-frontends (nvim, ws bridge) that gate "queue strip"
+    /// UI on whether the prompt landed behind a running turn.
+    #[tokio::test]
+    async fn send_slug_spawns_and_renames_with_sent_disposition() {
+        let adapter = dead_child_adapter();
+        let v = dispatch_with_adapter(
+            adapter,
+            "prompts/send",
+            json!({ "instanceId": "feat-xyz", "text": "build it" }),
+        )
+        .await;
+        assert_eq!(v["disposition"], "sent", "fresh spawn must report sent: {v}");
+        assert_eq!(v["wasBusy"], false, "empty registry is never busy: {v}");
+        assert_eq!(v["accepted"], true, "actor channel accepted the prompt: {v}");
+        assert!(
+            v["instanceId"].as_str().is_some_and(|s| !s.is_empty()),
+            "minted instance id must surface on the reply: {v}"
+        );
+    }
+
+    /// `prompts/send` with `draft: true` short-circuits the adapter
+    /// submit and replies with `disposition: "drafted"`. Resolution
+    /// still happens (the new instance is spawned + named), so the
+    /// captain can hit `ctl prompts send --draft --instance feat-xyz`
+    /// on an empty daemon and the overlay lands with the prompt
+    /// staged in the composer.
+    #[tokio::test]
+    async fn send_draft_path_reports_drafted_disposition() {
+        let adapter = dead_child_adapter();
+        let v = dispatch_with_adapter(
+            adapter,
+            "prompts/send",
+            json!({ "instanceId": "feat-draft", "text": "staged", "draft": true }),
+        )
+        .await;
+        assert_eq!(v["disposition"], "drafted", "draft path must surface drafted: {v}");
+        assert_eq!(v["drafted"], true);
+        assert_eq!(
+            v["accepted"], false,
+            "draft does not dispatch — accepted stays false: {v}"
+        );
+        assert_eq!(v["wasBusy"], false);
+        assert!(v["instanceId"].as_str().is_some_and(|s| !s.is_empty()));
     }
 
     /// Malformed `attachments` entry (missing required `slug`) rejects

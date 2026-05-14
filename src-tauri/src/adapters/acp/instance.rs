@@ -3237,6 +3237,85 @@ mod tests {
         }
     }
 
+    /// `config_options_update` projects onto `MappedUpdate::ConfigOptions`
+    /// with a typed `SessionConfigOptionCategory` per category. Pins
+    /// T4 from the audit: the `mode` / `model` mirror dispatch
+    /// (instance.rs:2945) is downstream of this mapping, and a
+    /// regression that drops a `currentValue` or renames a category
+    /// would silently break the per-instance mode/model mirror
+    /// without surfacing in any other test.
+    #[test]
+    fn map_session_update_config_options_carries_mode_and_model_categories() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+                {
+                    "id": "mode",
+                    "name": "Mode",
+                    "currentValue": "plan",
+                    "options": [
+                        { "value": "plan", "name": "Plan" },
+                        { "value": "edit", "name": "Edit" }
+                    ]
+                },
+                {
+                    "id": "model",
+                    "name": "Model",
+                    "currentValue": "claude-sonnet-4-5",
+                    "options": [
+                        { "value": "claude-sonnet-4-5", "name": "Sonnet 4.5" }
+                    ]
+                }
+            ]
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+        match mapped {
+            MappedUpdate::ConfigOptions { categories } => {
+                assert_eq!(categories.len(), 2, "two categories — mode + model");
+                let mode = categories.iter().find(|c| c.id == "mode").expect("mode category");
+                assert_eq!(mode.current_value.as_deref(), Some("plan"));
+                assert_eq!(mode.options.len(), 2);
+                let model = categories.iter().find(|c| c.id == "model").expect("model category");
+                assert_eq!(model.current_value.as_deref(), Some("claude-sonnet-4-5"));
+            }
+            _ => panic!("expected ConfigOptions variant"),
+        }
+    }
+
+    /// Unknown category ids pass through with their fields intact —
+    /// the actor's `mode`/`model` mirror dispatch (instance.rs:2945)
+    /// only writes to the per-instance RwLocks on `id == "mode"` /
+    /// `"model"`, so an `effort` or `thought_level` category just
+    /// rides the wire untouched. Pins forward-compat: a new ACP
+    /// category id doesn't crash the mapping.
+    #[test]
+    fn map_session_update_config_options_passes_unknown_category_through() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+                {
+                    "id": "effort",
+                    "name": "Effort",
+                    "currentValue": "high",
+                    "options": []
+                }
+            ]
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+        match mapped {
+            MappedUpdate::ConfigOptions { categories } => {
+                assert_eq!(categories.len(), 1);
+                assert_eq!(categories[0].id, "effort");
+                assert_eq!(categories[0].current_value.as_deref(), Some("high"));
+            }
+            _ => panic!("expected ConfigOptions variant"),
+        }
+    }
+
     #[test]
     fn map_session_update_thought_with_unknown_shape_yields_empty_text() {
         use serde_json::json;
