@@ -989,12 +989,13 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   `{ ensure: true }` to auto-spawn-if-missing; `spawn` accepts
   `{ restore: true }` to resume an existing session id. Spawn-shaped
   verbs (`spawn`, `restart`, `focus { ensure: true }`, `prompts/send`
-  when it auto-spawns) accept `withConfig: Array<object>` —
-  kustomize-style overlay patches the daemon folds onto its resolved
-  `Config` before the spawn. Patches apply in declaration order and
-  are stored on the spawned instance so `restart` replays them
-  against whatever config the daemon currently has. See
-  `config/patch.rs` for `$patch` directive semantics
+  when it auto-spawns, plus `sessions/load` for resume) accept
+  `withConfig: Array<object>` — kustomize-style overlay patches the
+  daemon folds onto the **resolved profile** (not the root `Config`)
+  before spawning. Patches apply in declaration order and are stored
+  on the spawned instance so `restart` replays them against whatever
+  config the daemon currently has. See `config/patch.rs` for `$patch`
+  directive semantics
   (`replace` / `delete` / `deleteFromPrimitiveList/<field>`); the
   `ctl` flag is `--with-config <path|@inline|->` paired with
   `--with-config-format toml|json|yaml` (default: `json`). **Three
@@ -1005,12 +1006,15 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   flag is repeatable for all shapes — except `-`, which can be
   used **at most once** per invocation (stdin can only be drained
   once); the second `-` errors out up-front with a helpful
-  message. **Authoring shape**:
-  patches address the daemon's serialized `Config` directly — note
-  that `Config.agents` is `#[serde(flatten)]`, so `[[agents]]`
-  entries live at the top level under `agents` (not nested under
-  `agents.agents`). When in doubt, serialize `Config::default()`
-  and inspect the JSON layout.
+  message. **Authoring shape**: patches address a `ProfileConfig`
+  directly — the same TOML shape captains write under `[[profiles]]`.
+  Fields: `agent`, `model`, `mode`, `system_prompt`, `mcps`, `skills`,
+  `env`, `cwd`, `thinking_budget_tokens`. When no `--profile` is
+  addressed and no `[profile] default` exists, the base is a
+  synthetic bare profile pointing at the resolved default agent — so
+  patches always have somewhere to land. Root-level knobs (theme,
+  daemon.window, the agent registry itself) are deliberately out of
+  scope; those belong in the on-disk config or a `daemon/reload`.
 - **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle`.
   Race-safe across concurrent calls — every `overlay/*` entry serialises
   through `WindowRenderer::lock_present`.

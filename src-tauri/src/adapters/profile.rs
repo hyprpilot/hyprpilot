@@ -118,7 +118,18 @@ impl ResolvedInstance {
             .iter()
             .find(|p| p.id == profile_id)
             .with_context(|| format!("profile '{profile_id}' not found in [[profiles]] registry"))?;
+        Self::from_profile_explicit(profile, config)
+    }
 
+    /// Resolve against an already-materialised `ProfileConfig` —
+    /// skips the `[[profiles]]` lookup. The agent referenced by
+    /// `profile.agent` must still exist in `config.agents.agents`.
+    ///
+    /// `withConfig` patches use this: they fold against the
+    /// captain-resolved profile (or a synthetic bare profile), then
+    /// hand the patched `ProfileConfig` here for resolution against
+    /// the unpatched agent registry.
+    pub fn from_profile_explicit(profile: &ProfileConfig, config: &Config) -> Result<Self> {
         let agent = config
             .agents
             .agents
