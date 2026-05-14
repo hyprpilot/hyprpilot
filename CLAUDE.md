@@ -11,7 +11,7 @@ description is the authoritative design snapshot.
 - Backend: Rust crate at `src-tauri/` with `clap`-derive subcommand dispatch,
   `tauri-plugin-single-instance`, and a tokio `UnixListener` at
   `$XDG_RUNTIME_DIR/hyprpilot.sock`.
-- Config: layered TOML — compiled defaults → `$XDG_CONFIG_HOME/hyprpilot/config.toml`
+- Config: layered TOML/JSON/YAML — compiled defaults → `$XDG_CONFIG_HOME/hyprpilot/config.{toml,json,yaml,yml}`
   → per-profile TOML → clap flags. The full UI theme is part of this config.
 
 ## Toolchain (mise-pinned)
@@ -130,11 +130,18 @@ fields they set.
 
 1. Compiled defaults — `src-tauri/src/config/defaults.toml` embedded via
    `include_str!`.
-2. Global config — `$XDG_CONFIG_HOME/hyprpilot/config.toml` or `--config <path>`.
-3. Per-profile config — `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml`
+2. Global config — `$XDG_CONFIG_HOME/hyprpilot/config.{toml,json,yaml,yml}`
+   or `--config <path>`. The daemon searches the four extensions in
+   declaration order (`.toml` → `.json` → `.yaml` → `.yml`) and uses
+   the first that exists. Multiple coexisting files (e.g. both
+   `config.toml` and `config.yaml`) error at boot — captain picks one.
+   `--config <path>` infers format from the supplied extension.
+3. Per-profile config —
+   `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{toml,json,yaml,yml}`
    when `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` is supplied.
-   This is the config-layering alias, distinct from the session
-   `[[profiles]]` registry (addressed per-call via `ctl submit --profile <id>`).
+   Same extension search + multi-format-conflict rejection as the
+   global config. Distinct from the session `[[profiles]]` registry
+   (addressed per-call via `ctl submit --profile <id>`).
 4. `clap` flags — override-per-invocation, never persisted.
 
 **Rule**: `defaults.toml` is the **single source of truth** for default values.

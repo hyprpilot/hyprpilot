@@ -219,54 +219,101 @@ pub struct ResolvedMcpFile {
     pub ignore: Option<globset::GlobSet>,
 }
 
+/// On-disk config format. Picked off the file extension; mirrors
+/// the `--with-config` flag's extension set so a captain who
+/// authors overlays in YAML can keep their root config in YAML
+/// too without juggling formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigFormat {
+    Toml,
+    Json,
+    Yaml,
+}
+
+fn format_for_path(path: &Path) -> Result<ConfigFormat> {
+    let ext = path.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("toml") => Ok(ConfigFormat::Toml),
+        Some("json") => Ok(ConfigFormat::Json),
+        Some("yaml" | "yml") => Ok(ConfigFormat::Yaml),
+        Some(other) => Err(anyhow!(
+            "unsupported config extension '.{other}' at {} — use .toml, .json, .yaml, or .yml",
+            path.display()
+        )),
+        None => Err(anyhow!(
+            "config file at {} has no extension — must be .toml, .json, .yaml, or .yml",
+            path.display()
+        )),
+    }
+}
+
+/// Parse a config-layer file by extension. Returns the typed `Config`
+/// (NOT raw text) — every layer round-trips through the same serde
+/// derive, so `deny_unknown_fields` + the closed enums catch typos
+/// regardless of format.
+fn parse_layer_file(path: &Path) -> Result<Config> {
+    let body = fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))?;
+    parse_layer_body(&body, format_for_path(path)?, Some(path))
+}
+
+fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Result<Config> {
+    let src_label = src
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<defaults>".into());
+    match format {
+        ConfigFormat::Toml => {
+            toml::from_str(body).with_context(|| format!("failed to parse TOML config at {src_label}"))
+        }
+        ConfigFormat::Json => {
+            serde_json::from_str(body).with_context(|| format!("failed to parse JSON config at {src_label}"))
+        }
+        ConfigFormat::Yaml => {
+            serde_yaml::from_str(body).with_context(|| format!("failed to parse YAML config at {src_label}"))
+        }
+    }
+}
+
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
     tracing::info!(cli_path = ?cli_path, profile = ?profile, "config::load: loading layers");
-    let mut layers: Vec<String> = vec![DEFAULTS.to_string()];
 
-    match cli_path {
+    let mut cfg =
+        parse_layer_body(DEFAULTS, ConfigFormat::Toml, None).context("failed to parse compiled defaults.toml")?;
+
+    let root_layer_path: Option<PathBuf> = match cli_path {
         Some(p) => {
             if !p.exists() {
                 tracing::error!(path = %p.display(), "config::load: cli path missing");
                 bail!("config file not found: {}", p.display());
             }
-            tracing::debug!(path = %p.display(), "config::load: reading cli-provided layer");
-            layers.push(read_layer(p)?);
+            Some(p.to_path_buf())
         }
-        None => {
-            let default = paths::config_file();
-            if default.exists() {
-                tracing::debug!(path = %default.display(), "config::load: reading default layer");
-                layers.push(read_layer(&default)?);
-            }
-        }
+        None => paths::find_config_file().context("failed to locate root config")?,
+    };
+
+    if let Some(p) = root_layer_path.as_deref() {
+        tracing::debug!(path = %p.display(), "config::load: reading root layer");
+        let layer = parse_layer_file(p)?;
+        cfg.merge(layer);
     }
 
     if let Some(name) = profile {
-        let p = paths::profile_config_file(name);
-        if !p.exists() {
-            tracing::error!(profile = name, path = %p.display(), "config::load: profile not found");
-            bail!("profile '{name}' not found at {}", p.display());
-        }
-        tracing::debug!(profile = name, path = %p.display(), "config::load: reading profile layer");
-        layers.push(read_layer(&p)?);
+        let resolved = paths::find_profile_config_file(name)
+            .with_context(|| format!("failed to locate profile '{name}'"))?
+            .ok_or_else(|| {
+                tracing::error!(profile = name, "config::load: profile not found");
+                anyhow!(
+                    "profile '{name}' not found at {} (tried .toml / .json / .yaml / .yml)",
+                    paths::profile_config_file(name).display()
+                )
+            })?;
+        tracing::debug!(profile = name, path = %resolved.display(), "config::load: reading profile layer");
+        let layer = parse_layer_file(&resolved)?;
+        cfg.merge(layer);
     }
 
-    let cfg = layers
-        .iter()
-        .enumerate()
-        .try_fold(Config::default(), |mut acc, (idx, body)| -> Result<Config> {
-            let layer: Config = toml::from_str(body)
-                .map_err(|e| {
-                    tracing::error!(layer_index = idx, err = %e, "config::load: TOML parse failed");
-                    e
-                })
-                .context("failed to parse TOML layer")?;
-            acc.merge(layer);
-            Ok(acc)
-        })?;
-
     tracing::info!(
-        layers = layers.len(),
+        root_layer = ?root_layer_path,
+        profile = ?profile,
         agents = cfg.agents.agents.len(),
         profiles = cfg.profiles.len(),
         default_agent = ?cfg.agents.agent.default,
@@ -275,10 +322,6 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
     );
 
     Ok(cfg)
-}
-
-fn read_layer(path: &Path) -> Result<String> {
-    fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))
 }
 
 impl Config {
@@ -345,7 +388,62 @@ level = "debug"
     fn load_rejects_unknown_fields() {
         let p = write_tmp("unknown.toml", "bogus = true\n");
         let err = load(Some(&p), None).expect_err("should error");
-        assert!(err.to_string().contains("failed to parse TOML layer"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse TOML config"), "got: {msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    /// `--config <path>.json` loads + merges a JSON-authored root
+    /// config. The fields shipped on the wire are the same as TOML —
+    /// the file format is the only thing that changes.
+    #[test]
+    fn load_accepts_json_extension() {
+        let p = write_tmp("json-cli.json", r#"{"logging": {"level": "debug"}}"#);
+        let cfg = load(Some(&p), None).expect("load json");
+        assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
+        fs::remove_file(&p).ok();
+    }
+
+    /// `--config <path>.yaml` loads + merges a YAML-authored root
+    /// config. `.yml` works too via the same extension matcher.
+    #[test]
+    fn load_accepts_yaml_extension() {
+        let p = write_tmp("yaml-cli.yaml", "logging:\n  level: debug\n");
+        let cfg = load(Some(&p), None).expect("load yaml");
+        assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
+        fs::remove_file(&p).ok();
+    }
+
+    /// `deny_unknown_fields` survives the JSON parse path too — a
+    /// stray field at the top level rejects with a parse error
+    /// instead of silently dropping.
+    #[test]
+    fn load_rejects_unknown_fields_in_json() {
+        let p = write_tmp("unknown.json", r#"{"bogus": true}"#);
+        let err = load(Some(&p), None).expect_err("should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse JSON config"), "got: {msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn load_rejects_unknown_fields_in_yaml() {
+        let p = write_tmp("unknown.yaml", "bogus: true\n");
+        let err = load(Some(&p), None).expect_err("should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse YAML config"), "got: {msg}");
+        fs::remove_file(&p).ok();
+    }
+
+    /// Captain points `--config` at a file with an unsupported
+    /// extension → clear error naming the extension, NOT a confusing
+    /// TOML parse failure.
+    #[test]
+    fn load_rejects_unsupported_extension() {
+        let p = write_tmp("unsupported.ini", "ignored\n");
+        let err = load(Some(&p), None).expect_err("should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unsupported config extension"), "got: {msg}");
         fs::remove_file(&p).ok();
     }
 
