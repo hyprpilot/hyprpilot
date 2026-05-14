@@ -27,7 +27,7 @@ const emit = defineEmits<{
   <article class="permission-row" data-testid="permission-row">
     <ToolHeader class="permission-row-header" :icon="view.call.icon" :title="view.call.title" :tone="ToastTone.Warn">
       <template #trailing>
-        <PermissionActions class="permission-row-actions" :options="view.options" @reply="(id) => emit('reply', id)" />
+        <PermissionActions class="permission-row-actions" :options="view.options" :default-option-id="view.defaultOptionId" @reply="(id) => emit('reply', id)" />
       </template>
     </ToolHeader>
     <div class="permission-row-body">

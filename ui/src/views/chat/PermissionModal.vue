@@ -29,7 +29,7 @@ const emit = defineEmits<{
 <template>
   <Modal :title="view.call.title" :tone="ToastTone.Warn" :icon="view.call.icon" :dismissable="false" @dismiss="emit('dismiss')">
     <template #actions>
-      <PermissionActions class="permission-modal-actions" :options="view.options" @reply="(id) => emit('reply', id)" />
+      <PermissionActions class="permission-modal-actions" :options="view.options" :default-option-id="view.defaultOptionId" @reply="(id) => emit('reply', id)" />
     </template>
     <ToolBody :view="view.call" />
   </Modal>

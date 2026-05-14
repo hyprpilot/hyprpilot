@@ -185,6 +185,13 @@ pub struct PermissionRequestSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
     pub options: Vec<PermissionOptionView>,
+    /// Pre-selected option id — same allow-kind preference as the
+    /// `acp:permission-request` event field. Captains hitting
+    /// `Enter` on the modal commit this; external frontends can use
+    /// it as the default highlight. `None` when no allow-shaped
+    /// option exists and the options list is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_option_id: Option<String>,
 }
 
 /// Everything the decision pipeline needs at call time. `mcps`
@@ -398,6 +405,7 @@ impl PermissionController for DefaultPermissionController {
             instance_id: req.instance_id.clone(),
             tool: req.tool_call.name.clone(),
             args: req.tool_call.raw_args.clone().or_else(|| req.tool_call.title.clone()),
+            default_option_id: pick_allow_option_id(&req.options),
             options: req.options.clone(),
         };
         let mut waiters = self.waiters.lock().await;

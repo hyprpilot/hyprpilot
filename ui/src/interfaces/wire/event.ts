@@ -51,6 +51,12 @@ export interface PermissionRequestEventPayload {
   /// to render text / diff / terminal blocks.
   content?: Record<string, unknown>[]
   options: PermissionOptionView[]
+  /// Pre-selected option id — daemon picks the allow-shaped option
+  /// via the same matcher that powers `permissions/respond
+  /// { remember }`. UI uses this as the default highlight + the
+  /// `Enter`-commit target. `undefined` when no allow-shaped option
+  /// exists (the modal still renders without a default).
+  defaultOptionId?: string
   /// Daemon-authored presentation view. UI renders verbatim — no
   /// client-side formatting fallback.
   formatted: import('./formatted-tool-call').FormattedToolCall

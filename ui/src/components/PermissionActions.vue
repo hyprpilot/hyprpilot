@@ -17,8 +17,14 @@ import type { PermissionOptionView } from '@interfaces/wire/transcript'
  *
  * Emits `reply` with the real `optionId` from the offered set.
  */
-defineProps<{
+const props = defineProps<{
   options: PermissionOptionView[]
+  /// Daemon-picked default option id (allow-shaped, via the same
+  /// matcher that powers the trust store). When set, that button
+  /// renders solid (the visual primary) and any other allow-kind
+  /// button drops to ghost. When unset, falls back to the legacy
+  /// rule (`allow_once` is solid).
+  defaultOptionId?: string
 }>()
 
 const emit = defineEmits<{
@@ -38,6 +44,15 @@ function toneFor(opt: PermissionOptionView): ButtonTone {
 }
 
 function variantFor(opt: PermissionOptionView): ButtonVariant {
+  // When the daemon supplied a default, ONLY that option is solid;
+  // every other option (including other allow-shaped ones) renders
+  // ghost so the primary action is visually unambiguous. Without a
+  // daemon-supplied default, fall back to the legacy "allow_once is
+  // solid" rule for compat with older daemon builds.
+  if (props.defaultOptionId !== undefined) {
+    return opt.optionId === props.defaultOptionId ? ButtonVariant.Solid : ButtonVariant.Ghost
+  }
+
   return opt.kind === 'allow_once' ? ButtonVariant.Solid : ButtonVariant.Ghost
 }
 </script>
@@ -52,6 +67,7 @@ function variantFor(opt: PermissionOptionView): ButtonVariant {
       :variant="variantFor(opt)"
       :title="opt.name"
       :aria-label="opt.name"
+      :data-default="opt.optionId === props.defaultOptionId || undefined"
       @click="emit('reply', opt.optionId)"
       ><span class="permission-actions-label">{{ opt.name }}</span></Button
     >
