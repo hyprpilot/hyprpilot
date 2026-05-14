@@ -110,6 +110,13 @@ export interface LoadSessionArgs {
   /// cwd (from `session_list`) so the resume request lands in the
   /// right scope.
   cwd?: string
+  /// Kustomize-style overlay patches the daemon folds onto its
+  /// resolved `Config` before resolving the resumed instance's
+  /// profile. Same semantics as `instances/spawn`'s `withConfig`:
+  /// applied in declaration order, stored on the resumed instance
+  /// so `instances/restart` replays them against whatever config
+  /// the daemon currently has.
+  withConfig?: Record<string, unknown>[]
 }
 
 /**
