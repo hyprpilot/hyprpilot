@@ -118,7 +118,18 @@ impl ResolvedInstance {
             .iter()
             .find(|p| p.id == profile_id)
             .with_context(|| format!("profile '{profile_id}' not found in [[profiles]] registry"))?;
+        Self::from_profile_explicit(profile, config)
+    }
 
+    /// Resolve against an already-materialised `ProfileConfig` —
+    /// skips the `[[profiles]]` lookup. The agent referenced by
+    /// `profile.agent` must still exist in `config.agents.agents`.
+    ///
+    /// `withConfig` patches use this: they fold against the
+    /// captain-resolved profile (or a synthetic bare profile), then
+    /// hand the patched `ProfileConfig` here for resolution against
+    /// the unpatched agent registry.
+    pub fn from_profile_explicit(profile: &ProfileConfig, config: &Config) -> Result<Self> {
         let agent = config
             .agents
             .agents
@@ -145,10 +156,6 @@ impl ResolvedInstance {
             agent.env.insert(k.clone(), v.clone());
         }
 
-        let budget = profile.thinking_budget_tokens.or(agent.thinking_budget_tokens);
-
-        apply_thinking_budget(&mut agent, budget);
-
         Ok(Self {
             agent,
             profile_id: Some(profile.id.clone()),
@@ -170,11 +177,9 @@ impl ResolvedInstance {
             .as_deref()
             .and_then(|wanted| agents.iter().find(|a| a.id == wanted))
             .unwrap_or(&agents[0]);
-        let mut agent = agent.clone();
+        let agent = agent.clone();
         let model = agent.model.clone();
-        let budget = agent.thinking_budget_tokens;
 
-        apply_thinking_budget(&mut agent, budget);
         Ok(Self {
             agent,
             profile_id: None,
@@ -197,41 +202,6 @@ impl ResolvedInstance {
         }
         load_root_system_prompt(config)
     }
-}
-
-/// Translate `thinking_budget_tokens` onto the spawned process env.
-/// Provider-specific dispatch (only `acp-claude-code` consumes this
-/// today) keeps the knob ergonomic at the config layer instead of
-/// forcing captains to memorise the magic env-var name.
-///
-/// Default for `acp-claude-code` when the captain leaves it unset:
-/// `MAX_THINKING_TOKENS=10000`. Per Anthropic's docs, Claude Opus
-/// 4.7+ default `thinking.display = "omitted"` — thinking is BILLED
-/// either way, but chunks arrive with empty text unless an explicit
-/// budget tells the SDK to pass `display: "showing"`. Defaulting to
-/// visible costs nothing and surfaces the reasoning the captain is
-/// already paying for.
-///
-/// `Some(0)` is the explicit "no thinking" off-switch — clears any
-/// existing env entry so the SDK falls back to its own default.
-///
-/// User-provided `MAX_THINKING_TOKENS` in `[profiles.env]` /
-/// `[agents.env]` always wins — we only fill the slot when the
-/// captain hasn't already set it.
-fn apply_thinking_budget(agent: &mut AgentConfig, budget: Option<u32>) {
-    use crate::config::AgentProvider;
-    if !matches!(agent.provider, AgentProvider::AcpClaudeCode) {
-        return;
-    }
-    if agent.env.contains_key("MAX_THINKING_TOKENS") {
-        return;
-    }
-    let resolved = match budget {
-        Some(0) => return,
-        Some(n) => n,
-        None => 10_000,
-    };
-    agent.env.insert("MAX_THINKING_TOKENS".into(), resolved.to_string());
 }
 
 fn load_root_system_prompt(config: &Config) -> Result<Vec<ResolvedSystemPromptEntry>> {
@@ -280,7 +250,6 @@ mod tests {
             args: vec![],
             cwd: None,
             env: Default::default(),
-            thinking_budget_tokens: None,
         }
     }
 
@@ -303,7 +272,6 @@ mod tests {
             mode: None,
             cwd: None,
             env: Default::default(),
-            thinking_budget_tokens: None,
         }
     }
 
@@ -641,112 +609,5 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("root"), "{msg}");
         assert!(msg.contains("system_prompt"), "{msg}");
-    }
-
-    #[test]
-    fn thinking_budget_default_visible_for_acp_claude_code() {
-        // Per Anthropic's docs, Claude Opus 4.7+ default
-        // `thinking.display = "omitted"` ships thinking blocks with
-        // empty text. Captains pay for thinking either way; defaulting
-        // visible surfaces it for free. Sentinel: env carries
-        // MAX_THINKING_TOKENS=10000 when neither agent nor profile
-        // set the field.
-        let cfg = Config {
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                ..Default::default()
-            },
-            profiles: vec![profile("ask", "cc", None, None)],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(
-            r.agent.env.get("MAX_THINKING_TOKENS").map(String::as_str),
-            Some("10000")
-        );
-    }
-
-    #[test]
-    fn thinking_budget_profile_wins_over_agent() {
-        let mut a = agent("cc", None);
-
-        a.thinking_budget_tokens = Some(2000);
-        let mut p = profile("ask", "cc", None, None);
-
-        p.thinking_budget_tokens = Some(50000);
-        let cfg = Config {
-            agents: AgentsConfig {
-                agents: vec![a],
-                ..Default::default()
-            },
-            profiles: vec![p],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-
-        assert_eq!(
-            r.agent.env.get("MAX_THINKING_TOKENS").map(String::as_str),
-            Some("50000")
-        );
-    }
-
-    #[test]
-    fn thinking_budget_zero_is_explicit_off_switch() {
-        let mut p = profile("ask", "cc", None, None);
-
-        p.thinking_budget_tokens = Some(0);
-        let cfg = Config {
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                ..Default::default()
-            },
-            profiles: vec![p],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-
-        // Some(0) → don't inject. SDK falls back to its own default.
-        assert!(!r.agent.env.contains_key("MAX_THINKING_TOKENS"));
-    }
-
-    #[test]
-    fn thinking_budget_user_env_wins_over_default() {
-        // Captain who explicitly sets MAX_THINKING_TOKENS in
-        // [profiles.env] keeps their value — we only fill the slot
-        // when nobody else has.
-        let mut p = profile("ask", "cc", None, None);
-
-        p.env.insert("MAX_THINKING_TOKENS".into(), "32000".into());
-        let cfg = Config {
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                ..Default::default()
-            },
-            profiles: vec![p],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(
-            r.agent.env.get("MAX_THINKING_TOKENS").map(String::as_str),
-            Some("32000")
-        );
-    }
-
-    #[test]
-    fn thinking_budget_skips_non_claude_code_providers() {
-        let mut a = agent("oc", None);
-
-        a.provider = AgentProvider::AcpOpenCode;
-        let cfg = Config {
-            agents: AgentsConfig {
-                agents: vec![a],
-                ..Default::default()
-            },
-            profiles: vec![profile("ask", "oc", None, None)],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-
-        assert!(!r.agent.env.contains_key("MAX_THINKING_TOKENS"));
     }
 }

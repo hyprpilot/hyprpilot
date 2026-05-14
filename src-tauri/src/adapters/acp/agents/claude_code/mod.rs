@@ -48,7 +48,6 @@ mod tests {
             args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
             cwd: None,
             env: BTreeMap::new(),
-            thinking_budget_tokens: None,
         }
     }
 

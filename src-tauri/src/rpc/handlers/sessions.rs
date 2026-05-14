@@ -41,12 +41,13 @@ struct LoadParams {
     agent_id: Option<String>,
     profile_id: Option<String>,
     cwd: Option<PathBuf>,
-    /// Kustomize-style overlay patches the daemon folds onto its
-    /// resolved `Config` before resolving the resumed instance's
-    /// profile. Same semantics as `instances/spawn`'s `withConfig`:
-    /// applied in declaration order, stored on the resumed instance
-    /// so `instances/restart` replays them against whatever config
-    /// the daemon currently has.
+    /// Profile-shaped overlay patches the daemon folds onto the
+    /// resolved profile (synthetic when no profile is addressed)
+    /// before spawning the resumed instance. Same semantics as
+    /// `instances/spawn`'s `withConfig`: patch fields mirror
+    /// `[[profiles]]` TOML shape, applied in declaration order, then
+    /// stored on the resumed instance so `instances/restart` replays
+    /// them against whatever config the daemon currently has.
     with_config: Vec<Value>,
 }
 
@@ -175,31 +176,24 @@ mod tests {
     }
 
     /// `withConfig` rides through the same plumbing as
-    /// `instances/spawn`: each patch is applied to the daemon's
-    /// resolved `Config`, then validation runs. An empty array is the
-    /// no-op default — still hits the adapter and trips its "no
-    /// agents configured" path. A non-empty patch that breaks config
-    /// validation gets surfaced as `-32602 withConfig failed
-    /// validation: ...` BEFORE the adapter is touched — proving the
-    /// fold + revalidate happened.
+    /// `instances/spawn`: each patch folds against the **resolved
+    /// profile** (synthetic when no profile is addressed), then
+    /// validation runs. An empty array is the no-op default — still
+    /// hits the adapter and trips its "no agents configured" path.
+    /// A non-empty patch that breaks the profile shape surfaces as
+    /// `-32602` BEFORE the adapter is touched.
     #[tokio::test]
     async fn load_with_config_invalid_patch_rejects_with_validation_error() {
         let v = dispatch(
             "sessions/load",
             json!({
                 "sessionId": "abc",
-                "withConfig": [{ "agent": { "default": "x" } }],
+                "withConfig": [{ "this_field_does_not_exist": true }],
             }),
         )
         .await;
         assert_eq!(v["code"], -32602, "{v}");
-        assert!(
-            v["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("withConfig failed validation"),
-            "{v}"
-        );
+        assert!(v["message"].as_str().unwrap_or_default().contains("withConfig"), "{v}");
     }
 
     #[tokio::test]
