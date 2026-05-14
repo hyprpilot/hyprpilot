@@ -22,7 +22,13 @@ pub enum OverlaySubcommand {
     /// Hide the overlay (no-op when already hidden). Webview stays warm.
     Hide,
     /// Flip the overlay's visibility. Race-safe across concurrent calls.
-    Toggle,
+    /// With `--instance`, also focuses that instance when the toggle
+    /// brings the overlay into view (ignored on the visible→hidden
+    /// branch, but still validated up-front).
+    Toggle {
+        #[arg(long = "instance")]
+        instance_id: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -37,7 +43,7 @@ impl CtlDispatch for OverlaySubcommand {
         match self {
             OverlaySubcommand::Show { instance_id } => show(client, instance_id),
             OverlaySubcommand::Hide => hide(client),
-            OverlaySubcommand::Toggle => toggle(client),
+            OverlaySubcommand::Toggle { instance_id } => toggle(client, instance_id),
         }
     }
 }
@@ -50,6 +56,6 @@ fn hide(client: &CtlClient) -> Result<()> {
     emit(client, "overlay/hide", &Value::Null)
 }
 
-fn toggle(client: &CtlClient) -> Result<()> {
-    emit(client, "overlay/toggle", &Value::Null)
+fn toggle(client: &CtlClient, instance_id: Option<String>) -> Result<()> {
+    emit(client, "overlay/toggle", &ShowParams { instance_id })
 }
