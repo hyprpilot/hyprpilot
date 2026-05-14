@@ -368,4 +368,46 @@ describe('Viewport.vue', () => {
     expect(invoke).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('defers near-bottom eviction to requestAnimationFrame', async() => {
+    // Eviction inside the scroll-event task removes DOM nodes from
+    // the TOP of the scroller while the browser is mid-gesture,
+    // confusing scroll-anchoring + concurrent stick-to-bottom
+    // observers. The body view wraps the trigger in rAF so the
+    // cache mutation lands on the next frame, after the browser
+    // has finished the current scroll tick.
+    const page = chatPage(
+      [
+        {
+          seq: 1,
+          item: { kind: TranscriptItemKind.AgentText, text: 'a' } as never
+        }
+      ],
+      false
+    )
+
+    invoke.mockResolvedValueOnce(page)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: page })
+
+    await flushPromises()
+    await flushPromises()
+
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+
+    // Position the captain within one viewport of the bottom. Both
+    // scrollHeight and clientHeight need explicit values for the
+    // distanceFromBottom <= clientHeight check.
+    Object.defineProperty(root, 'scrollTop', { configurable: true, value: 1200 })
+    Object.defineProperty(root, 'scrollHeight', { configurable: true, value: 2000 })
+    Object.defineProperty(root, 'clientHeight', { configurable: true, value: 800 })
+
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame')
+
+    root.dispatchEvent(new Event('scroll'))
+
+    expect(rafSpy).toHaveBeenCalled()
+
+    rafSpy.mockRestore()
+    wrapper.unmount()
+  })
 })
