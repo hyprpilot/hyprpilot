@@ -337,8 +337,8 @@ impl AcpAdapter {
     /// onto the **resolved profile** (not the root config). The patch
     /// shape mirrors `[[profiles]]` in TOML; patches can override
     /// `model`, `mode`, `system_prompt`, `mcps`, `skills`, `env`,
-    /// `cwd`, `thinking_budget_tokens`, or even swap the underlying
-    /// `agent` to point at a different entry in the (unpatched) agent
+    /// `cwd`, or even swap the underlying `agent` to point at a
+    /// different entry in the (unpatched) agent
     /// registry. Root-level knobs (theme, daemon.window, the agent
     /// registry itself) are deliberately out of scope — they belong
     /// in the on-disk config or a `daemon/reload`.
@@ -862,7 +862,7 @@ impl AcpAdapter {
         // Apply `--with-config` overlays before resolving. Mirrors
         // `spawn_instance`: the captain's overlays patch the
         // resolved profile (model / mode / mcps / skills /
-        // system_prompt / env / cwd / thinking_budget) and the
+        // system_prompt / env / cwd) and the
         // patches get stored on the resumed instance so a subsequent
         // `instances/restart` replays them — same semantics as a
         // Fresh-spawned instance.
@@ -1573,7 +1573,6 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> ProfileCo
         mode: None,
         cwd: None,
         env: std::collections::BTreeMap::new(),
-        thinking_budget_tokens: None,
     }
 }
 

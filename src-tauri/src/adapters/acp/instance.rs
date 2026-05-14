@@ -3502,7 +3502,6 @@ mod tests {
                 cwd: None,
                 env: Default::default(),
                 model: None,
-                thinking_budget_tokens: None,
             },
             profile_id: None,
             model: None,

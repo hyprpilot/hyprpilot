@@ -159,7 +159,6 @@ mod tests {
             args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
             cwd: None,
             env: Default::default(),
-            thinking_budget_tokens: None,
         }
     }
 

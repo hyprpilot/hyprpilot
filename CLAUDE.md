@@ -1009,7 +1009,7 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   message. **Authoring shape**: patches address a `ProfileConfig`
   directly — the same TOML shape captains write under `[[profiles]]`.
   Fields: `agent`, `model`, `mode`, `system_prompt`, `mcps`, `skills`,
-  `env`, `cwd`, `thinking_budget_tokens`. When no `--profile` is
+  `env`, `cwd`. When no `--profile` is
   addressed and no `[profile] default` exists, the base is a
   synthetic bare profile pointing at the resolved default agent — so
   patches always have somewhere to land. Root-level knobs (theme,
