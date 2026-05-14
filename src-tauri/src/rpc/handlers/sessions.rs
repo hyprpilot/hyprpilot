@@ -33,14 +33,21 @@ struct ListParams {
 /// `cwd` overrides the resolved profile's cwd — agents that scope
 /// persisted sessions by cwd (claude-agent-acp) reject loads under
 /// a different cwd than the session was created with.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct LoadParams {
     session_id: String,
     instance_id: Option<String>,
     agent_id: Option<String>,
     profile_id: Option<String>,
     cwd: Option<PathBuf>,
+    /// Kustomize-style overlay patches the daemon folds onto its
+    /// resolved `Config` before resolving the resumed instance's
+    /// profile. Same semantics as `instances/spawn`'s `withConfig`:
+    /// applied in declaration order, stored on the resumed instance
+    /// so `instances/restart` replays them against whatever config
+    /// the daemon currently has.
+    with_config: Vec<Value>,
 }
 
 pub struct SessionsHandler;
@@ -74,6 +81,7 @@ impl RpcHandler for SessionsHandler {
                     agent_id,
                     profile_id,
                     cwd,
+                    with_config,
                 } = parse_params::<LoadParams>(params, method)?;
                 let key = adapter
                     .load_session(
@@ -82,6 +90,7 @@ impl RpcHandler for SessionsHandler {
                         profile_id.as_deref(),
                         session_id,
                         cwd,
+                        with_config,
                     )
                     .await
                     .map_err(map_adapter_err)?;
@@ -163,6 +172,47 @@ mod tests {
     async fn load_unknown_field_is_invalid_params() {
         let v = dispatch("sessions/load", json!({ "sessionId": "abc", "stray": true })).await;
         assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    /// `withConfig` rides through the same plumbing as
+    /// `instances/spawn`: each patch is applied to the daemon's
+    /// resolved `Config`, then validation runs. An empty array is the
+    /// no-op default — still hits the adapter and trips its "no
+    /// agents configured" path. A non-empty patch that breaks config
+    /// validation gets surfaced as `-32602 withConfig failed
+    /// validation: ...` BEFORE the adapter is touched — proving the
+    /// fold + revalidate happened.
+    #[tokio::test]
+    async fn load_with_config_invalid_patch_rejects_with_validation_error() {
+        let v = dispatch(
+            "sessions/load",
+            json!({
+                "sessionId": "abc",
+                "withConfig": [{ "agent": { "default": "x" } }],
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("withConfig failed validation"),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_empty_with_config_falls_through_to_adapter() {
+        let v = dispatch("sessions/load", json!({ "sessionId": "abc", "withConfig": [] })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no agents configured"),
+            "{v}"
+        );
     }
 
     #[tokio::test]

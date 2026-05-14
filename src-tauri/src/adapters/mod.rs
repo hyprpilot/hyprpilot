@@ -257,6 +257,7 @@ pub trait Adapter: Send + Sync + 'static {
         _profile_id: Option<&str>,
         _session_id: String,
         _cwd: Option<std::path::PathBuf>,
+        _config_patches: Vec<serde_json::Value>,
     ) -> AdapterResult<InstanceKey> {
         Err(AdapterError::Unsupported(
             "session/load not supported by this adapter".into(),
@@ -321,6 +322,7 @@ pub trait Adapter: Send + Sync + 'static {
                 spec.profile_id.as_deref(),
                 latest_id,
                 spec.cwd.clone(),
+                spec.config_patches.clone(),
             )
             .await?;
         Ok(Some(key))

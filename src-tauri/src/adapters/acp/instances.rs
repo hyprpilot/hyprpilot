@@ -793,12 +793,21 @@ impl AcpAdapter {
         profile_id: Option<&str>,
         session_id: String,
         cwd: Option<PathBuf>,
+        config_patches: Vec<Value>,
     ) -> Result<InstanceKey, RpcError> {
         let key = match instance_id {
             Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
             None => InstanceKey::new_v4(),
         };
-        let mut resolved = self.resolve(agent_id, profile_id)?;
+        // Apply `--with-config` overlays before resolving. Mirrors
+        // `spawn_instance`: the captain's overlays drive the
+        // resolved profile's `mcps` / `skills` / `system_prompt` /
+        // model lookup, AND the patches get stored on the resumed
+        // instance so a subsequent `instances/restart` replays them
+        // against whatever config the daemon currently has — same
+        // semantics as a Fresh-spawned instance.
+        let cfg = self.config_with_patches(&config_patches)?;
+        let mut resolved = resolve_with_config(&cfg, agent_id, profile_id)?;
         // Override the profile-default cwd with the session's own. ACP
         // agents (claude-agent-acp) scope persisted sessions BY cwd —
         // resuming session-X under any cwd other than the one it was
@@ -808,7 +817,8 @@ impl AcpAdapter {
         if let Some(c) = cwd {
             resolved.agent.cwd = Some(c);
         }
-        self.ensure(key, resolved, Bootstrap::Resume(session_id)).await?;
+        self.ensure_with_config(key, resolved, Bootstrap::Resume(session_id), &cfg, config_patches)
+            .await?;
         self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)?;
         Ok(key)
     }
@@ -1360,8 +1370,9 @@ impl Adapter for AcpAdapter {
         profile_id: Option<&str>,
         session_id: String,
         cwd: Option<PathBuf>,
+        config_patches: Vec<Value>,
     ) -> AdapterResult<InstanceKey> {
-        AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id, cwd)
+        AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id, cwd, config_patches)
             .await
             .map_err(rpc_to_adapter)
     }

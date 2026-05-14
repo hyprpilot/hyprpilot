@@ -248,13 +248,19 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
         }
         "session_load" => {
             #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
+            #[serde(deny_unknown_fields, rename_all = "camelCase")]
             struct Args {
+                #[serde(default)]
                 instance_id: Option<String>,
+                #[serde(default)]
                 agent_id: Option<String>,
+                #[serde(default)]
                 profile_id: Option<String>,
                 session_id: String,
+                #[serde(default)]
                 cwd: Option<PathBuf>,
+                #[serde(default)]
+                with_config: Vec<Value>,
             }
             let args: Args = parse_params(params, "tauri/session_load")?;
             let adapter = adapter_arc(app)?;
@@ -265,6 +271,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                     args.profile_id.as_deref(),
                     args.session_id,
                     args.cwd,
+                    args.with_config,
                 )
                 .await
                 .map_err(|e| RpcError::internal_error(e.message))?;
