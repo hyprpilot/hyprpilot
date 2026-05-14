@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use anyhow::{anyhow, Result};
 use directories::BaseDirs;
 use path_absolutize::Absolutize;
 
@@ -46,12 +47,82 @@ pub fn state_dir() -> PathBuf {
         .join(APP_NAME)
 }
 
-pub fn config_file() -> PathBuf {
-    config_dir().join("config.toml")
+/// Extensions the daemon recognises for config-file lookups. Priority
+/// order is **declaration order** — `find_config_file` returns the
+/// first existing match when callers don't supply an explicit path,
+/// so `.toml` is preferred when multiple files coexist after a
+/// migration. Mirrors the `--with-config` extension set so a captain
+/// authoring overlays in YAML can also keep their root config in
+/// YAML without juggling formats.
+pub const CONFIG_EXTENSIONS: &[&str] = &["toml", "json", "yaml", "yml"];
+
+/// Search `config_dir()` for `config.{toml,json,yaml,yml}` in
+/// priority order. Returns:
+///
+/// - `Ok(Some(path))` when exactly one exists — the canonical
+///   format-agnostic resolver.
+/// - `Ok(None)` when none exist — captain hasn't authored a root
+///   config; the daemon falls through to defaults + profile only.
+/// - `Err(anyhow)` when multiple coexist — captain has both
+///   `config.toml` AND `config.yaml` (or any other ambiguous mix),
+///   the daemon refuses to pick a winner silently.
+pub fn find_config_file() -> Result<Option<PathBuf>> {
+    let dir = config_dir();
+    let matches: Vec<PathBuf> = CONFIG_EXTENSIONS
+        .iter()
+        .map(|ext| dir.join(format!("config.{ext}")))
+        .filter(|p| p.exists())
+        .collect();
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches.into_iter().next().expect("len == 1"))),
+        _ => Err(anyhow!(
+            "multiple config files exist in {}; keep exactly one of: {}",
+            dir.display(),
+            matches
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
+/// Conventional path for a named profile when authored as TOML.
+/// Used in error messages + by the missing-profile path of
+/// `--config-profile`; format-agnostic lookups go through
+/// `find_profile_config_file`.
 pub fn profile_config_file(name: &str) -> PathBuf {
     config_dir().join("profiles").join(format!("{name}.toml"))
+}
+
+/// Search `config_dir()/profiles/` for `<name>.{toml,json,yaml,yml}`
+/// in priority order. Same shape as `find_config_file`:
+///
+/// - `Ok(Some(path))` — exactly one match.
+/// - `Ok(None)` — no profile by that name.
+/// - `Err(anyhow)` — multiple coexist; captain must pick.
+pub fn find_profile_config_file(name: &str) -> Result<Option<PathBuf>> {
+    let dir = config_dir().join("profiles");
+    let matches: Vec<PathBuf> = CONFIG_EXTENSIONS
+        .iter()
+        .map(|ext| dir.join(format!("{name}.{ext}")))
+        .filter(|p| p.exists())
+        .collect();
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches.into_iter().next().expect("len == 1"))),
+        _ => Err(anyhow!(
+            "multiple profile files exist for '{}' in {}; keep exactly one of: {}",
+            name,
+            dir.display(),
+            matches
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 pub fn socket_path() -> PathBuf {
