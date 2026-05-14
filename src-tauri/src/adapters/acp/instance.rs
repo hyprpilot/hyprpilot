@@ -1334,6 +1334,14 @@ pub struct AcpInstance {
     /// path that powers the snapshot RPC. Writes go through
     /// `mirror::publish` to enforce apply-then-broadcast ordering.
     pub mirror: Arc<crate::adapters::InstanceMirror>,
+    /// `--with-config` patch documents folded against the daemon's
+    /// base `Config` at spawn time. Empty when the instance was
+    /// constructed without overlays. Stored verbatim so
+    /// `Adapter::restart` replays them against whatever config the
+    /// daemon currently has (so a `daemon/reload` between spawn and
+    /// restart picks up the new base while preserving the captain's
+    /// overlays).
+    pub config_patches: Vec<serde_json::Value>,
 }
 
 impl AcpInstance {
@@ -1439,6 +1447,7 @@ impl AcpInstance {
             skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
             tool_calls: Arc::new(tokio::sync::RwLock::new(ToolCallCache::default())),
             mirror,
+            config_patches: Vec::new(),
         }
     }
 
@@ -1466,6 +1475,7 @@ impl AcpInstance {
             mcps,
             skills,
             commands_cache,
+            config_patches,
         } = params;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
         let initial = match &bootstrap {
@@ -1502,6 +1512,7 @@ impl AcpInstance {
             skills,
             tool_calls: tool_calls.clone(),
             mirror: mirror.clone(),
+            config_patches,
         };
 
         tokio::spawn(run(RunParams {
@@ -1587,6 +1598,9 @@ pub struct StartParams {
     /// contract.
     pub skills: Arc<crate::skills::SkillsRegistry>,
     pub commands_cache: Option<crate::completion::source::commands::CommandsCache>,
+    /// `--with-config` patch documents to store on the instance for
+    /// restart replay. Default to empty when not overlaying.
+    pub config_patches: Vec<serde_json::Value>,
 }
 
 /// Internal `run` actor params — superset of `StartParams` with the
@@ -3425,6 +3439,7 @@ mod tests {
             mcps: None,
             skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
             commands_cache: None,
+            config_patches: Vec::new(),
         }
     }
 

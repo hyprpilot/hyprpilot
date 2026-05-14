@@ -678,6 +678,13 @@ pub trait InstanceActor: Send + Sync + 'static {
 /// adapters fall through to their own default-chain when a slot is
 /// `None`. Constructed at the RPC / Tauri command boundary from user
 /// input; the adapter then resolves it against its config.
+///
+/// `config_patches` carries kustomize-style overlay documents (one
+/// per `--with-config` flag or `withConfig` array entry) that the
+/// adapter folds onto its base `Config` before constructing the
+/// instance. Patches are stored on the running instance so
+/// `Adapter::restart` replays them against whatever config the
+/// daemon currently has.
 #[derive(Debug, Default, Clone)]
 pub struct SpawnSpec {
     pub profile_id: Option<String>,
@@ -685,6 +692,7 @@ pub struct SpawnSpec {
     pub cwd: Option<PathBuf>,
     pub mode: Option<String>,
     pub model: Option<String>,
+    pub config_patches: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]

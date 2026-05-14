@@ -975,7 +975,17 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
 - **`instances/*`** — `list`, `focus`, `spawn`, `restart`, `shutdown`,
   `info`, `rename`. Live process management. `focus` accepts
   `{ ensure: true }` to auto-spawn-if-missing; `spawn` accepts
-  `{ restore: true }` to resume an existing session id.
+  `{ restore: true }` to resume an existing session id. Spawn-shaped
+  verbs (`spawn`, `restart`, `focus { ensure: true }`, `prompts/send`
+  when it auto-spawns) accept `withConfig: Array<object>` —
+  kustomize-style overlay patches the daemon folds onto its resolved
+  `Config` before the spawn. Patches apply in declaration order and
+  are stored on the spawned instance so `restart` replays them
+  against whatever config the daemon currently has. See
+  `config/patch.rs` for `$patch` directive semantics
+  (`replace` / `delete` / `deleteFromPrimitiveList/<field>`); the
+  `ctl` flag is `--with-config <path|->` paired with
+  `--with-config-format toml|json|yaml` (default: `json`).
 - **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle`.
   Race-safe across concurrent calls — every `overlay/*` entry serialises
   through `WindowRenderer::lock_present`.

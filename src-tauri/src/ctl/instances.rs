@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::ctl::client::CtlClient;
+use crate::ctl::with_config::WithConfigArgs;
 use crate::ctl::{emit, request_value, show_after, CtlDispatch};
 
 #[derive(Subcommand, Debug, Clone)]
@@ -55,6 +56,8 @@ pub enum InstancesSubcommand {
         /// session exists.
         #[arg(long, default_value_t = false)]
         restore: bool,
+        #[command(flatten)]
+        with_config: WithConfigArgs,
     },
     /// Spawn a new instance against a profile / agent. Optional
     /// `--name` applies a captain-set name post-spawn.
@@ -81,6 +84,8 @@ pub enum InstancesSubcommand {
         /// fresh spawn when no matching session exists.
         #[arg(long, default_value_t = false)]
         restore: bool,
+        #[command(flatten)]
+        with_config: WithConfigArgs,
     },
     /// Restart an instance. `--instance` accepts UUID or name;
     /// omitted falls back to focused.
@@ -143,6 +148,8 @@ struct FocusParams {
     model: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     restore: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    with_config: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -160,6 +167,8 @@ struct SpawnParams {
     model: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     restore: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    with_config: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -194,7 +203,9 @@ impl CtlDispatch for InstancesSubcommand {
                 mode,
                 model,
                 restore,
+                with_config,
             } => {
+                let with_config = with_config.into_patches()?;
                 let v = request_value(
                     client,
                     "instances/focus",
@@ -207,6 +218,7 @@ impl CtlDispatch for InstancesSubcommand {
                         mode,
                         model,
                         restore,
+                        with_config,
                     },
                 )?;
                 println!("{}", serde_json::to_string_pretty(&v)?);
@@ -229,7 +241,9 @@ impl CtlDispatch for InstancesSubcommand {
                 name,
                 show,
                 restore,
+                with_config,
             } => {
+                let with_config = with_config.into_patches()?;
                 let spawn_params = SpawnParams {
                     profile_id,
                     agent_id,
@@ -237,6 +251,7 @@ impl CtlDispatch for InstancesSubcommand {
                     mode,
                     model,
                     restore,
+                    with_config,
                 };
                 let v = request_value(client, "instances/spawn", &spawn_params)?;
                 println!("{}", serde_json::to_string_pretty(&v)?);

@@ -45,6 +45,11 @@ struct FocusParams {
     /// matching `(agent_id, profile_id, cwd)` first. Falls through to
     /// a fresh spawn when no match exists.
     restore: bool,
+    /// Kustomize-style overlay patches the daemon folds onto its
+    /// resolved `Config` before the spawn proceeds. Applied in
+    /// declaration order. Ignored on the no-spawn focus path.
+    /// See `config::patch` for `$patch` directive semantics.
+    with_config: Vec<serde_json::Value>,
 }
 
 /// `instances/restart` — `instanceId` optional (falls back to
@@ -97,6 +102,12 @@ struct SpawnParams {
     /// `(agent_id, profile_id, cwd)` first. Falls through to a fresh
     /// spawn when no matching session exists.
     restore: bool,
+    /// Kustomize-style overlay patches the daemon folds onto its
+    /// resolved `Config` before the spawn proceeds. Applied in
+    /// declaration order. Stored on the spawned instance so
+    /// `instances/restart` replays them against the daemon's
+    /// then-current config.
+    with_config: Vec<serde_json::Value>,
 }
 
 /// `instances/setMode` — switch active operational mode on a live
@@ -174,6 +185,7 @@ impl RpcHandler for InstancesHandler {
                     mode,
                     model,
                     restore,
+                    with_config,
                 } = params_or_default::<FocusParams>(params, method)?;
 
                 let key = match (instance_id.as_deref(), ensure) {
@@ -196,6 +208,7 @@ impl RpcHandler for InstancesHandler {
                                 cwd,
                                 mode,
                                 model,
+                                config_patches: with_config,
                             };
                             let spawned = spawn_or_restore(adapter.as_ref(), spec, restore).await?;
                             adapter.rename(spawned, Some(slug)).await.map_err(map_adapter_err)?;
@@ -215,6 +228,7 @@ impl RpcHandler for InstancesHandler {
                     mode,
                     model,
                     restore,
+                    with_config,
                 } = params_or_default::<SpawnParams>(params, method)?;
                 let spec = SpawnSpec {
                     profile_id,
@@ -222,6 +236,7 @@ impl RpcHandler for InstancesHandler {
                     cwd,
                     mode,
                     model,
+                    config_patches: with_config,
                 };
                 let key = spawn_or_restore(adapter.as_ref(), spec, restore).await?;
                 Ok(HandlerOutcome::Reply(json!({ "instanceId": key.as_string() })))

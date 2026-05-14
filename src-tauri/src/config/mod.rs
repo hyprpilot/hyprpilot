@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod extensions;
 pub mod keymaps;
 pub(crate) mod merge_strategies;
+pub mod patch;
 pub mod remote;
 pub mod system_prompt;
 pub mod theme;
