@@ -35,7 +35,7 @@
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { useEventListener, useNow } from '@vueuse/core'
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
@@ -127,17 +127,21 @@ const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 // auto-scroll window so cache cleanup is prompt without
 // disturbing the read-history flow.
 
-/// Floating chevron click — drop extra pages first, THEN jump to
-/// the foot. Eviction shrinks `data.pages` from the OLDEST entry,
-/// which renders at the TOP of the DOM (`use-chat-viewport.items`
-/// walks pages last→first). Doing it before the scroll means the
-/// final scrollHeight `scrollToBottom()` reads is already
-/// post-eviction, so the assignment lands at the actual bottom.
-/// Reversed order races the cache mutation against the rAF that
-/// the suppress flag was meant to ride, occasionally landing the
-/// foot a couple hundred pixels above where the captain expects.
-function goToBottom(): void {
+/// Floating chevron click — drop extra pages, await Vue's DOM
+/// patch, THEN jump to the foot. Eviction shrinks `data.pages`
+/// from the OLDEST entry, which renders at the TOP of the DOM
+/// (`use-chat-viewport.items` walks pages last→first).
+/// `evictExtraPages()` calls `setQueryData` synchronously, but
+/// Vue's reactive DOM patch flushes on the next microtask — so
+/// without `await nextTick()`, `scrollToBottom()` would read the
+/// PRE-eviction `scrollHeight`, scroll past the new tail, and the
+/// browser would clamp scrollTop in a visible second step.
+/// Awaiting nextTick lets Vue flush the eviction patch first;
+/// `scrollToBottom()` then lands exactly at the new bottom in one
+/// motion.
+async function goToBottom(): Promise<void> {
   viewport.evictExtraPages()
+  await nextTick()
   scrollToBottom()
 }
 
@@ -262,11 +266,24 @@ function onScroll(): void {
     void viewport.fetchNextPage()
   }
 
-  // Eviction trigger — within one viewport of the bottom.
+  // Eviction trigger — within one viewport of the bottom. Defer
+  // the actual cache mutation to the next animation frame so the
+  // DOM patch doesn't race the in-flight scroll gesture. When
+  // eviction fires synchronously inside the scroll handler, the
+  // resulting microtask removes nodes from the TOP of the DOM
+  // while the browser is mid-gesture — scroll-anchoring can miss
+  // (the anchor element itself may be evicted), and concurrent
+  // `useStickToBottom` observers queue an rAF off the same DOM
+  // mutation, doubling the disruption. rAF moves the mutation
+  // out of the scroll-event task, after the browser has finished
+  // processing the current tick. `evictExtraPages` is idempotent
+  // — repeated rAF wrappers within a single gesture all observe
+  // the same cache state; at most one mutates, subsequent calls
+  // are within-budget no-ops.
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
 
   if (distanceFromBottom <= el.clientHeight) {
-    viewport.evictExtraPages()
+    requestAnimationFrame(() => viewport.evictExtraPages())
   }
 }
 

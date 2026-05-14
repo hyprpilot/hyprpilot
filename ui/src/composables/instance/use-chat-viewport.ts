@@ -24,9 +24,14 @@
  *    the cache holds more than `MAX_PAGES_KEPT` pages, drop pages
  *    `0..(N-MAX_PAGES_KEPT)`. Keeps memory bounded under long
  *    sessions without user-visible truncation: the daemon always
- *    serves older pages on backward scroll. Triggered by the
- *    `useStickToBottom` "stuck" signal so trimming only fires while
- *    the captain isn't reading older history.
+ *    serves older pages on backward scroll. Triggered from the
+ *    body view's scroll handler whenever the captain is within
+ *    ~one viewport of bottom (wider than `useStickToBottom`'s
+ *    strict 64px so cleanup is prompt without disturbing
+ *    read-history flow). The body view schedules the mutation via
+ *    `requestAnimationFrame` so the cache write lands outside the
+ *    scroll-event task — see Viewport.vue's onScroll for the
+ *    timing rationale.
  *
  * The exposed shape is a thin pass-through over the underlying
  * `useInfiniteQuery` handle plus a flattened `items` ref (oldest-
