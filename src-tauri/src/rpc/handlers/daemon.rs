@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tauri::Manager;
 
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::protocol::RpcError;
@@ -29,9 +30,52 @@ impl RpcHandler for DaemonHandler {
             "daemon/version" => Ok(HandlerOutcome::Reply(version_payload())),
             "daemon/shutdown" => shutdown(&ctx, params).await,
             "daemon/reload" => reload(&ctx).await,
+            "daemon/boot_snapshot" => boot_snapshot(&ctx).await,
             other => Err(RpcError::method_not_found(other)),
         }
     }
+}
+
+/// Aggregate boot-time payload — theme + keymaps + window state +
+/// daemon cwd + completion config + agents + profiles + instances
+/// in one round-trip. Mirrors the `tauri/boot_snapshot` proxy arm
+/// (which the SPA hits via the webview bridge); promoting to a
+/// public `daemon/*` verb lets second-frontends (nvim, remote ws,
+/// etc.) hydrate on connect without round-tripping through
+/// transport-coupled `tauri/<cmd>` namespacing.
+async fn boot_snapshot(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+    let app = ctx
+        .app
+        .ok_or_else(|| RpcError::internal_error("daemon/boot_snapshot requires a tauri AppHandle"))?;
+    let theme = app
+        .try_state::<crate::config::Theme>()
+        .ok_or_else(|| RpcError::internal_error("theme state not managed"))?;
+    let keymaps = app
+        .try_state::<crate::config::KeymapsConfig>()
+        .ok_or_else(|| RpcError::internal_error("keymaps state not managed"))?;
+    let window_state = app
+        .try_state::<crate::daemon::WindowState>()
+        .ok_or_else(|| RpcError::internal_error("window state not managed"))?;
+    let config_state = app
+        .try_state::<std::sync::Arc<std::sync::RwLock<crate::config::Config>>>()
+        .ok_or_else(|| RpcError::internal_error("config state not managed"))?;
+    let adapter_state = app
+        .try_state::<std::sync::Arc<crate::adapters::AcpAdapter>>()
+        .ok_or_else(|| RpcError::internal_error("adapter state not managed"))?;
+
+    let snap = crate::daemon::build_boot_snapshot(
+        theme.inner(),
+        keymaps.inner(),
+        window_state.inner(),
+        config_state.inner(),
+        adapter_state.inner().as_ref(),
+    )
+    .await
+    .map_err(RpcError::internal_error)?;
+
+    let v =
+        serde_json::to_value(snap).map_err(|e| RpcError::internal_error(format!("serialize boot snapshot: {e}")))?;
+    Ok(HandlerOutcome::Reply(v))
 }
 
 async fn reload(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {

@@ -426,49 +426,13 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             controller.resolve_if_pending(&args.request_id, &args.option_id).await;
             Ok(Value::Null)
         }
-        "models_set" => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Args {
-                instance_id: String,
-                model_id: String,
-            }
-            let args: Args = parse_params(params, "tauri/models_set")?;
-            let adapter = adapter_arc(app)?;
-            adapter
-                .set_session_model(&args.instance_id, &args.model_id)
-                .await
-                .map_err(|e| RpcError::internal_error(e.message))
-        }
-        "modes_set" => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Args {
-                instance_id: String,
-                mode_id: String,
-            }
-            let args: Args = parse_params(params, "tauri/modes_set")?;
-            let adapter = adapter_arc(app)?;
-            adapter
-                .set_session_mode(&args.instance_id, &args.mode_id)
-                .await
-                .map_err(|e| RpcError::internal_error(e.message))
-        }
-        "config_option_set" => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Args {
-                instance_id: String,
-                config_id: String,
-                value: String,
-            }
-            let args: Args = parse_params(params, "tauri/config_option_set")?;
-            let adapter = adapter_arc(app)?;
-            adapter
-                .set_session_config_option(&args.instance_id, &args.config_id, &args.value)
-                .await
-                .map_err(|e| RpcError::internal_error(e.message))
-        }
+        // `tauri/models_set` / `tauri/modes_set` /
+        // `tauri/config_option_set` were dropped — the canonical
+        // wire is `instances/setModel` / `instances/setMode` /
+        // `instances/setOption` (see `rpc/handlers/instances.rs`).
+        // The Tauri commands themselves stay (the SPA invokes them
+        // directly via the webview bridge); only the proxy
+        // duplication is gone.
         "instance_restart" => {
             #[derive(Default, Deserialize)]
             #[serde(rename_all = "camelCase")]

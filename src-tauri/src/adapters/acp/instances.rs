@@ -570,6 +570,21 @@ impl AcpAdapter {
         let resolved_profile_id = resolved.profile_id.clone();
 
         let key = self.ensure(key, resolved, Bootstrap::Fresh).await?;
+
+        // Check busy state BEFORE submitting so the wire reply can
+        // tell the caller whether the actor was already mid-turn
+        // when their prompt landed. The actor's `cmd_rx` is an
+        // unbounded mpsc — a prompt sent while a turn is active
+        // sits in the channel until the current turn drains; the
+        // captain's frontend may want to render "queued behind
+        // running turn" UI in that window. `busy_instance_ids` is
+        // maintained off the `TurnStarted`/`TurnEnded` broadcast
+        // (see `spawn_busy_tracker`), so this read is a snapshot
+        // — by the time the actor reads the new command the turn
+        // may have ended, but the disposition reply still reflects
+        // the moment-in-time the captain submitted.
+        let was_busy = self.busy_instance_ids().await.iter().any(|id| id == &key.as_string());
+
         let cmd_tx = self
             .cmd_tx_for(&key)
             .await
@@ -599,6 +614,8 @@ impl AcpAdapter {
 
         Ok(json!({
             "accepted": true,
+            "disposition": if was_busy { "queued" } else { "sent" },
+            "wasBusy": was_busy,
             "agentId": resolved_agent_id,
             "profileId": resolved_profile_id,
             "instanceId": key.as_string(),

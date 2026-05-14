@@ -12,10 +12,17 @@
  *
  * The Tauri command boundary is wider than the JSON-RPC surface — many
  * UI calls go through Tauri-only commands (`get_theme`, `instance_meta`,
- * `models_set`, etc.) that have no JSON-RPC mirror today. To keep one
- * call signature for the UI, we route every Tauri command name
- * straight to a `tauri/<command>` JSON-RPC method, and the daemon's
- * remote dispatcher proxies them through to the Tauri command handler.
+ * etc.) that have no JSON-RPC mirror today. To keep one call signature
+ * for the UI, we route every Tauri command name straight to a
+ * `tauri/<command>` JSON-RPC method, and the daemon's remote dispatcher
+ * proxies them through to the Tauri command handler.
+ *
+ * **Canonical-namespace exceptions** (`REMOTE_NAMESPACE_MAP`): a few
+ * Tauri commands have first-class JSON-RPC mirrors on the
+ * `instances/*` namespace (added in PR #36 / chore audit pass 3).
+ * For those we skip the `tauri/<cmd>` proxy entirely and address the
+ * canonical verb directly. Keeps the wire honest and lets us drop
+ * the redundant proxy arms in `tauri_proxy.rs`.
  *
  * Pair handshake: connection opens, daemon sends `pending` frame
  * with the BIP39 code; the captain confirms on the desktop overlay;
@@ -417,13 +424,28 @@ async function ensureAuthenticated(): Promise<WebSocket> {
  */
 const REMOTE_INVOKE_TIMEOUT_MS = 30_000
 
+/**
+ * Commands that have first-class JSON-RPC mirrors on the
+ * `instances/*` namespace — we address those directly instead of
+ * the `tauri/<cmd>` proxy, which lets us drop the proxy arms on
+ * the daemon side. Param shapes are identical
+ * (`instanceId`, `modelId` / `modeId` / `configId+value`); only the
+ * method name changes.
+ */
+const REMOTE_NAMESPACE_MAP: Record<string, string> = {
+  models_set: 'instances/setModel',
+  modes_set: 'instances/setMode',
+  config_option_set: 'instances/setOption'
+}
+
 export async function remoteInvoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
   const ws = await ensureAuthenticated()
   const id = crypto.randomUUID()
+  const method = REMOTE_NAMESPACE_MAP[command] ?? `tauri/${command}`
   const frame = JSON.stringify({
     jsonrpc: '2.0',
     id,
-    method: `tauri/${command}`,
+    method,
     params: args ?? {}
   })
 
