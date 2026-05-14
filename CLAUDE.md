@@ -1011,7 +1011,12 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   instance + decision write. Mirrors what the desktop overlay does
   through `permission_reply` Tauri command. After `respond`, an
   `acp:permission-resolved` event fires on the broadcast so any
-  second subscriber clears their row.
+  second subscriber clears their row. Every pending row +
+  `acp:permission-request` event carries `defaultOptionId?: string`
+  — the daemon's allow-shaped pick (via `pick_allow_option_id`)
+  so frontends can render the default highlight + `Enter`-commit
+  target without re-implementing the matcher. `undefined` when the
+  agent offered no allow-shaped option.
 - **`prompts/{send, cancel}`** — per-instance scripting surface.
   `send` accepts `{ instanceId | name, text }`; the request adopts the
   client-minted instance id verbatim. `cancel` interrupts the active

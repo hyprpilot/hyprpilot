@@ -29,6 +29,11 @@ export interface PendingPermission {
   rawInput?: Record<string, unknown>
   content: Record<string, unknown>[]
   options: PermissionOptionView[]
+  /// Pre-selected option id picked by the daemon (allow-shaped
+  /// option). UI uses this as the modal's initial focus + the
+  /// `Enter`-commit target. `undefined` when no allow-shaped option
+  /// exists in the offered set.
+  defaultOptionId?: string
   formatted: FormattedToolCall
   createdAt: number
 }
@@ -42,6 +47,7 @@ export interface PermissionRequestRaw {
   rawInput?: Record<string, unknown>
   content?: Record<string, unknown>[]
   options: PermissionOptionView[]
+  defaultOptionId?: string
   formatted: FormattedToolCall
 }
 
@@ -70,6 +76,7 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     content: raw.content ?? [],
     createdAt: seq,
     options: raw.options,
+    defaultOptionId: raw.defaultOptionId,
     formatted: raw.formatted
   }
   const current = states.get(id) ?? []
@@ -128,6 +135,7 @@ function buildView(p: PendingPermission, queued: boolean): PermissionView {
     },
     call,
     options: p.options,
+    defaultOptionId: p.defaultOptionId,
     queued
   }
 }

@@ -26,6 +26,12 @@ export interface PermissionView {
   /// ACP-supplied option set ("Allow" / "Deny" / "Always allow"
   /// / "Always deny"). Each carries a typed `optionId`.
   options: PermissionOptionView[]
+  /// Daemon-picked default option id — the modal / row's primary
+  /// (solid) button + the `Enter`-commit target. Populated by the
+  /// daemon's allow-kind matcher; `undefined` when no allow-shaped
+  /// option exists. UI falls back to the legacy `allow_once`-solid
+  /// rule when unset.
+  defaultOptionId?: string
   /// Set when more than one prompt is pending and this one is
   /// behind the head.
   queued?: boolean

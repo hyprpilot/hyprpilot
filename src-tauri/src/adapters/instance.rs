@@ -158,6 +158,17 @@ pub enum InstanceEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<serde_json::Value>,
         options: Vec<PermissionOptionView>,
+        /// Pre-selected option for the modal / row. Populated by
+        /// `pick_allow_option_id` so captains can `Enter` straight
+        /// through the prompt without picking. Falls back to the
+        /// first option when no allow-shaped option exists, or
+        /// `None` when the agent offered an empty option list (the
+        /// UI then surfaces a disabled "no options" state). External
+        /// frontends (nvim plugin, ws remote) read this directly to
+        /// match desktop ergonomics without re-implementing the
+        /// allow-kind matcher.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_option_id: Option<String>,
         /// Daemon-authored presentation view, formatted from `tool` +
         /// `kind` + `raw_input` + `content` via the formatter
         /// registry. The UI renders this verbatim on the permission

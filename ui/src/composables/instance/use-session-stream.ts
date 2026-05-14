@@ -57,6 +57,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
     rawInput: payload.rawInput,
     content: payload.content,
     options: payload.options,
+    defaultOptionId: payload.defaultOptionId,
     formatted: payload.formatted
   })
 }

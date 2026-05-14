@@ -23,8 +23,21 @@
 import { shutdownInstance } from './instances'
 import { buildProfilesPaletteSpec } from './profiles'
 import { ToastTone } from '@components'
-import { type PaletteEntry, PaletteMode, type PaletteSpec, useActiveInstance, type InstanceId, usePalette, useProfiles, useRenameInstanceModal, useToasts } from '@composables'
-import { invoke, TauriCommand } from '@ipc'
+import {
+  type PaletteEntry,
+  PaletteMode,
+  type PaletteSpec,
+  pushInstanceModelState,
+  setInstanceAgent,
+  setInstanceProfile,
+  useActiveInstance,
+  type InstanceId,
+  usePalette,
+  useProfiles,
+  useRenameInstanceModal,
+  useToasts
+} from '@composables'
+import { invoke, TauriCommand, type ProfileSummary } from '@ipc'
 import { log } from '@lib'
 
 const ACTION_NEW = 'new'
@@ -36,16 +49,37 @@ const ACTION_SHUTDOWN = 'shutdown'
 /// (matches the Overlay shell's `mintInstanceId()` path); we only
 /// move the active pointer here. When `profileId` is set, also
 /// persists the profile selection so the next submit routes through it.
-function startNewInstance(profileId: string | undefined, label: string | undefined): void {
+///
+/// **Header pre-fill**: seed `useSessionInfo` with the bits we
+/// already know from the picked `ProfileSummary` (`profileId`,
+/// `agent`, optional `model`). Without this the chrome header
+/// pills stay empty until the daemon's first `acp:instance-meta`
+/// event lands — which only fires after the actor's `session/new`
+/// resolves, often several seconds in. The real `instance-meta`
+/// event overrides these seeds when it arrives (the daemon's
+/// values are authoritative); the seed just covers the
+/// spawn-in-flight window.
+function startNewInstance(profile: ProfileSummary | undefined, label: string | undefined): void {
   const { set: setActive } = useActiveInstance()
   const { select } = useProfiles()
   const id: InstanceId = crypto.randomUUID()
 
-  if (profileId) {
-    select(profileId)
+  if (profile) {
+    select(profile.id)
+    setInstanceProfile(id, profile.id)
+    setInstanceAgent(id, profile.agent)
+
+    if (profile.model) {
+      pushInstanceModelState(id, { currentModelId: profile.model, availableModels: undefined })
+    }
   }
   setActive(id)
-  log.info('palette-instance: new instance staged', { instanceId: id, profileId })
+  log.info('palette-instance: new instance staged', {
+    instanceId: id,
+    profileId: profile?.id,
+    agent: profile?.agent,
+    model: profile?.model
+  })
   useToasts().push(ToastTone.Ok, label ? `new instance · ${label}` : 'new instance staged')
 }
 
@@ -131,7 +165,7 @@ function openNewInstanceProfilePicker(): void {
     onSelect(profileId) {
       const profile = profiles.value.find((p) => p.id === profileId)
 
-      startNewInstance(profileId, profile?.id)
+      startNewInstance(profile, profile?.id)
     }
   })
 

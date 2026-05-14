@@ -96,6 +96,12 @@ export interface PermissionRequestRecord {
   args: string
   rawInput?: Record<string, unknown>
   options: PermissionOptionView[]
+  /// Pre-selected option id — populated by the daemon via the same
+  /// allow-kind matcher used by `permissions/respond { remember }`.
+  /// Captains hitting `Enter` on the modal commit this directly;
+  /// external frontends use it as the default highlight. `undefined`
+  /// when no allow-shaped option exists.
+  defaultOptionId?: string
   /// Daemon-authored presentation view, computed via the same
   /// formatter registry the live `acp:permission-request` event
   /// uses. Carries description / fields / output the captain reads

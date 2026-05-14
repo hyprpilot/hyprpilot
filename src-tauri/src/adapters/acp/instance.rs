@@ -3026,6 +3026,13 @@ async fn run(params: RunParams) {
                                 };
                                 registry.dispatch(&ctx)
                             };
+                            // Pre-select an allow-shaped option so the
+                            // captain's `Enter` on the modal commits the
+                            // typical "yes" without picking; same allow
+                            // matcher used elsewhere keeps wire +
+                            // permissions/pending agreed.
+                            let default_option_id =
+                                crate::adapters::permission::pick_allow_option_id(&options);
                             let event = InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
@@ -3038,6 +3045,7 @@ async fn run(params: RunParams) {
                                 raw_input,
                                 content,
                                 options,
+                                default_option_id,
                                 formatted,
                             };
                             mirror_notif.apply(&event).await;
