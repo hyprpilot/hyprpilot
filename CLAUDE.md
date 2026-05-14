@@ -1015,8 +1015,12 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   patches always have somewhere to land. Root-level knobs (theme,
   daemon.window, the agent registry itself) are deliberately out of
   scope; those belong in the on-disk config or a `daemon/reload`.
-- **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle`.
-  Race-safe across concurrent calls — every `overlay/*` entry serialises
+- **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle { instanceId? }`.
+  `toggle` accepts the same `instanceId` knob as `show`: when the flip
+  brings the overlay into view, that instance gets focused; ignored on
+  the visible→hidden branch (but still validated up-front so a typo
+  surfaces `-32602` either way). Race-safe across concurrent calls —
+  every `overlay/*` entry serialises
   through `WindowRenderer::lock_present`.
 - **`permissions/{pending, respond}`** — pending list for the addressed
   instance + decision write. Mirrors what the desktop overlay does

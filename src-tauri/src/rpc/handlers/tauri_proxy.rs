@@ -792,7 +792,9 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
         "window_toggle" => {
             // Rather than re-implementing the renderer plumbing, route
             // via the existing `overlay/toggle` JSON-RPC handler we
-            // already have. Same effect, single code path.
+            // already have. Same effect, single code path. Params
+            // (`instanceId`) pass straight through; null/empty maps
+            // to a bare toggle.
             let dispatcher = app
                 .try_state::<Arc<crate::rpc::RpcDispatcher>>()
                 .ok_or_else(|| RpcError::internal_error("dispatcher state not managed"))?;
@@ -807,7 +809,7 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 started_at: ctx.started_at,
                 socket_path: ctx.socket_path,
             };
-            match dispatcher.dispatch("overlay/toggle", Value::Null, nested_ctx).await? {
+            match dispatcher.dispatch("overlay/toggle", params, nested_ctx).await? {
                 HandlerOutcome::Reply(v) => Ok(v),
                 HandlerOutcome::StatusSubscribed(_, _) => {
                     Err(RpcError::internal_error("overlay/toggle returned subscribe"))

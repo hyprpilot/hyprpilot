@@ -34,7 +34,10 @@ impl RpcHandler for OverlayHandler {
                 show(&ctx, instance_id.as_deref()).await
             }
             "overlay/hide" => hide(&ctx).await,
-            "overlay/toggle" => toggle(&ctx).await,
+            "overlay/toggle" => {
+                let ShowParams { instance_id } = params_or_default::<ShowParams>(params, method)?;
+                toggle(&ctx, instance_id.as_deref()).await
+            }
             other => Err(RpcError::method_not_found(other)),
         }
     }
@@ -122,7 +125,22 @@ async fn hide(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
     Ok(HandlerOutcome::Reply(json!({ "visible": false })))
 }
 
-async fn toggle(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
+async fn toggle(ctx: &HandlerCtx<'_>, instance_id: Option<&str>) -> Result<HandlerOutcome, RpcError> {
+    // Resolve up front (same as `show`) so a bogus `instanceId`
+    // reports `-32602` deterministically — even on the hide branch,
+    // where `instance_id` is otherwise ignored, the parse error wins
+    // over the silent drop so a captain mis-spelling a name finds
+    // out either way.
+    let parsed_key = match instance_id {
+        Some(id) => Some(
+            ctx.adapter
+                .resolve_token(id)
+                .await
+                .ok_or_else(|| RpcError::invalid_params(format!("instance '{id}' not found")))?,
+        ),
+        None => None,
+    };
+
     let app = ctx
         .app
         .ok_or_else(|| RpcError::internal_error("no app handle available"))?;
@@ -138,7 +156,10 @@ async fn toggle(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
             .await
             .map_err(|err| RpcError::internal_error(format!("hide failed: {err}")))?;
         ctx.status.set_visible(false);
-        Ok(HandlerOutcome::Reply(json!({ "visible": false })))
+        Ok(HandlerOutcome::Reply(json!({
+            "visible": false,
+            "focusedInstanceId": Value::Null,
+        })))
     } else {
         renderer
             .show_on_main(app, &window)
@@ -146,7 +167,19 @@ async fn toggle(ctx: &HandlerCtx<'_>) -> Result<HandlerOutcome, RpcError> {
             .map_err(|err| RpcError::internal_error(format!("show failed: {err}")))?;
         ctx.status.set_visible(true);
         let _ = window.set_focus();
-        Ok(HandlerOutcome::Reply(json!({ "visible": true })))
+
+        let focused = match parsed_key {
+            Some(key) => {
+                let key = ctx.adapter.focus(key).await.map_err(map_adapter_err)?;
+                Some(key.as_string())
+            }
+            None => None,
+        };
+
+        Ok(HandlerOutcome::Reply(json!({
+            "visible": true,
+            "focusedInstanceId": focused,
+        })))
     }
 }
 
@@ -263,6 +296,37 @@ mod tests {
             json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
         )
         .await;
+        assert_eq!(v["code"], -32602);
+    }
+
+    /// `overlay/toggle` accepts the same `instanceId` param as
+    /// `overlay/show` — Hyprland binds like
+    /// `bind = SUPER, 1, exec, hyprpilot ctl overlay toggle --instance foo`
+    /// want to flip-and-focus in one shot. Malformed UUID rejects
+    /// with `-32602` before the renderer step, mirroring `show`.
+    #[tokio::test]
+    async fn overlay_toggle_with_unparseable_instance_id_is_invalid_params() {
+        let v = dispatch("overlay/toggle", json!({ "instanceId": "not-a-uuid" })).await;
+        assert_eq!(v["code"], -32602);
+    }
+
+    /// Well-formed but unknown `instanceId` on toggle also rejects
+    /// with `-32602` — same resolution semantics as show.
+    #[tokio::test]
+    async fn overlay_toggle_with_unknown_instance_id_is_invalid_params() {
+        let v = dispatch(
+            "overlay/toggle",
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602);
+    }
+
+    /// `overlay/toggle` still rejects unknown fields — the param
+    /// shape is the same `ShowParams` (`deny_unknown_fields`).
+    #[tokio::test]
+    async fn overlay_toggle_rejects_unknown_field() {
+        let v = dispatch("overlay/toggle", json!({ "stray": true })).await;
         assert_eq!(v["code"], -32602);
     }
 }
