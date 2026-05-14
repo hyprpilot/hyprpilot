@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0](https://github.com/hyprpilot/hyprpilot/compare/v0.3.0...v0.4.0) (2026-05-14)
+
+
+### Features
+
+* **config:** add --with-config overlay patches for per-spawn config ([#50](https://github.com/hyprpilot/hyprpilot/issues/50)) ([cd76602](https://github.com/hyprpilot/hyprpilot/commit/cd76602ce0ebeb162a3f00f18e5b09ef229e0d4a))
+* **formatter:** add plain git-diff field alongside Shiki-marker description ([#44](https://github.com/hyprpilot/hyprpilot/issues/44)) ([ddffdc4](https://github.com/hyprpilot/hyprpilot/commit/ddffdc4edf67f74508143f41be8ced77af01d689))
+* **permissions:** add feedback field on reject — synthesize follow-up turn ([#53](https://github.com/hyprpilot/hyprpilot/issues/53)) ([9e25f53](https://github.com/hyprpilot/hyprpilot/commit/9e25f53648f40a8602173f6e6756d8c7ca6ecbb9))
+* **rpc:** lift sessions/* + completion/* onto public namespaces ([#41](https://github.com/hyprpilot/hyprpilot/issues/41)) ([a451111](https://github.com/hyprpilot/hyprpilot/commit/a451111df0fb51391e31115655204cf333201ad0))
+* spawn-time header prefill + permission default option id ([#52](https://github.com/hyprpilot/hyprpilot/issues/52)) ([9531be2](https://github.com/hyprpilot/hyprpilot/commit/9531be2460222786c5886d0403e7277c41cdda45))
+
+
+### Bug Fixes
+
+* **completion:** show label at natural width, truncate detail to fit ([#39](https://github.com/hyprpilot/hyprpilot/issues/39)) ([cf55220](https://github.com/hyprpilot/hyprpilot/commit/cf552202289535f1cca1617d80f50a776f2f5868))
+* **markdown:** wrap long lines in code blocks instead of horizontal-scroll ([#47](https://github.com/hyprpilot/hyprpilot/issues/47)) ([44d1ffa](https://github.com/hyprpilot/hyprpilot/commit/44d1ffa9b7e4cc4e23a737fc09adb77923bc042f))
+* **modal:** floor title + permission buttons so long titles don't crush actions ([#42](https://github.com/hyprpilot/hyprpilot/issues/42)) ([7c5acf0](https://github.com/hyprpilot/hyprpilot/commit/7c5acf0d54965168266f74279d6abeb81e097166))
+* **permissions:** route plan-exit to modal even when adapter is unresolved ([#43](https://github.com/hyprpilot/hyprpilot/issues/43)) ([cea22d2](https://github.com/hyprpilot/hyprpilot/commit/cea22d2213647de3d56f21ea419062b7d94b59dc))
+* **ui:** defer chat-viewport eviction outside the scroll event task ([#48](https://github.com/hyprpilot/hyprpilot/issues/48)) ([7a61a46](https://github.com/hyprpilot/hyprpilot/commit/7a61a4692b54bf8a47f912f6e55e5fa03d93ddb0))
+* update sizing ([#49](https://github.com/hyprpilot/hyprpilot/issues/49)) ([b23e3ba](https://github.com/hyprpilot/hyprpilot/commit/b23e3ba19851a27802d670e5604817e92a63abc9))
+
 ## [0.3.0](https://github.com/hyprpilot/hyprpilot/compare/v0.2.1...v0.3.0) (2026-05-11)
 
 
