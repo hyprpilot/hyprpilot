@@ -151,8 +151,14 @@ export interface UsePermissionsApi {
    * pending entry's `options` array. Hyprpilot is transparent to the
    * agent's permission model — the option_id rides the wire as-is
    * and the agent owns "always" persistence.
+   *
+   * `feedback` is optional captain context. Daemon ignores it unless
+   * the picked option is reject-shaped AND the string is non-empty
+   * after trim; when both hold, the daemon dispatches a synthetic
+   * follow-up `session/prompt` carrying the feedback so the agent
+   * reads the rejection reason on its next turn.
    */
-  respond: (requestId: string, optionId: string) => Promise<void>
+  respond: (requestId: string, optionId: string, feedback?: string) => Promise<void>
   /**
    * Drop the matching pending entry without firing a daemon RPC.
    * UI-side mirror of the daemon's `PermissionResolved` broadcast —
@@ -186,7 +192,7 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
 
   const modalQueue = computed<PermissionView[]>(() => allViews.value.filter((v) => v.call.permissionUi === PermissionUi.Modal))
 
-  async function respond(requestId: string, optionId: string): Promise<void> {
+  async function respond(requestId: string, optionId: string, feedback?: string): Promise<void> {
     const resolved = instanceId ?? activeId.value
 
     if (!resolved) {
@@ -200,7 +206,8 @@ export function usePermissions(instanceId?: InstanceId): UsePermissionsApi {
     await invoke(TauriCommand.PermissionReply, {
       sessionId: entry.sessionId,
       requestId: entry.requestId,
-      optionId
+      optionId,
+      feedback
     })
     evictPermission(resolved, requestId)
   }

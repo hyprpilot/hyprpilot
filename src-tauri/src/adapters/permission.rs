@@ -263,6 +263,16 @@ pub trait PermissionController: Send + Sync + 'static {
     /// or never existed.
     async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>>;
 
+    /// Full snapshot for a single pending request — the same shape
+    /// `list_pending` produces, but addressed by id. Used by
+    /// `permissions/respond` (and the Tauri `permission_reply`
+    /// command) to read the instance id + the picked option's
+    /// `kind` BEFORE resolving the waiter, so the post-resolve
+    /// feedback dispatch can route a synthetic follow-up turn to
+    /// the right instance. `None` when the waiter has already
+    /// resolved or never existed.
+    async fn snapshot_for(&self, request_id: &str) -> Option<PermissionRequestSnapshot>;
+
     /// Atomic membership-check + option-validation + resolve under a
     /// single lock. Used by `permissions/respond` so the lookup ≠
     /// resolve race window collapses to zero.
@@ -469,6 +479,11 @@ impl PermissionController for DefaultPermissionController {
     async fn options_for(&self, request_id: &str) -> Option<Vec<PermissionOptionView>> {
         let waiters = self.waiters.lock().await;
         waiters.get(request_id).map(|w| w.options.clone())
+    }
+
+    async fn snapshot_for(&self, request_id: &str) -> Option<PermissionRequestSnapshot> {
+        let waiters = self.waiters.lock().await;
+        waiters.get(request_id).map(|w| w.snapshot.clone())
     }
 
     async fn resolve_if_pending(&self, request_id: &str, option_id: &str) -> Option<bool> {

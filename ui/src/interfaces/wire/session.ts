@@ -239,6 +239,16 @@ export interface PermissionReplyArgs {
    * `remember` / `tool` / `instanceId` fields on the wire.
    */
   optionId: string
+  /**
+   * Captain-supplied feedback explaining the decision. Daemon
+   * ignores it unless the picked option is reject-shaped AND the
+   * string is non-empty after trim. When both hold, the daemon
+   * dispatches a synthetic follow-up `session/prompt` carrying
+   * the feedback as user text so the agent reads the rejection's
+   * "why" on its next turn. Mirrors the same field on
+   * `permissions/respond` for the JSON-RPC peer surface.
+   */
+  feedback?: string
 }
 
 export interface SessionsInfoArgs {

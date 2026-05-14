@@ -666,11 +666,15 @@ async function onCancel(): Promise<void> {
 /// behind this one in `permissionModalQueue`.
 const activeModalView = computed(() => permissionModalQueue.value[0])
 
-async function onPermissionReply(requestId: string, optionId: string): Promise<void> {
-  log.info('permission click', { requestId, optionId })
+async function onPermissionReply(requestId: string, optionId: string, feedback?: string): Promise<void> {
+  log.info('permission click', {
+    requestId,
+    optionId,
+    hasFeedback: feedback !== undefined && feedback.trim().length > 0
+  })
 
   try {
-    await respondPermission(requestId, optionId)
+    await respondPermission(requestId, optionId, feedback)
   } catch(err) {
     log.error(
       'invoke failed',
@@ -934,7 +938,7 @@ function onQueueSend(itemId: string): void {
        Modal; future heavy-confirm flows opt in by setting the same
        discriminator. Top-level so the backdrop covers the viewport
        regardless of any chat-transcript scroll position. -->
-  <PermissionModal v-if="activeModalView" :view="activeModalView" @reply="(optionId) => onPermissionReply(activeModalView!.request.requestId, optionId)" />
+  <PermissionModal v-if="activeModalView" :view="activeModalView" @reply="(optionId, fb) => onPermissionReply(activeModalView!.request.requestId, optionId, fb)" />
 
   <!-- Rename-instance modal — singleton driven by
        `useRenameInstanceModal()`. Body composes `<ModalDescription>`

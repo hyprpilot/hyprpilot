@@ -464,21 +464,33 @@ pub async fn instance_meta(
 /// out, or never registered). The command never errors on that path —
 /// the UI sees `Ok(())` regardless so a stale reply doesn't surface
 /// as a user-visible failure.
+///
+/// `feedback` mirrors `permissions/respond { feedback }`: when the
+/// captain rejects with a non-empty reason, the daemon dispatches a
+/// synthetic follow-up `session/prompt` carrying the feedback as
+/// user text so the agent sees the rejection's "why" on its next
+/// turn. Ignored on allow-shaped picks and on empty / whitespace-
+/// only strings.
 #[tauri::command]
 pub async fn permission_reply(
+    adapter: AdapterState<'_>,
     controller: State<'_, Arc<dyn PermissionController>>,
     _session_id: String,
     request_id: String,
     option_id: String,
+    feedback: Option<String>,
 ) -> Result<(), String> {
     tracing::info!(
         request_id = %request_id,
         option_id = %option_id,
+        has_feedback = feedback.as_deref().is_some_and(|s| !s.trim().is_empty()),
         "cmd::permission_reply: entry"
     );
+    let snapshot = controller.snapshot_for(&request_id).await;
     match controller.resolve_if_pending(&request_id, &option_id).await {
         None => {
             tracing::debug!(request_id, "permission_reply: no waiter — no-op");
+            return Ok(());
         }
         Some(false) => {
             tracing::warn!(
@@ -486,10 +498,69 @@ pub async fn permission_reply(
                 option_id,
                 "permission_reply: option_id not in offered set — no-op"
             );
+            return Ok(());
         }
         Some(true) => {
             tracing::info!(request_id, option_id, "cmd::permission_reply: resolved");
         }
+    }
+
+    // Feedback-on-reject follow-up — mirrors the `permissions/respond`
+    // handler's behaviour so desktop SPA + external JSON-RPC clients
+    // share one semantic path. Detached: command returns immediately;
+    // the follow-up turn races toward the actor's mpsc and lands as
+    // a normal `session/prompt`.
+    if let Some(text) = feedback.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let Some(snap) = snapshot else { return Ok(()) };
+        let picked_kind = snap
+            .options
+            .iter()
+            .find(|o| o.option_id == option_id)
+            .map(|o| o.kind.clone());
+        let is_reject = picked_kind
+            .as_deref()
+            .is_some_and(crate::adapters::permission::is_reject_kind);
+        if !is_reject {
+            return Ok(());
+        }
+        let Some(instance_id) = snap.instance_id else {
+            tracing::warn!(
+                request_id = %request_id,
+                "cmd::permission_reply: reject feedback supplied but no instance id — dropped"
+            );
+            return Ok(());
+        };
+        let adapter_arc = adapter.inner().clone();
+        let text_owned = text.to_string();
+        tokio::spawn(async move {
+            let adapter_dyn: std::sync::Arc<dyn crate::adapters::Adapter> = adapter_arc;
+            match adapter_dyn
+                .submit(
+                    crate::adapters::UserTurnInput::Prompt {
+                        text: text_owned,
+                        attachments: Vec::new(),
+                    },
+                    Some(instance_id.as_str()),
+                    None,
+                    None,
+                )
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        instance_id = %instance_id,
+                        "cmd::permission_reply: reject feedback dispatched as follow-up turn"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        instance_id = %instance_id,
+                        error = ?err,
+                        "cmd::permission_reply: feedback follow-up failed"
+                    );
+                }
+            }
+        });
     }
     Ok(())
 }

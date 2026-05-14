@@ -1016,7 +1016,13 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   — the daemon's allow-shaped pick (via `pick_allow_option_id`)
   so frontends can render the default highlight + `Enter`-commit
   target without re-implementing the matcher. `undefined` when the
-  agent offered no allow-shaped option.
+  agent offered no allow-shaped option. `respond` (and the Tauri
+  `permission_reply` command) accept an optional
+  `feedback: string` — when the picked option is reject-shaped
+  AND the string is non-empty, the daemon dispatches a synthetic
+  follow-up `session/prompt` to the same instance carrying the
+  feedback as user text so the agent reads the rejection's "why"
+  on its next turn.
 - **`prompts/{send, cancel}`** — per-instance scripting surface.
   `send` accepts `{ instanceId | name, text }`; the request adopts the
   client-minted instance id verbatim. `cancel` interrupts the active
