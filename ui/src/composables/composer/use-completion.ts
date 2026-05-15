@@ -94,10 +94,15 @@ export function useCompletion(): UseCompletionApi {
     return singleton
   }
 
+  // `selectedIndex: -1` is the "nothing highlighted yet" sentinel —
+  // not just an empty list. The popover opens with rows visible but
+  // no row tinted, so Enter is unambiguous: it submits the buffer.
+  // Tab is the explicit "I want a completion" verb; it walks -1 → 0
+  // and from there cycles normally.
   const state = ref<CompletionState>({
     open: false,
     items: [],
-    selectedIndex: 0,
+    selectedIndex: -1,
     sourceId: null,
     documentation: null,
     resolving: false,
@@ -133,7 +138,7 @@ export function useCompletion(): UseCompletionApi {
     if (state.value.open) {
       state.value.open = false
       state.value.items = []
-      state.value.selectedIndex = 0
+      state.value.selectedIndex = -1
       state.value.documentation = null
     }
     // Manual fires immediately; auto runs through the captain's
@@ -194,7 +199,7 @@ export function useCompletion(): UseCompletionApi {
     if (response.sourceId === null || response.items.length === 0) {
       state.value.open = false
       state.value.items = []
-      state.value.selectedIndex = 0
+      state.value.selectedIndex = -1
       state.value.sourceId = null
       state.value.documentation = null
 
@@ -203,10 +208,13 @@ export function useCompletion(): UseCompletionApi {
 
     state.value.open = true
     state.value.items = response.items
-    state.value.selectedIndex = 0
+    // Open with the sentinel — captain must Tab / arrow to pick a row.
+    state.value.selectedIndex = -1
     state.value.sourceId = response.sourceId ?? null
     state.value.documentation = null
-    scheduleResolve()
+    // No `scheduleResolve()` — nothing is selected, so there's nothing
+    // to fetch docs for. The first selectNext / selectPrev call kicks
+    // resolve off naturally.
   }
 
   function close(): void {
@@ -234,7 +242,7 @@ export function useCompletion(): UseCompletionApi {
     }
     state.value.open = false
     state.value.items = []
-    state.value.selectedIndex = 0
+    state.value.selectedIndex = -1
     state.value.sourceId = null
     state.value.documentation = null
     state.value.resolving = false
@@ -246,7 +254,12 @@ export function useCompletion(): UseCompletionApi {
     if (state.value.items.length === 0) {
       return
     }
-    state.value.selectedIndex = (state.value.selectedIndex + 1) % state.value.items.length
+    const cur = state.value.selectedIndex
+
+    // From the "nothing highlighted" sentinel (-1), land on the first
+    // row — Tab / ArrowDown is the verb that turns the popover into
+    // an actual completion pick.
+    state.value.selectedIndex = cur < 0 ? 0 : (cur + 1) % state.value.items.length
     state.value.documentation = null
     scheduleResolve()
   }
@@ -255,7 +268,11 @@ export function useCompletion(): UseCompletionApi {
     if (state.value.items.length === 0) {
       return
     }
-    state.value.selectedIndex = (state.value.selectedIndex - 1 + state.value.items.length) % state.value.items.length
+    const cur = state.value.selectedIndex
+
+    // ArrowUp from the sentinel wraps to the last row (mirrors the
+    // forward sentinel-handling above so both directions feel symmetric).
+    state.value.selectedIndex = cur < 0 ? state.value.items.length - 1 : (cur - 1 + state.value.items.length) % state.value.items.length
     state.value.documentation = null
     scheduleResolve()
   }

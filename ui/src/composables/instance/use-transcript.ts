@@ -46,12 +46,28 @@ export interface AgentTurn extends Turn {
   /// the same `Attachments` chat component renders both. Empty
   /// array when the agent didn't attach anything.
   attachments: Attachment[]
+  /// Most-recent vendor-emitted `messageId` on this turn's stream.
+  /// Tracked so the chunk-fold logic can detect content-block
+  /// boundaries and inject a markdown paragraph break (`\n\n`) when
+  /// the next chunk's id changes — without it, vendors that switch
+  /// ids mid-turn (Claude / Codex emit fresh ids per content block)
+  /// concat blocks with no separator and markdown renders one
+  /// run-on paragraph instead of two.
+  lastChunkMessageId?: string
 }
 
 export type ChatTurnItem = UserTurn | AgentTurn
 
 export interface TranscriptState {
   turns: ChatTurnItem[]
+  /// Per-session id of the currently-open agent turn. While set, every
+  /// `agent_message_chunk` folds into that turn — regardless of
+  /// vendor-emitted `messageId` churn or stream items (thought / plan /
+  /// tool-call) landing in sibling stores between chunks. Cleared on
+  /// `TurnStarted` so the next turn opens a fresh block. Mirrors
+  /// `openThoughtBySession` in use-stream.ts; without it the captain's
+  /// reply renders as a stack of micro-cards instead of one flow.
+  openAgentBySession: Map<string, string>
 }
 
 const states = reactive(new Map<InstanceId, TranscriptState>())
@@ -60,11 +76,24 @@ function slotFor(id: InstanceId): TranscriptState {
   let slot = states.get(id)
 
   if (!slot) {
-    slot = { turns: [] }
+    slot = { turns: [], openAgentBySession: new Map() }
     states.set(id, slot)
   }
 
   return slot
+}
+
+/// Close the per-session open-agent tracker — the next agent chunk
+/// will open a fresh turn. Called from the session-stream demuxer on
+/// `TurnStarted` (the canonical turn boundary), mirroring `closeTurn`
+/// over in use-stream.ts.
+export function closeTranscriptTurn(id: InstanceId, sessionId: string): void {
+  const slot = states.get(id)
+
+  if (!slot) {
+    return
+  }
+  slot.openAgentBySession.delete(sessionId)
 }
 
 interface ChunkUpdate {
@@ -98,6 +127,76 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
   }
 }
 
+/// Pick the prefix that turns the existing text + new chunk into a
+/// well-formed markdown paragraph boundary. Returns `''` when no
+/// separator is needed (existing already ends in `\n\n`, or the new
+/// chunk leads with `\n\n`, or the existing is empty). Otherwise
+/// returns `\n` (existing ended on a single `\n`) or `\n\n`.
+function paragraphSeparator(existing: string, incoming: string): string {
+  if (existing.length === 0) {
+    return ''
+  }
+
+  if (existing.endsWith('\n\n') || incoming.startsWith('\n\n')) {
+    return ''
+  }
+
+  return existing.endsWith('\n') ? '\n' : '\n\n'
+}
+
+/// Append a chunk onto an open agent turn (or open a fresh one).
+/// Extracted from `pushTranscriptChunk` to keep its cyclomatic
+/// complexity under the project lint ceiling. The boundary heuristic
+/// lives here too: a new vendor messageId on the open turn is the
+/// signal that a content block ended, and markdown needs `\n\n`
+/// between blocks or the captain reads two paragraphs as one.
+function foldAgentChunk(
+  instanceId: InstanceId,
+  slot: TranscriptState,
+  sessionId: string,
+  seq: number,
+  text: string,
+  messageId: string | undefined,
+  attachments: Attachment[]
+): void {
+  const openId = slot.openAgentBySession.get(sessionId)
+  const target = openId !== undefined ? slot.turns.find((t): t is AgentTurn => t.role === TurnRole.Agent && t.sessionId === sessionId && t.id === openId) : undefined
+
+  if (target) {
+    const newBlock = messageId !== undefined && target.lastChunkMessageId !== undefined && target.lastChunkMessageId !== messageId
+
+    if (newBlock) {
+      target.text += paragraphSeparator(target.text, text)
+    }
+    target.text += text
+    target.updatedAt = seq
+
+    if (messageId !== undefined) {
+      target.lastChunkMessageId = messageId
+    }
+
+    if (attachments.length > 0) {
+      target.attachments = [...target.attachments, ...attachments]
+    }
+
+    return
+  }
+  const agentId = messageId ?? `agent-${sessionId}-${slot.turns.length}`
+
+  slot.turns.push({
+    role: TurnRole.Agent,
+    id: agentId,
+    sessionId,
+    turnId: openTurnIdFor(instanceId, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    text,
+    attachments,
+    lastChunkMessageId: messageId
+  })
+  slot.openAgentBySession.set(sessionId, agentId)
+}
+
 // ── Internal store-mutation surface ───────────────────────────────
 // Sibling-store wire-listener inputs. CLAUDE.md "Two-tier composables".
 
@@ -116,36 +215,46 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
   const slot = slotFor(id)
   const seq = nextSeq(id)
   const hasExplicitId = typeof raw.messageId === 'string'
+
+  // Agent chunks fold onto the open agent turn by id lookup, not by
+  // "is the last item the agent turn?". Vendors interleave tool calls,
+  // thoughts, and plans between agent_message_chunks — and some swap
+  // the wire-side messageId between content blocks within a single
+  // turn — both of which broke the old "last + role match" merge and
+  // left the captain reading the reply as multiple cards.
+  if (role === TurnRole.Agent) {
+    foldAgentChunk(id, slot, sessionId, seq, text, raw.messageId, raw.attachments ?? [])
+
+    return
+  }
+
+  // User chunks: keep the contiguous-last merge. User prompts arrive
+  // as single shots in practice and there's no per-turn "open user
+  // block" concept — the next user prompt is a fresh turn boundary.
   const last = slot.turns[slot.turns.length - 1]
 
   if (last && last.role === role && last.sessionId === sessionId && (hasExplicitId ? last.id === raw.messageId : true)) {
     last.text += text
     last.updatedAt = seq
 
-    // Attachments append to the existing turn (instead of replacing)
-    // so an agent that streams multiple non-text content blocks lands
-    // every one in the same turn alongside the text. User-side keeps
-    // the same shape — user attachments only ride on the first chunk
-    // anyway.
     if (raw.attachments && raw.attachments.length > 0) {
       last.attachments = [...last.attachments, ...raw.attachments]
     }
 
     return
   }
-  const messageId = hasExplicitId ? (raw.messageId as string) : `${role}-${sessionId}-${slot.turns.length}`
-  const turn: ChatTurnItem = {
-    role,
-    id: messageId,
+  const userId = hasExplicitId ? (raw.messageId as string) : `user-${sessionId}-${slot.turns.length}`
+
+  slot.turns.push({
+    role: TurnRole.User,
+    id: userId,
     sessionId,
     turnId: openTurnIdFor(id, sessionId),
     createdAt: seq,
     updatedAt: seq,
     text,
     attachments: raw.attachments ?? []
-  }
-
-  slot.turns.push(turn)
+  })
 }
 
 /**

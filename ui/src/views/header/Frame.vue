@@ -37,7 +37,10 @@ const props = withDefaults(
     counts?: BreadcrumbCount[]
     cwdExpanded?: boolean
     /// Total live-instance count. Renders the row-1 instances pill
-    /// when ≥ 2 (one means "just this", no extras to surface).
+    /// whenever ≥ 1 so the captain always has a click target into the
+    /// instance palette (even when there's only one running — the
+    /// pill doubles as the "spawn another" affordance via the palette
+    /// leaf's actions).
     instancesCount?: number
   }>(),
   {
@@ -69,12 +72,26 @@ const emit = defineEmits<{
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
 const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working || props.phase === Phase.Awaiting || props.phase === Phase.Pending)
 const hasGit = computed(() => Boolean(props.gitStatus))
+const instancesLabel = computed(() => (props.instancesCount === 1 ? 'instance' : 'instances'))
+// Row-1 background tint — same phase palette as the profile pill, but
+// dialed way down so the bar reads as ambient state rather than a hot
+// surface. `color-mix` blends the phase token against the standard
+// surface; the percentage stays small enough that text contrast stays
+// AA against the foreground tokens. `Idle` skips the mix entirely so
+// the bar matches the default surface (no tint = nothing to surface).
+const rowOneBg = computed(() => {
+  if (props.phase === Phase.Idle) {
+    return 'var(--theme-surface)'
+  }
+
+  return `color-mix(in srgb, ${phaseColor.value} 18%, var(--theme-surface))`
+})
 </script>
 
 <template>
   <section class="frame" data-testid="frame">
     <header class="frame-header">
-      <div class="frame-row frame-row-1">
+      <div class="frame-row frame-row-1" :style="{ backgroundColor: rowOneBg }">
         <!-- Pills + title compete with each other for horizontal
              space. On wide screens they all fit; on narrow / phone
              widths the HorizontalScroller lets the captain swipe (or
@@ -109,9 +126,15 @@ const hasGit = computed(() => Boolean(props.gitStatus))
           </button>
           <span v-if="title" class="frame-title">{{ title }}</span>
         </HorizontalScroller>
-        <button v-if="instancesCount > 1" type="button" class="frame-instances-pill" :aria-label="`${instancesCount} instances`" @click="emit('instancesClick')">
+        <button
+          v-if="instancesCount >= 1"
+          type="button"
+          class="frame-instances-pill"
+          :aria-label="`${instancesCount} ${instancesLabel}`"
+          @click="emit('instancesClick')"
+        >
           <span class="frame-instances-count">{{ instancesCount }}</span>
-          <span class="frame-instances-label">instances</span>
+          <span class="frame-instances-label">{{ instancesLabel }}</span>
         </button>
         <!-- Palette-open button: visible only on coarse pointers
              (phones / tablets). Desktop captains hit Ctrl+K. -->

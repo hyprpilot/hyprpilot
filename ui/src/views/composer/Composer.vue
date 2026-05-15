@@ -24,7 +24,7 @@ import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
 import { ToastTone, ComposerPillKind, type ComposerPill } from '@components'
 import {
-  type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo
+  type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo, useTouchDevice
 } from '@composables'
 import { CompletionKind, invoke, Modifier, TauriCommand } from '@ipc'
 import { blobToDataUrl, formatSize, getCaretCoordinates, log, rgbaToPngBlob } from '@lib'
@@ -71,6 +71,12 @@ const text = composer.text
 const composerPills = composer.pills
 
 const attachments = useAttachments()
+
+// Touch-device probe — drives the Enter-key branch in `onEnter`. On a
+// soft keyboard there's no Shift key, so the captain has no way to
+// insert a newline if Enter submits. Coarse pointer → Enter becomes
+// newline; the visible send button is the only submit path on mobile.
+const touch = useTouchDevice()
 
 // Skill attachments (palette-driven) render as resource pills
 // alongside image attachment pills. The composer doesn't own the
@@ -195,10 +201,36 @@ function onTextareaKeydown(e: KeyboardEvent): void {
     return
   }
 
-  if (e.key === 'Enter' || e.key === 'Tab') {
+  if (e.key === 'Tab') {
     e.preventDefault()
     e.stopPropagation()
-    applyCompletion()
+
+    // First Tab moves the sentinel (-1) onto the first row instead of
+    // committing — the popover stops auto-highlighting, so a stray
+    // Tab can't accidentally insert a path the captain didn't pick.
+    // Subsequent Tabs commit the (now-selected) row.
+    if (completion.state.value.selectedIndex < 0) {
+      completion.selectNext()
+    } else {
+      applyCompletion()
+    }
+
+    return
+  }
+
+  if (e.key === 'Enter') {
+    // Only commit when a row is explicitly selected — otherwise let
+    // Enter fall through to the chat-submit keybind. This is the
+    // captain's fix: with auto-select-first, Enter on an open popover
+    // was ambiguous (submit vs commit-completion). Now Enter always
+    // means submit unless the captain has Tab/Arrow'd onto a row.
+    if (completion.state.value.selectedIndex >= 0) {
+      e.preventDefault()
+      e.stopPropagation()
+      applyCompletion()
+    } else {
+      completion.close()
+    }
 
     return
   }
@@ -415,6 +447,14 @@ function onEnter(e: KeyboardEvent): boolean {
   if (e.isComposing) {
     return false
   }
+
+  // Mobile branch: a soft keyboard has no Shift, so binding submit to
+  // bare Enter strands the captain in single-line mode. Fall through
+  // and let the textarea insert a newline; the visible send button is
+  // the submit path. Desktop keeps the Enter-to-send muscle memory.
+  if (touch.isCoarsePointer.value) {
+    return false
+  }
   log.debug('composer keybind', { key: 'Enter' })
   trySubmit()
 
@@ -615,7 +655,7 @@ function onDragOver(e: DragEvent): void {
         autocapitalize="sentences"
         autocorrect="on"
         spellcheck="true"
-        enterkeyhint="send"
+        :enterkeyhint="touch.isCoarsePointer.value ? 'enter' : 'send'"
         data-testid="composer-textarea"
         @keydown.capture="onTextareaKeydown"
         @input="onTextareaInput"

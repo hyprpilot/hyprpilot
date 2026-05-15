@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { timelineBlocksFromSnapshot } from './snapshot-timeline'
 import { Role } from '@components'
 import { TranscriptItemKind } from '@constants/wire/transcript'
+import { PlanPriority, PlanStepStatus, type PlanStep } from '@interfaces/wire/transcript'
 import type { SeqTranscriptItem } from '@ipc'
 
 function userPrompt(seq: number, turnId: string | undefined, text: string): SeqTranscriptItem {
@@ -120,5 +121,68 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(blocks[0].turnId).toBe('t-1')
     expect(blocks[1].turnId).toBeUndefined()
     expect(blocks[2].turnId).toBe('t-1')
+  })
+
+  it('overwrites plan stream items within a turn instead of stacking them', () => {
+    // Plans arrive as full snapshots — every ACP `plan` update carries
+    // the complete current step list. The daemon mirror appends one
+    // SeqTranscriptItem per update, so the snapshot of a turn that
+    // received N plan updates ships N plan items. Without dedup the
+    // captain reads the same plan N times stacked vertically.
+    const planItem = (seq: number, turnId: string, steps: PlanStep[]): SeqTranscriptItem => ({
+      seq,
+      turnId,
+      item: {
+        kind: TranscriptItemKind.Plan,
+        steps
+      }
+    })
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'go'),
+      planItem(2, 't-1', [
+        {
+          content: 'step 1',
+          status: PlanStepStatus.Pending,
+          priority: PlanPriority.High
+        }
+      ]),
+      planItem(3, 't-1', [
+        {
+          content: 'step 1',
+          status: PlanStepStatus.Completed,
+          priority: PlanPriority.High
+        },
+        {
+          content: 'step 2',
+          status: PlanStepStatus.Pending,
+          priority: PlanPriority.Medium
+        }
+      ]),
+      planItem(4, 't-1', [
+        {
+          content: 'step 1',
+          status: PlanStepStatus.Completed,
+          priority: PlanPriority.High
+        },
+        {
+          content: 'step 2',
+          status: PlanStepStatus.Completed,
+          priority: PlanPriority.Medium
+        }
+      ])
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistantBlock = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistantBlock?.streamEntries).toHaveLength(1)
+    const planEntry = assistantBlock?.streamEntries[0]
+
+    expect(planEntry?.item.kind).toBe('plan')
+
+    if (planEntry?.item.kind === 'plan') {
+      // Latest plan wins — both steps completed.
+      expect(planEntry.item.entries).toHaveLength(2)
+      expect(planEntry.item.entries[1].status).toBe(PlanStepStatus.Completed)
+    }
   })
 })

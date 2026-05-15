@@ -34,6 +34,19 @@ import type { EventCallback, UnlistenFn } from '@tauri-apps/api/event'
 let socket: WebSocket | undefined
 let connectPromise: Promise<WebSocket> | undefined
 let authenticated = false
+/**
+ * True after the SPA has already gone through one successful pair /
+ * silent-reauth in this page lifetime. When a second `authenticated`
+ * frame lands (silent reconnect after the WS dropped + auto-reauthed
+ * with the cached token), the in-memory stores still hold pre-disconnect
+ * state — turns / thoughts / tool calls accumulated against the prior
+ * session. Letting the live event router drain fresh events onto stale
+ * stores produces duplicate cards and orphaned thoughts. The cheapest
+ * correct path is a full page reload: SPA re-boots, snapshot re-hydrates,
+ * stores start empty, and the silent-reauth via cached token kicks back
+ * in on the next pending frame. Coarse but right.
+ */
+let hasAuthenticatedThisPage = false
 let pendingFrame: PendingFrame | undefined
 let lastConfirmRejection: string | undefined
 /**
@@ -280,6 +293,24 @@ function handleFrameByType(msg: Record<string, unknown>): void {
 
       return
     case 'authenticated':
+      // Reconnect detection — see `hasAuthenticatedThisPage` doc. A
+      // second `authenticated` in the same page lifetime means the WS
+      // dropped + silently reauthenticated. Reload before draining
+      // events so the stores re-hydrate from scratch.
+      if (hasAuthenticatedThisPage) {
+        if (typeof msg.sessionToken === 'string' && msg.sessionToken.length > 0) {
+          // Persist the freshly-minted token across the reload —
+          // otherwise the post-reload boot would have to pair manually.
+          storeSessionToken(msg.sessionToken)
+        }
+
+        if (typeof window !== 'undefined') {
+          window.location.reload()
+        }
+
+        return
+      }
+      hasAuthenticatedThisPage = true
       authenticated = true
       pendingFrame = undefined
       lastConfirmRejection = undefined
