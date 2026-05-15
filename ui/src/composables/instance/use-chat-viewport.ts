@@ -2,25 +2,9 @@
  * Surface composable for the virtualized chat body (Phase C1).
  *
  * Combines `useInstanceChatInfiniteQuery` (the data layer) with the
- * three concerns the body view needs on top:
+ * two concerns the body view needs on top:
  *
- * 1. **Live event patching** — incoming `acp:transcript` events (and
- *    sibling `acp:turn-started` / `acp:turn-ended`) land on the
- *    *latest page* of the cached infinite query via `setQueryData`.
- *    Without this, new chunks during streaming wouldn't appear until
- *    the page refetched. Tool-call updates merge with the existing
- *    item by `tool_call_id` instead of appending. The local `seq`
- *    counter starts at the daemon's `latestSeq` and increments on
- *    every patched item — UI doesn't know the daemon's actual `seq`,
- *    but it doesn't need to: the cursor is only used for backward
- *    pagination, and live events always land at the head.
- *
- * 2. **Permission-resolved cache invalidation** — `acp:permission-resolved`
- *    drops the matching entry from `MetaSnapshot.pendingPermissions`
- *    so a captain answering on the desktop clears the prompt on the
- *    remote (and vice versa).
- *
- * 3. **Page-trim policy** — when the viewport is at the bottom AND
+ * 1. **Page-trim policy** — when the viewport is at the bottom AND
  *    the cache holds more than `MAX_PAGES_KEPT` pages, drop pages
  *    `0..(N-MAX_PAGES_KEPT)`. Keeps memory bounded under long
  *    sessions without user-visible truncation: the daemon always
@@ -33,28 +17,31 @@
  *    scroll-event task — see Viewport.vue's onScroll for the
  *    timing rationale.
  *
+ * 2. **Flattened oldest-first items view** for the snapshot
+ *    projector + a `latestSeq` cursor for diagnostic consumers.
+ *
+ * Live patching (`acp:transcript` + `acp:permission-resolved`) lives
+ * in the module-level singleton at `./transcript-patcher.ts`. The
+ * earlier per-composable IIFE only wired itself when this composable
+ * mounted, which on remote landed after the WS auto-subscribed to
+ * events — every event arriving in that gap was dropped on the floor
+ * at the remote-bridge dispatcher (no listener registered for the
+ * event name yet). `startTranscriptPatcher` runs from `main.ts`
+ * before the first boot RPC fires, so the dispatcher's
+ * `eventListeners.get('acp:transcript')` is populated by the time
+ * the daemon pushes its first frame.
+ *
  * The exposed shape is a thin pass-through over the underlying
  * `useInfiniteQuery` handle plus a flattened `items` ref (oldest-
  * first) and a `latestSeq` cursor for downstream consumers.
  */
 
 import { useQueryClient, type InfiniteData } from '@tanstack/vue-query'
-import { computed, onUnmounted, watch, type ComputedRef, type Ref } from 'vue'
+import { computed, type ComputedRef, type Ref } from 'vue'
 
 import { useInstanceChatInfiniteQuery, type UseInstanceChatInfiniteQueryReturn } from './use-instance-chat-infinite-query'
-import { usePermissions } from './use-permissions'
 import { type InstanceId } from '../chrome/use-active-instance'
-import {
-  listen,
-  TauriEvent,
-  TranscriptItemKind,
-  type ChatSnapshot,
-  type MetaSnapshot,
-  type SeqTranscriptItem,
-  type TranscriptEventPayload,
-  type AcpPermissionResolvedPayload,
-  type UnlistenFn
-} from '@ipc'
+import { type ChatSnapshot, type SeqTranscriptItem } from '@ipc'
 import { log } from '@lib'
 
 /**
@@ -149,138 +136,11 @@ export interface UseChatViewportApi {
    * daemon serves them again on backward scroll.
    */
   evictExtraPages: () => void
-  /** Unsubscribe the live-event listeners — wired automatically on unmount. */
-  stop: () => void
 }
 
 interface PatchableInfiniteData extends InfiniteData<ChatSnapshot, number | undefined> {
   pages: ChatSnapshot[]
   pageParams: (number | undefined)[]
-}
-
-/**
- * Merge a `tool_call_update` event onto its existing tool-call
- * entry on the latest page. Returns `true` on merge.
- *
- * Wire shape: ACP `tool_call_update` carries the same `id` as the
- * original `tool_call`. The daemon's `tool_call_cache.merge`
- * concatenates `content` arrays (`acp/instance.rs`:
- * `running.content.extend(arr.iter().cloned())`) — the wire ships
- * per-delta `content`, so the UI must concat to reconstruct the
- * merged view that the daemon's formatter produces. The snapshot-
- * replay path in `snapshot-timeline.ts::mergeToolCall` does the
- * same; this helper keeps the live-patch path in lockstep.
- *
- * `turnId` preservation: the merged `SeqTranscriptItem` MUST keep
- * the existing `turnId` (the tool call's anchor to the active turn).
- * Dropping it here would orphan the call out of its turn block —
- * `timelineBlocksFromSnapshot` groups by `turnId`, so an undefined
- * turnId falls into a phantom "snapshot-assistant:N" block instead
- * of the `turn:X` block where the rest of the turn lives. That
- * cascades into perceived bugs: (1) tool pills with no Turn header
- * chips above them, (2) thought chunks that arrive after the tool
- * landing in a separate block from the thoughts that came before
- * (because the tool block sits between them).
- *
- * Single-shape items.length scan from the tail finds the matching
- * call regardless of initial vs update kind.
- */
-function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscriptItem): boolean {
-  const next = incoming.item
-
-  if (next.kind !== TranscriptItemKind.ToolCallUpdate) {
-    return false
-  }
-  const id = next.id
-
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    const existing = items[i]
-
-    if (!existing) {
-      continue
-    }
-    const ex = existing.item
-
-    if ((ex.kind === TranscriptItemKind.ToolCall || ex.kind === TranscriptItemKind.ToolCallUpdate) && ex.id === id) {
-      const merged: typeof ex = { ...ex }
-
-      if (next.toolKind !== undefined) {
-        merged.toolKind = next.toolKind
-      }
-
-      if (next.title !== undefined) {
-        merged.title = next.title
-      }
-
-      if (next.state !== undefined) {
-        merged.state = next.state
-      }
-
-      if (next.rawInput !== undefined) {
-        merged.rawInput = next.rawInput
-      }
-
-      // Concat content — see fn header.
-      if (next.content && next.content.length > 0) {
-        merged.content = [...(ex.content ?? []), ...next.content]
-      }
-      merged.formatted = next.formatted
-      merged.startedAtMs = next.startedAtMs
-
-      if (next.completedAtMs !== undefined) {
-        merged.completedAtMs = next.completedAtMs
-      }
-      // Preserve the existing turnId — the original `tool_call` event
-      // stamped it; the wire `tool_call_update` may or may not echo
-      // the turnId in its payload, but the merged item's anchor is
-      // the original turn. Take the incoming turnId only as a fallback
-      // (the existing was undefined).
-      items[i] = {
-        seq: existing.seq,
-        turnId: existing.turnId ?? incoming.turnId,
-        item: merged
-      }
-
-      return true
-    }
-  }
-
-  return false
-}
-
-/**
- * Build a `SeqTranscriptItem` for a live transcript event. The local
- * `seq` is monotonically issued by the caller; the daemon-side seq
- * exists separately and isn't needed for live consumption.
- *
- * `turnId` MUST be carried through from the payload — the snapshot
- * path returns items already stamped with the active turn id, and
- * `timelineBlocksFromSnapshot` groups blocks by `turnId` to anchor
- * the Turn header chips (elapsed / usage / cost) to a useTurns
- * record. Dropping `turnId` here makes live-patched blocks render
- * with `block.turnId === undefined` → `usageFor(undefined)` returns
- * undefined → chips don't render even though the underlying turn
- * record DOES carry the usage reading.
- */
-function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscriptItem | undefined {
-  // `Unknown` payloads are forward-compat catch-alls; ignore them in
-  // the chat body (they don't have a typed renderer).
-  if (payload.item.kind === TranscriptItemKind.Unknown) {
-    return undefined
-  }
-
-  // PermissionRequest rides through `acp:permission-request` for the
-  // sticky stack; the transcript variant exists for typed completeness
-  // but doesn't render inline.
-  if (payload.item.kind === TranscriptItemKind.PermissionRequest) {
-    return undefined
-  }
-
-  return {
-    seq,
-    turnId: payload.turnId,
-    item: payload.item
-  }
 }
 
 export interface UseChatViewportOptions {
@@ -378,237 +238,6 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     return out
   })
 
-  /**
-   * Pending live-event queue. `patchLatestPage` enqueues; a single
-   * microtask-scheduled flush drains the whole burst into ONE
-   * `setQueryData` call. Without this, a `session/load` replay
-   * (hundreds of `session/update` notifications fanned out within
-   * ~2ms) would land hundreds of `setQueryData` invocations on the
-   * head page — each clones the entire `head.items` array (O(N))
-   * and re-keys the pages array (O(pages)). Total: O(N²)
-   * allocations on a hot path that drowns the renderer; under
-   * extreme bursts (long session restored on a slow box) this OOM-s
-   * the webview before the chat ever paints.
-   *
-   * Microtask scheduling collapses the burst because every
-   * `acp:transcript` event handler runs synchronously off Tauri's
-   * IPC bridge — the queue accumulates the whole batch on the
-   * current tick, and the flush runs once after the tick yields.
-   */
-  let pendingPatches: TranscriptEventPayload[] = []
-  let flushScheduled = false
-  let stopped = false
-
-  function flushPatches(): void {
-    flushScheduled = false
-
-    if (stopped) {
-      return
-    }
-    const batch = pendingPatches
-
-    pendingPatches = []
-
-    if (batch.length === 0) {
-      return
-    }
-    const id = instanceId.value
-
-    if (id === undefined) {
-      return
-    }
-    queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', id], (old) => {
-      if (!old || old.pages.length === 0) {
-        // No cached pages — the live events arrived before the first
-        // snapshot fetch resolved. Skip; the snapshot will land with
-        // the same items via the daemon mirror.
-        log.trace('snapshot.live-patch.skipped-no-cache', {
-          instanceId: id,
-          batchSize: batch.length
-        })
-
-        return old
-      }
-      const head = old.pages[0]
-
-      if (!head) {
-        return old
-      }
-      // Clone head.items ONCE for the whole batch.
-      const nextItems = [...head.items]
-      let baseSeq = (localSeq.value ?? head.latestSeq ?? 0) + 1
-      let lastSeq = head.latestSeq ?? 0
-      let applied = 0
-      let mergedCount = 0
-      let skipped = 0
-
-      for (const payload of batch) {
-        if (payload.instanceId !== id) {
-          continue
-        }
-        const incoming = liveItemFor(payload, baseSeq)
-
-        if (!incoming) {
-          skipped += 1
-          continue
-        }
-        const merged = mergeToolCallUpdate(nextItems, incoming)
-
-        if (merged) {
-          mergedCount += 1
-        } else {
-          nextItems.push(incoming)
-        }
-        baseSeq += 1
-        lastSeq = incoming.seq
-        applied += 1
-      }
-
-      if (applied === 0) {
-        return old
-      }
-
-      log.trace('snapshot.live-patch.batch-applied', {
-        instanceId: id,
-        batchSize: batch.length,
-        applied,
-        merged: mergedCount,
-        skipped,
-        headItemCount: nextItems.length
-      })
-
-      const nextHead: ChatSnapshot = {
-        items: nextItems,
-        // Live patches only ever land at the head — the oldest entry
-        // doesn't move, so preserve `head.oldestSeq`. If the head was
-        // empty it stays unset; the next backward fetch will populate.
-        oldestSeq: head.oldestSeq ?? lastSeq,
-        latestSeq: lastSeq,
-        hasMore: head.hasMore
-      }
-
-      return {
-        ...old,
-        pages: [nextHead, ...old.pages.slice(1)],
-        pageParams: old.pageParams
-      }
-    })
-  }
-
-  function patchLatestPage(payload: TranscriptEventPayload): void {
-    const id = instanceId.value
-
-    if (id === undefined) {
-      return
-    }
-
-    if (payload.instanceId !== id) {
-      return
-    }
-    pendingPatches.push(payload)
-
-    if (!flushScheduled) {
-      flushScheduled = true
-      queueMicrotask(flushPatches)
-    }
-  }
-
-  function patchPermissionResolved(payload: AcpPermissionResolvedPayload): void {
-    // Drop the matching row from the per-instance permissions store
-    // regardless of whether the resolved id matches the focused
-    // viewport — a captain answering on the desktop must clear the
-    // remote's row, and vice versa, even when the captain is looking
-    // at another instance at that moment. The wire payload always
-    // carries `instanceId`, so addressing it directly is correct.
-    usePermissions().clearById(payload.instanceId, payload.requestId)
-
-    const id = instanceId.value
-
-    if (id === undefined) {
-      return
-    }
-
-    if (payload.instanceId !== id) {
-      return
-    }
-    queryClient.setQueryData<MetaSnapshot>(['snapshot-meta', id], (old) => {
-      if (!old) {
-        return old
-      }
-      const pending = old.pendingPermissions
-
-      if (!pending || pending.length === 0) {
-        return old
-      }
-      const filtered = pending.filter((p) => p.requestId !== payload.requestId)
-
-      if (filtered.length === pending.length) {
-        return old
-      }
-
-      return { ...old, pendingPermissions: filtered }
-    })
-  }
-
-  // Wire the live-event listeners. Single subscription per composable
-  // instance — Overlay.vue mounts the viewport once. Cleanup runs on
-  // unmount via `onUnmounted` AND through the returned `stop()` so
-  // tests can tear down explicitly.
-  const unlisteners: UnlistenFn[] = []
-
-  function stop(): void {
-    if (stopped) {
-      return
-    }
-    stopped = true
-
-    for (const u of unlisteners) {
-      u()
-    }
-    unlisteners.length = 0
-    // Drop any pending batch the next microtask was about to flush —
-    // the queryClient may have been torn down by the time the flush
-    // runs, and even if it hasn't, applying live patches to a
-    // composable that the captain has already unmounted is wasted
-    // work.
-    pendingPatches = []
-  }
-
-  void (async() => {
-    try {
-      const t = await listen(TauriEvent.AcpTranscript, (e) => {
-        patchLatestPage(e.payload)
-      })
-
-      // Race guard: stop() may have been called while the first
-      // `listen()` was awaiting. Drop the registration immediately
-      // and skip the second so a unit-test teardown that races the
-      // IIFE doesn't leak a stale listener pointing at the old
-      // queryClient.
-      if (stopped) {
-        t()
-
-        return
-      }
-      unlisteners.push(t)
-      const p = await listen(TauriEvent.AcpPermissionResolved, (e) => {
-        patchPermissionResolved(e.payload)
-      })
-
-      if (stopped) {
-        p()
-
-        return
-      }
-      unlisteners.push(p)
-    } catch {
-      // Listener registration errors surface in the dev console; the
-      // viewport stays functional via the snapshot path.
-    }
-  })()
-
-  onUnmounted(stop)
-
   // Page-trim policy. Idempotent: drop pages older than the
   // newest `MAX_PAGES_KEPT` whenever the caller signals "the
   // captain is in the live area, dropping older pages won't yank
@@ -691,17 +320,6 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
   const isFetchingNextPage = computed(() => query.isFetchingNextPage.value)
   const hasNextPage = computed(() => query.hasNextPage.value)
 
-  // Defensive watcher — when the instanceId flips, reset the local
-  // seq cursor. The infinite-query wakes its own cache key off the
-  // ref so this is mostly belt-and-braces; explicit teardown of any
-  // leaked listeners would land here too if the composable grew
-  // multi-instance subscriptions.
-  watch(instanceId, () => {
-    // No-op today — `localSeq` is computed off the cache, which
-    // re-keys with `instanceId.value`. Future per-instance event
-    // filters would re-bind here.
-  })
-
   return {
     items,
     latestSeq: localSeq,
@@ -709,7 +327,6 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     isFetchingNextPage,
     hasNextPage,
     fetchNextPage,
-    evictExtraPages,
-    stop
+    evictExtraPages
   }
 }

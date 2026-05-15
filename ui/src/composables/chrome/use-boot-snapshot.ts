@@ -107,20 +107,32 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   if (snap.instances.focusedId) {
     useActiveInstance().setIfUnset(snap.instances.focusedId)
 
-    // Kick off meta + chat-first-page prefetch in parallel with the
-    // app mount so the chat viewport doesn't paint an empty state
-    // before its `useInfiniteQuery` resolves. TanStack dedupes on
-    // queryKey — Overlay.vue's brim-sync still runs but rides the
-    // already-cached entries / in-flight requests rather than burning
-    // fresh RTTs. Fire-and-forget; failures get caught by the
-    // composables' own error paths.
+    // AWAIT the focused instance's meta + chat-first-page prefetches
+    // BEFORE returning. Earlier versions fired these as
+    // `void prefetch(...).catch(...)` so the boot phase completed
+    // before the snapshots landed. On remote that meant Overlay.vue
+    // mounted with an empty cache; `useInstanceChatInfiniteQuery`
+    // fired its own fetch, which on a slow WS could take seconds —
+    // the captain saw an empty viewport until the fetch resolved,
+    // and any live events landing during that gap got patched into
+    // an empty cache and dropped. Awaiting here means the cache is
+    // hot by the time Overlay renders ChatViewport, which then
+    // picks up the cached page synchronously. `Promise.allSettled`
+    // so a meta failure (e.g. permissions race) doesn't block chat;
+    // both errors land in the log + the relevant store stays empty
+    // for that field. TanStack dedupes on queryKey, so the parallel
+    // `brimSync` invocation in Overlay.vue's `onMounted` rides the
+    // cached value.
     if (queryClient) {
-      void prefetchInstanceMeta(queryClient, snap.instances.focusedId).catch((err: unknown) => {
-        log.warn('boot-snapshot: focused meta prefetch failed', undefined, err)
-      })
-      void prefetchInstanceChatFirstPage(queryClient, snap.instances.focusedId).catch((err: unknown) => {
-        log.warn('boot-snapshot: focused chat prefetch failed', undefined, err)
-      })
+      const results = await Promise.allSettled([prefetchInstanceMeta(queryClient, snap.instances.focusedId), prefetchInstanceChatFirstPage(queryClient, snap.instances.focusedId)])
+
+      if (results[0].status === 'rejected') {
+        log.warn('boot-snapshot: focused meta prefetch failed', undefined, results[0].reason)
+      }
+
+      if (results[1].status === 'rejected') {
+        log.warn('boot-snapshot: focused chat prefetch failed', undefined, results[1].reason)
+      }
     }
   }
 
