@@ -570,6 +570,13 @@ pub struct InstanceInfo {
     /// generic layer only carries + surfaces the value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Display-formatted cwd the instance spawned in (home-collapsed
+    /// to `~`, same shape `MetaSnapshot.cwd` carries). Always set —
+    /// the actor falls back to `std::env::current_dir()` when no
+    /// `agent.cwd` is configured, so every running instance has a
+    /// concrete path. Powers the nvim plugin's instances-palette cwd
+    /// filter (`item.cwd == vim.fn.getcwd()`).
+    pub cwd: String,
 }
 
 /// Wire shape for instance entries on `instances/list` and
@@ -593,6 +600,9 @@ pub struct InstanceListEntry {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// See [`InstanceInfo::cwd`]. Always present so the nvim
+    /// instances-palette filter can rely on a concrete string.
+    pub cwd: String,
 }
 
 impl From<&InstanceInfo> for InstanceListEntry {
@@ -604,6 +614,7 @@ impl From<&InstanceInfo> for InstanceListEntry {
             session_id: i.session_id.clone(),
             name: i.name.clone(),
             mode: i.mode.clone(),
+            cwd: i.cwd.clone(),
         }
     }
 }
@@ -741,6 +752,7 @@ mod instance_list_entry_tests {
             session_id: None,
             name: None,
             mode: None,
+            cwd: "/tmp/proj".into(),
         };
         let value = serde_json::to_value(&entry).expect("serialize");
         let obj = value.as_object().expect("entry is JSON object");
@@ -773,6 +785,9 @@ mod instance_list_entry_tests {
             "mode must be omitted, got {:?}",
             obj.get("mode")
         );
+        // `cwd` is always present — the nvim palette's filter
+        // (`item.cwd == vim.fn.getcwd()`) relies on a concrete string.
+        assert_eq!(obj.get("cwd"), Some(&serde_json::Value::String("/tmp/proj".into())));
     }
 
     #[test]
@@ -784,12 +799,14 @@ mod instance_list_entry_tests {
             session_id: Some("sess-1".into()),
             name: Some("alpha".into()),
             mode: Some("plan".into()),
+            cwd: "~/proj".into(),
         };
         let value = serde_json::to_value(&entry).expect("serialize");
         assert_eq!(value["profileId"], "personal/claude/opus");
         assert_eq!(value["sessionId"], "sess-1");
         assert_eq!(value["name"], "alpha");
         assert_eq!(value["mode"], "plan");
+        assert_eq!(value["cwd"], "~/proj");
     }
 
     #[test]
@@ -801,10 +818,12 @@ mod instance_list_entry_tests {
             profile_id: None,
             session_id: None,
             mode: None,
+            cwd: "/tmp/proj".into(),
         };
         let entry = InstanceListEntry::from(&info);
         assert_eq!(entry.instance_id, "abc-123");
         assert_eq!(entry.agent_id, "claude-code");
+        assert_eq!(entry.cwd, "/tmp/proj");
     }
 
     /// `event_name` is the public colon-separated string that every

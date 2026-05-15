@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec};
+use crate::adapters::{validate_instance_name, InstanceKey, InstanceListEntry, SpawnSpec};
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_params, spawn_or_restore};
 use crate::rpc::protocol::RpcError;
@@ -160,19 +160,13 @@ impl RpcHandler for InstancesHandler {
         match method {
             "instances/list" => {
                 let items = adapter.list().await;
-                let wire: Vec<Value> = items
-                    .iter()
-                    .map(|i| {
-                        json!({
-                            "agentId": i.agent_id,
-                            "profileId": i.profile_id,
-                            "instanceId": i.id,
-                            "name": i.name,
-                            "sessionId": i.session_id,
-                            "mode": i.mode,
-                        })
-                    })
-                    .collect();
+                // Typed wire shape — same `InstanceListEntry` the
+                // Tauri `instances_list` command and `boot_snapshot`
+                // ship. Centralising on the typed projection keeps
+                // every transport (unix-socket RPC, Tauri webview,
+                // remote WS) emitting the same field set; new
+                // additions (like `cwd`) flow automatically.
+                let wire: Vec<InstanceListEntry> = items.iter().map(InstanceListEntry::from).collect();
                 Ok(HandlerOutcome::Reply(json!({ "instances": wire })))
             }
             "instances/focus" => {
@@ -257,14 +251,12 @@ impl RpcHandler for InstancesHandler {
                 let InstanceParams { instance_id } = params_or_default::<InstanceParams>(params, method)?;
                 let key = resolve_or_focused(adapter.as_ref(), instance_id.as_deref()).await?;
                 let info = adapter.info_for(key).await.map_err(map_adapter_err)?;
-                Ok(HandlerOutcome::Reply(json!({
-                    "agentId": info.agent_id,
-                    "profileId": info.profile_id,
-                    "instanceId": info.id,
-                    "name": info.name,
-                    "sessionId": info.session_id,
-                    "mode": info.mode,
-                })))
+                // Same typed projection as `instances/list` so the
+                // single-instance read shape stays consistent with
+                // the list shape — including the new `cwd` field.
+                let wire = serde_json::to_value(InstanceListEntry::from(&info))
+                    .map_err(|e| RpcError::internal_error(format!("serialize instance info: {e}")))?;
+                Ok(HandlerOutcome::Reply(wire))
             }
             "instances/rename" => {
                 let RenameParams { instance_id, name } = params_or_default::<RenameParams>(params, method)?;
@@ -912,5 +904,83 @@ command = "/bin/false"
     async fn instances_unknown_verb_is_method_not_found() {
         let v = dispatch("instances/setBogus", json!({})).await;
         assert_eq!(v["code"], -32601, "{v}");
+    }
+
+    /// `instances/list` ships the per-instance `cwd` on every entry —
+    /// `hyprpilot.nvim`'s palette filter (`item.cwd == vim.fn.getcwd()`)
+    /// keys off it. Seed a stub instance via `test_install_mirror`
+    /// (cwd defaults to the stub sentinel `/tmp/test-stub`) and assert
+    /// the wire payload carries the field.
+    #[tokio::test]
+    async fn instances_list_ships_cwd_on_each_entry() {
+        use crate::adapters::InstanceMirror;
+        let shared = Arc::new(RwLock::new(Config::default()));
+        let adapter = Arc::new(AcpAdapter::with_shared_config(
+            shared,
+            Arc::new(StatusBroadcast::new(true)),
+            Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>,
+        ));
+        let _key = adapter.test_install_mirror(Arc::new(InstanceMirror::new())).await;
+        let status = StatusBroadcast::new(true);
+        let dyn_adapter: Arc<dyn Adapter> = adapter;
+        let ctx = HandlerCtx {
+            app: None,
+            status: &status,
+            adapter: dyn_adapter,
+            config: None,
+            mcps: None,
+            already_subscribed: false,
+            already_events_subscribed: false,
+            started_at: None,
+            socket_path: None,
+        };
+        let outcome = InstancesHandler
+            .handle("instances/list", json!({}), ctx)
+            .await
+            .expect("list ok");
+        let v = match outcome {
+            HandlerOutcome::Reply(v) => v,
+            _ => panic!("expected Reply"),
+        };
+        let entries = v["instances"].as_array().expect("instances array");
+        assert_eq!(entries.len(), 1, "{v}");
+        assert_eq!(entries[0]["cwd"], "/tmp/test-stub", "{v}");
+    }
+
+    /// `instances/info` carries the same typed `InstanceListEntry`
+    /// projection as the list shape — including `cwd`.
+    #[tokio::test]
+    async fn instances_info_ships_cwd() {
+        use crate::adapters::InstanceMirror;
+        let shared = Arc::new(RwLock::new(Config::default()));
+        let adapter = Arc::new(AcpAdapter::with_shared_config(
+            shared,
+            Arc::new(StatusBroadcast::new(true)),
+            Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>,
+        ));
+        let key = adapter.test_install_mirror(Arc::new(InstanceMirror::new())).await;
+        let status = StatusBroadcast::new(true);
+        let dyn_adapter: Arc<dyn Adapter> = adapter;
+        let ctx = HandlerCtx {
+            app: None,
+            status: &status,
+            adapter: dyn_adapter,
+            config: None,
+            mcps: None,
+            already_subscribed: false,
+            already_events_subscribed: false,
+            started_at: None,
+            socket_path: None,
+        };
+        let outcome = InstancesHandler
+            .handle("instances/info", json!({ "instanceId": key.as_string() }), ctx)
+            .await
+            .expect("info ok");
+        let v = match outcome {
+            HandlerOutcome::Reply(v) => v,
+            _ => panic!("expected Reply"),
+        };
+        assert_eq!(v["cwd"], "/tmp/test-stub", "{v}");
+        assert_eq!(v["instanceId"], key.as_string(), "{v}");
     }
 }

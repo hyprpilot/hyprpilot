@@ -178,24 +178,21 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             let adapter = adapter_arc(app)?;
             let items = adapter.list().await;
             let focused_id = adapter.focused_id().await.map(|k| k.as_string());
-            let wire: Vec<Value> = items
-                .iter()
-                .map(|i| {
-                    json!({
-                        "agentId": i.agent_id,
-                        "profileId": i.profile_id,
-                        "instanceId": i.id,
-                        "sessionId": i.session_id,
-                        "name": i.name,
-                        "mode": i.mode,
-                    })
-                })
-                .collect();
+            // Typed wire shape — same `InstanceListEntry` the
+            // `instances/list` RPC + Tauri command + boot snapshot
+            // ship. New fields (like `cwd`) flow uniformly across
+            // every transport.
+            let wire: Vec<crate::adapters::InstanceListEntry> =
+                items.iter().map(crate::adapters::InstanceListEntry::from).collect();
             // See `instances_list` Tauri command — omit the
             // `focusedId` key when None so consumers see `undefined`
             // instead of `null`.
             let mut payload = serde_json::Map::with_capacity(2);
-            payload.insert("instances".into(), Value::Array(wire));
+            payload.insert(
+                "instances".into(),
+                serde_json::to_value(&wire)
+                    .map_err(|e| RpcError::internal_error(format!("serialize instances: {e}")))?,
+            );
             if let Some(id) = focused_id {
                 payload.insert("focusedId".into(), Value::String(id));
             }
