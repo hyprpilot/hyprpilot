@@ -21,12 +21,6 @@ const props = withDefaults(
     /// utilisation + cost. Renders as `120k/200k · $0.74` chips
     /// next to the elapsed pill on assistant turns.
     usage?: TurnUsage
-    /// Total wall-clock spent in this turn's tool calls. Sum of
-    /// `(completedAtMs ?? now) - startedAtMs` across every call in
-    /// the block, rendered as a single chip alongside the turn's
-    /// elapsed time. Hidden when the turn had no tool calls (or
-    /// no call carried timing).
-    toolElapsed?: string
   }>(),
   { live: false }
 )
@@ -80,7 +74,6 @@ const costLabel = computed(() => {
       <div v-if="role === Role.Assistant" class="turn-stats">
         <StatPill v-if="usageLabel" :label="usageLabel" />
         <StatPill v-if="costLabel" :label="costLabel" />
-        <StatPill v-if="toolElapsed" :label="`tools ${toolElapsed}`" :live="live" />
         <StatPill v-if="elapsed" :label="elapsed" :live="live" />
       </div>
     </header>
