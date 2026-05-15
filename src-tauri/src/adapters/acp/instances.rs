@@ -1471,13 +1471,7 @@ fn effective_mcp_files_with(
 ) -> Vec<crate::config::ResolvedMcpFile> {
     if let Some(p) = profile {
         if let Some(files) = &p.mcps {
-            return files
-                .iter()
-                .map(|e| crate::config::ResolvedMcpFile {
-                    file: crate::paths::resolve_user(&e.file.to_string_lossy()),
-                    ignore: e.compile_ignore(),
-                })
-                .collect();
+            return files.iter().map(crate::config::ResolvedMcpFile::from_entry).collect();
         }
     }
     cfg.resolved_mcps()

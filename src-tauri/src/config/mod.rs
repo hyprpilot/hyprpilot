@@ -194,29 +194,56 @@ impl Config {
             .collect()
     }
 
-    /// Resolve every `[[mcps]]` entry to an absolute path + compiled
-    /// ignore matcher. Mirrors `resolved_skills`. Profile-level
-    /// `mcps` overrides feed through the same shape via
+    /// Resolve every `[[mcps]]` entry to its runtime shape: an
+    /// absolute file path OR a pre-extracted inline server map, plus
+    /// the compiled ignore matcher. Mirrors `resolved_skills`.
+    /// Profile-level `mcps` overrides feed through the same shape via
     /// `effective_mcps_for`.
     pub fn resolved_mcps(&self) -> Vec<ResolvedMcpFile> {
         self.mcps
             .as_deref()
             .unwrap_or(&[])
             .iter()
-            .map(|e| ResolvedMcpFile {
-                file: crate::paths::resolve_user(&e.file.to_string_lossy()),
-                ignore: e.compile_ignore(),
-            })
+            .map(ResolvedMcpFile::from_entry)
             .collect()
     }
 }
 
-/// One resolved MCP catalog file. Mirror of `ResolvedSkillEntry` for
-/// the `mcps` side.
+/// One resolved MCP catalog entry. Mirror of `ResolvedSkillEntry` for
+/// the `mcps` side. The `source` variant carries either a resolved
+/// absolute path (file-on-disk shape) or a pre-extracted inline
+/// server map (`mcp_servers` shape); the loader branches on it.
 #[derive(Debug, Clone)]
 pub struct ResolvedMcpFile {
-    pub file: PathBuf,
+    pub source: ResolvedMcpSource,
     pub ignore: Option<globset::GlobSet>,
+}
+
+/// The two source kinds for an MCP entry. `File` carries the resolved
+/// absolute path; `Inline` carries the server map directly so the
+/// loader needs no fs round-trip.
+#[derive(Debug, Clone)]
+pub enum ResolvedMcpSource {
+    File(PathBuf),
+    Inline(serde_json::Map<String, serde_json::Value>),
+}
+
+impl ResolvedMcpFile {
+    /// Project one config-shaped `McpFile` onto its runtime form.
+    /// Assumes the entry already passed `validate_mcp_source` — the
+    /// cross-field check guarantees exactly one of file / inline is
+    /// set, so the branch below can't double-match.
+    pub fn from_entry(entry: &McpFile) -> Self {
+        let source = match (entry.file.as_ref(), entry.mcp_servers.as_ref()) {
+            (Some(p), _) => ResolvedMcpSource::File(crate::paths::resolve_user(&p.to_string_lossy())),
+            (None, Some(map)) => ResolvedMcpSource::Inline(map.clone()),
+            (None, None) => ResolvedMcpSource::Inline(serde_json::Map::new()),
+        };
+        Self {
+            source,
+            ignore: entry.compile_ignore(),
+        }
+    }
 }
 
 /// On-disk config format. Picked off the file extension; mirrors

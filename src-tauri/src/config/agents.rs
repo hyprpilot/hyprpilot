@@ -514,8 +514,8 @@ mcps = [
         let work = cfg.profiles.iter().find(|p| p.id == "work").expect("work entry");
         let mcps = work.mcps.as_deref().expect("set");
         assert_eq!(mcps.len(), 2);
-        assert_eq!(mcps[0].file, PathBuf::from("~/.config/hyprpilot/mcps/work.json"));
-        assert_eq!(mcps[1].file, PathBuf::from("/etc/hyprpilot/shared.json"));
+        assert_eq!(mcps[0].file, Some(PathBuf::from("~/.config/hyprpilot/mcps/work.json")));
+        assert_eq!(mcps[1].file, Some(PathBuf::from("/etc/hyprpilot/shared.json")));
         assert_eq!(mcps[1].ignore.as_deref(), Some(&["scratch-*".to_string()][..]));
         cfg.validate().expect("valid mcps");
         fs::remove_file(&p).ok();
@@ -576,8 +576,8 @@ ignore = ["work-*"]
         let cfg = load(Some(&p), None).expect("load");
         let mcps = cfg.mcps.as_deref().expect("set");
         assert_eq!(mcps.len(), 2);
-        assert_eq!(mcps[0].file, PathBuf::from("~/.config/hyprpilot/mcps/base.json"));
-        assert_eq!(mcps[1].file, PathBuf::from("/etc/hyprpilot/team.json"));
+        assert_eq!(mcps[0].file, Some(PathBuf::from("~/.config/hyprpilot/mcps/base.json")));
+        assert_eq!(mcps[1].file, Some(PathBuf::from("/etc/hyprpilot/team.json")));
         assert_eq!(mcps[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
         cfg.validate().expect("valid global mcps");
         fs::remove_file(&p).ok();
@@ -602,7 +602,7 @@ file = "~/work.json"
         base.merge(over);
         let mcps = base.mcps.as_deref().expect("merged");
         assert_eq!(mcps.len(), 1);
-        assert_eq!(mcps[0].file, PathBuf::from("~/work.json"));
+        assert_eq!(mcps[0].file, Some(PathBuf::from("~/work.json")));
     }
 
     #[test]

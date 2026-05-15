@@ -218,12 +218,14 @@ editor / git noise burns through any debouncer.
 Skill delivery flows exclusively through the palette. Picked skills
 attach to the user turn as `UserTurnInput::Prompt { text, attachments }`.
 
-### `mcps` — JSON-file MCP catalog
+### `mcps` — MCP catalog (file paths + inline servers)
 
-`mcps: Option<Vec<PathBuf>>` at the TOML root lists JSON paths. Each
-path follows the standard `mcpServers` shape used by Claude Code / Codex
-/ Cursor. hyprpilot extends each server entry via an optional
-`hyprpilot` namespace key:
+`mcps: Option<Vec<McpFile>>` at the TOML root. Each entry carries
+**either** a `file` path **or** an inline `mcp_servers` map (exactly
+one; garde rejects both/neither at config load). File paths follow
+the standard `mcpServers` shape used by Claude Code / Codex / Cursor.
+hyprpilot extends each server entry via an optional `hyprpilot`
+namespace key:
 
 ```json
 {
@@ -240,9 +242,39 @@ path follows the standard `mcpServers` shape used by Claude Code / Codex
 }
 ```
 
-- **Merge semantics**: files iterate in order, map collisions → later
-  wins. The `hyprpilot` block is typed; everything else stays as opaque
-  `serde_json::Value`.
+Inline form — same payload the file's `mcpServers` key would carry,
+declared on the entry directly. Right shape for one-off servers
+under `--with-config` (e.g. an nvim plugin where the env value is
+per-invocation):
+
+```toml
+[[mcps]]
+mcp_servers = { hyprpilot-nvim = { command = "uvx", args = ["hyprpilot-nvim-mcp"] } }
+```
+
+Equivalent JSON for a `--with-config` patch:
+
+```json
+{
+  "mcps": [
+    {
+      "mcp_servers": {
+        "hyprpilot-nvim": {
+          "command": "uvx",
+          "args": ["hyprpilot-nvim-mcp"],
+          "env": { "NVIM_LISTEN_ADDRESS": "/tmp/nvim.sock" }
+        }
+      }
+    }
+  ]
+}
+```
+
+- **Merge semantics**: entries iterate in order, map collisions →
+  later wins. File and inline entries share the same merge / dedup /
+  ignore-glob path; mixing both kinds in one catalog is supported.
+  The `hyprpilot` block is typed (works on inline entries too);
+  everything else stays as opaque `serde_json::Value`.
 - **Per-profile override**: `[[profiles]] mcps = [...]` wholesale-replaces
   the global default. `mcps = []` is the explicit "no MCPs" off-switch.
 - **ACP injection**: each `session/new` and `session/load` carries the
