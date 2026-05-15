@@ -679,14 +679,6 @@ async function onPermissionReply(requestId: string, optionId: string, feedback?:
   }
 }
 
-// Mint a fresh instance UUID the backend will adopt. Matches
-// `AcpInstances::InstanceKey` — a v4 UUID, opaque to the UI except
-// for identity. Used when there's no active instance yet (first
-// submit, or after a "new session" reset).
-function mintInstanceId(): InstanceId {
-  return crypto.randomUUID()
-}
-
 /**
  * Project image-attachment composer pills onto the wire
  * `Attachment` shape so the daemon's `build_prompt_blocks` can
@@ -747,9 +739,18 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
     editing: editingQueueSlot.value !== undefined
   })
 
-  const instanceId = activeInstanceId.value ?? mintInstanceId()
-
-  useActiveInstance().set(instanceId)
+  // **Daemon is the source of truth for instance identity.** Earlier
+  // versions minted the UUID UI-side and shipped it via
+  // `session_submit { instanceId }`; the daemon's adopt-verbatim
+  // fallback was permissive, but that meant the UI's chrome
+  // (ChatViewport `:key`, `useActiveInstance.set`, the InfiniteQuery
+  // key) all flipped onto an id that didn't exist server-side until
+  // the spawn task landed — every per-instance surface raced the
+  // spawn and a "not found" snapshot error stranded the cache. The
+  // right shape is: omit `instanceId` when there's nothing focused,
+  // let the daemon mint via `InstanceKey::new_v4()`, and read the
+  // freshly-issued id off the RPC reply (`SubmitResult.instanceId`).
+  const instanceId = activeInstanceId.value
 
   // Edit-resubmit: captain pulled this entry into the composer via
   // the queue-strip edit button. Daemon owns the queue now — submit
@@ -796,7 +797,20 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
     profileId: selectedProfile.value,
     attachments: wireAttachments
   })
-    .then(() => {
+    .then((result) => {
+      // Daemon-issued id (`InstanceKey::new_v4()` server-side, or the
+      // adopt-verbatim path when the caller passed one). When this
+      // was a fresh-spawn — `instanceId` was undefined, the daemon
+      // just minted — pin the result onto `useActiveInstance` so
+      // ChatViewport's `:key` flips, the snapshot fetch hits an
+      // existing actor, and the transcript-patcher's cache check
+      // succeeds when the first live frame lands. Setting unconditionally
+      // would race the daemon-pushed `acp:instances-focused` event on
+      // a follow-up submit; the `!activeInstanceId.value` gate keeps
+      // the reply path advisory.
+      if (result.instanceId && !activeInstanceId.value) {
+        useActiveInstance().set(result.instanceId)
+      }
       composerRef.value?.clear()
       clearAttachments()
     })

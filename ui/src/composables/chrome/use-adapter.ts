@@ -5,11 +5,18 @@ import { invoke, TauriCommand, type AgentSummary, type Attachment, type CancelRe
 export interface SubmitOptions {
   text: string
   /**
-   * UUID of the instance this prompt targets. Omit to mint a fresh
-   * instance server-side; provide to route a follow-up to a live one
-   * (or to adopt-on-first-sight a client-generated UUID so the
-   * webview can push its user turn optimistically before the RPC
-   * round-trip completes).
+   * UUID of the instance this prompt targets. Omit to spawn fresh
+   * server-side — the daemon mints via `InstanceKey::new_v4()` and
+   * returns the issued id on `SubmitResult.instanceId`. UI-side
+   * minting is intentionally not the contract: every per-instance
+   * surface (ChatViewport `:key`, snapshot cache, palette listing)
+   * flips off a value that must exist server-side, and a
+   * pre-emptive UI mint races the spawn task — the snapshot RPC for
+   * the freshly-minted id returns "not found" before the actor
+   * lands, the InfiniteQuery enters error state, and the
+   * transcript-patcher silently drops live frames against the
+   * empty cache. Daemon-issued ids land synchronously with the
+   * spawn so the round-trip is the right place to learn the id.
    */
   instanceId?: string
   agentId?: string
