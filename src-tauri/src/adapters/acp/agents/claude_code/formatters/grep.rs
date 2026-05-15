@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct GrepFormatter;
@@ -31,7 +31,7 @@ impl ToolFormatter for GrepFormatter {
         if let Some(p) = path {
             fields.push(ToolField {
                 label: "path".to_string(),
-                value: short_path(&p),
+                value: p,
             });
         }
         if let Some(g) = glob {
@@ -128,9 +128,9 @@ mod tests {
             .iter()
             .map(|f| (f.label.as_str(), f.value.as_str()))
             .collect();
-        // path is short_path-shortened; assert by key presence + value substring.
-        let path_value = pairs.iter().find(|(l, _)| *l == "path").expect("path field").1;
-        assert!(path_value.ends_with("src"), "path field shortened: {path_value}");
+        // Path is forwarded verbatim — the frontend handles any
+        // ellipsing for display.
+        assert!(pairs.contains(&("path", "/home/u/proj/src")));
         assert!(pairs.contains(&("glob", "*.rs")));
         assert!(pairs.contains(&("type", "rust")));
         assert!(pairs.contains(&("mode", "content")));

@@ -1,7 +1,7 @@
 //! opencode's `grep` tool. RawInput: `{ pattern, path?, include? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct GrepFormatter;
@@ -13,7 +13,7 @@ impl ToolFormatter for GrepFormatter {
         let include = pick::<String>(ctx.raw_input, "include").filter(|s| !s.is_empty());
 
         let title = match (pattern.as_deref(), path.as_deref()) {
-            (Some(p), Some(root)) => format!("grep · {} in {}", p, short_path(root)),
+            (Some(p), Some(root)) => format!("grep · {} in {}", p, root),
             (Some(p), None) => format!("grep · {}", p),
             _ => "grep".to_string(),
         };

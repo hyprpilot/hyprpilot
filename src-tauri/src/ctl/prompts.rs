@@ -22,7 +22,7 @@ pub enum PromptsCommand {
     /// Send a prompt. `--instance` is overloaded:
     ///  - UUID or existing captain-set name → target that instance.
     ///  - Slug-shaped value (lowercase, `[a-z0-9][a-z0-9_-]*`,
-    ///    ≤16 chars) that doesn't match any live instance →
+    ///    ≤64 chars) that doesn't match any live instance →
     ///    auto-spawn a new instance and rename it to that slug.
     ///  - Anything else → error.
     ///

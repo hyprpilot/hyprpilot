@@ -1,7 +1,7 @@
 //! opencode's `glob` tool. RawInput: `{ pattern, path? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct GlobFormatter;
@@ -12,7 +12,7 @@ impl ToolFormatter for GlobFormatter {
         let path = pick::<String>(ctx.raw_input, "path").filter(|s| !s.is_empty());
 
         let title = match (pattern.as_deref(), path.as_deref()) {
-            (Some(p), Some(root)) => format!("glob · {} in {}", p, short_path(root)),
+            (Some(p), Some(root)) => format!("glob · {} in {}", p, root),
             (Some(p), None) => format!("glob · {}", p),
             _ => "glob".to_string(),
         };

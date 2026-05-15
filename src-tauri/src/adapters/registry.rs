@@ -170,10 +170,15 @@ impl<H: InstanceActor> AdapterRegistry<H> {
     /// v4 parse first; on miss, scans live instances for a matching
     /// captain-set `name`. Returns `None` when neither matches.
     ///
-    /// The two-stage lookup is unambiguous because `validate_instance_name`
-    /// caps names at 16 chars (UUIDs are 36) and rejects hyphens-only-
-    /// at-positions-8/13/18/23 — no slug-form name can collide with
-    /// a hyphenated UUID's shape.
+    /// The two-stage lookup is unambiguous in practice: `InstanceKey::parse`
+    /// uses the strict `Uuid` parser (36 chars, hex + hyphens at
+    /// positions 8/13/18/23), so any slug-form name that doesn't match
+    /// that exact shape falls through to the name lookup naturally. A
+    /// captain could theoretically pick a 36-char name that happens to
+    /// be UUID-shaped (hex-only + hyphens at the right offsets); the
+    /// resolver would then prefer the UUID interpretation, miss the
+    /// live key, and return `None`. Practically impossible to hit by
+    /// accident — leave it.
     pub async fn resolve_token(&self, token: &str) -> Option<InstanceKey> {
         if let Ok(key) = InstanceKey::parse(token) {
             let instances = self.instances.lock().await;

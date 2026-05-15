@@ -4,7 +4,7 @@
 //! captain reads the impending change inline.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct NotebookEditFormatter;
@@ -18,7 +18,7 @@ impl ToolFormatter for NotebookEditFormatter {
         let new_source = pick::<String>(ctx.raw_input, "new_source").filter(|s| !s.is_empty());
 
         let title = match path.as_deref() {
-            Some(p) => format!("notebook · {}", short_path(p)),
+            Some(p) => format!("notebook · {}", p),
             None => "notebook".to_string(),
         };
 
@@ -105,11 +105,9 @@ mod tests {
         let content: Vec<serde_json::Value> = Vec::new();
         let out = NotebookEditFormatter.format(&ctx(&raw, &content));
 
-        // `short_path` only trims when the path has many segments;
-        // `/tmp/nb.ipynb` round-trips. Assert by suffix to stay
-        // independent of `short_path`'s exact policy.
-        assert!(out.title.starts_with("notebook · "));
-        assert!(out.title.ends_with("nb.ipynb"));
+        // Path is forwarded verbatim — the frontend handles any
+        // ellipsing for display. Assert exact match.
+        assert_eq!(out.title, "notebook · /tmp/nb.ipynb");
         let desc = out.description.as_deref().expect("description must be populated");
 
         assert!(desc.starts_with("```python\n"));

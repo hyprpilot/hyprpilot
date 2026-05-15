@@ -4,7 +4,7 @@
 //! extension resolves; `\`\`\`diff` fallback otherwise).
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct EditFormatter;
@@ -17,7 +17,7 @@ impl ToolFormatter for EditFormatter {
         let new_text = pick::<String>(ctx.raw_input, "newString").unwrap_or_default();
 
         let title = match path.as_deref() {
-            Some(p) => format!("edit · {}", short_path(p)),
+            Some(p) => format!("edit · {}", p),
             None => "edit".to_string(),
         };
 

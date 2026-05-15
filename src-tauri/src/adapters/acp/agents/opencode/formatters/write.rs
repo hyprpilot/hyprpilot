@@ -1,7 +1,7 @@
 //! opencode's `write` tool. RawInput: `{ filePath, content }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, line_magnitudes, pick, short_path};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, line_magnitudes, pick};
 use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct WriteFormatter;
@@ -12,7 +12,7 @@ impl ToolFormatter for WriteFormatter {
         let body = pick::<String>(ctx.raw_input, "content");
 
         let title = match path.as_deref() {
-            Some(p) => format!("write · {}", short_path(p)),
+            Some(p) => format!("write · {}", p),
             None => "write".to_string(),
         };
 

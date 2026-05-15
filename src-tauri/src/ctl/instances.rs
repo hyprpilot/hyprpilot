@@ -72,7 +72,7 @@ pub enum InstancesSubcommand {
         mode: Option<String>,
         #[arg(long)]
         model: Option<String>,
-        /// Captain-set name to apply post-spawn (slug, ≤16 chars).
+        /// Captain-set name to apply post-spawn (slug, ≤64 chars).
         #[arg(long)]
         name: Option<String>,
         /// Present the overlay focused on the freshly-spawned instance

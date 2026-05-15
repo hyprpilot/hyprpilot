@@ -350,17 +350,17 @@ mod tests {
     }
 
     /// Empty `attachments` parses and falls through to the same
-    /// resolve-or-spawn path as a bare prompt. Empty registry +
-    /// UUID-shaped id is not slug-validatable, so the call rejects at
-    /// the resolution step with the standard not-found message — not
-    /// at the parse step. Pinning the resolution-error path (not the
-    /// parse-error path) is what proves `attachments: []` is accepted.
+    /// resolve-or-spawn path as a bare prompt. The instance id is
+    /// longer than the 64-char slug ceiling, so the call rejects at
+    /// the resolution step with the slug-validation error — not at
+    /// the parse step. Pinning the resolution-error path is what
+    /// proves `attachments: []` is accepted by the parser.
     #[tokio::test]
     async fn send_accepts_empty_attachments() {
         let v = dispatch(
             "prompts/send",
             json!({
-                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "instanceId": "this-name-is-deliberately-longer-than-the-sixty-four-character-slug-ceiling",
                 "text": "hi",
                 "attachments": [],
             }),
@@ -376,13 +376,13 @@ mod tests {
 
     /// Populated `attachments` parses (same field shape as
     /// `tauri/session_submit`). Reaches the resolution step, where
-    /// the synthetic UUID-shape id rejects.
+    /// the over-cap slug id rejects.
     #[tokio::test]
     async fn send_accepts_attachments() {
         let v = dispatch(
             "prompts/send",
             json!({
-                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "instanceId": "this-name-is-deliberately-longer-than-the-sixty-four-character-slug-ceiling",
                 "text": "see attached",
                 "attachments": [
                     {

@@ -3,7 +3,7 @@
 //! block keyed off the path's language.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{lang_from_path, pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{lang_from_path, pick, text_blocks};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct ReadFormatter;
@@ -14,17 +14,14 @@ impl ToolFormatter for ReadFormatter {
         let offset = pick::<i64>(ctx.raw_input, "offset");
         let limit = pick::<i64>(ctx.raw_input, "limit");
 
-        let trimmed = if path.is_empty() {
-            String::new()
-        } else {
-            short_path(&path)
-        };
-
-        let title = if !trimmed.is_empty() {
+        // Pass the path through verbatim — the UI owns truncation
+        // (CSS `text-overflow: ellipsis`, mid-path elision, hover-to-expand,
+        // whatever frontend wants). Daemon shouldn't pre-shorten.
+        let title = if !path.is_empty() {
             match (offset, limit) {
-                (Some(o), Some(l)) => format!("read · {} (lines {}..{})", trimmed, o, o + l),
-                (Some(o), None) => format!("read · {} (from {})", trimmed, o),
-                _ => format!("read · {}", trimmed),
+                (Some(o), Some(l)) => format!("read · {} (lines {}..{})", path, o, o + l),
+                (Some(o), None) => format!("read · {} (from {})", path, o),
+                _ => format!("read · {}", path),
             }
         } else {
             "read".to_string()
