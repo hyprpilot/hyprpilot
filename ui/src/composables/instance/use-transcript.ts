@@ -46,6 +46,14 @@ export interface AgentTurn extends Turn {
   /// the same `Attachments` chat component renders both. Empty
   /// array when the agent didn't attach anything.
   attachments: Attachment[]
+  /// Most-recent vendor-emitted `messageId` on this turn's stream.
+  /// Tracked so the chunk-fold logic can detect content-block
+  /// boundaries and inject a markdown paragraph break (`\n\n`) when
+  /// the next chunk's id changes — without it, vendors that switch
+  /// ids mid-turn (Claude / Codex emit fresh ids per content block)
+  /// concat blocks with no separator and markdown renders one
+  /// run-on paragraph instead of two.
+  lastChunkMessageId?: string
 }
 
 export type ChatTurnItem = UserTurn | AgentTurn
@@ -119,6 +127,76 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
   }
 }
 
+/// Pick the prefix that turns the existing text + new chunk into a
+/// well-formed markdown paragraph boundary. Returns `''` when no
+/// separator is needed (existing already ends in `\n\n`, or the new
+/// chunk leads with `\n\n`, or the existing is empty). Otherwise
+/// returns `\n` (existing ended on a single `\n`) or `\n\n`.
+function paragraphSeparator(existing: string, incoming: string): string {
+  if (existing.length === 0) {
+    return ''
+  }
+
+  if (existing.endsWith('\n\n') || incoming.startsWith('\n\n')) {
+    return ''
+  }
+
+  return existing.endsWith('\n') ? '\n' : '\n\n'
+}
+
+/// Append a chunk onto an open agent turn (or open a fresh one).
+/// Extracted from `pushTranscriptChunk` to keep its cyclomatic
+/// complexity under the project lint ceiling. The boundary heuristic
+/// lives here too: a new vendor messageId on the open turn is the
+/// signal that a content block ended, and markdown needs `\n\n`
+/// between blocks or the captain reads two paragraphs as one.
+function foldAgentChunk(
+  instanceId: InstanceId,
+  slot: TranscriptState,
+  sessionId: string,
+  seq: number,
+  text: string,
+  messageId: string | undefined,
+  attachments: Attachment[]
+): void {
+  const openId = slot.openAgentBySession.get(sessionId)
+  const target = openId !== undefined ? slot.turns.find((t): t is AgentTurn => t.role === TurnRole.Agent && t.sessionId === sessionId && t.id === openId) : undefined
+
+  if (target) {
+    const newBlock = messageId !== undefined && target.lastChunkMessageId !== undefined && target.lastChunkMessageId !== messageId
+
+    if (newBlock) {
+      target.text += paragraphSeparator(target.text, text)
+    }
+    target.text += text
+    target.updatedAt = seq
+
+    if (messageId !== undefined) {
+      target.lastChunkMessageId = messageId
+    }
+
+    if (attachments.length > 0) {
+      target.attachments = [...target.attachments, ...attachments]
+    }
+
+    return
+  }
+  const agentId = messageId ?? `agent-${sessionId}-${slot.turns.length}`
+
+  slot.turns.push({
+    role: TurnRole.Agent,
+    id: agentId,
+    sessionId,
+    turnId: openTurnIdFor(instanceId, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    text,
+    attachments,
+    lastChunkMessageId: messageId
+  })
+  slot.openAgentBySession.set(sessionId, agentId)
+}
+
 // ── Internal store-mutation surface ───────────────────────────────
 // Sibling-store wire-listener inputs. CLAUDE.md "Two-tier composables".
 
@@ -145,35 +223,7 @@ export function pushTranscriptChunk(id: InstanceId, sessionId: string, raw: Chun
   // turn — both of which broke the old "last + role match" merge and
   // left the captain reading the reply as multiple cards.
   if (role === TurnRole.Agent) {
-    const openId = slot.openAgentBySession.get(sessionId)
-
-    if (openId) {
-      const target = slot.turns.find((t): t is AgentTurn => t.role === TurnRole.Agent && t.sessionId === sessionId && t.id === openId)
-
-      if (target) {
-        target.text += text
-        target.updatedAt = seq
-
-        if (raw.attachments && raw.attachments.length > 0) {
-          target.attachments = [...target.attachments, ...raw.attachments]
-        }
-
-        return
-      }
-    }
-    const agentId = hasExplicitId ? (raw.messageId as string) : `agent-${sessionId}-${slot.turns.length}`
-
-    slot.turns.push({
-      role: TurnRole.Agent,
-      id: agentId,
-      sessionId,
-      turnId: openTurnIdFor(id, sessionId),
-      createdAt: seq,
-      updatedAt: seq,
-      text,
-      attachments: raw.attachments ?? []
-    })
-    slot.openAgentBySession.set(sessionId, agentId)
+    foldAgentChunk(id, slot, sessionId, seq, text, raw.messageId, raw.attachments ?? [])
 
     return
   }

@@ -69,20 +69,22 @@ describe('useTranscript', () => {
     expect(useTranscript('nonexistent').turns.value).toEqual([])
   })
 
-  it('folds agent chunks with different messageIds into the open agent turn', () => {
+  it('folds agent chunks with different messageIds into the open agent turn with markdown paragraph breaks', () => {
     // Vendors swap messageIds mid-turn (Claude / Codex emit fresh ids
     // per content block). Without the open-agent tracker, every id
-    // change spawned a fresh card; the captain reads one logical
-    // reply as a stack of micro-cards. Pin the contract: across
-    // distinct ids in the same turn the chunks fold.
-    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'first ', 'm-1'))
-    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'block ', 'm-2'))
+    // change spawned a fresh card; the captain read one logical reply
+    // as a stack of micro-cards. Now distinct ids in the same turn
+    // fold into one card AND get `\n\n` between each block so markdown
+    // renders them as separate paragraphs (the captain's screenshot
+    // bug — three blocks were running together as one paragraph).
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'first', 'm-1'))
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'block', 'm-2'))
     pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'block', 'm-3'))
 
     const turns = useTranscript('A').turns.value
 
     expect(turns).toHaveLength(1)
-    expect(turns[0]?.text).toBe('first block block')
+    expect(turns[0]?.text).toBe('first\n\nblock\n\nblock')
   })
 
   it('folds agent chunks after a user prompt lands between them', () => {
@@ -101,6 +103,45 @@ describe('useTranscript', () => {
 
     expect(agentTurns).toHaveLength(1)
     expect(agentTurns[0]?.text).toBe('agent-part-1-part-2')
+  })
+
+  it('inserts a paragraph break between merged agent chunks with different messageIds', () => {
+    // Captain's screenshot bug: a single agent turn folded from two
+    // vendor content blocks (distinct messageIds) used to render as
+    // one markdown paragraph because the join was bare text. Pin the
+    // contract: when the second chunk's messageId differs from what
+    // we last folded, prepend `\n\n` so markdown sees a paragraph
+    // boundary.
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'First paragraph.', 'm-1'))
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'Second paragraph.', 'm-2'))
+
+    const agentTurn = useTranscript('A').turns.value.find((t) => t.role === TurnRole.Agent)
+
+    expect(agentTurn?.text).toBe('First paragraph.\n\nSecond paragraph.')
+  })
+
+  it('does not duplicate paragraph break when an existing one is already present', () => {
+    // The vendor sometimes ends its own content block with `\n\n`
+    // before swapping messageId on the next one. Don't stack another
+    // separator on top — that would render as three blank lines.
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'First paragraph.\n\n', 'm-1'))
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'Second paragraph.', 'm-2'))
+
+    const agentTurn = useTranscript('A').turns.value.find((t) => t.role === TurnRole.Agent)
+
+    expect(agentTurn?.text).toBe('First paragraph.\n\nSecond paragraph.')
+  })
+
+  it('does not insert a paragraph break when consecutive chunks share a messageId', () => {
+    // Multi-chunk content-block stream within one paragraph (vendor
+    // streams a long sentence token-by-token). Same messageId = same
+    // content block = no separator.
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'hello ', 'm-1'))
+    pushTranscriptChunk('A', 's-a', chunk('agent_message_chunk', 'world', 'm-1'))
+
+    const agentTurn = useTranscript('A').turns.value.find((t) => t.role === TurnRole.Agent)
+
+    expect(agentTurn?.text).toBe('hello world')
   })
 
   it('closeTranscriptTurn opens a fresh agent block for the next chunk', () => {
