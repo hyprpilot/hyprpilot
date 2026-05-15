@@ -171,6 +171,21 @@ const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 // auto-scroll window so cache cleanup is prompt without
 // disturbing the read-history flow.
 
+// **Window-focus → scroll-to-end.** Captain explicitly asked: when
+// they switch away from the overlay (alt-tab, Hyprland keybind
+// hide/show, browser tab swap on remote) and come back, the chat
+// surface should be at the latest message, not wherever the cursor
+// was. Tauri 2 propagates window focus to the DOM `focus` event;
+// the remote-bridge browser context already fires it natively. We
+// defer to `nextTick` so the layout has a chance to settle —
+// `scrollHeight` could be stale if a `useStickToBottom` MutationObserver
+// pass is queued from chunks that landed while we were unfocused.
+useEventListener(window, 'focus', () => {
+  void nextTick(() => {
+    scrollToBottom()
+  })
+})
+
 /// Floating chevron click — drop extra pages, await Vue's DOM
 /// patch, THEN jump to the foot. Eviction shrinks `data.pages`
 /// from the OLDEST entry, which renders at the TOP of the DOM
