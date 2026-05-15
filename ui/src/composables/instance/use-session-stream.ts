@@ -21,7 +21,7 @@ import {
 import { closeTurn, deleteStreamByTurnId, pushConfigOptionChange, pushModeChange, pushPlan, pushSystemPromptInjected, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
-import { deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
+import { closeTranscriptTurn, deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
 import { markThinkingEnd, markThinkingStart, pushTurnEnded, pushTurnStarted, pushUsageUpdate } from './use-turns'
 import { recordInstanceState, useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useComposer } from '../composer/use-composer'
@@ -293,9 +293,11 @@ export async function startSessionStream(): Promise<() => void> {
         startedAt
       })
       // The TurnStarted signal owns the per-turn aggregation reset.
-      // Each new turn opens fresh thought / plan items so chunked
-      // updates within the turn merge cleanly into one block each.
+      // Each new turn opens fresh thought / plan items + a fresh
+      // agent turn in the transcript store, so chunked updates within
+      // the turn merge cleanly into one block each.
       closeTurn(instanceId, sessionId)
+      closeTranscriptTurn(instanceId, sessionId)
       pushTurnStarted(instanceId, {
         turnId,
         sessionId,
