@@ -355,6 +355,16 @@ pub enum InstanceEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
     },
+    /// Per-instance queue state changed — captain enqueued / removed
+    /// / reordered / dispatched / cleared. Carries the full
+    /// post-change item list (idempotent on lossy broadcast: a
+    /// re-delivered event lands on a Map keyed by `id` without
+    /// duplicating). See [`crate::adapters::queue`] for the contract.
+    QueueChanged {
+        agent_id: String,
+        instance_id: String,
+        items: Vec<crate::adapters::queue::QueueItem>,
+    },
 }
 
 /// Display-friendly snapshot of one ACP `SessionMode`. Mirrors
@@ -473,6 +483,7 @@ impl InstanceEvent {
             InstanceEvent::ConfigOptionsUpdate { .. } => "instance.config_options_update",
             InstanceEvent::InstanceMeta { .. } => "instance.meta",
             InstanceEvent::SystemPromptInjected { .. } => "instance.system_prompt_injected",
+            InstanceEvent::QueueChanged { .. } => "instance.queue_changed",
         }
     }
 
@@ -502,6 +513,7 @@ impl InstanceEvent {
             InstanceEvent::ConfigOptionsUpdate { .. } => "acp:config-options-update",
             InstanceEvent::InstanceMeta { .. } => "acp:instance-meta",
             InstanceEvent::SystemPromptInjected { .. } => "acp:system-prompt-injected",
+            InstanceEvent::QueueChanged { .. } => "acp:queue-changed",
         }
     }
 
@@ -525,7 +537,8 @@ impl InstanceEvent {
             | InstanceEvent::UsageUpdate { instance_id, .. }
             | InstanceEvent::ConfigOptionsUpdate { instance_id, .. }
             | InstanceEvent::InstanceMeta { instance_id, .. }
-            | InstanceEvent::SystemPromptInjected { instance_id, .. } => Some(instance_id),
+            | InstanceEvent::SystemPromptInjected { instance_id, .. }
+            | InstanceEvent::QueueChanged { instance_id, .. } => Some(instance_id),
             InstanceEvent::InstancesChanged { .. }
             | InstanceEvent::InstancesFocused { .. }
             | InstanceEvent::DaemonReloaded { .. } => None,
@@ -825,6 +838,22 @@ mod instance_list_entry_tests {
         for (evt, want) in cases {
             assert_eq!(evt.event_name(), *want);
         }
+    }
+
+    /// `QueueChanged` rides on `acp:queue-changed` (Tauri / WS event
+    /// name) and `instance.queue_changed` (snapshot topic). Pin both —
+    /// hyprpilot-nvim + the Vue UI key off the canonical strings.
+    #[test]
+    fn queue_changed_event_carries_canonical_strings() {
+        let evt = InstanceEvent::QueueChanged {
+            agent_id: "claude-code".into(),
+            instance_id: "i-1".into(),
+            items: Vec::new(),
+        };
+
+        assert_eq!(evt.event_name(), "acp:queue-changed");
+        assert_eq!(evt.topic(), "instance.queue_changed");
+        assert_eq!(evt.instance_id(), Some("i-1"));
     }
 
     /// `instance_id` returns `None` for daemon-global events and

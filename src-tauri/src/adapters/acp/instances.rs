@@ -1678,6 +1678,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::ConfigOptionsUpdate { .. } => "acp:config-options-update",
         GenEvt::InstanceMeta { .. } => "acp:instance-meta",
         GenEvt::SystemPromptInjected { .. } => "acp:system-prompt-injected",
+        GenEvt::QueueChanged { .. } => "acp:queue-changed",
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {

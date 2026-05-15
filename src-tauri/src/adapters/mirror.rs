@@ -201,6 +201,10 @@ pub struct MirrorInner {
     /// — at typical session lengths this is bounded enough not to
     /// warrant explicit eviction yet.
     pub turns: Vec<TurnSnapshot>,
+    /// Cached snapshot of the per-instance submit queue. Replaced
+    /// wholesale on every `QueueChanged` event; snapshot reads serve
+    /// from this without an actor round-trip. Empty by default.
+    pub queue: Vec<crate::adapters::queue::QueueItem>,
 }
 
 /// Mutable backing for [`MetaSnapshot`]. Mirrors the existing
@@ -488,6 +492,18 @@ impl InstanceMirror {
             // * `DaemonReloaded` — daemon-global, not per-instance.
             // * `SystemPromptInjected` — banner-only event; the file
             //   list isn't part of the snapshot wire shape today.
+            // ── queue ────────────────────────────────────────────
+            //
+            // Full-state replace, idempotent on lossy broadcast: a
+            // re-delivered event with the same items is a no-op (Vec
+            // equality), and a stale event landing after a newer one
+            // is a hold-down (the next live mutation re-broadcasts
+            // the canonical state). Frontends key off `enqueued_seq`
+            // for ordering; the mirror just preserves wire order.
+            InstanceEvent::QueueChanged { items, .. } => {
+                g.queue = items.clone();
+            }
+
             InstanceEvent::State { .. }
             | InstanceEvent::InstancesChanged { .. }
             | InstanceEvent::InstancesFocused { .. }
@@ -568,6 +584,16 @@ impl InstanceMirror {
         TerminalsSnapshot {
             terminals: g.terminals.clone(),
         }
+    }
+
+    /// Read the per-instance queue snapshot. Cheap clone of the cached
+    /// `Vec<QueueItem>` — same as `chat_snapshot` / `terminals_snapshot`,
+    /// no actor round-trip. Serves `queue/list` RPC + Tauri
+    /// `queue_list` command + first-observation hydration in the Vue
+    /// UI's `use-queue.ts`.
+    pub async fn queue_snapshot(&self) -> Vec<crate::adapters::queue::QueueItem> {
+        let g = self.inner.read().await;
+        g.queue.clone()
     }
 }
 
@@ -1480,5 +1506,65 @@ mod tests {
         assert_eq!(term.stderr, "ERR");
         assert!(!term.running);
         assert_eq!(term.exit_code, Some(0));
+    }
+
+    fn sample_queue_item(id: &str, seq: u64) -> crate::adapters::queue::QueueItem {
+        crate::adapters::queue::QueueItem {
+            id: id.into(),
+            text: format!("text-{id}"),
+            attachments: vec![],
+            enqueued_seq: seq,
+            enqueued_at: seq as i64,
+        }
+    }
+
+    /// Each `QueueChanged` replaces the cache wholesale. The mirror
+    /// does not merge / preserve old entries — clients reconcile by
+    /// replacement.
+    #[tokio::test]
+    async fn mirror_queue_apply_overwrites_with_full_state() {
+        let mirror = InstanceMirror::new();
+        mirror
+            .apply(&InstanceEvent::QueueChanged {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                items: vec![sample_queue_item("q-1", 1)],
+            })
+            .await;
+        assert_eq!(mirror.queue_snapshot().await.len(), 1);
+
+        mirror
+            .apply(&InstanceEvent::QueueChanged {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                items: vec![sample_queue_item("q-2", 2), sample_queue_item("q-3", 3)],
+            })
+            .await;
+        let snap = mirror.queue_snapshot().await;
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].id, "q-2");
+        assert_eq!(snap[1].id, "q-3");
+    }
+
+    /// Empty `QueueChanged` clears the cache (captain's `queue/clear`
+    /// path). Mirror remains a faithful echo of the wire-side state.
+    #[tokio::test]
+    async fn mirror_queue_apply_with_empty_items_clears_the_cache() {
+        let mirror = InstanceMirror::new();
+        mirror
+            .apply(&InstanceEvent::QueueChanged {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                items: vec![sample_queue_item("q-1", 1)],
+            })
+            .await;
+        mirror
+            .apply(&InstanceEvent::QueueChanged {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                items: vec![],
+            })
+            .await;
+        assert_eq!(mirror.queue_snapshot().await.len(), 0);
     }
 }
