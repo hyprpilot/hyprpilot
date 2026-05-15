@@ -10,6 +10,42 @@ export interface RenderedMarkdown {
   html: string
 }
 
+/**
+ * Force a markdown paragraph boundary at the splice point. Returns
+ * the prefix to insert between `existing` and `incoming` so the
+ * joined text reads as two paragraphs in rendered markdown:
+ *
+ * - `''` — existing is empty, or already ends with `\n\n`, or
+ *   incoming leads with `\n\n` (already paragraph-shaped).
+ * - `'\n'` — existing ends with exactly one `\n`; one more lifts it
+ *   over the paragraph threshold.
+ * - `'\n\n'` — otherwise.
+ *
+ * Use at **explicit content-block boundaries** where the caller
+ * knows two chunks should render as separate paragraphs. Calling on
+ * every token boundary would split mid-sentence bursts like
+ * `"Hello, "` + `"world"` into two paragraphs.
+ *
+ * Frontends generally do NOT call this directly — the daemon now
+ * bakes the lift prefix onto every `AgentText` / `AgentThought`
+ * chunk it emits (`adapters/acp/paragraph.rs` +
+ * `TurnState::note_agent_text`), so any concatenation across chunks
+ * already renders correctly. Kept here for the live `use-transcript`
+ * accumulator path which mirrors the same intent on a hypothetical
+ * future messageId-aware fold.
+ */
+export function paragraphSeparator(existing: string, incoming: string): string {
+  if (existing.length === 0) {
+    return ''
+  }
+
+  if (existing.endsWith('\n\n') || incoming.startsWith('\n\n')) {
+    return ''
+  }
+
+  return existing.endsWith('\n') ? '\n' : '\n\n'
+}
+
 const DEFAULT_THEME: BundledTheme = 'one-dark-pro'
 
 let highlighterPromise: Promise<Highlighter> | undefined

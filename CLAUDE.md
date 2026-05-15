@@ -845,6 +845,31 @@ the wire router OR a sibling instance store. Each instance composable
 carries a comment header above its mutation block
 (`// ── Internal store-mutation surface ───`).
 
+#### Module-level singletons for wire listeners
+
+A third shape sits alongside the two tiers above: **module-level
+listener singletons** that own a `listen(...)` registration for the
+SPA's whole page lifetime. The canonical example is
+`transcript-patcher.ts` (`acp:transcript` + `acp:permission-resolved`
+→ `queryClient.setQueryData`). The rule that forces this shape:
+**listener-before-snapshot ordering**. The remote WS bridge
+auto-subscribes events at handshake time, so frames flow the moment
+auth completes; if the listener lives inside a composable's IIFE,
+the listener only wires when that composable mounts — after auth,
+after `applyBootSnapshot`, after `Overlay.vue` mounts. Every frame
+arriving in the gap dispatches to no listeners and gets dropped at
+`remote-bridge.ts::onMessage`. Hoisting the listener to a module-
+level singleton wired from `main.ts` BEFORE `applyBootSnapshot`
+closes the gap.
+
+Singletons of this shape carry: a `startFoo(queryClient): Promise<() => void>`
+boot entry (idempotent, returns a teardown thunk), a
+`__resetFooForTests` reset for vitest, and per-event pending queues
+that drain via `queueMicrotask` so a `session/load` replay storm
+collapses into one `setQueryData` call per cache key. They do NOT
+read `useQueryClient()` — the boot passes a `QueryClient` ref in
+explicitly so the singleton works outside Vue's setup context.
+
 ### Icons — direct imports only, no `library.add(...)` registry
 
 FontAwesome `library.add(...)` is **forbidden**. Each component imports
@@ -1071,15 +1096,26 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   feedback as user text so the agent reads the rejection's "why"
   on its next turn.
 - **`prompts/{send, cancel}`** — per-instance scripting surface.
-  `send` accepts `{ instanceId | name, text }`; the request adopts the
-  client-minted instance id verbatim. `cancel` interrupts the active
-  turn. **Reply shape**: `{ accepted, disposition: "sent" | "queued"
-  | "drafted", wasBusy, instanceId, sessionId, turnId? }`.
-  `disposition: "queued"` (with `wasBusy: true`) means the prompt
-  landed in the actor's command channel behind an existing turn —
-  second-frontends use this to render a "queued behind running
-  turn" UI without re-implementing busy detection. `"drafted"`
-  short-circuits the dispatch and emits `composer:draft-append`.
+  `send` accepts `{ instanceId | name?, text }`. **Instance
+  identity is daemon-owned**: when `instanceId` is omitted the
+  daemon mints via `InstanceKey::new_v4()` (`acp/instances.rs`
+  `submit_prompt` fallback) and returns the issued id on the
+  reply. Frontends MUST NOT mint UUIDs client-side and ship them
+  optimistically — the chrome that keys off `instanceId`
+  (`<ChatViewport>`'s `:key`, the snapshot-cache key, palette
+  rows) all flip onto a value that doesn't exist server-side until
+  the spawn task lands; the resulting `instance_snapshot_chat`
+  call races the spawn and returns `-32602 not found in registry`,
+  stranding the cache. Read the daemon-issued id off the reply
+  and only THEN pin it onto the active-instance pointer. `cancel`
+  interrupts the active turn. **Reply shape**: `{ accepted,
+  disposition: "sent" | "queued" | "drafted", wasBusy, instanceId,
+  sessionId, turnId? }`. `disposition: "queued"` (with
+  `wasBusy: true`) means the prompt landed in the actor's command
+  channel behind an existing turn — second-frontends use this to
+  render a "queued behind running turn" UI without re-implementing
+  busy detection. `"drafted"` short-circuits the dispatch and emits
+  `composer:draft-append`.
 - **`status/*`** — `get` (one-shot), `subscribe` (registers connection;
   server pushes `status/changed` notifications). `StatusResult`:
   `{ state: "idle" | "streaming" | "awaiting" | "error", visible, active_session }`.
@@ -1171,25 +1207,56 @@ transport reuses one `RpcDispatcher` and one event broadcast, so
 a second frontend gets full parity by speaking the wire
 contract — no daemon code changes.
 
-**Hydrate-then-subscribe** is the model. A new connection:
+**Hydrate-then-subscribe** is the model, BUT the listener must be
+wired BEFORE the first snapshot RPC fires. The remote WS bridge
+auto-subscribes to events at handshake time
+(`remote/ws.rs::dispatch_line` flips `connection_already_events_subscribed
+= true`), so broadcast frames for an in-flight turn start flowing
+the moment auth completes. A frontend that wires its listener AFTER
+the snapshot lands hits a race window where every event in the gap
+dispatches against an empty listener set and gets silently dropped
+at the transport. The Vue SPA codifies this via a module-level
+`startTranscriptPatcher(queryClient)` invocation in `main.ts`
+immediately after auth, BEFORE `applyBootSnapshot`. The nvim plugin
+does the same via `M.ensure_subscribed()` at startup. Second
+frontends MUST follow the pattern.
 
-1. Calls `instance/snapshot/meta { instanceId }` for header chrome
+A new connection:
+
+1. Wire the `events/changed` notification handler. On the WS bridge
+   this is implicit (auto-subscribed at handshake); on the unix
+   socket the frontend must call `events/subscribe { instanceId? }`
+   explicitly. Either way, the handler must be ready to dispatch
+   before step 2 fires.
+2. Calls `instance/snapshot/meta { instanceId }` for header chrome
    (mode, model, pending permissions, usage). One RPC.
-2. Calls `instance/snapshot/chat { instanceId, limit }` for the
+3. Calls `instance/snapshot/chat { instanceId, limit }` for the
    most-recent transcript page. Backward-paginates via
    `before: <oldestSeq>` cursors when the captain scrolls up.
-3. Calls `instance/snapshot/terminals { instanceId }` only when
+   `limit` defaults to 100 in both reference clients (nvim
+   `snapshot_limit = 100`, Vue `BOOT_PAGE_SIZE = 100`) — a
+   smaller initial page can leave a long session looking
+   truncated even though the daemon mirror has every turn.
+4. Calls `instance/snapshot/terminals { instanceId }` only when
    needed (the chat snapshot mentions a terminal id).
-4. Calls `events/subscribe { instanceId? }` to start receiving
-   live `events/changed` notifications. Filter scopes per-instance
-   events; daemon-global events (`daemon:reloaded`,
-   `acp:instances-changed`, `acp:instances-focused`) always pass.
 
 After the brim-sync, the client patches its in-memory model with
 each notification's payload — same shape the Tauri webview
-processes through its accumulator stores. On `events/lagged`
-(broadcast capacity exceeded), the client re-fetches via
-`instance/snapshot/chat` to bridge the gap.
+processes through its accumulator stores. Filter scopes per-instance
+events; daemon-global events (`daemon:reloaded`,
+`acp:instances-changed`, `acp:instances-focused`) always pass.
+On `events/lagged` (broadcast capacity exceeded), the client
+re-fetches via `instance/snapshot/chat` to bridge the gap.
+
+**Wire-ordering invariant**: the WS bridge's main loop runs
+`tokio::select! { biased; … }` with outbound responses polled
+BEFORE broadcast events on the same connection (`remote/ws.rs:241-
+252`). Consequence: any event emitted before the snapshot response
+is sent appears on the wire BEFORE the response, and any event
+emitted after the snapshot read appears AFTER. A client patching
+events into the cache can therefore drop frames seen with no cache
+present (they're presumed to be in the upcoming snapshot) — the
+ordering guarantee is what makes that drop correct.
 
 **Action surface** (writes from the client back to the daemon)
 rides existing JSON-RPC verbs on the **same connection** — no
@@ -1223,6 +1290,23 @@ the local icon system (FontAwesome on the SPA; nerd-fonts on a
 Neovim plugin; no icons in `ctl`). See
 `src-tauri/src/tools/formatter/types.rs::FormattedToolCall` for
 the schema.
+
+**Streamed-chunk markdown-paragraph lift**: every `AgentText` and
+`AgentThought` chunk on the wire is **concatenation-safe**.
+Frontends append chunks verbatim and get well-formed markdown.
+The daemon's `acp::paragraph::soft_lift_prefix` runs at emit time
+on the per-turn `TurnState::note_agent_text` / `note_agent_thought`
+counter: when the accumulated tail of the open turn's agent text
+ends on a single `\n` and the next chunk's text doesn't lead with
+one, the daemon prepends `\n` to the outgoing text before the
+event fires and before the mirror persists. Net effect: a vendor
+emitting `"Para 1.\n"` + `"Para 2."` as two `agent_message_chunk`
+notifications produces wire chunks `"Para 1.\n"` + `"\nPara 2."`,
+and the concat reads as two paragraphs in any markdown renderer.
+Soft-lift only: never injects a break on a non-newline boundary,
+so streaming token bursts (`"Hello, "` + `"world"`) emit verbatim
+without splitting mid-sentence. Counter resets on every
+`open_real` / `open_synthetic`.
 
 **Existing client implementations**:
 
@@ -1440,8 +1524,14 @@ Client-side auto-accept / auto-reject lives on the
 `PermissionController` as a two-lane pipeline:
 
 1. **Runtime trust store** — `(instance_id, tool_name) → Allow|Deny`,
-   populated by "always allow" / "always deny" buttons via
-   `permission_reply { remember }`. Cleared on instance shutdown /
+   populated when the captain picks an option whose ACP `kind` is
+   `allow_always` / `reject_always`. No separate `remember` / `tool`
+   / `instanceId` fields on the wire — `permission_reply` (and the
+   JSON-RPC `permissions/respond` peer) accepts
+   `{ sessionId, requestId, optionId, feedback? }`; the daemon reads
+   the picked option's kind off the originating
+   `session/request_permission` set and writes the trust store when
+   the kind is `_always`-shaped. Cleared on instance shutdown /
    restart. In-memory only.
 2. **Per-server hyprpilot extension globs** — each MCP JSON entry's
    optional `hyprpilot.autoAcceptTools` / `autoRejectTools`. Tool→server
@@ -1450,27 +1540,81 @@ Client-side auto-accept / auto-reject lives on the
 Reject beats accept inside each lane. Vendor-native tools (Bash, Read,
 …) skip lane 2 entirely. Misses on both lanes fall through to AskUser.
 
+**`defaultOptionId` on every pending row + `acp:permission-request`
+event**: the daemon picks the allow-shaped option (via
+`pick_allow_option_id`) so frontends render the default highlight +
+`Enter`-commit target without re-implementing the matcher. `undefined`
+when the agent offered no allow-shaped option.
+
+**Reject feedback follow-up**: when the picked option is reject-shaped
+AND `feedback` is non-empty, the daemon dispatches a synthetic
+follow-up `session/prompt` to the same instance carrying the feedback
+as user text so the agent reads the rejection's "why" on its next turn.
+
 ### Tauri commands + events (live)
 
 **Commands**: `session_submit`, `session_cancel`, `permission_reply`,
 `agents_list`, `profiles_list`, `session_list`, `session_load`. Argument
 shapes are typed in `interfaces/ipc/invoke.ts` keyed by `TauriCommand`;
 see `src-tauri/src/adapters/commands.rs` for the authoritative Rust side.
-Notable: `session_submit.instance_id` is a client-minted UUID
-(`crypto.randomUUID()`); subsequent submits pass the same id. `session_load`
-is gated on `agent_capabilities.load_session`.
+Notable: `session_submit.instance_id` is **omitted on the first
+submit** so the daemon mints (`InstanceKey::new_v4()`) and returns
+the issued id on `SubmitResult.instanceId`. The UI reads that field
+off the reply and pins it onto `useActiveInstance` only if no prior
+active id was set — the gate keeps the reply path advisory so a
+follow-up submit on a still-focused instance doesn't fight the
+daemon-pushed `acp:instances-focused` event. Subsequent submits
+pass the same id explicitly so the actor stays in continuity.
+`session_load` is gated on `agent_capabilities.load_session`.
 
-**Events**:
+**Events** — full set emitted by `InstanceEvent::event_name`
+(`adapters/instance.rs`). Every entry rides the same broadcast →
+fans out to (a) Tauri webview via `app.emit`, (b) WS peers via the
+`events_rx` arm in `remote/ws.rs`, (c) unix-socket subscribers via
+`events/changed` notifications.
 
-- `acp:transcript` `{ agent_id, instance_id, session_id, update }` — every
-  `SessionNotification`; `update` is the raw `SessionUpdate` JSON.
-- `acp:permission-request` `{ agent_id, instance_id, session_id, options }`
-  — every `session/request_permission`.
-- `acp:instance-state` `{ agent_id, instance_id, session_id?, state }` —
-  every lifecycle transition (`starting` / `running` / `ended` / `error`).
+- `acp:transcript` — every `TranscriptItem` the agent emits inside a
+  session. Carries `{ agentId, instanceId, sessionId, turnId?, item }`
+  where `item` is a typed `TranscriptItem` (`UserPrompt` / `UserText` /
+  `AgentText` / `AgentThought` / `AgentAttachment` / `Plan` / `ToolCall`
+  / `ToolCallUpdate` / `PermissionRequest` / `Unknown`).
+- `acp:permission-request` — every `session/request_permission` the
+  agent fires. Carries `defaultOptionId?` (allow-shaped option pick).
+- `acp:permission-resolved` — fires when ANY transport answers a
+  permission, so cross-frontend resolution clears the pending row
+  everywhere (desktop / remote / nvim / `ctl`).
+- `acp:instance-state` — lifecycle transitions
+  (`starting` / `running` / `ended` / `error`).
+- `acp:turn-started` / `acp:turn-ended` — turn lifecycle (used by the
+  composer's phase derivation + the chat header's elapsed chip).
+- `acp:instances-changed` — registry membership delta. Always carries
+  the full `instanceIds` array + optional `focusedId`.
+- `acp:instances-focused` — focus pointer move. Authoritative for
+  "which instance the captain is on" across frontends.
+- `acp:instance-renamed` — captain-set name updated via
+  `instances/rename`.
+- `acp:terminal` — terminal stream (`{ output, exit }` chunk kinds).
+- `acp:session-info-update` — wire `session_info_update` (title +
+  `updatedAt`).
+- `acp:current-mode-update` — wire `current_mode_update` (mode pill).
+- `acp:usage-update` — token usage + cost per turn.
+- `acp:config-options-update` — vendor config-option set (catch-all
+  for `effort` etc.).
+- `acp:instance-meta` — small projection of `MetaSnapshot` for the
+  header chrome's `useSnapshotHydration`.
+- `acp:system-prompt-injected` — fires when `inject_system_prompt`
+  ran at spawn (drives the "system prompt attached" change banner).
+- `acp:queue-changed` — per-instance prompt queue delta (the daemon
+  owns the queue since PR #67; emits on every enqueue / dispatch /
+  edit / remove).
 
 Event names use `:` (Tauri convention); the JSON-RPC wire keeps `/`;
-config uses `.`; CSS uses `-`.
+config uses `.`; CSS uses `-`. Match patcher / accumulator wiring on
+the UI side: every variant the daemon emits must have a corresponding
+listener in either the singleton patcher (`transcript-patcher.ts`,
+which owns `acp:transcript` + `acp:permission-resolved`) or the
+session-stream demuxer (`use-session-stream.ts`, which fans the rest
+into accumulator stores).
 
 ### User-turn input + attachments
 

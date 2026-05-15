@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{validate_instance_name, InstanceKey, SpawnSpec, UserTurnInput};
+use crate::completion::hydration::TokenHydrators;
 use crate::rpc::handler::{HandlerCtx, HandlerOutcome, RpcHandler};
 use crate::rpc::handlers::util::{map_adapter_err, parse_params, spawn_or_restore};
 use crate::rpc::protocol::RpcError;
@@ -94,9 +95,50 @@ impl RpcHandler for PromptsHandler {
 
         match method {
             "prompts/send" => {
-                let p: SendParams = parse_params(params, method)?;
+                let mut p: SendParams = parse_params(params, method)?;
                 if p.text.is_empty() {
                     return Err(RpcError::invalid_params("prompts/send: text must not be empty"));
+                }
+
+                // **Inline-token hydration — daemon-side, transport-
+                // agnostic.** When the caller's text contains
+                // `#{<scheme>://<value>}` tokens (`#{skills://git-commit}`
+                // and friends), resolve each match against the daemon's
+                // `TokenHydrators` registry and append the resulting
+                // `Attachment`s to whatever the caller supplied. This
+                // is the same registry the Tauri `session_submit`
+                // command + `tauri/session_submit` proxy already use —
+                // hoisting the call here means `ctl`, the nvim plugin,
+                // any future RPC client speaking `prompts/send` get
+                // attachment hydration for free WITHOUT shipping the
+                // hydrator surface into every frontend. Captain's
+                // requirement: hydration is a daemon concern; clients
+                // send raw text.
+                //
+                // Idempotent with the existing palette path: the Vue
+                // overlay pre-resolves attachments client-side via
+                // `useAttachments` and ships both `text` (with token
+                // still visible) AND `attachments`. The hydrator
+                // re-resolves the token and appends — slug duplicates
+                // are accepted today; future work can dedup on slug
+                // if it bites. Token text stays in the prompt so the
+                // captain reads the reference in the rendered chat.
+                //
+                // `ctx.app` is the Tauri `AppHandle` that owns the
+                // `TokenHydrators` state. When absent (unit-test
+                // dispatch with no Tauri host), skip hydration —
+                // captain-supplied `attachments` flow through
+                // unchanged.
+                if let Some(app) = ctx.app.as_ref() {
+                    use tauri::Manager;
+                    if let Some(hydrators) = app.try_state::<TokenHydrators>() {
+                        let hydrated = hydrators.hydrate_all(&p.text).await;
+
+                        if !hydrated.is_empty() {
+                            tracing::debug!(count = hydrated.len(), "prompts/send: hydrated tokens");
+                            p.attachments.extend(hydrated);
+                        }
+                    }
                 }
 
                 // Resolution: `instance_id` is overloaded.

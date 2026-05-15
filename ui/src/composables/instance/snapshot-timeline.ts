@@ -258,6 +258,13 @@ function tryMergeTurn(projected: ProjectedItem[], entry: TimelineEntry & { kind:
     const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => p.entry.kind === 'turn' && p.entry.turn.role === TurnRole.Agent && p.entry.turn.attachments.length === 0)
 
     if (target && target.entry.kind === 'turn') {
+      // Verbatim concat — the daemon bakes the
+      // markdown-paragraph-lift prefix onto every `AgentText` chunk
+      // it emits (see `adapters/acp/paragraph.rs` +
+      // `TurnState::note_agent_text`). Frontends just append. Doing
+      // it once on the daemon side means nvim, Vue, and any future
+      // second-frontend render the same paragraph-correct text
+      // without re-implementing the lift logic.
       target.entry.turn.text += entry.turn.text
       target.entry.turn.updatedAt = it.seq
 
@@ -296,6 +303,7 @@ function tryMergeThought(projected: ProjectedItem[], entry: TimelineStream, it: 
     const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Thought)
 
     if (target && target.entry.kind === 'stream' && target.entry.item.kind === StreamItemKind.Thought) {
+      // Verbatim concat — daemon-side lift bakes the prefix in.
       target.entry.item.text += entry.item.text
       target.entry.item.updatedAt = it.seq
 

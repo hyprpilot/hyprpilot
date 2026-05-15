@@ -84,11 +84,13 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(blocks[2].turnEntries).toHaveLength(1)
   })
 
-  it('merges streamed agent text chunks within a turn into one turnEntry', () => {
-    // Captain's bug: each agent_message_chunk landed as its own row
-    // because the snapshot ships one TranscriptItem per chunk and
-    // the projector did not merge. Live path merges via messageId;
-    // snapshot path merges by adjacency + turnId.
+  it('merges streamed agent text chunks within a turn into one turnEntry (verbatim concat)', () => {
+    // Each `agent_message_chunk` lands as a separate
+    // SeqTranscriptItem; the projector folds them by turnId. The
+    // daemon bakes any markdown-paragraph-lift prefix onto the
+    // chunk text BEFORE emission (see `adapters/acp/paragraph.rs`),
+    // so the projector just concatenates — no client-side
+    // separator logic.
     const items: SeqTranscriptItem[] = [
       userPrompt(1, 't-1', 'hey'),
       agentText(2, 't-1', 'Hey! '),
@@ -101,6 +103,25 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(blocks[1].role).toBe(Role.Assistant)
     expect(blocks[1].turnEntries).toHaveLength(1)
     expect(blocks[1].turnEntries[0].turn.text).toBe('Hey! Doing well — what\'s on your mind?')
+  })
+
+  it('preserves daemon-baked paragraph-lift prefixes when folding chunks (verbatim concat)', () => {
+    // The daemon's `TurnState::note_agent_text` prepends a `\n` to
+    // a chunk when the prior accumulated text ended with a single
+    // `\n`, lifting the boundary to `\n\n` for proper markdown
+    // paragraph rendering. The projector's job is to faithfully
+    // concatenate the chunks the daemon ships — no further
+    // mutation. This test pins that contract.
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'go'),
+      agentText(2, 't-1', 'Paragraph one.\n'),
+      agentText(3, 't-1', '\nParagraph two.')
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistant = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistant?.turnEntries).toHaveLength(1)
+    expect(assistant?.turnEntries[0].turn.text).toBe('Paragraph one.\n\nParagraph two.')
   })
 
   it('folds agent text chunks across an interleaved thought within the same turn', () => {

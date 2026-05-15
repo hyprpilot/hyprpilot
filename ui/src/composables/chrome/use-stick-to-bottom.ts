@@ -123,9 +123,35 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
       rafPending = false
       rafHandle = undefined
 
-      if (stuck.value) {
-        scrollToBottom()
-      }
+      // Engagement was decided at schedule time (line above —
+      // `if (!stuck.value) return`). Trust that decision; do NOT
+      // re-check `stuck.value` here. Captain-reported bug: sending a
+      // message while already at the bottom sometimes lost
+      // stickiness. The cause was a race in the ~16 ms gap between
+      // schedule and rAF:
+      //
+      //   1. New DOM child appended at the foot → MutationObserver
+      //      fires → schedule (stuck still true).
+      //   2. Browser-internal reflow side-effects (composer below
+      //      the viewport shrinking after submit clears the textarea
+      //      → viewport `clientHeight` grows → `scrollTop` clamped
+      //      down by the browser → `scroll` event fires).
+      //   3. `onScroll` sees `nearBottom = false` for a single frame
+      //      because the chunk that landed in step 1 hasn't fully
+      //      laid out yet → flips `stuck = false`.
+      //   4. rAF fires, re-checks `stuck.value` → false → skips
+      //      `scrollToBottom`.
+      //   5. Captain is now stranded at the previous position with
+      //      auto-follow dead.
+      //
+      // The fix: once engaged, always scroll. `scrollToBottom`'s
+      // `suppressNextScrollUpdate` flag (see top of file) absorbs
+      // the resulting scroll event and forces `stuck = true` back
+      // on. Any concurrent captain wheel/touch within 16 ms is
+      // vanishingly rare in practice; re-establishing stuck on a
+      // mutation-driven engage matches the captain's intent ("I was
+      // at the bottom; keep me there as content streams in").
+      scrollToBottom()
     })
   }
 

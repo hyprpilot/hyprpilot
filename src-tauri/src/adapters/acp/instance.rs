@@ -73,6 +73,18 @@ struct TurnState {
     /// "Internal error" with no actionable signal. With this flag we
     /// can synthesize a specific error message instead.
     output_observed: bool,
+    /// Trailing-newline count (capped at 2) of the accumulated
+    /// `AgentText` chunks for the open turn. Drives the markdown
+    /// paragraph lift in `note_agent_text` — when prior trailing == 1
+    /// and the next chunk doesn't begin with `\n`, we prepend `\n`
+    /// to the chunk so the boundary reaches `\n\n` and markdown
+    /// renders two paragraphs instead of one with a soft break. See
+    /// `acp::paragraph` for the rule.
+    agent_text_trailing: u8,
+    /// Same counter for the `AgentThought` stream — applied
+    /// independently because thoughts ride a separate rendering
+    /// surface (the thinking card) from agent text.
+    agent_thought_trailing: u8,
 }
 
 impl TurnState {
@@ -99,6 +111,8 @@ impl TurnState {
         self.current = Some(turn_id);
         self.synthetic = None;
         self.output_observed = false;
+        self.agent_text_trailing = 0;
+        self.agent_thought_trailing = 0;
     }
 
     /// Mint a synthetic turn — out-of-turn agent activity wraps under
@@ -108,6 +122,36 @@ impl TurnState {
         self.current = Some(turn_id.clone());
         self.synthetic = Some(turn_id);
         self.output_observed = false;
+        self.agent_text_trailing = 0;
+        self.agent_thought_trailing = 0;
+    }
+
+    /// Compute the markdown-paragraph lift prefix for an incoming
+    /// `AgentText` chunk AND fold the new trailing-newline count into
+    /// the running tally. Returns the prefix (`""` or `"\n"`) — the
+    /// caller is responsible for prepending it to the chunk text
+    /// before emitting / persisting.
+    ///
+    /// Mutates state regardless of whether the prefix is non-empty —
+    /// the tally must track every chunk so the NEXT chunk's lift
+    /// decision sees the right prior state.
+    fn note_agent_text(&mut self, incoming: &str) -> &'static str {
+        let prior = self.agent_text_trailing;
+        let prefix = super::paragraph::soft_lift_prefix(prior, incoming);
+
+        self.agent_text_trailing = super::paragraph::fold_trailing(prior, prefix, incoming);
+        prefix
+    }
+
+    /// `note_agent_text` for the `AgentThought` stream — independent
+    /// trailing counter since thoughts render on a separate surface
+    /// (the thinking card).
+    fn note_agent_thought(&mut self, incoming: &str) -> &'static str {
+        let prior = self.agent_thought_trailing;
+        let prefix = super::paragraph::soft_lift_prefix(prior, incoming);
+
+        self.agent_thought_trailing = super::paragraph::fold_trailing(prior, prefix, incoming);
+        prefix
     }
 
     /// Mark the current turn as having emitted at least one agent-
@@ -3196,7 +3240,7 @@ async fn run(params: RunParams) {
                                 turn_id = Some(synthetic);
                             }
                             let evt: Option<InstanceEvent> = match mapped {
-                                MappedUpdate::Transcript(item) => {
+                                MappedUpdate::Transcript(mut item) => {
                                     // Mark the current turn as having emitted
                                     // agent output — the prompt-future reads
                                     // this on completion to decide whether to
@@ -3217,6 +3261,56 @@ async fn run(params: RunParams) {
                                     ) {
                                         turn_state.write().await.note_agent_output();
                                     }
+
+                                    // Markdown-paragraph lift. Each
+                                    // `agent_message_chunk` /
+                                    // `agent_thought_chunk` is a wire
+                                    // fragment; frontends concatenate them
+                                    // verbatim. When the accumulated tail
+                                    // ends with a single `\n` and the next
+                                    // chunk doesn't begin with one, we
+                                    // prepend `\n` here so the boundary
+                                    // reaches `\n\n` (markdown paragraph
+                                    // break). Baking the prefix onto the
+                                    // outgoing chunk means every frontend
+                                    // — Vue desktop, Vue remote,
+                                    // hyprpilot.nvim, ctl — sees
+                                    // concatenation-safe text without
+                                    // having to re-implement the lift.
+                                    // Soft-lift only: never injects a break
+                                    // on a non-newline boundary, so
+                                    // streaming token bursts
+                                    // (`"Hello, "` + `"world"`) emit
+                                    // verbatim instead of splitting into
+                                    // bogus paragraphs. Per-turn counter
+                                    // resets on `open_real` /
+                                    // `open_synthetic`.
+                                    match &mut item {
+                                        crate::adapters::TranscriptItem::AgentText { text } => {
+                                            let prefix = turn_state.write().await.note_agent_text(text);
+
+                                            if !prefix.is_empty() {
+                                                let mut lifted = String::with_capacity(prefix.len() + text.len());
+
+                                                lifted.push_str(prefix);
+                                                lifted.push_str(text);
+                                                *text = lifted;
+                                            }
+                                        }
+                                        crate::adapters::TranscriptItem::AgentThought { text } => {
+                                            let prefix = turn_state.write().await.note_agent_thought(text);
+
+                                            if !prefix.is_empty() {
+                                                let mut lifted = String::with_capacity(prefix.len() + text.len());
+
+                                                lifted.push_str(prefix);
+                                                lifted.push_str(text);
+                                                *text = lifted;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+
                                     Some(InstanceEvent::Transcript {
                                         agent_id: agent_id_notif.clone(),
                                         instance_id: instance_id_notif.clone(),
@@ -3500,6 +3594,107 @@ mod tests {
     use super::*;
     use crate::adapters::permission::DefaultPermissionController;
     use crate::config::{AgentConfig, AgentProvider};
+
+    // ── TurnState markdown-paragraph lift ──────────────────────────────
+    //
+    // Tests for the per-turn lift counters. The pure helpers in
+    // `acp::paragraph` are covered by their own unit tests; these
+    // exercise the `TurnState` integration — counter init, mutation
+    // through `note_agent_text` / `note_agent_thought`, reset on
+    // `open_real` / `open_synthetic`, and independence between the
+    // text and thought streams.
+
+    #[test]
+    fn turn_state_lift_starts_at_zero_trailing() {
+        let mut state = TurnState::default();
+        // First chunk on a fresh turn — prior trailing is 0 → no lift.
+        assert_eq!(state.note_agent_text("First chunk"), "");
+        assert_eq!(state.agent_text_trailing, 0);
+    }
+
+    #[test]
+    fn turn_state_lifts_a_soft_newline_to_paragraph_break() {
+        let mut state = TurnState::default();
+        // Chunk 1 leaves trailing \n.
+        assert_eq!(state.note_agent_text("Para 1.\n"), "");
+        assert_eq!(state.agent_text_trailing, 1);
+        // Chunk 2 starts with non-newline → daemon prepends \n so the
+        // boundary reaches \n\n in the concat.
+        assert_eq!(state.note_agent_text("Para 2."), "\n");
+        // After the lift, the chunk ends on non-newline → counter reset.
+        assert_eq!(state.agent_text_trailing, 0);
+    }
+
+    #[test]
+    fn turn_state_does_not_lift_when_incoming_brings_its_own_newline() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Para 1.\n");
+        // Incoming already begins with \n — natural concat reaches \n\n.
+        assert_eq!(state.note_agent_text("\nPara 2."), "");
+    }
+
+    #[test]
+    fn turn_state_does_not_lift_a_non_newline_boundary() {
+        let mut state = TurnState::default();
+        // Token streaming inside one paragraph — no lift between chunks.
+        assert_eq!(state.note_agent_text("Hello, "), "");
+        assert_eq!(state.note_agent_text("world"), "");
+        assert_eq!(state.note_agent_text("!"), "");
+    }
+
+    #[test]
+    fn turn_state_text_and_thought_counters_are_independent() {
+        let mut state = TurnState::default();
+        // Build trailing newline on the text axis.
+        state.note_agent_text("Para 1.\n");
+        assert_eq!(state.agent_text_trailing, 1);
+        // Thought axis is untouched.
+        assert_eq!(state.agent_thought_trailing, 0);
+        // Thought chunk doesn't see the text-side trailing — first
+        // thought is a fresh boundary, no lift.
+        assert_eq!(state.note_agent_thought("First thought."), "");
+        // And the text axis counter is still 1 — the thought
+        // operation didn't bleed across.
+        assert_eq!(state.agent_text_trailing, 1);
+    }
+
+    #[test]
+    fn turn_state_open_real_resets_both_lift_counters() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Tail 1.\n");
+        state.note_agent_thought("Thought 1.\n");
+        assert_eq!(state.agent_text_trailing, 1);
+        assert_eq!(state.agent_thought_trailing, 1);
+        // Opening a new real turn — counters reset so the new turn's
+        // first chunk doesn't carry forward the prior turn's tail.
+        state.open_real("turn-2".to_string());
+        assert_eq!(state.agent_text_trailing, 0);
+        assert_eq!(state.agent_thought_trailing, 0);
+        // First chunk of the new turn — no lift on the boundary.
+        assert_eq!(state.note_agent_text("Hello"), "");
+    }
+
+    #[test]
+    fn turn_state_open_synthetic_resets_both_lift_counters() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Tail.\n");
+        assert_eq!(state.agent_text_trailing, 1);
+        state.open_synthetic("synth-1".to_string());
+        assert_eq!(state.agent_text_trailing, 0);
+        assert_eq!(state.note_agent_text("Hello"), "");
+    }
+
+    #[test]
+    fn turn_state_caps_trailing_at_two() {
+        let mut state = TurnState::default();
+        // A chunk ending on \n\n\n caps at 2.
+        state.note_agent_text("Para 1.\n\n\n");
+        assert_eq!(state.agent_text_trailing, 2);
+        // Already paragraph-shaped → no further lift on next chunk.
+        assert_eq!(state.note_agent_text("Para 2."), "");
+    }
+
+    // ── existing tests ─────────────────────────────────────────────────
 
     /// Pin every wire shape `chunk_text` extracts text from. Bare-text
     /// is the ACP-spec'd shape; `thinking` covers claude-agent-acp

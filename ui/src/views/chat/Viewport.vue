@@ -171,6 +171,21 @@ const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
 // auto-scroll window so cache cleanup is prompt without
 // disturbing the read-history flow.
 
+// **Window-focus → scroll-to-end.** Captain explicitly asked: when
+// they switch away from the overlay (alt-tab, Hyprland keybind
+// hide/show, browser tab swap on remote) and come back, the chat
+// surface should be at the latest message, not wherever the cursor
+// was. Tauri 2 propagates window focus to the DOM `focus` event;
+// the remote-bridge browser context already fires it natively. We
+// defer to `nextTick` so the layout has a chance to settle —
+// `scrollHeight` could be stale if a `useStickToBottom` MutationObserver
+// pass is queued from chunks that landed while we were unfocused.
+useEventListener(window, 'focus', () => {
+  void nextTick(() => {
+    scrollToBottom()
+  })
+})
+
 /// Floating chevron click — drop extra pages, await Vue's DOM
 /// patch, THEN jump to the foot. Eviction shrinks `data.pages`
 /// from the OLDEST entry, which renders at the TOP of the DOM
@@ -343,7 +358,28 @@ function onScroll(): void {
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
 
   if (distanceFromBottom <= el.clientHeight) {
-    requestAnimationFrame(() => viewport.evictExtraPages())
+    // Capture whether the captain was at the live tail BEFORE
+    // eviction. Eviction shrinks `scrollHeight` from the TOP — the
+    // browser's `overflow-anchor` heuristic picks SOMETHING to keep
+    // visually stable, but the choice is opaque and the captain
+    // reported "jump to random places" when the anchor lands
+    // somewhere unexpected (the chevron-click path at `goToBottom`
+    // already does evict-then-nextTick-then-scroll for this exact
+    // reason; the auto-eviction path didn't). Mirror that pattern
+    // so the captain who was stuck-at-bottom lands back at the new
+    // bottom after the DOM shrinks, instead of wherever scroll-
+    // anchoring left them.
+    const wasStuck = stuck.value
+
+    requestAnimationFrame(() => {
+      viewport.evictExtraPages()
+
+      if (wasStuck) {
+        void nextTick(() => {
+          scrollToBottom()
+        })
+      }
+    })
   }
 }
 
