@@ -47,8 +47,13 @@ pub struct McpFile {
     ///
     /// `mcp_servers` is mutually exclusive with `file` — see
     /// `validate_mcp_source` for the cross-field check.
+    ///
+    /// Accepts both `mcp_servers` (hyprpilot snake_case convention)
+    /// and `mcpServers` (the MCP spec's camelCase key) on input so a
+    /// captain can paste an existing `.mcp.json` body verbatim under
+    /// `[[mcps]]`. Serialisation always writes `mcp_servers`.
     #[garde(custom(validate_mcp_source(&self.file)))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "mcpServers", skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<serde_json::Map<String, Value>>,
     /// Optional glob array. Server names matching ANY pattern are
     /// dropped from the loaded set. Applies uniformly to both file
@@ -186,6 +191,18 @@ mod tests {
 
         let empty_case = mcp_file("/tmp/x.json", Some(vec![]));
         assert!(empty_case.compile_ignore().is_none());
+    }
+
+    /// Accept the MCP spec's camelCase `mcpServers` key on input —
+    /// captains pasting an existing `.mcp.json` body into `[[mcps]]`
+    /// don't have to rename. Both keys deserialize into the same
+    /// `mcp_servers` field.
+    #[test]
+    fn camel_case_mcp_servers_alias_deserializes() {
+        let body = r#"{ "mcpServers": { "alpha": { "command": "echo" } } }"#;
+        let parsed: McpFile = serde_json::from_str(body).expect("camelCase alias must deserialize");
+        let servers = parsed.mcp_servers.expect("alias populates mcp_servers");
+        assert!(servers.contains_key("alpha"));
     }
 
     /// Inline shape passes garde — `mcp_servers` set, `file` unset.
