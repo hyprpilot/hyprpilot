@@ -32,19 +32,27 @@
 /// boundary between the prior accumulated text and the incoming
 /// chunk lifts to a markdown paragraph break.
 ///
-/// - `prior_trailing == 2` (already paragraph-shaped) → `""`
-/// - `incoming` starts with `\n\n` (brings its own break) → `""`
-/// - `prior_trailing == 1` AND `incoming` doesn't start with `\n`
-///   (which would naturally reach 2) → `"\n"`
-/// - otherwise → `""`
+/// Two complementary cases trigger a lift:
+///
+/// 1. **Boundary lift** — prior accumulated text ended on exactly
+///    one `\n` AND the incoming chunk leads with non-newline
+///    content. Prepending `\n` pushes the boundary to `\n\n`.
+/// 2. **Chunk-self lift** — the incoming chunk itself leads with
+///    exactly one `\n` (not `\n\n`). Vendors stream chunks like
+///    `"\nPara 2."` expecting a paragraph break, but a single
+///    `\n` is just a soft break in markdown. Prepend another `\n`
+///    so the chunk's own leading newline reads as `\n\n`.
+///
+/// Chunks that already lead with `\n\n` get no lift — they
+/// already carry the paragraph break.
 pub(crate) fn soft_lift_prefix(prior_trailing: u8, incoming: &str) -> &'static str {
-    if prior_trailing >= 2 {
-        return "";
-    }
     if incoming.starts_with("\n\n") {
         return "";
     }
-    if prior_trailing == 1 && !incoming.starts_with('\n') {
+    if incoming.starts_with('\n') {
+        return "\n";
+    }
+    if prior_trailing == 1 {
         return "\n";
     }
     ""
@@ -113,10 +121,21 @@ mod tests {
     }
 
     #[test]
-    fn soft_lift_returns_empty_when_incoming_brings_its_own_newline_to_lift_naturally() {
-        // Prior trailing == 1, incoming starts with `\n` — the natural
-        // concat reaches `\n\n` without our help.
-        assert_eq!(soft_lift_prefix(1, "\nPara 2."), "");
+    fn soft_lift_promotes_single_leading_newline_in_chunk_to_paragraph_break() {
+        // Chunk starts with exactly one `\n` (not `\n\n`). Prepend `\n`
+        // so the chunk's own leading newline reads as a markdown
+        // paragraph break — independent of prior trailing state.
+        assert_eq!(soft_lift_prefix(0, "\nPara 2."), "\n");
+        assert_eq!(soft_lift_prefix(1, "\nPara 2."), "\n");
+        assert_eq!(soft_lift_prefix(2, "\nPara 2."), "\n");
+    }
+
+    #[test]
+    fn soft_lift_returns_empty_when_chunk_already_has_double_leading_newline() {
+        // `\n\n` is already a paragraph break — no lift needed.
+        assert_eq!(soft_lift_prefix(0, "\n\nPara 2."), "");
+        assert_eq!(soft_lift_prefix(1, "\n\nPara 2."), "");
+        assert_eq!(soft_lift_prefix(2, "\n\nPara 2."), "");
     }
 
     #[test]

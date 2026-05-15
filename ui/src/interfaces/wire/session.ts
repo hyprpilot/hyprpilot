@@ -174,6 +174,13 @@ export interface InstanceListEntry {
   profileId?: string
   sessionId?: string
   mode?: string
+  /// Display-formatted cwd the instance spawned in (home-collapsed to
+  /// `~`, same shape `MetaSnapshot.cwd` carries). Always present —
+  /// the daemon falls back to its own cwd when the agent has none.
+  /// Used by the nvim instances-palette filter; the desktop palette
+  /// doesn't currently filter on it but the field stays consistent
+  /// across transports.
+  cwd: string
 }
 
 export interface InstanceRestartArgs {

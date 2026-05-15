@@ -1498,6 +1498,13 @@ pub struct AcpInstance {
     /// restart picks up the new base while preserving the captain's
     /// overlays).
     pub config_patches: Vec<serde_json::Value>,
+    /// Display-formatted cwd this instance spawned in (home-collapsed
+    /// to `~`, same shape `MetaSnapshot.cwd` carries). Computed once
+    /// at `start()` time from `resolved.agent.cwd` (with
+    /// `std::env::current_dir()` fallback) so `InstanceInfo` /
+    /// `InstanceListEntry` can read it synchronously off the struct
+    /// without round-tripping through the actor's command channel.
+    pub cwd: String,
 }
 
 impl AcpInstance {
@@ -1604,6 +1611,7 @@ impl AcpInstance {
             tool_calls: Arc::new(tokio::sync::RwLock::new(ToolCallCache::default())),
             mirror,
             config_patches: Vec::new(),
+            cwd: "/tmp/test-stub".into(),
         }
     }
 
@@ -1644,6 +1652,26 @@ impl AcpInstance {
         let mode = resolved.mode.clone();
         let instance_id = key.as_string();
 
+        // Compute the display-formatted cwd here so `InstanceInfo` /
+        // `InstanceListEntry` can read it synchronously off the
+        // struct. Mirrors the actor's normalize → display pipeline
+        // (line ~2167) so the value stored on the struct matches what
+        // every `InstanceMeta` event ships.
+        let cwd_display = {
+            let absolute = resolved
+                .agent
+                .cwd
+                .as_ref()
+                .map(|p| crate::tools::path::normalize_cwd(&p.to_string_lossy()))
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "/".into())
+                });
+            crate::tools::path::display_cwd(&absolute)
+        };
+
         // Mode is a per-instance operational override (e.g.
         // claude-code's `plan` / `edit`). Surface it so UI pickers
         // see it; vendor-specific wire injection lands in the agent
@@ -1670,6 +1698,7 @@ impl AcpInstance {
             tool_calls: tool_calls.clone(),
             mirror: mirror.clone(),
             config_patches,
+            cwd: cwd_display,
         };
 
         tokio::spawn(run(RunParams {
@@ -1717,6 +1746,7 @@ impl InstanceActor for AcpInstance {
             profile_id: self.profile_id.clone(),
             session_id,
             mode: self.mode.clone(),
+            cwd: self.cwd.clone(),
         }
     }
 
@@ -3626,11 +3656,21 @@ mod tests {
     }
 
     #[test]
-    fn turn_state_does_not_lift_when_incoming_brings_its_own_newline() {
+    fn turn_state_lifts_chunks_starting_with_a_single_newline() {
         let mut state = TurnState::default();
         state.note_agent_text("Para 1.\n");
-        // Incoming already begins with \n — natural concat reaches \n\n.
-        assert_eq!(state.note_agent_text("\nPara 2."), "");
+        // Incoming begins with a single \n — promote to \n\n so the
+        // chunk's own leading newline reads as a markdown paragraph
+        // break (some vendors stream `"\nPara 2."` expecting the break).
+        assert_eq!(state.note_agent_text("\nPara 2."), "\n");
+    }
+
+    #[test]
+    fn turn_state_does_not_lift_when_chunk_already_starts_with_double_newline() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Para 1.\n");
+        // `\n\n` already carries its own paragraph break — no lift.
+        assert_eq!(state.note_agent_text("\n\nPara 2."), "");
     }
 
     #[test]

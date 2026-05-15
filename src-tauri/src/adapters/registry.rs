@@ -352,6 +352,7 @@ mod tests {
                 profile_id: self.profile_id.clone(),
                 session_id: None,
                 mode: self.mode.clone(),
+                cwd: "/tmp/dummy".into(),
             }
         }
 
