@@ -167,4 +167,39 @@ describe('ChatComposer.vue', () => {
     await textarea.trigger('keydown', { key: 'Enter' })
     expect(wrapper.emitted('submit')?.[0]).toBeDefined()
   })
+
+  it('Enter on a coarse-pointer device falls through to newline, never submits', async() => {
+    // Flip `matchMedia` to report a coarse pointer BEFORE mount so the
+    // composable's snapshot captures the mobile shape. The captain's
+    // bug: on a phone, Enter sent the message — no Shift on a soft
+    // keyboard, so the buffer was stuck single-line.
+    const originalMatchMedia = window.matchMedia
+
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes('coarse'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn().mockReturnValue(false)
+    }))
+
+    try {
+      const wrapper = mount(ChatComposer, { attachTo: document.body })
+      const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
+
+      await textarea.setValue('hi')
+      textarea.element.focus()
+      await textarea.trigger('keydown', { key: 'Enter' })
+      expect(wrapper.emitted('submit')).toBeUndefined()
+
+      // The submit button is still the explicit submit path on mobile.
+      await wrapper.trigger('submit')
+      expect(wrapper.emitted('submit')?.[0]).toBeDefined()
+    } finally {
+      window.matchMedia = originalMatchMedia
+    }
+  })
 })
