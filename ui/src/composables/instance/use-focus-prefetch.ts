@@ -27,7 +27,6 @@
 
 import { useQueryClient, type QueryClient } from '@tanstack/vue-query'
 
-import { DEFAULT_CHAT_LIMIT } from './use-instance-chat-infinite-query'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from './use-session-info'
 import { type InstanceId, useActiveInstance } from '../chrome/use-active-instance'
 import { invoke, listen, TauriCommand, TauriEvent, type ChatSnapshot, type UnlistenFn } from '@ipc'
@@ -78,23 +77,30 @@ export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: I
 }
 
 /**
- * Boot-time viewport proxy. The chat scroller isn't mounted yet when
- * the boot snapshot runs, so we estimate off `window.innerHeight`. The
- * actual chat surface is shorter than the window (header + composer
- * subtract ~150px on the typical layout), so we trim a chunk and
- * apply the same `~96px / row` heuristic the live viewport uses.
- * Clamps to a 20-row floor so even tiny mobile layouts get a useful
- * first page.
+ * Boot-time page size. Hard 100 — matches the nvim plugin's
+ * `snapshot_limit` default and produces an immediately-readable
+ * conversation on every form factor.
+ *
+ * The earlier viewport-derived heuristic (~96px / row, clamped at 20)
+ * fetched ≤20 items on a typical 1080p monitor → captains on a long
+ * session saw only the last 20 turns and the rest of the history was
+ * invisible until they manually scrolled up far enough to trigger
+ * `fetchNextPage`. The Vue UIs were the only frontends shipping a
+ * truncated view; nvim's full-history paint felt strictly more
+ * correct.
+ *
+ * Trade-off: a fresh boot now pulls more bytes than fit on screen.
+ * That's the right call — `fetchNextPage` only loads further back
+ * from the OLDEST seq, so paying for 100 up-front is the difference
+ * between "captain sees their conversation" and "captain wonders
+ * where their conversation went". The chat-viewport's later
+ * `measuredPageSize` keeps subsequent backward fetches viewport-sized
+ * so we don't multiply the cost.
  */
-function bootPageSize(): number {
-  if (typeof window === 'undefined') {
-    return DEFAULT_CHAT_LIMIT
-  }
-  const ROW_HEIGHT_ESTIMATE = 96
-  const CHROME_BUDGET_PX = 160 // header + composer + status row
-  const usable = Math.max(0, window.innerHeight - CHROME_BUDGET_PX)
+const BOOT_PAGE_SIZE = 100
 
-  return Math.max(20, Math.ceil(usable / ROW_HEIGHT_ESTIMATE))
+function bootPageSize(): number {
+  return BOOT_PAGE_SIZE
 }
 
 /**

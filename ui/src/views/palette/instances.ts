@@ -3,9 +3,16 @@
  * knows about; `Enter` focuses one, `Ctrl+D` shuts it down.
  *
  * Row shape (captain-friendly):
- *   - `name`: captain-set name when set, else profile id, else agent id
- *   - `description`: `<adapter> · <model?>` plus phase / queue / terminal counts
- *   - `kind`: short instance-id slug (acts as a quiet handle in the row)
+ *   - `name`: session title (rolling "what's the captain working on
+ *     now" string derived from the latest user prompt, or the wire
+ *     `session_info_update` title when the agent ships one). Falls
+ *     through to captain-set name, profile id, and agent id when
+ *     there's no title yet (fresh instance, no turn submitted).
+ *   - `description`: profile id, adapter, model, phase, cwd, mode,
+ *     queue / terminal counts. The pieces the short headline used to
+ *     advertise now sit in the details strip so the row's primary
+ *     identifier matches what the captain reads in the header.
+ *   - `kind`: short instance-id slug (acts as a quiet handle in the row).
  *
  * Right pane: `InstancesPreview.vue` renders the headline + the last
  * two transcript turns so the captain can scan recent context without
@@ -29,12 +36,26 @@ function rowFor(entry: InstanceListEntry, activeInstanceId: string | undefined):
   const { all: terminals } = useTerminals(entry.instanceId)
   const { phase } = usePhase(entry.instanceId)
 
-  // Headline name: captain-renamed → profile id → adapter id.
-  const headline = entry.name ?? entry.profileId ?? entry.agentId
+  // Headline name: session title (set by either the wire
+  // `session_info_update` or the latest user prompt) → captain-set
+  // name → profile id → adapter id. Title beats the rest because the
+  // captain just read that string in the header and on the chat
+  // title chip — matching it in the picker means the row reads in
+  // their own vocabulary.
+  const headline = info.value.title ?? entry.name ?? entry.profileId ?? entry.agentId
 
-  // Description groups: adapter / model first, then phase + cwd +
-  // counts so fuzzy filter still hits every signal.
-  const meta: string[] = [entry.agentId]
+  // Description groups: profile id first (the most-specific config
+  // bundle the captain authored), then adapter / model / phase /
+  // cwd / mode and live-state counts. Fuzzy filter still hits every
+  // signal so a captain typing the profile id finds the row even
+  // when the title is captioning the headline slot. `q<N>` / `t<N>`
+  // only appear when non-zero so quiet rows stay clean.
+  const meta: string[] = []
+
+  if (entry.profileId) {
+    meta.push(entry.profileId)
+  }
+  meta.push(entry.agentId)
   const model = info.value.model
 
   if (model) {
