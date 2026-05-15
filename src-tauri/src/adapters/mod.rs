@@ -17,6 +17,7 @@ pub mod instance;
 pub mod mirror;
 pub mod permission;
 pub mod profile;
+pub mod queue;
 pub mod registry;
 pub mod transcript;
 
