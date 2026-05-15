@@ -18,6 +18,8 @@ use tracing::{info, warn};
 
 use crate::adapters::Adapter;
 use crate::daemon::{shutdown, WindowRenderer};
+use crate::rpc::protocol::{AgentState, StatusResult};
+use crate::rpc::StatusBroadcast;
 
 /// Build the tray icon, attach the menu, and wire the click handlers.
 /// Called once from `setup_app`; the icon is owned by Tauri for the
@@ -34,7 +36,11 @@ pub fn install(app: &App) -> Result<()> {
     let menu = Menu::with_items(handle, &[&toggle_item, &separator, &shutdown_item]).context("tray: build menu")?;
 
     TrayIconBuilder::with_id("hyprpilot-tray")
-        .tooltip("hyprpilot — running")
+        .tooltip(tooltip_for(&StatusResult {
+            state: AgentState::Idle,
+            visible: false,
+            active_session: None,
+        }))
         .icon(
             app.default_window_icon()
                 .cloned()
@@ -47,8 +53,72 @@ pub fn install(app: &App) -> Result<()> {
         .build(app)
         .context("tray: build icon")?;
 
+    // Spawn a task that subscribes to StatusBroadcast and pushes
+    // every state change into the tray's tooltip. Daemon publishes
+    // `idle` / `streaming` / `awaiting` / `error` on every ACP
+    // lifecycle transition (see `rpc/status.rs` + the
+    // `acp:turn-started` / `acp:turn-ended` / `acp:instance-state`
+    // emit sites) plus a `visible` axis flipped by `overlay/*`.
+    // Native cross-platform icon-overlay badges aren't a thing
+    // (StatusNotifier / NSStatusBar / Win32 tray APIs all lack a
+    // standard "dot on the corner" surface), so the tooltip carries
+    // the status text. Captain's "if not possible via native tauri
+    // forget about it" — tooltip swap IS native, but a colored-dot
+    // icon variant would need pre-baked PNGs per state; deferred.
+    if let Some(status) = app.try_state::<std::sync::Arc<StatusBroadcast>>() {
+        let status = status.inner().clone();
+        let handle = app.handle().clone();
+
+        tauri::async_runtime::spawn(async move {
+            let (initial, mut rx) = status.subscribe();
+            apply_tooltip(&handle, &initial);
+
+            loop {
+                match rx.recv().await {
+                    Ok(next) => apply_tooltip(&handle, &next),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Slow tooltip-update path lost N transitions;
+                        // re-pull the current snapshot so we land on
+                        // truth instead of staying on a stale one.
+                        tracing::warn!(n, "tray: tooltip subscriber lagged");
+                        apply_tooltip(&handle, &status.get());
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    } else {
+        warn!("tray: StatusBroadcast not in managed state — tooltip will stay static");
+    }
+
     info!("tray: icon installed");
     Ok(())
+}
+
+/// One-line tooltip for the current daemon status. Tauri's tray
+/// tooltip is the only natively-supported cross-platform status
+/// surface — Linux StatusNotifier, macOS NSStatusBar, and Win32
+/// tray all expose tooltip text but no badge-overlay primitive.
+fn tooltip_for(status: &StatusResult) -> String {
+    let phase = match status.state {
+        AgentState::Idle => "ready",
+        AgentState::Streaming => "working",
+        AgentState::Awaiting => "needs permission",
+        AgentState::Error => "error",
+    };
+    let visibility = if status.visible { "shown" } else { "hidden" };
+    format!("hyprpilot — {phase} · {visibility}")
+}
+
+fn apply_tooltip(app: &AppHandle, status: &StatusResult) {
+    let Some(tray) = app.tray_by_id("hyprpilot-tray") else {
+        warn!("tray: tooltip update — tray icon missing from registry");
+        return;
+    };
+
+    if let Err(err) = tray.set_tooltip(Some(tooltip_for(status))) {
+        warn!(%err, "tray: tooltip update failed");
+    }
 }
 
 /// Left-click on the tray icon → toggle overlay. Other mouse events

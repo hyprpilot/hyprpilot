@@ -91,7 +91,9 @@ describe('transcript-patcher singleton', () => {
         state: 'running',
         content: [],
         formatted: {
-          title: 'echo', stats: [], fields: []
+          title: 'echo',
+          stats: [],
+          fields: []
         },
         startedAtMs: 1000
       } as never
@@ -116,7 +118,9 @@ describe('transcript-patcher singleton', () => {
           state: 'completed',
           content: [{ kind: 'text', text: 'hi' }],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000,
           completedAtMs: 1100
@@ -144,7 +148,9 @@ describe('transcript-patcher singleton', () => {
         state: 'running',
         content: [{ kind: 'text', text: 'first' }],
         formatted: {
-          title: 'echo', stats: [], fields: []
+          title: 'echo',
+          stats: [],
+          fields: []
         },
         startedAtMs: 1000
       } as never
@@ -165,7 +171,9 @@ describe('transcript-patcher singleton', () => {
           id: 'tc-1',
           content: [{ kind: 'text', text: 'second' }],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000
         } as never
@@ -181,7 +189,9 @@ describe('transcript-patcher singleton', () => {
           id: 'tc-1',
           content: [{ kind: 'text', text: 'third' }],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000
         } as never
@@ -208,7 +218,9 @@ describe('transcript-patcher singleton', () => {
         state: 'running',
         content: [],
         formatted: {
-          title: 'echo', stats: [], fields: []
+          title: 'echo',
+          stats: [],
+          fields: []
         },
         startedAtMs: 1000
       } as never
@@ -230,7 +242,9 @@ describe('transcript-patcher singleton', () => {
           state: 'completed',
           content: [],
           formatted: {
-            title: 'echo', stats: [], fields: []
+            title: 'echo',
+            stats: [],
+            fields: []
           },
           startedAtMs: 1000,
           completedAtMs: 1100
@@ -339,10 +353,14 @@ describe('transcript-patcher singleton', () => {
       usage: { used: 0, size: 0 },
       pendingPermissions: [
         {
-          requestId: 'r-1', tool: 'bash', options: []
+          requestId: 'r-1',
+          tool: 'bash',
+          options: []
         },
         {
-          requestId: 'r-2', tool: 'edit', options: []
+          requestId: 'r-2',
+          tool: 'edit',
+          options: []
         }
       ]
     } as MetaSnapshot
@@ -381,7 +399,9 @@ describe('transcript-patcher singleton', () => {
       args: 'echo hi',
       options: [],
       formatted: {
-        title: 'bash', stats: [], fields: []
+        title: 'bash',
+        stats: [],
+        fields: []
       }
     })
     pushPermissionRequest('i-OTHER', 's-b', {
@@ -392,7 +412,9 @@ describe('transcript-patcher singleton', () => {
       args: 'echo on other instance',
       options: [],
       formatted: {
-        title: 'bash', stats: [], fields: []
+        title: 'bash',
+        stats: [],
+        fields: []
       }
     })
 
@@ -401,7 +423,9 @@ describe('transcript-patcher singleton', () => {
 
     cb!({
       payload: {
-        instanceId: 'i-1', requestId: 'req-1', optionId: 'allow-once'
+        instanceId: 'i-1',
+        requestId: 'req-1',
+        optionId: 'allow-once'
       }
     })
     await flushPromises()
@@ -411,7 +435,9 @@ describe('transcript-patcher singleton', () => {
 
     cb!({
       payload: {
-        instanceId: 'i-OTHER', requestId: 'req-cross', optionId: 'reject-once'
+        instanceId: 'i-OTHER',
+        requestId: 'req-cross',
+        optionId: 'reject-once'
       }
     })
     await flushPromises()

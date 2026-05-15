@@ -112,11 +112,7 @@ describe('timelineBlocksFromSnapshot', () => {
     // paragraph rendering. The projector's job is to faithfully
     // concatenate the chunks the daemon ships — no further
     // mutation. This test pins that contract.
-    const items: SeqTranscriptItem[] = [
-      userPrompt(1, 't-1', 'go'),
-      agentText(2, 't-1', 'Paragraph one.\n'),
-      agentText(3, 't-1', '\nParagraph two.')
-    ]
+    const items: SeqTranscriptItem[] = [userPrompt(1, 't-1', 'go'), agentText(2, 't-1', 'Paragraph one.\n'), agentText(3, 't-1', '\nParagraph two.')]
     const blocks = timelineBlocksFromSnapshot(items)
     const assistant = blocks.find((b) => b.role === Role.Assistant)
 

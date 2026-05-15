@@ -543,6 +543,30 @@ function onAttachClick(): void {
   fileInputRef.value?.click()
 }
 
+/**
+ * Mime types the daemon's `attachment_to_block` encoder routes
+ * through `TextResourceContents` (reads `att.body`, ignores
+ * `att.data`). For these, the UI reads the file via `readAsText`
+ * and puts the plain content into the pill's `data` field — the
+ * projector (`Overlay.vue::pillsToAttachments`) then ships it as
+ * the wire `Attachment.body` instead of `Attachment.data`.
+ *
+ * Everything else (image / audio / pdf / archive / arbitrary
+ * binary) reads as a data URL → base64 → wire `Attachment.data`,
+ * and the daemon dispatches to `ImageContent` / `AudioContent` /
+ * `BlobResourceContents` based on the mime category.
+ */
+function isTextMime(mime: string): boolean {
+  if (mime.startsWith('text/')) {
+    return true
+  }
+
+  // Structured text formats the daemon's `mime_category` rule treats
+  // as Text. Keep this list in lockstep with
+  // `acp/instance.rs::mime_category`.
+  return mime === 'application/json' || mime === 'application/xml' || mime === 'application/x-yaml' || mime === 'application/toml'
+}
+
 async function onFileInputChange(e: Event): Promise<void> {
   const input = e.target as HTMLInputElement
   const files = input.files
@@ -552,21 +576,22 @@ async function onFileInputChange(e: Event): Promise<void> {
   }
 
   for (const file of Array.from(files)) {
-    if (!file.type.startsWith('image/')) {
-      log.debug('composer attach: skipping non-image file', { name: file.name, type: file.type })
-      continue
-    }
     attachmentLoading.value += 1
 
     try {
-      const dataUrl = await blobToDataUrl(file)
+      // Text-shaped mimes ship as `body` (plain text); everything
+      // else ships as `data` (base64 binary). The pill carries one
+      // single `data` string field — the projector branches on
+      // `mimeType` to decide which wire field to populate.
+      const mime = file.type || 'application/octet-stream'
+      const payload = isTextMime(mime) ? await file.text() : ((await blobToDataUrl(file)).split(',')[1] ?? '')
 
       composer.addPill({
         kind: ComposerPillKind.Attachment,
         id: crypto.randomUUID(),
-        label: `${file.name || file.type} · ${formatSize(file.size)}`,
-        data: dataUrl.slice(dataUrl.indexOf(',') + 1),
-        mimeType: file.type,
+        label: `${file.name || mime} · ${formatSize(file.size)}`,
+        data: payload,
+        mimeType: mime,
         fileName: file.name || undefined
       })
     } catch(err) {
@@ -653,7 +678,7 @@ function onDragOver(e: DragEvent): void {
 
     <!-- Hidden file picker — `accept="image/*"` mirrors the
          drag-drop guard. Multiple to mirror the loop in onDrop. -->
-    <input ref="fileInputRef" type="file" accept="image/*" multiple hidden data-testid="composer-file-input" @change="(e) => void onFileInputChange(e)" />
+    <input ref="fileInputRef" type="file" multiple hidden data-testid="composer-file-input" @change="(e) => void onFileInputChange(e)" />
 
     <div class="composer-row">
       <textarea

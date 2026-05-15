@@ -25,10 +25,12 @@
 import { ToastTone } from '@components'
 import { useActiveInstance, useCwdHistory, usePalette, useProfiles, useSessionInfo, useToasts, type PaletteEntry, PaletteMode } from '@composables'
 import { CompletionKind, CompletionSourceId, invoke, TauriCommand } from '@ipc'
+import { isRemoteHost } from '@ipc/remote-bridge'
 import { log } from '@lib'
 
 const COMPLETION_ROW_PREFIX = 'cwd-complete:'
 const RECENT_ROW_PREFIX = 'cwd-recent:'
+const BROWSE_ROW_ID = 'cwd-browse'
 const COMPLETION_DEBOUNCE_MS = 120
 
 async function commitCwd(rawPath: string, cwdBase?: string): Promise<void> {
@@ -181,6 +183,43 @@ async function rankRecents(query: string, recents: string[]): Promise<PaletteEnt
   }
 }
 
+/**
+ * On Tauri host, pop the native OS folder picker and commit the
+ * chosen path as the new cwd. On remote / browser frontends the
+ * dialog plugin isn't available — the row is hidden in those
+ * contexts (see `initialEntries` below), so this never runs.
+ *
+ * Bare `let dialog` import would tree-shake from the remote build
+ * but tauri-plugin-dialog's barrel is small enough that dynamic
+ * import isn't worth the complication. The dialog plugin's
+ * `open({ directory: true })` returns the absolute path (or null
+ * on cancel); we forward straight into `commitCwd` which routes
+ * through the same `paths_resolve` + `instance_restart` round-trip
+ * the captain's typed path uses.
+ */
+async function browseFolder(cwdBase?: string): Promise<void> {
+  const toasts = useToasts()
+
+  try {
+    const { open: openDialog } = await import('@tauri-apps/plugin-dialog')
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+      defaultPath: cwdBase,
+      title: 'Pick a working directory'
+    })
+
+    if (typeof selected !== 'string' || selected.length === 0) {
+      // Captain cancelled; nothing to commit.
+      return
+    }
+    await commitCwd(selected, cwdBase)
+  } catch(err) {
+    log.warn('palette-cwd: native folder picker failed', { err: String(err) })
+    toasts.push(ToastTone.Err, `cwd browse failed: ${String(err)}`)
+  }
+}
+
 export function openCwdLeaf(): void {
   const { open } = usePalette()
   const { history } = useCwdHistory()
@@ -193,11 +232,28 @@ export function openCwdLeaf(): void {
   // wire shape collapses `$HOME` already on subsequent emits, so
   // the moment the captain commits a recent + the agent reports
   // back, the row label updates to the display form on next open.
-  const initialRecents: PaletteEntry[] = history.value.map((cwd) => ({
+  const recentRows: PaletteEntry[] = history.value.map((cwd) => ({
     id: `${RECENT_ROW_PREFIX}${cwd}`,
     name: cwd,
     description: cwd
   }))
+
+  // **Browse folder…** entry — Tauri-host only. The `@tauri-apps/plugin-
+  // dialog` plugin runs inside the Tauri webview; remote/browser
+  // frontends don't have it AND can't usefully pick a folder on the
+  // captain's phone for a daemon running on a different machine
+  // (path wouldn't resolve daemon-side). Hide the row in that case.
+  const initialEntries: PaletteEntry[] = isRemoteHost()
+    ? recentRows
+    : [
+      {
+        id: BROWSE_ROW_ID,
+        name: 'Browse folder…',
+        description: 'open native folder picker',
+        kind: 'action'
+      },
+      ...recentRows
+    ]
 
   let debounceTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -205,7 +261,7 @@ export function openCwdLeaf(): void {
     mode: PaletteMode.Input,
     title: 'cwd',
     placeholder: 'absolute or relative path…',
-    entries: initialRecents,
+    entries: initialEntries,
     // Server-pre-filtered: directory completions + recents arrive
     // already ranked against the typed query. Skip the generic
     // `completion/rank` pass that would re-rank basenames against
@@ -218,7 +274,7 @@ export function openCwdLeaf(): void {
       const trimmed = query.trim()
 
       if (trimmed.length === 0) {
-        update(initialRecents)
+        update(initialEntries)
 
         return
       }
@@ -240,6 +296,14 @@ export function openCwdLeaf(): void {
     onCommit(picks, query) {
       const base = sessionInfo.value.cwd
       const pick = picks[0]
+
+      // Browse-folder action → pop the native dialog. Only present
+      // on Tauri host (see `initialEntries`).
+      if (pick?.id === BROWSE_ROW_ID) {
+        void browseFolder(base)
+
+        return
+      }
 
       // Highlighted autocomplete row → use its replacement text.
       // Highlighted recent row → use its absolute path id suffix.
