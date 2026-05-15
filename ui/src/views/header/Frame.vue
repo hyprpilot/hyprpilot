@@ -73,12 +73,25 @@ const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.ph
 const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working || props.phase === Phase.Awaiting || props.phase === Phase.Pending)
 const hasGit = computed(() => Boolean(props.gitStatus))
 const instancesLabel = computed(() => (props.instancesCount === 1 ? 'instance' : 'instances'))
+// Row-1 background tint — same phase palette as the profile pill, but
+// dialed way down so the bar reads as ambient state rather than a hot
+// surface. `color-mix` blends the phase token against the standard
+// surface; the percentage stays small enough that text contrast stays
+// AA against the foreground tokens. `Idle` skips the mix entirely so
+// the bar matches the default surface (no tint = nothing to surface).
+const rowOneBg = computed(() => {
+  if (props.phase === Phase.Idle) {
+    return 'var(--theme-surface)'
+  }
+
+  return `color-mix(in srgb, ${phaseColor.value} 18%, var(--theme-surface))`
+})
 </script>
 
 <template>
   <section class="frame" data-testid="frame">
     <header class="frame-header">
-      <div class="frame-row frame-row-1">
+      <div class="frame-row frame-row-1" :style="{ backgroundColor: rowOneBg }">
         <!-- Pills + title compete with each other for horizontal
              space. On wide screens they all fit; on narrow / phone
              widths the HorizontalScroller lets the captain swipe (or
