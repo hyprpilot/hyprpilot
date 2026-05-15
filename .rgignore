@@ -1,15 +1,50 @@
+# Documentation
 /docs/
-pnpm-lock.yaml
-Cargo.lock
+README.md
+CHANGELOG.md
 CLAUDE.md
+LICENSE
+
+# Package manifests + lockfiles
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+Cargo.lock
+Cargo.toml
+**/Cargo.toml
+**/package.json
+
+# Lint / format config
 clippy.toml
+rustfmt.toml
+eslint.config.mjs
+**/eslint.config.mjs
+.prettierrc.mjs
+.editorconfig
+
+# Build / project config
 mise.toml
 rust-toolchain.toml
-rustfmt.toml
-vitest.config.ts
-vite.config.ts
-playwright.config.ts
-eslint.config.mjs
-.prettierrc.mjs
+Taskfile.yml
+renovate.json
 components.json
+.gitattributes
+.mcp.json
+build.rs
+tauri.conf.json
+tauri.conf.e2e.json
+tsconfig.json
+**/tsconfig.json
+vite.config.ts
+vitest.config.ts
+vitest.setup.ts
+playwright.config.ts
+
+# CI / packaging
+/.github/
+/packaging/
+
+# Tests
 **/*.spec.ts
+**/*.test.ts
+/tests/
