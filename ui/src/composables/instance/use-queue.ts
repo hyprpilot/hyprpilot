@@ -4,9 +4,14 @@
  * dispatching immediately; captain drains the head explicitly via
  * the `queue.send` keybind (Ctrl+Enter by default) or the per-row
  * "send now" / "drop" buttons on the queue strip. The queue never
- * auto-dispatches on turn end — captain stays in control. Cancel of
- * the in-flight turn (`stopReason === 'cancelled'`) still flushes
- * the queue alongside the cancelled head, matching pilot.py.
+ * auto-dispatches on turn end — captain stays in control.
+ *
+ * Cancel does NOT touch the queue. Ctrl+C cancels the in-flight turn
+ * and the queue survives intact, so the captain can let queued items
+ * dispatch on the next user-initiated send. Only manual drop (per-row
+ * trash, drop-all toolbar button) and instance teardown
+ * (`InstanceState::Ended` / `Error` via `cleanupInstance`) clear the
+ * queue. Pinned by the cancel-keeps-queue test below.
  *
  * Storage shape carries both composer image pills (`pills`, for the
  * queue strip preview) and skill attachments (`skillAttachments`,
@@ -240,11 +245,13 @@ export function dispatchQueueItem(id: InstanceId, itemId: string): void {
   submitQueuedItem(id, popped.item)
 }
 
-// Queue dispatcher kept as no-op stubs for callers that still drive
-// the boot/teardown lifecycle. The cancel-flush coupling was dropped
-// — Ctrl+C only cancels the in-flight turn now, queued items
-// survive so the captain can let them dispatch on the next turn.
-// Manual drop is still available via the queue strip's trash button.
+// Queue dispatcher: deliberately empty. Boot / teardown still call
+// these for parity with the older lifecycle hook, but the queue is
+// fully passive — it only mutates through explicit `enqueue` /
+// `pop*` / `removeFromQueue` / `flushQueue` calls from the composer,
+// the queue strip, and `cleanupInstance` on instance teardown. There
+// is intentionally no auto-dispatch on `TurnEnded` and no flush on
+// `stopReason === 'cancelled'`: the captain stays in control.
 export function startQueueDispatcher(): void {}
 
 export function stopQueueDispatcher(): void {}
