@@ -621,19 +621,21 @@ pub struct ProfileSummary {
 
 /// Validate a captain-supplied instance name against the slug rule.
 ///
-/// Rule: `[a-z0-9][a-z0-9_-]*`, lowercase, ≤16 chars. Lowercase /
+/// Rule: `[a-z0-9][a-z0-9_-]*`, lowercase, ≤64 chars. Lowercase /
 /// slug-only because anything else needs shell quoting on the ctl
-/// side, and the 16-char ceiling keeps log lines tidy without
-/// being so tight that meaningful names get truncated. Returns
-/// the validated owned `String` for ergonomics; the caller can
-/// move it into the registry without re-allocating.
+/// side. The 64-char ceiling leaves room for meaningful names like
+/// `nvim-feat-empty-turn-diagnostic` without the captain having to
+/// truncate at the boundary; log lines stay readable because the
+/// frontend (chrome / waybar) ellipses to fit anyway. Returns the
+/// validated owned `String` for ergonomics; the caller can move it
+/// into the registry without re-allocating.
 pub fn validate_instance_name(raw: &str) -> Result<String, AdapterError> {
     if raw.is_empty() {
         return Err(AdapterError::InvalidRequest("instance name must not be empty".into()));
     }
-    if raw.len() > 16 {
+    if raw.len() > 64 {
         return Err(AdapterError::InvalidRequest(format!(
-            "instance name '{raw}' exceeds 16-char limit"
+            "instance name '{raw}' exceeds 64-char limit"
         )));
     }
     let mut chars = raw.chars();
