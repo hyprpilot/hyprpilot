@@ -760,6 +760,135 @@ impl AcpAdapter {
         }
     }
 
+    /// Resolve a captain-supplied `instance_id` (optional) into a live
+    /// actor's command channel. Falls back to the focused instance
+    /// when omitted (same convention as `prompts/cancel` /
+    /// `permissions/respond`). Returns `None` when neither resolves.
+    async fn resolve_queue_cmd_tx(&self, instance_id: Option<&str>) -> Option<tokio::sync::mpsc::UnboundedSender<InstanceCommand>> {
+        let key = match instance_id {
+            Some(s) => InstanceKey::parse(s).ok()?,
+            None => self.registry.focused_id().await?,
+        };
+        self.registry.get(key).await.map(|h| h.cmd_tx.clone())
+    }
+
+    /// Read the current queue. Empty `Vec` for an unknown instance
+    /// id (the RPC handler reports back to the captain; the facade
+    /// keeps the shape uniform).
+    pub async fn queue_list(&self, instance_id: Option<&str>) -> Result<Vec<crate::adapters::queue::QueueItem>, RpcError> {
+        let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
+            return Ok(Vec::new());
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(InstanceCommand::QueueList { reply: reply_tx })
+            .map_err(|_| RpcError::internal_error("queue/list: actor channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("queue/list: actor dropped reply"))
+    }
+
+    /// In-place edit. Text always replaces; `attachments` replaces
+    /// only when supplied. Errors when the item id is unknown.
+    pub async fn queue_edit(
+        &self,
+        instance_id: Option<&str>,
+        item_id: String,
+        text: String,
+        attachments: Option<Vec<crate::adapters::Attachment>>,
+    ) -> Result<crate::adapters::queue::QueueItem, RpcError> {
+        let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
+            return Err(RpcError::invalid_params("queue/edit: no live instance"));
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(InstanceCommand::QueueEdit {
+                item_id,
+                text,
+                attachments,
+                reply: reply_tx,
+            })
+            .map_err(|_| RpcError::internal_error("queue/edit: actor channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("queue/edit: actor dropped reply"))?
+            .map_err(RpcError::invalid_params)
+    }
+
+    pub async fn queue_remove(&self, instance_id: Option<&str>, item_id: String) -> Result<bool, RpcError> {
+        let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
+            return Ok(false);
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(InstanceCommand::QueueRemove {
+                item_id,
+                reply: reply_tx,
+            })
+            .map_err(|_| RpcError::internal_error("queue/remove: actor channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("queue/remove: actor dropped reply"))?
+            .map_err(RpcError::internal_error)
+    }
+
+    pub async fn queue_move(&self, instance_id: Option<&str>, item_id: String, position: usize) -> Result<bool, RpcError> {
+        let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
+            return Ok(false);
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(InstanceCommand::QueueMove {
+                item_id,
+                position,
+                reply: reply_tx,
+            })
+            .map_err(|_| RpcError::internal_error("queue/move: actor channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("queue/move: actor dropped reply"))?
+            .map_err(RpcError::internal_error)
+    }
+
+    pub async fn queue_clear(&self, instance_id: Option<&str>) -> Result<u32, RpcError> {
+        let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
+            return Ok(0);
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(InstanceCommand::QueueClear { reply: reply_tx })
+            .map_err(|_| RpcError::internal_error("queue/clear: actor channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("queue/clear: actor dropped reply"))?
+            .map_err(RpcError::internal_error)
+    }
+
+    /// Pop the named item (or the head when `None`) AND dispatch it
+    /// immediately, regardless of busy. ACP serialises on the wire so
+    /// a concurrent active turn is fine — the popped item chains
+    /// behind. Captain's "send now" intent.
+    pub async fn queue_dispatch(
+        &self,
+        instance_id: Option<&str>,
+        item_id: Option<String>,
+    ) -> Result<crate::adapters::queue::QueueDispatchResult, RpcError> {
+        let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
+            return Err(RpcError::invalid_params("queue/dispatch: no live instance"));
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        cmd_tx
+            .send(InstanceCommand::QueueDispatch {
+                item_id,
+                reply: reply_tx,
+            })
+            .map_err(|_| RpcError::internal_error("queue/dispatch: actor channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| RpcError::internal_error("queue/dispatch: actor dropped reply"))?
+            .map_err(RpcError::internal_error)
+    }
+
     /// Snapshot of every live instance in the legacy `{ instances: [...] }`
     /// envelope. `Adapter::list` returns typed `InstanceInfo[]` for
     /// programmatic consumers. Test-only consumer today.
@@ -1497,6 +1626,50 @@ impl Adapter for AcpAdapter {
 
     async fn reload_all_skills(&self) -> usize {
         AcpAdapter::reload_all_skills(self).await
+    }
+
+    // ── queue/* dispatch ─────────────────────────────────────────
+
+    async fn queue_list(&self, instance_id: Option<&str>) -> AdapterResult<Vec<crate::adapters::queue::QueueItem>> {
+        AcpAdapter::queue_list(self, instance_id).await.map_err(rpc_to_adapter)
+    }
+
+    async fn queue_edit(
+        &self,
+        instance_id: Option<&str>,
+        item_id: String,
+        text: String,
+        attachments: Option<Vec<crate::adapters::transcript::Attachment>>,
+    ) -> AdapterResult<crate::adapters::queue::QueueItem> {
+        AcpAdapter::queue_edit(self, instance_id, item_id, text, attachments)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn queue_remove(&self, instance_id: Option<&str>, item_id: String) -> AdapterResult<bool> {
+        AcpAdapter::queue_remove(self, instance_id, item_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn queue_move(&self, instance_id: Option<&str>, item_id: String, position: usize) -> AdapterResult<bool> {
+        AcpAdapter::queue_move(self, instance_id, item_id, position)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn queue_clear(&self, instance_id: Option<&str>) -> AdapterResult<u32> {
+        AcpAdapter::queue_clear(self, instance_id).await.map_err(rpc_to_adapter)
+    }
+
+    async fn queue_dispatch(
+        &self,
+        instance_id: Option<&str>,
+        item_id: Option<String>,
+    ) -> AdapterResult<crate::adapters::queue::QueueDispatchResult> {
+        AcpAdapter::queue_dispatch(self, instance_id, item_id)
+            .await
+            .map_err(rpc_to_adapter)
     }
 }
 
