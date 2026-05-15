@@ -680,30 +680,57 @@ async function onPermissionReply(requestId: string, optionId: string, feedback?:
 }
 
 /**
- * Project image-attachment composer pills onto the wire
- * `Attachment` shape so the daemon's `build_prompt_blocks` can
- * emit `ContentBlock::Image` for each one. Skill-style pills
- * (palette-pushed onto `useAttachments`) skip this path — they
- * already arrive as wire `Attachment`s with `body` set.
+ * Mime types the daemon's `attachment_to_block` encoder routes
+ * through `TextResourceContents` (reads `att.body`, ignores
+ * `att.data`). Keep this in lockstep with
+ * `Composer.vue::isTextMime` and `acp/instance.rs::mime_category`.
+ */
+function isTextMime(mime: string | undefined): boolean {
+  if (!mime) {
+    return false
+  }
+
+  if (mime.startsWith('text/')) {
+    return true
+  }
+
+  return mime === 'application/json' || mime === 'application/xml' || mime === 'application/x-yaml' || mime === 'application/toml'
+}
+
+/**
+ * Project attachment-kind composer pills (paperclip / drag-drop /
+ * Ctrl+P) onto the wire `Attachment` shape so the daemon's
+ * `build_prompt_blocks` can emit the right ACP `ContentBlock`
+ * variant. Skill-style pills (palette-pushed onto `useAttachments`)
+ * skip this path — they already arrive as wire `Attachment`s.
+ *
+ * The pill's `data` field carries either base64 binary OR plain
+ * text depending on the mime category; this projector mirrors that
+ * dispatch onto the wire `body` / `data` axis the daemon expects.
  *
  * `path` is synthesized from the optional `fileName` (drag-drop /
  * file picker) or the MIME's extension (clipboard paste) so the
  * Rust side's `mime_guess` fallback still works on the extension
  * if the explicit `mime` field is ever stripped en route.
  */
-function imagePillsToAttachments(pills: ComposerPill[]): Attachment[] {
+function pillsToAttachments(pills: ComposerPill[]): Attachment[] {
   return pills
-    .filter((p) => p.kind === ComposerPillKind.Attachment && p.mimeType?.startsWith('image/'))
+    .filter((p) => p.kind === ComposerPillKind.Attachment)
     .map((p) => {
-      const ext = (p.mimeType ?? 'image/png').split('/')[1] ?? 'png'
+      const mime = p.mimeType ?? 'application/octet-stream'
+      const ext = mime.split('/')[1]?.split('+')[0] ?? 'bin'
       const synthName = p.fileName && p.fileName.length > 0 ? p.fileName : `${p.id}.${ext}`
+      const text = isTextMime(p.mimeType)
 
       return {
         slug: p.id,
         path: synthName,
-        body: '',
+        // Text-shaped attachments ride on `body` (the daemon's
+        // `TextResourceContents` encoder reads it); binary on
+        // `data` (Image / Audio / Blob encoders read base64 there).
+        body: text ? p.data : '',
         title: p.label,
-        data: p.data,
+        data: text ? undefined : p.data,
         mime: p.mimeType
       }
     })
@@ -724,16 +751,17 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   // (the skills palette pushes onto it). They snapshot at submit time
   // so a resubmit after cancel sends the same set; submit-ack clears.
   const skillAttachments = [...pendingAttachments.value]
-  // Image pills (paperclip / drag-drop / Ctrl+P) project onto the
-  // wire `Attachment` shape with `data` + `mime` set; the daemon's
-  // `build_prompt_blocks` dispatches those to ACP `ContentBlock::Image`
-  // (versus skill resources which use `body` + `ContentBlock::Resource`).
-  const imageAttachments = imagePillsToAttachments(attachments)
-  const wireAttachments = [...skillAttachments, ...imageAttachments]
+  // Attachment pills (paperclip / drag-drop / Ctrl+P) project onto
+  // the wire `Attachment` shape; the daemon's `build_prompt_blocks`
+  // dispatches to ACP `ContentBlock::Image` / `Audio` / `Resource`
+  // based on the mime category (versus skill resources which arrive
+  // pre-resolved as wire `Attachment`s).
+  const fileAttachments = pillsToAttachments(attachments)
+  const wireAttachments = [...skillAttachments, ...fileAttachments]
 
   log.info('composer submit', {
     text_len: text.length,
-    image_attachments: imageAttachments.length,
+    file_attachments: fileAttachments.length,
     skill_attachments: skillAttachments.length,
     profileId: selectedProfile.value,
     editing: editingQueueSlot.value !== undefined
@@ -852,24 +880,30 @@ function onQueueEdit(itemId: string): void {
   // In-place edit: leave the queue item alone, pre-fill the composer
   // with its text + attachments, and pin the id so the next submit
   // routes through `queue/edit` instead of re-enqueueing. Branch on
-  // mime type when projecting back to `ComposerPill`s — image
-  // attachments (`mime: 'image/png'` + `data: <base64>`) need the
-  // Attachment pill shape so `imagePillsToAttachments` re-finds them
-  // on submit; skill attachments (slug + body) land as Resource pills.
-  // Misclassifying drops the base64 payload silently.
+  // mime type when projecting back to `ComposerPill`s — attachments
+  // with a `mime` set on the wire shape are file uploads (paperclip
+  // / drag-drop), so they need the Attachment pill shape so
+  // `pillsToAttachments` re-finds them on submit; skill attachments
+  // (slug + body, no mime) land as Resource pills.
   editingQueueSlot.value = { instanceId, itemId }
   composerRef.value?.setDraft({
     text: target.text,
     pills: (target.attachments ?? []).map((a) => {
-      const isImage = a.mime?.startsWith('image/') === true
+      // File upload (paperclip / drag-drop) — has a real `mime`
+      // type from the file picker. Skill / palette-pushed
+      // attachments land without `mime`. Branch on presence; the
+      // composer's pill shape carries `data` for binary OR text
+      // (per `Composer.vue::isTextMime`) so we forward whichever
+      // the wire shape had populated.
+      if (a.mime) {
+        const text = a.body && a.body.length > 0 ? a.body : ''
 
-      if (isImage) {
         return {
           kind: ComposerPillKind.Attachment,
           id: `attachment:${a.slug}`,
           label: a.title ?? a.slug,
-          data: a.data ?? '',
-          mimeType: a.mime ?? 'application/octet-stream',
+          data: text.length > 0 ? text : (a.data ?? ''),
+          mimeType: a.mime,
           fileName: a.title ?? a.path
         }
       }

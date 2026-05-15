@@ -322,6 +322,12 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
         .plugin(tauri_plugin_log::Builder::default().skip_logger().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
+        // Native OS file / folder dialogs — used by the overlay
+        // composer's attachments button and the cwd palette's
+        // "Browse folder…" entry. Tauri-only; remote/browser
+        // frontends fall back to `<input type="file">` for
+        // attachments and the daemon-served cwd palette flow.
+        .plugin(tauri_plugin_dialog::init())
         // tauri-plugin-autostart MUST register before tauri-plugin-
         // single-instance per the plugin's README — single-instance's
         // forward-and-exit path needs the autostart manager available

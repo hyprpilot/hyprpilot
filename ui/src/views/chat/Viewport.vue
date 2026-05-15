@@ -533,6 +533,52 @@ function thinkingElapsedFor(block: ThinkingElapsedBlock): string | undefined {
   return formatDuration(totalMs)
 }
 
+/**
+ * Total wall-clock spent inside this turn's tool calls — sum of
+ * `(completedAtMs ?? now) - startedAtMs` across every call in
+ * `block.toolCalls`. Renders as a chip in the turn header so the
+ * captain reads "agent took 1m12s total in tools" alongside the
+ * existing per-turn elapsed + thinking-elapsed surfaces. Mirrors
+ * `thinkingElapsedFor`'s shape — running calls (no `completedAtMs`)
+ * tick against `liveNow` until they close.
+ *
+ * Skips calls without a positive `startedAtMs` so silently-zero
+ * timing fields don't inflate the total. Returns `undefined` when
+ * no call carried timing — the chip suppresses in that case
+ * instead of rendering a misleading `0s`.
+ */
+interface ToolElapsedBlock {
+  toolCalls: { call: { startedAtMs: number; completedAtMs?: number } }[]
+}
+
+function toolElapsedFor(block: ToolElapsedBlock): string | undefined {
+  if (block.toolCalls.length === 0) {
+    return undefined
+  }
+  const now = liveNowMs()
+  let totalMs = 0
+  let hasSignal = false
+
+  for (const entry of block.toolCalls) {
+    const s = entry.call.startedAtMs
+
+    if (typeof s !== 'number' || s <= 0) {
+      continue
+    }
+    const c = entry.call.completedAtMs
+    const end = typeof c === 'number' ? c : now
+
+    totalMs += Math.max(0, end - s)
+    hasSignal = true
+  }
+
+  if (!hasSignal || !Number.isFinite(totalMs)) {
+    return undefined
+  }
+
+  return formatDuration(totalMs)
+}
+
 function hasThinkingSignal(block: { turnId?: string; thoughts: { call: { startedAtMs: number } }[] }): boolean {
   if (block.turnId !== undefined) {
     const turn = turnRecords.value.find((rec) => rec.id === block.turnId)
@@ -690,11 +736,13 @@ defineExpose({ scrollEl })
             latestUpdatedAt(block),
             blockIdx === liveBlockIdx,
             elapsedFor(block.turnId),
+            toolElapsedFor(block),
             usageFor(block.turnId)
           ]"
           :role="block.role"
           :live="blockIdx === liveBlockIdx"
           :elapsed="elapsedFor(block.turnId)"
+          :tool-elapsed="toolElapsedFor(block)"
           :usage="usageFor(block.turnId)"
         >
           <StreamCard
