@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { faArrowDown, faArrowUp, faBars, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faArrowDown, faArrowUp, faBars, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
 import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
@@ -72,6 +72,9 @@ const emit = defineEmits<{
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
 const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working || props.phase === Phase.Awaiting || props.phase === Phase.Pending)
 const hasGit = computed(() => Boolean(props.gitStatus))
+// `aria-label` reuses this for screen readers; the visible badge
+// shows only the digit. Plural / singular still matters for assistive
+// tech ("1 instance" vs "3 instances").
 const instancesLabel = computed(() => (props.instancesCount === 1 ? 'instance' : 'instances'))
 // Row-1 background tint — same phase palette as the profile pill, but
 // dialed way down so the bar reads as ambient state rather than a hot
@@ -129,12 +132,12 @@ const rowOneBg = computed(() => {
         <button
           v-if="instancesCount >= 1"
           type="button"
-          class="frame-instances-pill"
-          :aria-label="`${instancesCount} ${instancesLabel}`"
+          class="frame-instances"
+          :aria-label="`${instancesCount} ${instancesLabel} — open switcher`"
           @click="emit('instancesClick')"
         >
-          <span class="frame-instances-count">{{ instancesCount }}</span>
-          <span class="frame-instances-label">{{ instancesLabel }}</span>
+          <FaIcon :icon="faLayerGroup" class="frame-instances-icon" aria-hidden="true" />
+          <span class="frame-instances-badge">{{ instancesCount }}</span>
         </button>
         <!-- Palette-open button: visible only on coarse pointers
              (phones / tablets). Desktop captains hit Ctrl+K. -->
@@ -342,33 +345,49 @@ html:not([data-window-anchor]) .frame {
   font-style: italic;
 }
 
-/* Row 1 instances pill — sits between the title (or spacer) and the
- * close button; queue-style format (small accent-soft fill, accent
- * fg) so the captain reads "+N" first. Hidden when the registry has
- * a single instance: nothing extra to surface. */
-.frame-instances-pill {
-  @apply inline-flex shrink-0 cursor-pointer items-center gap-[0.3125rem] border-0 leading-tight;
-  padding: 0.125rem 0.5rem;
-  font-size: 0.6rem;
-  font-weight: 700;
-  color: var(--theme-accent);
-  background-color: color-mix(in srgb, var(--theme-accent) 18%, transparent);
-  border-radius: 0.1875rem;
+/* Row 1 instances button — same chrome as `frame-close` / `frame-palette`
+ * (transparent square button) so the trailing-button cluster reads as
+ * one uniform row regardless of viewport. The count rides as a small
+ * circle badge in the top-right corner, notification-style, so the
+ * captain can scan it at a glance without the button growing wider
+ * with more digits. Always visible at count ≥ 1 on every viewport —
+ * the old textual pill hid on the horizontal scroller's overflow on
+ * narrow widths, so phones never saw it. */
+.frame-instances {
+  @apply relative inline-flex shrink-0 items-center justify-center border-0 bg-transparent leading-none;
+  color: var(--theme-fg-dim);
+  cursor: pointer;
+  padding: 0 0.25rem;
   font-family: var(--theme-font-mono);
 }
 
-.frame-instances-pill:hover {
-  filter: brightness(1.1);
+.frame-instances:hover {
+  color: var(--theme-fg);
 }
 
-.frame-instances-count {
-  font-weight: 700;
+.frame-instances-icon {
+  width: 0.9375rem;
+  height: 0.9375rem;
 }
 
-.frame-instances-label {
-  font-weight: 500;
-  text-transform: lowercase;
-  letter-spacing: 0.01875rem;
+.frame-instances-badge {
+  /* Notification-style numeric chip. Pinned to the icon's top-right
+   * corner via negative offsets so the chip overlaps the icon slightly;
+   * doesn't grow the button's hit area. Min-width 1rem keeps single-
+   * digit + double-digit counts visually balanced (the chip stays
+   * circular at 1 digit, ellipse-y at 2+). */
+  @apply pointer-events-none absolute inline-flex items-center justify-center font-bold;
+  top: -0.25rem;
+  right: -0.125rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  background-color: var(--theme-accent);
+  color: var(--theme-fg-on-tone);
+  border-radius: 9999px;
+  font-size: 0.625rem;
+  letter-spacing: 0.0125rem;
+  line-height: 1;
 }
 
 .frame-cwd-git-arrow {
@@ -421,6 +440,11 @@ html:not([data-window-anchor]) .frame {
   }
 
   .frame-close {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  .frame-instances {
     min-width: 2.25rem;
     min-height: 2.25rem;
   }
