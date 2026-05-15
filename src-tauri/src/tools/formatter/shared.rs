@@ -304,18 +304,6 @@ pub fn comment_for_lang(lang: &str) -> Option<&'static str> {
     })
 }
 
-/// Trim a long path to its last two segments so the title stays
-/// narrow. `.../<parent>/<leaf>` for paths with 3+ segments.
-pub fn short_path(path: &str) -> String {
-    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-
-    if parts.len() <= 2 {
-        return path.to_string();
-    }
-
-    format!(".../{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
-}
-
 /// `mcp__server__leaf` parsing. Empty server / leaf returns `None`.
 pub struct McpName<'a> {
     pub server: &'a str,

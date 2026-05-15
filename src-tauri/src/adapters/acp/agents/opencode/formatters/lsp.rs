@@ -5,7 +5,7 @@
 //! incomingCalls, outgoingCalls.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct LspFormatter;
@@ -20,8 +20,8 @@ impl ToolFormatter for LspFormatter {
 
         let detail = match (file.as_deref(), line, character, query.as_deref(), op.as_deref()) {
             (_, _, _, Some(q), Some("workspaceSymbol")) => Some(q.to_string()),
-            (Some(f), Some(l), Some(c), _, _) => Some(format!("{}:{}:{}", short_path(f), l, c)),
-            (Some(f), _, _, _, _) => Some(short_path(f)),
+            (Some(f), Some(l), Some(c), _, _) => Some(format!("{}:{}:{}", f, l, c)),
+            (Some(f), _, _, _, _) => Some(f.to_string()),
             _ => None,
         };
 

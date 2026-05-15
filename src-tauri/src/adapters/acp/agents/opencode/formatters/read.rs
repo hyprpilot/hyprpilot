@@ -1,7 +1,7 @@
 //! opencode's `read` tool. RawInput: `{ filePath, offset?, limit? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct ReadFormatter;
@@ -13,7 +13,7 @@ impl ToolFormatter for ReadFormatter {
         let limit = pick::<i64>(ctx.raw_input, "limit");
 
         let title = match path.as_deref() {
-            Some(p) => format!("read · {}", short_path(p)),
+            Some(p) => format!("read · {}", p),
             None => "read".to_string(),
         };
 

@@ -4,9 +4,7 @@
 //! captain reads the change inline.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{
-    format_diff_hunk, format_git_diff, pick, short_path, text_blocks, wire_title_or_fallback,
-};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, pick, text_blocks, wire_title_or_fallback};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct EditFormatter;
@@ -19,11 +17,10 @@ impl ToolFormatter for EditFormatter {
         let prefix = wire_title_or_fallback(ctx.wire_name, "Edit");
         let title = match path.as_deref() {
             Some(p) => {
-                let trimmed = short_path(p);
                 if replace_all {
-                    format!("{} · {} (replace all)", prefix, trimmed)
+                    format!("{} · {} (replace all)", prefix, p)
                 } else {
-                    format!("{} · {}", prefix, trimmed)
+                    format!("{} · {}", prefix, p)
                 }
             }
             None => prefix,

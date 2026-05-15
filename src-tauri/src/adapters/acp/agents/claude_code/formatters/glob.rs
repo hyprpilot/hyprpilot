@@ -3,7 +3,7 @@
 //! arg pair instead of a long string crammed into the title.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{pick, short_path, text_blocks};
+use crate::tools::formatter::shared::{pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct GlobFormatter;
@@ -22,7 +22,7 @@ impl ToolFormatter for GlobFormatter {
         if let Some(p) = path {
             fields.push(ToolField {
                 label: "path".to_string(),
-                value: short_path(&p),
+                value: p,
             });
         }
 
@@ -70,7 +70,7 @@ mod tests {
         assert_eq!(out.title, "glob · **/*.rs");
         let path_field = out.fields.iter().find(|f| f.label == "path").expect("path field");
 
-        assert!(path_field.value.ends_with("src"));
+        assert_eq!(path_field.value, "/home/u/proj/src");
     }
 
     #[test]

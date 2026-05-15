@@ -5,7 +5,6 @@
 //! to surface the path as a field.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::short_path;
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct ViewFormatter;
@@ -14,7 +13,7 @@ impl ToolFormatter for ViewFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
         let path = ctx.wire_name.strip_prefix("View Image ").map(str::to_string);
         let title = match path.as_deref() {
-            Some(p) => format!("view · {}", short_path(p)),
+            Some(p) => format!("view · {}", p),
             None => ctx.wire_name.trim().to_string(),
         };
 

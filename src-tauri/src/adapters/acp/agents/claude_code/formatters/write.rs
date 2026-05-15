@@ -2,9 +2,7 @@
 //! surfaces the byte count of the new content.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{
-    format_diff_hunk, format_git_diff, line_magnitudes, pick, short_path, text_blocks,
-};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, line_magnitudes, pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct WriteFormatter;
@@ -14,7 +12,7 @@ impl ToolFormatter for WriteFormatter {
         let path = pick::<String>(ctx.raw_input, "file_path");
         let body = pick::<String>(ctx.raw_input, "content");
         let title = match path.as_deref() {
-            Some(p) => format!("write · {}", short_path(p)),
+            Some(p) => format!("write · {}", p),
             None => "write".to_string(),
         };
 

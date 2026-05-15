@@ -4,9 +4,7 @@
 use serde_json::Value;
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{
-    format_diff_hunk, format_git_diff, line_magnitudes, pick, short_path, text_blocks,
-};
+use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, line_magnitudes, pick, text_blocks};
 use crate::tools::formatter::types::{FormattedToolCall, Stat};
 
 pub struct MultiEditFormatter;
@@ -17,7 +15,7 @@ impl ToolFormatter for MultiEditFormatter {
         let edits = pick::<Vec<Value>>(ctx.raw_input, "edits").unwrap_or_default();
 
         let title = match path.as_deref() {
-            Some(p) => format!("edit · {}", short_path(p)),
+            Some(p) => format!("edit · {}", p),
             None => "edit".to_string(),
         };
 
