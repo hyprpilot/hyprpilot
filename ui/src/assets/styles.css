@@ -88,7 +88,7 @@
  * borders) and properties that should stay device-pixel exact
  * regardless of UI scale.** */
 :root {
-  font-size: 22px;
+  font-size: 16px;
 }
 
 /* Mobile bump — phone screens (≤480px wide, the typical remote
@@ -102,7 +102,7 @@
  * compositor's anchor extent, never <480px in practice). */
 @media (max-width: 480px) {
   :root {
-    font-size: 24px;
+    font-size: 18px;
   }
 }
 
