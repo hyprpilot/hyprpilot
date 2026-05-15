@@ -4,6 +4,7 @@ import { nextSeq } from './sequence'
 import { openTurnIdFor } from './use-turns'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import type { Attachment } from '@ipc'
+import { paragraphSeparator } from '@lib/markdown'
 
 export enum TurnRole {
   User = 'user',
@@ -125,23 +126,6 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
     default:
       return undefined
   }
-}
-
-/// Pick the prefix that turns the existing text + new chunk into a
-/// well-formed markdown paragraph boundary. Returns `''` when no
-/// separator is needed (existing already ends in `\n\n`, or the new
-/// chunk leads with `\n\n`, or the existing is empty). Otherwise
-/// returns `\n` (existing ended on a single `\n`) or `\n\n`.
-function paragraphSeparator(existing: string, incoming: string): string {
-  if (existing.length === 0) {
-    return ''
-  }
-
-  if (existing.endsWith('\n\n') || incoming.startsWith('\n\n')) {
-    return ''
-  }
-
-  return existing.endsWith('\n') ? '\n' : '\n\n'
 }
 
 /// Append a chunk onto an open agent turn (or open a fresh one).

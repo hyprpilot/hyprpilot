@@ -1291,6 +1291,23 @@ Neovim plugin; no icons in `ctl`). See
 `src-tauri/src/tools/formatter/types.rs::FormattedToolCall` for
 the schema.
 
+**Streamed-chunk markdown-paragraph lift**: every `AgentText` and
+`AgentThought` chunk on the wire is **concatenation-safe**.
+Frontends append chunks verbatim and get well-formed markdown.
+The daemon's `acp::paragraph::soft_lift_prefix` runs at emit time
+on the per-turn `TurnState::note_agent_text` / `note_agent_thought`
+counter: when the accumulated tail of the open turn's agent text
+ends on a single `\n` and the next chunk's text doesn't lead with
+one, the daemon prepends `\n` to the outgoing text before the
+event fires and before the mirror persists. Net effect: a vendor
+emitting `"Para 1.\n"` + `"Para 2."` as two `agent_message_chunk`
+notifications produces wire chunks `"Para 1.\n"` + `"\nPara 2."`,
+and the concat reads as two paragraphs in any markdown renderer.
+Soft-lift only: never injects a break on a non-newline boundary,
+so streaming token bursts (`"Hello, "` + `"world"`) emit verbatim
+without splitting mid-sentence. Counter resets on every
+`open_real` / `open_synthetic`.
+
 **Existing client implementations**:
 
 - `src-tauri/src/ctl/` — operator CLI. One `CtlHandler` impl per
