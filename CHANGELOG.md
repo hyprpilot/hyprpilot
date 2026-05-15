@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.0](https://github.com/hyprpilot/hyprpilot/compare/v0.5.0...v0.6.0) (2026-05-15)
+
+
+### Features
+
+* composer + transcript + header chrome polish ([#64](https://github.com/hyprpilot/hyprpilot/issues/64)) ([b80024d](https://github.com/hyprpilot/hyprpilot/commit/b80024db62792071e39ec4b5dea8dab7147d8604))
+* **daemon:** markdown-paragraph lift on streamed agent chunks + contract docs refresh ([#73](https://github.com/hyprpilot/hyprpilot/issues/73)) ([6e1f510](https://github.com/hyprpilot/hyprpilot/commit/6e1f5108513c46ea5428b7f595e3f36662ec5c22))
+* **header:** instances button redesign + queue cancel contract docs ([#66](https://github.com/hyprpilot/hyprpilot/issues/66)) ([566fd5b](https://github.com/hyprpilot/hyprpilot/commit/566fd5b518c8d79f6c95da2f6fceb55514008be1))
+* internalize queue mechanism — daemon-owned, RPC-driven ([#67](https://github.com/hyprpilot/hyprpilot/issues/67)) ([5fbe25f](https://github.com/hyprpilot/hyprpilot/commit/5fbe25f324afc2c00c81614c1e1ae40feb38a66f))
+* **mcps:** accept inline mcp_servers on `[[mcps]]` entries ([#61](https://github.com/hyprpilot/hyprpilot/issues/61)) ([bd9ff6b](https://github.com/hyprpilot/hyprpilot/commit/bd9ff6b54520d541c549b8a590d66441a469ad0c))
+* **overlay:** accept instanceId on overlay/toggle ([#60](https://github.com/hyprpilot/hyprpilot/issues/60)) ([6e7f39b](https://github.com/hyprpilot/hyprpilot/commit/6e7f39bf573d29cc652d4f6c9340924284107193))
+* **tray + pickers:** status tooltip, native cwd picker, broader attachments ([#74](https://github.com/hyprpilot/hyprpilot/issues/74)) ([6af5b28](https://github.com/hyprpilot/hyprpilot/commit/6af5b28c0baf57ba4bf87ee89b9ad46812c81caa))
+
+
+### Bug Fixes
+
+* empty-turn diagnostics + drop daemon-side path/body truncation ([#65](https://github.com/hyprpilot/hyprpilot/issues/65)) ([54c6a64](https://github.com/hyprpilot/hyprpilot/commit/54c6a64782df7e7702e910c42e84449ca493de44))
+* **remote-pair:** scroll the pair landing on short phones ([#63](https://github.com/hyprpilot/hyprpilot/issues/63)) ([adcd621](https://github.com/hyprpilot/hyprpilot/commit/adcd621e390b6ea4b572fde801346381678aa099))
+* **remote:** hoist transcript patcher to singleton + un-truncate header pills ([#70](https://github.com/hyprpilot/hyprpilot/issues/70)) ([77b61da](https://github.com/hyprpilot/hyprpilot/commit/77b61da4a14beaf67f57081f26fae82b8d0f3fd5))
+* **submit:** let the daemon mint the instance id, read it off the reply ([#72](https://github.com/hyprpilot/hyprpilot/issues/72)) ([5027041](https://github.com/hyprpilot/hyprpilot/commit/5027041822100bf152cf5c2a35ab3f1b342c9fc5))
+* **ui:** bundle warnings + agent-text fold + mobile chrome + load-older gate ([#69](https://github.com/hyprpilot/hyprpilot/issues/69)) ([47efcfb](https://github.com/hyprpilot/hyprpilot/commit/47efcfb961eef169cab423fa0b44f2967aabfef1))
+* **ui:** full-history hydration + title-driven instance rows ([#71](https://github.com/hyprpilot/hyprpilot/issues/71)) ([844b7b0](https://github.com/hyprpilot/hyprpilot/commit/844b7b084adcb87f12cac42c8af304fbefbed2fe))
+* update styles ([#62](https://github.com/hyprpilot/hyprpilot/issues/62)) ([ace4337](https://github.com/hyprpilot/hyprpilot/commit/ace4337d05ef285be8909efc4443e884a96148fb))
+* **viewport:** clean remount per instance + gate scroll-driven pagination ([#68](https://github.com/hyprpilot/hyprpilot/issues/68)) ([cf58dcb](https://github.com/hyprpilot/hyprpilot/commit/cf58dcb4f8ef88458ee9aceaefc3659d13753077))
+
+
+### Refactor
+
+* **config:** scope withConfig patches to the resolved profile ([#58](https://github.com/hyprpilot/hyprpilot/issues/58)) ([d9ae583](https://github.com/hyprpilot/hyprpilot/commit/d9ae583eefea15105f98b877e811e9e640b60bac))
+
 ## [0.5.0](https://github.com/hyprpilot/hyprpilot/compare/v0.4.0...v0.5.0) (2026-05-14)
 
 
