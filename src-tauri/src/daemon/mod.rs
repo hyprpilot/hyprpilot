@@ -198,16 +198,28 @@ pub(crate) async fn build_boot_snapshot(
     // with many live instances. Empty `items` arrays included so the
     // consumer treats absence as "no instance" rather than "queue
     // unknown".
+    //
+    // `entry.instance_id` came from `adapter.list()` which derives
+    // it via `InstanceKey::as_string()`; the round-trip MUST succeed.
+    // A parse failure here means a wire-shape mismatch — surface as
+    // an error so the daemon log catches the regression instead of
+    // silently shipping an instance with no queue field.
     let mut queues = serde_json::Map::with_capacity(instance_entries.len());
     for entry in &instance_entries {
-        let key = match crate::adapters::InstanceKey::parse(&entry.instance_id) {
-            Ok(k) => k,
-            Err(_) => continue,
+        let key = crate::adapters::InstanceKey::parse(&entry.instance_id).map_err(|e| {
+            format!(
+                "boot_snapshot: instance id from adapter.list() did not round-trip: {} ({e})",
+                entry.instance_id
+            )
+        })?;
+        // `instance_mirror` returning None means the actor was torn
+        // down between `adapter.list()` and the mirror lookup — rare
+        // race, ship an empty array so consumers don't see a missing
+        // key for an instance that was listed.
+        let items = match adapter.instance_mirror(key).await {
+            Some(mirror) => mirror.queue_snapshot().await,
+            None => Vec::new(),
         };
-        let Some(mirror) = adapter.instance_mirror(key).await else {
-            continue;
-        };
-        let items = mirror.queue_snapshot().await;
         queues.insert(
             entry.instance_id.clone(),
             serde_json::to_value(&items).map_err(|e| format!("serialize queue for {}: {e}", entry.instance_id))?,

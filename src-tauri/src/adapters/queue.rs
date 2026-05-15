@@ -55,27 +55,31 @@ pub struct QueueItem {
     pub enqueued_at: i64,
 }
 
-/// Reply shape for `queue/dispatch`. Mirrors the `prompts/send` reply
-/// fields so second-frontends can reuse their existing "did this
-/// land?" handling.
+/// Reply shape for `queue/dispatch`. Mirrors the `prompts/send` reply's
+/// "did the actor accept this?" semantics. `accepted` flips immediately
+/// on actor-accept (NOT on turn completion) so the captain's UI spinner
+/// resolves in milliseconds; the eventual `acp:turn-ended` event
+/// (carrying the real `turnId`) is the completion signal.
+///
+/// `item` is `None` when the queue was empty (head dispatch) or the
+/// named id wasn't in the queue — frontends render "queue empty" /
+/// "item already drained" without unwrapping a sentinel.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueDispatchResult {
-    /// The item that was popped + dispatched. Frontends echo this on
-    /// the local mirror's optimistic remove if they didn't wait for
-    /// the matching `QueueChanged` broadcast.
-    pub item: QueueItem,
-    /// ACP session id the prompt landed on. Mirrors
-    /// `SubmitResult.sessionId`.
+    /// The item that was popped + dispatched. `None` when the dispatch
+    /// found nothing (empty queue / unknown id) — `accepted` is `false`
+    /// in that case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<QueueItem>,
+    /// ACP session id the prompt will land on. Mirrors
+    /// `SubmitResult.sessionId`. `None` on dispatch-failure paths or
+    /// pre-`session/new` instances.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Turn id the agent assigned to the dispatched prompt. Mirrors
-    /// `SubmitResult.turnId`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    /// `true` when the actor accepted the prompt for dispatch; `false`
-    /// when the queue was empty / item id missing / dispatch failed
-    /// before the request left the wire.
+    /// `true` when the actor took the popped item and forwarded it
+    /// down the prompt path. `false` when the queue was empty / item
+    /// id missing / the actor channel was closed.
     pub accepted: bool,
 }
 
@@ -120,21 +124,37 @@ mod tests {
         assert_eq!(original, parsed);
     }
 
-    /// `QueueDispatchResult` mirrors the `prompts/send` reply: when no
-    /// session is open yet the optional fields drop off the wire so
-    /// thin clients don't have to type-narrow.
+    /// `QueueDispatchResult` mirrors the `prompts/send` reply: when
+    /// nothing was popped (empty queue / unknown id) the `item` drops
+    /// off the wire so thin clients don't have to type-narrow against
+    /// a sentinel. `session_id` drops similarly when the dispatch
+    /// failed pre-`session/new`.
     #[test]
-    fn dispatch_result_drops_empty_optionals() {
+    fn dispatch_result_drops_empty_optionals_when_unaccepted() {
         let v = serde_json::to_value(QueueDispatchResult {
-            item: sample(0),
+            item: None,
             session_id: None,
-            turn_id: None,
             accepted: false,
         })
         .unwrap();
 
-        assert!(v.get("sessionId").is_none());
-        assert!(v.get("turnId").is_none());
+        assert!(v.get("item").is_none(), "item must drop on empty-queue: {v}");
+        assert!(v.get("sessionId").is_none(), "sessionId must drop pre-spawn: {v}");
         assert_eq!(v["accepted"], false);
+    }
+
+    /// Happy path: queue had an item, actor accepted, session id known.
+    #[test]
+    fn dispatch_result_carries_item_and_session_on_accept() {
+        let v = serde_json::to_value(QueueDispatchResult {
+            item: Some(sample(3)),
+            session_id: Some("s-1".into()),
+            accepted: true,
+        })
+        .unwrap();
+
+        assert_eq!(v["item"]["id"], "q-3");
+        assert_eq!(v["sessionId"], "s-1");
+        assert_eq!(v["accepted"], true);
     }
 }

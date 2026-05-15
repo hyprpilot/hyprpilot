@@ -2988,16 +2988,12 @@ async fn run(params: RunParams) {
                             let item = match popped {
                                 Some(it) => it,
                                 None => {
+                                    // Queue empty / unknown id — reply with `item: None`,
+                                    // `accepted: false`. No sentinel placeholder; frontends
+                                    // type-narrow on `item` directly.
                                     let _ = reply.send(Ok(crate::adapters::queue::QueueDispatchResult {
-                                        item: crate::adapters::queue::QueueItem {
-                                            id: String::new(),
-                                            text: String::new(),
-                                            attachments: Vec::new(),
-                                            enqueued_seq: 0,
-                                            enqueued_at: 0,
-                                        },
+                                        item: None,
                                         session_id: None,
-                                        turn_id: None,
                                         accepted: false,
                                     }));
                                     continue;
@@ -3010,35 +3006,32 @@ async fn run(params: RunParams) {
                             // own command channel so the existing
                             // attachment / system-prompt-injection /
                             // TurnGuard machinery handles it without
-                            // duplicating any of that logic here.
-                            let (inner_reply, inner_rx) = oneshot::channel::<Result<(), String>>();
-                            if cmd_tx_self.send(InstanceCommand::Prompt {
-                                text: item.text.clone(),
-                                attachments: item.attachments.clone(),
-                                // Captain explicit dispatch — bypass the
-                                // queue auto-route so the popped item
-                                // goes on-wire immediately.
-                                force_dispatch: true,
-                                reply: inner_reply,
-                            }).is_err() {
-                                let _ = reply.send(Err("actor channel closed".into()));
-                                continue;
-                            }
+                            // duplicating any of that logic here. The
+                            // inner Prompt's reply fires when the prompt-
+                            // future resolves (turn complete) — not what
+                            // the captain's "did you accept this?" RPC
+                            // wants. We reply IMMEDIATELY on mailbox-
+                            // accept so the UI spinner resolves in ms;
+                            // turn completion arrives via the regular
+                            // `acp:turn-ended` event.
+                            let (inner_reply, _inner_rx) = oneshot::channel::<Result<(), String>>();
                             let session_id_str = session_id.as_ref().map(|s| s.0.to_string());
-                            // Spawn the wait so we don't block the
-                            // actor's mailbox on the inner prompt-future
-                            // (which is itself spawned and pumps the
-                            // notification stream through this same
-                            // select loop).
-                            tokio::spawn(async move {
-                                let accepted = inner_rx.await.is_ok_and(|r| r.is_ok());
-                                let _ = reply.send(Ok(crate::adapters::queue::QueueDispatchResult {
-                                    item,
-                                    session_id: session_id_str,
-                                    turn_id: None,
-                                    accepted,
-                                }));
-                            });
+                            let accepted = cmd_tx_self
+                                .send(InstanceCommand::Prompt {
+                                    text: item.text.clone(),
+                                    attachments: item.attachments.clone(),
+                                    // Captain explicit dispatch — bypass the
+                                    // queue auto-route so the popped item
+                                    // goes on-wire immediately.
+                                    force_dispatch: true,
+                                    reply: inner_reply,
+                                })
+                                .is_ok();
+                            let _ = reply.send(Ok(crate::adapters::queue::QueueDispatchResult {
+                                item: Some(item),
+                                session_id: session_id_str,
+                                accepted,
+                            }));
                         }
                         InstanceCommand::Shutdown { reply } => {
                             info!(
