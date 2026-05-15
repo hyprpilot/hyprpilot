@@ -1,6 +1,7 @@
 export * from './cleanup'
 export * from './sequence'
 export * from './snapshot-timeline'
+export * from './transcript-patcher'
 export * from './use-chat-viewport'
 export * from './use-focus-prefetch'
 export * from './use-git-status'

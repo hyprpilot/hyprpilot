@@ -3,7 +3,17 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { createApp } from 'vue'
 
 import App from './App.vue'
-import { applyBootSnapshot, applyTheme, applyWindowState, loadCompletionConfig, loadKeymaps, markBootDone, setBootStatus, startGitStatus } from '@composables'
+import {
+  applyBootSnapshot,
+  applyTheme,
+  applyWindowState,
+  loadCompletionConfig,
+  loadKeymaps,
+  markBootDone,
+  setBootStatus,
+  startGitStatus,
+  startTranscriptPatcher
+} from '@composables'
 import { ensureRemoteConnection, isRemoteHost, subscribePair } from '@ipc/remote-bridge'
 import { log } from '@lib'
 import '@assets/styles.css'
@@ -136,6 +146,20 @@ async function boot(): Promise<void> {
     app.mount('#app')
     await ensureRemoteConnection()
     await waitForPairAuthenticated()
+    // Wire the live-transcript patcher BEFORE any further RPC fires.
+    // The WS auto-subscribes to events at handshake time, so live
+    // `acp:transcript` pushes for an in-flight turn would otherwise
+    // land at the bridge dispatcher with no listener registered
+    // (`useChatViewport`'s IIFE doesn't mount until Overlay.vue does,
+    // which is gated on `bootDone` flipping AFTER `applyBootSnapshot`
+    // returns). Events in that gap were silently dropped at
+    // `remote-bridge.ts::onMessage` — `eventListeners.get('acp:transcript')`
+    // returned `undefined` → early-return. The captain's "remote
+    // doesn't hydrate, only handles incoming data as it goes along"
+    // symptom was exactly those dropped frames. Registering the
+    // singleton here, after auth but before any other RPC, means the
+    // dispatcher has a listener ready for the first frame.
+    await startTranscriptPatcher(queryClient)
     setBootStatus('loading')
 
     if (!(await applyBootSnapshot(queryClient))) {
@@ -148,6 +172,12 @@ async function boot(): Promise<void> {
     }
   } else {
     setBootStatus('loading')
+    // Tauri host: `listen()` rides the synchronous event pump and
+    // resolves immediately. Wire the patcher before the boot
+    // snapshot fires so it stays in lockstep with the remote path
+    // (and so a daemon emitting events during the snapshot fetch
+    // gets caught — vanishingly small race on desktop, but free).
+    await startTranscriptPatcher(queryClient)
 
     if (!(await applyBootSnapshot(queryClient))) {
       await applyTheme()

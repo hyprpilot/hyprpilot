@@ -140,7 +140,12 @@ describe('timelineBlocksFromSnapshot', () => {
         content: [],
         rawInput: {},
         formatted: {
-          title: 'edit', stats: [], description: '', output: '', fields: [], iconKey: 'edit'
+          title: 'edit',
+          stats: [],
+          description: '',
+          output: '',
+          fields: [],
+          iconKey: 'edit'
         }
       } as unknown as SeqTranscriptItem['item']
     })

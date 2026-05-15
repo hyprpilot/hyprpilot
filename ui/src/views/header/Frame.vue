@@ -267,19 +267,18 @@ html:not([data-window-anchor]) .frame {
 }
 
 /* Profile pill — phase color bg + dark ink + mono. Pulse dot when the
- * session is in any active phase (working/streaming/awaiting/pending). */
+ * session is in any active phase (working/streaming/awaiting/pending).
+ * No truncation: the parent `HorizontalScroller` absorbs overflow via
+ * `overflow-x: auto` + arrow chevrons, so a long captain-set name
+ * stays fully readable by swipe / arrow-tap. */
 .frame-profile-pill {
-  @apply inline-flex shrink-0 items-center gap-[0.375rem] rounded-sm border-0 leading-tight;
+  @apply inline-flex shrink-0 items-center gap-[0.375rem] rounded-sm border-0 whitespace-nowrap leading-tight;
   padding: 0.1875rem 0.6875rem;
   font-size: 0.7rem;
   font-weight: 700;
   color: var(--theme-fg-on-tone);
   font-family: var(--theme-font-mono);
   cursor: pointer;
-  max-width: 16ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Secondary profile pill (rendered to the right of a captain-set
@@ -306,7 +305,7 @@ html:not([data-window-anchor]) .frame {
 .frame-adapter-pill,
 .frame-model-pill,
 .frame-mode-pill {
-  @apply inline-flex shrink-0 items-center rounded-sm leading-tight;
+  @apply inline-flex shrink-0 items-center whitespace-nowrap rounded-sm leading-tight;
   padding: 0.1875rem 0.5625rem;
   font-size: 0.66rem;
   font-weight: 700;
@@ -314,14 +313,11 @@ html:not([data-window-anchor]) .frame {
   border: 1px solid var(--theme-border-soft);
   font-family: var(--theme-font-mono);
   cursor: pointer;
-  /* Long model / adapter names (e.g. claude-sonnet-4-5-20250514)
-   * truncate before squeezing the close button off-screen. Hard
-   * `shrink-0` is preserved — the pill keeps its full width when
-   * the row has room and only the inner text ellipsises. */
-  max-width: 14ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* No truncation: long model / adapter names (e.g.
+   * `claude-sonnet-4-5-20250514`) stay fully readable. The parent
+   * `HorizontalScroller` already absorbs overflow with `overflow-x:
+   * auto` + arrow chevrons, so the captain swipes / arrow-taps to
+   * reach pills that ran past the viewport. */
 }
 
 .frame-adapter-pill {
