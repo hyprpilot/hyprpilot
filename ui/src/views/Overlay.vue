@@ -928,12 +928,7 @@ function onQueueSend(itemId: string): void {
          keeps the per-instance chat cache keyed by `instanceId` so
          content paints from cache the moment the new mount reads
          `query.data.value` — no IPC round-trip cost on the flip. -->
-    <ChatViewport
-      :key="activeInstanceId ?? 'idle'"
-      :restoring="sessionInfo.restoring"
-      @cancel="onCancel"
-      @attachment-open="onAttachmentOpen"
-    >
+    <ChatViewport :key="activeInstanceId ?? 'idle'" :restoring="sessionInfo.restoring" @cancel="onCancel" @attachment-open="onAttachmentOpen">
       <template #empty>
         <IdleScreen
           :profile="selectedProfile"

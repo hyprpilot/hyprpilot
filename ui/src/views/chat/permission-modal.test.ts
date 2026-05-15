@@ -44,10 +44,14 @@ function buildView(): PermissionView {
     },
     options: [
       {
-        optionId: 'allow-once', name: 'Allow', kind: 'allow_once'
+        optionId: 'allow-once',
+        name: 'Allow',
+        kind: 'allow_once'
       },
       {
-        optionId: 'reject-once', name: 'Reject', kind: 'reject_once'
+        optionId: 'reject-once',
+        name: 'Reject',
+        kind: 'reject_once'
       }
     ],
     defaultOptionId: 'allow-once'

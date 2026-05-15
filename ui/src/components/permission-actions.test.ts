@@ -15,13 +15,19 @@ import type { PermissionOptionView } from '@interfaces/wire/transcript'
 describe('PermissionActions', () => {
   const opts: PermissionOptionView[] = [
     {
-      optionId: 'allow-once', name: 'Allow Once', kind: 'allow_once'
+      optionId: 'allow-once',
+      name: 'Allow Once',
+      kind: 'allow_once'
     },
     {
-      optionId: 'allow-always', name: 'Allow Always', kind: 'allow_always'
+      optionId: 'allow-always',
+      name: 'Allow Always',
+      kind: 'allow_always'
     },
     {
-      optionId: 'reject-once', name: 'Reject', kind: 'reject_once'
+      optionId: 'reject-once',
+      name: 'Reject',
+      kind: 'reject_once'
     }
   ]
 

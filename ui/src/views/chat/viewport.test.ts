@@ -245,11 +245,10 @@ describe('Viewport.vue', () => {
     // The viewport now gates `fetchNextPage` on `hasUserScrolled` —
     // a synthetic scroll event during the initial mount's anchor
     // write is treated as bootstrap noise, NOT a captain gesture.
-    // Two-step simulation: (1) captain pushes the bar AWAY from
-    // bottom past the threshold (unlocks the gate); (2) captain
-    // drags it to the top (fires the actual backward fetch). Real
-    // browsers fire one scroll event per pixel of drag; one each
-    // here matches the prod state-machine without a million ticks.
+    // The gate flips on a real input event (`wheel` / `touchstart` /
+    // `pointerdown`), not on distance heuristics — `useStickToBottom`
+    // can move `scrollTop` arbitrarily during mount, so a scroll-only
+    // simulation can't distinguish bootstrap from gesture.
     Object.defineProperty(root, 'scrollHeight', {
       configurable: true,
       value: 5000
@@ -259,17 +258,10 @@ describe('Viewport.vue', () => {
       value: 500
     })
 
-    // Step 1 — captain scrolls up past the threshold (distance from
-    // bottom = 4500 - 1000 - 500 = 3000 > 240). Unlocks the gate.
-    Object.defineProperty(root, 'scrollTop', {
-      configurable: true,
-      writable: true,
-      value: 1000
-    })
-    root.dispatchEvent(new Event('scroll'))
-    await flushPromises()
+    // Step 1 — captain's wheel/touch input flips the gate.
+    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }))
 
-    // Step 2 — captain reaches the top. Fires the backward fetch.
+    // Step 2 — scroll reaches the top, triggers backward fetch.
     Object.defineProperty(root, 'scrollTop', {
       configurable: true,
       writable: true,
@@ -428,16 +420,11 @@ describe('Viewport.vue', () => {
       value: 800
     })
 
-    // First flip `hasUserScrolled` true by scrolling away from
-    // bottom past LOAD_MORE_THRESHOLD_PX (240). With scrollHeight
-    // 2000 + clientHeight 800: distanceFromBottom = 2000 - 200 - 800
-    // = 1000 > 240 → gate unlocks.
-    Object.defineProperty(root, 'scrollTop', {
-      configurable: true,
-      writable: true,
-      value: 200
-    })
-    root.dispatchEvent(new Event('scroll'))
+    // First flip `hasUserScrolled` true with a real input gesture —
+    // the gate listens for `wheel` / `touchstart` / `pointerdown` to
+    // tell captain intent apart from `useStickToBottom` synthetic
+    // scrolls during mount.
+    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }))
     await flushPromises()
 
     // Now position within one viewport of the bottom + assert the

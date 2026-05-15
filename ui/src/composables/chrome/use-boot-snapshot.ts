@@ -21,7 +21,7 @@
 
 import { type QueryClient } from '@tanstack/vue-query'
 
-import { useActiveInstance } from './use-active-instance'
+import { applyInstancesSnapshot, useActiveInstance } from './use-active-instance'
 import { setDaemonCwd } from './use-daemon-cwd'
 import { applyKeymapsFromObject } from './use-keymaps'
 import { applyThemeFromObject } from './use-theme'
@@ -62,6 +62,14 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   // check, `null !== undefined` slipped through to `null.length` and
   // threw, taking the whole boot pipeline with it (markBootDone never
   // fired, captain stuck on the loading screen).
+  // Seed the per-process instance registry BEFORE the live router
+  // subscribes — a remote captain on a fresh page load needs the
+  // current membership + count so the row-1 instances button paints
+  // correctly. Without this seed, `useActiveInstance().count` stays
+  // 0 until the daemon broadcasts a spawn / shutdown event, which
+  // may not happen for the entire mobile session.
+  applyInstancesSnapshot(snap.instances.instances.map((entry) => entry.instanceId))
+
   for (const entry of snap.instances.instances) {
     if (entry.agentId) {
       setInstanceAgent(entry.instanceId, entry.agentId)

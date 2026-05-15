@@ -3,6 +3,15 @@ import { listen as tauriListen, type EventCallback, type UnlistenFn } from '@tau
 
 import { remoteInvoke, remoteListen, isRemoteHost } from './remote-bridge'
 import { TauriCommand, TauriEvent, type TauriCommandArgs, type TauriCommandResult, type TauriEventPayload } from '@constants/wire'
+// Import the leaf `@lib/log` directly, NOT the `@lib` barrel. The
+// barrel re-exports `./markdown`, which pulls `@ipc` for its
+// `read_file_for_attachment` hydrator — that closes the loop
+// `@ipc/bridge → @lib → @lib/markdown → @ipc`. The leaf has zero
+// `@ipc` deps so it's safe at module-load time. Beyond breaking the
+// cycle this also lets Rolldown chunk `@lib/markdown` (shiki + the
+// markdown pipeline) away from the entry bundle — see vite.config.ts
+// `codeSplitting.groups`.
+import { log } from '@lib/log'
 
 /**
  * Typed `invoke` wrapper. Args are inferred from `TauriCommandArgs[K]`
@@ -35,10 +44,6 @@ export async function invoke<K extends TauriCommand>(
 
     return await tauriInvoke<TauriCommandResult[K]>(command, payload as Record<string, unknown> | undefined)
   } catch(err) {
-    // Lazy-import to avoid an `@lib` <-> `@ipc` cyclic dep at module
-    // load time. The runtime cost is negligible — once-per-error.
-    const { log } = await import('@lib')
-
     log.error('invoke failed', { command, args: payload }, err)
     throw err
   }

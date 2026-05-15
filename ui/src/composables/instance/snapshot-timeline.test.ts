@@ -103,6 +103,63 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(blocks[1].turnEntries[0].turn.text).toBe('Hey! Doing well — what\'s on your mind?')
   })
 
+  it('folds agent text chunks across an interleaved thought within the same turn', () => {
+    // Regression: vendors (Claude / Codex / OpenCode) emit
+    // agent_thought between agent_message_chunks of the same turn,
+    // and the snapshot ships each as a separate SeqTranscriptItem.
+    // The adjacency-only merge produced multiple Body bubbles in one
+    // block; the captain read one logical reply as a stack of cards.
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'hey'),
+      agentText(2, 't-1', 'Paragraph one. '),
+      agentThought(3, 't-1', 'thinking…'),
+      agentText(4, 't-1', 'Paragraph two.')
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistant = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistant).toBeDefined()
+    expect(assistant?.turnEntries).toHaveLength(1)
+    expect(assistant?.turnEntries[0].turn.text).toBe('Paragraph one. Paragraph two.')
+    expect(assistant?.streamEntries).toHaveLength(1)
+  })
+
+  it('folds thought chunks across an interleaved tool call within the same turn', () => {
+    // Same shape as the agent-text fold, applied to the Thought
+    // stream — a tool call between thought chunks must not split
+    // the thinking block.
+    const toolCall = (seq: number, turnId: string, id: string): SeqTranscriptItem => ({
+      seq,
+      turnId,
+      item: {
+        kind: TranscriptItemKind.ToolCall,
+        id,
+        title: 'edit',
+        state: 'completed',
+        toolKind: 'edit',
+        content: [],
+        rawInput: {},
+        formatted: {
+          title: 'edit', stats: [], description: '', output: '', fields: [], iconKey: 'edit'
+        }
+      } as unknown as SeqTranscriptItem['item']
+    })
+
+    const items: SeqTranscriptItem[] = [userPrompt(1, 't-1', 'go'), agentThought(2, 't-1', 'first half — '), toolCall(3, 't-1', 'tc-1'), agentThought(4, 't-1', 'second half.')]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistant = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistant).toBeDefined()
+    expect(assistant?.streamEntries).toHaveLength(1)
+    const thought = assistant?.streamEntries[0]
+
+    expect(thought?.item.kind).toBe('thought')
+
+    if (thought?.item.kind === 'thought') {
+      expect(thought.item.text).toBe('first half — second half.')
+    }
+  })
+
   it('does not collapse two distinct turnIds even when adjacent', () => {
     const items: SeqTranscriptItem[] = [agentText(1, 't-1', 'a'), agentText(2, 't-2', 'b')]
     const blocks = timelineBlocksFromSnapshot(items)

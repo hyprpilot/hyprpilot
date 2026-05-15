@@ -93,23 +93,50 @@ const instanceId = computed<InstanceId | undefined>(() => activeInstanceId.value
 // the initial fetch races a sane lower bound, and every backward
 // page picks up the real viewport extent.
 const scrollEl = ref<HTMLElement>()
-/// Flipped on the first captain-initiated scroll event after mount.
+/// Flipped on the first captain-initiated input gesture after mount.
 /// Both `fetchNextPage` (load older) and `evictExtraPages` (drop
 /// trailing pages) gate on this so they don't fire during the
-/// initial paint of a freshly-mounted viewport. Without the gate:
-/// `useStickToBottom.onMounted` writes `scrollTop = scrollHeight`,
-/// the browser fires a synthetic `scroll` event for that
-/// assignment, the handler sees `scrollTop < LOAD_MORE_THRESHOLD_PX`
-/// while the page is mid-render (the new instance's head page may
-/// only have 1-2 items rendered so far → `scrollHeight ≈
-/// clientHeight` → `scrollTop ≈ 0`) and burns a backward fetch on
-/// content the captain hasn't even scrolled past yet. This was the
-/// captain's "loading earlier history after switching" bug.
+/// initial paint of a freshly-mounted viewport.
+///
+/// **Why a gesture listener, not a scroll-event heuristic.**
+/// `useStickToBottom.onMounted` writes `scrollTop = scrollHeight` on
+/// mount, and its MutationObserver re-stick passes write again on
+/// every chunk while the head page renders. The browser fires
+/// synthetic `scroll` events for each — indistinguishable from a
+/// captain's drag if you only watch `scrollTop`. A distance-based
+/// gate (the previous shape) had two failure modes: (1) on a small
+/// upward drag, `distanceFromBottom < threshold` so the gate stayed
+/// locked, burning the gesture; (2) on a large drag past the
+/// threshold, the gate unlocked but the same scroll tick also
+/// satisfied the load-more condition, racing the fetch.
+///
+/// `wheel` / `touchstart` / `pointerdown` are pure intent signals —
+/// stick-to-bottom never fires them. First one flips the gate; from
+/// that point on, every scroll handler tick can pull older pages.
 ///
 /// Resets to `false` on every mount (the `:key="activeInstanceId"`
 /// on `<ChatViewport>` in `Overlay.vue` forces a clean remount per
 /// instance flip, so this ref is freshly `false` for each instance).
 const hasUserScrolled = ref(false)
+
+function markUserScrolled(): void {
+  if (!hasUserScrolled.value) {
+    hasUserScrolled.value = true
+  }
+}
+
+useEventListener(scrollEl, 'wheel', markUserScrolled, { passive: true })
+useEventListener(scrollEl, 'touchstart', markUserScrolled, { passive: true })
+useEventListener(scrollEl, 'pointerdown', markUserScrolled, { passive: true })
+useEventListener(scrollEl, 'keydown', (ev: KeyboardEvent) => {
+  // Inside-viewport keyboard nav (PageUp/PageDown/Home/End/Arrows)
+  // also counts as captain intent. The document-level handler
+  // further down routes nav keys to scroll ops; this just unlocks
+  // the gate so the resulting scroll events fetch / evict.
+  if (ev.key.startsWith('Arrow') || ev.key === 'PageUp' || ev.key === 'PageDown' || ev.key === 'Home' || ev.key === 'End') {
+    markUserScrolled()
+  }
+})
 
 const viewport = useChatViewport(instanceId, { scrollEl })
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
@@ -214,6 +241,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
   switch (ev.key) {
     case 'PageDown': {
       ev.preventDefault()
+      markUserScrolled()
       el.scrollBy({ top: el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
 
       return
@@ -221,6 +249,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
 
     case 'PageUp': {
       ev.preventDefault()
+      markUserScrolled()
       el.scrollBy({ top: -el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
 
       return
@@ -232,6 +261,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
       // textarea-cursor case is already safe. Ctrl/Cmd modifier is
       // also accepted for muscle memory parity with browsers.
       ev.preventDefault()
+      markUserScrolled()
       el.scrollTo({ top: 0, behavior: 'smooth' })
 
       return
@@ -239,6 +269,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
 
     case 'End': {
       ev.preventDefault()
+      markUserScrolled()
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
       // Smooth-scroll fires `scroll` events along the way, which our
       // `onScroll` handler reacts to — but the timing is browser-
@@ -278,24 +309,16 @@ function onScroll(): void {
     return
   }
   // Gate every "auto" pagination action behind a captain-initiated
-  // scroll. `useStickToBottom.onMounted` writes `scrollTop =
-  // scrollHeight` on mount; the browser fires a synthetic scroll
-  // event for that assignment + the subsequent MutationObserver
-  // re-stick passes. Treat any scroll where the captain has NOT yet
-  // pushed/dragged the bar themselves as bootstrap noise — neither
-  // fetchNextPage nor evictExtraPages fire. The first delta over a
-  // small threshold flips `hasUserScrolled` and unlocks normal
-  // pagination. Threshold guards against jitter from the initial
-  // anchor write.
+  // input gesture. `useStickToBottom.onMounted` writes `scrollTop =
+  // scrollHeight` on mount + the MutationObserver re-stick passes
+  // write on every chunk; the browser fires synthetic scroll events
+  // for each that are indistinguishable from a captain drag if you
+  // only watch `scrollTop`. The `wheel` / `touchstart` /
+  // `pointerdown` listeners above flip `hasUserScrolled` on real
+  // intent — stick-to-bottom never triggers any of those.
 
   if (!hasUserScrolled.value) {
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-
-    if (distanceFromBottom > LOAD_MORE_THRESHOLD_PX) {
-      hasUserScrolled.value = true
-    } else {
-      return
-    }
+    return
   }
 
   // Backward fetch.
