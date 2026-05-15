@@ -62,6 +62,17 @@ const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 struct TurnState {
     current: Option<String>,
     synthetic: Option<String>,
+    /// True when the dispatcher routed at least one agent-output
+    /// transcript item (`AgentText` / `AgentThought` / `AgentAttachment`
+    /// / `ToolCall` / `ToolCallUpdate` / `Plan`) for the currently open
+    /// turn. Reset on every `open_real` / `open_synthetic`. Read by the
+    /// prompt-future at completion: a vendor that returned a
+    /// `stop_reason: null` AND emitted nothing during the turn used to
+    /// surface as a bare `TurnEnded { error: None }`, which downstream
+    /// frontends (hyprpilot-nvim in particular) render as a generic
+    /// "Internal error" with no actionable signal. With this flag we
+    /// can synthesize a specific error message instead.
+    output_observed: bool,
 }
 
 impl TurnState {
@@ -74,6 +85,7 @@ impl TurnState {
     fn open_real(&mut self, turn_id: String) {
         self.current = Some(turn_id);
         self.synthetic = None;
+        self.output_observed = false;
     }
 
     /// Mint a synthetic turn — out-of-turn agent activity wraps under
@@ -82,6 +94,20 @@ impl TurnState {
     fn open_synthetic(&mut self, turn_id: String) {
         self.current = Some(turn_id.clone());
         self.synthetic = Some(turn_id);
+        self.output_observed = false;
+    }
+
+    /// Mark the current turn as having emitted at least one agent-
+    /// output transcript item. Idempotent.
+    fn note_agent_output(&mut self) {
+        self.output_observed = true;
+    }
+
+    /// Did the current turn produce any agent-output? Read by the
+    /// prompt-future on completion to decide whether to synthesize a
+    /// "no output" error when the vendor returns a null stop reason.
+    fn output_observed(&self) -> bool {
+        self.output_observed
     }
 
     /// Close the current turn iff `turn_id` still owns the slot.
@@ -181,10 +207,35 @@ impl TurnGuard {
     /// Returns true when this guard still owned the slot at emit time
     /// (so the caller knows whether to follow up with the per-turn
     /// `InstanceMeta` refresh — only fires alongside an emit).
-    async fn complete(mut self, stop_reason: Option<String>, error: Option<String>) -> bool {
+    ///
+    /// When the caller passes `stop_reason: None` AND `error: None`
+    /// AND the dispatcher never routed an agent-output transcript
+    /// item for this turn, synthesize a specific `error` describing
+    /// the empty-turn case. Without this, downstream frontends see a
+    /// bare `TurnEnded` with no diagnostic signal at all — hyprpilot-
+    /// nvim ends up labeling these as a generic "Internal error" which
+    /// is both wrong (the daemon didn't error) and unhelpful (the
+    /// captain has nothing to act on). Synthesizing here keeps every
+    /// "no output, no reason" case readable to every transport without
+    /// each one re-implementing the heuristic.
+    async fn complete(mut self, stop_reason: Option<String>, mut error: Option<String>) -> bool {
         self.completed = true;
-        if !self.turn_state.write().await.close_if_current(&self.turn_id) {
+        let mut slot = self.turn_state.write().await;
+        if !slot.close_if_current(&self.turn_id) {
             return false;
+        }
+        let output_observed = slot.output_observed();
+        drop(slot);
+
+        if stop_reason.is_none() && error.is_none() && !output_observed {
+            error = Some(
+                "agent ended the turn without emitting any output and without a \
+                 stop reason — vendor returned a null `stop_reason` and no \
+                 session updates landed between TurnStarted and TurnEnded. \
+                 Re-run with `RUST_LOG=acp::wire=trace` to see the raw \
+                 session/prompt response."
+                    .to_string(),
+            );
         }
         let event = InstanceEvent::TurnEnded {
             agent_id: self.agent_id.clone(),
@@ -2880,14 +2931,36 @@ async fn run(params: RunParams) {
                                 turn_id = Some(synthetic);
                             }
                             let evt: Option<InstanceEvent> = match mapped {
-                                MappedUpdate::Transcript(item) => Some(InstanceEvent::Transcript {
-                                    agent_id: agent_id_notif.clone(),
-                                    instance_id: instance_id_notif.clone(),
-                                    session_id: sid,
-                                    turn_id,
-                                    item,
-                                    meta,
-                                }),
+                                MappedUpdate::Transcript(item) => {
+                                    // Mark the current turn as having emitted
+                                    // agent output — the prompt-future reads
+                                    // this on completion to decide whether to
+                                    // synthesize a "no output" error when the
+                                    // vendor returns a null stop reason.
+                                    // User-side echoes (`UserText`),
+                                    // permission requests (own bus), and
+                                    // unknown wire variants don't count;
+                                    // they're not the agent "doing work."
+                                    if matches!(
+                                        item,
+                                        crate::adapters::TranscriptItem::AgentText { .. }
+                                            | crate::adapters::TranscriptItem::AgentThought { .. }
+                                            | crate::adapters::TranscriptItem::AgentAttachment(_)
+                                            | crate::adapters::TranscriptItem::ToolCall(_)
+                                            | crate::adapters::TranscriptItem::ToolCallUpdate(_)
+                                            | crate::adapters::TranscriptItem::Plan(_)
+                                    ) {
+                                        turn_state.write().await.note_agent_output();
+                                    }
+                                    Some(InstanceEvent::Transcript {
+                                        agent_id: agent_id_notif.clone(),
+                                        instance_id: instance_id_notif.clone(),
+                                        session_id: sid,
+                                        turn_id,
+                                        item,
+                                        meta,
+                                    })
+                                }
                                 MappedUpdate::SessionInfo { title, updated_at } => Some(InstanceEvent::SessionInfoUpdate {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
@@ -3711,5 +3784,138 @@ mod tests {
         assert!(settled.is_ok());
 
         drop(handle);
+    }
+
+    /// `TurnState::open_real` resets `output_observed` so a fresh turn
+    /// always starts with no agent activity. Captures the invariant
+    /// the `TurnGuard::complete` empty-turn heuristic relies on — if
+    /// the flag persisted across turns, every turn after the first
+    /// would skip the synthesized error.
+    #[test]
+    fn turn_state_open_real_resets_output_observed() {
+        let mut state = TurnState::default();
+        state.open_real("t-1".into());
+        state.note_agent_output();
+        assert!(state.output_observed());
+
+        // Close the current turn, then open a fresh one.
+        assert!(state.close_if_current("t-1"));
+        state.open_real("t-2".into());
+        assert!(
+            !state.output_observed(),
+            "open_real must reset output_observed; otherwise the empty-turn heuristic in TurnGuard::complete would skip the synthesized error on every turn after the first"
+        );
+    }
+
+    /// `TurnGuard::complete` synthesizes an actionable `error` when
+    /// the vendor returns `stop_reason: null` and no agent-output
+    /// transcript items landed during the turn. Pins the contract the
+    /// captain asked for: hyprpilot-nvim was rendering bare empty-
+    /// turn closes as a generic "Internal error"; now the wire-side
+    /// `error` field carries a specific message.
+    #[tokio::test]
+    async fn turn_guard_complete_synthesizes_error_on_empty_turn_with_null_stop_reason() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "claude-code".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state,
+        )
+        .await;
+        // Drain the TurnStarted emission so the next recv() picks up
+        // TurnEnded specifically.
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+
+        let emitted = guard.complete(None, None).await;
+        assert!(emitted, "guard must own the slot at complete-time");
+
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { stop_reason, error, .. } => {
+                assert_eq!(stop_reason, None);
+                let msg = error.expect("error synthesized on empty turn");
+                assert!(
+                    msg.contains("without emitting any output"),
+                    "error message should describe the empty-turn case; got: {msg}"
+                );
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
+    }
+
+    /// Inverse of the empty-turn synthesis: when the dispatcher noted
+    /// at least one agent-output transcript item, complete preserves
+    /// the caller's `(stop_reason, error)` pair verbatim — no
+    /// synthesis. Without this, a successful turn with a missing
+    /// stop reason but real content would also get tagged as "empty."
+    #[tokio::test]
+    async fn turn_guard_complete_preserves_none_error_when_output_observed() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "claude-code".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state.clone(),
+        )
+        .await;
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+
+        // Simulate dispatcher noting an agent output for this turn.
+        turn_state.write().await.note_agent_output();
+
+        guard.complete(None, None).await;
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { stop_reason, error, .. } => {
+                assert_eq!(stop_reason, None);
+                assert!(
+                    error.is_none(),
+                    "no synthesis when output was observed; got error={error:?}"
+                );
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
+    }
+
+    /// When the caller already supplies an explicit `error` (e.g. the
+    /// transport returned an error), the empty-turn heuristic must
+    /// NOT overwrite it — the caller's message is the real signal,
+    /// the empty-turn synthesis is the fallback.
+    #[tokio::test]
+    async fn turn_guard_complete_keeps_callers_error_intact() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "claude-code".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state,
+        )
+        .await;
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+
+        guard.complete(None, Some("transport closed".into())).await;
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { error, .. } => {
+                assert_eq!(error.as_deref(), Some("transport closed"));
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
     }
 }
