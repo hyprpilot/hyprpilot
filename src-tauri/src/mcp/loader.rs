@@ -1,39 +1,51 @@
-//! JSON file loader for MCP server config.
+//! JSON-shape loader for MCP server config.
 //!
-//! Reads a list of paths, parses each as `{ "mcpServers": { ... } }`,
-//! merges into a single resolved set with later-file-wins on
-//! same-name collision. Pulls the `hyprpilot` extension out of each
-//! entry; everything else stays as opaque `serde_json::Value` for
-//! pass-through projection at ACP `session/new` time.
+//! Sources are heterogeneous: each entry is either a path to a
+//! standard `{ "mcpServers": { ... } }` JSON file OR an inline
+//! pre-parsed map of the same payload (`mcp_servers = {...}` in the
+//! hyprpilot config). Both flow through one server-extraction helper
+//! so the `hyprpilot` extension pull + same-name later-wins merge are
+//! identical across sources.
 //!
 //! Failure mode: malformed file warns and continues — one bad JSON
 //! doesn't abort the whole catalog. Same warn-and-skip pattern the
 //! skills loader uses.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, warn};
 
 use super::{HyprpilotExtension, MCPDefinition};
-use crate::config::ResolvedMcpFile;
+use crate::config::{ResolvedMcpFile, ResolvedMcpSource};
+
+/// Display-source label for inline entries. Used purely in trace
+/// logs + the `MCPDefinition.source` field — never read as a real
+/// fs path, so the angle-bracket sentinel is safe.
+const INLINE_SOURCE_LABEL: &str = "<inline>";
 
 /// Load + merge every entry in `entries`. Returns the resolved
 /// definition list ready to hand to `MCPsRegistry::new`. Per-entry
-/// `ignore` glob (when present) filters the file's loaded servers
-/// by name before merging. Errors are per-file: a single bad file
-/// logs and is skipped; the others still load. An empty list returns
-/// an empty Vec.
+/// `ignore` glob (when present) filters the loaded servers by name
+/// before merging. Errors are per-entry: a single bad file logs and
+/// is skipped; the others still load. Inline entries skip the fs
+/// round-trip. Empty input returns an empty Vec.
 pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
     let mut resolved: Vec<MCPDefinition> = Vec::new();
     for entry in entries {
-        let loaded = match load_one(&entry.file) {
-            Ok(loaded) => loaded,
-            Err(err) => {
-                warn!(path = %entry.file.display(), %err, "mcp loader: skipping malformed file");
-                continue;
+        let (loaded, source_label) = match &entry.source {
+            ResolvedMcpSource::File(path) => match load_one_file(path) {
+                Ok(loaded) => (loaded, path.display().to_string()),
+                Err(err) => {
+                    warn!(path = %path.display(), %err, "mcp loader: skipping malformed file");
+                    continue;
+                }
+            },
+            ResolvedMcpSource::Inline(map) => {
+                let label = PathBuf::from(INLINE_SOURCE_LABEL);
+                (extract_servers(map.clone(), &label), INLINE_SOURCE_LABEL.to_string())
             }
         };
         let kept: Vec<MCPDefinition> = match &entry.ignore {
@@ -43,7 +55,7 @@ pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
                     let drop = glob.is_match(&d.name);
                     if drop {
                         debug!(
-                            path = %entry.file.display(),
+                            source = %source_label,
                             server = %d.name,
                             "mcp loader: server name matches ignore glob — skipping"
                         );
@@ -53,7 +65,7 @@ pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
                 .collect(),
             None => loaded,
         };
-        debug!(path = %entry.file.display(), count = kept.len(), "mcp loader: file loaded");
+        debug!(source = %source_label, count = kept.len(), "mcp loader: entry loaded");
         for def in kept {
             // Later-wins: drop any prior definition with the same name
             // before pushing the new one.
@@ -64,24 +76,29 @@ pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
     resolved
 }
 
-fn load_one(path: &Path) -> Result<Vec<MCPDefinition>, anyhow::Error> {
+fn load_one_file(path: &Path) -> Result<Vec<MCPDefinition>, anyhow::Error> {
     let body = fs::read_to_string(path).map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
     let parsed: McpFile = serde_json::from_str(&body).map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?;
+    Ok(extract_servers(parsed.mcp_servers, path))
+}
 
-    let mut out = Vec::with_capacity(parsed.mcp_servers.len());
-    for (name, mut raw) in parsed.mcp_servers {
+/// Project a `mcpServers` map onto a Vec of resolved `MCPDefinition`
+/// records. Strips the `hyprpilot` extension key off each entry so
+/// the pass-through projection at `session/new` time doesn't ship
+/// our extension to the agent. Shared between file + inline paths so
+/// both honour the same hyprpilot extension semantics.
+fn extract_servers(servers: serde_json::Map<String, Value>, source: &Path) -> Vec<MCPDefinition> {
+    let mut out = Vec::with_capacity(servers.len());
+    for (name, mut raw) in servers {
         if name.is_empty() {
-            warn!(path = %path.display(), "mcp loader: server entry with empty name — skipping");
+            warn!(source = %source.display(), "mcp loader: server entry with empty name — skipping");
             continue;
         }
-        // Pull `hyprpilot` out of the raw entry (if present) so the
-        // pass-through projection at session/new time doesn't ship
-        // our extension key to the agent.
         let hyprpilot: HyprpilotExtension = match raw.as_object_mut() {
             Some(obj) => match obj.remove("hyprpilot") {
                 Some(value) => serde_json::from_value(value).unwrap_or_else(|err| {
                     warn!(
-                        path = %path.display(),
+                        source = %source.display(),
                         server = %name,
                         %err,
                         "mcp loader: server has malformed `hyprpilot` extension — defaulting"
@@ -91,7 +108,7 @@ fn load_one(path: &Path) -> Result<Vec<MCPDefinition>, anyhow::Error> {
                 None => HyprpilotExtension::default(),
             },
             None => {
-                warn!(path = %path.display(), server = %name, "mcp loader: server entry is not an object — skipping");
+                warn!(source = %source.display(), server = %name, "mcp loader: server entry is not an object — skipping");
                 continue;
             }
         };
@@ -99,10 +116,10 @@ fn load_one(path: &Path) -> Result<Vec<MCPDefinition>, anyhow::Error> {
             name,
             raw,
             hyprpilot,
-            source: path.to_path_buf(),
+            source: source.to_path_buf(),
         });
     }
-    Ok(out)
+    out
 }
 
 /// Wire-shape for the MCP config file. Strictly speaking the standard
@@ -128,18 +145,41 @@ mod tests {
     }
 
     fn entry(file: PathBuf) -> ResolvedMcpFile {
-        ResolvedMcpFile { file, ignore: None }
+        ResolvedMcpFile {
+            source: ResolvedMcpSource::File(file),
+            ignore: None,
+        }
     }
 
     fn entry_with_ignore(file: PathBuf, patterns: &[&str]) -> ResolvedMcpFile {
+        ResolvedMcpFile {
+            source: ResolvedMcpSource::File(file),
+            ignore: Some(compile_globs(patterns)),
+        }
+    }
+
+    fn inline_entry(body: &str, ignore: Option<&[&str]>) -> ResolvedMcpFile {
+        // The inline shape mirrors the JSON file's `mcpServers` payload —
+        // parse a wrapper to reuse the same fixture body shape tests use
+        // for files, so file + inline cases stay symmetrical.
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("test fixture parses");
+        let map = parsed
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .cloned()
+            .expect("test fixture has mcpServers object");
+        ResolvedMcpFile {
+            source: ResolvedMcpSource::Inline(map),
+            ignore: ignore.map(compile_globs),
+        }
+    }
+
+    fn compile_globs(patterns: &[&str]) -> globset::GlobSet {
         let mut builder = globset::GlobSetBuilder::new();
         for p in patterns {
             builder.add(globset::Glob::new(p).expect("test glob compiles"));
         }
-        ResolvedMcpFile {
-            file,
-            ignore: Some(builder.build().expect("test glob set builds")),
-        }
+        builder.build().expect("test glob set builds")
     }
 
     #[test]
@@ -258,5 +298,85 @@ mod tests {
     fn empty_entry_list_returns_empty() {
         let defs = load_files(&[]);
         assert!(defs.is_empty());
+    }
+
+    /// Inline shape — `mcp_servers` map on the entry, no fs read.
+    /// The hyprpilot extension extraction has to run identically to
+    /// the file path; assertions mirror `loads_single_file_with_extension`.
+    #[test]
+    fn loads_inline_with_extension() {
+        let entry = inline_entry(
+            r#"{
+                "mcpServers": {
+                    "hyprpilot-nvim": {
+                        "command": "uvx",
+                        "args": ["hyprpilot-nvim-mcp"],
+                        "env": { "NVIM_LISTEN_ADDRESS": "/tmp/nvim.sock" },
+                        "hyprpilot": {
+                            "autoAcceptTools": ["read_*"]
+                        }
+                    }
+                }
+            }"#,
+            None,
+        );
+        let defs = load_files(&[entry]);
+        assert_eq!(defs.len(), 1);
+        let d = &defs[0];
+        assert_eq!(d.name, "hyprpilot-nvim");
+        assert_eq!(d.source, PathBuf::from("<inline>"));
+        assert_eq!(d.hyprpilot.auto_accept_tools, vec!["read_*"]);
+        assert!(d.raw.get("hyprpilot").is_none(), "hyprpilot key must be stripped");
+        assert_eq!(d.raw.get("command").and_then(Value::as_str), Some("uvx"));
+    }
+
+    /// Later-wins merge spans across source kinds — a file entry
+    /// followed by an inline entry naming the same server should
+    /// land with the inline definition winning. Pins the captain's
+    /// `--with-config` workflow: a base file under `[[mcps]]` +
+    /// inline override at spawn time.
+    #[test]
+    fn inline_overrides_earlier_file_with_same_name() {
+        let dir = TempDir::new().unwrap();
+        let base = write(
+            &dir,
+            "base.json",
+            r#"{ "mcpServers": { "shared": { "command": "echo", "args": ["from-file"] } } }"#,
+        );
+        let inline = inline_entry(
+            r#"{ "mcpServers": { "shared": { "command": "echo", "args": ["from-inline"] } } }"#,
+            None,
+        );
+        let defs = load_files(&[entry(base), inline]);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "shared");
+        assert_eq!(defs[0].source, PathBuf::from("<inline>"));
+        assert_eq!(
+            defs[0]
+                .raw
+                .get("args")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first()),
+            Some(&Value::String("from-inline".to_string()))
+        );
+    }
+
+    /// `ignore` glob applies to inline servers too — same matcher,
+    /// anchored against the server name. The dropped server never
+    /// reaches the registry.
+    #[test]
+    fn inline_ignore_glob_drops_matching_servers() {
+        let entry = inline_entry(
+            r#"{
+                "mcpServers": {
+                    "github": { "command": "echo" },
+                    "scratch-pad": { "command": "echo" }
+                }
+            }"#,
+            Some(&["scratch-*"]),
+        );
+        let defs = load_files(&[entry]);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["github"]);
     }
 }
