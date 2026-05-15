@@ -764,7 +764,10 @@ impl AcpAdapter {
     /// actor's command channel. Falls back to the focused instance
     /// when omitted (same convention as `prompts/cancel` /
     /// `permissions/respond`). Returns `None` when neither resolves.
-    async fn resolve_queue_cmd_tx(&self, instance_id: Option<&str>) -> Option<tokio::sync::mpsc::UnboundedSender<InstanceCommand>> {
+    async fn resolve_queue_cmd_tx(
+        &self,
+        instance_id: Option<&str>,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<InstanceCommand>> {
         let key = match instance_id {
             Some(s) => InstanceKey::parse(s).ok()?,
             None => self.registry.focused_id().await?,
@@ -775,7 +778,10 @@ impl AcpAdapter {
     /// Read the current queue. Empty `Vec` for an unknown instance
     /// id (the RPC handler reports back to the captain; the facade
     /// keeps the shape uniform).
-    pub async fn queue_list(&self, instance_id: Option<&str>) -> Result<Vec<crate::adapters::queue::QueueItem>, RpcError> {
+    pub async fn queue_list(
+        &self,
+        instance_id: Option<&str>,
+    ) -> Result<Vec<crate::adapters::queue::QueueItem>, RpcError> {
         let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
             return Ok(Vec::new());
         };
@@ -832,7 +838,12 @@ impl AcpAdapter {
             .map_err(RpcError::internal_error)
     }
 
-    pub async fn queue_move(&self, instance_id: Option<&str>, item_id: String, position: usize) -> Result<bool, RpcError> {
+    pub async fn queue_move(
+        &self,
+        instance_id: Option<&str>,
+        item_id: String,
+        position: usize,
+    ) -> Result<bool, RpcError> {
         let Some(cmd_tx) = self.resolve_queue_cmd_tx(instance_id).await else {
             return Ok(false);
         };

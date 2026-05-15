@@ -55,15 +55,6 @@ pub struct QueueItem {
     pub enqueued_at: i64,
 }
 
-/// Captain-supplied draft an enqueue call carries. The actor folds
-/// it into a full `QueueItem` by minting `id`, `enqueued_seq`, and
-/// `enqueued_at`.
-#[derive(Debug, Clone)]
-pub struct QueueItemDraft {
-    pub text: String,
-    pub attachments: Vec<Attachment>,
-}
-
 /// Reply shape for `queue/dispatch`. Mirrors the `prompts/send` reply
 /// fields so second-frontends can reuse their existing "did this
 /// land?" handling.
@@ -103,7 +94,7 @@ mod tests {
     }
 
     /// Pin the camelCase wire shape — frontends key off `enqueuedAt`
-    /// + `enqueuedSeq` literally; a snake_case slip would silently
+    /// and `enqueuedSeq` literally; a snake_case slip would silently
     /// strand the ordering.
     #[test]
     fn queue_item_serialises_to_camel_case() {

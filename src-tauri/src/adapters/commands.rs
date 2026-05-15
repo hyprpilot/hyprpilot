@@ -659,6 +659,117 @@ pub async fn instance_snapshot_terminals(
 /// otherwise we fall back to the global set. Without the per-instance
 /// resolution captains who scope their MCPs under `[[profiles]]
 /// mcps = […]` see an empty palette while the live agent has the
+/// Snapshot read of the per-instance queue from the daemon mirror.
+/// Same shape as `instance_snapshot_meta` / `instance_snapshot_chat`
+/// / `instance_snapshot_terminals` — no actor round-trip, just a
+/// read off the cached `Vec<QueueItem>`. Powers the Vue UI's
+/// first-observation hydration in `use-queue.ts::refreshQueue` so
+/// the read path is symmetric with the other snapshot endpoints.
+#[tauri::command]
+pub async fn instance_snapshot_queue(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    use crate::adapters::Adapter;
+    let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
+    let mirror = adapter
+        .instance_mirror(key)
+        .await
+        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
+    let items = mirror.queue_snapshot().await;
+
+    Ok(serde_json::json!({ "items": items }))
+}
+
+/// `queue/list` Tauri mirror. Hydrates the captain-visible queue on
+/// connect / focus / reconnect. `instance_id` falls back to the
+/// focused instance when omitted; an empty queue returns `[]`, not
+/// an error, so callers can render unconditionally.
+#[tauri::command]
+pub async fn queue_list(adapter: AdapterState<'_>, instance_id: Option<String>) -> Result<Value, String> {
+    let items = adapter
+        .queue_list(instance_id.as_deref())
+        .await
+        .map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "items": items }))
+}
+
+/// `queue/edit` Tauri mirror. In-place edit on a queued item;
+/// preserves id + position + `enqueued_seq`. `attachments` left
+/// unset (None on the wire) keeps the existing list; supplied
+/// `Some([])` clears all attachments.
+#[tauri::command]
+pub async fn queue_edit(
+    adapter: AdapterState<'_>,
+    instance_id: Option<String>,
+    item_id: String,
+    text: String,
+    attachments: Option<Vec<Attachment>>,
+) -> Result<Value, String> {
+    let item = adapter
+        .queue_edit(instance_id.as_deref(), item_id, text, attachments)
+        .await
+        .map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "item": item }))
+}
+
+/// `queue/remove` Tauri mirror. Returns `{ removed: bool }` —
+/// `false` when the id wasn't in the queue (already drained / never
+/// existed) so the UI can no-op gracefully.
+#[tauri::command]
+pub async fn queue_remove(
+    adapter: AdapterState<'_>,
+    instance_id: Option<String>,
+    item_id: String,
+) -> Result<Value, String> {
+    let removed = adapter
+        .queue_remove(instance_id.as_deref(), item_id)
+        .await
+        .map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "removed": removed }))
+}
+
+/// `queue/move` Tauri mirror. Reorder; position clamps to
+/// `[0, len-1]` server-side. Returns `{ moved: bool }`.
+#[tauri::command]
+pub async fn queue_move(
+    adapter: AdapterState<'_>,
+    instance_id: Option<String>,
+    item_id: String,
+    position: usize,
+) -> Result<Value, String> {
+    let moved = adapter
+        .queue_move(instance_id.as_deref(), item_id, position)
+        .await
+        .map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "moved": moved }))
+}
+
+/// `queue/clear` Tauri mirror. Returns `{ cleared: u32 }` carrying
+/// the count of dropped entries so the UI can render a toast.
+#[tauri::command]
+pub async fn queue_clear(adapter: AdapterState<'_>, instance_id: Option<String>) -> Result<Value, String> {
+    let cleared = adapter
+        .queue_clear(instance_id.as_deref())
+        .await
+        .map_err(|e| e.message)?;
+    Ok(serde_json::json!({ "cleared": cleared }))
+}
+
+/// `queue/dispatch` Tauri mirror. Captain's "send now" — pops the
+/// named item (or the head when omitted) AND dispatches it
+/// immediately, bypassing the auto-queue. The returned payload
+/// matches `QueueDispatchResult` from the adapter facade.
+#[tauri::command]
+pub async fn queue_dispatch(
+    adapter: AdapterState<'_>,
+    instance_id: Option<String>,
+    item_id: Option<String>,
+) -> Result<Value, String> {
+    let res = adapter
+        .queue_dispatch(instance_id.as_deref(), item_id)
+        .await
+        .map_err(|e| e.message)?;
+    serde_json::to_value(res).map_err(|e| format!("queue_dispatch: serialise reply: {e}"))
+}
+
 /// servers wired in.
 #[tauri::command]
 pub async fn mcps_list(adapter: AdapterState<'_>, instance_id: Option<String>) -> Result<Value, String> {

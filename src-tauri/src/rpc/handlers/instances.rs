@@ -359,6 +359,12 @@ struct InstanceSnapshotTerminalsParams {
     instance_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InstanceSnapshotQueueParams {
+    instance_id: String,
+}
+
 #[async_trait]
 impl RpcHandler for InstanceSnapshotHandler {
     fn namespace(&self) -> &'static str {
@@ -392,6 +398,12 @@ impl RpcHandler for InstanceSnapshotHandler {
                 serde_json::to_value(snap)
                     .map(HandlerOutcome::Reply)
                     .map_err(|e| RpcError::internal_error(format!("serialize terminals snapshot: {e}")))
+            }
+            "instance/snapshot/queue" => {
+                let p: InstanceSnapshotQueueParams = parse_snapshot_params(params, method)?;
+                let mirror = require_mirror(adapter.as_ref(), &p.instance_id).await?;
+                let items = mirror.queue_snapshot().await;
+                Ok(HandlerOutcome::Reply(json!({ "items": items })))
             }
             other => Err(RpcError::method_not_found(other)),
         }

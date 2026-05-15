@@ -449,21 +449,6 @@ pub enum InstanceCommand {
     Shutdown {
         reply: oneshot::Sender<()>,
     },
-    /// Append a draft to the tail of the per-instance queue. Reply
-    /// carries the materialised `QueueItem` (with `id`, `enqueued_seq`,
-    /// `enqueued_at` minted under the actor's mailbox lock).
-    QueueEnqueue {
-        item: crate::adapters::queue::QueueItemDraft,
-        reply: oneshot::Sender<Result<crate::adapters::queue::QueueItem, String>>,
-    },
-    /// Insert at a specific slot — for the edit round-trip (the
-    /// captain pops a row into the composer, edits, re-submits at the
-    /// original position). `position` clamps to `[0, len]` server-side.
-    QueueInsert {
-        position: usize,
-        item: crate::adapters::queue::QueueItemDraft,
-        reply: oneshot::Sender<Result<crate::adapters::queue::QueueItem, String>>,
-    },
     /// Remove a specific item by id. Reply is `Ok(true)` when found.
     QueueRemove {
         item_id: String,
@@ -2919,33 +2904,6 @@ async fn run(params: RunParams) {
                                 mcps_count,
                             };
                             let _ = reply.send(snap);
-                        }
-                        InstanceCommand::QueueEnqueue { item, reply } => {
-                            queue_next_seq = queue_next_seq.saturating_add(1);
-                            let materialised = crate::adapters::queue::QueueItem {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                text: item.text,
-                                attachments: item.attachments,
-                                enqueued_seq: queue_next_seq,
-                                enqueued_at: now_epoch_ms() as i64,
-                            };
-                            queue.push_back(materialised.clone());
-                            publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
-                            let _ = reply.send(Ok(materialised));
-                        }
-                        InstanceCommand::QueueInsert { position, item, reply } => {
-                            queue_next_seq = queue_next_seq.saturating_add(1);
-                            let materialised = crate::adapters::queue::QueueItem {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                text: item.text,
-                                attachments: item.attachments,
-                                enqueued_seq: queue_next_seq,
-                                enqueued_at: now_epoch_ms() as i64,
-                            };
-                            let at = position.min(queue.len());
-                            queue.insert(at, materialised.clone());
-                            publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
-                            let _ = reply.send(Ok(materialised));
                         }
                         InstanceCommand::QueueRemove { item_id, reply } => {
                             let before = queue.len();

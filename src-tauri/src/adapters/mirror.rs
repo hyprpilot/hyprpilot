@@ -588,9 +588,9 @@ impl InstanceMirror {
 
     /// Read the per-instance queue snapshot. Cheap clone of the cached
     /// `Vec<QueueItem>` — same as `chat_snapshot` / `terminals_snapshot`,
-    /// no actor round-trip. Serves `queue/list` RPC + Tauri
-    /// `queue_list` command + first-observation hydration in the Vue
-    /// UI's `use-queue.ts`.
+    /// no actor round-trip. Serves `instance/snapshot/queue` RPC +
+    /// `instance_snapshot_queue` Tauri command + first-observation
+    /// hydration in the Vue UI's `use-queue.ts::refreshQueue`.
     pub async fn queue_snapshot(&self) -> Vec<crate::adapters::queue::QueueItem> {
         let g = self.inner.read().await;
         g.queue.clone()
