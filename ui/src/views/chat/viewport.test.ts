@@ -242,12 +242,34 @@ describe('Viewport.vue', () => {
 
     const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
 
-    // Simulate a captain scrolling to the top of the chat — scrollTop
-    // crosses LOAD_MORE_THRESHOLD_PX (240) → 0. `writable: true` so a
-    // post-test rAF callback (scheduled by `useStickToBottom`'s
-    // observers) can still assign `el.scrollTop = scrollHeight`
-    // without throwing on read-only property — real browsers never
-    // lock down scrollTop, jsdom does when this defaults to false.
+    // The viewport now gates `fetchNextPage` on `hasUserScrolled` —
+    // a synthetic scroll event during the initial mount's anchor
+    // write is treated as bootstrap noise, NOT a captain gesture.
+    // Two-step simulation: (1) captain pushes the bar AWAY from
+    // bottom past the threshold (unlocks the gate); (2) captain
+    // drags it to the top (fires the actual backward fetch). Real
+    // browsers fire one scroll event per pixel of drag; one each
+    // here matches the prod state-machine without a million ticks.
+    Object.defineProperty(root, 'scrollHeight', {
+      configurable: true,
+      value: 5000
+    })
+    Object.defineProperty(root, 'clientHeight', {
+      configurable: true,
+      value: 500
+    })
+
+    // Step 1 — captain scrolls up past the threshold (distance from
+    // bottom = 4500 - 1000 - 500 = 3000 > 240). Unlocks the gate.
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 1000
+    })
+    root.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+
+    // Step 2 — captain reaches the top. Fires the backward fetch.
     Object.defineProperty(root, 'scrollTop', {
       configurable: true,
       writable: true,
@@ -397,10 +419,34 @@ describe('Viewport.vue', () => {
     // Position the captain within one viewport of the bottom. Both
     // scrollHeight and clientHeight need explicit values for the
     // distanceFromBottom <= clientHeight check.
-    Object.defineProperty(root, 'scrollTop', { configurable: true, value: 1200 })
-    Object.defineProperty(root, 'scrollHeight', { configurable: true, value: 2000 })
-    Object.defineProperty(root, 'clientHeight', { configurable: true, value: 800 })
+    Object.defineProperty(root, 'scrollHeight', {
+      configurable: true,
+      value: 2000
+    })
+    Object.defineProperty(root, 'clientHeight', {
+      configurable: true,
+      value: 800
+    })
 
+    // First flip `hasUserScrolled` true by scrolling away from
+    // bottom past LOAD_MORE_THRESHOLD_PX (240). With scrollHeight
+    // 2000 + clientHeight 800: distanceFromBottom = 2000 - 200 - 800
+    // = 1000 > 240 → gate unlocks.
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 200
+    })
+    root.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+
+    // Now position within one viewport of the bottom + assert the
+    // rAF-deferred eviction trigger.
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 1200
+    })
     const rafSpy = vi.spyOn(window, 'requestAnimationFrame')
 
     root.dispatchEvent(new Event('scroll'))

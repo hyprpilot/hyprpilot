@@ -916,7 +916,24 @@ function onQueueSend(itemId: string): void {
       Idle landing renders inside the `empty` slot so the empty-gate
       reads off the viewport's snapshot items, not the accumulator.
     -->
-    <ChatViewport :restoring="sessionInfo.restoring" @cancel="onCancel" @attachment-open="onAttachmentOpen">
+    <!-- `:key="activeInstanceId"` forces a clean remount on every
+         instance flip. Every viewport-local concern (scroll position,
+         `useStickToBottom.stuck`, `useChatViewport`'s listener IIFE +
+         `pendingPatches` queue, `useSnapshotHydration`'s dedup sets)
+         resets atomically. `useStickToBottom.onMounted` calls
+         `scrollToBottom()` so the captain always lands at the latest
+         message of the freshly-focused instance — no "loading
+         earlier history" misfire because the new viewport hasn't
+         scrolled yet (`hasUserScrolled` gate in `onScroll`). TanStack
+         keeps the per-instance chat cache keyed by `instanceId` so
+         content paints from cache the moment the new mount reads
+         `query.data.value` — no IPC round-trip cost on the flip. -->
+    <ChatViewport
+      :key="activeInstanceId ?? 'idle'"
+      :restoring="sessionInfo.restoring"
+      @cancel="onCancel"
+      @attachment-open="onAttachmentOpen"
+    >
       <template #empty>
         <IdleScreen
           :profile="selectedProfile"
