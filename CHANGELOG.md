@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/hyprpilot/hyprpilot/compare/v0.6.0...v0.7.0) (2026-05-15)
+
+
+### Features
+
+* **daemon:** paragraph lift for single-leading \n + ship cwd on instance wire shapes ([#75](https://github.com/hyprpilot/hyprpilot/issues/75)) ([710dce6](https://github.com/hyprpilot/hyprpilot/commit/710dce64e729b46e09b798b383d2baf382229630))
+
 ## [0.6.0](https://github.com/hyprpilot/hyprpilot/compare/v0.5.0...v0.6.0) (2026-05-15)
 
 
