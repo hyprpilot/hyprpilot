@@ -114,9 +114,7 @@ pub struct QueueDispatchResult {
 | Verb | Params | Returns |
 |---|---|---|
 | `queue/list` | `{ instanceId? }` | `{ items: QueueItem[] }` |
-| `queue/enqueue` | `{ instanceId, text, attachments?: Attachment[] }` | `{ item: QueueItem, items: QueueItem[] }` |
-| `queue/replace` | `{ instanceId, items: QueueItem[] }` | `{ items: QueueItem[] }` |
-| `queue/insert` | `{ instanceId, position: u32, text, attachments?: Attachment[] }` | `{ item: QueueItem }` |
+| `queue/edit` | `{ instanceId, itemId, text, attachments?: Attachment[] }` | `{ item: QueueItem }` |
 | `queue/remove` | `{ instanceId, itemId }` | `{ removed: bool }` |
 | `queue/move` | `{ instanceId, itemId, position: u32 }` | `{ moved: bool }` |
 | `queue/clear` | `{ instanceId }` | `{ cleared: u32 }` |

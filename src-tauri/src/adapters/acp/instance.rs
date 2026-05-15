@@ -80,6 +80,19 @@ impl TurnState {
         self.current.as_deref()
     }
 
+    /// `true` only when a real (prompt-driven) turn is open — i.e.,
+    /// `current` is set AND it's not the synthetic placeholder. The
+    /// daemon-side queue uses this to decide whether to enqueue an
+    /// incoming `Prompt` (real turn open → enqueue) vs dispatch it
+    /// immediately (synthetic / no turn → dispatch).
+    fn is_real_turn_open(&self) -> bool {
+        match (&self.current, &self.synthetic) {
+            (Some(_), Some(synth)) => self.current.as_deref() != Some(synth.as_str()),
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
     /// Open a real (prompt-driven) turn. Clears any prior synthetic —
     /// the real prompt supersedes whatever the actor was wrapping.
     fn open_real(&mut self, turn_id: String) {
@@ -370,6 +383,13 @@ pub enum InstanceCommand {
     Prompt {
         text: String,
         attachments: Vec<Attachment>,
+        /// When `true`, skip the auto-route-into-queue branch and
+        /// dispatch immediately. Used by `queue/dispatch` so popped
+        /// items go on-wire NOW (ACP serialises on the wire so a
+        /// concurrent active turn just chains behind; idle goes
+        /// straight through). External `prompts/send` always supplies
+        /// `false` so the captain's submit-while-busy auto-queues.
+        force_dispatch: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Cancel {
@@ -428,6 +448,62 @@ pub enum InstanceCommand {
     /// (or immediately if idle). Reply carries the final state.
     Shutdown {
         reply: oneshot::Sender<()>,
+    },
+    /// Append a draft to the tail of the per-instance queue. Reply
+    /// carries the materialised `QueueItem` (with `id`, `enqueued_seq`,
+    /// `enqueued_at` minted under the actor's mailbox lock).
+    QueueEnqueue {
+        item: crate::adapters::queue::QueueItemDraft,
+        reply: oneshot::Sender<Result<crate::adapters::queue::QueueItem, String>>,
+    },
+    /// Insert at a specific slot — for the edit round-trip (the
+    /// captain pops a row into the composer, edits, re-submits at the
+    /// original position). `position` clamps to `[0, len]` server-side.
+    QueueInsert {
+        position: usize,
+        item: crate::adapters::queue::QueueItemDraft,
+        reply: oneshot::Sender<Result<crate::adapters::queue::QueueItem, String>>,
+    },
+    /// Remove a specific item by id. Reply is `Ok(true)` when found.
+    QueueRemove {
+        item_id: String,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+    /// Reorder: move an existing item to a new position (clamped to
+    /// `[0, len-1]`). Same semantics as drag-and-drop.
+    QueueMove {
+        item_id: String,
+        position: usize,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+    /// Drop every item. Reply carries the count of dropped entries.
+    QueueClear {
+        reply: oneshot::Sender<Result<u32, String>>,
+    },
+    /// Read the current queue without mutating. Powers the
+    /// `queue/list` RPC + first-observation hydration on the UI.
+    QueueList {
+        reply: oneshot::Sender<Vec<crate::adapters::queue::QueueItem>>,
+    },
+    /// In-place edit of a queued item. `text` overwrites the existing
+    /// text; `attachments` (when `Some`) replaces the existing list
+    /// wholesale (`None` leaves attachments untouched). `id`,
+    /// `enqueued_seq`, and `enqueued_at` are preserved — the queued
+    /// item keeps its slot + ordering.
+    QueueEdit {
+        item_id: String,
+        text: String,
+        attachments: Option<Vec<Attachment>>,
+        reply: oneshot::Sender<Result<crate::adapters::queue::QueueItem, String>>,
+    },
+    /// Pop the head (or a specific item by id) AND dispatch it as a
+    /// `session/prompt`. The pop happens before the prompt future
+    /// fires, so a concurrent `prompts/cancel` aborts the in-flight
+    /// turn but does NOT re-insert the popped item — captain
+    /// explicit re-submit if they wanted it back.
+    QueueDispatch {
+        item_id: Option<String>,
+        reply: oneshot::Sender<Result<crate::adapters::queue::QueueDispatchResult, String>>,
     },
 }
 
@@ -1552,6 +1628,7 @@ impl AcpInstance {
             );
         }
 
+        let cmd_tx_self = cmd_tx.clone();
         let instance = AcpInstance {
             key,
             agent_id: resolved.agent.id.clone(),
@@ -1570,6 +1647,7 @@ impl AcpInstance {
             resolved,
             instance_id,
             cmd_rx,
+            cmd_tx_self,
             events_tx,
             session_id_slot: session_id,
             tool_calls,
@@ -1661,6 +1739,12 @@ struct RunParams {
     resolved: ResolvedInstance,
     instance_id: String,
     cmd_rx: mpsc::UnboundedReceiver<InstanceCommand>,
+    /// Self-clone of the actor's command sender. Captured into the
+    /// actor so `QueueDispatch` can re-enqueue a `Prompt` onto its
+    /// own mailbox — that re-routes through the existing system-
+    /// prompt-injection + TurnGuard + attachments machinery without
+    /// duplicating any of it inline.
+    cmd_tx_self: mpsc::UnboundedSender<InstanceCommand>,
     events_tx: broadcast::Sender<InstanceEvent>,
     session_id_slot: Arc<tokio::sync::RwLock<Option<SessionId>>>,
     /// Shared running tool-call state — same `Arc` the public
@@ -1682,11 +1766,31 @@ struct RunParams {
 
 /// the child process, the dispatch loop. Spawned by
 /// [`AcpInstance::start`].
+/// Broadcast the current per-instance queue. The local `VecDeque` is
+/// cloned into a `Vec` (the wire shape); `publish` writes through the
+/// mirror BEFORE the broadcast so a snapshot reader observing the
+/// event already sees the post-change state.
+async fn publish_queue_changed(
+    mirror: &Arc<crate::adapters::InstanceMirror>,
+    events_tx: &broadcast::Sender<InstanceEvent>,
+    agent_id: &str,
+    instance_id: &str,
+    queue: &std::collections::VecDeque<crate::adapters::queue::QueueItem>,
+) {
+    let event = InstanceEvent::QueueChanged {
+        agent_id: agent_id.to_string(),
+        instance_id: instance_id.to_string(),
+        items: queue.iter().cloned().collect(),
+    };
+    publish(mirror, events_tx, event).await;
+}
+
 async fn run(params: RunParams) {
     let RunParams {
         resolved,
         instance_id,
         mut cmd_rx,
+        cmd_tx_self,
         events_tx,
         session_id_slot,
         tool_calls,
@@ -1909,6 +2013,19 @@ async fn run(params: RunParams) {
     // real prompt. Cancel takes the current id (real or synthetic)
     // via take_current.
     let turn_state: SharedTurnState = Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+
+    // ── Per-instance queue ───────────────────────────────────────
+    //
+    // FIFO of captain-staged prompts the actor serves under
+    // `queue/*` RPC + Tauri `queue_*` commands. Single-mailbox
+    // ordering: every mutation lands here in arrival order, so
+    // `enqueued_seq` ties never happen. Local to the actor — the
+    // mirror caches a clone for snapshot reads (see `queue_snapshot`)
+    // and the broadcast carries the full list on every change so
+    // every connected client (Vue desktop, mobile WS, hyprpilot-nvim)
+    // reconciles by replacement.
+    let mut queue: std::collections::VecDeque<crate::adapters::queue::QueueItem> = std::collections::VecDeque::new();
+    let mut queue_next_seq: u64 = 0;
 
     // Bridge live terminal output → InstanceEvent::Terminal. The ACP
     // `terminal/output` request remains a polled snapshot path
@@ -2425,11 +2542,46 @@ async fn run(params: RunParams) {
                         // blocks for up to 10min waiting on a UI reply — but the UI
                         // never sees the prompt because the event is stuck in that same
                         // mpsc. Spawn the request so the loop keeps draining.
-                        InstanceCommand::Prompt { text, attachments, reply } => {
+                        InstanceCommand::Prompt { text, attachments, force_dispatch, reply } => {
                             let Some(sid) = session_id.clone() else {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
                             };
+                            // Auto-route: if a real turn is in flight OR
+                            // the queue already has waiters, append to
+                            // the queue instead of spawning a parallel
+                            // prompt-future. ACP serialises prompts on
+                            // the wire, but two simultaneous TurnGuards
+                            // would race on `turn_state.open_real` and
+                            // strand the first turn's TurnEnded — so we
+                            // serialise here. Synthetic turns (out-of-
+                            // turn agent activity wrappers) don't gate
+                            // — they're transient and `take_synthetic`
+                            // below closes them out of the way.
+                            //
+                            // `force_dispatch` skips the auto-route — set
+                            // by `queue/dispatch` so popped items go
+                            // on-wire immediately (the captain's "send
+                            // now" intent).
+                            let queue_route = !force_dispatch && ({
+                                let snap = turn_state.read().await;
+                                snap.current().is_some() && snap.is_real_turn_open()
+                            } || !queue.is_empty());
+
+                            if queue_route {
+                                queue_next_seq = queue_next_seq.saturating_add(1);
+                                let item = crate::adapters::queue::QueueItem {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    text,
+                                    attachments,
+                                    enqueued_seq: queue_next_seq,
+                                    enqueued_at: now_epoch_ms() as i64,
+                                };
+                                queue.push_back(item);
+                                publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                                let _ = reply.send(Ok(()));
+                                continue;
+                            }
                             // First-prompt system-prompt injection: wrap the prompt
                             // text in an Attachment-shaped wire resource, NOT
                             // concatenated with the user's text. The transcript
@@ -2767,6 +2919,168 @@ async fn run(params: RunParams) {
                                 mcps_count,
                             };
                             let _ = reply.send(snap);
+                        }
+                        InstanceCommand::QueueEnqueue { item, reply } => {
+                            queue_next_seq = queue_next_seq.saturating_add(1);
+                            let materialised = crate::adapters::queue::QueueItem {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                text: item.text,
+                                attachments: item.attachments,
+                                enqueued_seq: queue_next_seq,
+                                enqueued_at: now_epoch_ms() as i64,
+                            };
+                            queue.push_back(materialised.clone());
+                            publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                            let _ = reply.send(Ok(materialised));
+                        }
+                        InstanceCommand::QueueInsert { position, item, reply } => {
+                            queue_next_seq = queue_next_seq.saturating_add(1);
+                            let materialised = crate::adapters::queue::QueueItem {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                text: item.text,
+                                attachments: item.attachments,
+                                enqueued_seq: queue_next_seq,
+                                enqueued_at: now_epoch_ms() as i64,
+                            };
+                            let at = position.min(queue.len());
+                            queue.insert(at, materialised.clone());
+                            publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                            let _ = reply.send(Ok(materialised));
+                        }
+                        InstanceCommand::QueueRemove { item_id, reply } => {
+                            let before = queue.len();
+                            queue.retain(|q| q.id != item_id);
+                            let removed = queue.len() != before;
+                            if removed {
+                                publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                            }
+                            let _ = reply.send(Ok(removed));
+                        }
+                        InstanceCommand::QueueMove { item_id, position, reply } => {
+                            let from = match queue.iter().position(|q| q.id == item_id) {
+                                Some(i) => i,
+                                None => {
+                                    let _ = reply.send(Ok(false));
+                                    continue;
+                                }
+                            };
+                            // Clamp target to `[0, len-1]` (item count stays
+                            // the same; this is a reorder, not an insert).
+                            let to = position.min(queue.len().saturating_sub(1));
+                            if from == to {
+                                let _ = reply.send(Ok(true));
+                                continue;
+                            }
+                            // VecDeque has no `swap_remove` + `insert` at
+                            // arbitrary positions cleanly — pop + reinsert.
+                            if let Some(item) = queue.remove(from) {
+                                queue.insert(to, item);
+                                publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                                let _ = reply.send(Ok(true));
+                            } else {
+                                let _ = reply.send(Ok(false));
+                            }
+                        }
+                        InstanceCommand::QueueClear { reply } => {
+                            let dropped = queue.len() as u32;
+                            if dropped > 0 {
+                                queue.clear();
+                                publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                            }
+                            let _ = reply.send(Ok(dropped));
+                        }
+                        InstanceCommand::QueueList { reply } => {
+                            let _ = reply.send(queue.iter().cloned().collect());
+                        }
+                        InstanceCommand::QueueEdit { item_id, text, attachments, reply } => {
+                            let target = queue.iter_mut().find(|q| q.id == item_id);
+                            match target {
+                                Some(item) => {
+                                    item.text = text;
+                                    if let Some(atts) = attachments {
+                                        item.attachments = atts;
+                                    }
+                                    // Capture the updated item BEFORE the
+                                    // broadcast clone (else the borrow
+                                    // checker complains about `queue`
+                                    // being borrowed twice).
+                                    let updated = item.clone();
+                                    publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                                    let _ = reply.send(Ok(updated));
+                                }
+                                None => {
+                                    let _ = reply.send(Err(format!("queue item not found: {item_id}")));
+                                }
+                            }
+                        }
+                        InstanceCommand::QueueDispatch { item_id, reply } => {
+                            // Pop the named item (or the head when None).
+                            // Pop happens BEFORE the prompt fires — a
+                            // concurrent `prompts/cancel` aborts the
+                            // turn but does NOT re-enqueue the popped
+                            // item (captain explicit re-submits if they
+                            // want it back).
+                            let popped = match &item_id {
+                                Some(id) => match queue.iter().position(|q| q.id == *id) {
+                                    Some(i) => queue.remove(i),
+                                    None => None,
+                                },
+                                None => queue.pop_front(),
+                            };
+                            let item = match popped {
+                                Some(it) => it,
+                                None => {
+                                    let _ = reply.send(Ok(crate::adapters::queue::QueueDispatchResult {
+                                        item: crate::adapters::queue::QueueItem {
+                                            id: String::new(),
+                                            text: String::new(),
+                                            attachments: Vec::new(),
+                                            enqueued_seq: 0,
+                                            enqueued_at: 0,
+                                        },
+                                        session_id: None,
+                                        turn_id: None,
+                                        accepted: false,
+                                    }));
+                                    continue;
+                                }
+                            };
+                            publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                            // Forward the popped item to the same prompt
+                            // path `InstanceCommand::Prompt` uses. We
+                            // re-enqueue the synthesised Prompt onto our
+                            // own command channel so the existing
+                            // attachment / system-prompt-injection /
+                            // TurnGuard machinery handles it without
+                            // duplicating any of that logic here.
+                            let (inner_reply, inner_rx) = oneshot::channel::<Result<(), String>>();
+                            if cmd_tx_self.send(InstanceCommand::Prompt {
+                                text: item.text.clone(),
+                                attachments: item.attachments.clone(),
+                                // Captain explicit dispatch — bypass the
+                                // queue auto-route so the popped item
+                                // goes on-wire immediately.
+                                force_dispatch: true,
+                                reply: inner_reply,
+                            }).is_err() {
+                                let _ = reply.send(Err("actor channel closed".into()));
+                                continue;
+                            }
+                            let session_id_str = session_id.as_ref().map(|s| s.0.to_string());
+                            // Spawn the wait so we don't block the
+                            // actor's mailbox on the inner prompt-future
+                            // (which is itself spawned and pumps the
+                            // notification stream through this same
+                            // select loop).
+                            tokio::spawn(async move {
+                                let accepted = inner_rx.await.is_ok_and(|r| r.is_ok());
+                                let _ = reply.send(Ok(crate::adapters::queue::QueueDispatchResult {
+                                    item,
+                                    session_id: session_id_str,
+                                    turn_id: None,
+                                    accepted,
+                                }));
+                            });
                         }
                         InstanceCommand::Shutdown { reply } => {
                             info!(

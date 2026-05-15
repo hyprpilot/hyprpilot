@@ -689,6 +689,11 @@ impl AcpAdapter {
             .send(InstanceCommand::Prompt {
                 text: text.to_string(),
                 attachments: attachments.to_vec(),
+                // External `prompts/send` always honours the queue
+                // auto-route — if a turn is mid-flight the captain's
+                // prompt lands in the visible queue, not as a parallel
+                // dispatch.
+                force_dispatch: false,
                 reply: reply_tx,
             })
             .map_err(|_| RpcError::internal_error("instance actor closed before accepting prompt"))?;
