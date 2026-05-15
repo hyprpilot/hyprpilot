@@ -93,6 +93,23 @@ const instanceId = computed<InstanceId | undefined>(() => activeInstanceId.value
 // the initial fetch races a sane lower bound, and every backward
 // page picks up the real viewport extent.
 const scrollEl = ref<HTMLElement>()
+/// Flipped on the first captain-initiated scroll event after mount.
+/// Both `fetchNextPage` (load older) and `evictExtraPages` (drop
+/// trailing pages) gate on this so they don't fire during the
+/// initial paint of a freshly-mounted viewport. Without the gate:
+/// `useStickToBottom.onMounted` writes `scrollTop = scrollHeight`,
+/// the browser fires a synthetic `scroll` event for that
+/// assignment, the handler sees `scrollTop < LOAD_MORE_THRESHOLD_PX`
+/// while the page is mid-render (the new instance's head page may
+/// only have 1-2 items rendered so far → `scrollHeight ≈
+/// clientHeight` → `scrollTop ≈ 0`) and burns a backward fetch on
+/// content the captain hasn't even scrolled past yet. This was the
+/// captain's "loading earlier history after switching" bug.
+///
+/// Resets to `false` on every mount (the `:key="activeInstanceId"`
+/// on `<ChatViewport>` in `Overlay.vue` forces a clean remount per
+/// instance flip, so this ref is freshly `false` for each instance).
+const hasUserScrolled = ref(false)
 
 const viewport = useChatViewport(instanceId, { scrollEl })
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
@@ -259,6 +276,26 @@ function onScroll(): void {
 
   if (!el) {
     return
+  }
+  // Gate every "auto" pagination action behind a captain-initiated
+  // scroll. `useStickToBottom.onMounted` writes `scrollTop =
+  // scrollHeight` on mount; the browser fires a synthetic scroll
+  // event for that assignment + the subsequent MutationObserver
+  // re-stick passes. Treat any scroll where the captain has NOT yet
+  // pushed/dragged the bar themselves as bootstrap noise — neither
+  // fetchNextPage nor evictExtraPages fire. The first delta over a
+  // small threshold flips `hasUserScrolled` and unlocks normal
+  // pagination. Threshold guards against jitter from the initial
+  // anchor write.
+
+  if (!hasUserScrolled.value) {
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+
+    if (distanceFromBottom > LOAD_MORE_THRESHOLD_PX) {
+      hasUserScrolled.value = true
+    } else {
+      return
+    }
   }
 
   // Backward fetch.
