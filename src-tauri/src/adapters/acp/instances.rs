@@ -478,26 +478,60 @@ impl AcpAdapter {
         // Status bridge — drives the `StatusBroadcast` snapshot off the
         // ACP turn lifecycle so waybar's `ctl status --watch` reflects
         // what the agent is actually doing. TurnStarted → Streaming;
-        // PermissionRequest → Awaiting (only while a turn is open);
-        // TurnEnded → Idle (or Error when the turn carried an error).
+        // PermissionRequest → Awaiting; PermissionResolved while a turn
+        // is still open → back to Streaming (without this, waybar
+        // stuck on Awaiting until TurnEnded fired); TurnEnded → Idle
+        // (or Error when the turn carried an error); a crash-path
+        // `State::Ended | Error` clears stale Awaiting / Streaming on
+        // the instance that just dropped.
+        //
+        // `open_session` tracks the live turn's session id so the
+        // PermissionResolved revert can re-emit Streaming with the
+        // correct active_session field; without it the revert would
+        // null out active_session and waybar would lose context.
         let mut status_rx = self.registry.subscribe();
         let status = self.status.clone();
         tauri::async_runtime::spawn(async move {
+            let mut open_session: Option<String> = None;
+
             loop {
                 match status_rx.recv().await {
                     Ok(InstanceEvent::TurnStarted { session_id, .. }) => {
+                        open_session = Some(session_id.clone());
                         status.set_state(crate::rpc::protocol::AgentState::Streaming, Some(session_id));
                     }
                     Ok(InstanceEvent::PermissionRequest { session_id, .. }) => {
                         status.set_state(crate::rpc::protocol::AgentState::Awaiting, Some(session_id));
                     }
+                    Ok(InstanceEvent::PermissionResolved { .. }) => {
+                        // Captain answered (or it timed out). If a turn is
+                        // still open the agent has work left — flip back
+                        // to Streaming so waybar reflects "running" the
+                        // instant the answer lands, instead of waiting
+                        // for the next chunk / TurnEnded to reconcile.
+                        if let Some(session_id) = open_session.clone() {
+                            status.set_state(crate::rpc::protocol::AgentState::Streaming, Some(session_id));
+                        }
+                    }
                     Ok(InstanceEvent::TurnEnded { error, .. }) => {
+                        open_session = None;
                         let next = if error.is_some() {
                             crate::rpc::protocol::AgentState::Error
                         } else {
                             crate::rpc::protocol::AgentState::Idle
                         };
                         status.set_state(next, None);
+                    }
+                    Ok(InstanceEvent::State {
+                        state: InstanceState::Ended | InstanceState::Error,
+                        ..
+                    }) => {
+                        // Defensive: an actor that ended mid-turn (crash,
+                        // SIGTERM during a prompt) might never emit
+                        // TurnEnded; without this the status sticks on
+                        // Streaming / Awaiting forever from waybar's POV.
+                        open_session = None;
+                        status.set_state(crate::rpc::protocol::AgentState::Idle, None);
                     }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(n)) => {
