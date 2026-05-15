@@ -1,450 +1,181 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Phase } from '@components'
 import {
-  useActiveInstance,
-  useAdapter,
-  __resetAllPhaseSignals,
-  pushInstanceState,
-  usePhase,
   __resetAllQueues,
-  dispatchQueueHead,
-  dispatchQueueItem,
-  flushQueue,
-  popQueueHead,
-  popQueueItem,
-  pushToQueue,
-  pushToQueueAt,
+  applyQueueChanged,
+  refreshQueue,
   resetQueue,
-  startQueueDispatcher,
-  stopQueueDispatcher,
-  useQueue,
-  clearToasts,
-  resetTools,
-  __resetTurnEndedListeners,
-  pushTurnEnded,
-  pushTurnStarted,
-  resetTurns
+  useActiveInstance,
+  useQueue
 } from '@composables'
-import { InstanceState } from '@ipc'
+import type { QueueItem } from '@interfaces/wire/queue'
+import { TauriCommand } from '@ipc'
 
-const invoke = vi.fn()
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
 
-vi.mock('@ipc', async() => {
-  const actual = await vi.importActual<typeof import('@ipc')>('@ipc')
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
+  invoke: (cmd: string, args?: Record<string, unknown>) => invoke(cmd, args),
+  listen: () => Promise.resolve(() => {})
+}))
 
+const flushMicrotasks = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+function item(id: string, seq: number, text = 'hi'): QueueItem {
   return {
-    ...actual,
-    invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
-    listen: vi.fn()
+    id,
+    text,
+    enqueuedSeq: seq,
+    enqueuedAt: seq
   }
-})
+}
 
 beforeEach(() => {
   invoke.mockReset()
-  invoke.mockResolvedValue({ accepted: true })
+  invoke.mockResolvedValue({ items: [] })
   __resetAllQueues()
-  __resetTurnEndedListeners()
-  __resetAllPhaseSignals()
-  resetTurns('A')
-  resetTurns('B')
-  resetTools('A')
-  resetTools('B')
-  clearToasts()
   useActiveInstance().id.value = undefined
 })
 
 afterEach(() => {
-  stopQueueDispatcher()
+  __resetAllQueues()
 })
 
-describe('useQueue', () => {
-  it('enqueue appends to the tail and stamps id + enqueuedAt', () => {
-    const a = pushToQueue('A', {
-      text: 'first',
-      pills: [],
-      skillAttachments: []
-    })
-    const b = pushToQueue('A', {
-      text: 'second',
-      pills: [],
-      skillAttachments: []
-    })
+describe('useQueue (daemon-mirror)', () => {
+  it('applyQueueChanged replaces wholesale — no merge, no carry-over', () => {
+    applyQueueChanged('A', [item('q-1', 1), item('q-2', 2)])
+    expect(useQueue('A').items.value.map((q) => q.id)).toEqual(['q-1', 'q-2'])
 
-    const { items } = useQueue('A')
-
-    expect(items.value).toHaveLength(2)
-    expect(items.value[0]?.id).toBe(a.id)
-    expect(items.value[1]?.id).toBe(b.id)
-    expect(a.enqueuedAt).toBeLessThan(b.enqueuedAt)
+    applyQueueChanged('A', [item('q-3', 3)])
+    expect(useQueue('A').items.value.map((q) => q.id)).toEqual(['q-3'])
   })
 
-  it('enqueue via composable resolves the active instance id', () => {
-    useActiveInstance().set('A')
-    const { enqueue, items } = useQueue()
-
-    enqueue({
-      text: 'hi',
-      pills: [],
-      skillAttachments: []
-    })
-
-    expect(items.value).toHaveLength(1)
-    expect(items.value[0]?.text).toBe('hi')
-  })
-
-  it('popQueueHead returns FIFO and undefined when empty', () => {
-    pushToQueue('A', {
-      text: 'first',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('A', {
-      text: 'second',
-      pills: [],
-      skillAttachments: []
-    })
-
-    const head = popQueueHead('A')
-
-    expect(head?.text).toBe('first')
-    const head2 = popQueueHead('A')
-
-    expect(head2?.text).toBe('second')
-    expect(popQueueHead('A')).toBeUndefined()
-  })
-
-  it('flushQueue drops every item for the instance', () => {
-    pushToQueue('A', {
-      text: 'a',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('A', {
-      text: 'b',
-      pills: [],
-      skillAttachments: []
-    })
-
-    flushQueue('A')
+  it('applyQueueChanged accepts an empty list (clear-via-empty contract)', () => {
+    applyQueueChanged('A', [item('q-1', 1)])
+    applyQueueChanged('A', [])
     expect(useQueue('A').items.value).toHaveLength(0)
   })
 
-  it('isolates queues between instances', () => {
-    pushToQueue('A', {
-      text: 'for A',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('B', {
-      text: 'for B',
-      pills: [],
-      skillAttachments: []
-    })
-
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['for A'])
-    expect(useQueue('B').items.value.map((q) => q.text)).toEqual(['for B'])
+  it('isolates instance slices: A never sees B and vice versa', () => {
+    applyQueueChanged('A', [item('q-a', 1)])
+    applyQueueChanged('B', [item('q-b', 1)])
+    expect(useQueue('A').items.value.map((q) => q.id)).toEqual(['q-a'])
+    expect(useQueue('B').items.value.map((q) => q.id)).toEqual(['q-b'])
   })
 
-  it('resetQueue clears the slot', () => {
-    pushToQueue('A', {
-      text: 'x',
-      pills: [],
-      skillAttachments: []
-    })
+  it('useQueue(undefined) resolves through the active instance id', () => {
+    useActiveInstance().set('A')
+    applyQueueChanged('A', [item('q-1', 1)])
+    expect(useQueue().items.value.map((q) => q.id)).toEqual(['q-1'])
+  })
+
+  it('first observation of an unseen id fires exactly one snapshot invoke', async() => {
+    invoke.mockResolvedValueOnce({ items: [item('q-fetched', 1)] })
+
+    const a1 = useQueue('A')
+
+    // Force the watchEffect to run.
+    await flushMicrotasks()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceSnapshotQueue, { instanceId: 'A' })
+
+    // Second observer for the same instance must NOT re-fire — the
+    // observed-set gates concurrent first-observations.
+    const a2 = useQueue('A')
+
+    await flushMicrotasks()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(a1.items.value).toHaveLength(1)
+    expect(a2.items.value).toHaveLength(1)
+  })
+
+  it('refreshQueue swallows invoke errors and leaves the store untouched', async() => {
+    applyQueueChanged('A', [item('q-1', 1)])
+    invoke.mockRejectedValueOnce(new Error('daemon down'))
+
+    await refreshQueue('A')
+    expect(useQueue('A').items.value.map((q) => q.id)).toEqual(['q-1'])
+  })
+
+  it('drops a stale snapshot whose newest seq is older than what we already observed', async() => {
+    applyQueueChanged('A', [item('q-fresh', 10)])
+
+    // Daemon snapshot reply with stale data (seq 5 < 10).
+    invoke.mockResolvedValueOnce({ items: [item('q-stale', 5)] })
+    await refreshQueue('A')
+
+    // Watermark guard kept the fresh broadcast state.
+    expect(useQueue('A').items.value.map((q) => q.id)).toEqual(['q-fresh'])
+  })
+
+  it('accepts an empty snapshot even when the watermark is high (clear-via-empty)', async() => {
+    applyQueueChanged('A', [item('q-1', 10)])
+    invoke.mockResolvedValueOnce({ items: [] })
+
+    await refreshQueue('A')
+    expect(useQueue('A').items.value).toHaveLength(0)
+  })
+
+  it('resetQueue clears the slot AND the observed marker', async() => {
+    // First useQueue('A') marks A as observed via the watchEffect.
+    useQueue('A')
+    await flushMicrotasks()
+    expect(invoke).toHaveBeenCalledTimes(1)
+
+    // Reset wipes both the cached items AND the observed marker.
+    applyQueueChanged('A', [item('q-1', 1)])
     resetQueue('A')
     expect(useQueue('A').items.value).toHaveLength(0)
-  })
-})
 
-describe('popQueueItem + pushToQueueAt (edit round-trip)', () => {
-  it('popQueueItem removes the entry and reports its slot', () => {
-    const a = pushToQueue('A', {
-      text: 'first',
-      pills: [],
-      skillAttachments: []
-    })
-    const b = pushToQueue('A', {
-      text: 'second',
-      pills: [],
-      skillAttachments: []
-    })
-    const c = pushToQueue('A', {
-      text: 'third',
-      pills: [],
-      skillAttachments: []
-    })
-
-    const popped = popQueueItem('A', b.id)
-
-    expect(popped?.position).toBe(1)
-    expect(popped?.item.text).toBe('second')
-    expect(useQueue('A').items.value.map((q) => q.id)).toEqual([a.id, c.id])
-  })
-
-  it('popQueueItem returns undefined for an unknown id', () => {
-    pushToQueue('A', {
-      text: 'only',
-      pills: [],
-      skillAttachments: []
-    })
-    expect(popQueueItem('A', 'no-such-id')).toBeUndefined()
-  })
-
-  it('pushToQueueAt inserts at the given slot, clamped to bounds', () => {
-    pushToQueue('A', {
-      text: 'first',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('A', {
-      text: 'third',
-      pills: [],
-      skillAttachments: []
-    })
-
-    pushToQueueAt('A', 1, {
-      text: 'second',
-      pills: [],
-      skillAttachments: []
-    })
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['first', 'second', 'third'])
-
-    pushToQueueAt('A', 999, {
-      text: 'tail',
-      pills: [],
-      skillAttachments: []
-    })
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['first', 'second', 'third', 'tail'])
-  })
-})
-
-describe('dispatchQueueHead / dispatchQueueItem', () => {
-  it('dispatchQueueHead pops the head and submits via the adapter', async() => {
-    pushToQueue('A', {
-      text: 'queued one',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('A', {
-      text: 'queued two',
-      pills: [],
-      skillAttachments: []
-    })
-
-    dispatchQueueHead('A')
-
-    await Promise.resolve()
-    await Promise.resolve()
-
+    // Post-reset, the NEXT useQueue('A') is a fresh first observation
+    // → re-fires the snapshot invoke. (Note: the immediately-prior
+    // `useQueue('A').items.value` re-marks A as observed via its
+    // watchEffect, so we have to test the contract by calling
+    // resetQueue AGAIN before the final invocation.)
+    resetQueue('A')
+    invoke.mockClear()
+    invoke.mockResolvedValueOnce({ items: [item('q-fetched', 1)] })
+    useQueue('A')
+    await flushMicrotasks()
     expect(invoke).toHaveBeenCalledTimes(1)
-    const args = invoke.mock.calls[0]?.[1] as { text: string; instanceId: string }
-
-    expect(args.text).toBe('queued one')
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['queued two'])
   })
 
-  it('dispatchQueueHead is a no-op when the queue is empty', () => {
-    dispatchQueueHead('A')
-    expect(invoke).not.toHaveBeenCalled()
-  })
-
-  it('dispatchQueueItem pops a specific entry and submits it', async() => {
-    pushToQueue('A', {
-      text: 'a',
-      pills: [],
-      skillAttachments: []
-    })
-    const b = pushToQueue('A', {
-      text: 'b',
-      pills: [],
-      skillAttachments: []
-    })
-
-    dispatchQueueItem('A', b.id)
-
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(invoke).toHaveBeenCalledTimes(1)
-    const args = invoke.mock.calls[0]?.[1] as { text: string; instanceId: string }
-
-    expect(args.text).toBe('b')
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['a'])
-  })
-})
-
-describe('startQueueDispatcher', () => {
-  it('does NOT auto-dispatch the queue head on turn-ended end_turn — captain only', async() => {
-    startQueueDispatcher()
-    pushToQueue('A', {
-      text: 'queued one',
-      pills: [],
-      skillAttachments: []
-    })
-
-    pushTurnStarted('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      startedAtMs: 0
-    })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'end_turn',
-      endedAtMs: 0
-    })
-
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(invoke).not.toHaveBeenCalled()
-    // head still queued — captain drains via Ctrl+Enter or the strip
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['queued one'])
-  })
-
-  it('leaves the queue intact on stopReason=cancelled — captain only drains via the strip', () => {
-    // Cancel-flush coupling was dropped: Ctrl+C cancels the
-    // in-flight turn but queued items survive so the captain can
-    // let them dispatch on the next turn.
-    startQueueDispatcher()
-    pushToQueue('A', {
-      text: 'x',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('A', {
-      text: 'y',
-      pills: [],
-      skillAttachments: []
-    })
-
-    pushTurnStarted('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      startedAtMs: 0
-    })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'cancelled',
-      endedAtMs: 0
-    })
-
-    expect(useQueue('A').items.value).toHaveLength(2)
-    expect(invoke).not.toHaveBeenCalled()
-  })
-
-  it('ignores other stop reasons (max_tokens / refusal) — head stays, queue stays', () => {
-    startQueueDispatcher()
-    pushToQueue('A', {
-      text: 'still queued',
-      pills: [],
-      skillAttachments: []
-    })
-
-    pushTurnStarted('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      startedAtMs: 0
-    })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'max_tokens',
-      endedAtMs: 0
-    })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'refusal',
-      endedAtMs: 0
-    })
-
-    expect(invoke).not.toHaveBeenCalled()
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['still queued'])
-  })
-
-  it('keeps sibling queues intact regardless of stop reason', () => {
-    startQueueDispatcher()
-    pushToQueue('A', {
-      text: 'A item',
-      pills: [],
-      skillAttachments: []
-    })
-    pushToQueue('B', {
-      text: 'B item',
-      pills: [],
-      skillAttachments: []
-    })
-
-    pushTurnStarted('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      startedAtMs: 0
-    })
-    pushTurnEnded('A', {
-      turnId: 't1',
-      sessionId: 's-a',
-      stopReason: 'cancelled',
-      endedAtMs: 0
-    })
-
-    expect(useQueue('A').items.value).toHaveLength(1)
-    expect(useQueue('B').items.value).toHaveLength(1)
-  })
-})
-
-/**
- * Mirrors the `Overlay.vue::onSubmit` routing decision: when phase is
- * idle, dispatch via `useAdapter().submit`; otherwise enqueue. Lives
- * here (not in `Chat.test.ts`) so the existing baseline harness
- * issues don't bleed into the queue invariant.
- */
-describe('submit-routing (Overlay.vue parity)', () => {
-  function routeSubmit(text: string): { dispatched: boolean } {
-    useActiveInstance().setIfUnset('A')
-    const instanceId = useActiveInstance().id.value!
-    const { phase } = usePhase()
-
-    if (phase.value !== Phase.Idle) {
-      pushToQueue(instanceId, {
-        text,
-        pills: [],
-        skillAttachments: []
-      })
-
-      return { dispatched: false }
-    }
-    void useAdapter().submit({ text, instanceId })
-
-    return { dispatched: true }
-  }
-
-  it('phase=Idle → submit dispatches through useAdapter', async() => {
-    const r = routeSubmit('first message')
-
-    expect(r.dispatched).toBe(true)
-
-    await Promise.resolve()
-    expect(invoke).toHaveBeenCalledTimes(1)
-    expect(useQueue('A').items.value).toHaveLength(0)
-  })
-
-  it('phase=Working → submit enqueues, no invoke', () => {
+  it('mutation API methods route through invoke with the right command + args', async() => {
     useActiveInstance().set('A')
-    pushInstanceState('A', InstanceState.Running)
-    pushTurnStarted('A', {
-      turnId: 't-active',
-      sessionId: 's-a',
-      startedAtMs: 0
+    const q = useQueue()
+
+    invoke.mockResolvedValue({ item: item('q-1', 1, 'edited') })
+    await q.edit('q-1', 'edited')
+    expect(invoke).toHaveBeenCalledWith(
+      TauriCommand.QueueEdit,
+      expect.objectContaining({
+        instanceId: 'A',
+        itemId: 'q-1',
+        text: 'edited'
+      })
+    )
+
+    invoke.mockResolvedValue({ removed: true })
+    await q.remove('q-1')
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.QueueRemove, { instanceId: 'A', itemId: 'q-1' })
+
+    invoke.mockResolvedValue({
+      accepted: true,
+      item: item('q-2', 2)
     })
-    expect(usePhase().phase.value).toBe(Phase.Working)
+    await q.dispatch('q-2')
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.QueueDispatch, { instanceId: 'A', itemId: 'q-2' })
 
-    const r = routeSubmit('second message')
+    invoke.mockResolvedValue({ moved: true })
+    await q.move('q-1', 3)
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.QueueMove, {
+      instanceId: 'A',
+      itemId: 'q-1',
+      position: 3
+    })
 
-    expect(r.dispatched).toBe(false)
-    expect(invoke).not.toHaveBeenCalled()
-    expect(useQueue('A').items.value.map((q) => q.text)).toEqual(['second message'])
+    invoke.mockResolvedValue({ cleared: 4 })
+    await q.clear()
+    expect(invoke).toHaveBeenCalledWith(TauriCommand.QueueClear, { instanceId: 'A' })
   })
 })

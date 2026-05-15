@@ -1,6 +1,7 @@
 import { cleanupInstance } from './cleanup'
 import { pushPermissionRequest } from './use-permissions'
 import { pushInstanceState } from './use-phase'
+import { applyQueueChanged } from './use-queue'
 import {
   pushConfigOptionsUpdate,
   pushCurrentModeUpdate,
@@ -427,6 +428,11 @@ export async function startSessionStream(): Promise<() => void> {
         })
       }
       pushConfigOptionsUpdate(instanceId, categories)
+    }),
+    await listen(TauriEvent.AcpQueueChanged, (e) => {
+      const { instanceId, items } = e.payload
+
+      applyQueueChanged(instanceId, items)
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
       const { agentId, instanceId, profileId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload

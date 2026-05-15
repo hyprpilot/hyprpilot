@@ -1,5 +1,6 @@
 import type { CompletionConfigSnapshot } from './completion-config'
 import type { KeymapsConfig } from './keymap'
+import type { QueueItem } from './queue'
 import type { AgentSummary, InstanceListEntry, ProfileSummary } from './session'
 import type { Theme } from './theme'
 import type { WindowState } from './window'
@@ -25,4 +26,8 @@ export interface BootSnapshot {
   agents: { agents: AgentSummary[] }
   profiles: { profiles: ProfileSummary[] }
   instances: { instances: InstanceListEntry[]; focusedId?: string }
+  /// Per-instance queue snapshots keyed by instance id. Empty queues
+  /// are included (as `[]`) so the consumer treats absence as "no
+  /// instance" rather than "queue unknown".
+  queues: Record<string, QueueItem[]>
 }

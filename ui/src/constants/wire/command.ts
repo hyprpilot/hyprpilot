@@ -48,6 +48,21 @@ import type {
 } from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
 import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
+import type {
+  AcpQueueChangedPayload,
+  QueueClearArgs,
+  QueueClearResult,
+  QueueDispatchArgs,
+  QueueDispatchResult,
+  QueueEditArgs,
+  QueueEditResult,
+  QueueListArgs,
+  QueueListResult,
+  QueueMoveArgs,
+  QueueMoveResult,
+  QueueRemoveArgs,
+  QueueRemoveResult
+} from '@interfaces/wire/queue'
 import type { RemotePairRequestEventPayload, RemotePairResolvedEventPayload, RemotePendingPair } from '@interfaces/wire/remote-pair'
 import type {
   AgentSummary,
@@ -110,7 +125,14 @@ export enum TauriCommand {
   InstanceSnapshotMeta = 'instance_snapshot_meta',
   InstanceSnapshotChat = 'instance_snapshot_chat',
   InstanceSnapshotTerminals = 'instance_snapshot_terminals',
+  InstanceSnapshotQueue = 'instance_snapshot_queue',
   McpsList = 'mcps_list',
+  QueueList = 'queue_list',
+  QueueEdit = 'queue_edit',
+  QueueRemove = 'queue_remove',
+  QueueMove = 'queue_move',
+  QueueClear = 'queue_clear',
+  QueueDispatch = 'queue_dispatch',
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
   CompletionCancel = 'completion_cancel',
@@ -139,6 +161,7 @@ export enum TauriEvent {
   AcpConfigOptionsUpdate = 'acp:config-options-update',
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
+  AcpQueueChanged = 'acp:queue-changed',
   ComposerDraftAppend = 'composer:draft-append',
   RemotePairRequest = 'remote:pair-request',
   RemotePairResolved = 'remote:pair-resolved'
@@ -179,7 +202,14 @@ export interface TauriCommandArgs {
   [TauriCommand.InstanceSnapshotMeta]: InstanceSnapshotMetaArgs
   [TauriCommand.InstanceSnapshotChat]: InstanceSnapshotChatArgs
   [TauriCommand.InstanceSnapshotTerminals]: InstanceSnapshotTerminalsArgs
+  [TauriCommand.InstanceSnapshotQueue]: { instanceId: string }
   [TauriCommand.McpsList]: McpsListArgs
+  [TauriCommand.QueueList]: QueueListArgs
+  [TauriCommand.QueueEdit]: QueueEditArgs
+  [TauriCommand.QueueRemove]: QueueRemoveArgs
+  [TauriCommand.QueueMove]: QueueMoveArgs
+  [TauriCommand.QueueClear]: QueueClearArgs
+  [TauriCommand.QueueDispatch]: QueueDispatchArgs
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
   [TauriCommand.CompletionCancel]: CompletionCancelArgs
@@ -235,7 +265,14 @@ export interface TauriCommandResult {
   [TauriCommand.InstanceSnapshotMeta]: MetaSnapshot
   [TauriCommand.InstanceSnapshotChat]: ChatSnapshot
   [TauriCommand.InstanceSnapshotTerminals]: TerminalsSnapshot
+  [TauriCommand.InstanceSnapshotQueue]: QueueListResult
   [TauriCommand.McpsList]: MCPListResult
+  [TauriCommand.QueueList]: QueueListResult
+  [TauriCommand.QueueEdit]: QueueEditResult
+  [TauriCommand.QueueRemove]: QueueRemoveResult
+  [TauriCommand.QueueMove]: QueueMoveResult
+  [TauriCommand.QueueClear]: QueueClearResult
+  [TauriCommand.QueueDispatch]: QueueDispatchResult
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
   [TauriCommand.CompletionCancel]: CompletionCancelResponse
@@ -265,6 +302,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpConfigOptionsUpdate]: ConfigOptionsUpdateEventPayload
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
+  [TauriEvent.AcpQueueChanged]: AcpQueueChangedPayload
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
   [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
   [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload

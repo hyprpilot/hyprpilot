@@ -45,15 +45,7 @@ import {
 } from '@components'
 import {
   pushToast,
-  dispatchQueueHead,
-  dispatchQueueItem,
-  popQueueItem,
-  pushToQueue,
-  pushToQueueAt,
-  removeFromQueue,
   startActiveInstance,
-  startQueueDispatcher,
-  stopQueueDispatcher,
   useActiveInstance,
   useAdapter,
   resetPermissions,
@@ -155,7 +147,7 @@ const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
 // the cross-feature stores that drive surfaces other than the body.
 const { rowQueue: permissionRowQueue, modalQueue: permissionModalQueue, respond: respondPermission } = usePermissions()
 const { daemonCwd } = useDaemonCwd()
-const { items: queuedItems, flush: flushActiveQueue } = useQueue()
+const { items: queuedItems, remove: removeFromActiveQueue, dispatch: dispatchActiveQueue, edit: editActiveQueueItem, clear: flushActiveQueue } = useQueue()
 const { entries: toastEntries, dismiss: dismissToast } = useToasts()
 const activeToast = computed(() => toastEntries.value[0])
 
@@ -458,7 +450,7 @@ useKeymap(
             return true
           }
           log.info('keybind invoked', { action: 'send', target: 'queue' })
-          dispatchQueueHead(instanceId)
+          void dispatchActiveQueue()
 
           return true
         }
@@ -484,7 +476,7 @@ useKeymap(
             target: 'queue',
             queuedItemId: head.id
           })
-          removeFromQueue(instanceId, head.id)
+          void removeFromActiveQueue(head.id)
 
           return true
         }
@@ -545,7 +537,6 @@ function windowToggleCaptureListener(e: KeyboardEvent): void {
 
 onMounted(async() => {
   window.addEventListener('keydown', windowToggleCaptureListener, { capture: true })
-  startQueueDispatcher()
 
   try {
     stopActiveInstanceStore = await startActiveInstance()
@@ -611,7 +602,6 @@ onUnmounted(() => {
   stopFocusPrefetch = undefined
   unsubscribePairForBrimSync?.()
   unsubscribePairForBrimSync = undefined
-  stopQueueDispatcher()
 })
 
 // Skill attachments are per-turn but tied to the active instance —
@@ -734,7 +724,7 @@ function imagePillsToAttachments(pills: ComposerPill[]): Attachment[] {
  * the original slot. On the next submit we re-insert at the same
  * position so order is preserved.
  */
-const editingQueueSlot = ref<{ instanceId: InstanceId; position: number } | undefined>(undefined)
+const editingQueueSlot = ref<{ instanceId: InstanceId; itemId: string } | undefined>(undefined)
 
 function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void {
   const { text, attachments } = payload
@@ -761,40 +751,39 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
 
   useActiveInstance().set(instanceId)
 
-  // Edit-resubmit: a captain pulled this entry into the composer
-  // via the queue-strip edit button. Land it back in the queue at
-  // the original slot regardless of phase — the queue is captain-
-  // drained today (Ctrl+Enter or per-row send), so always
-  // re-queueing keeps the order predictable.
+  // Edit-resubmit: captain pulled this entry into the composer via
+  // the queue-strip edit button. Daemon owns the queue now — submit
+  // becomes an in-place `queue/edit` RPC. The item stays at its
+  // original slot with the new text + attachments. The composer's
+  // existing draft has been replaced with the queued item's text in
+  // `onQueueEdit`; clear it on a successful edit, restore the
+  // pending state on rejection so the captain can retry.
   const editing = editingQueueSlot.value
 
   if (editing && editing.instanceId === instanceId) {
-    pushToQueueAt(instanceId, editing.position, {
-      text,
-      pills: attachments,
-      skillAttachments
-    })
-    editingQueueSlot.value = undefined
-    composerRef.value?.clear()
-    clearAttachments()
+    void editActiveQueueItem(editing.itemId, text, wireAttachments)
+      .then(() => {
+        editingQueueSlot.value = undefined
+        composerRef.value?.clear()
+        clearAttachments()
+      })
+      .catch((err) => {
+        log.error('queue/edit failed', { instanceId, itemId: editing.itemId }, err)
+        pushToast(ToastTone.Err, `edit failed: ${String(err)}`)
+        // Don't clear the composer — captain keeps the draft + can
+        // retry. `editingQueueSlot` stays set so the next submit
+        // attempts the edit again instead of falling through to a
+        // fresh send.
+      })
 
     return
   }
 
-  // Submit-while-busy: queue at the tail. The queue never auto-
-  // drains today — captain dispatches via Ctrl+Enter or the per-
-  // row send button on the queue strip.
-  if (phase.value !== Phase.Idle) {
-    pushToQueue(instanceId, {
-      text,
-      pills: attachments,
-      skillAttachments
-    })
-    composerRef.value?.clear()
-    clearAttachments()
-
-    return
-  }
+  // Submit always goes through `prompts/send` (server-side
+  // `session_submit`). The daemon's auto-route decides:
+  // idle → dispatch immediately; busy → enqueue at the tail. UI
+  // doesn't pre-check phase — the daemon is the single decider so
+  // every transport (Vue desktop, mobile WS, hyprpilot-nvim) agrees.
 
   sending.value = true
   // The user turn lands as a daemon-emitted `TranscriptItem::UserPrompt`
@@ -821,14 +810,11 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
 }
 
 function onQueueDrop(id: string): void {
-  if (!activeInstanceId.value) {
-    return
-  }
-  removeFromQueue(activeInstanceId.value, id)
+  void removeFromActiveQueue(id)
 }
 
 function onQueueDropAll(): void {
-  flushActiveQueue()
+  void flushActiveQueue()
 }
 
 /**
@@ -844,36 +830,56 @@ function onQueueEdit(itemId: string): void {
   if (!instanceId) {
     return
   }
-  const popped = popQueueItem(instanceId, itemId)
+  const target = queuedItems.value.find((q) => q.id === itemId)
 
-  if (!popped) {
+  if (!target) {
     return
   }
-  editingQueueSlot.value = { instanceId, position: popped.position }
+  // In-place edit: leave the queue item alone, pre-fill the composer
+  // with its text + attachments, and pin the id so the next submit
+  // routes through `queue/edit` instead of re-enqueueing. Branch on
+  // mime type when projecting back to `ComposerPill`s — image
+  // attachments (`mime: 'image/png'` + `data: <base64>`) need the
+  // Attachment pill shape so `imagePillsToAttachments` re-finds them
+  // on submit; skill attachments (slug + body) land as Resource pills.
+  // Misclassifying drops the base64 payload silently.
+  editingQueueSlot.value = { instanceId, itemId }
   composerRef.value?.setDraft({
-    text: popped.item.text,
-    pills: popped.item.pills
+    text: target.text,
+    pills: (target.attachments ?? []).map((a) => {
+      const isImage = a.mime?.startsWith('image/') === true
+
+      if (isImage) {
+        return {
+          kind: ComposerPillKind.Attachment,
+          id: `attachment:${a.slug}`,
+          label: a.title ?? a.slug,
+          data: a.data ?? '',
+          mimeType: a.mime ?? 'application/octet-stream',
+          fileName: a.title ?? a.path
+        }
+      }
+
+      return {
+        kind: ComposerPillKind.Resource,
+        id: `attachment:${a.slug}`,
+        label: a.title ?? a.slug,
+        data: a.slug,
+        mimeType: 'skill'
+      }
+    })
   })
-  log.info('queue edit', {
-    instanceId,
-    queuedItemId: itemId,
-    slot: popped.position
-  })
+  log.info('queue edit start', { instanceId, queuedItemId: itemId })
 }
 
 /**
- * Per-row "send now" — pop the specific entry out of the queue
- * and dispatch it via the adapter. Skips the head if the captain
- * picked a later row.
+ * Per-row "send now" — captain explicit dispatch for a specific
+ * queued entry. Server pops + fires immediately; ACP serialises if
+ * a turn is already in flight.
  */
 function onQueueSend(itemId: string): void {
-  const instanceId = activeInstanceId.value
-
-  if (!instanceId) {
-    return
-  }
-  log.info('queue send-now', { instanceId, queuedItemId: itemId })
-  dispatchQueueItem(instanceId, itemId)
+  log.info('queue send-now', { queuedItemId: itemId })
+  void dispatchActiveQueue(itemId)
 }
 </script>
 
