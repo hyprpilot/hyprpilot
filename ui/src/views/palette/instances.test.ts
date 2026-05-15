@@ -88,10 +88,13 @@ describe('openInstancesLeaf', () => {
 
     expect(entries).toHaveLength(2)
     expect(entries[0]?.id).toBe('inst-A')
+    // No title yet (fresh instance, no turn submitted) → headline
+    // falls through to profile id. Description leads with the
+    // profile id now, then adapter, then live state.
     expect(entries[0]?.name).toBe('ask')
-    expect(entries[0]?.description).toMatch(/^claude-code/)
+    expect(entries[0]?.description).toMatch(/^ask · claude-code/)
     expect(entries[1]?.name).toBe('plan')
-    expect(entries[1]?.description).toMatch(/^codex/)
+    expect(entries[1]?.description).toMatch(/^plan · codex/)
   })
 
   it('uses captain-set name as headline when present', async() => {
@@ -112,6 +115,54 @@ describe('openInstancesLeaf', () => {
     const entry = stack.value[0]?.entries[0]
 
     expect(entry?.name).toBe('planning')
+  })
+
+  it('uses the session title as headline when present and pushes profile + adapter into the description', async() => {
+    // Re-import the module with a session-info mock that ships a
+    // `title`. The default mock at file scope returns `title:
+    // undefined`, so the headline falls through to name/profile/agent;
+    // this scenario is the title-driven path.
+    vi.resetModules()
+    vi.doMock('@composables', async(importOriginal) => ({
+      ...(await importOriginal<typeof import('@composables')>()),
+      useActiveInstance: () => ({ id: activeInstanceRef }),
+      usePhase: () => ({ phase: computed(() => 'idle') }),
+      useQueue: () => ({ items: computed(() => []) }),
+      useSessionInfo: () => ({
+        info: computed(() => ({
+          title: 'kustomize the gateway',
+          mode: undefined,
+          cwd: '/home/cenk/dev',
+          mcpsCount: 0
+        }))
+      }),
+      useTerminals: () => ({ all: computed(() => []) }),
+      pushToast: (...args: unknown[]) => pushToastMock(...args)
+    }))
+
+    const { openInstancesLeaf: openWithTitle } = await import('./instances')
+    const { __resetPaletteStackForTests: reset, usePalette: paletteWithTitle } = await import('@composables')
+
+    reset()
+    invokeMock.mockResolvedValue({
+      instances: [
+        {
+          agentId: 'claude-code',
+          profileId: 'ask',
+          instanceId: 'inst-A'
+        }
+      ]
+    })
+
+    await openWithTitle()
+
+    const { stack } = paletteWithTitle()
+    const entry = stack.value[0]?.entries[0]
+
+    expect(entry?.name).toBe('kustomize the gateway')
+    expect(entry?.description).toMatch(/^ask · claude-code/)
+    vi.doUnmock('@composables')
+    vi.resetModules()
   })
 
   it('marks the active instance in its description prefix', async() => {

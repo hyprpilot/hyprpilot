@@ -31,30 +31,6 @@ const active = computed<InstanceListEntry | undefined>(() => {
   return props.items.find((i) => i.instanceId === props.entry?.id)
 })
 
-const headline = computed<string>(() => {
-  const entry = active.value
-
-  if (!entry) {
-    return ''
-  }
-
-  return entry.name ?? entry.profileId ?? entry.agentId
-})
-
-const subhead = computed<string | undefined>(() => {
-  const entry = active.value
-
-  if (!entry) {
-    return undefined
-  }
-
-  if (entry.name && entry.profileId) {
-    return entry.profileId
-  }
-
-  return undefined
-})
-
 const sessionInfo = computed(() => {
   const id = active.value?.instanceId
 
@@ -64,6 +40,42 @@ const sessionInfo = computed(() => {
   const { info } = useSessionInfo(id)
 
   return info.value
+})
+
+const headline = computed<string>(() => {
+  const entry = active.value
+
+  if (!entry) {
+    return ''
+  }
+
+  // Title first — matches the rolling header chip + the row's
+  // headline in the picker. Falls through to captain-set name,
+  // profile id, adapter id when no title has landed yet.
+  return sessionInfo.value?.title ?? entry.name ?? entry.profileId ?? entry.agentId
+})
+
+const subhead = computed<string | undefined>(() => {
+  const entry = active.value
+
+  if (!entry) {
+    return undefined
+  }
+
+  // When the title is driving the headline, the captain still wants
+  // to read the captain-set name (if any) underneath — it identifies
+  // the instance the same way the header pill does on row 1.
+  if (sessionInfo.value?.title && entry.name) {
+    return entry.name
+  }
+
+  // Captain-set name driving headline: profile id sits in the
+  // subhead as a quiet breadcrumb.
+  if (entry.name && entry.profileId) {
+    return entry.profileId
+  }
+
+  return undefined
 })
 
 const recentTurns = computed(() => {
@@ -93,6 +105,10 @@ function preview(text: string): string {
       <h3 class="palette-instances-preview-title">{{ headline }}</h3>
       <div v-if="subhead" class="palette-instances-preview-subhead">{{ subhead }}</div>
       <dl class="palette-instances-preview-meta">
+        <div v-if="active.profileId">
+          <dt>profile</dt>
+          <dd>{{ active.profileId }}</dd>
+        </div>
         <div>
           <dt>adapter</dt>
           <dd>{{ active.agentId }}</dd>
@@ -104,6 +120,10 @@ function preview(text: string): string {
         <div v-if="active.mode">
           <dt>mode</dt>
           <dd>{{ active.mode }}</dd>
+        </div>
+        <div v-if="sessionInfo?.cwd">
+          <dt>cwd</dt>
+          <dd>{{ sessionInfo.cwd }}</dd>
         </div>
         <div>
           <dt>id</dt>
