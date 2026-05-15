@@ -37,7 +37,10 @@ const props = withDefaults(
     counts?: BreadcrumbCount[]
     cwdExpanded?: boolean
     /// Total live-instance count. Renders the row-1 instances pill
-    /// when ≥ 2 (one means "just this", no extras to surface).
+    /// whenever ≥ 1 so the captain always has a click target into the
+    /// instance palette (even when there's only one running — the
+    /// pill doubles as the "spawn another" affordance via the palette
+    /// leaf's actions).
     instancesCount?: number
   }>(),
   {
@@ -69,6 +72,7 @@ const emit = defineEmits<{
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
 const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working || props.phase === Phase.Awaiting || props.phase === Phase.Pending)
 const hasGit = computed(() => Boolean(props.gitStatus))
+const instancesLabel = computed(() => (props.instancesCount === 1 ? 'instance' : 'instances'))
 </script>
 
 <template>
@@ -109,9 +113,15 @@ const hasGit = computed(() => Boolean(props.gitStatus))
           </button>
           <span v-if="title" class="frame-title">{{ title }}</span>
         </HorizontalScroller>
-        <button v-if="instancesCount > 1" type="button" class="frame-instances-pill" :aria-label="`${instancesCount} instances`" @click="emit('instancesClick')">
+        <button
+          v-if="instancesCount >= 1"
+          type="button"
+          class="frame-instances-pill"
+          :aria-label="`${instancesCount} ${instancesLabel}`"
+          @click="emit('instancesClick')"
+        >
           <span class="frame-instances-count">{{ instancesCount }}</span>
-          <span class="frame-instances-label">instances</span>
+          <span class="frame-instances-label">{{ instancesLabel }}</span>
         </button>
         <!-- Palette-open button: visible only on coarse pointers
              (phones / tablets). Desktop captains hit Ctrl+K. -->
