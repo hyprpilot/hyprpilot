@@ -79,7 +79,24 @@ function shortenCwd(raw: string): string {
 }
 
 export function buildSessionEntries(sessions: SessionSummary[], now: () => number = Date.now): SessionsLeafEntry[] {
-  return sessions.map((s) => {
+  // Order by `updatedAt` desc — the most recently touched session
+  // sits at the top, matching the captain's "what was I just
+  // working on?" mental model. Falls back to a stable string
+  // comparison when `updatedAt` is missing (older daemons / agents
+  // that don't stamp the field). Spread first so the upstream array
+  // isn't mutated — `sessionList` is reactive in `useSessionHistory`.
+  const ordered = [...sessions].sort((a, b) => {
+    const at = a.updatedAt ?? ''
+    const bt = b.updatedAt ?? ''
+
+    if (at === bt) {
+      return 0
+    }
+
+    return at > bt ? -1 : 1
+  })
+
+  return ordered.map((s) => {
     const name = s.title?.trim() ? s.title : s.sessionId
     const cwd = shortenCwd(s.cwd)
     const rel = relativeFromNow(s.updatedAt, now)

@@ -49,6 +49,36 @@ let unlisteners: UnlistenFn[] = []
  * focus-shift toast can pick a tone derived from the prior instance's
  * exit reason.
  */
+/**
+ * Seed the per-process instance registry from a snapshot of the
+ * daemon's instance list. Wired from `applyBootSnapshot` so a remote
+ * captain on a fresh page load sees the correct membership AND count
+ * before the daemon broadcasts its first `acp:instances-changed`.
+ *
+ * Without this, a phone connecting over the HTTPS bridge to a
+ * daemon that already has live instances would observe
+ * `useActiveInstance().count === 0` indefinitely (the broadcast only
+ * fires on spawn / shutdown — not on every fresh subscriber). One
+ * visible symptom: the row-1 instances button (gated on `count >= 1`)
+ * stayed hidden on mobile until the captain spawned or killed
+ * something. Desktop only worked by accident — the overlay was
+ * usually long-lived enough to catch the broadcast.
+ */
+export function applyInstancesSnapshot(ids: InstanceId[]): void {
+  for (const known of [...knownInstances.keys()]) {
+    if (!ids.includes(known)) {
+      knownInstances.delete(known)
+    }
+  }
+
+  for (const id of ids) {
+    if (!knownInstances.has(id)) {
+      knownInstances.set(id, {})
+    }
+  }
+  instanceIds.value = [...ids]
+}
+
 export function recordInstanceState(id: InstanceId, agentId: string | undefined, state: InstanceState): void {
   let meta = knownInstances.get(id)
 

@@ -31,6 +31,11 @@
 
 import type { EventCallback, UnlistenFn } from '@tauri-apps/api/event'
 
+// Direct leaf import — same rationale as `bridge.ts`. Avoids the
+// `@lib` barrel which re-exports `./markdown` and would cycle back
+// to `@ipc`. The leaf is `@ipc`-free.
+import { log } from '@lib/log'
+
 let socket: WebSocket | undefined
 let connectPromise: Promise<WebSocket> | undefined
 let authenticated = false
@@ -383,11 +388,8 @@ function handleFrameByType(msg: Record<string, unknown>): void {
             id: 0
           } as Parameters<EventCallback<unknown>>[0])
         } catch(err) {
-          // Listener errors must not derail the multiplexer. Lazy-
-          // import `log` to avoid an `@lib` ↔ `@ipc` cyclic dep at
-          // module load — same pattern bridge.ts uses for invoke
-          // failures.
-          void import('@lib').then(({ log }) => log.warn('remote bridge: event listener threw', { err: String(err) }))
+          // Listener errors must not derail the multiplexer.
+          log.warn('remote bridge: event listener threw', { err: String(err) })
         }
       }
 

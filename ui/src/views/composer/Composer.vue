@@ -24,7 +24,17 @@ import CompletionPopover from './CompletionPopover.vue'
 import ChatComposerPill from './ComposerPill.vue'
 import { ToastTone, ComposerPillKind, type ComposerPill } from '@components'
 import {
-  type KeymapEntry, pushToast, useActiveInstance, useAttachments, useCompletion, useComposer, useDaemonCwd, useKeymap, useKeymaps, useSessionInfo, useTouchDevice
+  type KeymapEntry,
+  pushToast,
+  useActiveInstance,
+  useAttachments,
+  useCompletion,
+  useComposer,
+  useDaemonCwd,
+  useKeymap,
+  useKeymaps,
+  useSessionInfo,
+  useTouchDevice
 } from '@composables'
 import { CompletionKind, invoke, Modifier, TauriCommand } from '@ipc'
 import { blobToDataUrl, formatSize, getCaretCoordinates, log, rgbaToPngBlob } from '@lib'

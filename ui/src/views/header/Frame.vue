@@ -82,12 +82,22 @@ const instancesLabel = computed(() => (props.instancesCount === 1 ? 'instance' :
 // surface; the percentage stays small enough that text contrast stays
 // AA against the foreground tokens. `Idle` skips the mix entirely so
 // the bar matches the default surface (no tint = nothing to surface).
+// Row-1 background tint composes the phase color at 18% opacity over
+// the surface. Originally written as `color-mix(in srgb, …)` but that
+// silently no-ops on WebKit2GTK 4.1 (Tauri's webview) and on mobile
+// Safari pre-16.2 — the captain saw no tint on either surface.
+// `rgba(var(--theme-state-X-rgb), 0.18)` is the project-wide
+// fallback the theme system already exposes (`useTheme::applyTheme`
+// emits an `-rgb` companion for every colour leaf). The parent
+// `.frame-header` paints `--theme-surface` underneath, so an alpha
+// of 0.18 visually composes to the same result `color-mix` produced
+// in WebKit ≥ 16.2.
 const rowOneBg = computed(() => {
   if (props.phase === Phase.Idle) {
     return 'var(--theme-surface)'
   }
 
-  return `color-mix(in srgb, ${phaseColor.value} 18%, var(--theme-surface))`
+  return `rgba(var(--theme-state-${phaseToCssSuffix(props.phase)}-rgb), 0.18)`
 })
 </script>
 

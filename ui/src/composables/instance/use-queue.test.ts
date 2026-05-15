@@ -1,13 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  __resetAllQueues,
-  applyQueueChanged,
-  refreshQueue,
-  resetQueue,
-  useActiveInstance,
-  useQueue
-} from '@composables'
+import { __resetAllQueues, applyQueueChanged, refreshQueue, resetQueue, useActiveInstance, useQueue } from '@composables'
 import type { QueueItem } from '@interfaces/wire/queue'
 import { TauriCommand } from '@ipc'
 

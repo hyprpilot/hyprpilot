@@ -207,6 +207,149 @@ interface ProjectedItem {
 }
 
 /**
+ * Walk `projected` from the tail backwards looking for an item whose
+ * `turnId` matches `turnId` AND that `predicate` accepts. Returns the
+ * first match (most recent). Returns `undefined` when an item with a
+ * DIFFERENT turnId (or `undefined`) appears before the match — that
+ * gap is an explicit logical break in the captain's reading order and
+ * the new entry must not fold across it.
+ *
+ * This is the load-bearing rule for agent-text + thought folding:
+ * interleaved items WITHIN the same turn (same turnId) are transparent,
+ * but a foreign-turnId or unkeyed item is a hard boundary.
+ */
+function findFoldTargetWithinTurn(projected: ProjectedItem[], turnId: string, predicate: (p: ProjectedItem) => boolean): ProjectedItem | undefined {
+  for (let i = projected.length - 1; i >= 0; i -= 1) {
+    const p = projected[i]
+
+    if (!p) {
+      continue
+    }
+
+    // Foreign-turnId (or unkeyed) item is a hard logical break — the
+    // captain read past it, so the new entry must not fold into
+    // anything older. Bail before the predicate check.
+    if (p.turnId !== turnId) {
+      return undefined
+    }
+
+    if (predicate(p)) {
+      return p
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Try to merge a turn entry into an existing one. Agent-text chunks
+ * fold across interleaving items (thoughts, tool calls, plans) within
+ * the same turn — matches the live path's `openAgentBySession`
+ * semantics. The wire ships one SeqTranscriptItem per streamed chunk;
+ * without folding by turnId, a turn with N text chunks and an
+ * interleaved thought renders as N+ separate Body bubbles in the same
+ * block. User entries stand alone (each prompt is a turn boundary);
+ * AgentAttachment carries its own row and stays unmerged. An unkeyed
+ * (undefined-turnId) item between two same-turnId chunks splits the
+ * fold — handled by `findFoldTargetWithinTurn`.
+ */
+function tryMergeTurn(projected: ProjectedItem[], entry: TimelineEntry & { kind: 'turn' }, it: SeqTranscriptItem): boolean {
+  if (entry.turn.role === TurnRole.Agent && it.turnId !== undefined && entry.turn.attachments.length === 0) {
+    const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => p.entry.kind === 'turn' && p.entry.turn.role === TurnRole.Agent && p.entry.turn.attachments.length === 0)
+
+    if (target && target.entry.kind === 'turn') {
+      target.entry.turn.text += entry.turn.text
+      target.entry.turn.updatedAt = it.seq
+
+      return true
+    }
+  }
+
+  const prev = projected[projected.length - 1]
+
+  if (prev && prev.entry.kind === 'turn' && prev.entry.turn.role === entry.turn.role && prev.turnId === it.turnId) {
+    prev.entry.turn.text += entry.turn.text
+    prev.entry.turn.updatedAt = it.seq
+
+    if (entry.turn.attachments.length > 0) {
+      prev.entry.turn.attachments = [...prev.entry.turn.attachments, ...entry.turn.attachments]
+    }
+
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Try to merge a Thought stream entry into an existing one. Thoughts
+ * fold by turnId for the same reason as agent-text — interleaved tool
+ * calls between thought chunks must not split the thought stream. An
+ * unkeyed item between same-turnId chunks splits the fold.
+ */
+function tryMergeThought(projected: ProjectedItem[], entry: TimelineStream, it: SeqTranscriptItem): boolean {
+  if (entry.item.kind !== StreamItemKind.Thought) {
+    return false
+  }
+
+  if (it.turnId !== undefined) {
+    const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Thought)
+
+    if (target && target.entry.kind === 'stream' && target.entry.item.kind === StreamItemKind.Thought) {
+      target.entry.item.text += entry.item.text
+      target.entry.item.updatedAt = it.seq
+
+      return true
+    }
+  }
+
+  const prev = projected[projected.length - 1]
+
+  if (prev && prev.entry.kind === 'stream' && prev.entry.item.kind === StreamItemKind.Thought && prev.turnId === it.turnId) {
+    prev.entry.item.text += entry.item.text
+    prev.entry.item.updatedAt = it.seq
+
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Try to overwrite an existing Plan entry for the same turnId. Plans
+ * arrive as full snapshots; later updates within the same turn
+ * supersede earlier ones. Without this each plan ACP update lands as
+ * its own card and the captain reads the same plan N times.
+ */
+function tryMergePlan(projected: ProjectedItem[], entry: TimelineStream, it: SeqTranscriptItem): boolean {
+  const existing = projected.find((p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Plan && p.turnId === it.turnId)
+
+  if (existing && existing.entry.kind === 'stream' && existing.entry.item.kind === StreamItemKind.Plan && entry.item.kind === StreamItemKind.Plan) {
+    existing.entry.item.entries = entry.item.entries
+    existing.entry.item.updatedAt = it.seq
+
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Try to merge a tool-call entry by `toolCallId`.
+ */
+function tryMergeTool(projected: ProjectedItem[], entry: TimelineTool, it: SeqTranscriptItem): boolean {
+  const existing = projected.find((p) => p.entry.kind === 'tool' && p.entry.call.toolCallId === entry.call.toolCallId)
+
+  if (existing && existing.entry.kind === 'tool') {
+    mergeToolCall(existing.entry.call, entry.call, it.seq)
+
+    return true
+  }
+
+  return false
+}
+
+/**
  * Try to merge `entry` into an existing item in `projected`. Returns
  * true when the merge happened (caller skips the push). The wire ships
  * one TranscriptItem per streamed chunk; the rendered view is one
@@ -215,63 +358,19 @@ interface ProjectedItem {
  */
 function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, it: SeqTranscriptItem): boolean {
   if (entry.kind === 'turn') {
-    const prev = projected[projected.length - 1]
-
-    if (prev && prev.entry.kind === 'turn' && prev.entry.turn.role === entry.turn.role && prev.turnId === it.turnId) {
-      prev.entry.turn.text += entry.turn.text
-      prev.entry.turn.updatedAt = it.seq
-
-      if (entry.turn.attachments.length > 0) {
-        prev.entry.turn.attachments = [...prev.entry.turn.attachments, ...entry.turn.attachments]
-      }
-
-      return true
-    }
-
-    return false
+    return tryMergeTurn(projected, entry, it)
   }
 
   if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Thought) {
-    const prev = projected[projected.length - 1]
-
-    if (prev && prev.entry.kind === 'stream' && prev.entry.item.kind === StreamItemKind.Thought && prev.turnId === it.turnId) {
-      prev.entry.item.text += entry.item.text
-      prev.entry.item.updatedAt = it.seq
-
-      return true
-    }
-
-    return false
+    return tryMergeThought(projected, entry, it)
   }
 
   if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Plan) {
-    // Plans arrive as full snapshots; later updates within the same
-    // turn supersede earlier ones. Without this branch each plan ACP
-    // update lands as its own card in `block.streamEntries` and the
-    // captain reads the same plan N times. Match the live `pushPlan`
-    // behaviour: overwrite the existing plan for this turnId in place,
-    // anywhere in `projected` (interleaving tool calls / thoughts
-    // don't force a new card).
-    const existing = projected.find((p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Plan && p.turnId === it.turnId)
-
-    if (existing && existing.entry.kind === 'stream' && existing.entry.item.kind === StreamItemKind.Plan) {
-      existing.entry.item.entries = entry.item.entries
-      existing.entry.item.updatedAt = it.seq
-
-      return true
-    }
-
-    return false
+    return tryMergePlan(projected, entry, it)
   }
 
   if (entry.kind === 'tool') {
-    const existing = projected.find((p) => p.entry.kind === 'tool' && p.entry.call.toolCallId === entry.call.toolCallId)
-
-    if (existing && existing.entry.kind === 'tool') {
-      mergeToolCall(existing.entry.call, entry.call, it.seq)
-
-      return true
-    }
+    return tryMergeTool(projected, entry, it)
   }
 
   return false
