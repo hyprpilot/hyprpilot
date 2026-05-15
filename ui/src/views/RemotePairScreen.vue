@@ -182,14 +182,22 @@ watch(
 <style scoped>
 @reference '../assets/styles.css';
 
+/* Unlike the chat overlay (whose inner panes own their own scroll so
+ * the document never walks), this landing is a one-shot stack: QR
+ * frame, words, camera preview, scan button, status row. On a short
+ * phone — or once the camera preview expands — the scan button drops
+ * past the viewport, so the page itself scrolls. `min-height: 100%`
+ * keeps the surface fill on tall phones; `overflow-y: auto` rescues
+ * the overflow case. */
 .pair-screen {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
   gap: 1.125rem;
-  height: 100%;
-  padding: 1.75rem 1.375rem 2rem;
+  min-height: 100%;
+  padding: 1.75rem 1.375rem calc(2rem + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
   background-color: var(--theme-surface-bg);
   color: var(--theme-fg);
   font-family: var(--theme-font-mono);
