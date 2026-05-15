@@ -3595,6 +3595,107 @@ mod tests {
     use crate::adapters::permission::DefaultPermissionController;
     use crate::config::{AgentConfig, AgentProvider};
 
+    // ── TurnState markdown-paragraph lift ──────────────────────────────
+    //
+    // Tests for the per-turn lift counters. The pure helpers in
+    // `acp::paragraph` are covered by their own unit tests; these
+    // exercise the `TurnState` integration — counter init, mutation
+    // through `note_agent_text` / `note_agent_thought`, reset on
+    // `open_real` / `open_synthetic`, and independence between the
+    // text and thought streams.
+
+    #[test]
+    fn turn_state_lift_starts_at_zero_trailing() {
+        let mut state = TurnState::default();
+        // First chunk on a fresh turn — prior trailing is 0 → no lift.
+        assert_eq!(state.note_agent_text("First chunk"), "");
+        assert_eq!(state.agent_text_trailing, 0);
+    }
+
+    #[test]
+    fn turn_state_lifts_a_soft_newline_to_paragraph_break() {
+        let mut state = TurnState::default();
+        // Chunk 1 leaves trailing \n.
+        assert_eq!(state.note_agent_text("Para 1.\n"), "");
+        assert_eq!(state.agent_text_trailing, 1);
+        // Chunk 2 starts with non-newline → daemon prepends \n so the
+        // boundary reaches \n\n in the concat.
+        assert_eq!(state.note_agent_text("Para 2."), "\n");
+        // After the lift, the chunk ends on non-newline → counter reset.
+        assert_eq!(state.agent_text_trailing, 0);
+    }
+
+    #[test]
+    fn turn_state_does_not_lift_when_incoming_brings_its_own_newline() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Para 1.\n");
+        // Incoming already begins with \n — natural concat reaches \n\n.
+        assert_eq!(state.note_agent_text("\nPara 2."), "");
+    }
+
+    #[test]
+    fn turn_state_does_not_lift_a_non_newline_boundary() {
+        let mut state = TurnState::default();
+        // Token streaming inside one paragraph — no lift between chunks.
+        assert_eq!(state.note_agent_text("Hello, "), "");
+        assert_eq!(state.note_agent_text("world"), "");
+        assert_eq!(state.note_agent_text("!"), "");
+    }
+
+    #[test]
+    fn turn_state_text_and_thought_counters_are_independent() {
+        let mut state = TurnState::default();
+        // Build trailing newline on the text axis.
+        state.note_agent_text("Para 1.\n");
+        assert_eq!(state.agent_text_trailing, 1);
+        // Thought axis is untouched.
+        assert_eq!(state.agent_thought_trailing, 0);
+        // Thought chunk doesn't see the text-side trailing — first
+        // thought is a fresh boundary, no lift.
+        assert_eq!(state.note_agent_thought("First thought."), "");
+        // And the text axis counter is still 1 — the thought
+        // operation didn't bleed across.
+        assert_eq!(state.agent_text_trailing, 1);
+    }
+
+    #[test]
+    fn turn_state_open_real_resets_both_lift_counters() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Tail 1.\n");
+        state.note_agent_thought("Thought 1.\n");
+        assert_eq!(state.agent_text_trailing, 1);
+        assert_eq!(state.agent_thought_trailing, 1);
+        // Opening a new real turn — counters reset so the new turn's
+        // first chunk doesn't carry forward the prior turn's tail.
+        state.open_real("turn-2".to_string());
+        assert_eq!(state.agent_text_trailing, 0);
+        assert_eq!(state.agent_thought_trailing, 0);
+        // First chunk of the new turn — no lift on the boundary.
+        assert_eq!(state.note_agent_text("Hello"), "");
+    }
+
+    #[test]
+    fn turn_state_open_synthetic_resets_both_lift_counters() {
+        let mut state = TurnState::default();
+        state.note_agent_text("Tail.\n");
+        assert_eq!(state.agent_text_trailing, 1);
+        state.open_synthetic("synth-1".to_string());
+        assert_eq!(state.agent_text_trailing, 0);
+        assert_eq!(state.note_agent_text("Hello"), "");
+    }
+
+    #[test]
+    fn turn_state_caps_trailing_at_two() {
+        let mut state = TurnState::default();
+        // A chunk ending on \n\n\n caps at 2.
+        state.note_agent_text("Para 1.\n\n\n");
+        assert_eq!(state.agent_text_trailing, 2);
+        // Already paragraph-shaped → no further lift on next chunk.
+        assert_eq!(state.note_agent_text("Para 2."), "");
+    }
+
+    // ── existing tests ─────────────────────────────────────────────────
+
     /// Pin every wire shape `chunk_text` extracts text from. Bare-text
     /// is the ACP-spec'd shape; `thinking` covers claude-agent-acp
     /// passing through Anthropic's reasoning blocks unchanged; the
