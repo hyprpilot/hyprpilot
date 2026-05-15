@@ -15,15 +15,10 @@ impl ToolFormatter for TaskFormatter {
             Some(d) => format!("task · {} — {}", subagent, d),
             None => format!("task · {}", subagent),
         };
-        let body = prompt.map(|p| {
-            if p.chars().count() > 200 {
-                let mut s: String = p.chars().take(199).collect();
-                s.push('…');
-                s
-            } else {
-                p
-            }
-        });
+        // Forward the full prompt body to the UI; the frontend
+        // handles any visual truncation (clamp, collapse, expand-on-
+        // click) — daemon shouldn't pre-elide.
+        let body = prompt;
         let block_text = text_blocks(ctx.content);
         let output = if block_text.is_empty() { None } else { Some(block_text) };
 
