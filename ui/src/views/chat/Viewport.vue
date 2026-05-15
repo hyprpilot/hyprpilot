@@ -358,7 +358,28 @@ function onScroll(): void {
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
 
   if (distanceFromBottom <= el.clientHeight) {
-    requestAnimationFrame(() => viewport.evictExtraPages())
+    // Capture whether the captain was at the live tail BEFORE
+    // eviction. Eviction shrinks `scrollHeight` from the TOP — the
+    // browser's `overflow-anchor` heuristic picks SOMETHING to keep
+    // visually stable, but the choice is opaque and the captain
+    // reported "jump to random places" when the anchor lands
+    // somewhere unexpected (the chevron-click path at `goToBottom`
+    // already does evict-then-nextTick-then-scroll for this exact
+    // reason; the auto-eviction path didn't). Mirror that pattern
+    // so the captain who was stuck-at-bottom lands back at the new
+    // bottom after the DOM shrinks, instead of wherever scroll-
+    // anchoring left them.
+    const wasStuck = stuck.value
+
+    requestAnimationFrame(() => {
+      viewport.evictExtraPages()
+
+      if (wasStuck) {
+        void nextTick(() => {
+          scrollToBottom()
+        })
+      }
+    })
   }
 }
 
