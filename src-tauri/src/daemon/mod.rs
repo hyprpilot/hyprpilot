@@ -140,6 +140,12 @@ pub(crate) struct BootSnapshot {
     pub(crate) agents: serde_json::Value,
     pub(crate) profiles: serde_json::Value,
     pub(crate) instances: serde_json::Value,
+    /// Per-instance queue snapshots keyed by instance id. Second-
+    /// frontends connecting fresh use this to avoid an N+1 of
+    /// `instance/snapshot/queue` reads. Empty queues are included
+    /// (as `[]`) so the consumer can mirror the daemon's per-instance
+    /// state set exactly.
+    pub(crate) queues: serde_json::Value,
 }
 
 /// Single source of truth for the boot-time payload — both the
@@ -187,6 +193,39 @@ pub(crate) async fn build_boot_snapshot(
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/".to_string());
 
+    // Per-instance queue snapshots. Reads directly off each mirror
+    // (no actor round-trip) so a fresh boot snapshot stays cheap even
+    // with many live instances. Empty `items` arrays included so the
+    // consumer treats absence as "no instance" rather than "queue
+    // unknown".
+    //
+    // `entry.instance_id` came from `adapter.list()` which derives
+    // it via `InstanceKey::as_string()`; the round-trip MUST succeed.
+    // A parse failure here means a wire-shape mismatch — surface as
+    // an error so the daemon log catches the regression instead of
+    // silently shipping an instance with no queue field.
+    let mut queues = serde_json::Map::with_capacity(instance_entries.len());
+    for entry in &instance_entries {
+        let key = crate::adapters::InstanceKey::parse(&entry.instance_id).map_err(|e| {
+            format!(
+                "boot_snapshot: instance id from adapter.list() did not round-trip: {} ({e})",
+                entry.instance_id
+            )
+        })?;
+        // `instance_mirror` returning None means the actor was torn
+        // down between `adapter.list()` and the mirror lookup — rare
+        // race, ship an empty array so consumers don't see a missing
+        // key for an instance that was listed.
+        let items = match adapter.instance_mirror(key).await {
+            Some(mirror) => mirror.queue_snapshot().await,
+            None => Vec::new(),
+        };
+        queues.insert(
+            entry.instance_id.clone(),
+            serde_json::to_value(&items).map_err(|e| format!("serialize queue for {}: {e}", entry.instance_id))?,
+        );
+    }
+
     Ok(BootSnapshot {
         theme: theme.clone(),
         keymaps: keymaps.clone(),
@@ -196,6 +235,7 @@ pub(crate) async fn build_boot_snapshot(
         agents,
         profiles,
         instances: serde_json::Value::Object(instances_payload),
+        queues: serde_json::Value::Object(queues),
     })
 }
 
@@ -349,7 +389,14 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::instance_snapshot_meta,
             adapter_commands::instance_snapshot_chat,
             adapter_commands::instance_snapshot_terminals,
+            adapter_commands::instance_snapshot_queue,
             adapter_commands::mcps_list,
+            adapter_commands::queue_list,
+            adapter_commands::queue_edit,
+            adapter_commands::queue_remove,
+            adapter_commands::queue_move,
+            adapter_commands::queue_clear,
+            adapter_commands::queue_dispatch,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
             crate::skills::commands::skills_reload,

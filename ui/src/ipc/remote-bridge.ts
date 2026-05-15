@@ -466,7 +466,18 @@ const REMOTE_INVOKE_TIMEOUT_MS = 30_000
 const REMOTE_NAMESPACE_MAP: Record<string, string> = {
   models_set: 'instances/setModel',
   modes_set: 'instances/setMode',
-  config_option_set: 'instances/setOption'
+  config_option_set: 'instances/setOption',
+  // queue/* + instance/snapshot/queue have first-class JSON-RPC
+  // namespaces; routing through `tauri/queue_*` / `tauri/instance_*`
+  // would require duplicate dispatch on the daemon side. Address the
+  // canonical verb directly over the WS instead.
+  queue_list: 'queue/list',
+  queue_edit: 'queue/edit',
+  queue_remove: 'queue/remove',
+  queue_move: 'queue/move',
+  queue_clear: 'queue/clear',
+  queue_dispatch: 'queue/dispatch',
+  instance_snapshot_queue: 'instance/snapshot/queue'
 }
 
 export async function remoteInvoke(command: string, args?: Record<string, unknown>): Promise<unknown> {

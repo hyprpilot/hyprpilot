@@ -28,6 +28,7 @@ import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
 import { applyCompletionConfigFromObject } from '../composer/use-completion'
 import { prefetchInstanceChatFirstPage, prefetchInstanceMeta } from '../instance/use-focus-prefetch'
+import { applyQueueChanged } from '../instance/use-queue'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from '../instance/use-session-info'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
@@ -76,6 +77,17 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
 
     if (entry.name != null && entry.name.length > 0) {
       setInstanceName(entry.instanceId, entry.name)
+    }
+  }
+
+  // Seed the per-instance queue mirror so the QueueStrip + the
+  // palette's `q<N>` badge render correctly on first paint without
+  // an extra per-instance `instance/snapshot/queue` round-trip. The
+  // daemon emits an empty `[]` for instances with no queued items
+  // so absence here means "no instance" not "queue unknown".
+  if (snap.queues) {
+    for (const [instanceId, items] of Object.entries(snap.queues)) {
+      applyQueueChanged(instanceId, items)
     }
   }
 

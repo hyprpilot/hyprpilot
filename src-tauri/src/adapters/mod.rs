@@ -17,6 +17,7 @@ pub mod instance;
 pub mod mirror;
 pub mod permission;
 pub mod profile;
+pub mod queue;
 pub mod registry;
 pub mod transcript;
 
@@ -218,6 +219,57 @@ pub trait Adapter: Send + Sync + 'static {
     /// empty list (adapters with no agent registry).
     async fn list_agents(&self) -> AdapterResult<Vec<AgentSummary>> {
         Ok(Vec::new())
+    }
+
+    // ── queue/* surface ──────────────────────────────────────────
+    //
+    // Per-instance captain-staged submit queue. Adapters that don't
+    // expose a queue (future stateless adapters?) return `Unsupported`.
+
+    async fn queue_list(&self, _instance_id: Option<&str>) -> AdapterResult<Vec<queue::QueueItem>> {
+        Err(AdapterError::Unsupported(
+            "queue/list not supported by this adapter".into(),
+        ))
+    }
+
+    async fn queue_edit(
+        &self,
+        _instance_id: Option<&str>,
+        _item_id: String,
+        _text: String,
+        _attachments: Option<Vec<crate::adapters::transcript::Attachment>>,
+    ) -> AdapterResult<queue::QueueItem> {
+        Err(AdapterError::Unsupported(
+            "queue/edit not supported by this adapter".into(),
+        ))
+    }
+
+    async fn queue_remove(&self, _instance_id: Option<&str>, _item_id: String) -> AdapterResult<bool> {
+        Err(AdapterError::Unsupported(
+            "queue/remove not supported by this adapter".into(),
+        ))
+    }
+
+    async fn queue_move(&self, _instance_id: Option<&str>, _item_id: String, _position: usize) -> AdapterResult<bool> {
+        Err(AdapterError::Unsupported(
+            "queue/move not supported by this adapter".into(),
+        ))
+    }
+
+    async fn queue_clear(&self, _instance_id: Option<&str>) -> AdapterResult<u32> {
+        Err(AdapterError::Unsupported(
+            "queue/clear not supported by this adapter".into(),
+        ))
+    }
+
+    async fn queue_dispatch(
+        &self,
+        _instance_id: Option<&str>,
+        _item_id: Option<String>,
+    ) -> AdapterResult<queue::QueueDispatchResult> {
+        Err(AdapterError::Unsupported(
+            "queue/dispatch not supported by this adapter".into(),
+        ))
     }
 
     /// `profiles/list` — every configured profile. Default returns
