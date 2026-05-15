@@ -244,6 +244,26 @@ function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, 
     return false
   }
 
+  if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Plan) {
+    // Plans arrive as full snapshots; later updates within the same
+    // turn supersede earlier ones. Without this branch each plan ACP
+    // update lands as its own card in `block.streamEntries` and the
+    // captain reads the same plan N times. Match the live `pushPlan`
+    // behaviour: overwrite the existing plan for this turnId in place,
+    // anywhere in `projected` (interleaving tool calls / thoughts
+    // don't force a new card).
+    const existing = projected.find((p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Plan && p.turnId === it.turnId)
+
+    if (existing && existing.entry.kind === 'stream' && existing.entry.item.kind === StreamItemKind.Plan) {
+      existing.entry.item.entries = entry.item.entries
+      existing.entry.item.updatedAt = it.seq
+
+      return true
+    }
+
+    return false
+  }
+
   if (entry.kind === 'tool') {
     const existing = projected.find((p) => p.entry.kind === 'tool' && p.entry.call.toolCallId === entry.call.toolCallId)
 
