@@ -64,7 +64,7 @@ describe('useCompletion', () => {
     expect(c.state.value.open).toBe(false)
   })
 
-  it('cycles selectedIndex on selectNext / selectPrev', async() => {
+  it('opens with no row selected; selectNext lands on the first row', async() => {
     invoke.mockResolvedValueOnce({
       requestId: 'r1',
       sourceId: 'skills',
@@ -91,17 +91,49 @@ describe('useCompletion', () => {
 
     c.query('#a', 2)
     await wait(50)
+    // Sentinel: nothing highlighted → Enter on the open popover
+    // falls through to chat-submit, unambiguous.
+    expect(c.state.value.selectedIndex).toBe(-1)
+    c.selectNext()
     expect(c.state.value.selectedIndex).toBe(0)
     c.selectNext()
     expect(c.state.value.selectedIndex).toBe(1)
     c.selectNext()
+    expect(c.state.value.selectedIndex).toBe(2)
     c.selectNext()
     expect(c.state.value.selectedIndex).toBe(0) // wraps
     c.selectPrev()
     expect(c.state.value.selectedIndex).toBe(2) // wraps backward
   })
 
-  it('commit returns the selected item and closes', async() => {
+  it('selectPrev from the sentinel jumps to the last row', async() => {
+    invoke.mockResolvedValueOnce({
+      requestId: 'r1',
+      sourceId: 'skills',
+      replacementRange: { start: 0, end: 1 },
+      items: [
+        {
+          label: 'a',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 1 }, text: 'a' }
+        },
+        {
+          label: 'b',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 1 }, text: 'b' }
+        }
+      ]
+    })
+    const c = useCompletion()
+
+    c.query('#a', 2)
+    await wait(50)
+    expect(c.state.value.selectedIndex).toBe(-1)
+    c.selectPrev()
+    expect(c.state.value.selectedIndex).toBe(1)
+  })
+
+  it('commit returns undefined from the sentinel; returns the item once selected', async() => {
     invoke.mockResolvedValueOnce({
       requestId: 'r1',
       sourceId: 'skills',
@@ -119,6 +151,12 @@ describe('useCompletion', () => {
 
     c.query('#g', 2)
     await wait(50)
+    // No selection yet → commit() is a no-op (Enter must fall through
+    // to submit; we never lie and return the first row).
+    expect(c.commit()).toBeUndefined()
+    expect(c.state.value.open).toBe(true)
+
+    c.selectNext()
     const item = c.commit()
 
     expect(item?.label).toBe('git-commit')
