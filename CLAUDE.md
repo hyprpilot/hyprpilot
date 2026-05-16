@@ -1293,20 +1293,72 @@ the schema.
 
 **Streamed-chunk markdown-paragraph lift**: every `AgentText` and
 `AgentThought` chunk on the wire is **concatenation-safe**.
-Frontends append chunks verbatim and get well-formed markdown.
-The daemon's `acp::paragraph::soft_lift_prefix` runs at emit time
-on the per-turn `TurnState::note_agent_text` / `note_agent_thought`
-counter: when the accumulated tail of the open turn's agent text
-ends on a single `\n` and the next chunk's text doesn't lead with
-one, the daemon prepends `\n` to the outgoing text before the
-event fires and before the mirror persists. Net effect: a vendor
-emitting `"Para 1.\n"` + `"Para 2."` as two `agent_message_chunk`
-notifications produces wire chunks `"Para 1.\n"` + `"\nPara 2."`,
-and the concat reads as two paragraphs in any markdown renderer.
-Soft-lift only: never injects a break on a non-newline boundary,
-so streaming token bursts (`"Hello, "` + `"world"`) emit verbatim
-without splitting mid-sentence. Counter resets on every
-`open_real` / `open_synthetic`.
+Frontends append chunks verbatim (`target.text += chunk.text`) and
+get well-formed markdown. The daemon owns the lift; consumers are
+dumb concat sinks. Two signals decide the prefix the daemon prepends
+to the outgoing chunk:
+
+1. **`messageId` switch (`acp::paragraph::paragraph_break_prefix`)**
+   — ACP's `ContentChunk.messageId` (under the
+   `unstable_message_id` feature, enabled via our `"unstable"`
+   umbrella) is a vendor-emitted content-block id. Claude / Codex
+   emit a fresh id per content block; a tool call between two
+   text chunks within one turn produces two distinct ids. When
+   the next chunk's id differs from the prior chunk's,
+   `TurnState::note_agent_text` / `note_agent_thought` force
+   `\n\n` at the boundary — even when neither side carries a
+   newline. Catches the captain's screenshot bug
+   (`"...behind."` + `"Now bg is solid"` → `"...behind.\n\nNow bg
+   is solid"`). The id is daemon-internal: it never lands on the
+   wire shape, so frontends don't need to know about it.
+2. **Soft-lift trailing newline
+   (`acp::paragraph::soft_lift_prefix`)** — accumulated tail ends
+   with a single `\n` AND the next chunk doesn't start with one:
+   prepend `\n` so the boundary reaches `\n\n`. Also catches
+   chunks that lead with a single `\n` themselves. Never injects
+   on a clean non-newline boundary, so streaming token bursts
+   (`"Hello, "` + `"world"`) emit verbatim. Same path runs for
+   thoughts via the independent `agent_thought_trailing` counter.
+
+Per-turn state lives on `TurnState`
+(`agent_text_trailing`, `agent_thought_trailing`,
+`last_agent_text_message_id`, `last_agent_thought_message_id`).
+Text and thought streams are independent. Everything resets on
+every `open_real` / `open_synthetic`.
+
+**Why this shape (not segment lists, not per-block "bubbles")**:
+
+- The mirror already stores each AgentText chunk as a separate
+  `TranscriptItem` in its `transcript` deque. The chunks themselves
+  ARE the segments — indexed by `seq`, not by `messageId`.
+- Baking the prefix at emit time means the wire / mirror / snapshot
+  all carry identical text. Live concat = snapshot re-hydrate = no
+  divergence to reason about.
+- Earlier UI iterations rendered each content block as its own
+  "bubble" / card. Captain rejected that direction — too visually
+  busy. Markdown paragraph breaks within one card is the resting
+  shape.
+- A `Vec<AgentTextSegment>` model on the mirror was considered. It
+  buys nothing here because: (a) live wire still has to emit
+  prefix-baked chunks (frontends concat in real-time), (b)
+  reconstruction-on-read would have to produce identical bytes to
+  live concat, (c) the messageId tag isn't on the wire so no
+  consumer can read it. Strictly redundant given the lift-on-emit
+  invariant.
+- If a future second frontend wants to address chunks by content
+  block (e.g. fold them visually, expose per-segment timing), the
+  upgrade path is gradual: ship `messageId?` on
+  `TranscriptItem::AgentText` / `AgentThought` as a new optional
+  wire field. Pure-concat frontends ignore it; structure-aware
+  frontends use it. The daemon-side lift logic doesn't have to
+  change at all.
+
+Helpers live in `src-tauri/src/adapters/acp/paragraph.rs`;
+TurnState integration lives at the top of
+`src-tauri/src/adapters/acp/instance.rs`. Comprehensive unit tests
+under both files pin every boundary case (token streams stay
+together, `messageId` switch forces `\n\n`, opencode-style chunks
+without `messageId` still get the soft-lift, etc.).
 
 **Existing client implementations**:
 
