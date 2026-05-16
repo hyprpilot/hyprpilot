@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/hyprpilot/hyprpilot/compare/v0.7.0...v0.7.1) (2026-05-16)
+
+
+### Bug Fixes
+
+* **daemon:** ship absolute cwd on instance wire shapes, not display form ([#77](https://github.com/hyprpilot/hyprpilot/issues/77)) ([81e207a](https://github.com/hyprpilot/hyprpilot/commit/81e207a289caf6d4bbbd3bd2a969cb5e5098137a))
+
 ## [0.7.0](https://github.com/hyprpilot/hyprpilot/compare/v0.6.0...v0.7.0) (2026-05-15)
 
 
