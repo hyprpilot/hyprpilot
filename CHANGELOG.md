@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/hyprpilot/hyprpilot/compare/v0.7.1...v0.7.2) (2026-05-16)
+
+
+### Bug Fixes
+
+* **daemon:** force paragraph break on messageId switch between agent chunks ([#79](https://github.com/hyprpilot/hyprpilot/issues/79)) ([3aae6fd](https://github.com/hyprpilot/hyprpilot/commit/3aae6fde9d998de80d331c4b7623d0b513ff93e3))
+
 ## [0.7.1](https://github.com/hyprpilot/hyprpilot/compare/v0.7.0...v0.7.1) (2026-05-16)
 
 
