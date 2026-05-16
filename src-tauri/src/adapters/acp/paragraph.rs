@@ -58,6 +58,40 @@ pub(crate) fn soft_lift_prefix(prior_trailing: u8, incoming: &str) -> &'static s
     ""
 }
 
+/// Compute a stronger prefix for a content-block boundary — the
+/// vendor's `messageId` switched between two text chunks within the
+/// same turn (typically a tool call interrupted text generation and
+/// a fresh content block started after). The Claude / Codex models
+/// emit a fresh content block whose first text token starts directly
+/// with the new sentence — no leading whitespace, no leading newline.
+/// Naive concat reads as `"...prior sentence.New sentence..."`.
+///
+/// Forces `\n\n` between the two so markdown renders a paragraph
+/// break. Falls through cleanly when the natural state already
+/// reaches `\n\n` (prior ends with `\n\n`, incoming leads with
+/// `\n\n`, or the combination is on track to land there).
+pub(crate) fn paragraph_break_prefix(prior_trailing: u8, incoming: &str) -> &'static str {
+    if incoming.starts_with("\n\n") {
+        return "";
+    }
+    if prior_trailing >= 2 {
+        return "";
+    }
+    if incoming.starts_with('\n') {
+        // prior + "\n" + chunk's own "\n…" lands on \n\n.
+        if prior_trailing >= 1 {
+            return "";
+        }
+        return "\n";
+    }
+    if prior_trailing == 1 {
+        // prior "\n" + our "\n" = "\n\n" at the boundary.
+        return "\n";
+    }
+    // prior 0, incoming non-newline → need full "\n\n".
+    "\n\n"
+}
+
 /// Fold the prefix + chunk into the running trailing-newline tally,
 /// capped at 2. Walks chunk-first (the typical case where the chunk
 /// ends on its own content); falls back into the prefix and finally
@@ -151,6 +185,41 @@ mod tests {
         assert_eq!(soft_lift_prefix(1, ""), "\n");
         assert_eq!(soft_lift_prefix(0, ""), "");
         assert_eq!(soft_lift_prefix(2, ""), "");
+    }
+
+    // ── paragraph_break_prefix ────────────────────────────────────
+
+    #[test]
+    fn paragraph_break_forces_double_newline_on_clean_boundary() {
+        // Captain's screenshot bug — tool call interrupts text, the
+        // next text chunk arrives with no leading newline at all.
+        // Without the forced break, concat reads "...behind.Now bg".
+        assert_eq!(paragraph_break_prefix(0, "Found the real cause"), "\n\n");
+    }
+
+    #[test]
+    fn paragraph_break_collapses_to_single_newline_when_prior_has_one() {
+        // Prior trailing == 1, incoming non-newline → "\n" prefix
+        // pushes the boundary to "\n\n".
+        assert_eq!(paragraph_break_prefix(1, "Found the real cause"), "\n");
+    }
+
+    #[test]
+    fn paragraph_break_returns_empty_when_prior_already_paragraph_terminated() {
+        assert_eq!(paragraph_break_prefix(2, "Found"), "");
+    }
+
+    #[test]
+    fn paragraph_break_returns_empty_when_chunk_brings_its_own_double_newline() {
+        assert_eq!(paragraph_break_prefix(0, "\n\nFound"), "");
+    }
+
+    #[test]
+    fn paragraph_break_handles_chunk_with_single_leading_newline() {
+        // prior 0, chunk "\nFound" → prepend "\n" → "\n\nFound"
+        assert_eq!(paragraph_break_prefix(0, "\nFound"), "\n");
+        // prior 1, chunk "\nFound" → natural concat "\n\nFound", no prefix
+        assert_eq!(paragraph_break_prefix(1, "\nFound"), "");
     }
 
     // ── fold_trailing ──────────────────────────────────────────────
