@@ -1498,12 +1498,17 @@ pub struct AcpInstance {
     /// restart picks up the new base while preserving the captain's
     /// overlays).
     pub config_patches: Vec<serde_json::Value>,
-    /// Display-formatted cwd this instance spawned in (home-collapsed
-    /// to `~`, same shape `MetaSnapshot.cwd` carries). Computed once
-    /// at `start()` time from `resolved.agent.cwd` (with
-    /// `std::env::current_dir()` fallback) so `InstanceInfo` /
-    /// `InstanceListEntry` can read it synchronously off the struct
-    /// without round-tripping through the actor's command channel.
+    /// Absolute cwd this instance spawned in (NOT display-formatted —
+    /// no `~` collapse). Computed once at `start()` time from
+    /// `resolved.agent.cwd` (with `std::env::current_dir()` fallback)
+    /// via `normalize_cwd` only, so `InstanceInfo` /
+    /// `InstanceListEntry` can read it synchronously off the struct.
+    /// The absolute form is load-bearing for client-side filters —
+    /// hyprpilot.nvim's instances palette compares against
+    /// `vim.fn.getcwd()` which is always absolute. The header
+    /// chrome's display-formatted cwd reads from `MetaSnapshot.cwd`
+    /// via `useSessionInfo` instead — different surface, different
+    /// shape.
     pub cwd: String,
 }
 
@@ -1652,25 +1657,26 @@ impl AcpInstance {
         let mode = resolved.mode.clone();
         let instance_id = key.as_string();
 
-        // Compute the display-formatted cwd here so `InstanceInfo` /
+        // Compute the absolute cwd here so `InstanceInfo` /
         // `InstanceListEntry` can read it synchronously off the
-        // struct. Mirrors the actor's normalize → display pipeline
-        // (line ~2167) so the value stored on the struct matches what
-        // every `InstanceMeta` event ships.
-        let cwd_display = {
-            let absolute = resolved
-                .agent
-                .cwd
-                .as_ref()
-                .map(|p| crate::tools::path::normalize_cwd(&p.to_string_lossy()))
-                .unwrap_or_else(|| {
-                    std::env::current_dir()
-                        .ok()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "/".into())
-                });
-            crate::tools::path::display_cwd(&absolute)
-        };
+        // struct. Deliberately NOT display-formatted (no `~`
+        // collapse): consumers like hyprpilot.nvim's palette filter
+        // compare byte-for-byte against `vim.fn.getcwd()` which
+        // returns an absolute path. The header chrome reads
+        // `MetaSnapshot.cwd` (display form) via `useSessionInfo`,
+        // not this field — the two surfaces serve different
+        // purposes.
+        let cwd_absolute = resolved
+            .agent
+            .cwd
+            .as_ref()
+            .map(|p| crate::tools::path::normalize_cwd(&p.to_string_lossy()))
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "/".into())
+            });
 
         // Mode is a per-instance operational override (e.g.
         // claude-code's `plan` / `edit`). Surface it so UI pickers
@@ -1698,7 +1704,7 @@ impl AcpInstance {
             tool_calls: tool_calls.clone(),
             mirror: mirror.clone(),
             config_patches,
-            cwd: cwd_display,
+            cwd: cwd_absolute,
         };
 
         tokio::spawn(run(RunParams {

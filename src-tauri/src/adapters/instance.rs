@@ -570,12 +570,14 @@ pub struct InstanceInfo {
     /// generic layer only carries + surfaces the value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// Display-formatted cwd the instance spawned in (home-collapsed
-    /// to `~`, same shape `MetaSnapshot.cwd` carries). Always set —
-    /// the actor falls back to `std::env::current_dir()` when no
-    /// `agent.cwd` is configured, so every running instance has a
-    /// concrete path. Powers the nvim plugin's instances-palette cwd
-    /// filter (`item.cwd == vim.fn.getcwd()`).
+    /// Absolute cwd the instance spawned in — NOT display-formatted
+    /// (no `~` collapse). Always set — the actor falls back to
+    /// `std::env::current_dir()` when no `agent.cwd` is configured.
+    /// Powers the nvim plugin's instances-palette cwd filter
+    /// (`item.cwd == vim.fn.getcwd()`); `vim.fn.getcwd()` is always
+    /// absolute, so the wire shape stays byte-compatible. The
+    /// display-formatted shape (for header chrome) lives on
+    /// `MetaSnapshot.cwd` / `acp:instance-meta` instead.
     pub cwd: String,
 }
 
@@ -600,8 +602,7 @@ pub struct InstanceListEntry {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// See [`InstanceInfo::cwd`]. Always present so the nvim
-    /// instances-palette filter can rely on a concrete string.
+    /// Absolute cwd. See [`InstanceInfo::cwd`].
     pub cwd: String,
 }
 
@@ -799,14 +800,14 @@ mod instance_list_entry_tests {
             session_id: Some("sess-1".into()),
             name: Some("alpha".into()),
             mode: Some("plan".into()),
-            cwd: "~/proj".into(),
+            cwd: "/home/captain/proj".into(),
         };
         let value = serde_json::to_value(&entry).expect("serialize");
         assert_eq!(value["profileId"], "personal/claude/opus");
         assert_eq!(value["sessionId"], "sess-1");
         assert_eq!(value["name"], "alpha");
         assert_eq!(value["mode"], "plan");
-        assert_eq!(value["cwd"], "~/proj");
+        assert_eq!(value["cwd"], "/home/captain/proj");
     }
 
     #[test]
