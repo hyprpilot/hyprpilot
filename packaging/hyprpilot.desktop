@@ -2,10 +2,10 @@
 Type=Application
 Name=hyprpilot
 GenericName=Agent cockpit overlay
-Comment=Captain the agents — one cockpit, every vendor, your skills, your way.
+Comment=An overlay daemon that runs coding agents at the edge of your screen.
 Exec=hyprpilot daemon
 Icon=hyprpilot
 Categories=Development;Utility;
 StartupNotify=false
 Terminal=false
-Keywords=hyprland;agent;overlay;acp;claude;codex;opencode;mcp;
+Keywords=hyprland;agent;overlay;acp;ai;
