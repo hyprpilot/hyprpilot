@@ -50,18 +50,6 @@ pub struct Config {
     pub autostart: Autostart,
     #[garde(dive)]
     pub logging: Logging,
-    /// Root-level fallback cwd. Used at daemon startup as the chdir
-    /// target when `--cwd` isn't passed on the CLI. Mostly useful for
-    /// systemd-unit invocations where there's no shell-set cwd. When
-    /// neither is set, the daemon inherits the spawning environment's
-    /// cwd. `~` / `$VAR` expansion runs at consume time.
-    ///
-    /// NOTE: separate from `ProfileConfig.cwd` (which controls the
-    /// per-instance agent process cwd). Root `cwd` is the daemon
-    /// chdir; it doesn't participate in profile / patch resolution.
-    #[garde(skip)]
-    #[merge(strategy = overwrite_some)]
-    pub cwd: Option<PathBuf>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so

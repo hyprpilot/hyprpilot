@@ -275,12 +275,12 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // process. Expand `~` / `$VAR` so a hyprland bind like
     // `--cwd ~/projects/foo` works without a wrapper script.
     //
-    // Resolution: `--cwd` flag wins; otherwise root-level `cwd` from
-    // config (mostly for systemd-unit invocations where there's no
-    // shell-set cwd); otherwise inherit the spawning environment's
-    // cwd (no chdir).
-    let cwd_source = args.cwd.as_deref().or(cfg.cwd.as_deref());
-    if let Some(raw) = cwd_source {
+    // Resolution: ONLY the `--cwd` flag chdir's the daemon. The old
+    // root-level `Config.cwd` was deleted with the patches refactor —
+    // captains who want a profile-wide cwd put it in a `[[patches]]`
+    // entry's `cwd` field; per-instance agent processes pick that up
+    // via the resolved profile, no daemon-level chdir needed.
+    if let Some(raw) = args.cwd.as_deref() {
         let target = paths::resolve_user(&raw.to_string_lossy());
 
         std::env::set_current_dir(&target)

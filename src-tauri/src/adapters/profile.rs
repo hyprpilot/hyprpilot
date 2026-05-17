@@ -11,7 +11,7 @@
 
 pub use crate::config::{AgentConfig, ProfileConfig};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use crate::config::Config;
 
@@ -98,44 +98,52 @@ impl ResolvedInstance {
 }
 
 impl ResolvedInstance {
-    /// Resolve the active agent + profile overlay for a submit call.
-    /// `profile_id` — when `Some` — must name a real `[[profiles]]`
-    /// entry. When `None`, falls back to `[profile] default`. Errors
-    /// when neither resolves — there is no bare-agent fallback (every
-    /// spawn flows through a profile so `[[patches]]` /
-    /// `--with-config` always have a target).
+    /// Pick a profile (addressed id, then `[profile] default`),
+    /// fold root `[[patches]]`, and project the result through
+    /// `from_profile_explicit`. Errors when neither addresses a
+    /// real profile — there is no bare-agent fallback.
+    ///
+    /// Production callers go through `adapters::acp::instances::
+    /// resolve_into_instance_and_profile` which returns the patched
+    /// `ProfileConfig` alongside, so downstream MCP / skills
+    /// registries read from the same shape. This entry point is
+    /// the thin test-only surface — production paths must use the
+    /// production helper so the MCP / skills registries get the
+    /// same patched view, not a re-derived one that could drift.
+    #[cfg(test)]
     pub fn from_config(config: &Config, profile_id: Option<&str>) -> Result<Self> {
-        if let Some(id) = profile_id {
-            return Self::from_profile(config, id);
-        }
-        if let Some(id) = config.profile.default.as_deref() {
-            return Self::from_profile(config, id);
-        }
-        bail!(
-            "no profile addressed and no `[profile] default` configured — \
-             every spawn requires a `[[profiles]]` entry. \
-             Pass `--profile <id>` or set `[profile] default = '<id>'`."
-        )
-    }
-
-    fn from_profile(config: &Config, profile_id: &str) -> Result<Self> {
-        let profile = config
+        let picked_id = profile_id
+            .map(str::to_string)
+            .or_else(|| config.profile.default.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no profile addressed and no `[profile] default` configured — \
+                 every spawn requires a `[[profiles]]` entry. \
+                 Pass `--profile <id>` or set `[profile] default = '<id>'`."
+                )
+            })?;
+        let base = config
             .profiles
             .iter()
-            .find(|p| p.id == profile_id)
-            .with_context(|| format!("profile '{profile_id}' not found in [[profiles]] registry"))?;
-        let patched = apply_root_patches(config, profile.clone())?;
+            .find(|p| p.id == picked_id)
+            .cloned()
+            .with_context(|| format!("profile '{picked_id}' not found in [[profiles]] registry"))?;
+        let patched = apply_root_patches(config, base)?;
         Self::from_profile_explicit(&patched, config)
     }
 
     /// Resolve against an already-materialised `ProfileConfig` —
-    /// skips the `[[profiles]]` lookup. The agent referenced by
-    /// `profile.agent` must still exist in `config.agents.agents`.
+    /// the result of `resolve_effective_profile` (which picks the
+    /// addressed profile, folds root `[[patches]]`, folds any
+    /// `--with-config` overlays, and re-validates the shape).
+    /// The agent referenced by `profile.agent` must still exist in
+    /// `config.agents.agents`.
     ///
-    /// `withConfig` patches use this: they fold against the
-    /// captain-resolved profile (or a synthetic bare profile), then
-    /// hand the patched `ProfileConfig` here for resolution against
-    /// the unpatched agent registry.
+    /// Production callers go through `adapters::acp::instances::
+    /// resolve_into_instance_and_profile` (or `resolve_with_patches`
+    /// for the `withConfig` path) — both return the patched
+    /// `ProfileConfig` alongside the `ResolvedInstance` so downstream
+    /// MCP / skills registry builders read from the same shape.
     pub fn from_profile_explicit(profile: &ProfileConfig, config: &Config) -> Result<Self> {
         let agent = config
             .agents
@@ -187,16 +195,17 @@ impl ResolvedInstance {
     }
 }
 
-/// Fold root-level `[[patches]]` into the captain-picked profile
-/// before downstream resolution kicks in. Each patch may carry an
-/// optional `$match: { profile: "<glob>" }` directive — `patch::
-/// apply_root_patches_to_profile` strips it and skips non-matching
-/// entries. The result deserializes back through `ProfileConfig` so
-/// garde re-validates the post-merge shape.
+/// Fold root-level `[[patches]]` into the captain-picked profile.
+/// Each patch may carry an optional `$match: { profile: "<glob>" }`
+/// directive — stripped before merging, skips non-matching entries.
+/// The result deserializes back through `ProfileConfig` so garde
+/// re-validates the post-merge shape.
 ///
-/// `--with-config` patches still apply LATER (inside
-/// `AcpAdapter::resolve_with_patches`) on top of whatever this
-/// returns. Order: root patches first, per-invocation patches second.
+/// Test-only — production paths use `adapters::acp::instances::
+/// resolve_effective_profile` (which composes this same logic +
+/// `--with-config` overlays) so MCP / skills registries read from
+/// the same patched view.
+#[cfg(test)]
 fn apply_root_patches(config: &Config, profile: ProfileConfig) -> Result<ProfileConfig> {
     let Some(patches) = config.patches.as_deref() else {
         return Ok(profile);

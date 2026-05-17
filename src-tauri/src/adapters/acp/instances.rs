@@ -136,35 +136,23 @@ impl AcpAdapter {
             .clone()
     }
 
-    /// Resolved MCP file list for an instance. Profile's `mcps` when
-    /// set wholesale-replaces the global `mcps`; None (unset) falls
-    /// back. Used by the `mcps_list` Tauri command's readonly preview
-    /// path AND by the ACP injection at session/new.
-    pub(crate) fn effective_mcp_files_for(
-        &self,
-        profile: Option<&crate::config::ProfileConfig>,
-    ) -> Vec<crate::config::ResolvedMcpFile> {
-        effective_mcp_files_with(&self.read_config(), profile)
-    }
-
     /// Per-instance MCP catalog as a flat `Vec<MCPDefinition>`. Drives
-    /// the `mcps_list` Tauri command's preview pane: when `instance_id`
-    /// resolves to a live actor we use that instance's profile to pick
-    /// the right MCP files, otherwise we fall back to the global set.
-    /// Without this lookup the captain's profile-scoped MCPs are
-    /// invisible in the palette while still being injected into ACP at
-    /// session/new — a silent divergence between what the agent sees
-    /// and what the UI shows.
+    /// the `mcps_list` Tauri command's preview pane. Routes through
+    /// `resolve_effective_profile` so the palette sees the SAME mcps
+    /// set the spawn-time MCP registry builds — root `[[patches]]`
+    /// included. Without that the captain's patched mcps would be
+    /// invisible in the palette while still being injected into ACP
+    /// at session/new.
     pub async fn resolve_mcp_catalog(&self, instance_id: Option<&str>) -> Vec<crate::mcp::MCPDefinition> {
-        let profile = match instance_id.and_then(|id| InstanceKey::parse(id).ok()) {
-            Some(key) => match self.registry.info_for(key).await {
-                Ok(info) => self.profile_by_id(info.profile_id.as_deref()),
-                Err(_) => None,
-            },
+        let profile_id = match instance_id.and_then(|id| InstanceKey::parse(id).ok()) {
+            Some(key) => self.registry.info_for(key).await.ok().and_then(|info| info.profile_id),
             None => None,
         };
-        let files = self.effective_mcp_files_for(profile.as_ref());
-        crate::mcp::loader::load_files(&files)
+        let cfg = self.read_config().clone();
+        match resolve_effective_profile(&cfg, profile_id.as_deref(), &[]) {
+            Ok(profile) => crate::mcp::loader::load_files(&effective_mcp_files_with(&profile)),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Build the per-instance `SkillsRegistry` from the resolved
@@ -178,11 +166,8 @@ impl AcpAdapter {
     /// `--with-config` patched-config path can pass an explicit
     /// `&Config`.
     #[cfg(test)]
-    fn build_skills_registry_for(
-        &self,
-        profile: Option<&crate::config::ProfileConfig>,
-    ) -> Arc<crate::skills::SkillsRegistry> {
-        build_skills_registry_with(&self.read_config(), profile)
+    fn build_skills_registry_for(&self, profile: &crate::config::ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
+        build_skills_registry_with(profile)
     }
 
     /// Per-instance skills registry for an addressed key. Returns
@@ -296,13 +281,6 @@ impl AcpAdapter {
         key
     }
 
-    /// Profile config lookup by id — used when spawning an actor so
-    /// the runtime carries the full allowlist definition, not just a
-    /// profile id.
-    fn profile_by_id(&self, profile_id: Option<&str>) -> Option<ProfileConfig> {
-        profile_by_id_in(&self.read_config(), profile_id)
-    }
-
     /// Short-lived read guard helper. Callers drop before any `.await`
     /// — `std::sync::RwLock` isn't `Send` across suspension points.
     fn read_config(&self) -> std::sync::RwLockReadGuard<'_, Config> {
@@ -358,72 +336,16 @@ impl AcpAdapter {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
         patches: &[Value],
-    ) -> Result<(ResolvedInstance, Option<ProfileConfig>), RpcError> {
+    ) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
         let cfg = self.read_config().clone();
-        if patches.is_empty() {
-            let resolved = resolve_with_config(&cfg, agent_id, profile_id)?;
-            let profile = profile_by_id_in(&cfg, resolved.profile_id.as_deref());
-            return Ok((resolved, profile));
-        }
-
-        // Resolution order:
-        //   1. Pick base profile (captain-picked id, or `[profile]
-        //      default`, or a synthetic bare profile pointing at
-        //      `[agent] default`).
-        //   2. Apply root `[[patches]]` from the captain's on-disk
-        //      config, filtered by each patch's optional `$match`
-        //      directive.
-        //   3. Apply per-invocation `--with-config` patches on top.
-        // Both layers go through the same strategic-merge engine;
-        // step 3 wins on field collision because right wins.
-        let base_profile = base_profile_for_patches(&cfg, profile_id)?;
-        let base_value = serde_json::to_value(&base_profile)
-            .map_err(|e| RpcError::internal_error(format!("profile serialize failed: {e}")))?;
-
-        let with_root_patches = if let Some(root_patches) = cfg.patches.as_deref() {
-            crate::config::patch::apply_root_patches_to_profile(base_value, root_patches, &base_profile.id)
-        } else {
-            base_value
-        };
-
-        let merged = crate::config::patch::merge_patches(with_root_patches, patches.to_vec());
-        let patched: ProfileConfig = serde_json::from_value(merged)
-            .map_err(|e| RpcError::invalid_params(format!("withConfig produced invalid profile: {e}")))?;
-        garde::Validate::validate(&patched)
-            .map_err(|e| RpcError::invalid_params(format!("withConfig failed validation: {e}")))?;
+        let result = resolve_into_instance_and_profile(&cfg, agent_id, profile_id, patches)?;
         tracing::debug!(
             patch_count = patches.len(),
             root_patch_count = cfg.patches.as_deref().map_or(0, <[_]>::len),
-            profile_id = %patched.id,
+            profile_id = %result.1.id,
             "acp::adapter: root [[patches]] + withConfig patches applied to resolved profile"
         );
-
-        let mut resolved = ResolvedInstance::from_profile_explicit(&patched, &cfg)
-            .map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
-
-        if let Some(wanted) = agent_id {
-            let agent = cfg
-                .agents
-                .agents
-                .iter()
-                .find(|a| a.id == wanted)
-                .cloned()
-                .ok_or_else(|| {
-                    RpcError::invalid_params(format!("agent '{wanted}' not found in [[agents]] registry"))
-                })?;
-            if resolved.model.is_none() || resolved.agent.id != agent.id {
-                resolved.model = resolved.model.or_else(|| agent.model.clone());
-            }
-            resolved.agent = agent;
-        }
-
-        if resolved.agent.id.is_empty() {
-            return Err(RpcError::invalid_params(
-                "no agent resolved — add a [[agents]] entry or pass agent_id / profile_id",
-            ));
-        }
-
-        Ok((resolved, Some(patched)))
+        Ok(result)
     }
 
     /// Route a generic `InstanceEvent` onto the corresponding `acp:*`
@@ -561,13 +483,27 @@ impl AcpAdapter {
         });
     }
 
-    /// Resolve a `(agent_id?, profile_id?)` pair. When both are
-    /// omitted, falls back through `[profile] default` and finally
-    /// to `[agent] default`. Explicit `agent_id` overrides whatever
-    /// agent the resolved profile names (same profile, new agent
+    /// Resolve a `(agent_id?, profile_id?)` pair into the spawn-time
+    /// pair every downstream consumer reads from: the
+    /// `ResolvedInstance` (agent + system_prompt + model + mode) AND
+    /// the post-patches `ProfileConfig` (mcps + mcp.skills + cwd +
+    /// env). Returning both at once eliminates the drift that bit
+    /// us pre-hoist where `ensure()` re-fetched the UNPATCHED
+    /// profile via `profile_by_id_in` and the MCP / skills
+    /// registries silently dropped root `[[patches]]` content.
+    ///
+    /// Errors when neither `--profile` nor `[profile] default`
+    /// addresses a real `[[profiles]]` entry — every spawn flows
+    /// through a profile. Explicit `agent_id` overrides whatever
+    /// agent the patched profile names (same profile, new agent
     /// spawn).
-    fn resolve(&self, agent_id: Option<&str>, profile_id: Option<&str>) -> Result<ResolvedInstance, RpcError> {
-        resolve_with_config(&self.read_config(), agent_id, profile_id)
+    fn resolve(
+        &self,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+    ) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
+        let cfg = self.read_config();
+        resolve_into_instance_and_profile(&cfg, agent_id, profile_id, &[])
     }
 
     /// Spawn-or-reuse for a given `InstanceKey`. Caller supplies the
@@ -582,11 +518,11 @@ impl AcpAdapter {
         &self,
         key: InstanceKey,
         resolved: ResolvedInstance,
+        effective_profile: ProfileConfig,
         bootstrap: Bootstrap,
     ) -> Result<InstanceKey, RpcError> {
         let cfg = self.read_config().clone();
-        let profile = profile_by_id_in(&cfg, resolved.profile_id.as_deref());
-        self.ensure_with_config(key, resolved, bootstrap, &cfg, profile, Vec::new())
+        self.ensure_with_config(key, resolved, bootstrap, &cfg, effective_profile, Vec::new())
             .await
     }
 
@@ -598,8 +534,8 @@ impl AcpAdapter {
         key: InstanceKey,
         resolved: ResolvedInstance,
         bootstrap: Bootstrap,
-        cfg: &Config,
-        effective_profile: Option<ProfileConfig>,
+        _cfg: &Config,
+        effective_profile: ProfileConfig,
         config_patches: Vec<Value>,
     ) -> Result<InstanceKey, RpcError> {
         let replace_existing = matches!(bootstrap, Bootstrap::Resume(_));
@@ -616,14 +552,15 @@ impl AcpAdapter {
         // so the global registries apply.
         let profile = effective_profile;
         let profile_id = resolved.profile_id.clone();
-        // Per-instance MCP catalog: profile's `mcps` wholesale-
-        // replaces the global default; the resolved set is what
-        // `PermissionController::decide` lane 2 reads via
-        // `DecisionContext.mcps`. None when no MCP files are wired —
-        // the per-server lane short-circuits and every call falls
+        // Per-instance MCP catalog reads from the patched profile
+        // (root `[[patches]]` + any `--with-config` overlays are
+        // already folded). `DecisionContext.mcps` consumes the
+        // resulting registry at `PermissionController::decide` lane
+        // 2. `None` from the builder means no MCP files wired — the
+        // per-server lane short-circuits and every call falls
         // through to AskUser (or trust store).
-        let skills = build_skills_registry_with(cfg, profile.as_ref());
-        let mcps = build_mcp_registry_with(cfg, profile.as_ref(), Some(&skills));
+        let skills = build_skills_registry_with(&profile);
+        let mcps = build_mcp_registry_with(&profile, Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -661,7 +598,7 @@ impl AcpAdapter {
         agent_id: Option<&str>,
         profile_id: Option<&str>,
     ) -> Result<Value, RpcError> {
-        let resolved = self.resolve(agent_id, profile_id)?;
+        let (resolved, effective_profile) = self.resolve(agent_id, profile_id)?;
 
         let key = match instance_id {
             Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
@@ -681,7 +618,7 @@ impl AcpAdapter {
         let resolved_agent_id = resolved.agent.id.clone();
         let resolved_profile_id = resolved.profile_id.clone();
 
-        let key = self.ensure(key, resolved, Bootstrap::Fresh).await?;
+        let key = self.ensure(key, resolved, effective_profile, Bootstrap::Fresh).await?;
 
         // Check busy state BEFORE submitting so the wire reply can
         // tell the caller whether the actor was already mid-turn
@@ -748,7 +685,7 @@ impl AcpAdapter {
             let key = InstanceKey::parse(id).map_err(map_adapter_error_to_rpc)?;
             self.cmd_tx_for(&key).await
         } else {
-            let resolved = self.resolve(agent_id, None)?;
+            let (resolved, _) = self.resolve(agent_id, None)?;
             let keys = self.registry.ordered_keys().await;
             let mut tx = None;
             for k in keys {
@@ -964,9 +901,8 @@ impl AcpAdapter {
         let (cmd_tx, ephemeral) = if let Some(tx) = live_tx {
             (tx, None)
         } else {
-            let resolved = self.resolve(agent_id, profile_id)?;
+            let (resolved, _profile) = self.resolve(agent_id, profile_id)?;
             let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
-            let profile = self.profile_by_id(resolved.profile_id.as_deref());
             let profile_id_for_instance = resolved.profile_id.clone();
             // Ephemeral list-only actors must NOT publish onto the
             // registry's UI-bound broadcast — their state transitions
@@ -984,7 +920,6 @@ impl AcpAdapter {
             // pass empty registries so the actor body's accessors
             // stay non-Option without paying for a disk walk on the
             // throwaway path.
-            let _ = profile;
             let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
                 resolved,
                 key: ephemeral_key,
@@ -1205,7 +1140,6 @@ impl AcpAdapter {
             .await
             .map_err(map_adapter_error_to_rpc)?;
 
-        let cfg = self.read_config().clone();
         let (mut resolved, effective_profile) = self.resolve_with_patches(
             Some(&existing_agent_id),
             existing_profile_id.as_deref(),
@@ -1218,8 +1152,8 @@ impl AcpAdapter {
             resolved.agent.cwd = Some(c);
         }
         let profile_id_for_instance = resolved.profile_id.clone();
-        let skills = build_skills_registry_with(&cfg, effective_profile.as_ref());
-        let mcps = build_mcp_registry_with(&cfg, effective_profile.as_ref(), Some(&skills));
+        let skills = build_skills_registry_with(&effective_profile);
+        let mcps = build_mcp_registry_with(&effective_profile, Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -1415,7 +1349,7 @@ impl AcpAdapter {
                 "instance '{key_str}' not found in registry"
             )));
         }
-        let mut resolved = self.resolve(spec.agent_id.as_deref(), spec.profile_id.as_deref())?;
+        let (mut resolved, effective_profile) = self.resolve(spec.agent_id.as_deref(), spec.profile_id.as_deref())?;
         if let Some(c) = spec.cwd {
             resolved.agent.cwd = Some(c);
         }
@@ -1426,7 +1360,9 @@ impl AcpAdapter {
             resolved.mode = spec.mode;
         }
         let new_key = key.unwrap_or_else(InstanceKey::new_v4);
-        let new_key = self.ensure(new_key, resolved, Bootstrap::Fresh).await?;
+        let new_key = self
+            .ensure(new_key, resolved, effective_profile, Bootstrap::Fresh)
+            .await?;
         let handle = self
             .registry
             .get(new_key)
@@ -1711,42 +1647,33 @@ impl Adapter for AcpAdapter {
     }
 }
 
-/// `effective_mcp_files_for` against an explicit config — used by the
-/// `--with-config` path so the patched profile's `mcps` view drives
-/// the resolved file list. The `&self` method delegates here against
-/// the daemon's base config.
-///
-/// Reads ONLY from the resolved profile — root patches are folded
-/// onto the profile in `adapters::profile::apply_root_patches` BEFORE
-/// the profile lands here, so a captain who declared shared `mcps`
-/// at root via `[[patches]]` already sees them on the profile's own
-/// field by the time `mcps_files_with` runs.
-fn effective_mcp_files_with(
-    _cfg: &Config,
-    profile: Option<&crate::config::ProfileConfig>,
-) -> Vec<crate::config::ResolvedMcpFile> {
+/// Project the patched profile's `mcps` field onto the resolved
+/// runtime shape. Reads ONLY from the patched profile — root
+/// `[[patches]]` were folded onto it in `resolve_effective_profile`
+/// upstream.
+fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::config::ResolvedMcpFile> {
     profile
-        .and_then(|p| p.mcps.as_deref())
+        .mcps
+        .as_deref()
         .map(|files| files.iter().map(crate::config::ResolvedMcpFile::from_entry).collect())
         .unwrap_or_default()
 }
 
-/// `build_mcp_registry_for` against an explicit config.
+/// Build the per-instance MCP registry from the patched profile.
 ///
 /// Prepends an **auto-injected** entry for the in-tree `hyprpilot mcp
-/// serve` server when the effective `[mcp]` block has `enabled =
-/// true` AND the per-instance skills registry (after applying the
-/// optional slug whitelist) is non-empty. The daemon's resolved
-/// skill set rides through to the agent vendor as a stdio MCP server
-/// it spawns itself. Auto-inject is independent of user-declared
-/// `[[mcps]]` — `mcps = []` does not suppress the in-tree server
-/// (that's what `[mcp] enabled = false` is for).
+/// serve` server when the resolved `[mcp]` block has `enabled = true`
+/// AND the per-instance skills registry (after applying the optional
+/// slug whitelist) is non-empty. The daemon's resolved skill set
+/// rides through to the agent vendor as a stdio MCP server it spawns
+/// itself. Auto-inject is independent of user-declared `mcps` —
+/// `mcps = []` does not suppress the in-tree server (that's what
+/// `mcp.enabled = false` is for).
 fn build_mcp_registry_with(
-    cfg: &Config,
-    profile: Option<&crate::config::ProfileConfig>,
+    profile: &ProfileConfig,
     skills: Option<&Arc<crate::skills::SkillsRegistry>>,
 ) -> Option<Arc<crate::mcp::MCPsRegistry>> {
-    let files = effective_mcp_files_with(cfg, profile);
+    let files = effective_mcp_files_with(profile);
     let mut defs = crate::mcp::loader::load_files(&files);
 
     // Auto-inject only when the effective [mcp] block opts in AND
@@ -1754,7 +1681,7 @@ fn build_mcp_registry_with(
     // synthetic path so the UI's "which file owns this server"
     // surfaces a recognisable label.
     if let Some(skills_arc) = skills {
-        let mcp_cfg = effective_mcp_with(cfg, profile);
+        let mcp_cfg = effective_mcp_with(profile);
         if mcp_cfg.enabled() {
             if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
                 skills_arc,
@@ -1773,31 +1700,23 @@ fn build_mcp_registry_with(
 }
 
 /// Resolved `[mcp]` block for an instance — reads ONLY from the
-/// resolved profile (root `[[patches]]` have already merged into
-/// `profile.mcp` upstream). Falls back to the typed `Default::default()`
-/// when neither profile nor patches set one — same shape the
-/// previous root-level `[mcp]` defaulted to (enabled=true,
+/// patched profile. Falls back to the typed `Default::default()`
+/// when the profile has no `mcp` block (enabled=true,
 /// autoAcceptTools=["*"], no skills).
-fn effective_mcp_with(_cfg: &Config, profile: Option<&crate::config::ProfileConfig>) -> crate::config::McpConfig {
-    profile.and_then(|p| p.mcp.clone()).unwrap_or_default()
+fn effective_mcp_with(profile: &ProfileConfig) -> crate::config::McpConfig {
+    profile.mcp.clone().unwrap_or_default()
 }
 
-/// `effective_skills_for` against an explicit config. Reads from the
-/// effective `[mcp]` block (profile's if set, else global) — skills
-/// live under `mcp.skills` now (was top-level `[[skills]]`).
-fn effective_skills_with(
-    cfg: &Config,
-    profile: Option<&crate::config::ProfileConfig>,
-) -> Vec<crate::config::ResolvedSkillEntry> {
-    effective_mcp_with(cfg, profile).resolved_skills()
+/// Skills slugs the auto-injected `hyprpilot` MCP server should
+/// expose for this instance. Reads from the patched profile's
+/// `mcp.skills` (root `[[patches]]` already folded upstream).
+fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::ResolvedSkillEntry> {
+    effective_mcp_with(profile).resolved_skills()
 }
 
-/// `build_skills_registry_for` against an explicit config.
-fn build_skills_registry_with(
-    cfg: &Config,
-    profile: Option<&crate::config::ProfileConfig>,
-) -> Arc<crate::skills::SkillsRegistry> {
-    let entries = effective_skills_with(cfg, profile);
+/// Build the per-instance skills registry from the patched profile.
+fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
+    let entries = effective_skills_with(profile);
     let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
     if let Err(err) = registry.reload() {
         tracing::warn!(%err, "acp::adapter: per-instance skills initial reload failed");
@@ -1805,20 +1724,56 @@ fn build_skills_registry_with(
     registry
 }
 
-/// `profile_by_id` against an explicit config.
-fn profile_by_id_in(cfg: &Config, profile_id: Option<&str>) -> Option<ProfileConfig> {
-    let id = profile_id?;
-    cfg.profiles.iter().find(|p| p.id == id).cloned()
+/// Single source of truth for the captain-intended `ProfileConfig`
+/// at spawn time. Every consumer that needs to ask "what does the
+/// captain want?" — `ResolvedInstance` builder, MCP registry
+/// builder, skills registry builder, session-info shape — calls
+/// this and reads from the returned profile.
+///
+/// Resolution order:
+///   1. Pick base profile via `base_profile_for_patches` (errors
+///      when neither `--profile <id>` nor `[profile] default`
+///      addresses a real `[[profiles]]` entry).
+///   2. Fold root `[[patches]]` from the captain's on-disk config,
+///      filtered by each patch's optional `$match.profile` glob.
+///   3. Fold `external_patches` in declaration order (the
+///      `--with-config` per-invocation overrides). Empty slice
+///      is a no-op.
+///   4. Deserialize back to `ProfileConfig` + re-run garde
+///      validation against the post-merge shape.
+///
+/// Before the hoist, layers drifted: `ResolvedInstance::from_config`
+/// applied root patches to system_prompt / model / mode, but the
+/// downstream `build_mcp_registry_with` / `build_skills_registry_with`
+/// got the unpatched profile via `profile_by_id_in` — so patches'
+/// `mcps` / `mcp.skills` silently never reached the spawned actor.
+pub(crate) fn resolve_effective_profile(
+    cfg: &Config,
+    profile_id: Option<&str>,
+    external_patches: &[Value],
+) -> Result<ProfileConfig, RpcError> {
+    let base = base_profile_for_patches(cfg, profile_id)?;
+    let base_value =
+        serde_json::to_value(&base).map_err(|e| RpcError::internal_error(format!("profile serialize failed: {e}")))?;
+
+    let with_root = match cfg.patches.as_deref() {
+        Some(rp) if !rp.is_empty() => crate::config::patch::apply_root_patches_to_profile(base_value, rp, &base.id),
+        _ => base_value,
+    };
+
+    let merged = if external_patches.is_empty() {
+        with_root
+    } else {
+        crate::config::patch::merge_patches(with_root, external_patches.to_vec())
+    };
+
+    let patched: ProfileConfig = serde_json::from_value(merged)
+        .map_err(|e| RpcError::invalid_params(format!("profile resolution: invalid shape after patches: {e}")))?;
+    garde::Validate::validate(&patched)
+        .map_err(|e| RpcError::invalid_params(format!("profile resolution: validation failed: {e}")))?;
+    Ok(patched)
 }
 
-/// Resolve the `ProfileConfig` that `withConfig` patches should fold
-/// against. Mirrors `ResolvedInstance::from_config`'s precedence —
-/// explicit profile id, then `[profile] default`, then synthesize a
-/// bare profile pointing at the default agent. A non-matching
-/// `profile_id` silently falls through to synthesis instead of
-/// erroring: the patches themselves may well set `profile.id` /
-/// `profile.agent` to something sensible. Invalid combinations
-/// surface downstream during the patched profile's validate pass.
 /// Pick the base `ProfileConfig` patches will fold onto. Resolves
 /// `--profile <id>` first, then `[profile] default`. Errors when
 /// neither addresses a real `[[profiles]]` entry — every spawn
@@ -1849,16 +1804,27 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> Result<Pr
     ))
 }
 
-/// `AcpAdapter::resolve` against an explicit config — same logic,
-/// reads the supplied tree instead of `self.config`. Used by the
-/// `--with-config` spawn path.
-fn resolve_with_config(
+/// One-stop spawn-time resolver: pick + patch the profile, project
+/// onto a `ResolvedInstance`, return both. The patched
+/// `ProfileConfig` is the single source the MCP registry, skills
+/// registry, and per-instance context downstream all read from.
+///
+/// `external_patches` is empty for plain submit / spawn paths; the
+/// `--with-config` and `withConfig` RPC paths supply non-empty
+/// patches that fold on top of root `[[patches]]`.
+///
+/// Explicit `agent_id` wins over whatever agent the patched profile
+/// names — captain intent for "run THIS profile but on a different
+/// vendor binary".
+fn resolve_into_instance_and_profile(
     cfg: &Config,
     agent_id: Option<&str>,
     profile_id: Option<&str>,
-) -> Result<ResolvedInstance, RpcError> {
-    let mut resolved =
-        ResolvedInstance::from_config(cfg, profile_id).map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
+    external_patches: &[Value],
+) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
+    let patched = resolve_effective_profile(cfg, profile_id, external_patches)?;
+    let mut resolved = ResolvedInstance::from_profile_explicit(&patched, cfg)
+        .map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
 
     if let Some(wanted) = agent_id {
         let agent = cfg
@@ -1880,7 +1846,7 @@ fn resolve_with_config(
         ));
     }
 
-    Ok(resolved)
+    Ok((resolved, patched))
 }
 
 fn map_adapter_error_to_rpc(err: AdapterError) -> RpcError {
@@ -2040,7 +2006,7 @@ system_prompt = [{{ file = "{}" }}]
         .expect("fixture parses");
         let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
 
-        let resolved = adapter.resolve(None, Some("strict")).expect("strict resolves");
+        let (resolved, _) = adapter.resolve(None, Some("strict")).expect("strict resolves");
         assert_eq!(resolved.agent.id, "claude-code");
         assert_eq!(resolved.profile_id.as_deref(), Some("strict"));
         assert_eq!(resolved.model.as_deref(), Some("claude-opus-4-5"));
@@ -2049,7 +2015,7 @@ system_prompt = [{{ file = "{}" }}]
             Some("be terse")
         );
 
-        let resolved = adapter.resolve(None, None).expect("default profile resolves");
+        let (resolved, _) = adapter.resolve(None, None).expect("default profile resolves");
         assert_eq!(resolved.profile_id.as_deref(), Some("ask"));
         assert_eq!(resolved.model.as_deref(), Some("claude-sonnet-4-5"));
         assert!(resolved.system_prompt_for(&Bootstrap::Fresh).is_none());
@@ -2134,7 +2100,7 @@ skills = []
             .find(|p| p.id == "no-skills")
             .cloned();
 
-        let personal_reg = adapter.build_skills_registry_for(personal.as_ref());
+        let personal_reg = adapter.build_skills_registry_for(personal.as_ref().expect("personal profile present"));
         let personal_slugs: Vec<String> = personal_reg.list().iter().map(|s| s.slug.to_string()).collect();
         assert!(personal_slugs.contains(&"personal-todo".into()));
         assert!(personal_slugs.contains(&"shared-readme".into()));
@@ -2143,7 +2109,7 @@ skills = []
             "personal profile must filter out work-* per its own glob"
         );
 
-        let work_reg = adapter.build_skills_registry_for(work.as_ref());
+        let work_reg = adapter.build_skills_registry_for(work.as_ref().expect("work profile present"));
         let work_slugs: Vec<String> = work_reg.list().iter().map(|s| s.slug.to_string()).collect();
         assert!(work_slugs.contains(&"work-internal".into()));
         assert!(work_slugs.contains(&"shared-readme".into()));
@@ -2152,11 +2118,92 @@ skills = []
             "work profile must filter out personal-* per its own glob (NOT inherit personal's filter)"
         );
 
-        let empty_reg = adapter.build_skills_registry_for(no_skills.as_ref());
+        let empty_reg = adapter.build_skills_registry_for(no_skills.as_ref().expect("no-skills profile present"));
         assert_eq!(
             empty_reg.list().len(),
             0,
             "skills = [] explicit off-switch yields empty registry"
+        );
+    }
+
+    /// Pins the reviewer's blocking finding pre-hoist: root
+    /// `[[patches]]` `mcps` / `mcp.skills` reach the MCP / skills
+    /// registry the spawned actor sees. Before `resolve_effective_profile`
+    /// was hoisted, the empty-`--with-config` path returned the
+    /// UNPATCHED profile to `build_mcp_registry_with` /
+    /// `build_skills_registry_with`, silently dropping the captain's
+    /// patch-supplied content. Test asserts both paths see the patch.
+    #[tokio::test]
+    async fn root_patches_reach_mcp_and_skills_registries_on_default_spawn() {
+        let skills_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(skills_dir.path().join("from-patch")).unwrap();
+        std::fs::write(
+            skills_dir.path().join("from-patch/SKILL.md"),
+            "---\nname: from-patch\ndescription: pinned by root patch\n---\nbody\n",
+        )
+        .unwrap();
+        let mcps_path = skills_dir.path().join("mcps.json");
+        std::fs::write(
+            &mcps_path,
+            r#"{"mcpServers": {"from-patch": {"command": "/bin/false"}}}"#,
+        )
+        .unwrap();
+
+        let cfg: Config = toml::from_str(&format!(
+            r#"
+[[agents]]
+id = "cc"
+provider = "acp-claude-code"
+command = "/bin/false"
+
+[profile]
+default = "p1"
+
+[[profiles]]
+id = "p1"
+agent = "cc"
+
+[[patches]]
+[[patches.mcps]]
+file = "{mcps}"
+
+[patches.mcp]
+enabled = true
+[[patches.mcp.skills]]
+dir = "{skills}"
+"#,
+            mcps = mcps_path.display(),
+            skills = skills_dir.path().display(),
+        ))
+        .expect("fixture parses");
+        cfg.validate().expect("fixture validates");
+
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let (_resolved, patched) = adapter
+            .resolve(None, None)
+            .expect("default profile resolves with patches applied");
+
+        // Patches landed on the profile.
+        assert!(
+            patched.mcps.as_deref().is_some_and(|v| !v.is_empty()),
+            "patches' mcps must reach the resolved profile"
+        );
+        assert!(
+            patched.mcp.as_ref().is_some_and(|m| m.skills.is_some()),
+            "patches' mcp.skills must reach the resolved profile"
+        );
+
+        // The MCP registry builds against the patched profile.
+        let skills = build_skills_registry_with(&patched);
+        let mcp_registry = build_mcp_registry_with(&patched, Some(&skills));
+        assert!(
+            mcp_registry.is_some(),
+            "patched mcps must produce a non-empty MCPsRegistry"
+        );
+        let slugs: Vec<String> = skills.list().iter().map(|s| s.slug.to_string()).collect();
+        assert!(
+            slugs.contains(&"from-patch".to_string()),
+            "patch-supplied skill `from-patch` must reach the skills registry, got: {slugs:?}"
         );
     }
 
@@ -2354,6 +2401,10 @@ agent = "base"
         };
         let err = adapter.spawn_instance(spec).await.expect_err("typo must reject");
         assert_eq!(err.code, -32602);
-        assert!(err.message.contains("withConfig"));
+        assert!(
+            err.message.contains("profile resolution") || err.message.contains("unknown field"),
+            "expected a captain-facing profile-resolution error, got: {}",
+            err.message
+        );
     }
 }
