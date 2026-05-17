@@ -283,6 +283,16 @@ export function useStickToBottom(
   /// chance to fire.
   function release(): void {
     stuck.value = false
+    // Clear the suppress flag too. Narrow but real race: if
+    // `scrollToBottom` ran moments before the captain's input AND
+    // its scroll event hasn't been delivered yet, the next
+    // `onScroll` would consume the suppress flag and force
+    // `stuck = true` — undoing this release for one tick. The
+    // captain's smooth scroll's own scroll events would then
+    // re-unstick via `movedUp`, but the brief re-engage looks like
+    // the hostage bug. Clearing the flag here means the very next
+    // scroll event runs through the normal `movedUp` branch.
+    suppressNextScrollUpdate = false
 
     if (rafHandle !== undefined) {
       cancelAnimationFrame(rafHandle)

@@ -6,24 +6,26 @@ pkgdesc="Tauri overlay daemon for agent-driven workflows on Hyprland (VCS)"
 arch=('x86_64')
 url="https://github.com/hyprpilot/hyprpilot"
 license=('MIT')
-# Runtime shared-library deps — verified via `ldd target/release/hyprpilot`
-# against a 1.0.0 build. `webkit2gtk-4.1` covers webkit +
-# javascriptcoregtk; `gtk3` covers gdk + glib + cairo + pango + harfbuzz
-# transitively; `gtk-layer-shell` is the C wrapper the `gtk-layer-shell`
-# crate binds against and is the only Wayland-specific piece.
+# Runtime deps — verified via `ldd target/release/hyprpilot` + a read of
+# the `tray-icon` crate's Linux backend. `webkit2gtk-4.1` covers webkit
+# + javascriptcoregtk; `gtk3` covers gdk + glib + cairo + pango +
+# harfbuzz transitively; `gtk-layer-shell` is the C wrapper the
+# `gtk-layer-shell` crate binds against — Wayland layer-shell anchored
+# overlay needs it.
 #
-# No `libappindicator-gtk3`: tauri 2's `tray-icon` feature speaks the
-# KSNI dbus protocol via the `ksni` crate, not via libappindicator
-# linkage — `ldd` confirms zero references to `libayatana-appindicator`
-# or `libappindicator` in the produced binary. The tray surfaces on
-# KDE Plasma natively and on GNOME via the AppIndicator extension; on
-# Hyprland there's no tray anyway. Dropping the dep removes a
-# transitive pull (libdbusmenu-glib + libdbusmenu-gtk3 + indicator-glib)
-# the binary never opens.
+# `libappindicator-gtk3` is required at RUNTIME via `dlopen` (the
+# `libappindicator-rs` crate uses `libloading`, which is why `ldd`
+# shows no static reference). tauri 2's `tray-icon = "0.23"` feature
+# initialises a `TrayIconBuilder` at daemon startup; on GNOME with the
+# AppIndicator extension that path opens `libappindicator-gtk3.so.1`
+# to publish the icon. On Hyprland there's no tray host so the dlopen
+# silently no-ops, but the dep stays declared so KDE / GNOME users
+# don't lose the tray with a confusing silent failure.
 depends=(
   'webkit2gtk-4.1'
   'gtk3'
   'gtk-layer-shell'
+  'libappindicator-gtk3'
 )
 makedepends=(
   'git'
