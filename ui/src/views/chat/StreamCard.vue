@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { faSquare as farSquare } from '@fortawesome/free-regular-svg-icons'
 import { faChevronDown, faChevronRight, faCircleHalfStroke, faSquareCheck } from '@fortawesome/free-solid-svg-icons'
-import { computed, onBeforeUnmount, ref, useSlots, watch } from 'vue'
+import { computed, ref, useSlots, watch } from 'vue'
 
-import { PlanStatus, StatPill, StreamKind, type PlanItem } from '@components'
-import { log, renderMarkdown, renderMarkdownPlain } from '@lib'
+import { MarkdownBody, PlanStatus, StatPill, StreamKind, type PlanItem } from '@components'
 
 /**
  * stream card — thinking / planning. Two states:
@@ -69,66 +68,6 @@ const useMarkdown = computed(() => props.kind === StreamKind.Thinking && Boolean
 /// fooling-the-captain "click me to expand into nothing".
 const hasBody = computed(() => hasItems.value || useMarkdown.value || hasSlot.value)
 
-const renderedHtml = ref('')
-
-// Two-pass render — same strategy as `<MarkdownBody>`. Plain
-// markdown-it first (synchronous, no Shiki) so the prose lands
-// instantly even on the cold path; then upgrade with the full
-// Shiki pipeline asynchronously. Shiki re-tokenization is debounced
-// to a trailing 150ms window — agent thought streams emit dozens of
-// chunks per second and re-tokenizing the whole accumulated prose
-// per chunk burns a CPU core for no visual gain.
-const SHIKI_DEBOUNCE_MS = 150
-let shikiTimer: ReturnType<typeof setTimeout> | undefined
-let shikiSeq = 0
-
-function clearShikiTimer(): void {
-  if (shikiTimer !== undefined) {
-    clearTimeout(shikiTimer)
-    shikiTimer = undefined
-  }
-}
-
-watch(
-  [() => props.text, useMarkdown],
-  ([raw, on]) => {
-    if (!on || !raw) {
-      renderedHtml.value = ''
-      clearShikiTimer()
-
-      return
-    }
-
-    try {
-      renderedHtml.value = renderMarkdownPlain(raw)
-    } catch(err) {
-      log.warn('stream-card: plain render failed', { err: String(err) })
-      renderedHtml.value = ''
-    }
-
-    clearShikiTimer()
-    const mySeq = ++shikiSeq
-
-    shikiTimer = setTimeout(() => {
-      shikiTimer = undefined
-      void (async() => {
-        try {
-          const out = await renderMarkdown(raw)
-
-          if (mySeq === shikiSeq) {
-            renderedHtml.value = out.html
-          }
-        } catch(err) {
-          log.warn('stream-card: shiki upgrade failed; keeping plain pass', { err: String(err) })
-        }
-      })()
-    }, SHIKI_DEBOUNCE_MS)
-  },
-  { immediate: true }
-)
-
-onBeforeUnmount(clearShikiTimer)
-
 // Local expanded state — seeded from the `active` prop so live cards
 // open by default. Clicking the header toggles regardless. Once the
 // user has manually collapsed/expanded, we stop tracking the prop so
@@ -191,9 +130,9 @@ function planIconFor(status: PlanStatus) {
         </li>
       </ul>
     </div>
-    <!-- eslint-disable-next-line vue/no-v-html -- HTML is sanitised by renderMarkdown -->
-    <div v-else-if="expanded && useMarkdown && renderedHtml" class="stream-card-body stream-card-prose prose" v-html="renderedHtml" />
-    <div v-else-if="expanded && useMarkdown && !renderedHtml && text" class="stream-card-body stream-card-plain">{{ text }}</div>
+    <div v-else-if="expanded && useMarkdown && text" class="stream-card-body stream-card-prose">
+      <MarkdownBody :source="text" />
+    </div>
     <div v-else-if="expanded && hasSlot" class="stream-card-body stream-card-plain">
       <slot />
     </div>
@@ -333,38 +272,20 @@ function planIconFor(status: PlanStatus) {
   overflow-wrap: anywhere;
 }
 
-/* Markdown-rendered body — same prose vocabulary as `ChatBody`'s
- * markdown render (paragraphs / lists / code blocks / etc.) but
- * dimmer ink to read as "internal monologue" vs assistant-spoken
- * prose. */
+/* Wrap `<MarkdownBody>` — same prose vocabulary as `ChatBody`
+ * (paragraphs / lists / blockquotes / tables / fenced code with
+ * GitHub-spec margins all live there). Stream cards layer a dimmer
+ * ink tone on top so thoughts read as "internal monologue" vs
+ * assistant-spoken prose. */
 .stream-card-prose {
-  @apply text-[0.78rem] leading-relaxed;
-  color: var(--theme-fg-subtle);
+  @apply text-[0.78rem] leading-normal;
   font-family: var(--theme-font-sans);
   overflow-wrap: anywhere;
 }
 
-.stream-card-prose :deep(p) {
-  @apply my-1;
-}
-
-.stream-card-prose :deep(p:first-child) {
-  @apply mt-0;
-}
-
-.stream-card-prose :deep(p:last-child) {
-  @apply mb-0;
-}
-
-.stream-card-prose :deep(ul),
-.stream-card-prose :deep(ol) {
-  @apply my-1 pl-5;
-}
-
-.stream-card-prose :deep(code) {
-  @apply rounded-sm px-1 py-[0.0625rem] text-[0.85em];
-  font-family: var(--theme-font-mono);
-  background-color: var(--theme-surface-alt);
-  color: var(--theme-fg);
+.stream-card-prose :deep(.markdown-body) {
+  font-size: inherit;
+  line-height: inherit;
+  color: var(--theme-fg-subtle);
 }
 </style>
