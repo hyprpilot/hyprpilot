@@ -965,6 +965,18 @@ impl AcpAdapter {
                 let display = crate::tools::path::display_cwd(&s.cwd.to_string_lossy());
                 s.cwd = display.into();
             }
+
+            // Order by `updatedAt` descending — most-recently-used
+            // session surfaces first across every consumer (sessions/list
+            // RPC, `ctl sessions list`, the command palette's session
+            // picker). ACP ships ISO-8601 timestamps which sort
+            // lexically. `None` → empty string → sorts last; ties keep
+            // insertion order via `sort_by`'s stability.
+            r.sessions.sort_by(|a, b| {
+                let au = a.updated_at.as_deref().unwrap_or("");
+                let bu = b.updated_at.as_deref().unwrap_or("");
+                bu.cmp(au)
+            });
         }
 
         response

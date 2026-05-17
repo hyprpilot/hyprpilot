@@ -363,10 +363,14 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
-  it('Home / End still bail out when focus is in an input / textarea', async() => {
-    // Home and End ARE useful inside textareas (jump to start / end
-    // of line) — the bailout stays in place for them so editing
-    // keystrokes are untouched.
+  it('Home / End also bypass the editable-target gate (captain wants viewport nav)', async() => {
+    // Home and End used to bail when focus was in the composer
+    // textarea so they could still navigate the caret. Captain
+    // pivoted: their focus lives in the composer 99% of the time
+    // and mid-line caret hops are rare — viewport scroll is the
+    // dominant intent. Match PageUp/PageDown's behavior: bypass
+    // the gate, drive viewport scroll, leave caret nav to
+    // Ctrl+Home / Ctrl+End at the OS level.
     const page = chatPage(
       [
         {
@@ -396,7 +400,8 @@ describe('Viewport.vue', () => {
     ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
     await flushPromises()
 
-    expect(scrollTo).not.toHaveBeenCalled()
+    expect(scrollTo).toHaveBeenCalledTimes(2)
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
 
     document.body.removeChild(ta)
     wrapper.unmount()

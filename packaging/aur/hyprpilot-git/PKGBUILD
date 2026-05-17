@@ -6,11 +6,24 @@ pkgdesc="Tauri overlay daemon for agent-driven workflows on Hyprland (VCS)"
 arch=('x86_64')
 url="https://github.com/hyprpilot/hyprpilot"
 license=('MIT')
+# Runtime shared-library deps — verified via `ldd target/release/hyprpilot`
+# against a 1.0.0 build. `webkit2gtk-4.1` covers webkit +
+# javascriptcoregtk; `gtk3` covers gdk + glib + cairo + pango + harfbuzz
+# transitively; `gtk-layer-shell` is the C wrapper the `gtk-layer-shell`
+# crate binds against and is the only Wayland-specific piece.
+#
+# No `libappindicator-gtk3`: tauri 2's `tray-icon` feature speaks the
+# KSNI dbus protocol via the `ksni` crate, not via libappindicator
+# linkage — `ldd` confirms zero references to `libayatana-appindicator`
+# or `libappindicator` in the produced binary. The tray surfaces on
+# KDE Plasma natively and on GNOME via the AppIndicator extension; on
+# Hyprland there's no tray anyway. Dropping the dep removes a
+# transitive pull (libdbusmenu-glib + libdbusmenu-gtk3 + indicator-glib)
+# the binary never opens.
 depends=(
   'webkit2gtk-4.1'
   'gtk3'
   'gtk-layer-shell'
-  'libappindicator-gtk3'
 )
 makedepends=(
   'git'

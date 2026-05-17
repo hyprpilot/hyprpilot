@@ -348,10 +348,48 @@ mod tests {
         path
     }
 
+    /// Clone the captain's `Config` with a stub `[[profiles]]` entry
+    /// injected when the list is empty, so `validate()` doesn't
+    /// reject on the "must have at least one profile" rule. Defaults
+    /// don't seed a profile anymore (captains supply their own); use
+    /// this in tests whose subject is something OTHER than profile
+    /// validation (keymap parsing, log-level enums, patches authoring).
+    /// Returns a clone so the test can keep reading the original cfg
+    /// after running validation against the stub-augmented one.
+    fn with_stub_profile(cfg: &Config) -> Config {
+        let mut out = cfg.clone();
+        if out.profiles.is_empty() {
+            out.profiles.push(ProfileConfig {
+                id: "stub".into(),
+                agent: "claude-code".into(),
+                model: None,
+                system_prompt: None,
+                mcps: None,
+                mcp: None,
+                mode: None,
+                cwd: None,
+                env: Default::default(),
+            });
+        }
+        out
+    }
+
     #[test]
-    fn defaults_parse_and_validate() {
+    fn defaults_parse_but_reject_validate_without_a_profile() {
+        // Defaults.toml seeds agents + patches + chrome but
+        // intentionally NO profile — captains supply their own so
+        // the profile list isn't polluted with a default-pretender.
+        // Validation must reject the empty `[[profiles]]` list so a
+        // captain who hasn't configured a profile finds out at
+        // daemon boot rather than per-spawn.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
-        cfg.validate().expect("defaults must validate");
+        let err = cfg
+            .validate()
+            .expect_err("defaults must NOT validate without a profile");
+        assert!(
+            err.to_string().contains("at least one [[profiles]] entry"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -501,7 +539,9 @@ level = "{lvl}"
             );
             let p = write_tmp(&format!("level-{lvl}.toml"), &body);
             let cfg = load(Some(&p), None).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
-            cfg.validate().unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
+            with_stub_profile(&cfg)
+                .validate()
+                .unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
             fs::remove_file(&p).ok();
         }
     }
@@ -556,7 +596,7 @@ level = "{lvl}"
         assert_eq!(k.chat.cancel_turn, Some(binding(&[Modifier::Ctrl], Key::Char('d'))));
         assert_eq!(k.chat.focus_input, Some(binding(&[Modifier::Ctrl], Key::Char('f'))));
 
-        cfg.validate().expect("seeded defaults validate");
+        with_stub_profile(&cfg).validate().expect("seeded defaults validate");
     }
 
     #[test]
@@ -591,7 +631,9 @@ open = { key = "enter" }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate().expect("cross-scope collisions validate");
+        with_stub_profile(&cfg)
+            .validate()
+            .expect("cross-scope collisions validate");
         fs::remove_file(&p).ok();
     }
 
@@ -608,7 +650,9 @@ focus = { modifiers = ["ctrl"], key = "i" }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate().expect("palette vs palette.instances is cross-scope");
+        with_stub_profile(&cfg)
+            .validate()
+            .expect("palette vs palette.instances is cross-scope");
         fs::remove_file(&p).ok();
     }
 
@@ -667,7 +711,7 @@ open = { key = "?" }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate().expect("single-char key accepts");
+        with_stub_profile(&cfg).validate().expect("single-char key accepts");
         assert_eq!(cfg.keymaps.palette.open, Some(binding(&[], Key::Char('?'))));
         fs::remove_file(&p).ok();
     }
@@ -682,7 +726,9 @@ submit = { modifiers = ["shift", "ctrl"], key = "enter" }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate().expect("mixed-order modifiers validate");
+        with_stub_profile(&cfg)
+            .validate()
+            .expect("mixed-order modifiers validate");
         // Source order ["shift","ctrl"] canonicalises to sorted ascending.
         let submit = cfg.keymaps.chat.submit.expect("seeded");
         assert_eq!(submit.modifiers, vec![Modifier::Ctrl, Modifier::Shift]);
@@ -726,7 +772,7 @@ submit = { modifiers = ["ctrl"], key = "enter" }
             cfg.keymaps.palette.instances.focus,
             Some(binding(&[Modifier::Ctrl], Key::Char('i')))
         );
-        cfg.validate().expect("partial override validates");
+        with_stub_profile(&cfg).validate().expect("partial override validates");
         fs::remove_file(&p).ok();
     }
 
@@ -750,7 +796,7 @@ inject = { on_update = true }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        cfg.validate().expect("root patches validate");
+        with_stub_profile(&cfg).validate().expect("root patches validate");
 
         let patches = cfg.patches.as_deref().expect("set");
         assert!(!patches.is_empty(), "captain's patch must merge in");

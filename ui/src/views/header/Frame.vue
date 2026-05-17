@@ -337,15 +337,17 @@ html:not([data-window-anchor]) .frame {
   cursor: pointer;
 }
 
-/* Session title — dashed pill, mono, ink-2. Takes its intrinsic
- * width and joins the `HorizontalScroller` cluster so the captain
- * can swipe to read the full title instead of seeing it ellipsised
- * after a dozen chars. `truncate` + `flex-1` (the previous shape)
- * gave the title the squeeze: every sibling pill is `shrink-0`, so
- * the title was the only thing that shrank, and on the typical
- * row width that meant a hard ellipsis mid-title. */
+/* Session title — dashed pill, mono, ink-2. Grows to fill remaining
+ * space in the row (after sibling pills claim their `shrink-0`
+ * intrinsic widths) and ellipsizes via CSS when the title doesn't
+ * fit. `min-width: 0` is the unlock — without it `flex-1` won't let
+ * the title shrink below its intrinsic content width and `truncate`
+ * never engages. The earlier `shrink-0` shape made the title take
+ * its full intrinsic width which on long session titles pushed the
+ * trailing buttons off-screen on narrow rows. */
 .frame-title {
-  @apply shrink-0 whitespace-nowrap;
+  @apply flex-1 truncate;
+  min-width: 0;
   padding: 0.1875rem 0.625rem;
   font-size: 0.66rem;
   color: var(--theme-fg-subtle);
@@ -534,6 +536,20 @@ html:not([data-window-anchor]) .frame {
  * is the longest chip on the row. */
 @container frame (max-width: 21.25rem) {
   .frame-cwd-worktree {
+    display: none;
+  }
+}
+
+/* Phone / very-narrow viewports: collapse row 1 entirely. Captain
+ * only cares about the cwd (row 2) on mobile — profile / agent /
+ * model / mode / title pills + trailing buttons are desktop-only
+ * cockpit chrome that wastes vertical space + horizontal swiping on
+ * a phone. Row 2 stays with its cwd + git status; row 3 (the
+ * permission strip when active) also stays since it's actionable.
+ * 32rem (~512px at default zoom) is the phone-portrait threshold —
+ * tablets in landscape still see the full cockpit. */
+@container frame (max-width: 32rem) {
+  .frame-row-1 {
     display: none;
   }
 }

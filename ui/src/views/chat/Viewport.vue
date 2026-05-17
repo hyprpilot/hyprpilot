@@ -125,18 +125,26 @@ function markUserScrolled(): void {
   }
 }
 
-useEventListener(scrollEl, 'wheel', markUserScrolled, { passive: true })
+// `wheel` with negative deltaY (or trackpad scroll-up) releases
+// stick SYNCHRONOUSLY before WebKit2GTK's compositor delivers the
+// async scroll event a few frames later. End-of-frame races where a
+// chunk-driven rAF fired first cancel the captain's scroll silently
+// without this. Downward wheel falls through to the same
+// markUserScrolled intent without release.
+useEventListener(
+  scrollEl,
+  'wheel',
+  (ev: WheelEvent) => {
+    if (ev.deltaY < 0) {
+      releaseStickAndMark()
+    } else {
+      markUserScrolled()
+    }
+  },
+  { passive: true }
+)
 useEventListener(scrollEl, 'touchstart', markUserScrolled, { passive: true })
 useEventListener(scrollEl, 'pointerdown', markUserScrolled, { passive: true })
-useEventListener(scrollEl, 'keydown', (ev: KeyboardEvent) => {
-  // Inside-viewport keyboard nav (PageUp/PageDown/Home/End/Arrows)
-  // also counts as captain intent. The document-level handler
-  // further down routes nav keys to scroll ops; this just unlocks
-  // the gate so the resulting scroll events fetch / evict.
-  if (ev.key.startsWith('Arrow') || ev.key === 'PageUp' || ev.key === 'PageDown' || ev.key === 'Home' || ev.key === 'End') {
-    markUserScrolled()
-  }
-})
 
 const viewport = useChatViewport(instanceId, { scrollEl })
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
@@ -161,7 +169,21 @@ const adapterForActive = computed(() => {
   return id ? adapterFor(id) : undefined
 })
 
-const { stuck, scrollToBottom } = useStickToBottom(scrollEl)
+const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scrollEl)
+
+/// Synchronous "captain wants to scroll up" gate. Calls into the
+/// composable to cancel any pending sticky rAF + flip `stuck =
+/// false` BEFORE the input gesture initiates its scroll. Without
+/// this, gestures using `behavior: 'smooth'` (PageUp / Home, the
+/// keyboard handlers below) — or wheel scrolls delivered async by
+/// WebKit2GTK's compositor — get cancelled by a coincident
+/// MutationObserver-driven `scrollToBottom` rAF firing first.
+/// Captain reported the viewport "stays hostage" when stuck at
+/// the bottom; this is the fix.
+function releaseStickAndMark(): void {
+  markUserScrolled()
+  releaseStick()
+}
 
 // `stuck` is the auto-scroll signal — strict 64px-from-bottom
 // threshold so a captain reading 1 viewport above the foot
@@ -244,17 +266,20 @@ async function goToBottom(): Promise<void> {
 const PAGE_OVERLAP_RATIO = 0.9
 
 useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
-  // PageUp / PageDown are unambiguously about scrolling a big
-  // container — textareas / inputs have no meaningful pageful
-  // navigation. The captain's focus lives in the composer textarea
-  // 99% of the time, so bailing on `isEditableTarget` for them meant
-  // Page keys were effectively dead. Bypass the editable-target gate
-  // for Page keys specifically; Home / End keep the gate because
-  // they ARE useful inside textareas for line navigation.
+  // PageUp / PageDown / Home / End are unambiguously about
+  // scrolling a big container — textareas / inputs have no
+  // meaningful pageful navigation. The captain's focus lives in
+  // the composer textarea 99% of the time, so bailing on
+  // `isEditableTarget` for them meant these keys were effectively
+  // dead in the captain's primary workflow. Bypass the editable-
+  // target gate for ALL viewport nav keys; line navigation inside
+  // the composer is rare enough that Ctrl+Home / Ctrl+End cover
+  // it (the captain types text, hits Enter, scrolls chat — not
+  // mid-document caret hops).
   const key = ev.key
-  const isPageKey = key === 'PageUp' || key === 'PageDown'
+  const isViewportNavKey = key === 'PageUp' || key === 'PageDown' || key === 'Home' || key === 'End'
 
-  if (!isPageKey && isEditableTarget(ev.target)) {
+  if (!isViewportNavKey && isEditableTarget(ev.target)) {
     return
   }
   const el = scrollEl.value
@@ -274,18 +299,20 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
 
     case 'PageUp': {
       ev.preventDefault()
-      markUserScrolled()
+      // Upward nav: release stick SYNCHRONOUSLY before scrolling,
+      // so a coincident MutationObserver-driven rAF doesn't fire
+      // `scrollToBottom` first and cancel the smooth scroll.
+      releaseStickAndMark()
       el.scrollBy({ top: -el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
 
       return
     }
 
     case 'Home': {
-      // Bare Home jumps to top — `isEditableTarget` already gated
-      // out inputs / textareas / contenteditable above, so the
-      // textarea-cursor case is already safe.
       ev.preventDefault()
-      markUserScrolled()
+      // Same race as PageUp — release synchronously before the
+      // smooth scroll's first frame.
+      releaseStickAndMark()
       el.scrollTo({ top: 0, behavior: 'smooth' })
 
       return

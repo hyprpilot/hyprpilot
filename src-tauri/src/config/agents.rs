@@ -198,12 +198,6 @@ mod tests {
     fn defaults_populate_every_required_agent_field() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
-        assert_eq!(
-            cfg.profile.default.as_deref(),
-            Some("claude-code"),
-            "[profile] default must be seeded to a concrete profile id (no [agent] default anymore)"
-        );
-
         let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -335,6 +329,10 @@ id = "bare"
 provider = "acp-claude-code"
 command = "my-agent"
 args = ["--flag"]
+
+[[profiles]]
+id = "bare"
+agent = "bare"
 "##,
         );
         let cfg = load(Some(&p), None).expect("load");
@@ -344,27 +342,29 @@ args = ["--flag"]
         fs::remove_file(&p).ok();
     }
 
-    /// Defaults seed a single profile (`claude-code` → `claude-code`
-    /// agent) and pin `[profile] default = "claude-code"` so a fresh
-    /// install can spawn out of the box without further configuration.
-    /// At least one profile is required since the bare-agent fallback
-    /// is gone.
+    /// Defaults seed ZERO profiles + no `[profile] default`.
+    /// Fresh installs configure at least one profile on disk;
+    /// `validate_profiles_non_empty` rejects an empty list at
+    /// config-load so the captain finds out at startup rather than
+    /// per spawn. This shape avoids polluting the captain's profile
+    /// list with a default-pretender profile that's not actually
+    /// any of their setups.
     #[test]
-    fn defaults_seed_a_working_default_profile() {
+    fn defaults_seed_no_profile() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
-        assert!(!cfg.profiles.is_empty(), "defaults must seed at least one profile");
-        assert_eq!(
-            cfg.profile.default.as_deref(),
-            Some("claude-code"),
-            "[profile] default must point at the seeded profile"
-        );
-        assert!(
-            cfg.profiles.iter().any(|p| p.id == "claude-code"),
-            "default profile id must exist in the [[profiles]] list"
-        );
+        assert!(cfg.profiles.is_empty(), "defaults must NOT seed a profile");
+        assert!(cfg.profile.default.is_none(), "[profile] default must NOT be seeded");
 
-        cfg.validate().expect("defaults validate");
+        // Validation rejects the empty defaults — captain must supply
+        // a profile of their own.
+        let err = cfg
+            .validate()
+            .expect_err("defaults must fail validation without a profile");
+        assert!(
+            err.to_string().contains("at least one [[profiles]] entry"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -612,11 +612,10 @@ skills = []
     }
 
     #[test]
-    /// User profiles append onto the defaults-seeded one (keyed by
-    /// id). `merge_profiles_by_id` keeps the seed's `claude-code`
-    /// entry and appends the new ids in file order — captain can
-    /// override the default profile by reusing `id = "claude-code"`
-    /// (covered by the merge-by-id test alongside `[[agents]]`).
+    /// User profiles ARE the full profile list — no defaults-seeded
+    /// `claude-code` polluting the captain's view. `merge_profiles_by_id`
+    /// folds onto the empty defaults vec so iter-order is exactly
+    /// the captain's file order.
     fn user_profiles_flow_through_in_order() {
         let p = write_tmp(
             "user-profiles.toml",
@@ -636,8 +635,8 @@ agent = "claude-code"
         let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["claude-code", "strict", "my-profile"],
-            "seeded default profile stays; user entries append in file order"
+            vec!["strict", "my-profile"],
+            "user profiles ARE the full list; nothing seeded into the captain's view",
         );
 
         let strict = cfg.profiles.iter().find(|p| p.id == "strict").unwrap();

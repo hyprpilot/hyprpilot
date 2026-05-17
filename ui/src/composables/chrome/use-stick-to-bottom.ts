@@ -17,7 +17,14 @@ import { onMounted, onUnmounted, ref, type Ref } from 'vue'
  * `stuck` is exposed for callers that want a "scroll to bottom"
  * affordance — `false` means the user has scrolled away.
  */
-export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options?: { threshold?: number }): { stuck: Ref<boolean>; scrollToBottom: () => void } {
+export function useStickToBottom(
+  scrollEl: Ref<HTMLElement | undefined>,
+  options?: { threshold?: number }
+): {
+  stuck: Ref<boolean>
+  scrollToBottom: () => void
+  release: () => void
+} {
   const threshold = options?.threshold ?? 64
   const stuck = ref(true)
   /// Set when `scrollToBottom` writes `scrollTop` and the assignment
@@ -257,5 +264,34 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     }
   })
 
-  return { stuck, scrollToBottom }
+  /// Synchronously release auto-follow + cancel any in-flight
+  /// stick rAF. Call from input handlers BEFORE initiating an
+  /// upward scroll so a coincident mutation-driven rAF can't
+  /// snap the viewport back to the foot.
+  ///
+  /// Why this exists separately from `onScroll`'s direction-based
+  /// cancel: input gestures that use `behavior: 'smooth'` (PageUp,
+  /// Home, the `scrollBy` paths in `Viewport.vue`) don't fire their
+  /// first scroll event until the next animation frame — by then a
+  /// rAF queued from a coincident chunk has already fired and run
+  /// `scrollToBottom`, which cancels the smooth scroll. The
+  /// captain's gesture vanishes silently. Same race with wheel on
+  /// compositor-accelerated scrolling (WebKit2GTK delivers wheel-
+  /// driven scroll events asynchronously via the compositor). The
+  /// only bulletproof fix is for the gesture handler to release
+  /// stick SYNCHRONOUSLY at gesture-start, before the rAF gets a
+  /// chance to fire.
+  function release(): void {
+    stuck.value = false
+
+    if (rafHandle !== undefined) {
+      cancelAnimationFrame(rafHandle)
+      rafHandle = undefined
+      rafPending = false
+    }
+  }
+
+  return {
+    stuck, scrollToBottom, release
+  }
 }
