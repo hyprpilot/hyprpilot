@@ -292,6 +292,8 @@ export function useStickToBottom(
   }
 
   return {
-    stuck, scrollToBottom, release
+    stuck,
+    scrollToBottom,
+    release
   }
 }

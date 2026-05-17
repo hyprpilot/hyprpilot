@@ -234,12 +234,43 @@ function routeTerminal(payload: TerminalEventPayload): void {
 }
 
 /**
- * Subscribes the session-event demuxer. Resolves to an unsubscribe
- * fn that tears down every listener. Safe to call from
- * `onMounted(async () => { const stop = await startSessionStream();
- * onUnmounted(stop) })`.
+ * Page-lifetime singleton — wires every `acp:*` event listener the
+ * SPA needs (TurnStarted/Ended, InstanceState, PermissionRequest,
+ * QueueChanged, InstanceMeta, …) onto module-level stores. Called
+ * exactly once per page from `main.ts` BEFORE `applyBootSnapshot`
+ * so the remote WS bridge's listener-before-snapshot ordering
+ * invariant holds — without this hoist, events arriving between
+ * pair-authenticated and Overlay.vue's `onMounted` were silently
+ * dropped at `remote-bridge.ts::onMessage` (no listener registered
+ * yet). Captain-reported symptom: submit a prompt on mobile, see
+ * no stop button / no header pill color flip — TurnStarted was
+ * one of the dropped frames.
+ *
+ * Returns a teardown thunk so the existing test harness (which
+ * mounts + unmounts components in isolation) can clean up between
+ * cases. Production paths leave the listeners attached for the
+ * page's lifetime — there's no useful tear-down point on a
+ * single-page app.
+ *
+ * Re-entry guard: a second call returns a no-op teardown. The
+ * shape lets test harnesses call this in a `beforeEach` without
+ * double-registering listeners against the same store.
  */
+let started = false
+
+/// Test-only sentinel reset. Tests register listeners per case via
+/// `beforeEach`; without clearing this flag the second call returns
+/// the no-op teardown and the case sees zero listeners.
+export function __resetSessionStreamForTests(): void {
+  started = false
+}
+
 export async function startSessionStream(): Promise<() => void> {
+  if (started) {
+    return () => {}
+  }
+  started = true
+
   const { setIfUnset } = useActiveInstance()
 
   // Prior state per instance — used to suppress spurious "session ended"
@@ -498,5 +529,6 @@ export async function startSessionStream(): Promise<() => void> {
     }
     unlisteners.length = 0
     priorState.clear()
+    started = false
   }
 }

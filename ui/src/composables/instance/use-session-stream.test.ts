@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ToastTone } from '@components'
 import {
+  __resetSessionStreamForTests,
   useActiveInstance,
   resetPermissions,
   usePermissions,
@@ -58,6 +59,7 @@ function emit(event: string, payload: unknown) {
 beforeEach(() => {
   handlers.clear()
   unlisten.mockReset()
+  __resetSessionStreamForTests()
   useActiveInstance().id.value = undefined
   clearToasts()
   resetTranscript('A')

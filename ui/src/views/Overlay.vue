@@ -67,7 +67,6 @@ import {
   useToasts,
   type KeymapEntry,
   startRemotePairListener,
-  startSessionStream,
   type InstanceId
 } from '@composables'
 import { type Attachment, invoke, Modifier, TauriCommand } from '@ipc'
@@ -249,8 +248,6 @@ async function onCloseOverlay(): Promise<void> {
 // (the virtualized chat-body component). Overlay no longer assembles
 // the timeline — the body reads off the daemon snapshot directly via
 // `useChatViewport` and projects pages through `timelineBlocksFromSnapshot`.
-
-let stopStream: (() => void) | undefined
 
 function firePermission(action: 'allow' | 'deny'): void {
   // TODO: Tab = next row cycling. Today the approval keybind always
@@ -545,12 +542,12 @@ onMounted(async() => {
     pushToast(ToastTone.Err, `active-instance bind failed: ${String(err)}`)
   }
 
-  try {
-    stopStream = await startSessionStream()
-  } catch(err) {
-    log.error('invoke failed', { command: 'startSessionStream' }, err)
-    pushToast(ToastTone.Err, `stream bind failed: ${String(err)}`)
-  }
+  // `startSessionStream` is hoisted to `main.ts` so its listeners
+  // wire BEFORE Overlay mounts (and BEFORE the boot snapshot fires).
+  // Used to live here; moving it closed a remote-bridge race where
+  // events arriving between pair-auth and Overlay mount got dropped.
+  // The re-entry guard in `startSessionStream` makes a stray call
+  // safe but unnecessary.
 
   try {
     stopRemotePairListener = await startRemotePairListener()
@@ -592,8 +589,6 @@ onMounted(async() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', windowToggleCaptureListener, { capture: true })
-  stopStream?.()
-  stopStream = undefined
   stopActiveInstanceStore?.()
   stopActiveInstanceStore = undefined
   stopRemotePairListener?.()
