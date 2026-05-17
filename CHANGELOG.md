@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.0.0](https://github.com/hyprpilot/hyprpilot/compare/v0.7.2...v1.0.0) (2026-05-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** Root-level `system_prompt`, `mcps`, and `mcp` config fields are removed. Captains using them must migrate to `[[patches]]`. See CLAUDE.md's "Root-level `[[patches]]`" section for the new shape + migration examples. Defaults.toml ships one seeded patch enabling the in-tree mcp server + the XDG skills dir so fresh installs work out of the box.
+* **ui:** First 1.x release — locks in the daemon's wire contract (JSON-RPC over the unix socket, the WS remote bridge, every `acp:*` Tauri event, the `[mcp]` config block, skills exposed as `hyprpilot://skills/<slug>` MCP resources) and the markdown-paragraph fold semantics for streamed agent chunks. No actual breakage in this commit — semantic versioning bump to mark stability of the surfaces shipped across the 0.x line.
+
+### style
+
+* **ui:** match GitHub markdown spacing in chat bubbles ([#85](https://github.com/hyprpilot/hyprpilot/issues/85)) ([674085b](https://github.com/hyprpilot/hyprpilot/commit/674085b25645fb2883b58add11e360bff667e67a))
+
+
+### Features
+
+* **daemon:** host skills as an in-tree hyprpilot MCP server ([#81](https://github.com/hyprpilot/hyprpilot/issues/81)) ([8ca3dd8](https://github.com/hyprpilot/hyprpilot/commit/8ca3dd81b6c33d40c39f58c70179c4b354e418f6))
+
+
+### Bug Fixes
+
+* **daemon:** paragraph break around tool calls + checklist stats on plans ([#83](https://github.com/hyprpilot/hyprpilot/issues/83)) ([ee6606f](https://github.com/hyprpilot/hyprpilot/commit/ee6606f38ed23bd10b81b845aceeb118fb4a7f83))
+* **ui:** cancel pending sticky rAF on upward scroll so PageUp/wheel respond mid-snap ([#87](https://github.com/hyprpilot/hyprpilot/issues/87)) ([d1daf63](https://github.com/hyprpilot/hyprpilot/commit/d1daf63540fe955bed2f747b252bd4c0f84abdc0))
+* **ui:** reliable chat viewport scrolling via mouse, scrollbar, and Page keys ([#84](https://github.com/hyprpilot/hyprpilot/issues/84)) ([29f328c](https://github.com/hyprpilot/hyprpilot/commit/29f328c9f313f57fd4e960b945298ea67afc116f))
+* **ui:** stop palette row accent borders from leaking past rounded corners ([#86](https://github.com/hyprpilot/hyprpilot/issues/86)) ([f82f881](https://github.com/hyprpilot/hyprpilot/commit/f82f88122f4085bc4c40dcaeb8920db5006d758d))
+
+
+### Refactor
+
+* **config:** replace root-level profile-fallback fields with [[patches]] ([#88](https://github.com/hyprpilot/hyprpilot/issues/88)) ([7233929](https://github.com/hyprpilot/hyprpilot/commit/72339290fc3c7bde4299e62c26c55f74cf5fbb5c))
+
 ## [0.7.2](https://github.com/hyprpilot/hyprpilot/compare/v0.7.1...v0.7.2) (2026-05-16)
 
 
