@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/hyprpilot/hyprpilot/compare/v1.0.0...v2.0.0) (2026-05-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **v1.x:** defaults.toml no longer seeds a `[[profiles]]` entry. Fresh installs MUST supply a profile (existing captain configs already did). Daemon's `validate_profiles_non_empty` surfaces a captain-readable error at boot.
+
+### Bug Fixes
+
+* **v1.x:** scroll/title/cwd/aur/mobile/seeded-profile/session-order + empty thought + remote stream hoist + queue snapshot ([#89](https://github.com/hyprpilot/hyprpilot/issues/89)) ([56bdc01](https://github.com/hyprpilot/hyprpilot/commit/56bdc0184eebb077b33250220f48ee8ee8d9ceb9))
+
 ## [1.0.0](https://github.com/hyprpilot/hyprpilot/compare/v0.7.2...v1.0.0) (2026-05-17)
 
 
