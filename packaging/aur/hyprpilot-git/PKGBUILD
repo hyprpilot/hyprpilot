@@ -14,7 +14,7 @@ license=('MIT')
 # overlay needs it.
 #
 # `libappindicator-gtk3` is required at RUNTIME via `dlopen` (the
-# `libappindicator-rs` crate uses `libloading`, which is why `ldd`
+# `libappindicator-sys` crate uses `libloading`, which is why `ldd`
 # shows no static reference). tauri 2's `tray-icon = "0.23"` feature
 # initialises a `TrayIconBuilder` at daemon startup; on GNOME with the
 # AppIndicator extension that path opens `libappindicator-gtk3.so.1`
