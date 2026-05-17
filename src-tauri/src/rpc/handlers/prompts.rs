@@ -476,13 +476,17 @@ mod tests {
     fn dead_child_adapter() -> Arc<AcpAdapter> {
         let cfg: Config = toml::from_str(
             r#"
-[agent]
-default = "dead"
-
 [[agents]]
 id = "dead"
 provider = "acp-claude-code"
 command = "/bin/false"
+
+[profile]
+default = "dead"
+
+[[profiles]]
+id = "dead"
+agent = "dead"
 "#,
         )
         .expect("config parses");

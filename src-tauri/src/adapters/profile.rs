@@ -99,9 +99,11 @@ impl ResolvedInstance {
 
 impl ResolvedInstance {
     /// Resolve the active agent + profile overlay for a submit call.
-    /// `profile_id` — when `Some` — must name a real profile; when
-    /// `None`, falls back through `[profile] default` and finally
-    /// to a bare-agent resolution.
+    /// `profile_id` — when `Some` — must name a real `[[profiles]]`
+    /// entry. When `None`, falls back to `[profile] default`. Errors
+    /// when neither resolves — there is no bare-agent fallback (every
+    /// spawn flows through a profile so `[[patches]]` /
+    /// `--with-config` always have a target).
     pub fn from_config(config: &Config, profile_id: Option<&str>) -> Result<Self> {
         if let Some(id) = profile_id {
             return Self::from_profile(config, id);
@@ -109,7 +111,11 @@ impl ResolvedInstance {
         if let Some(id) = config.profile.default.as_deref() {
             return Self::from_profile(config, id);
         }
-        Self::bare(config)
+        bail!(
+            "no profile addressed and no `[profile] default` configured — \
+             every spawn requires a `[[profiles]]` entry. \
+             Pass `--profile <id>` or set `[profile] default = '<id>'`."
+        )
     }
 
     fn from_profile(config: &Config, profile_id: &str) -> Result<Self> {
@@ -163,35 +169,6 @@ impl ResolvedInstance {
             model,
             system_prompt,
             mode: profile.mode.clone(),
-        })
-    }
-
-    fn bare(config: &Config) -> Result<Self> {
-        let agents = &config.agents.agents;
-        if agents.is_empty() {
-            bail!("no agents configured — add a [[agents]] entry or use --profile");
-        }
-        let agent = config
-            .agents
-            .agent
-            .default
-            .as_deref()
-            .and_then(|wanted| agents.iter().find(|a| a.id == wanted))
-            .unwrap_or(&agents[0]);
-        let agent = agent.clone();
-        let model = agent.model.clone();
-
-        Ok(Self {
-            agent,
-            profile_id: None,
-            model,
-            // Bare resolution has no profile to patch; the captain
-            // gets an empty prompt list. Captains who want a prompt
-            // without picking a profile add a default profile in
-            // `[profile] default` (root `[[patches]]` then layer
-            // the prompt onto that profile).
-            system_prompt: Vec::new(),
-            mode: None,
         })
     }
 
@@ -420,13 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_default_profile_then_bare_agent() {
+    fn falls_back_to_default_profile_then_errors() {
         let mut cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", Some("sonnet"))],
-                agent: crate::config::AgentDefaults {
-                    default: Some("cc".into()),
-                },
             },
             profile: crate::config::ProfileDefaults {
                 default: Some("ask".into()),
@@ -438,12 +412,15 @@ mod tests {
         assert_eq!(r.profile_id.as_deref(), Some("ask"));
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
+        // With `[profile] default` cleared AND no `--profile`,
+        // resolution errors — there is no bare-agent fallback.
         cfg.profile.default = None;
-        let r = ResolvedInstance::from_config(&cfg, None).unwrap();
-        assert!(r.profile_id.is_none());
-        assert_eq!(r.agent.id, "cc");
-        assert_eq!(r.model.as_deref(), Some("sonnet"));
-        assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
+        let err = ResolvedInstance::from_config(&cfg, None).expect_err("must error without a profile");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("every spawn requires a") || msg.contains("no profile addressed"),
+            "expected captain-facing error, got: {msg}"
+        );
     }
 
     #[test]

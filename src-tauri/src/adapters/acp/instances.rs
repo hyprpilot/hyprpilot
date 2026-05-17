@@ -376,7 +376,7 @@ impl AcpAdapter {
         //   3. Apply per-invocation `--with-config` patches on top.
         // Both layers go through the same strategic-merge engine;
         // step 3 wins on field collision because right wins.
-        let base_profile = base_profile_for_patches(&cfg, profile_id);
+        let base_profile = base_profile_for_patches(&cfg, profile_id)?;
         let base_value = serde_json::to_value(&base_profile)
             .map_err(|e| RpcError::internal_error(format!("profile serialize failed: {e}")))?;
 
@@ -1246,7 +1246,16 @@ impl AcpAdapter {
     #[must_use]
     pub fn list_agents(&self) -> Vec<crate::adapters::AgentSummary> {
         let cfg = self.read_config();
-        let default_agent = cfg.agents.agent.default.as_deref();
+        // `is_default` follows the agent referenced by `[profile]
+        // default` — there is no standalone `[agent] default`
+        // anymore. When `[profile] default` is unset or names a
+        // non-existent profile, no agent gets the badge.
+        let default_agent = cfg
+            .profile
+            .default
+            .as_deref()
+            .and_then(|id| cfg.profiles.iter().find(|p| p.id == id))
+            .map(|p| p.agent.as_str());
         cfg.agents
             .agents
             .iter()
@@ -1810,35 +1819,34 @@ fn profile_by_id_in(cfg: &Config, profile_id: Option<&str>) -> Option<ProfileCon
 /// erroring: the patches themselves may well set `profile.id` /
 /// `profile.agent` to something sensible. Invalid combinations
 /// surface downstream during the patched profile's validate pass.
-fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> ProfileConfig {
+/// Pick the base `ProfileConfig` patches will fold onto. Resolves
+/// `--profile <id>` first, then `[profile] default`. Errors when
+/// neither addresses a real `[[profiles]]` entry — every spawn
+/// flows through a profile (no bare-agent fallback). Validation at
+/// config-load already rejects an empty `[[profiles]]` list, so the
+/// captain's setup mistake surfaces at daemon boot rather than per
+/// `--with-config` invocation.
+fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> Result<ProfileConfig, RpcError> {
     if let Some(id) = profile_id {
         if let Some(p) = cfg.profiles.iter().find(|p| p.id == id) {
-            return p.clone();
+            return Ok(p.clone());
         }
+        return Err(RpcError::invalid_params(format!(
+            "profile '{id}' not found in [[profiles]] registry"
+        )));
     }
     if let Some(default_id) = cfg.profile.default.as_deref() {
         if let Some(p) = cfg.profiles.iter().find(|p| p.id == default_id) {
-            return p.clone();
+            return Ok(p.clone());
         }
+        return Err(RpcError::invalid_params(format!(
+            "[profile] default = '{default_id}' but no matching [[profiles]] entry exists"
+        )));
     }
-    let agent = cfg
-        .agents
-        .agent
-        .default
-        .clone()
-        .or_else(|| cfg.agents.agents.first().map(|a| a.id.clone()))
-        .unwrap_or_default();
-    ProfileConfig {
-        id: profile_id.unwrap_or("__inline__").to_string(),
-        agent,
-        model: None,
-        system_prompt: None,
-        mcps: None,
-        mcp: None,
-        mode: None,
-        cwd: None,
-        env: std::collections::BTreeMap::new(),
-    }
+    Err(RpcError::invalid_params(
+        "no profile addressed and no `[profile] default` configured — every spawn requires a `[[profiles]]` entry. \
+         Pass `--profile <id>` or set `[profile] default = '<id>'`.",
+    ))
 }
 
 /// `AcpAdapter::resolve` against an explicit config — same logic,
@@ -2008,9 +2016,6 @@ mod tests {
 
         let cfg: Config = toml::from_str(&format!(
             r#"
-[agent]
-default = "claude-code"
-
 [profile]
 default = "ask"
 
@@ -2058,9 +2063,6 @@ system_prompt = [{{ file = "{}" }}]
         // the first-iterated profile's view leaking across.
         toml::from_str(&format!(
             r#"
-[agent]
-default = "claude-code"
-
 [profile]
 default = "personal"
 
@@ -2238,13 +2240,17 @@ agent = "claude-code"
     async fn spawn_threads_mode_through_to_instance_info() {
         let cfg: Config = toml::from_str(
             r#"
-[agent]
-default = "dead"
-
 [[agents]]
 id = "dead"
 provider = "acp-claude-code"
 command = "/bin/false"
+
+[profile]
+default = "dead"
+
+[[profiles]]
+id = "dead"
+agent = "dead"
 "#,
         )
         .expect("parses");
@@ -2271,9 +2277,6 @@ command = "/bin/false"
     async fn spawn_with_config_patch_overrides_resolved_profile() {
         let cfg: Config = toml::from_str(
             r#"
-[agent]
-default = "base"
-
 [[agents]]
 id = "base"
 provider = "acp-claude-code"
@@ -2283,6 +2286,13 @@ command = "/bin/false"
 id = "extra"
 provider = "acp-claude-code"
 command = "/bin/false"
+
+[profile]
+default = "base"
+
+[[profiles]]
+id = "base"
+agent = "base"
 "#,
         )
         .expect("parses");
@@ -2318,13 +2328,17 @@ command = "/bin/false"
     async fn spawn_with_config_patch_rejects_unknown_field() {
         let cfg: Config = toml::from_str(
             r#"
-[agent]
-default = "base"
-
 [[agents]]
 id = "base"
 provider = "acp-claude-code"
 command = "/bin/false"
+
+[profile]
+default = "base"
+
+[[profiles]]
+id = "base"
+agent = "base"
 "#,
         )
         .expect("parses");

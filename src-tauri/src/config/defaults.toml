@@ -250,9 +250,6 @@ toggle = { modifiers = ["ctrl"], key = "q" }
 send = { modifiers = ["ctrl"], key = "enter" }
 drop = { modifiers = ["ctrl"], key = "backspace" }
 
-[agent]
-default = "claude-code"
-
 [[agents]]
 id = "claude-code"
 provider = "acp-claude-code"
@@ -270,3 +267,13 @@ id = "opencode"
 provider = "acp-opencode"
 command = "opencode"
 args = ["acp"]
+
+# `[[profiles]]` — at least one entry is required. Every spawn flows
+# through a profile (no bare-agent fallback). `[profile] default`
+# picks which one runs when `--profile <id>` isn't passed.
+[profile]
+default = "claude-code"
+
+[[profiles]]
+id = "claude-code"
+agent = "claude-code"

@@ -20,7 +20,7 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
+pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
 pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
 pub use extensions::{McpFile, SkillEntry};
@@ -32,6 +32,7 @@ pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
 pub use theme::{Theme, Ui};
 use validations::{
     validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
+    validate_profiles_non_empty,
 };
 
 pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
@@ -76,8 +77,12 @@ pub struct Config {
     pub profile: ProfileDefaults,
     /// `[[profiles]]` at TOML root. Each profile binds an agent id to an
     /// optional model override + optional system prompt; resolved into a
-    /// flat `ResolvedInstance` at `session/submit` time.
+    /// flat `ResolvedInstance` at `session/submit` time. **At least one
+    /// entry is required** — there is no bare-agent fallback. Spawn
+    /// picks `--profile <id>` first, then `[profile] default`, then
+    /// errors when neither resolves to a real profile.
     #[garde(dive)]
+    #[garde(custom(validate_profiles_non_empty))]
     #[garde(custom(validate_profiles_ids))]
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
     #[serde(default)]
@@ -315,7 +320,6 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
         profile = ?profile,
         agents = cfg.agents.agents.len(),
         profiles = cfg.profiles.len(),
-        default_agent = ?cfg.agents.agent.default,
         default_profile = ?cfg.profile.default,
         "config::load: layers merged"
     );
