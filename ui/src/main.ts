@@ -10,12 +10,13 @@ import {
   loadCompletionConfig,
   loadKeymaps,
   markBootDone,
+  resyncFromRemote,
   setBootStatus,
   startGitStatus,
   startSessionStream,
   startTranscriptPatcher
 } from '@composables'
-import { ensureRemoteConnection, isRemoteHost, subscribePair } from '@ipc/remote-bridge'
+import { ensureRemoteConnection, isRemoteHost, setRemoteResyncHandler, subscribePair } from '@ipc/remote-bridge'
 import { log } from '@lib'
 import '@assets/styles.css'
 
@@ -143,6 +144,17 @@ async function boot(): Promise<void> {
   // shut. On remote, mount comes first (the pair screen needs DOM
   // before the WS is up); the snapshot lands after authenticate.
   if (isRemoteHost()) {
+    // Wire delta-replay BEFORE the first WS handshake. On silent
+    // reauth (mobile tab regaining focus after the OS suspended the
+    // socket), the bridge dispatches this handler instead of
+    // `window.location.reload()`. Handler pulls per-instance
+    // `instance_snapshot_chat { after: lastSeen }` and refreshes
+    // meta/terminals/queue/instances queries — the captain's scroll
+    // position, composer state, and focus survive. Falls back to a
+    // page reload if the handler returns `false` (no prior state to
+    // delta-replay against, e.g. the very first reconnect with no
+    // events yet observed).
+    setRemoteResyncHandler(() => resyncFromRemote(queryClient))
     setBootStatus('connecting to daemon…')
     app.mount('#app')
     await ensureRemoteConnection()

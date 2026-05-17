@@ -53,7 +53,9 @@ import { type InfiniteData, type QueryClient } from '@tanstack/vue-query'
 import { nextSeq } from './sequence'
 import { usePermissions } from './use-permissions'
 import {
+  invoke,
   listen,
+  TauriCommand,
   TauriEvent,
   TranscriptItemKind,
   type AcpPermissionResolvedPayload,
@@ -77,6 +79,33 @@ const pendingByInstance = new Map<string, TranscriptEventPayload[]>()
 let flushScheduled = false
 let started = false
 let unlisteners: UnlistenFn[] = []
+/// Per-instance highest `seq` observed on the wire. The remote-bridge
+/// reads this on reconnect and asks the daemon for everything strictly
+/// newer via `instance_snapshot_chat { after }`. Seeded from snapshot
+/// pages (the `latestSeq` field on `ChatSnapshot`); updated on every
+/// live `acp:transcript` event whose payload carries `seq`. Older
+/// daemons leave `seq` undefined — the counter stays put and the
+/// reconnect path falls back to a head-anchored fetch.
+const lastSeenSeqByInstance = new Map<string, number>()
+
+export function recordLastSeenSeq(instanceId: string, seq: number | undefined): void {
+  if (typeof seq !== 'number' || !Number.isFinite(seq)) {
+    return
+  }
+  const prior = lastSeenSeqByInstance.get(instanceId) ?? 0
+
+  if (seq > prior) {
+    lastSeenSeqByInstance.set(instanceId, seq)
+  }
+}
+
+export function getLastSeenSeq(instanceId: string): number | undefined {
+  return lastSeenSeqByInstance.get(instanceId)
+}
+
+export function listSeenInstanceIds(): string[] {
+  return [...lastSeenSeqByInstance.keys()]
+}
 
 /// Find the most-recent existing item in the cache that an incoming
 /// `AgentText` / `AgentThought` chunk should accumulate onto. Match
@@ -350,10 +379,17 @@ function scheduleFlush(queryClient: QueryClient): void {
 
 function patchLatestPage(queryClient: QueryClient, payload: TranscriptEventPayload): void {
   // Touch the local seq counter so the singleton stays roughly in sync
-  // with the per-instance composable's monotonic counter. The wire
-  // doesn't ship the daemon's seq on live events; this is just a local
-  // ordinal used for diagnostic traces.
+  // with the per-instance composable's monotonic counter. Used for
+  // diagnostic traces — independent of the daemon-minted `seq` on the
+  // payload (the local counter exists for backward compat with older
+  // daemons that don't ship `seq`).
   nextSeq(payload.instanceId)
+  // Track the daemon's truth so a reconnect can ask for everything
+  // strictly newer. When the wire carries `seq` (current daemon) the
+  // remote-bridge's `setRemoteResyncHandler` reads this on reconnect
+  // and dispatches `instance_snapshot_chat { after }`. Older daemons
+  // leave the field undefined; reconnect falls back to a head fetch.
+  recordLastSeenSeq(payload.instanceId, payload.seq)
   const list = pendingByInstance.get(payload.instanceId) ?? []
 
   list.push(payload)
@@ -418,6 +454,7 @@ export function stopTranscriptPatcher(): void {
   }
   unlisteners = []
   pendingByInstance.clear()
+  lastSeenSeqByInstance.clear()
   flushScheduled = false
   started = false
 }
@@ -427,4 +464,153 @@ export function stopTranscriptPatcher(): void {
  */
 export function __resetTranscriptPatcherForTests(): void {
   stopTranscriptPatcher()
+}
+
+/// Max items the delta-replay path will pull per instance per
+/// reconnect. Picked at 500 because the mirror's ring buffer caps at
+/// 5000, and 500 covers minutes of streaming at typical agent
+/// throughput (~30 chunks/s burst, sub-1/s sustained). When the
+/// daemon has more than 500 newer-than-cursor items, the response's
+/// `hasMore` stays `true` — the patcher then logs and stops, leaving
+/// the captain a one-page-stale view; a manual scroll-to-bottom +
+/// next live event closes the gap. For longer offline windows the
+/// captain can refresh manually.
+const DELTA_REPLAY_PAGE_SIZE = 500
+
+/// Apply a daemon-served delta page (items strictly newer than the
+/// caller's last-seen seq) onto the head of the cached chat infinite
+/// query. Items are sequenced by the daemon — we trust their `seq`
+/// values and merge ToolCallUpdate entries onto in-cache ToolCall
+/// rows the same way the live patcher does, so a delta-replay that
+/// catches a mid-streaming tool call collapses correctly instead of
+/// stacking a phantom row.
+function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items: SeqTranscriptItem[]): number {
+  if (items.length === 0) {
+    return 0
+  }
+  let applied = 0
+
+  queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', instanceId], (old) => {
+    if (!old || old.pages.length === 0) {
+      // No cached pages yet — first hydration hasn't landed. The
+      // boot path will fetch a fresh head page anyway; drop the
+      // delta to avoid double-painting.
+      return old
+    }
+    const head = old.pages[0]
+
+    if (!head) {
+      return old
+    }
+    const nextItems = [...head.items]
+    let lastSeq = head.latestSeq ?? 0
+
+    for (const incoming of items) {
+      const merged = mergeToolCallUpdate(nextItems, incoming)
+
+      if (!merged) {
+        nextItems.push(incoming)
+      }
+
+      if (incoming.seq > lastSeq) {
+        lastSeq = incoming.seq
+      }
+      recordLastSeenSeq(instanceId, incoming.seq)
+      applied += 1
+    }
+
+    const nextHead: ChatSnapshot = {
+      items: nextItems,
+      oldestSeq: head.oldestSeq ?? lastSeq,
+      latestSeq: lastSeq,
+      hasMore: head.hasMore
+    }
+
+    return {
+      ...old,
+      pages: [nextHead, ...old.pages.slice(1)],
+      pageParams: old.pageParams
+    }
+  })
+
+  return applied
+}
+
+async function replayDeltaForInstance(queryClient: QueryClient, instanceId: string): Promise<void> {
+  const after = lastSeenSeqByInstance.get(instanceId)
+
+  if (after === undefined) {
+    return
+  }
+
+  try {
+    const snap = (await invoke(TauriCommand.InstanceSnapshotChat, {
+      instanceId,
+      after,
+      limit: DELTA_REPLAY_PAGE_SIZE
+    })) as ChatSnapshot
+
+    const applied = applyChatDeltaPage(queryClient, instanceId, snap.items)
+
+    log.trace('snapshot.delta-replay.applied', {
+      instanceId,
+      after,
+      received: snap.items.length,
+      applied,
+      hasMore: snap.hasMore,
+      latestSeq: snap.latestSeq
+    })
+
+    if (snap.hasMore) {
+      log.warn(
+        'transcript-patcher: delta-replay page exhausted with more items waiting — captain may need to refresh',
+        {
+          instanceId,
+          after,
+          pageSize: DELTA_REPLAY_PAGE_SIZE
+        }
+      )
+    }
+  } catch(err) {
+    log.warn('transcript-patcher: delta-replay failed', { instanceId, after }, err)
+    throw err
+  }
+}
+
+/**
+ * Top-level resync hook for the remote bridge. Called on silent
+ * reauth after a dropped WS. For every instance we've ever seen on
+ * this page, pulls a delta page (`instance_snapshot_chat { after }`)
+ * and patches the head. Meta / terminals / queue / instances list
+ * stay current via vue-query invalidations — UI subscribers refetch
+ * automatically.
+ *
+ * Returns `true` when the resync completed without falling back to
+ * the page reload. `false` signals the caller (`remote-bridge.ts`)
+ * to reload the page as a coarse-but-correct safety net.
+ */
+export async function resyncFromRemote(queryClient: QueryClient): Promise<boolean> {
+  const instanceIds = [...lastSeenSeqByInstance.keys()]
+
+  if (instanceIds.length === 0) {
+    // No prior state to delta-replay against — the page must be in
+    // an unusual state (rare reconnect before any event ever
+    // landed). Fall back to reload.
+    return false
+  }
+
+  try {
+    await Promise.all(instanceIds.map((id) => replayDeltaForInstance(queryClient, id)))
+  } catch {
+    return false
+  }
+
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['snapshot-meta'] }),
+    queryClient.invalidateQueries({ queryKey: ['snapshot-terminals'] }),
+    queryClient.invalidateQueries({ queryKey: ['snapshot-queue'] }),
+    queryClient.invalidateQueries({ queryKey: ['instances'] })
+  ])
+
+  return true
 }

@@ -40,6 +40,14 @@ let socket: WebSocket | undefined
 let connectPromise: Promise<WebSocket> | undefined
 let authenticated = false
 /**
+ * Caller (wired from `main.ts`) that handles delta-replay on silent
+ * reauth. Returns `true` if it handled the resync (no reload needed);
+ * `false` / undefined means "fall back to the page reload" — the
+ * original conservative path. Registered before the first WS handshake
+ * so the second-authenticated frame can dispatch immediately.
+ */
+let resyncHandler: (() => Promise<boolean>) | undefined
+/**
  * True after the SPA has already gone through one successful pair /
  * silent-reauth in this page lifetime. When a second `authenticated`
  * frame lands (silent reconnect after the WS dropped + auto-reauthed
@@ -300,13 +308,48 @@ function handleFrameByType(msg: Record<string, unknown>): void {
     case 'authenticated':
       // Reconnect detection — see `hasAuthenticatedThisPage` doc. A
       // second `authenticated` in the same page lifetime means the WS
-      // dropped + silently reauthenticated. Reload before draining
-      // events so the stores re-hydrate from scratch.
+      // dropped + silently reauthenticated. Two paths:
+      //
+      //   1. Resync handler registered (production): delta-replay
+      //      the gap via `instance_snapshot_chat { after }` for each
+      //      cached instance + refresh meta/terminals/queue. Keeps
+      //      the page alive, preserves scroll + composer + focus.
+      //   2. No handler (initial boot, screenshot harness, tests):
+      //      fall back to the page reload. Coarse but always
+      //      correct — boot re-hydrates from scratch.
       if (hasAuthenticatedThisPage) {
         if (typeof msg.sessionToken === 'string' && msg.sessionToken.length > 0) {
-          // Persist the freshly-minted token across the reload —
-          // otherwise the post-reload boot would have to pair manually.
+          // Persist the freshly-minted token whether we reload or
+          // delta-resync — the next reconnect (if there is one) reads
+          // it for silent reauth.
           storeSessionToken(msg.sessionToken)
+        }
+        authenticated = true
+        pendingFrame = undefined
+        lastConfirmRejection = undefined
+        terminalReason = undefined
+        notifyPairListeners()
+
+        if (resyncHandler) {
+          resyncHandler()
+            .then((handled) => {
+              if (handled) {
+                return
+              }
+
+              if (typeof window !== 'undefined') {
+                window.location.reload()
+              }
+            })
+            .catch((err: unknown) => {
+              log.warn('remote bridge: resync handler threw — falling back to reload', undefined, err)
+
+              if (typeof window !== 'undefined') {
+                window.location.reload()
+              }
+            })
+
+          return
         }
 
         if (typeof window !== 'undefined') {
@@ -625,6 +668,19 @@ export function retryRemotePair(): void {
 
 export function ensureRemoteConnection(): Promise<void> {
   return connect().then(() => undefined)
+}
+
+/**
+ * Register a delta-replay handler. Called on the second
+ * `authenticated` frame (silent reauth after a dropped WS). Handler
+ * resolves `true` when it has hydrated the gap in-place (skip the
+ * page reload); `false` / undefined / throw → bridge falls back to
+ * `window.location.reload()` for safety. Wire from `main.ts` BEFORE
+ * the first invocation that may trigger a connect so the handler is
+ * already in place when the WS drops.
+ */
+export function setRemoteResyncHandler(handler: () => Promise<boolean>): void {
+  resyncHandler = handler
 }
 
 /**
