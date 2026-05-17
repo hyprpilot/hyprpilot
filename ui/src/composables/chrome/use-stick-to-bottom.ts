@@ -43,6 +43,16 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
   /// resets it through the suppress branch.
   let prevScrollTop = 0
 
+  // rAF coalescing — observers fire per text mutation during
+  // streaming (one per chunk × N children). Each callback synchronously
+  // reads `scrollHeight` / `scrollTop` / `clientHeight` then writes
+  // `scrollTop`, forcing a layout flush per chunk. Coalescing to one
+  // rAF tick per burst collapses 50 layout flushes/sec to ~60Hz max.
+  // Declared above `onScroll` so that handler can cancel a pending
+  // rAF when an upward gesture lands inside the schedule→fire window.
+  let rafPending = false
+  let rafHandle: number | undefined
+
   function nearBottom(el: HTMLElement): boolean {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
   }
@@ -132,6 +142,22 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     if (movedUp) {
       stuck.value = false
 
+      // Cancel any in-flight `scheduleStick` rAF. The chip's elapsed
+      // counter (and any live tail surface) mutates text every second
+      // — each tick queues a rAF. If the captain wheels up / hits
+      // PageUp in the ~16ms window before the queued rAF fires, the
+      // rAF still runs `scrollToBottom` (the comment on `scheduleStick`
+      // explains why we don't re-check `stuck.value` at fire time —
+      // that re-check caused the spurious-reflow-on-submit bug). The
+      // cancel here closes the race in the OTHER direction: when the
+      // movement is explicitly upward, the captain's intent
+      // overrides whatever the schedule-time decision was.
+      if (rafHandle !== undefined) {
+        cancelAnimationFrame(rafHandle)
+        rafHandle = undefined
+        rafPending = false
+      }
+
       return
     }
     stuck.value = nearBottom(el)
@@ -139,14 +165,6 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
 
   let resizeObs: ResizeObserver | undefined
   let mutationObs: MutationObserver | undefined
-
-  // rAF coalescing — observers fire per text mutation during
-  // streaming (one per chunk × N children). Each callback synchronously
-  // reads `scrollHeight` / `scrollTop` / `clientHeight` then writes
-  // `scrollTop`, forcing a layout flush per chunk. Coalescing to one
-  // rAF tick per burst collapses 50 layout flushes/sec to ~60Hz max.
-  let rafPending = false
-  let rafHandle: number | undefined
 
   function scheduleStick(): void {
     if (rafPending) {
