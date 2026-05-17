@@ -35,7 +35,7 @@
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { useEventListener, useNow } from '@vueuse/core'
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
@@ -170,6 +170,47 @@ const adapterForActive = computed(() => {
 })
 
 const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scrollEl)
+
+/// Per-mount "first hydration" latch. `useStickToBottom` runs a
+/// `scrollToBottom` in its own `onMounted`, but that fires BEFORE
+/// the chat snapshot lands — at that moment `viewport.items.value`
+/// is empty and `scrollHeight === clientHeight`, so the assignment
+/// is a no-op. The MutationObserver-driven re-stick that follows
+/// catches most subsequent mutations, but a fully-cached snapshot
+/// (the captain returns to a previously-focused instance and the
+/// query cache is still warm) renders in one Vue tick with no
+/// observable DOM mutation between empty + populated — the
+/// `MutationObserver` callback runs, but `scrollHeight` may already
+/// equal `scrollTop + clientHeight` from the prior assignment, so
+/// `scheduleStick`'s rAF coalescing decides there's nothing to do.
+///
+/// Captain reported: switching instances via the palette list,
+/// the chat lands part-way up instead of at the foot. This watcher
+/// closes the gap explicitly — the first transition from "no items"
+/// to "items present" per mount triggers an explicit
+/// `scrollToBottom` after Vue has flushed the DOM, regardless of
+/// whether the MutationObserver fired. `<ChatViewport>` is keyed
+/// on `activeInstanceId` in `Overlay.vue`, so this watcher fires
+/// once per instance-flip.
+let firstHydrationLanded = false
+
+watch(
+  () => viewport.items.value.length,
+  async(count) => {
+    if (firstHydrationLanded || count === 0) {
+      return
+    }
+    firstHydrationLanded = true
+    await nextTick()
+    // Two ticks: the first lets Vue flush the items[] update into
+    // the DOM; the second covers any nested `<Turn>` / `<StreamCard>`
+    // child watchers that run their own `nextTick` for layout
+    // measurement (markdown render passes, syntax-highlight swaps).
+    await nextTick()
+    scrollToBottom()
+  },
+  { immediate: true }
+)
 
 /// Synchronous "captain wants to scroll up" gate. Calls into the
 /// composable to cancel any pending sticky rAF + flip `stuck =
