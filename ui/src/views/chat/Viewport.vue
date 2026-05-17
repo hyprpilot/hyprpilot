@@ -430,8 +430,20 @@ function onScroll(): void {
   // events but no `pointerdown` / `touchstart` / `wheel`, so the
   // gate would lock the fetch out even though the captain is
   // legitimately reading older content.
-  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
-    triggerBackwardFetch(el)
+  // `!loadingEarlier.value` AND `!isFetchingNextPage` both gate the
+  // fetch. The two flags don't flip together:
+  // `loadingEarlier.value = true` runs synchronously at the top of
+  // `triggerBackwardFetch`, BEFORE `await viewport.fetchNextPage()`
+  // returns its first microtask — and so before
+  // `isFetchingNextPage` flips true. A second scroll event landing
+  // in that microtask window otherwise passes the
+  // `isFetchingNextPage`-only guard and launches a duplicate
+  // concurrent fetch (double pages, double scroll restore, off-by-
+  // one captain shift). The `loadingEarlier` guard closes that
+  // window — flagged by the sonnet-tier review of the original PR2
+  // commit.
+  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && !loadingEarlier.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
+    void triggerBackwardFetch(el)
   }
 
   // **Eviction — kept gated.**
@@ -900,6 +912,15 @@ defineExpose({ scrollEl })
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
   padding: 0 0.875rem 0 0.25rem;
+  /* Disable browser-native scroll anchoring. Chrome / WebKit default
+   * to `overflow-anchor: auto` on scrollable containers, which the
+   * browser uses to compensate scrollTop automatically when content
+   * is added above the visible region. That fights the manual
+   * compensation `triggerBackwardFetch` does (capture scrollHeight -
+   * scrollTop before fetch, restore after), causing double-shift
+   * and a visible jump. JS owns the anchoring — disable the native
+   * path so the two don't compose. */
+  overflow-anchor: none;
 }
 
 .chat-load-chip {
