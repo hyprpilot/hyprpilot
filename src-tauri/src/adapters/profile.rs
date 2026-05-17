@@ -293,7 +293,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", Some("sonnet"))],
-                ..Default::default()
             },
             profiles: vec![profile("strict", "cc", Some("opus-4"), None)],
             ..Default::default()
@@ -308,7 +307,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", Some("sonnet"))],
-                ..Default::default()
             },
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
@@ -325,7 +323,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![profile("plan", "cc", None, Some(vec![prompt_path]))],
             ..Default::default()
@@ -347,7 +344,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![profile("layered", "cc", None, Some(vec![base, project]))],
             ..Default::default()
@@ -364,7 +360,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             // Empty Vec is the explicit "no prompt" off-switch.
             profiles: vec![profile("silent", "cc", None, Some(vec![]))],
@@ -385,7 +380,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![p],
             ..Default::default()
@@ -438,10 +432,7 @@ mod tests {
         p.env.insert("OVERRIDDEN".into(), "profile-value".into());
         p.env.insert("PROFILE_ONLY".into(), "from-profile".into());
         let cfg = Config {
-            agents: AgentsConfig {
-                agents: vec![a],
-                ..Default::default()
-            },
+            agents: AgentsConfig { agents: vec![a] },
             profiles: vec![p],
             ..Default::default()
         };
@@ -463,7 +454,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![p],
             ..Default::default()
@@ -478,7 +468,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![],
             ..Default::default()
@@ -500,7 +489,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![profile("personal/claude/opus", "cc", None, None)],
             patches: Some(vec![serde_json::json!({
@@ -525,7 +513,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![
                 profile("personal/claude/opus", "cc", None, None),
@@ -566,7 +553,6 @@ mod tests {
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
-                ..Default::default()
             },
             profiles: vec![profile("ask", "cc", None, None)],
             patches: Some(vec![
