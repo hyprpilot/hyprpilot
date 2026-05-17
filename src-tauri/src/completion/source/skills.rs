@@ -1,6 +1,6 @@
 //! Skills completion source — sigil `#` triggers slug autocomplete
 //! against the daemon's [`SkillsRegistry`]. Picked items insert
-//! `#{skills://<slug>}` into the textarea; submission-time
+//! `#{hyprpilot://skills/<slug>}` into the textarea; submission-time
 //! `attachments_hydrate` parses these back into `Attachment`
 //! payloads on the wire.
 
@@ -157,9 +157,9 @@ impl CompletionSource for SkillsSource {
                 kind: CompletionKind::Skill,
                 replacement: Replacement {
                     range: range.clone(),
-                    text: format!("#{{skills://{slug}}}"),
+                    text: format!("#{{hyprpilot://skills/{slug}}}"),
                 },
-                resolve_id: Some(format!("skills://{slug}")),
+                resolve_id: Some(format!("hyprpilot://skills/{slug}")),
             })
             .collect();
 
@@ -167,8 +167,8 @@ impl CompletionSource for SkillsSource {
     }
 
     async fn resolve(&self, resolve_id: &str) -> Result<Option<String>> {
-        // resolve_id format: "skills://<slug>"
-        let slug = resolve_id.strip_prefix("skills://").unwrap_or(resolve_id);
+        // resolve_id format: "hyprpilot://skills/<slug>"
+        let slug = resolve_id.strip_prefix("hyprpilot://skills/").unwrap_or(resolve_id);
         let parsed = match SkillSlug::parse(slug) {
             Ok(s) => s,
             Err(_) => return Ok(None),
@@ -262,8 +262,8 @@ mod tests {
         assert!(labels.contains(&"git-commit"));
         assert!(labels.contains(&"git-branch"));
         assert!(!labels.contains(&"docker-up"));
-        // First item's replacement is `#{skills://<slug>}`.
-        assert!(items[0].replacement.text.starts_with("#{skills://"));
+        // First item's replacement is `#{hyprpilot://skills/<slug>}`.
+        assert!(items[0].replacement.text.starts_with("#{hyprpilot://skills/"));
         assert!(items[0].replacement.text.ends_with('}'));
     }
 
@@ -271,7 +271,7 @@ mod tests {
     async fn resolve_returns_skill_body() {
         let registry = make_registry_with(&[("hello-world", "the body content")]);
         let source = SkillsSource::with_registry(registry);
-        let body = source.resolve("skills://hello-world").await.unwrap();
+        let body = source.resolve("hyprpilot://skills/hello-world").await.unwrap();
         assert!(body.is_some());
         assert!(body.unwrap().contains("the body content"));
     }
@@ -280,6 +280,10 @@ mod tests {
     async fn resolve_unknown_slug_returns_none() {
         let registry = make_registry_with(&[("real", "")]);
         let source = SkillsSource::with_registry(registry);
-        assert!(source.resolve("skills://nonexistent").await.unwrap().is_none());
+        assert!(source
+            .resolve("hyprpilot://skills/nonexistent")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

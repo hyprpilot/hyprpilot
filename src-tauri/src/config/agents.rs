@@ -162,12 +162,13 @@ pub struct ProfileConfig {
     /// shape as the root array.
     #[garde(dive)]
     pub mcps: Option<Vec<crate::config::McpFile>>,
-    /// Profile-level skills catalog. Mirrors `mcps`: `None` (unset) →
-    /// fall back to the global `[[skills]]`. `Some(vec![…])` →
-    /// wholesale replace. `Some(vec![])` → no skills. Same
-    /// `SkillEntry { dir, ignore }` shape as the root array.
+    /// Profile-level `[mcp]` override. `None` (unset) → inherit the
+    /// global `Config.mcp`. `Some(...)` → wholesale-replace the
+    /// global block (mirrors `mcps` / `skills`); every field on the
+    /// replacement uses its serde / defaults.toml default when
+    /// omitted by the captain.
     #[garde(dive)]
-    pub skills: Option<Vec<crate::config::SkillEntry>>,
+    pub mcp: Option<crate::config::McpConfig>,
     /// Default mode id — free string today; validation against a mode
     /// catalog lands with the catalog.
     #[garde(inner(length(min = 1)))]
@@ -456,9 +457,11 @@ system_prompt = [
   { file = "~/.config/hyprpilot/prompts/base.md" },
   { file = "~/.config/hyprpilot/prompts/full.md", inject = { on_create = true, on_update = true } },
 ]
-skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
 mode = "ask"
 cwd = "~/work"
+
+[profiles.mcp]
+skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
 
 [profiles.env]
 FOO = "bar"
@@ -484,7 +487,8 @@ BAZ = "qux"
         assert!(prompts[1].inject.on_create);
         assert!(prompts[1].inject.on_update, "explicit on_update=true honoured");
         assert_eq!(full.mcps, None, "absent mcps parses as None");
-        let skills = full.skills.as_deref().expect("skills set");
+        let mcp_block = full.mcp.as_ref().expect("[profiles.mcp] block parsed");
+        let skills = mcp_block.skills.as_deref().expect("[profiles.mcp].skills set");
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0].dir, PathBuf::from("~/.claude/skills/rust"));
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/vue"));
@@ -613,6 +617,8 @@ file = "~/work.json"
 [[profiles]]
 id = "team"
 agent = "claude-code"
+
+[profiles.mcp]
 skills = [
   { dir = "~/.claude/skills/rust" },
   { dir = "~/.claude/skills/all", ignore = ["work-*"] },
@@ -621,7 +627,8 @@ skills = [
         );
         let cfg = load(Some(&p), None).expect("parses");
         let team = cfg.profiles.iter().find(|p| p.id == "team").expect("team entry");
-        let skills = team.skills.as_deref().expect("set");
+        let mcp_block = team.mcp.as_ref().expect("[profiles.mcp] parsed");
+        let skills = mcp_block.skills.as_deref().expect("set");
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0].dir, PathBuf::from("~/.claude/skills/rust"));
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/all"));
@@ -638,6 +645,8 @@ skills = [
 [[profiles]]
 id = "busted"
 agent = "claude-code"
+
+[profiles.mcp]
 skills = [{ dir = "~/x", ignore = ["[unterminated"] }]
 "#,
         );
@@ -655,12 +664,15 @@ skills = [{ dir = "~/x", ignore = ["[unterminated"] }]
 [[profiles]]
 id = "deny"
 agent = "claude-code"
+
+[profiles.mcp]
 skills = []
 "#,
         );
         let cfg = load(Some(&p), None).expect("load");
         let deny = cfg.profiles.iter().find(|p| p.id == "deny").expect("deny entry");
-        assert_eq!(deny.skills, Some(vec![]));
+        let mcp_block = deny.mcp.as_ref().expect("[profiles.mcp] block present");
+        assert_eq!(mcp_block.skills, Some(vec![]));
         cfg.validate().expect("empty list validates");
         fs::remove_file(&p).ok();
     }

@@ -1380,6 +1380,13 @@ pub(crate) fn build_prompt_blocks(text: &str, attachments: &[Attachment]) -> Vec
 
 /// Project a single attachment onto the matching ACP wire variant
 /// based on its MIME type. Pure function — no I/O.
+///
+/// Skill attachments are not special-cased here. The hydrator
+/// (`completion::hydration::skills::HyprpilotTokenHydrator`) builds
+/// the markdown hydration blob inline when it resolves the
+/// `#{hyprpilot://skills/<slug>}` token; from this point on the
+/// attachment is a plain text resource carrying that blob as `body`,
+/// projected through the regular `MimeCategory::Text` path below.
 fn attachment_to_block(att: &Attachment) -> ContentBlock {
     let mime = att.mime_type();
     match mime_category(&mime) {
@@ -4150,14 +4157,20 @@ mod tests {
     }
 
     #[test]
-    fn build_prompt_blocks_prepends_resources_before_text() {
+    fn build_prompt_blocks_treats_skill_blob_as_plain_text_resource() {
+        // The hydrator (`HyprpilotTokenHydrator::hydrate_skill`)
+        // builds the markdown blob inline; by the time we hit
+        // `build_prompt_blocks` the attachment is just a text resource
+        // (slug = full URI, body = blob, mime = text/markdown). No
+        // skill-specific dispatch here — verify the resource shape
+        // rides through the regular `MimeCategory::Text` path.
         let att = Attachment {
-            slug: "git-commit".into(),
+            slug: "hyprpilot://skills/git-commit".into(),
             path: PathBuf::from("/tmp/skills/git-commit/SKILL.md"),
-            body: "stage and commit".into(),
+            body: "Attached skill `git-commit` (Git commit). Read via mcp__hyprpilot__read_skill.".into(),
             title: Some("Git commit".into()),
             data: None,
-            mime: None,
+            mime: Some("text/markdown".into()),
         };
         let blocks = build_prompt_blocks("please commit", std::slice::from_ref(&att));
         assert_eq!(blocks.len(), 2, "one resource + one text");
@@ -4169,7 +4182,12 @@ mod tests {
         };
         assert_eq!(tr.uri, "file:///tmp/skills/git-commit/SKILL.md");
         assert_eq!(tr.mime_type.as_deref(), Some("text/markdown"));
-        assert_eq!(tr.text, "stage and commit");
+        // Body rides through verbatim — `attachment_to_block` no
+        // longer rewrites it.
+        assert_eq!(
+            tr.text,
+            "Attached skill `git-commit` (Git commit). Read via mcp__hyprpilot__read_skill.",
+        );
         match &blocks[1] {
             ContentBlock::Text(t) => assert_eq!(t.text, "please commit"),
             other => panic!("second block must be text, got {other:?}"),
@@ -4260,37 +4278,41 @@ mod tests {
     #[test]
     fn build_prompt_blocks_preserves_attachment_order() {
         let a = Attachment {
-            slug: "a".into(),
+            slug: "hyprpilot://skills/a".into(),
             path: PathBuf::from("/tmp/a/SKILL.md"),
-            body: "A".into(),
+            body: "blob-a".into(),
             title: None,
             data: None,
-            mime: None,
+            mime: Some("text/markdown".into()),
         };
         let b = Attachment {
-            slug: "b".into(),
+            slug: "hyprpilot://skills/b".into(),
             path: PathBuf::from("/tmp/b/SKILL.md"),
-            body: "B".into(),
+            body: "blob-b".into(),
             title: None,
             data: None,
-            mime: None,
+            mime: Some("text/markdown".into()),
         };
         let blocks = build_prompt_blocks("text", &[a, b]);
         assert_eq!(blocks.len(), 3);
+        // Bodies ride through verbatim now (hydrator owns the blob).
+        // The order assertion is the load-bearing bit — attachments
+        // must come before the user text and stay in their original
+        // order.
         let ContentBlock::Resource(first) = &blocks[0] else {
             panic!()
         };
         let EmbeddedResourceResource::TextResourceContents(tr0) = &first.resource else {
             panic!()
         };
-        assert_eq!(tr0.text, "A");
+        assert_eq!(tr0.text, "blob-a");
         let ContentBlock::Resource(second) = &blocks[1] else {
             panic!()
         };
         let EmbeddedResourceResource::TextResourceContents(tr1) = &second.resource else {
             panic!()
         };
-        assert_eq!(tr1.text, "B");
+        assert_eq!(tr1.text, "blob-b");
     }
 
     fn dummy_resolved(id: &str) -> ResolvedInstance {

@@ -207,21 +207,7 @@ pub struct DecisionContext<'a> {
     pub mcps: Option<&'a MCPsRegistry>,
 }
 
-/// Parse `mcp__<server>__<leaf>` → `(<server>, <leaf>)`. Returns `None`
-/// for vendor-native tool names (Bash, Read, …) that don't carry the
-/// MCP prefix. The leaf is what per-server auto-accept / auto-reject
-/// globs match against — captains write `read_*` / `delete_*` inside
-/// the server block; repeating the `mcp__<server>__` prefix would be
-/// redundant.
-#[must_use]
-pub fn parse_mcp_tool_name(tool: &str) -> Option<(&str, &str)> {
-    let after_prefix = tool.strip_prefix("mcp__")?;
-    let (server, leaf) = after_prefix.split_once("__")?;
-    if server.is_empty() || leaf.is_empty() {
-        return None;
-    }
-    Some((server, leaf))
-}
+pub use crate::mcp::permission_match::parse_mcp_tool_name;
 
 /// The decision + waiter surface. `decide` is synchronous (pure
 /// lookups against the per-server MCP glob config). `register_pending`
@@ -702,27 +688,6 @@ mod tests {
             &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::AskUser);
-    }
-
-    #[test]
-    fn parse_mcp_tool_name_strips_prefix_and_returns_leaf() {
-        assert_eq!(
-            parse_mcp_tool_name("mcp__filesystem__read_file"),
-            Some(("filesystem", "read_file"))
-        );
-        assert_eq!(
-            parse_mcp_tool_name("mcp__github__create_pr"),
-            Some(("github", "create_pr"))
-        );
-    }
-
-    #[test]
-    fn parse_mcp_tool_name_rejects_non_mcp_or_empty_components() {
-        assert!(parse_mcp_tool_name("Bash").is_none());
-        assert!(parse_mcp_tool_name("Read").is_none());
-        assert!(parse_mcp_tool_name("mcp__no_separator").is_none());
-        assert!(parse_mcp_tool_name("mcp____empty_server").is_none());
-        assert!(parse_mcp_tool_name("mcp__server__").is_none(), "empty leaf rejected");
     }
 
     #[tokio::test]

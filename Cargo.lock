@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "hyprpilot"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -2574,6 +2574,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.12.28",
+ "rmcp",
  "rustls",
  "rustls-pemfile",
  "serde",

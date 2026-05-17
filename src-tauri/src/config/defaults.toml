@@ -62,15 +62,6 @@ level = "info"
 enabled = false
 bind = "0.0.0.0:6262"
 
-# `[[skills]]` — array of skill catalog roots. Each entry has a
-# `dir` (where `<slug>/SKILL.md` bundles live) and an optional
-# `ignore` glob array (slugs matching are dropped). User-supplied
-# `[[skills]]` replaces this list wholesale (no concat); set
-# `skills = []` to disable skill loading entirely. First-root-wins
-# on slug collision across roots.
-[[skills]]
-dir = "~/.config/hyprpilot/skills"
-
 # `[[mcps]]` — array of MCP catalog files. Each entry has a `file`
 # (JSON in the standard `{ "mcpServers": { ... } }` shape used by
 # Claude Code / Codex / every MCP client) and an optional `ignore`
@@ -84,6 +75,37 @@ dir = "~/.config/hyprpilot/skills"
 # [[mcps]]
 # file = "~/.config/hyprpilot/mcps/base.json"
 # ignore = ["work-*"]
+
+# `[mcp]` — singleton block (mirrors `[agent]` / `[[agents]]`)
+# controlling the in-tree MCP server the daemon auto-injects into
+# every `session/new`, and owning the **skills catalog** that server
+# exposes. Server name on the wire is `hyprpilot`; the agent vendor
+# spawns `hyprpilot mcp serve` as a stdio child. Skills are exposed
+# as `hyprpilot://skills/<slug>` resources + `mcp__hyprpilot__list_skills` /
+# `read_skill` / `load_skill_references` / `reload` tools.
+#
+# `enabled = false` → skip auto-inject entirely (vendor sees no
+# hyprpilot server). `autoAcceptTools = ["*"]` makes every
+# `mcp__hyprpilot__*` tool call short-circuit to Allow at
+# PermissionController lane 2. Per-profile `[profiles.X.mcp]`
+# wholesale-replaces this global block. (Distinct from `[[mcps]]`
+# which lists captain-declared *external* MCP servers — same TOML
+# neighbourhood, distinct concerns; the singular vs plural mirrors
+# `[agent]` / `[[agents]]`.)
+[mcp]
+enabled = true
+autoAcceptTools = ["*"]
+autoRejectTools = []
+
+# `[[mcp.skills]]` — catalog of skill root directories the hyprpilot
+# MCP server scans + exposes. Each entry has a `dir` (where
+# `<slug>/SKILL.md` bundles live) and an optional `ignore` glob array
+# (slugs matching are dropped). User-supplied `[[mcp.skills]]`
+# replaces this list wholesale (no concat); `skills = []` is the
+# explicit "no skills" off-switch (also suppresses auto-inject —
+# nothing to serve). First-root-wins on slug collision across roots.
+[[mcp.skills]]
+dir = "~/.config/hyprpilot/skills"
 
 # design tokens (K-250). The Rust config layer is the single source
 # of truth — `ui/src/assets/styles.css` declares no literal theme values

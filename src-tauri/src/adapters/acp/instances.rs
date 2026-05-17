@@ -604,8 +604,8 @@ impl AcpAdapter {
         // `DecisionContext.mcps`. None when no MCP files are wired —
         // the per-server lane short-circuits and every call falls
         // through to AskUser (or trust store).
-        let mcps = build_mcp_registry_with(cfg, profile.as_ref());
         let skills = build_skills_registry_with(cfg, profile.as_ref());
+        let mcps = build_mcp_registry_with(cfg, profile.as_ref(), Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -1200,8 +1200,8 @@ impl AcpAdapter {
             resolved.agent.cwd = Some(c);
         }
         let profile_id_for_instance = resolved.profile_id.clone();
-        let mcps = build_mcp_registry_with(&cfg, effective_profile.as_ref());
         let skills = build_skills_registry_with(&cfg, effective_profile.as_ref());
+        let mcps = build_mcp_registry_with(&cfg, effective_profile.as_ref(), Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -1701,38 +1701,71 @@ fn effective_mcp_files_with(
 }
 
 /// `build_mcp_registry_for` against an explicit config.
+///
+/// Prepends an **auto-injected** entry for the in-tree `hyprpilot mcp
+/// serve` server when the effective `[mcp]` block has `enabled =
+/// true` AND the per-instance skills registry (after applying the
+/// optional slug whitelist) is non-empty. The daemon's resolved
+/// skill set rides through to the agent vendor as a stdio MCP server
+/// it spawns itself. Auto-inject is independent of user-declared
+/// `[[mcps]]` — `mcps = []` does not suppress the in-tree server
+/// (that's what `[mcp] enabled = false` is for).
 fn build_mcp_registry_with(
     cfg: &Config,
     profile: Option<&crate::config::ProfileConfig>,
+    skills: Option<&Arc<crate::skills::SkillsRegistry>>,
 ) -> Option<Arc<crate::mcp::MCPsRegistry>> {
     let files = effective_mcp_files_with(cfg, profile);
-    if files.is_empty() {
-        return None;
+    let mut defs = crate::mcp::loader::load_files(&files);
+
+    // Auto-inject only when the effective [mcp] block opts in AND
+    // there's a non-empty skills registry to project. Source is a
+    // synthetic path so the UI's "which file owns this server"
+    // surfaces a recognisable label.
+    if let Some(skills_arc) = skills {
+        let mcp_cfg = effective_mcp_with(cfg, profile);
+        if mcp_cfg.enabled() {
+            if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
+                skills_arc,
+                mcp_cfg,
+                std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
+            ) {
+                defs.insert(0, auto);
+            }
+        }
     }
-    let defs = crate::mcp::loader::load_files(&files);
+
     if defs.is_empty() {
         return None;
     }
     Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
 }
 
-/// `effective_skills_for` against an explicit config.
+/// Resolved `[mcp]` block for an instance — profile's if set,
+/// otherwise global. Mirrors `effective_mcp_files_with` /
+/// `effective_skills_with`. Wholesale-replace semantics: the
+/// profile's `Some(McpConfig)` replaces the global outright; no
+/// field-level inheritance across the boundary.
+fn effective_mcp_with<'a>(
+    cfg: &'a Config,
+    profile: Option<&'a crate::config::ProfileConfig>,
+) -> &'a crate::config::McpConfig {
+    if let Some(p) = profile {
+        if let Some(mcp_cfg) = &p.mcp {
+            return mcp_cfg;
+        }
+    }
+    &cfg.mcp
+}
+
+/// `effective_skills_for` against an explicit config. Reads from the
+/// effective `[mcp]` block (profile's if set, else global) — skills
+/// live under `mcp.skills` now (was top-level `[[skills]]`).
 fn effective_skills_with(
     cfg: &Config,
     profile: Option<&crate::config::ProfileConfig>,
 ) -> Vec<crate::config::ResolvedSkillEntry> {
-    if let Some(p) = profile {
-        if let Some(entries) = &p.skills {
-            return entries
-                .iter()
-                .map(|e| crate::config::ResolvedSkillEntry {
-                    dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
-                    ignore: e.compile_ignore(),
-                })
-                .collect();
-        }
-    }
-    cfg.resolved_skills()
+    effective_mcp_with(cfg, profile).resolved_skills()
 }
 
 /// `build_skills_registry_for` against an explicit config.
@@ -1786,7 +1819,7 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> ProfileCo
         model: None,
         system_prompt: None,
         mcps: None,
-        skills: None,
+        mcp: None,
         mode: None,
         cwd: None,
         env: std::collections::BTreeMap::new(),
@@ -2024,16 +2057,22 @@ command = "/bin/false"
 [[profiles]]
 id = "personal"
 agent = "claude-code"
+
+[profiles.mcp]
 skills = [{{ dir = "{dir}", ignore = ["work-*"] }}]
 
 [[profiles]]
 id = "work"
 agent = "claude-code"
+
+[profiles.mcp]
 skills = [{{ dir = "{dir}", ignore = ["personal-*"] }}]
 
 [[profiles]]
 id = "no-skills"
 agent = "claude-code"
+
+[profiles.mcp]
 skills = []
 "#,
             dir = skills_dir.display(),

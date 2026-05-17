@@ -21,7 +21,10 @@
 //! `base.json`). One malformed file warns + skips — doesn't abort
 //! daemon boot.
 
+pub mod auto_inject;
 pub mod loader;
+pub mod permission_match;
+pub mod server;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
