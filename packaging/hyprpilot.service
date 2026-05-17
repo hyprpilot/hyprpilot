@@ -1,5 +1,5 @@
 [Unit]
-Description=hyprpilot — Tauri overlay daemon for agent-driven workflows
+Description=hyprpilot — An overlay daemon that runs coding agents at the edge of your screen.
 Documentation=https://github.com/hyprpilot/hyprpilot
 
 [Service]
