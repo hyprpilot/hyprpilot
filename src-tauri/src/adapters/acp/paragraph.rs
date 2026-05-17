@@ -38,18 +38,35 @@
 ///    one `\n` AND the incoming chunk leads with non-newline
 ///    content. Prepending `\n` pushes the boundary to `\n\n`.
 /// 2. **Chunk-self lift** — the incoming chunk itself leads with
-///    exactly one `\n` (not `\n\n`). Vendors stream chunks like
+///    exactly one `\n` (not `\n\n`) AND prior contributes nothing
+///    (`prior_trailing == 0`). Vendors stream chunks like
 ///    `"\nPara 2."` expecting a paragraph break, but a single
 ///    `\n` is just a soft break in markdown. Prepend another `\n`
 ///    so the chunk's own leading newline reads as `\n\n`.
 ///
-/// Chunks that already lead with `\n\n` get no lift — they
-/// already carry the paragraph break.
+/// **No-op cases** — we ALSO short-circuit when prior + the chunk's
+/// own leading newline already sum to ≥ 2. Without this the boundary
+/// `prior_trailing == 1` + incoming `"\nFoo"` would land on
+/// `\n + \n + \nFoo = \n\n\nFoo` — visually still one paragraph
+/// break (markdown collapses any `\n\n+` run) but our `\n` is
+/// wasted injection. Cleanest is to emit nothing when the agent
+/// already provided enough newlines.
+///
+/// Chunks that lead with `\n\n` get no lift either — they already
+/// carry the paragraph break.
 pub(crate) fn soft_lift_prefix(prior_trailing: u8, incoming: &str) -> &'static str {
     if incoming.starts_with("\n\n") {
         return "";
     }
-    if incoming.starts_with('\n') {
+    let incoming_leads_with_newline = incoming.starts_with('\n');
+    // Combined leading newlines at the boundary already reach the
+    // markdown paragraph-break threshold — no lift needed, and any
+    // prefix we returned would be wasted characters on the wire.
+    let combined = u32::from(prior_trailing) + u32::from(incoming_leads_with_newline);
+    if combined >= 2 {
+        return "";
+    }
+    if incoming_leads_with_newline {
         return "\n";
     }
     if prior_trailing == 1 {
@@ -155,13 +172,21 @@ mod tests {
     }
 
     #[test]
-    fn soft_lift_promotes_single_leading_newline_in_chunk_to_paragraph_break() {
-        // Chunk starts with exactly one `\n` (not `\n\n`). Prepend `\n`
-        // so the chunk's own leading newline reads as a markdown
-        // paragraph break — independent of prior trailing state.
+    fn soft_lift_promotes_single_leading_newline_in_chunk_when_prior_contributes_nothing() {
+        // Chunk starts with exactly one `\n` (not `\n\n`), and prior
+        // trailing is zero. Prepend `\n` so the chunk's own leading
+        // newline reads as a markdown paragraph break.
         assert_eq!(soft_lift_prefix(0, "\nPara 2."), "\n");
-        assert_eq!(soft_lift_prefix(1, "\nPara 2."), "\n");
-        assert_eq!(soft_lift_prefix(2, "\nPara 2."), "\n");
+    }
+
+    #[test]
+    fn soft_lift_skips_chunk_self_lift_when_prior_already_contributes_a_newline() {
+        // Prior trailing `\n` + the chunk's own leading `\n` already
+        // sum to `\n\n` at the boundary — markdown paragraph break is
+        // already on the wire. Lifting would emit a wasted extra `\n`
+        // that markdown collapses anyway.
+        assert_eq!(soft_lift_prefix(1, "\nPara 2."), "");
+        assert_eq!(soft_lift_prefix(2, "\nPara 2."), "");
     }
 
     #[test]
@@ -265,5 +290,112 @@ mod tests {
         assert_eq!(fold_trailing(2, "", "abc"), 0);
         // A chunk ending on `\n` resets-then-counts: trailing is 1.
         assert_eq!(fold_trailing(2, "", "abc\n"), 1);
+    }
+
+    // ── safety invariants ─────────────────────────────────────────────
+    //
+    // Captain's invariant: the lift logic must NEVER inject enough
+    // characters at the boundary between two chunks to produce more
+    // than one markdown paragraph break (one blank line) — even when
+    // the agent's intent already carried zero or one newline at the
+    // boundary. Stated mechanically:
+    //
+    //   1. Every prefix returned by either lift function contains ONLY
+    //      `\n` characters — no spaces, no other content. So a prefix
+    //      can only ever extend a contiguous newline run; it cannot
+    //      sneak content between two runs that would turn one
+    //      paragraph break into two.
+    //   2. Every prefix has length <= 2. Combined with (1), the maximum
+    //      we add to any newline run is 2 characters (\n\n). Markdown
+    //      collapses every run of `\n\n+` between non-empty content
+    //      into exactly ONE paragraph break.
+    //
+    // The two tests below exhaustively pin both invariants across the
+    // full input space — there's no path through either function that
+    // returns a non-newline character or a string longer than 2.
+
+    #[test]
+    fn lift_prefix_only_ever_contains_newlines() {
+        let chunks: &[&str] = &[
+            "",
+            "Foo",
+            "\nFoo",
+            "\n\nFoo",
+            "\n\n\nFoo",
+            "\n",
+            "\n\n",
+            "\n\n\n",
+            " ",
+            " Foo",
+            "Foo\n",
+            "Foo\nBar",
+        ];
+
+        for &prior in &[0u8, 1, 2] {
+            for &chunk in chunks {
+                for prefix in [soft_lift_prefix(prior, chunk), paragraph_break_prefix(prior, chunk)] {
+                    assert!(
+                        prefix.chars().all(|c| c == '\n'),
+                        "prefix returned a non-newline character: prior={prior}, chunk={chunk:?}, prefix={prefix:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lift_prefix_never_exceeds_two_characters() {
+        let chunks: &[&str] = &[
+            "",
+            "Foo",
+            "\nFoo",
+            "\n\nFoo",
+            "\n\n\nFoo",
+            "\n",
+            "\n\n",
+            "\n\n\n",
+            " ",
+            " Foo",
+            "Foo\n",
+            "Foo\nBar",
+        ];
+
+        for &prior in &[0u8, 1, 2] {
+            for &chunk in chunks {
+                let soft = soft_lift_prefix(prior, chunk);
+                let forced = paragraph_break_prefix(prior, chunk);
+
+                assert!(
+                    soft.len() <= 2,
+                    "soft_lift_prefix exceeded 2 chars: prior={prior}, chunk={chunk:?}, prefix={soft:?}",
+                );
+                assert!(
+                    forced.len() <= 2,
+                    "paragraph_break_prefix exceeded 2 chars: prior={prior}, chunk={chunk:?}, prefix={forced:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn soft_lift_never_creates_a_break_when_no_newline_signal_is_present() {
+        // The soft-lift path is the conservative one: it only ever
+        // fires on a chunk boundary that ALREADY carries a newline
+        // signal (prior tail ends \n, OR incoming leads with \n).
+        // A clean non-newline boundary (mid-sentence token burst)
+        // MUST emit nothing, no matter the prior state — verified
+        // explicitly here so a future refactor can't silently flip
+        // it into the "inject a break" branch.
+        let non_newline_chunks: &[&str] = &["Foo", " ", " Foo", "Foo\nBar", ""];
+
+        for &prior in &[0u8, 2] {
+            for &chunk in non_newline_chunks {
+                assert_eq!(
+                    soft_lift_prefix(prior, chunk),
+                    "",
+                    "soft_lift injected a break on a non-newline boundary: prior={prior}, chunk={chunk:?}",
+                );
+            }
+        }
     }
 }
