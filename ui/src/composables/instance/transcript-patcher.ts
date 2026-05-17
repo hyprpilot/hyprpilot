@@ -383,6 +383,15 @@ export function __resetTranscriptPatcherForTests(): void {
 /// captain can refresh manually.
 const DELTA_REPLAY_PAGE_SIZE = 500
 
+/// Outcome of [`applyChatDeltaPage`]. `kind = 'cache-cold'` means the
+/// `['snapshot-chat', instanceId]` query has no cached pages yet
+/// (boot hydration hadn't landed when the resync fired) — the delta
+/// items were NOT applied and would silently disappear if the caller
+/// returned success. `resyncFromRemote` reads the discriminant and
+/// degrades to the page-reload fallback in that case so the captain
+/// doesn't end up staring at a chat surface that's missing turns.
+type DeltaApplyOutcome = { kind: 'cache-cold'; received: number } | { kind: 'applied'; applied: number }
+
 /// Apply a daemon-served delta page (items strictly newer than the
 /// caller's last-seen seq) onto the head of the cached chat infinite
 /// query. Items are sequenced by the daemon — we trust their `seq`
@@ -390,22 +399,25 @@ const DELTA_REPLAY_PAGE_SIZE = 500
 /// rows the same way the live patcher does, so a delta-replay that
 /// catches a mid-streaming tool call collapses correctly instead of
 /// stacking a phantom row.
-function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items: SeqTranscriptItem[]): number {
+function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items: SeqTranscriptItem[]): DeltaApplyOutcome {
   if (items.length === 0) {
-    return 0
+    return { kind: 'applied', applied: 0 }
   }
+
+  let coldCache = false
   let applied = 0
 
   queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', instanceId], (old) => {
     if (!old || old.pages.length === 0) {
-      // No cached pages yet — first hydration hasn't landed. The
-      // boot path will fetch a fresh head page anyway; drop the
-      // delta to avoid double-painting.
+      coldCache = true
+
       return old
     }
     const head = old.pages[0]
 
     if (!head) {
+      coldCache = true
+
       return old
     }
     const nextItems = [...head.items]
@@ -439,14 +451,25 @@ function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items:
     }
   })
 
-  return applied
+  if (coldCache) {
+    return { kind: 'cache-cold', received: items.length }
+  }
+
+  return { kind: 'applied', applied }
 }
 
-async function replayDeltaForInstance(queryClient: QueryClient, instanceId: string): Promise<void> {
+/// Per-instance outcome the orchestrator aggregates. `cache-cold`
+/// means the delta page arrived but no chat query was hydrated yet
+/// — those items can't be patched in-place without producing a
+/// half-rendered view, so the orchestrator degrades to the page
+/// reload that the bridge falls back to.
+type ReplayOutcome = 'applied' | 'cache-cold' | 'failed'
+
+async function replayDeltaForInstance(queryClient: QueryClient, instanceId: string): Promise<ReplayOutcome> {
   const after = lastSeenSeqByInstance.get(instanceId)
 
   if (after === undefined) {
-    return
+    return 'applied'
   }
 
   try {
@@ -456,13 +479,13 @@ async function replayDeltaForInstance(queryClient: QueryClient, instanceId: stri
       limit: DELTA_REPLAY_PAGE_SIZE
     })) as ChatSnapshot
 
-    const applied = applyChatDeltaPage(queryClient, instanceId, snap.items)
+    const outcome = applyChatDeltaPage(queryClient, instanceId, snap.items)
 
     log.trace('snapshot.delta-replay.applied', {
       instanceId,
       after,
       received: snap.items.length,
-      applied,
+      outcome,
       hasMore: snap.hasMore,
       latestSeq: snap.latestSeq
     })
@@ -477,9 +500,21 @@ async function replayDeltaForInstance(queryClient: QueryClient, instanceId: stri
         }
       )
     }
+
+    if (outcome.kind === 'cache-cold' && outcome.received > 0) {
+      // We had a cursor (live event recorded a seq) but no cached
+      // query pages to merge into — most often because the captain
+      // hit the page before any chat component subscribed to the
+      // infinite query. Surface this so the orchestrator can reload
+      // rather than silently drop the items.
+      return 'cache-cold'
+    }
+
+    return 'applied'
   } catch(err) {
     log.warn('transcript-patcher: delta-replay failed', { instanceId, after }, err)
-    throw err
+
+    return 'failed'
   }
 }
 
@@ -493,7 +528,11 @@ async function replayDeltaForInstance(queryClient: QueryClient, instanceId: stri
  *
  * Returns `true` when the resync completed without falling back to
  * the page reload. `false` signals the caller (`remote-bridge.ts`)
- * to reload the page as a coarse-but-correct safety net.
+ * to reload the page as a coarse-but-correct safety net. Degrades
+ * to reload when ANY instance hit either a transport failure or the
+ * "cache-cold but cursor populated" race (delta items arrived but
+ * the chat query had no pages to merge into — silently dropping them
+ * would leave the captain with a missing turn).
  */
 export async function resyncFromRemote(queryClient: QueryClient): Promise<boolean> {
   const instanceIds = [...lastSeenSeqByInstance.keys()]
@@ -505,9 +544,14 @@ export async function resyncFromRemote(queryClient: QueryClient): Promise<boolea
     return false
   }
 
-  try {
-    await Promise.all(instanceIds.map((id) => replayDeltaForInstance(queryClient, id)))
-  } catch {
+  const outcomes = await Promise.all(instanceIds.map((id) => replayDeltaForInstance(queryClient, id)))
+
+  if (outcomes.some((o) => o !== 'applied')) {
+    log.warn('transcript-patcher: resync degraded to reload', {
+      instanceIds,
+      outcomes
+    })
+
     return false
   }
 
