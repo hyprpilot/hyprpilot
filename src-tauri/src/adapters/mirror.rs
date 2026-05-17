@@ -273,7 +273,11 @@ impl InstanceMirror {
     /// Phase A3 wires this alongside every existing `events_tx.send(…)`
     /// in `acp/instance.rs`. Phase A2 lands the type only; nothing
     /// calls `apply` yet.
-    pub async fn apply(&self, event: &InstanceEvent) {
+    /// Returns the seq value minted for `Transcript` events (so
+    /// [`publish`] can stamp it onto the broadcast event before
+    /// sending). `None` for every other variant — non-transcript
+    /// events don't carry seq today.
+    pub async fn apply(&self, event: &InstanceEvent) -> Option<u64> {
         // Same split as `acp::emit` — chunk events (transcript /
         // terminal) get their own sub-target so a captain debugging
         // lifecycle / usage doesn't drown in chunk spam at trace
@@ -292,6 +296,7 @@ impl InstanceMirror {
             );
         }
         let mut g = self.inner.write().await;
+        let mut minted_seq: Option<u64> = None;
         match event {
             // ── transcript firehose ──────────────────────────────
             InstanceEvent::Transcript { item, turn_id, .. } => {
@@ -305,6 +310,7 @@ impl InstanceMirror {
                 while g.transcript.len() > self.cap {
                     g.transcript.pop_front();
                 }
+                minted_seq = Some(seq);
             }
 
             // ── per-turn lifecycle markers ───────────────────────
@@ -511,6 +517,7 @@ impl InstanceMirror {
             | InstanceEvent::DaemonReloaded { .. }
             | InstanceEvent::SystemPromptInjected { .. } => {}
         }
+        minted_seq
     }
 
     /// Read a [`MetaSnapshot`] off the cache.
@@ -538,19 +545,62 @@ impl InstanceMirror {
 
     /// Read a windowed [`ChatSnapshot`].
     ///
-    /// `before = None` returns the latest `limit` entries (anchored at
-    /// the head). `before = Some(seq)` returns the latest `limit`
-    /// entries strictly older than `seq` — backward pagination cursor
-    /// for the UI's infinite-query.
+    /// Three cursor modes, mutually exclusive:
+    ///
+    /// - `before = None, after = None` → latest `limit` entries
+    ///   anchored at the head.
+    /// - `before = Some(seq), after = None` → latest `limit` entries
+    ///   strictly older than `seq` — backward pagination for the UI's
+    ///   infinite-query.
+    /// - `before = None, after = Some(seq)` → up to `limit` entries
+    ///   strictly newer than `seq`, oldest-first — delta-replay for
+    ///   reconnecting clients (mobile WS regaining focus after a tab
+    ///   suspension). Hits when the mirror still holds every missed
+    ///   item; if `after < oldest_seq_in_buffer` the response is
+    ///   complete only up to the bounded ring, so [`ChatSnapshot::has_more`]
+    ///   stays `true` and the client should fall back to a fresh head
+    ///   fetch.
+    ///
+    /// Passing both `before` and `after` is rejected at the RPC layer
+    /// (`-32602`). This method preserves backward semantics when both
+    /// are passed — `before` wins — but callers should never get here
+    /// with both set.
     ///
     /// `limit = 0` falls through to [`DEFAULT_CHAT_LIMIT`]. Any other
     /// value is honoured verbatim — frontends compute their own
     /// viewport-relative page size, and clamping daemon-side would
     /// force a one-size-fits-all heuristic that doesn't suit every
     /// consumer (phone vs 4K monitor vs neovim-side reader).
-    pub async fn chat_snapshot(&self, before: Option<u64>, limit: usize) -> ChatSnapshot {
+    pub async fn chat_snapshot(&self, before: Option<u64>, after: Option<u64>, limit: usize) -> ChatSnapshot {
         let limit = if limit == 0 { DEFAULT_CHAT_LIMIT } else { limit };
         let g = self.inner.read().await;
+
+        // Forward window (delta-replay): items strictly newer than
+        // `after`, oldest-first. Only consulted when `before` is
+        // unset; callers that supply both are pinned to backward
+        // semantics for legacy safety.
+        if let (None, Some(cursor)) = (before, after) {
+            let start_idx = g
+                .transcript
+                .iter()
+                .position(|e| e.seq > cursor)
+                .unwrap_or(g.transcript.len());
+            let end_idx = (start_idx + limit).min(g.transcript.len());
+            let items: Vec<SeqTranscriptItem> = g.transcript.range(start_idx..end_idx).cloned().collect();
+            let oldest_seq = items.first().map(|e| e.seq);
+            let latest_seq = items.last().map(|e| e.seq);
+            // `has_more` here means strictly newer entries exist
+            // beyond the returned window — the captain should keep
+            // pulling.
+            let has_more = end_idx < g.transcript.len();
+
+            return ChatSnapshot {
+                items,
+                oldest_seq,
+                latest_seq,
+                has_more,
+            };
+        }
 
         let upper_idx = match before {
             // Find the first index whose seq >= cursor; everything
@@ -612,9 +662,22 @@ impl InstanceMirror {
 pub async fn publish(
     mirror: &InstanceMirror,
     events_tx: &tokio::sync::broadcast::Sender<InstanceEvent>,
-    event: InstanceEvent,
+    mut event: InstanceEvent,
 ) {
-    mirror.apply(&event).await;
+    // Mint seq under the mirror's write lock, then stamp it onto the
+    // event before broadcasting so subscribers see the canonical
+    // value. The mirror is the single writer (no two `publish` calls
+    // race the counter — every actor emit funnels through here on the
+    // same async task). External WS / Tauri subscribers use the seq
+    // as their delta-replay cursor on reconnect.
+    if let Some(seq) = mirror.apply(&event).await {
+        if let InstanceEvent::Transcript {
+            seq: ref mut event_seq, ..
+        } = &mut event
+        {
+            *event_seq = seq;
+        }
+    }
     let _ = events_tx.send(event);
 }
 
@@ -731,7 +794,7 @@ mod tests {
         publish(&mirror, &tx, event).await;
 
         // Mirror has the event already.
-        let snap = mirror.chat_snapshot(None, 0).await;
+        let snap = mirror.chat_snapshot(None, None, 0).await;
         assert_eq!(snap.items.len(), 1);
 
         // Broadcast queued the event for any subscriber.
@@ -758,7 +821,7 @@ mod tests {
 
         publish(&mirror, &tx, transcript_event("only-mirror")).await;
 
-        let snap = mirror.chat_snapshot(None, 0).await;
+        let snap = mirror.chat_snapshot(None, None, 0).await;
         assert_eq!(snap.items.len(), 1);
     }
 
@@ -773,6 +836,10 @@ mod tests {
             session_id: "s-1".into(),
             turn_id: turn_id.map(str::to_string),
             item: TranscriptItem::AgentText { text: text.into() },
+            // Placeholder; `mirror.apply` mints the real value at
+            // insertion time. Test helpers never assert on the
+            // event's `seq` field directly — they read mirror state.
+            seq: 0,
             meta: None,
         }
     }
@@ -803,7 +870,7 @@ mod tests {
         for i in 0..(cap + overflow) {
             mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
         }
-        let snap = mirror.chat_snapshot(None, cap + overflow).await;
+        let snap = mirror.chat_snapshot(None, None, cap + overflow).await;
         assert_eq!(snap.items.len(), cap, "ring buffer caps at `cap` entries");
         let first_seq = snap.items.first().expect("non-empty").seq;
         let last_seq = snap.items.last().expect("non-empty").seq;
@@ -823,32 +890,92 @@ mod tests {
         }
 
         // Latest 50: seqs 150..=199.
-        let page1 = mirror.chat_snapshot(None, 50).await;
+        let page1 = mirror.chat_snapshot(None, None, 50).await;
         assert_eq!(page1.items.len(), 50);
         assert_eq!(page1.oldest_seq, Some(150));
         assert_eq!(page1.latest_seq, Some(199));
         assert!(page1.has_more);
 
         // Older than 150: seqs 100..=149.
-        let page2 = mirror.chat_snapshot(Some(150), 50).await;
+        let page2 = mirror.chat_snapshot(Some(150), None, 50).await;
         assert_eq!(page2.items.len(), 50);
         assert_eq!(page2.oldest_seq, Some(100));
         assert_eq!(page2.latest_seq, Some(149));
         assert!(page2.has_more);
 
         // Older than 50: seqs 0..=49 — last page.
-        let page4 = mirror.chat_snapshot(Some(50), 50).await;
+        let page4 = mirror.chat_snapshot(Some(50), None, 50).await;
         assert_eq!(page4.items.len(), 50);
         assert_eq!(page4.oldest_seq, Some(0));
         assert_eq!(page4.latest_seq, Some(49));
         assert!(!page4.has_more, "exhausted the buffer");
 
         // Older than 0: empty.
-        let page5 = mirror.chat_snapshot(Some(0), 50).await;
+        let page5 = mirror.chat_snapshot(Some(0), None, 50).await;
         assert!(page5.items.is_empty());
         assert!(!page5.has_more);
         assert_eq!(page5.oldest_seq, None);
         assert_eq!(page5.latest_seq, None);
+    }
+
+    /// `after` cursor: items strictly newer than the supplied seq,
+    /// oldest-first. Models the remote reconnect path — captain saw
+    /// up to seq 80, comes back online, asks for everything after.
+    #[tokio::test]
+    async fn chat_snapshot_paginates_forward_via_after_cursor() {
+        let mirror = InstanceMirror::with_cap(1_000);
+        for i in 0..100 {
+            mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
+        }
+
+        // Newer than 80, capped at 10: seqs 81..=90.
+        let page = mirror.chat_snapshot(None, Some(80), 10).await;
+        assert_eq!(page.items.len(), 10);
+        assert_eq!(page.oldest_seq, Some(81));
+        assert_eq!(page.latest_seq, Some(90));
+        assert!(page.has_more, "still 9 more items past seq 90");
+
+        // Newer than 90, drain remainder: seqs 91..=99.
+        let page2 = mirror.chat_snapshot(None, Some(90), 100).await;
+        assert_eq!(page2.items.len(), 9);
+        assert_eq!(page2.oldest_seq, Some(91));
+        assert_eq!(page2.latest_seq, Some(99));
+        assert!(!page2.has_more, "no entries past seq 99");
+
+        // Newer than the latest: empty.
+        let page3 = mirror.chat_snapshot(None, Some(99), 50).await;
+        assert!(page3.items.is_empty());
+        assert!(!page3.has_more);
+        assert_eq!(page3.oldest_seq, None);
+        assert_eq!(page3.latest_seq, None);
+
+        // Newer than seq=0: everything from seq 1 onwards.
+        let from_one = mirror.chat_snapshot(None, Some(0), 200).await;
+        assert_eq!(from_one.items.len(), 99);
+        assert_eq!(from_one.oldest_seq, Some(1));
+        assert_eq!(from_one.latest_seq, Some(99));
+    }
+
+    /// `publish` stamps the minted seq onto the broadcast event so
+    /// remote subscribers can use it as their delta-replay cursor.
+    /// Pinning this guarantees the wire-level `seq` matches what the
+    /// snapshot side returns for the same item.
+    #[tokio::test]
+    async fn publish_stamps_seq_onto_broadcast_event() {
+        let mirror = InstanceMirror::new();
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+
+        for (i, body) in ["one", "two", "three"].iter().enumerate() {
+            publish(&mirror, &tx, transcript_event(body)).await;
+            let received = rx.recv().await.expect("broadcast received");
+
+            match received {
+                InstanceEvent::Transcript { seq, .. } => {
+                    assert_eq!(seq, i as u64, "broadcast seq mismatched mirror seq for item #{i}");
+                }
+                other => panic!("expected Transcript variant, got {other:?}"),
+            }
+        }
     }
 
     /// `limit = 0` falls through to the default page size.
@@ -858,7 +985,7 @@ mod tests {
         for i in 0..(DEFAULT_CHAT_LIMIT + 10) {
             mirror.apply(&transcript_event(&format!("msg-{i}"))).await;
         }
-        let snap = mirror.chat_snapshot(None, 0).await;
+        let snap = mirror.chat_snapshot(None, None, 0).await;
         assert_eq!(snap.items.len(), DEFAULT_CHAT_LIMIT);
     }
 
@@ -869,7 +996,7 @@ mod tests {
         mirror.apply(&transcript_event("hello")).await;
 
         let baseline_meta = mirror.meta_snapshot().await;
-        let baseline_chat = mirror.chat_snapshot(None, 100).await;
+        let baseline_chat = mirror.chat_snapshot(None, None, 100).await;
 
         let noops = vec![
             InstanceEvent::State {
@@ -912,7 +1039,7 @@ mod tests {
         }
 
         let after_meta = mirror.meta_snapshot().await;
-        let after_chat = mirror.chat_snapshot(None, 100).await;
+        let after_chat = mirror.chat_snapshot(None, None, 100).await;
 
         // Pin every visible field — serializing makes the comparison
         // structural without manually unpacking each enum / vec.
@@ -1117,7 +1244,7 @@ mod tests {
             .apply(&transcript_event_with_turn("inside-turn-2-a", Some("t-2")))
             .await;
 
-        let snap = mirror.chat_snapshot(None, 100).await;
+        let snap = mirror.chat_snapshot(None, None, 100).await;
         let turn_ids: Vec<Option<String>> = snap.items.iter().map(|i| i.turn_id.clone()).collect();
         assert_eq!(
             turn_ids,
@@ -1418,8 +1545,8 @@ mod tests {
 
         let actor_meta = actor_mirror.meta_snapshot().await;
         let replay_meta = replay_mirror.meta_snapshot().await;
-        let actor_chat = actor_mirror.chat_snapshot(None, 100).await;
-        let replay_chat = replay_mirror.chat_snapshot(None, 100).await;
+        let actor_chat = actor_mirror.chat_snapshot(None, None, 100).await;
+        let replay_chat = replay_mirror.chat_snapshot(None, None, 100).await;
         let actor_terms = actor_mirror.terminals_snapshot().await;
         let replay_terms = replay_mirror.terminals_snapshot().await;
 

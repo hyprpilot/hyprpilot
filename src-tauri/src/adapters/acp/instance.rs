@@ -2911,14 +2911,16 @@ async fn run(params: RunParams) {
                                     text: text.clone(),
                                     attachments: attachments.clone(),
                                 },
+                                // Placeholder; `publish` overwrites with the
+                                // seq minted by `mirror.apply`.
+                                seq: 0,
                                 // User-prompt items are minted daemon-side
                                 // from the captain's submit, not from a
                                 // session/update notification — no `_meta`
                                 // envelope to forward.
                                 meta: None,
                             };
-                            mirror_notif.apply(&event).await;
-                            let _ = events_tx_notif.send(event);
+                            publish(&mirror_notif, &events_tx_notif, event).await;
                             // Wire blocks: [system_prompt?, ...user_attachments, user_text].
                             // Per-attachment ordering preserved through the chained iterator;
                             // `build_prompt_blocks` already lays attachments before text.
@@ -3575,6 +3577,9 @@ async fn run(params: RunParams) {
                                         session_id: sid,
                                         turn_id,
                                         item,
+                                        // Placeholder; `publish` overwrites
+                                        // with the seq minted by `mirror.apply`.
+                                        seq: 0,
                                         meta,
                                     })
                                 }
@@ -3676,8 +3681,7 @@ async fn run(params: RunParams) {
                                         "broadcasting InstanceEvent",
                                     );
                                 }
-                                mirror_notif.apply(&evt).await;
-                                let _ = events_tx_notif.send(evt);
+                                publish(&mirror_notif, &events_tx_notif, evt).await;
                             }
                         }
                         ClientEvent::PermissionRequested {
@@ -3738,8 +3742,7 @@ async fn run(params: RunParams) {
                                 default_option_id,
                                 formatted,
                             };
-                            mirror_notif.apply(&event).await;
-                            let _ = events_tx_notif.send(event);
+                            publish(&mirror_notif, &events_tx_notif, event).await;
                         }
                     }
                 }

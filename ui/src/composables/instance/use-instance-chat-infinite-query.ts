@@ -17,6 +17,7 @@
 import { useInfiniteQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef } from 'vue'
 
+import { recordLastSeenSeq } from './transcript-patcher'
 import { type InstanceId } from '../chrome/use-active-instance'
 import { invoke, TauriCommand, type ChatSnapshot } from '@ipc'
 
@@ -65,11 +66,21 @@ export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId 
         throw new Error('useInstanceChatInfiniteQuery: instanceId is undefined')
       }
 
-      return invoke(TauriCommand.InstanceSnapshotChat, {
+      const snap = await invoke(TauriCommand.InstanceSnapshotChat, {
         instanceId: id,
         before: pageParam,
         limit: resolveLimit()
       })
+
+      // Seed the delta-replay cursor whenever a snapshot page lands.
+      // Head-page fetches (pageParam undefined) carry the freshest
+      // `latestSeq` — that's the right baseline for "what the daemon
+      // believes the highest seq is right now". Backward-pagination
+      // pages also carry their slice's `latestSeq` (older), so the
+      // max() inside `recordLastSeenSeq` keeps the cursor monotonic.
+      recordLastSeenSeq(id, snap.latestSeq)
+
+      return snap
     },
     getNextPageParam: (lastPage) => (lastPage?.hasMore ? lastPage.oldestSeq : undefined),
     // Forward pagination doesn't exist — live events mutate the
