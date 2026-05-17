@@ -322,15 +322,42 @@ function onTextareaInput(): void {
 }
 
 /**
- * Cursor-move events (click / Home / End / PageUp / PageDown). Arrow
- * keys are intercepted by the popover's keymap when it's open, so they
- * never reach this path. We only need to reposition when the popover
- * is already open — closed popover doesn't render anywhere to move.
+ * Cursor-move events (click / Home / End / PageUp / PageDown / mobile
+ * tap-to-position). Arrow keys are intercepted by the popover's keymap
+ * when it's open, so they never reach this path.
+ *
+ * Re-evaluate the trigger context, not just reposition. The captain's
+ * caret may have jumped OUT of the current completion token (e.g.,
+ * tapping mid-paragraph on mobile while the `@./foo` popover was up).
+ * `fireCompletionQuery` re-runs the trigger matcher and closes the
+ * popover when no trigger covers the new caret position; when it
+ * still does, it repositions + refreshes the result set. The
+ * `!open` short-circuit keeps a closed popover dormant (no daemon
+ * round-trip per cursor move).
  */
 function onTextareaCursorMove(): void {
-  if (completion.state.value.open) {
-    repositionPopover()
+  if (!completion.state.value.open) {
+    return
   }
+  fireCompletionQuery()
+}
+
+/**
+ * `selectionchange` is the only DOM signal mobile WebViews fire when
+ * the captain taps a different position inside an already-focused
+ * textarea — neither `click` nor `keyup` is guaranteed. Without this
+ * the popover would sit pinned at its old anchor (and at its old
+ * stale token-context) while the caret moved away from it.
+ *
+ * Filtered to our textarea via `document.activeElement` — the event
+ * fires for every selection change in the document including
+ * `<select>` widgets, contenteditable nodes etc.
+ */
+function onDocumentSelectionChange(): void {
+  if (document.activeElement !== textareaRef.value) {
+    return
+  }
+  onTextareaCursorMove()
 }
 
 function applyCompletion(): void {
@@ -415,10 +442,12 @@ function applyCompletion(): void {
 onMounted(() => {
   resize()
   composer.registerTextarea(textareaRef.value)
+  document.addEventListener('selectionchange', onDocumentSelectionChange)
 })
 
 onUnmounted(() => {
   composer.registerTextarea(undefined)
+  document.removeEventListener('selectionchange', onDocumentSelectionChange)
 })
 
 watch(text, () => nextTick(resize))

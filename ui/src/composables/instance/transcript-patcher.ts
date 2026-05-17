@@ -107,7 +107,7 @@ export function listSeenInstanceIds(): string[] {
   return [...lastSeenSeqByInstance.keys()]
 }
 
-function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscriptItem | undefined {
+function liveItemFor(payload: TranscriptEventPayload, fallbackSeq: number): SeqTranscriptItem | undefined {
   if (payload.item.kind === TranscriptItemKind.Unknown) {
     return undefined
   }
@@ -116,8 +116,16 @@ function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscrip
     return undefined
   }
 
+  // Prefer the daemon's wire seq when present so the cached entry's
+  // `seq` matches what `instance_snapshot_chat` would return for the
+  // same item. Lets the delta-replay path dedup overlapping items by
+  // seq instead of having to reconcile two parallel numbering
+  // systems (client-synthesized vs daemon-stamped). The `fallbackSeq`
+  // covers older daemons that don't ship `seq` on the wire — the
+  // synthesized number is monotonic per batch flush so the cache
+  // stays internally consistent.
   return {
-    seq,
+    seq: payload.seq ?? fallbackSeq,
     turnId: payload.turnId,
     item: payload.item
   }
@@ -216,6 +224,7 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     let applied = 0
     let mergedCount = 0
     let skipped = 0
+    let dedupedSeq = 0
 
     for (const payload of batch) {
       if (payload.instanceId !== instanceId) {
@@ -227,6 +236,17 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
         skipped += 1
         continue
       }
+
+      // Wire-seq dedup. If the same seq already landed via the
+      // delta-replay path (rare race on remote reconnect), drop the
+      // duplicate live event rather than appending a phantom copy.
+      // Only meaningful when the wire ships seq — older daemons with
+      // synthesized seqs never hit this branch because the
+      // synthesized counter is monotonic per flush.
+      if (payload.seq !== undefined && payload.seq <= lastSeq) {
+        dedupedSeq += 1
+        continue
+      }
       const merged = mergeToolCallUpdate(nextItems, incoming)
 
       if (merged) {
@@ -234,7 +254,7 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       } else {
         nextItems.push(incoming)
       }
-      baseSeq += 1
+      baseSeq = incoming.seq + 1
       lastSeq = incoming.seq
       applied += 1
     }
@@ -250,6 +270,7 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       applied,
       merged: mergedCount,
       skipped,
+      dedupedSeq,
       headItemCount: nextItems.length
     })
 
@@ -424,15 +445,23 @@ function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items:
     let lastSeq = head.latestSeq ?? 0
 
     for (const incoming of items) {
+      // Dedup against the head's existing max seq. Covers the race
+      // where a live event for the same seq landed between the
+      // resync RPC being sent and its response arriving — without
+      // this guard the captain would see a chunk rendered twice
+      // (live + replay). Because the live patcher now stamps the
+      // wire seq onto cached items, `lastSeq` is comparable across
+      // both paths.
+      if (incoming.seq <= lastSeq) {
+        recordLastSeenSeq(instanceId, incoming.seq)
+        continue
+      }
       const merged = mergeToolCallUpdate(nextItems, incoming)
 
       if (!merged) {
         nextItems.push(incoming)
       }
-
-      if (incoming.seq > lastSeq) {
-        lastSeq = incoming.seq
-      }
+      lastSeq = incoming.seq
       recordLastSeenSeq(instanceId, incoming.seq)
       applied += 1
     }
