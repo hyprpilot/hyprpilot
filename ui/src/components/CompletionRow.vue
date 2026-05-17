@@ -81,7 +81,19 @@ const sourceLabel = computed<string>(() => {
 </script>
 
 <template>
-  <button type="button" class="completion-row" :data-active="active" @mouseenter="emit('hover')" @click.prevent="emit('click')">
+  <!-- Commit on `mousedown.prevent`, not `click`. The composer
+       textarea's `@blur="completion.close()"` fires the instant a
+       button anywhere else in the DOM takes focus — and click only
+       fires AFTER mousedown completes. Without `.prevent` the
+       sequence is: mousedown → button receives focus → textarea
+       blurs → completion.close() → popover unmounts → click never
+       fires (the row is gone). `.prevent` on mousedown blocks the
+       button-focus default action, so the textarea keeps focus and
+       the commit fires before any blur. Mouse + touch + pen all
+       route through this path; pointer-event capture (`@pointerdown`)
+       would catch them too, but `mousedown` is the broader-supported
+       event and matches what the wider Vue ecosystem uses. -->
+  <button type="button" class="completion-row" :data-active="active" @mouseenter="emit('hover')" @mousedown.prevent="emit('click')">
     <FaIcon :icon="icon" class="completion-row-icon" aria-hidden="true" />
     <span class="completion-row-label">{{ item.label }}</span>
     <span v-if="item.detail" class="completion-row-detail">({{ item.detail }})</span>
