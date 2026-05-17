@@ -39,9 +39,21 @@ export interface PlanEntry {
   priority?: string
 }
 
+/// Generic running stat for a checklist-shaped item. Mirrors the
+/// daemon's `ChecklistStats` (`adapters::transcript::ChecklistStats`).
+export interface ChecklistStats {
+  done: number
+  total: number
+}
+
 export interface PlanStreamItem extends BaseStream {
   kind: StreamItemKind.Plan
   entries: PlanEntry[]
+  /// Latest `done / total` snapshot from the daemon. Plans re-emit
+  /// fully on every agent update; we replace the prior stat in
+  /// place. `undefined` only when the daemon ships a plan without
+  /// stats (defensive — daemon always computes them).
+  stats?: ChecklistStats
 }
 
 /// Banner chip rendered between turns whenever the agent emits a
@@ -151,6 +163,7 @@ interface ThoughtUpdate {
 interface PlanUpdate {
   sessionUpdate: string
   entries?: PlanEntry[]
+  stats?: ChecklistStats
 }
 
 // ── Internal store-mutation surface ───────────────────────────────
@@ -194,6 +207,7 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
   const slot = slotFor(id)
   const seq = nextSeq(id)
   const entries = Array.isArray(raw.entries) ? raw.entries : []
+  const stats = raw.stats
   const openId = slot.openPlanBySession.get(sessionId)
 
   if (openId) {
@@ -201,6 +215,7 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
 
     if (target) {
       target.entries = entries
+      target.stats = stats
       target.updatedAt = seq
 
       return
@@ -216,7 +231,8 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
     turnId: openTurnIdFor(id, sessionId),
     createdAt: seq,
     updatedAt: seq,
-    entries
+    entries,
+    stats
   })
   slot.openPlanBySession.set(sessionId, itemId)
 }

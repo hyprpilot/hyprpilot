@@ -38,7 +38,21 @@ const props = defineProps<{
   /// Free-form prose body. Routed through `renderMarkdown` for the
   /// thinking kind; falls through to `<slot>` when omitted.
   text?: string
+  /// `done / total` running stat for checklist-shaped cards (plans
+  /// today). Rendered as a `N/M` chip in the header — mirrors the
+  /// elapsed chip alongside. `undefined` hides the chip entirely.
+  stats?: { done: number; total: number }
 }>()
+
+const statsLabel = computed<string | undefined>(() => {
+  const s = props.stats
+
+  if (!s || s.total === 0) {
+    return undefined
+  }
+
+  return `${s.done}/${s.total}`
+})
 
 const slots = useSlots()
 
@@ -165,6 +179,7 @@ function planIconFor(status: PlanStatus) {
       <FaIcon v-if="hasBody" :icon="expanded ? faChevronDown : faChevronRight" class="stream-card-caret" aria-hidden="true" />
       <span class="stream-card-label">{{ label }}</span>
       <span v-if="!expanded && summary" class="stream-card-summary-inline">{{ summary }}</span>
+      <StatPill v-if="statsLabel" class="stream-card-stat" :label="statsLabel" :live="active" />
       <StatPill v-if="elapsed" class="stream-card-elapsed" :label="elapsed" :live="active" />
     </header>
 

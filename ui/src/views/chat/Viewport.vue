@@ -712,6 +712,7 @@ defineExpose({ scrollEl })
               :active="blockIdx === liveBlockIdx"
               label="plan"
               :items="mapPlanItems(entry.item.entries)"
+              :stats="entry.item.stats"
             />
             <ChangeBanner
               v-else-if="entry.item.kind === StreamItemKind.ModeChange"

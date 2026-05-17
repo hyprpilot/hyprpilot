@@ -213,7 +213,8 @@ describe('timelineBlocksFromSnapshot', () => {
       turnId,
       item: {
         kind: TranscriptItemKind.Plan,
-        steps
+        steps,
+        stats: { done: 0, total: steps.length }
       }
     })
     const items: SeqTranscriptItem[] = [

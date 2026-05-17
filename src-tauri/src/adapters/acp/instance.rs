@@ -101,6 +101,23 @@ struct TurnState {
     /// stream — independent because the two render on different
     /// surfaces.
     last_agent_thought_message_id: Option<String>,
+    /// `true` when a non-`AgentText` transcript item (typically a
+    /// `ToolCall` / `ToolCallUpdate` / `Plan` / `AgentAttachment`)
+    /// has landed since the last `AgentText` chunk. The next
+    /// `AgentText` chunk treats this as a content-block boundary
+    /// equivalent to a `messageId` switch — vendors don't always
+    /// allocate a fresh `messageId` after a tool call returns
+    /// (Claude regularly reuses the same id across text→tool→text),
+    /// and without this flag the resumed text would concat directly
+    /// onto the prior sentence ("...behind.Now bg..."). Reset after
+    /// the next text chunk consumes it. Independent flag for the
+    /// thought stream below — same reasoning, different stream.
+    non_text_event_since_last_text: bool,
+    /// `true` when a non-`AgentThought` transcript item has landed
+    /// since the last `AgentThought` chunk. Mirrors
+    /// [`Self::non_text_event_since_last_text`] for the thought
+    /// stream.
+    non_text_event_since_last_thought: bool,
 }
 
 impl TurnState {
@@ -131,6 +148,8 @@ impl TurnState {
         self.agent_thought_trailing = 0;
         self.last_agent_text_message_id = None;
         self.last_agent_thought_message_id = None;
+        self.non_text_event_since_last_text = false;
+        self.non_text_event_since_last_thought = false;
     }
 
     /// Mint a synthetic turn — out-of-turn agent activity wraps under
@@ -144,6 +163,8 @@ impl TurnState {
         self.agent_thought_trailing = 0;
         self.last_agent_text_message_id = None;
         self.last_agent_thought_message_id = None;
+        self.non_text_event_since_last_text = false;
+        self.non_text_event_since_last_thought = false;
     }
 
     /// Compute the markdown-paragraph lift prefix for an incoming
@@ -169,9 +190,25 @@ impl TurnState {
     /// Mutates state regardless of whether the prefix is non-empty —
     /// the tally must track every chunk so the NEXT chunk's lift
     /// decision sees the right prior state.
+    ///
+    /// Two boundary triggers force the stronger `paragraph_break_prefix`
+    /// path (vs the conservative soft-lift):
+    ///   1. **messageId switch** — the vendor opened a fresh content
+    ///      block (Claude / Codex emit a new id per block).
+    ///   2. **non-text event interrupt** — a `ToolCall` /
+    ///      `ToolCallUpdate` / `Plan` / `AgentAttachment` landed
+    ///      between the prior text chunk and this one. Vendors often
+    ///      keep the SAME messageId across text→tool→text, so the
+    ///      messageId check alone misses this case and the resumed
+    ///      sentence concats directly onto the prior one. The
+    ///      `non_text_event_since_last_text` flag closes the gap.
+    ///
+    /// Either trigger consumes (clears) `non_text_event_since_last_text`.
     fn note_agent_text(&mut self, incoming: &str, message_id: Option<&str>) -> &'static str {
         let prior = self.agent_text_trailing;
-        let boundary = is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id);
+        let id_boundary = is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id);
+        let event_boundary = self.non_text_event_since_last_text;
+        let boundary = id_boundary || event_boundary;
         let prefix = if boundary {
             super::paragraph::paragraph_break_prefix(prior, incoming)
         } else {
@@ -182,16 +219,19 @@ impl TurnState {
         if let Some(id) = message_id {
             self.last_agent_text_message_id = Some(id.to_string());
         }
+        self.non_text_event_since_last_text = false;
         prefix
     }
 
     /// `note_agent_text` for the `AgentThought` stream — independent
-    /// trailing counter + messageId tracker since thoughts render on
-    /// a separate surface (the thinking card) and have their own
-    /// content-block id stream.
+    /// trailing counter + messageId tracker + non-text-event flag
+    /// since thoughts render on a separate surface (the thinking
+    /// card) and have their own content-block id stream.
     fn note_agent_thought(&mut self, incoming: &str, message_id: Option<&str>) -> &'static str {
         let prior = self.agent_thought_trailing;
-        let boundary = is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id);
+        let id_boundary = is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id);
+        let event_boundary = self.non_text_event_since_last_thought;
+        let boundary = id_boundary || event_boundary;
         let prefix = if boundary {
             super::paragraph::paragraph_break_prefix(prior, incoming)
         } else {
@@ -202,7 +242,18 @@ impl TurnState {
         if let Some(id) = message_id {
             self.last_agent_thought_message_id = Some(id.to_string());
         }
+        self.non_text_event_since_last_thought = false;
         prefix
+    }
+
+    /// Mark that a non-text transcript item (tool call, plan, attachment,
+    /// …) landed in the open turn. The NEXT `AgentText` /
+    /// `AgentThought` chunk treats this as a content-block boundary
+    /// (forces `paragraph_break_prefix`). Cleared by the next text /
+    /// thought chunk. Idempotent.
+    fn note_non_text_event(&mut self) {
+        self.non_text_event_since_last_text = true;
+        self.non_text_event_since_last_thought = true;
     }
 
     /// Mark the current turn as having emitted at least one agent-
@@ -790,14 +841,49 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Strip leading ATX-style markdown headers (`#`, `##`, `###`, …) and
+/// surrounding blank lines from a plan-step's content. Agents
+/// occasionally embed a title row inside the first plan entry
+/// (`### tasks` / `# plan • 12/13 done` / similar) — the structured
+/// plan render in the UI already supplies a chrome header (`PLAN`),
+/// so the agent's redundant header reads as a duplicated heading
+/// when stacked on top. Stripping it on the daemon side keeps the
+/// wire shape clean for every frontend without each having to
+/// re-implement the normalization.
+///
+/// Only consecutive leading lines that match `^\s*#{1,6}\s` are
+/// stripped — body content keeps its inline `#` headings (e.g. a
+/// step whose body genuinely starts with text and mentions `#1` is
+/// not affected). Returns the trimmed content with leading/trailing
+/// whitespace tightened.
+fn strip_plan_step_header(content: &str) -> String {
+    let mut rest = content.trim_start_matches(['\n', '\r']);
+    loop {
+        // Try to peel one header-shaped line off the front.
+        let line_end = rest.find('\n').map_or(rest.len(), |i| i + 1);
+        let line = &rest[..line_end];
+        let trimmed = line.trim_start();
+        let trimmed_bytes = trimmed.as_bytes();
+        let hash_count = trimmed_bytes.iter().take(6).take_while(|b| **b == b'#').count();
+        let first_after_hashes = trimmed_bytes.get(hash_count).copied();
+        let is_header = hash_count >= 1 && matches!(first_after_hashes, Some(b' ' | b'\t'));
+        if !is_header {
+            break;
+        }
+        rest = &rest[line_end..];
+        rest = rest.trim_start_matches(['\n', '\r']);
+    }
+    rest.trim_end().to_string()
+}
+
 pub(crate) fn map_session_update(
     update: serde_json::Value,
     tool_calls: &mut ToolCallCache,
     adapter_id: &str,
 ) -> MappedSessionUpdate {
     use crate::adapters::{
-        Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
-        ToolCallUpdateRecord, TranscriptItem,
+        Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
+        ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem,
     };
 
     let kind = update
@@ -1261,13 +1347,15 @@ pub(crate) fn map_session_update(
             }))
         }
         "plan" => {
-            let steps = update
+            let steps: Vec<PlanStep> = update
                 .get("entries")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
                         .map(|entry| PlanStep {
-                            content: entry.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            content: strip_plan_step_header(
+                                entry.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                            ),
                             // Unknown wire strings deserialize to None
                             // (tolerant) — agents shipping a future
                             // variant won't crash the mapping.
@@ -1279,7 +1367,15 @@ pub(crate) fn map_session_update(
                         .collect()
                 })
                 .unwrap_or_default();
-            MappedUpdate::Transcript(TranscriptItem::Plan(PlanRecord { steps }))
+            let total = steps.len();
+            let done = steps
+                .iter()
+                .filter(|s| s.status == Some(PlanStepStatus::Completed))
+                .count();
+            MappedUpdate::Transcript(TranscriptItem::Plan(PlanRecord {
+                steps,
+                stats: ChecklistStats { done, total },
+            }))
         }
         "permission_request" => {
             let request_id = update
@@ -3463,7 +3559,14 @@ async fn run(params: RunParams) {
                                                 *text = lifted;
                                             }
                                         }
-                                        _ => {}
+                                        // Tool call / plan / attachment / etc. — flag the
+                                        // turn so the NEXT text or thought chunk forces a
+                                        // markdown paragraph break, even when the vendor
+                                        // reuses the same messageId across the interrupt
+                                        // (Claude does this regularly).
+                                        _ => {
+                                            turn_state.write().await.note_non_text_event();
+                                        }
                                     }
 
                                     Some(InstanceEvent::Transcript {
@@ -3931,7 +4034,138 @@ mod tests {
         assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
     }
 
+    #[test]
+    fn turn_state_forces_paragraph_break_after_tool_call_even_with_same_message_id() {
+        // The regression PR #79 didn't catch: Claude often reuses the
+        // SAME messageId across text → tool call → text. With only the
+        // messageId-switch check, the resumed text would concat
+        // directly onto the prior sentence. The
+        // `non_text_event_since_last_text` flag forces a break.
+        let mut state = TurnState::default();
+        state.note_agent_text("...behind.", Some("msg-1"));
+        // A tool call lands — dispatcher catch-all flags non-text event.
+        state.note_non_text_event();
+        // Next text chunk: same messageId, no leading newline.
+        // Without the flag → soft-lift would do nothing → captain sees
+        // "...behind.Now bg...". With the flag → paragraph_break_prefix
+        // injects "\n\n" so the boundary renders as a paragraph break.
+        assert_eq!(state.note_agent_text("Now bg is solid", Some("msg-1")), "\n\n");
+    }
+
+    #[test]
+    fn turn_state_forces_paragraph_break_after_tool_call_with_no_message_id() {
+        // Vendors that never emit messageId (or stopped emitting after
+        // the tool) still get the paragraph break via the
+        // non-text-event flag.
+        let mut state = TurnState::default();
+        state.note_agent_text("Pre-tool.", None);
+        state.note_non_text_event();
+        assert_eq!(state.note_agent_text("Post-tool.", None), "\n\n");
+    }
+
+    #[test]
+    fn turn_state_non_text_event_flag_is_consumed_by_next_text_chunk() {
+        // After the next text chunk uses the flag, a subsequent chunk
+        // without an intervening non-text event should NOT get a
+        // forced break — falls back to soft-lift (no break on clean
+        // token concat).
+        let mut state = TurnState::default();
+        state.note_agent_text("...behind.", Some("msg-1"));
+        state.note_non_text_event();
+        // First chunk consumes the flag.
+        assert_eq!(state.note_agent_text("Now bg is solid.", Some("msg-1")), "\n\n");
+        // Second chunk: same messageId, no new non-text event since.
+        // Should emit nothing (soft-lift; no trailing newline on
+        // "...solid.", no leading newline on " More text.").
+        assert_eq!(state.note_agent_text(" More text.", Some("msg-1")), "");
+    }
+
+    #[test]
+    fn turn_state_non_text_event_clears_on_open_real() {
+        let mut state = TurnState::default();
+        state.note_non_text_event();
+        state.open_real("turn-2".into());
+        // Fresh turn — no flagged event, no prior text → soft-lift.
+        assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
+    }
+
+    #[test]
+    fn turn_state_text_and_thought_non_text_flags_are_independent() {
+        // A non-text event flags BOTH streams, but consuming via text
+        // does NOT consume the thought flag (and vice versa).
+        let mut state = TurnState::default();
+        state.note_agent_text("Text 1.", Some("text-1"));
+        state.note_agent_thought("Thought 1.", Some("th-1"));
+        state.note_non_text_event();
+        // Text chunk consumes its flag.
+        assert_eq!(state.note_agent_text("Text 2.", Some("text-1")), "\n\n");
+        // Thought stream still has its flag set — should fire on next
+        // thought chunk independently.
+        assert_eq!(state.note_agent_thought("Thought 2.", Some("th-1")), "\n\n");
+    }
+
     // ── existing tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn strip_plan_step_header_drops_leading_atx_headers() {
+        // Single leading header line, common case.
+        assert_eq!(
+            strip_plan_step_header("### tasks\nactual body content"),
+            "actual body content"
+        );
+        // Multiple consecutive header lines (agent gets enthusiastic).
+        assert_eq!(strip_plan_step_header("# title\n## subtitle\nbody"), "body");
+        // Header buried mid-content stays put — only consecutive
+        // leading lines are stripped.
+        assert_eq!(
+            strip_plan_step_header("real body\n## not a leading header"),
+            "real body\n## not a leading header"
+        );
+        // Leading blank lines + header + blank line + body.
+        assert_eq!(strip_plan_step_header("\n\n### tasks\n\nbody"), "body");
+        // Trailing whitespace trimmed.
+        assert_eq!(strip_plan_step_header("body  \n  "), "body");
+    }
+
+    #[test]
+    fn strip_plan_step_header_preserves_non_header_content() {
+        // `#1` is not an ATX header (no space between `#` and content).
+        assert_eq!(strip_plan_step_header("#1 first item"), "#1 first item");
+        // Empty input.
+        assert_eq!(strip_plan_step_header(""), "");
+        // No header at all.
+        assert_eq!(strip_plan_step_header("just body text"), "just body text");
+    }
+
+    #[test]
+    fn map_session_update_computes_plan_stats_and_strips_headers() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "plan",
+            "entries": [
+                { "content": "### tasks\nset up branch", "status": "completed" },
+                { "content": "implement feature", "status": "in_progress" },
+                { "content": "write tests", "status": "pending" },
+                { "content": "ship it", "status": "completed" },
+            ],
+        });
+        let mapped = map_session_update(update, &mut cache, "claude-code");
+        let MappedUpdate::Transcript(item) = mapped.mapped else {
+            panic!("expected Transcript update");
+        };
+        let crate::adapters::TranscriptItem::Plan(plan) = item else {
+            panic!("expected Plan transcript item");
+        };
+        assert_eq!(plan.steps.len(), 4);
+        assert_eq!(
+            plan.steps[0].content, "set up branch",
+            "header stripped from first step"
+        );
+        assert_eq!(plan.steps[1].content, "implement feature");
+        assert_eq!(plan.stats.done, 2, "two completed");
+        assert_eq!(plan.stats.total, 4, "four total");
+    }
 
     /// Pin every wire shape `chunk_text` extracts text from. Bare-text
     /// is the ACP-spec'd shape; `thinking` covers claude-agent-acp
