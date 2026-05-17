@@ -40,6 +40,22 @@ let socket: WebSocket | undefined
 let connectPromise: Promise<WebSocket> | undefined
 let authenticated = false
 /**
+ * Module-level handle to a pending reconnect timer. Cleared on every
+ * reconnect attempt + on a deliberate close (none today; reserved).
+ * Watcher state lives at module scope so a second `visibilitychange`
+ * fire during a debounce window collapses to a single reconnect.
+ */
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+let reconnectAttempts = 0
+/**
+ * Wired once per page lifetime so the watcher attaches even when the
+ * remote-bridge module is loaded before the first WS handshake (e.g.
+ * during `applyTheme()`'s `remoteInvoke('get_theme')`). Subsequent
+ * `connect()` calls skip the wiring because `visibilityWatcherWired`
+ * stays `true` for the page's life.
+ */
+let visibilityWatcherWired = false
+/**
  * True after the SPA has already gone through one successful pair /
  * silent-reauth in this page lifetime. When a second `authenticated`
  * frame lands (silent reconnect after the WS dropped + auto-reauthed
@@ -169,6 +185,90 @@ function sendHelloIfTokenPresent(): void {
   }
 }
 
+/**
+ * Auto-reconnect after a WS close — without this the next reconnect
+ * only fires on the captain's next `remoteInvoke` (a button click, a
+ * snapshot RPC). Mobile browsers aggressively suspend background tabs;
+ * when the tab regains focus minutes later we MUST already be back
+ * online so the event stream catches up — otherwise the captain sees
+ * a frozen view until they manually interact with the chrome.
+ *
+ * The second `authenticated` frame triggers a full `window.location.reload()`
+ * (see `hasAuthenticatedThisPage` in `handleFrameByType`) — that's
+ * what re-hydrates the stores from a clean snapshot. We don't need a
+ * "last-seen sequence" cursor on the wire: the reload-and-rehydrate
+ * dance is the captain's "ship missed messages" path. It's coarse but
+ * correct, and the snapshot RPCs (`instance/snapshot/*`) already carry
+ * every mirror-cached piece of state the daemon has.
+ *
+ * Backoff schedule: 500ms → 1s → 2s → 4s → 8s, capped at 8s. Resets
+ * on a successful `open`.
+ */
+function scheduleReconnect(): void {
+  if (reconnectTimer !== undefined) {
+    return
+  }
+
+  // Terminal — captain explicitly rejected pair or the daemon
+  // expired it. Don't keep banging on the door.
+  if (terminalReason !== undefined && terminalReason !== 'connection lost') {
+    return
+  }
+  const delay = Math.min(500 * 2 ** reconnectAttempts, 8000)
+
+  reconnectAttempts += 1
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined
+    // Fire-and-forget — `connect()` owns retry on its own failure
+    // path. We just need to kick the next attempt; if it fails the
+    // close handler reschedules.
+    connect().catch(() => {})
+  }, delay)
+}
+
+function wireVisibilityWatcher(): void {
+  if (visibilityWatcherWired || typeof document === 'undefined') {
+    return
+  }
+  visibilityWatcherWired = true
+
+  // On mobile, switching back to the tab is the canonical "I want
+  // events to resume" signal. Kick reconnect immediately (bypassing
+  // the backoff delay) so the captain doesn't stare at a stale view
+  // waiting for the backoff timer to tick.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') {
+      return
+    }
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      return
+    }
+
+    if (reconnectTimer !== undefined) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    reconnectAttempts = 0
+    connect().catch(() => {})
+  })
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        return
+      }
+
+      if (reconnectTimer !== undefined) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = undefined
+      }
+      reconnectAttempts = 0
+      connect().catch(() => {})
+    })
+  }
+}
+
 function buildWsUrl(): string {
   // In production the SPA is served by the same axum server that
   // hosts the WS endpoint, so `wss://<location.host>/ws` reaches
@@ -186,11 +286,13 @@ async function connect(): Promise<WebSocket> {
   if (connectPromise) {
     return connectPromise
   }
+  wireVisibilityWatcher()
   connectPromise = new Promise<WebSocket>((resolve, reject) => {
     const ws = new WebSocket(buildWsUrl())
 
     ws.addEventListener('open', () => {
       socket = ws
+      reconnectAttempts = 0
       resolve(ws)
     })
     ws.addEventListener('error', (ev) => {
@@ -220,6 +322,9 @@ async function connect(): Promise<WebSocket> {
         r.reject(new Error('remote bridge: WS closed'))
       }
       connectPromise = undefined
+      // Auto-reconnect — see `scheduleReconnect`. Skipped when a
+      // terminal `rejected` frame preceded the close.
+      scheduleReconnect()
     })
     ws.addEventListener('message', onMessage)
   })

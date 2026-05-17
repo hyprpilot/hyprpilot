@@ -87,8 +87,14 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
     // O(1) running-tool check via the counter `use-tools` maintains
     // inline with status mutations. Previously this scanned every
     // historical tool call per chunk during streaming.
+    //
+    // Tool-running maps to `working` (yellow), not `pending` (red) —
+    // red is reserved for terminal errors. Captain's read: a tool
+    // executing is the agent doing work, same hue family as streaming.
+    // Permission-awaiting already pre-empts via the orange branch
+    // above; tool-running with no permission is a regular busy state.
     if (runningCount.value > 0) {
-      return Phase.Pending
+      return Phase.Working
     }
 
     const hasAgentTurn = turns.value.some((t) => t.role === TurnRole.Agent)

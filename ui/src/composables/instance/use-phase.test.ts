@@ -110,7 +110,7 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Idle)
   })
 
-  it('returns pending when a tool call is running (beats streaming)', () => {
+  it('returns working when a tool call is running (beats streaming)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
@@ -134,10 +134,10 @@ describe('usePhase', () => {
 
     const { phase } = usePhase()
 
-    expect(phase.value).toBe(Phase.Pending)
+    expect(phase.value).toBe(Phase.Working)
   })
 
-  it('returns awaiting when there is a pending permission prompt (beats pending)', () => {
+  it('returns awaiting when there is a pending permission prompt (beats working)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
