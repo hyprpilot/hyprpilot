@@ -769,6 +769,28 @@ Scoped aliases per concern, **not** `@/*`. Kept in sync across
   `text-theme-pending`).
 - Type scalar theme fields as `string`, not `string | null` — the
   defaults-always-load invariant makes nullable shapes misleading.
+- **`<MarkdownBody>` owns prose spacing — consumers DO NOT
+  retighten margins.** The component implements GitHub's
+  `github-markdown-css` rhythm — `margin: 0 0 1em` on every block
+  element (`p`/`ul`/`ol`/`blockquote`/`pre`/`table`/`.md-codeblock`),
+  `padding-left: 2em` on lists, `li + li { margin-top: 0.25em }`,
+  headings `1.5em 0 1em` with `line-height: 1.25`, blockquote
+  `padding: 0 1em` with a `0.25em` left rule. **Em units, not
+  rem** — the rhythm scales with the consumer's `font-size`, so
+  chat bubbles at 0.78rem get ~12.5px, modals at 0.85rem get
+  ~13.6px, and CompletionDocs at 0.78rem get the same. Consumers
+  inherit by mounting `<MarkdownBody>` and setting their own
+  `font-size` / `line-height` — never re-declare `:deep(p)` /
+  `:deep(ul)` margins. The only consumer-side override that's
+  legitimate is a `color` change (`stream-card-prose` dims the
+  thinking-card prose with `:deep(.markdown-body) { color: ... }`).
+- **Markdown render path is single-source: `<MarkdownBody>`.**
+  Never duplicate the two-pass `renderMarkdownPlain` → debounced
+  `renderMarkdown` (Shiki) pipeline outside the component. Earlier
+  `StreamCard.vue` had its own copy + hand-rolled `.stream-card-prose`
+  styles; that drift meant thinking-block markdown rendered without
+  the `.markdown-body` class so prose-styling rules silently
+  missed it. Always mount `<MarkdownBody :source="text" />`.
 
 ### UI stack reference
 
@@ -949,6 +971,45 @@ never production. `main.ts` gates the import on
 builds leave it unset and tree-shake the module out. Not a
 `__TAURI_INTERNALS__` window probe — browser-detection by absence is
 fragile.
+
+### Chat viewport scroll model (`useStickToBottom` + `Viewport.vue`)
+
+The chat viewport pairs a `useStickToBottom` composable with a
+`Viewport.vue` keyboard/IO handler. Three load-bearing invariants
+worth preserving:
+
+- **Direction-based unstick is non-negotiable.** Captain reads older
+  content via wheel-up AND via OS-scrollbar drag. The native
+  scrollbar widget is a WebKit pseudo-element — dragging it fires
+  `scroll` events on the viewport but NO preceding `pointerdown` /
+  `wheel` / `touchstart`. A `hasUserScrolled` intent gate that
+  flips only on those input events therefore stays `false` during a
+  scrollbar drag and the next streaming chunk yanks the captain
+  back to the foot. `useStickToBottom` flips `stuck = false` on any
+  decreasing `scrollTop` in a non-suppressed scroll event (tracking
+  `prevScrollTop` between handlers). Catches the scrollbar drag
+  AND small wheel-up nudges below the 64px `nearBottom` threshold.
+- **PageUp/PageDown bypass the editable-target gate.** The document
+  keydown handler in `Viewport.vue` routes PageUp/PageDown to the
+  viewport even when the composer textarea holds focus (which is
+  most of the time). Home/End keep the gate — captains expect
+  caret-home / caret-end inside the composer. Only Page keys
+  bypass.
+- **Backward pagination is NOT gated on `hasUserScrolled`.** The
+  intent gate would block `fetchNextPage` on a fresh mount —
+  composing-then-streaming flips `hasUserScrolled = false` and the
+  initial scroll-to-bottom assignment is the only scroll event the
+  viewport sees, so a captain who immediately scrolls up gets no
+  fetch. Eviction stays gated (eviction destroys cached data —
+  earn the intent check); pagination just fetches more data, so
+  ungating is safe.
+
+`useStickToBottom`'s `suppressNextScrollUpdate` flag absorbs the
+scroll event from a programmatic `scrollToBottom` and re-asserts
+`stuck = true` — so the captain clicking the floating chevron from
+a scrolled-away state actually resumes auto-follow (without the
+re-assert, `scheduleStick`'s `!stuck` early-return killed the
+follow on the next streaming chunk).
 
 ## Frontend linting / formatting
 
@@ -1315,10 +1376,35 @@ to the outgoing chunk:
    (`acp::paragraph::soft_lift_prefix`)** — accumulated tail ends
    with a single `\n` AND the next chunk doesn't start with one:
    prepend `\n` so the boundary reaches `\n\n`. Also catches
-   chunks that lead with a single `\n` themselves. Never injects
-   on a clean non-newline boundary, so streaming token bursts
-   (`"Hello, "` + `"world"`) emit verbatim. Same path runs for
-   thoughts via the independent `agent_thought_trailing` counter.
+   chunks that lead with a single `\n` themselves WHEN
+   `prior_trailing == 0` — when prior already contributes a
+   newline, the chunk's own leading `\n` already brings the run
+   to `\n\n` and lifting would emit a wasted `\n` that markdown
+   collapses anyway. Never injects on a clean non-newline
+   boundary, so streaming token bursts (`"Hello, "` + `"world"`)
+   emit verbatim. Same path runs for thoughts via the independent
+   `agent_thought_trailing` counter.
+
+**Safety invariants — pinned by exhaustive property tests**:
+
+- Every prefix returned by either lift function contains ONLY
+  `\n` characters — no spaces, no other content. So a prefix can
+  only ever extend a contiguous newline run; it cannot sneak
+  content between two runs that would turn one paragraph break
+  into two.
+- Every prefix has length ≤ 2 (max is `\n\n` from
+  `paragraph_break_prefix` on a clean boundary).
+
+Combined: the rendered markdown will have **at most ONE paragraph
+break injected at any boundary**, ever, regardless of how the
+agent streamed the chunks. Markdown collapses any run of `\n\n+`
+between non-empty content into one paragraph break, and our
+prefix never inserts non-newline content that would split a run.
+"Double-spacing" (two blank lines between content) is therefore
+impossible from our injection. See
+`acp::paragraph::tests::{lift_prefix_only_ever_contains_newlines,
+lift_prefix_never_exceeds_two_characters,
+soft_lift_never_creates_a_break_when_no_newline_signal_is_present}`.
 
 Per-turn state lives on `TurnState`
 (`agent_text_trailing`, `agent_thought_trailing`,
