@@ -18,7 +18,7 @@
  * and reads from the config tree.
  */
 import { faSquare as farSquare } from '@fortawesome/free-regular-svg-icons'
-import { faArrowRightToBracket, faArrowTurnDown, faSquareCheck, faUpDown } from '@fortawesome/free-solid-svg-icons'
+import { faArrowRightToBracket, faArrowTurnDown, faSquareCheck, faUpDown, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { FocusTrap } from 'focus-trap-vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
@@ -384,6 +384,13 @@ onUnmounted(() => {
             data-testid="palette-input"
           />
           <span class="palette-result-count">{{ visibleEntries.length }} result{{ visibleEntries.length === 1 ? '' : 's' }}</span>
+          <!-- Touch-only close button. Desktop hits Esc; mobile users
+               can't reach the keyboard's Esc without losing the
+               textarea focus, and the dim outside-scrim doesn't read
+               as a tap target on a full-screen palette. -->
+          <button type="button" class="palette-close" aria-label="close" data-testid="palette-close" @click="close">
+            <FaIcon :icon="faXmark" class="palette-close-icon" />
+          </button>
         </header>
 
         <div class="palette-content">
@@ -666,6 +673,81 @@ onUnmounted(() => {
 @media (pointer: coarse) {
   .palette-footer-esc {
     display: none;
+  }
+}
+
+/* Header close button (the X chip). Hidden on desktop — Esc is the
+ * keyboard shortcut + the dim outside-scrim is the click target. On
+ * touch the close button is the only ergonomic dismiss path (the
+ * full-screen mobile palette below has no scrim to tap, and a phone
+ * keyboard rarely surfaces Esc). */
+.palette-close {
+  @apply hidden shrink-0 items-center justify-center border-0 bg-transparent leading-none;
+  color: var(--theme-fg-dim);
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--theme-font-mono);
+}
+
+.palette-close:hover {
+  color: var(--theme-status-err);
+}
+
+.palette-close-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+@media (pointer: coarse) {
+  .palette-close {
+    @apply inline-flex;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  .palette-close-icon {
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+
+  /* Compact keyboard hints on touch. Desktop kept them visible /
+   * readable; on mobile the captain reaches for taps over keyboard
+   * shortcuts, so each hint's label costs more vertical space than
+   * it pays back. Drop the label text on coarse pointers, keep the
+   * icon-only keycap as a tap target. Combined with the header
+   * close button + scroll-friendly full-screen frame, the captain
+   * sees more content. The full label still reads aloud for
+   * screen-readers via the underlying button's `aria-label`
+   * substitute (label still in the DOM, hidden visually only). */
+  .palette-footer {
+    padding: 0.25rem 0.5rem;
+    gap: 0.25rem 0.5rem;
+  }
+}
+
+/* Phone / very-narrow viewports: drop the centered card and fill
+ * the viewport. The captain reads the palette like a primary view
+ * (sessions, instances, mcps) and a half-screen modal forces
+ * pinching to see the content. Scrim collapses to zero so the
+ * frame anchors flush; the new in-header close button replaces the
+ * scrim-tap dismiss path. 32rem (~512px) matches the same
+ * phone-portrait breakpoint the Frame chrome uses. */
+@media (max-width: 32rem) {
+  .palette-overlay {
+    padding: 0;
+    background-color: var(--theme-surface-bg);
+  }
+
+  .palette-frame,
+  .palette-frame[data-mode='multi-select'],
+  .palette-frame[data-wide='true'] {
+    height: 100dvh;
+    max-height: none;
+    width: 100vw;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
   }
 }
 </style>

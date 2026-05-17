@@ -641,6 +641,15 @@ pub struct ProfileSummary {
     pub agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Profile-scoped cwd hint — the daemon's resolved cwd for spawns
+    /// under this profile. Optional because not every profile sets
+    /// one; consumers (palette `instance · new`) use it to pre-seed
+    /// the chrome header's cwd pill so the captain sees the spawn
+    /// target before the actor's `session/new` lands. The header
+    /// later updates from `MetaSnapshot.cwd` (authoritative) when
+    /// the spawn completes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     pub is_default: bool,
 }
 

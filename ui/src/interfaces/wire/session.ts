@@ -64,6 +64,13 @@ export interface ProfileSummary {
   id: string
   agent: string
   model?: string
+  /// Profile-scoped cwd hint, as the captain wrote it in their TOML
+  /// (raw — no `~` expansion). Consumers seed the chrome header's
+  /// cwd pill from this BEFORE the actor spawns so the spawn target
+  /// is visible immediately. `MetaSnapshot.cwd` from the
+  /// post-`session/new` mirror is authoritative — this is just the
+  /// pre-spawn preview value.
+  cwd?: string
   isDefault: boolean
 }
 

@@ -100,12 +100,21 @@ withDefaults(
 
 /* Touch-friendly hit target on coarse pointers (phones / tablets).
  * Desktop keeps the compact chrome — keyboard users don't need a
- * 2.75rem-tall row; the hint is just a label there. Clickable hints
- * grow on touch so they're a real tap target. */
+ * tappable row; the hint is just a label there.
+ *
+ * The original sizing (min-height 2.75rem + 0.5rem padding) hit the
+ * WCAG 2.5.5 enhanced target, but the captain reported it dominated
+ * the palette footer on phones — three or four hint chips ate the
+ * better part of the screen and pushed the result list above the
+ * fold. Dropping to 2rem min + 0.375rem padding keeps the chip well
+ * inside the WCAG 2.5.5 minimum (24x24 CSS px ≈ 1.5rem) while
+ * recovering ~30% of the footer's vertical real-estate. The chip's
+ * keycap glyph is still the dominant visual; the label trails as
+ * a faint mono caption. */
 @media (pointer: coarse) {
   .kbd-hint-clickable {
-    min-height: 2.75rem;
-    padding: 0.5rem 0.625rem;
+    min-height: 2rem;
+    padding: 0.25rem 0.5rem;
   }
 }
 

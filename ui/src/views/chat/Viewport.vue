@@ -35,7 +35,7 @@
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { useEventListener, useNow } from '@vueuse/core'
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
@@ -170,6 +170,47 @@ const adapterForActive = computed(() => {
 })
 
 const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scrollEl)
+
+/// Per-mount "first hydration" latch. `useStickToBottom` runs a
+/// `scrollToBottom` in its own `onMounted`, but that fires BEFORE
+/// the chat snapshot lands — at that moment `viewport.items.value`
+/// is empty and `scrollHeight === clientHeight`, so the assignment
+/// is a no-op. The MutationObserver-driven re-stick that follows
+/// catches most subsequent mutations, but a fully-cached snapshot
+/// (the captain returns to a previously-focused instance and the
+/// query cache is still warm) renders in one Vue tick with no
+/// observable DOM mutation between empty + populated — the
+/// `MutationObserver` callback runs, but `scrollHeight` may already
+/// equal `scrollTop + clientHeight` from the prior assignment, so
+/// `scheduleStick`'s rAF coalescing decides there's nothing to do.
+///
+/// Captain reported: switching instances via the palette list,
+/// the chat lands part-way up instead of at the foot. This watcher
+/// closes the gap explicitly — the first transition from "no items"
+/// to "items present" per mount triggers an explicit
+/// `scrollToBottom` after Vue has flushed the DOM, regardless of
+/// whether the MutationObserver fired. `<ChatViewport>` is keyed
+/// on `activeInstanceId` in `Overlay.vue`, so this watcher fires
+/// once per instance-flip.
+let firstHydrationLanded = false
+
+watch(
+  () => viewport.items.value.length,
+  async(count) => {
+    if (firstHydrationLanded || count === 0) {
+      return
+    }
+    firstHydrationLanded = true
+    await nextTick()
+    // Two ticks: the first lets Vue flush the items[] update into
+    // the DOM; the second covers any nested `<Turn>` / `<StreamCard>`
+    // child watchers that run their own `nextTick` for layout
+    // measurement (markdown render passes, syntax-highlight swaps).
+    await nextTick()
+    scrollToBottom()
+  },
+  { immediate: true }
+)
 
 /// Synchronous "captain wants to scroll up" gate. Calls into the
 /// composable to cancel any pending sticky rAF + flip `stuck =
@@ -338,6 +379,63 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
   }
 })
 
+/// Minimum visible duration for the "loading earlier…" chip. The raw
+/// `isFetchingNextPage` flag only stays true for the network round-
+/// trip (often <100ms on Tauri-local), which renders the chip for a
+/// single frame and looks like a flicker to the captain. Pinning the
+/// chip to `MIN_CHIP_DURATION_MS` from fetch start guarantees the
+/// captain sees the indicator long enough to register what's
+/// happening, without delaying the actual content rendering.
+const MIN_CHIP_DURATION_MS = 350
+
+const loadingEarlier = ref(false)
+
+/// Captures `scrollHeight - scrollTop` before fetching older pages
+/// and restores it once the new pages have rendered, so the
+/// captain's reading position doesn't snap up when content prepends
+/// at the top. Without the restore the rendered chunk gets pushed
+/// down by the new pages' height + chip; the captain's reading line
+/// shifts proportionally and they have to re-locate it.
+async function triggerBackwardFetch(el: HTMLElement): Promise<void> {
+  loadingEarlier.value = true
+  const startedAt = Date.now()
+  // Distance-from-bottom is invariant under top-side prepends: when
+  // the daemon's older items render above the captain's reading
+  // position, their height adds to BOTH `scrollHeight` and `scrollTop`
+  // (because the browser preserves what's pinned at the bottom).
+  // Capturing this delta and re-setting `scrollTop = scrollHeight -
+  // delta` after the DOM update collapses the visual shift to zero —
+  // the captain reads as if the older content was always there.
+  const distanceFromBottom = el.scrollHeight - el.scrollTop
+
+  try {
+    await viewport.fetchNextPage()
+  } finally {
+    // Defer the restore until Vue has flushed the new items into the
+    // DOM and the browser has measured the updated `scrollHeight`.
+    // `nextTick` chained twice catches the second-pass layout that
+    // <Turn> components sometimes do via their own reactive watches.
+    await nextTick()
+    await nextTick()
+
+    const target = el.scrollHeight - distanceFromBottom
+
+    if (Math.abs(el.scrollTop - target) > 1) {
+      el.scrollTop = target
+    }
+    const elapsed = Date.now() - startedAt
+    const remaining = Math.max(0, MIN_CHIP_DURATION_MS - elapsed)
+
+    if (remaining === 0) {
+      loadingEarlier.value = false
+    } else {
+      setTimeout(() => {
+        loadingEarlier.value = false
+      }, remaining)
+    }
+  }
+}
+
 // ── Backward pagination + eviction trigger ──────────────────────────
 //
 // One scroll handler drives two policies:
@@ -373,8 +471,20 @@ function onScroll(): void {
   // events but no `pointerdown` / `touchstart` / `wheel`, so the
   // gate would lock the fetch out even though the captain is
   // legitimately reading older content.
-  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
-    void viewport.fetchNextPage()
+  // `!loadingEarlier.value` AND `!isFetchingNextPage` both gate the
+  // fetch. The two flags don't flip together:
+  // `loadingEarlier.value = true` runs synchronously at the top of
+  // `triggerBackwardFetch`, BEFORE `await viewport.fetchNextPage()`
+  // returns its first microtask — and so before
+  // `isFetchingNextPage` flips true. A second scroll event landing
+  // in that microtask window otherwise passes the
+  // `isFetchingNextPage`-only guard and launches a duplicate
+  // concurrent fetch (double pages, double scroll restore, off-by-
+  // one captain shift). The `loadingEarlier` guard closes that
+  // window — flagged by the sonnet-tier review of the original PR2
+  // commit.
+  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && !loadingEarlier.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
+    void triggerBackwardFetch(el)
   }
 
   // **Eviction — kept gated.**
@@ -713,9 +823,18 @@ defineExpose({ scrollEl })
 
       <template v-else>
         <!-- Loading chip pinned at the top while a backward page is in
-           flight. Sits outside the virtualized spacer so its height
-           doesn't compete with row offsets. -->
-        <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
+           flight. Sticky so it stays visible at the captain's
+           viewport top regardless of where the chat-transcript has
+           scrolled to during the fetch — without `position: sticky`
+           the chip lived at the absolute top of the transcript and
+           was only visible at scrollTop ≤ chip height, which on a
+           multi-page chat meant the captain often saw nothing while
+           older pages were loading. `loadingEarlier` (manual ref)
+           overrides the raw `isFetchingNextPage` gate so the chip
+           remains visible for at least `MIN_CHIP_DURATION_MS` — fast
+           local fetches that resolve sub-frame would otherwise
+           flicker invisibly. -->
+        <div v-if="loadingEarlier || viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
 
         <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
            re-renders for history rows. Live row keeps re-rendering
@@ -834,10 +953,28 @@ defineExpose({ scrollEl })
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
   padding: 0 0.875rem 0 0.25rem;
+  /* Disable browser-native scroll anchoring. Chrome / WebKit default
+   * to `overflow-anchor: auto` on scrollable containers, which the
+   * browser uses to compensate scrollTop automatically when content
+   * is added above the visible region. That fights the manual
+   * compensation `triggerBackwardFetch` does (capture scrollHeight -
+   * scrollTop before fetch, restore after), causing double-shift
+   * and a visible jump. JS owns the anchoring — disable the native
+   * path so the two don't compose. */
+  overflow-anchor: none;
 }
 
 .chat-load-chip {
   @apply rounded text-[0.7rem];
+  /* Sticky to the top of the scroll viewport so the chip stays
+   * visible while older content loads. `top: 0.5rem` matches the
+   * margin so the chip's resting position looks identical to the
+   * pre-sticky version when scrolled to the head; while scrolled
+   * down it rides the top edge of the visible area. `z-index: 1`
+   * keeps it above the (non-positioned) <Turn> rows. */
+  position: sticky;
+  top: 0.5rem;
+  z-index: 1;
   margin: 0.5rem auto 0.25rem;
   padding: 0.125rem 0.5rem;
   background-color: var(--theme-surface-alt);

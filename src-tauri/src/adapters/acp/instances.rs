@@ -1225,6 +1225,11 @@ impl AcpAdapter {
                 id: p.id.clone(),
                 agent: p.agent.clone(),
                 model: p.model.clone(),
+                // Ship the raw configured cwd (no `~` expansion) so
+                // frontends can show it before the actor's
+                // `session/new` lands. The spawn path canonicalises
+                // when it actually launches the agent.
+                cwd: p.cwd.as_ref().map(|c| c.display().to_string()),
                 is_default: default_profile == Some(p.id.as_str()),
             })
             .collect()

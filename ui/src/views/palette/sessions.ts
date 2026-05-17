@@ -97,10 +97,21 @@ export function buildSessionEntries(sessions: SessionSummary[], now: () => numbe
   })
 
   return ordered.map((s) => {
-    const name = s.title?.trim() ? s.title : s.sessionId
     const cwd = shortenCwd(s.cwd)
     const rel = relativeFromNow(s.updatedAt, now)
-    const description = [cwd, rel].filter((part) => part.length > 0).join('  ·  ')
+    const name = resolveSessionName(s)
+    // Always include the short session-id in the description when the
+    // name had to fall back to a synthesized label — without it two
+    // titleless sessions rooted at the same cwd look identical in the
+    // list. When the agent provided a real title the description stays
+    // tight (cwd + time only) since the title carries the identity.
+    const parts = [cwd, rel]
+    const hadRealTitle = Boolean(s.title?.trim())
+
+    if (!hadRealTitle) {
+      parts.push(shortSessionId(s.sessionId))
+    }
+    const description = parts.filter((part) => part.length > 0).join('  ·  ')
 
     return {
       id: s.sessionId,
@@ -110,6 +121,40 @@ export function buildSessionEntries(sessions: SessionSummary[], now: () => numbe
       description
     }
   })
+}
+
+/// Captain-readable label for a session row. ACP vendors only stamp
+/// `title` after the agent has accumulated enough context (claude-code
+/// summarises after a handful of turns, codex similarly); sessions
+/// that ended early or are still fresh come through with `title: null`,
+/// and the captain saw bare UUIDs as the only identifier — useless for
+/// recall.
+///
+/// Fallback chain (first non-empty wins):
+///   1. Vendor-supplied `title` (trimmed).
+///   2. Last cwd segment — captains organise work by directory, so
+///      "hyprpilot" / "nvim-config" / "blog-site" is the next-best
+///      identifier when the agent hasn't summarised yet.
+///   3. Short session-id (first 8 chars) as the absolute floor — at
+///      least the captain can correlate against an exit log line.
+export function resolveSessionName(s: { title?: string; cwd: string; sessionId: string }): string {
+  const trimmed = s.title?.trim()
+
+  if (trimmed) {
+    return trimmed
+  }
+  const segments = s.cwd.split('/').filter((seg) => seg.length > 0)
+  const lastSegment = segments[segments.length - 1]
+
+  if (lastSegment) {
+    return lastSegment
+  }
+
+  return `session ${shortSessionId(s.sessionId)}`
+}
+
+function shortSessionId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id
 }
 
 function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false): PaletteSpec {

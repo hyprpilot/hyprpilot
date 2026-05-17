@@ -29,6 +29,7 @@ import {
   type PaletteSpec,
   pushInstanceModelState,
   setInstanceAgent,
+  setInstanceCwd,
   setInstanceProfile,
   useActiveInstance,
   type InstanceId,
@@ -71,6 +72,17 @@ function startNewInstance(profile: ProfileSummary | undefined, label: string | u
 
     if (profile.model) {
       pushInstanceModelState(id, { currentModelId: profile.model, availableModels: undefined })
+    }
+
+    // Seed the cwd pill from the profile's configured cwd (when set)
+    // so the captain sees the spawn target the moment they pick a
+    // profile — without this the header's cwd slot reads "—" until
+    // the actor's `session/new` lands and `MetaSnapshot.cwd` hydrates
+    // (often several seconds in). Raw value (no `~` expansion); the
+    // post-spawn meta snapshot overwrites with the daemon's
+    // canonicalised path.
+    if (profile.cwd) {
+      setInstanceCwd(id, profile.cwd)
     }
   }
   setActive(id)

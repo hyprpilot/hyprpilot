@@ -55,17 +55,49 @@ describe('relativeFromNow', () => {
 })
 
 describe('buildSessionEntries', () => {
-  it('uses sessionId when title is empty', () => {
+  it('falls back to cwd basename when title is empty so the captain reads a human label not a UUID', () => {
     const entries = buildSessionEntries([
       {
-        sessionId: 'abc',
-        cwd: '/tmp',
+        sessionId: 'abc-12345678',
+        cwd: '/home/u/dev/hyprpilot',
         title: undefined,
         updatedAt: undefined
       }
     ])
 
-    expect(entries[0]?.name).toBe('abc')
+    expect(entries[0]?.name).toBe('hyprpilot')
+    // When the fallback fires, the description carries the short
+    // session-id so two titleless sessions rooted at the same cwd
+    // still read distinct.
+    expect(entries[0]?.description).toContain('abc-1234')
+  })
+
+  it('prefers a vendor-supplied title over the cwd fallback', () => {
+    const entries = buildSessionEntries([
+      {
+        sessionId: 's-1',
+        cwd: '/home/u/dev/hyprpilot',
+        title: 'review the PR',
+        updatedAt: undefined
+      }
+    ])
+
+    expect(entries[0]?.name).toBe('review the PR')
+    // Title present → description stays tight (no short-id appended).
+    expect(entries[0]?.description).not.toContain('s-1')
+  })
+
+  it('falls through to "session <short-id>" when both title and cwd are unusable', () => {
+    const entries = buildSessionEntries([
+      {
+        sessionId: 'abcdefgh-12345678',
+        cwd: '',
+        title: '   ',
+        updatedAt: undefined
+      }
+    ])
+
+    expect(entries[0]?.name).toBe('session abcdefgh')
   })
 })
 

@@ -540,25 +540,18 @@ html:not([data-window-anchor]) .frame {
   }
 }
 
-/* Phone / very-narrow viewports: hide the row-1 pill cluster
- * (profile / agent / model / mode / title) — these are desktop
- * cockpit chrome that wastes horizontal space the captain can only
- * swipe through awkwardly on a phone. Trailing buttons stay
- * (instances / palette / close): the palette is the ONLY entry
- * point to mode / model / session switching on mobile, so hiding it
- * would strand the captain. Row 2 (cwd + git) stays as before.
+/* Phone / very-narrow viewports: hide row-2's breadcrumb-pill cluster
+ * (mcps / skills counts). Row 1's profile / agent / model / mode /
+ * title pills stay — they're the cockpit chrome the captain reads at
+ * a glance; the HorizontalScroller already makes them swipable when
+ * they overflow. The row-2 breadcrumbs are duplicates of palette
+ * leaves and cost more horizontal space than they earn on a phone,
+ * so the cwd + git pill gets the full row to itself.
  *
  * 32rem (~512px) is the phone-portrait threshold — tablets in
- * landscape still see the full pill cluster. Targeting the
- * `frame-row-1-scroller` (the HorizontalScroller wrapper) rather
- * than `frame-row-1` keeps the row alive so its `display: flex`
- * still lays out the trailing buttons on the right.
- *
- * Row 1 collapses to its trailing-button height when the scroller
- * is gone — captains who want to recover the full chrome rotate to
- * landscape. */
+ * landscape see the full chrome. */
 @container frame (max-width: 32rem) {
-  .frame-row-1-scroller {
+  .frame-counts {
     display: none;
   }
 }
