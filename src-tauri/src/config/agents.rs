@@ -189,8 +189,6 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
-    use merge::Merge as _;
-
     use super::super::{load, Config, DEFAULTS};
     use super::*;
 
@@ -562,51 +560,6 @@ mcps = [{ file = "/etc/hyprpilot/x.json", ignore = ["[unterminated"] }]
         let err = cfg.validate().expect_err("should reject");
         assert!(err.to_string().contains("not a valid glob"), "{err}");
         fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn mcps_global_parse() {
-        let p = write_tmp(
-            "mcps-global.toml",
-            r#"
-[[mcps]]
-file = "~/.config/hyprpilot/mcps/base.json"
-
-[[mcps]]
-file = "/etc/hyprpilot/team.json"
-ignore = ["work-*"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("load");
-        let mcps = cfg.mcps.as_deref().expect("set");
-        assert_eq!(mcps.len(), 2);
-        assert_eq!(mcps[0].file, Some(PathBuf::from("~/.config/hyprpilot/mcps/base.json")));
-        assert_eq!(mcps[1].file, Some(PathBuf::from("/etc/hyprpilot/team.json")));
-        assert_eq!(mcps[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
-        cfg.validate().expect("valid global mcps");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn mcps_global_unset_defaults_to_none() {
-        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults parse");
-        assert_eq!(cfg.mcps, None, "defaults must not seed any MCP files");
-    }
-
-    #[test]
-    fn mcps_global_user_overrides_defaults() {
-        let mut base = Config::default();
-        let over: Config = toml::from_str(
-            r#"
-[[mcps]]
-file = "~/work.json"
-"#,
-        )
-        .expect("over parses");
-        base.merge(over);
-        let mcps = base.mcps.as_deref().expect("merged");
-        assert_eq!(mcps.len(), 1);
-        assert_eq!(mcps[0].file, Some(PathBuf::from("~/work.json")));
     }
 
     #[test]

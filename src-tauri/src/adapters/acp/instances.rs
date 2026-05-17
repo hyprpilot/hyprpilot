@@ -366,18 +366,36 @@ impl AcpAdapter {
             return Ok((resolved, profile));
         }
 
+        // Resolution order:
+        //   1. Pick base profile (captain-picked id, or `[profile]
+        //      default`, or a synthetic bare profile pointing at
+        //      `[agent] default`).
+        //   2. Apply root `[[patches]]` from the captain's on-disk
+        //      config, filtered by each patch's optional `$match`
+        //      directive.
+        //   3. Apply per-invocation `--with-config` patches on top.
+        // Both layers go through the same strategic-merge engine;
+        // step 3 wins on field collision because right wins.
         let base_profile = base_profile_for_patches(&cfg, profile_id);
         let base_value = serde_json::to_value(&base_profile)
             .map_err(|e| RpcError::internal_error(format!("profile serialize failed: {e}")))?;
-        let merged = crate::config::patch::merge_patches(base_value, patches.to_vec());
+
+        let with_root_patches = if let Some(root_patches) = cfg.patches.as_deref() {
+            crate::config::patch::apply_root_patches_to_profile(base_value, root_patches, &base_profile.id)
+        } else {
+            base_value
+        };
+
+        let merged = crate::config::patch::merge_patches(with_root_patches, patches.to_vec());
         let patched: ProfileConfig = serde_json::from_value(merged)
             .map_err(|e| RpcError::invalid_params(format!("withConfig produced invalid profile: {e}")))?;
         garde::Validate::validate(&patched)
             .map_err(|e| RpcError::invalid_params(format!("withConfig failed validation: {e}")))?;
         tracing::debug!(
             patch_count = patches.len(),
+            root_patch_count = cfg.patches.as_deref().map_or(0, <[_]>::len),
             profile_id = %patched.id,
-            "acp::adapter: withConfig patches applied to resolved profile"
+            "acp::adapter: root [[patches]] + withConfig patches applied to resolved profile"
         );
 
         let mut resolved = ResolvedInstance::from_profile_explicit(&patched, &cfg)
@@ -1688,16 +1706,20 @@ impl Adapter for AcpAdapter {
 /// `--with-config` path so the patched profile's `mcps` view drives
 /// the resolved file list. The `&self` method delegates here against
 /// the daemon's base config.
+///
+/// Reads ONLY from the resolved profile — root patches are folded
+/// onto the profile in `adapters::profile::apply_root_patches` BEFORE
+/// the profile lands here, so a captain who declared shared `mcps`
+/// at root via `[[patches]]` already sees them on the profile's own
+/// field by the time `mcps_files_with` runs.
 fn effective_mcp_files_with(
-    cfg: &Config,
+    _cfg: &Config,
     profile: Option<&crate::config::ProfileConfig>,
 ) -> Vec<crate::config::ResolvedMcpFile> {
-    if let Some(p) = profile {
-        if let Some(files) = &p.mcps {
-            return files.iter().map(crate::config::ResolvedMcpFile::from_entry).collect();
-        }
-    }
-    cfg.resolved_mcps()
+    profile
+        .and_then(|p| p.mcps.as_deref())
+        .map(|files| files.iter().map(crate::config::ResolvedMcpFile::from_entry).collect())
+        .unwrap_or_default()
 }
 
 /// `build_mcp_registry_for` against an explicit config.
@@ -1727,7 +1749,7 @@ fn build_mcp_registry_with(
         if mcp_cfg.enabled() {
             if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
                 skills_arc,
-                mcp_cfg,
+                &mcp_cfg,
                 std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
             ) {
                 defs.insert(0, auto);
@@ -1741,21 +1763,14 @@ fn build_mcp_registry_with(
     Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
 }
 
-/// Resolved `[mcp]` block for an instance — profile's if set,
-/// otherwise global. Mirrors `effective_mcp_files_with` /
-/// `effective_skills_with`. Wholesale-replace semantics: the
-/// profile's `Some(McpConfig)` replaces the global outright; no
-/// field-level inheritance across the boundary.
-fn effective_mcp_with<'a>(
-    cfg: &'a Config,
-    profile: Option<&'a crate::config::ProfileConfig>,
-) -> &'a crate::config::McpConfig {
-    if let Some(p) = profile {
-        if let Some(mcp_cfg) = &p.mcp {
-            return mcp_cfg;
-        }
-    }
-    &cfg.mcp
+/// Resolved `[mcp]` block for an instance — reads ONLY from the
+/// resolved profile (root `[[patches]]` have already merged into
+/// `profile.mcp` upstream). Falls back to the typed `Default::default()`
+/// when neither profile nor patches set one — same shape the
+/// previous root-level `[mcp]` defaulted to (enabled=true,
+/// autoAcceptTools=["*"], no skills).
+fn effective_mcp_with(_cfg: &Config, profile: Option<&crate::config::ProfileConfig>) -> crate::config::McpConfig {
+    profile.and_then(|p| p.mcp.clone()).unwrap_or_default()
 }
 
 /// `effective_skills_for` against an explicit config. Reads from the

@@ -62,49 +62,27 @@ level = "info"
 enabled = false
 bind = "0.0.0.0:6262"
 
-# `[[mcps]]` — array of MCP catalog files. Each entry has a `file`
-# (JSON in the standard `{ "mcpServers": { ... } }` shape used by
-# Claude Code / Codex / every MCP client) and an optional `ignore`
-# glob array (server names matching are dropped). Files merge in
-# order; later files override same-name servers. hyprpilot extends
-# each server entry with an optional `hyprpilot` namespace key
-# carrying `autoAcceptTools` / `autoRejectTools` glob lists.
-# Per-profile `mcps = [...]` wholesale-replaces this default;
-# `mcps = []` is the explicit "no MCPs" off-switch.
+# `[[patches]]` — root-level profile patches. Each patch is a
+# partial `ProfileConfig` shape that gets folded onto whichever
+# profile the captain picked (or the synthetic bare profile when
+# none is picked). An optional `$match.profile` glob filters which
+# profiles a patch applies to — unset means "applies to every
+# profile". Same strategic-merge engine the `--with-config` flag
+# uses; `$patch: replace` / `$deleteFromPrimitiveList/<field>`
+# directives compose.
 #
-# [[mcps]]
-# file = "~/.config/hyprpilot/mcps/base.json"
-# ignore = ["work-*"]
-
-# `[mcp]` — singleton block (mirrors `[agent]` / `[[agents]]`)
-# controlling the in-tree MCP server the daemon auto-injects into
-# every `session/new`, and owning the **skills catalog** that server
-# exposes. Server name on the wire is `hyprpilot`; the agent vendor
-# spawns `hyprpilot mcp serve` as a stdio child. Skills are exposed
-# as `hyprpilot://skills/<slug>` resources + `mcp__hyprpilot__list_skills` /
-# `read_skill` / `load_skill_references` / `reload` tools.
-#
-# `enabled = false` → skip auto-inject entirely (vendor sees no
-# hyprpilot server). `autoAcceptTools = ["*"]` makes every
-# `mcp__hyprpilot__*` tool call short-circuit to Allow at
-# PermissionController lane 2. Per-profile `[profiles.X.mcp]`
-# wholesale-replaces this global block. (Distinct from `[[mcps]]`
-# which lists captain-declared *external* MCP servers — same TOML
-# neighbourhood, distinct concerns; the singular vs plural mirrors
-# `[agent]` / `[[agents]]`.)
-[mcp]
+# Default seed: one unscoped patch that enables the in-tree
+# `hyprpilot` MCP server with auto-accept-everything + the XDG
+# skills directory. Captains who want different behavior add more
+# `[[patches]]` entries (later wins on field collision) or override
+# the `mcp` field per-profile.
+[[patches]]
+[patches.mcp]
 enabled = true
 autoAcceptTools = ["*"]
 autoRejectTools = []
 
-# `[[mcp.skills]]` — catalog of skill root directories the hyprpilot
-# MCP server scans + exposes. Each entry has a `dir` (where
-# `<slug>/SKILL.md` bundles live) and an optional `ignore` glob array
-# (slugs matching are dropped). User-supplied `[[mcp.skills]]`
-# replaces this list wholesale (no concat); `skills = []` is the
-# explicit "no skills" off-switch (also suppresses auto-inject —
-# nothing to serve). First-root-wins on slug collision across roots.
-[[mcp.skills]]
+[[patches.mcp.skills]]
 dir = "~/.config/hyprpilot/skills"
 
 # design tokens (K-250). The Rust config layer is the single source

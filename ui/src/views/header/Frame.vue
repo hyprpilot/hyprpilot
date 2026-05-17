@@ -337,18 +337,22 @@ html:not([data-window-anchor]) .frame {
   cursor: pointer;
 }
 
-/* Session title — italic dashed pill, mono, ink-2, ellipsizes. */
+/* Session title — dashed pill, mono, ink-2. Takes its intrinsic
+ * width and joins the `HorizontalScroller` cluster so the captain
+ * can swipe to read the full title instead of seeing it ellipsised
+ * after a dozen chars. `truncate` + `flex-1` (the previous shape)
+ * gave the title the squeeze: every sibling pill is `shrink-0`, so
+ * the title was the only thing that shrank, and on the typical
+ * row width that meant a hard ellipsis mid-title. */
 .frame-title {
-  @apply flex-1 truncate;
+  @apply shrink-0 whitespace-nowrap;
   padding: 0.1875rem 0.625rem;
   font-size: 0.66rem;
-  min-width: 0;
   color: var(--theme-fg-subtle);
   background-color: var(--theme-surface-bg);
   border: 1px dashed var(--theme-border-soft);
   border-radius: 0.25rem;
   font-family: var(--theme-font-mono);
-  font-style: italic;
 }
 
 /* Row 1 instances button — same chrome as `frame-close` / `frame-palette`

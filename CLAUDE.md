@@ -218,14 +218,79 @@ editor / git noise burns through any debouncer.
 Skill delivery flows exclusively through the palette. Picked skills
 attach to the user turn as `UserTurnInput::Prompt { text, attachments }`.
 
+### Root-level `[[patches]]` — single mechanism for profile-shared knobs
+
+Root-level `[[patches]]: Option<Vec<Value>>` holds partial
+`ProfileConfig` overlays that fold onto whichever profile gets
+picked at resolve time. **There is NO root-level `system_prompt` /
+`mcps` / `mcp` field anymore** — those moved into patches as part
+of the v1 stabilization. The previous "if profile has X then X
+else config.X" cascade was three separate code paths; patches
+replace that with one mechanism shared with `--with-config`.
+
+Each patch is an object whose body is a partial `ProfileConfig`
+shape. An optional `$match: { profile: "<glob>" }` sibling filters
+which profiles the patch applies to — stripped before merging so it
+never lands on the profile shape. Unset `$match` = applies to every
+profile. Patches fold left-to-right via
+`config::patch::merge_values` (same strategic-merge engine
+`--with-config` uses — object-field merge, `$patch: replace`,
+keyed-array merge by id, primitive-array append+dedupe).
+
+```toml
+# Unscoped — every profile gets the shared system_prompt.
+[[patches]]
+[[patches.system_prompt]]
+file = "~/.config/hyprpilot/prompts/base.md"
+
+[[patches.system_prompt]]
+file = "~/.config/hyprpilot/prompts/global.md"
+inject = { on_update = true }
+
+# Scoped to a glob — only profiles whose id matches `personal/*`
+# get this mcps catalog.
+[[patches]]
+"$match" = { profile = "personal/*" }
+[[patches.mcps]]
+file = "~/.config/nvim/utils/mcphub/servers.json"
+ignore = ["*-kilic", "*-laravel", "aws-docs"]
+
+[[patches]]
+"$match" = { profile = "work/*" }
+[[patches.mcps]]
+file = "~/.config/nvim/utils/mcphub/servers.json"
+ignore = ["*-kilic", "gitlab", "playwright"]
+```
+
+Resolution order at submit time:
+1. Pick the addressed profile (or `[profile] default`, or a
+   synthetic bare profile pointing at the default agent).
+2. Apply each root `[[patches]]` entry in declaration order,
+   filtered by its `$match.profile` glob if present.
+3. Apply each `--with-config` patch in declaration order (no
+   `$match` — those are per-invocation overrides).
+4. Deserialize the resulting `Value` back into `ProfileConfig` +
+   re-run garde validation.
+
+Bare resolution (no profile picked, no `[profile] default`) gets
+an empty `system_prompt` list; patches don't apply because there's
+no profile-id to filter against. Captains who want a default
+prompt set `[profile] default` and shape it via patches.
+
 ### `mcps` — MCP catalog (file paths + inline servers)
 
-`mcps: Option<Vec<McpFile>>` at the TOML root. Each entry carries
-**either** a `file` path **or** an inline `mcp_servers` map (exactly
-one; garde rejects both/neither at config load). File paths follow
-the standard `mcpServers` shape used by Claude Code / Codex / Cursor.
-hyprpilot extends each server entry via an optional `hyprpilot`
-namespace key:
+`mcps: Option<Vec<McpFile>>` on `ProfileConfig` (the `[[profiles]]`
+array). Captains who want shared mcps across every profile put them
+in a root-level `[[patches]]` entry — see "Root-level `[[patches]]`"
+below; the patch's `mcps` field merges onto each profile via the
+same strategic-merge engine `--with-config` uses. There is NO
+root-level `[[mcps]]` field anymore — wholesale-replaced by patches.
+
+Each entry carries **either** a `file` path **or** an inline
+`mcp_servers` map (exactly one; garde rejects both/neither at
+config load). File paths follow the standard `mcpServers` shape
+used by Claude Code / Codex / Cursor. hyprpilot extends each server
+entry via an optional `hyprpilot` namespace key:
 
 ```json
 {
@@ -275,8 +340,12 @@ Equivalent JSON for a `--with-config` patch:
   ignore-glob path; mixing both kinds in one catalog is supported.
   The `hyprpilot` block is typed (works on inline entries too);
   everything else stays as opaque `serde_json::Value`.
-- **Per-profile override**: `[[profiles]] mcps = [...]` wholesale-replaces
-  the global default. `mcps = []` is the explicit "no MCPs" off-switch.
+- **Per-profile override**: `[[profiles]] mcps = [...]` defines the
+  profile's own set. Root `[[patches]]` mcps merge onto whichever
+  profile is picked (filtered by each patch's optional `$match`).
+  `mcps = []` on a profile is the explicit "no MCPs" off-switch
+  (resists patch overlay via `$patch: replace` if the captain wants
+  to wipe a patch-provided list).
 - **ACP injection**: each `session/new` and `session/load` carries the
   resolved set as `mcp_servers`. Stdio / HTTP / SSE project onto the
   typed ACP `McpServer` enum.

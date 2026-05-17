@@ -558,15 +558,15 @@ impl RuntimeState {
         // autocomplete / hydrator all read from the focused
         // instance's registry through `AcpAdapter::focused_skills`.
 
-        // MCP registry — resolved at daemon boot from the JSON files
-        // listed under top-level `mcps`. Empty when no files are
-        // configured (default state for fresh installs). Captain
-        // edits + `daemon/reload` triggers a re-read; existing
-        // instances keep their cached set, only restarted ones pick
-        // up changes (ACP fixes mcpServers at session/new).
-        let mcps_files = shared_config.read().expect("config lock poisoned").resolved_mcps();
-        let mcps_defs = crate::mcp::loader::load_files(&mcps_files);
-        let mcps = Arc::new(MCPsRegistry::new(mcps_defs));
+        // MCP registry — empty at daemon boot. Root-level `mcps`
+        // was removed in the patches refactor; every effective MCP
+        // set is per-instance now, built lazily from the resolved
+        // profile (possibly via `[[patches]]`) in
+        // `acp::instances::build_mcp_registry_with` at spawn time.
+        // The daemon-scoped registry survives only as the
+        // no-instance fallback some RPC handlers reach for; it stays
+        // empty until / unless a future shape repopulates it.
+        let mcps = Arc::new(MCPsRegistry::new(Vec::new()));
         let dispatcher = Arc::new(RpcDispatcher::with_defaults());
 
         let renderer = WindowRenderer::new(window_cfg, wm::detect());

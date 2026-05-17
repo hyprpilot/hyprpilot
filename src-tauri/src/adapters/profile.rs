@@ -118,7 +118,8 @@ impl ResolvedInstance {
             .iter()
             .find(|p| p.id == profile_id)
             .with_context(|| format!("profile '{profile_id}' not found in [[profiles]] registry"))?;
-        Self::from_profile_explicit(profile, config)
+        let patched = apply_root_patches(config, profile.clone())?;
+        Self::from_profile_explicit(&patched, config)
     }
 
     /// Resolve against an already-materialised `ProfileConfig` —
@@ -143,7 +144,7 @@ impl ResolvedInstance {
             })?;
 
         let model = profile.model.clone().or_else(|| agent.model.clone());
-        let system_prompt = Self::load_system_prompt(profile, config)?;
+        let system_prompt = Self::load_system_prompt(profile)?;
 
         // Merge profile.env onto a clone of the agent so the spawn
         // path (which iterates `entry.env`) sees both. Profile entries
@@ -184,31 +185,57 @@ impl ResolvedInstance {
             agent,
             profile_id: None,
             model,
-            system_prompt: load_root_system_prompt(config)?,
+            // Bare resolution has no profile to patch; the captain
+            // gets an empty prompt list. Captains who want a prompt
+            // without picking a profile add a default profile in
+            // `[profile] default` (root `[[patches]]` then layer
+            // the prompt onto that profile).
+            system_prompt: Vec::new(),
             mode: None,
         })
     }
 
-    /// Resolve the system prompt for a profile. Profile-level
-    /// `system_prompt` wholesale-replaces the root `system_prompt`;
-    /// both `None` means no prompt. Each entry's body is read in
-    /// list order at resolve time; the actor filters the list
+    /// Resolve the system prompt for a profile. Each entry's body is
+    /// read in list order at resolve time; the actor filters the list
     /// against the bootstrap variant at spawn time and concatenates
     /// the surviving bodies with a blank-line separator. `system_prompt
     /// = []` is the explicit off-switch and resolves to an empty list.
-    fn load_system_prompt(profile: &ProfileConfig, config: &Config) -> Result<Vec<ResolvedSystemPromptEntry>> {
-        if let Some(entries) = &profile.system_prompt {
-            return read_prompt_entries(entries, &format!("profile '{}'", profile.id));
+    /// `None` resolves to an empty list too — there is no root-level
+    /// fallback anymore (use `[[patches]]` for shared prompts).
+    fn load_system_prompt(profile: &ProfileConfig) -> Result<Vec<ResolvedSystemPromptEntry>> {
+        match &profile.system_prompt {
+            Some(entries) => read_prompt_entries(entries, &format!("profile '{}'", profile.id)),
+            None => Ok(Vec::new()),
         }
-        load_root_system_prompt(config)
     }
 }
 
-fn load_root_system_prompt(config: &Config) -> Result<Vec<ResolvedSystemPromptEntry>> {
-    match &config.system_prompt {
-        Some(entries) => read_prompt_entries(entries, "root"),
-        None => Ok(Vec::new()),
+/// Fold root-level `[[patches]]` into the captain-picked profile
+/// before downstream resolution kicks in. Each patch may carry an
+/// optional `$match: { profile: "<glob>" }` directive — `patch::
+/// apply_root_patches_to_profile` strips it and skips non-matching
+/// entries. The result deserializes back through `ProfileConfig` so
+/// garde re-validates the post-merge shape.
+///
+/// `--with-config` patches still apply LATER (inside
+/// `AcpAdapter::resolve_with_patches`) on top of whatever this
+/// returns. Order: root patches first, per-invocation patches second.
+fn apply_root_patches(config: &Config, profile: ProfileConfig) -> Result<ProfileConfig> {
+    let Some(patches) = config.patches.as_deref() else {
+        return Ok(profile);
+    };
+    if patches.is_empty() {
+        return Ok(profile);
     }
+
+    let profile_id = profile.id.clone();
+    let base = serde_json::to_value(&profile).context("apply_root_patches: profile serialize failed")?;
+    let merged = crate::config::patch::apply_root_patches_to_profile(base, patches, &profile_id);
+    let patched: ProfileConfig = serde_json::from_value(merged)
+        .with_context(|| format!("apply_root_patches: profile '{profile_id}' invalid after patch merge"))?;
+    garde::Validate::validate(&patched)
+        .with_context(|| format!("apply_root_patches: profile '{profile_id}' failed validation after patch merge"))?;
+    Ok(patched)
 }
 
 /// Read every entry's file body and pair it with the entry's
@@ -284,20 +311,6 @@ mod tests {
     }
 
     /// Helper: wrap a list of file paths as `SystemPromptEntry`s
-    /// using the default inject toggles (on_create=true,
-    /// on_update=false). Tests assert against `system_prompt_for`
-    /// with `Bootstrap::Fresh` (which honours on_create=true) so
-    /// the body matches the previous flat-vector shape.
-    fn prompt_entries(files: Vec<PathBuf>) -> Vec<crate::config::SystemPromptEntry> {
-        files
-            .into_iter()
-            .map(|file| crate::config::SystemPromptEntry {
-                file,
-                inject: crate::config::SystemPromptInject::default(),
-            })
-            .collect()
-    }
-
     #[test]
     fn profile_model_overrides_agent_model() {
         let cfg = Config {
@@ -371,16 +384,12 @@ mod tests {
 
     #[test]
     fn profile_system_prompt_empty_array_is_explicit_off_switch() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = write_prompt(&dir, "root.md", "should not apply");
-
         let cfg = Config {
-            system_prompt: Some(prompt_entries(vec![root_path])),
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
             },
-            // Empty Vec wholesale-replaces root with "no prompt".
+            // Empty Vec is the explicit "no prompt" off-switch.
             profiles: vec![profile("silent", "cc", None, Some(vec![]))],
             ..Default::default()
         };
@@ -501,113 +510,100 @@ mod tests {
         assert!(err.to_string().contains("profile 'ghost' not found"));
     }
 
+    // ── root `[[patches]]` apply to the picked profile ────────────
+
     #[test]
-    fn root_system_prompt_falls_back_when_profile_unset() {
+    fn root_patch_without_match_injects_system_prompt_into_profile() {
+        // Captain's typical shape: one shared system_prompt across
+        // every profile. `[[patches]]` with no `$match` filter
+        // overlays the prompt list onto whichever profile was picked.
         let dir = tempfile::tempdir().unwrap();
-        let root_path = write_prompt(&dir, "root.md", "global fallback prompt");
+        let base = write_prompt(&dir, "base.md", "shared base prompt");
 
         let cfg = Config {
-            system_prompt: Some(prompt_entries(vec![root_path])),
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![profile("personal/claude/opus", "cc", None, None)],
+            patches: Some(vec![serde_json::json!({
+                "system_prompt": [{ "file": base.to_string_lossy() }],
+            })]),
+            ..Default::default()
+        };
+
+        let r = ResolvedInstance::from_config(&cfg, Some("personal/claude/opus")).unwrap();
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            Some("shared base prompt"),
+            "root patch's system_prompt must reach the resolved profile"
+        );
+    }
+
+    #[test]
+    fn root_patch_with_match_only_applies_to_glob_matching_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let personal = write_prompt(&dir, "personal.md", "personal-only prompt");
+
+        let cfg = Config {
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+                ..Default::default()
+            },
+            profiles: vec![
+                profile("personal/claude/opus", "cc", None, None),
+                profile("work/claude/opus", "cc", None, None),
+            ],
+            patches: Some(vec![serde_json::json!({
+                "$match": { "profile": "personal/*" },
+                "system_prompt": [{ "file": personal.to_string_lossy() }],
+            })]),
+            ..Default::default()
+        };
+
+        let personal_resolved = ResolvedInstance::from_config(&cfg, Some("personal/claude/opus")).unwrap();
+        assert_eq!(
+            personal_resolved
+                .system_prompt_for(&crate::adapters::Bootstrap::Fresh)
+                .as_deref(),
+            Some("personal-only prompt")
+        );
+
+        let work_resolved = ResolvedInstance::from_config(&cfg, Some("work/claude/opus")).unwrap();
+        assert!(
+            work_resolved
+                .system_prompt_for(&crate::adapters::Bootstrap::Fresh)
+                .is_none(),
+            "personal/* glob must not reach work/* profile"
+        );
+    }
+
+    #[test]
+    fn root_patches_fold_in_declaration_order() {
+        // Two patches both setting system_prompt — later wins (right
+        // wins on scalar / non-keyed field collision).
+        let dir = tempfile::tempdir().unwrap();
+        let first = write_prompt(&dir, "first.md", "first");
+        let second = write_prompt(&dir, "second.md", "second");
+
+        let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
                 ..Default::default()
             },
             profiles: vec![profile("ask", "cc", None, None)],
+            patches: Some(vec![
+                serde_json::json!({ "system_prompt": [{ "file": first.to_string_lossy() }] }),
+                serde_json::json!({ "system_prompt": [{ "file": second.to_string_lossy() }] }),
+            ]),
             ..Default::default()
         };
+
         let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
         assert_eq!(
             r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
-            Some("global fallback prompt")
+            Some("first\n\nsecond"),
+            "system_prompt is a keyed-by-`file` array → both patches' entries land in order"
         );
-    }
-
-    #[test]
-    fn root_system_prompt_concatenates_multiple_files_with_blank_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = write_prompt(&dir, "a.md", "first");
-        let b = write_prompt(&dir, "b.md", "second");
-        let c = write_prompt(&dir, "c.md", "third");
-
-        let cfg = Config {
-            system_prompt: Some(prompt_entries(vec![a, b, c])),
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                ..Default::default()
-            },
-            profiles: vec![profile("ask", "cc", None, None)],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
-            Some("first\n\nsecond\n\nthird")
-        );
-    }
-
-    #[test]
-    fn profile_system_prompt_wins_over_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = write_prompt(&dir, "root.md", "global fallback");
-        let profile_path = write_prompt(&dir, "profile.md", "profile-specific");
-
-        let cfg = Config {
-            system_prompt: Some(prompt_entries(vec![root_path])),
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                ..Default::default()
-            },
-            profiles: vec![profile("ask", "cc", None, Some(vec![profile_path]))],
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
-        assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
-            Some("profile-specific")
-        );
-    }
-
-    #[test]
-    fn root_system_prompt_carries_through_bare_resolution() {
-        // No profile → bare-agent path. Root system_prompt still
-        // applies so unprofiled submits get the global default.
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = write_prompt(&dir, "bare.md", "bare-path fallback");
-
-        let cfg = Config {
-            system_prompt: Some(prompt_entries(vec![root_path])),
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                agent: crate::config::AgentDefaults {
-                    default: Some("cc".into()),
-                },
-            },
-            ..Default::default()
-        };
-        let r = ResolvedInstance::from_config(&cfg, None).unwrap();
-        assert!(r.profile_id.is_none());
-        assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
-            Some("bare-path fallback")
-        );
-    }
-
-    #[test]
-    fn root_system_prompt_missing_file_errors_with_root_context() {
-        let cfg = Config {
-            system_prompt: Some(prompt_entries(vec![PathBuf::from(
-                "/nonexistent/hyprpilot-root-prompt.md",
-            )])),
-            agents: AgentsConfig {
-                agents: vec![agent("cc", None)],
-                ..Default::default()
-            },
-            profiles: vec![profile("ask", "cc", None, None)],
-            ..Default::default()
-        };
-        let err = ResolvedInstance::from_config(&cfg, Some("ask")).expect_err("missing root file fails");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("root"), "{msg}");
-        assert!(msg.contains("system_prompt"), "{msg}");
     }
 }
