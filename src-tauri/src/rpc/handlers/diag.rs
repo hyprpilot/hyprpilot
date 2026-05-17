@@ -131,7 +131,7 @@ mod tests {
                 inject: crate::config::SystemPromptInject::default(),
             }]),
             mcps: None,
-            skills: None,
+            mcp: None,
             mode: None,
             cwd: None,
             env: std::collections::BTreeMap::new(),

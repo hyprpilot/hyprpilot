@@ -3,6 +3,7 @@ mod autostart;
 pub mod daemon;
 pub mod extensions;
 pub mod keymaps;
+pub mod mcp;
 pub(crate) mod merge_strategies;
 pub mod patch;
 pub mod remote;
@@ -24,6 +25,7 @@ pub use autostart::Autostart;
 pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
 pub use extensions::{McpFile, SkillEntry};
 pub use keymaps::{KeymapsConfig, Modifier};
+pub use mcp::McpConfig;
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
 pub use remote::RemoteConfig;
 pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
@@ -47,16 +49,6 @@ pub struct Config {
     pub autostart: Autostart,
     #[garde(dive)]
     pub logging: Logging,
-    /// `[[skills]]` — global skills catalog roots. Each entry is a
-    /// directory of `<slug>/SKILL.md` bundles plus an optional
-    /// per-entry glob `ignore` array filtering slugs at load time.
-    /// Profile-level `skills` wholesale-replaces this default. None
-    /// (unset) → defaults seeded by defaults.toml; `Some(vec![])` →
-    /// explicit "no skills" override. `~` / env-var expansion at
-    /// consume time.
-    #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
-    pub skills: Option<Vec<SkillEntry>>,
     /// `[[mcps]]` — global MCP catalog files. Each entry is a JSON
     /// file in the standard `{ "mcpServers": { ... } }` shape plus an
     /// optional per-entry glob `ignore` array filtering server names
@@ -67,6 +59,17 @@ pub struct Config {
     #[garde(dive)]
     #[merge(strategy = overwrite_some)]
     pub mcps: Option<Vec<McpFile>>,
+    /// `[mcp]` — singleton block (mirrors the `[agent]` / `[[agents]]`
+    /// pattern) controlling the in-tree `hyprpilot` MCP server the
+    /// daemon auto-injects into every `session/new`. `enabled`,
+    /// `skills` slug whitelist, `autoAcceptTools`, `autoRejectTools`.
+    /// Per-profile `[profiles.X.mcp]` wholesale-replaces this global
+    /// block (matching the `mcps` / `skills` profile-override pattern).
+    /// Defaults seeded by `defaults.toml`: `enabled = true`,
+    /// `auto_accept_tools = ["*"]`, `auto_reject_tools = []`,
+    /// `skills` unset.
+    #[garde(dive)]
+    pub mcp: McpConfig,
     /// Root-level fallback cwd. Used at daemon startup as the chdir
     /// target when `--cwd` isn't passed on the CLI. Mostly useful for
     /// systemd-unit invocations where there's no shell-set cwd. When
@@ -180,20 +183,6 @@ pub struct ResolvedSkillEntry {
 }
 
 impl Config {
-    /// Resolve every `[[skills]]` entry to an absolute path + compiled
-    /// ignore matcher. `~` / env-var expansion via `paths::resolve_user`.
-    pub fn resolved_skills(&self) -> Vec<ResolvedSkillEntry> {
-        self.skills
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(|e| ResolvedSkillEntry {
-                dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
-                ignore: e.compile_ignore(),
-            })
-            .collect()
-    }
-
     /// Resolve every `[[mcps]]` entry to its runtime shape: an
     /// absolute file path OR a pre-extracted inline server map, plus
     /// the compiled ignore matcher. Mirrors `resolved_skills`.
@@ -391,6 +380,35 @@ mod tests {
     }
 
     #[test]
+    fn defaults_seed_mcp_block() {
+        // Pins every `.expect("[mcp] ... seeded by defaults.toml")`
+        // accessor on `McpConfig`. If a future captain removes a
+        // field from `defaults.toml`, this fails before a runtime
+        // panic ships.
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        let m = &cfg.mcp;
+        assert_eq!(m.enabled, Some(true), "[mcp] enabled must default to true");
+        assert_eq!(
+            m.auto_accept_tools.as_deref(),
+            Some(&["*".to_string()][..]),
+            "[mcp] autoAcceptTools must default to [\"*\"]",
+        );
+        assert_eq!(
+            m.auto_reject_tools.as_deref(),
+            Some(&[][..]),
+            "[mcp] autoRejectTools must default to []",
+        );
+        let skills = m.skills.as_deref().expect("[mcp] skills must seed the default XDG dir");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].dir, std::path::PathBuf::from("~/.config/hyprpilot/skills"));
+
+        // Accessor `.expect()`s must succeed against the seeded block.
+        assert!(m.enabled());
+        assert_eq!(m.auto_accept_tools(), &["*".to_string()]);
+        assert!(m.auto_reject_tools().is_empty());
+    }
+
+    #[test]
     fn load_merges_cli_path_over_defaults() {
         let p = write_tmp(
             "merge.toml",
@@ -511,8 +529,10 @@ level = "{lvl}"
 
     #[test]
     fn defaults_seed_skills_with_xdg_path() {
+        // `[[mcp.skills]]` (was top-level `[[skills]]` pre-PR) —
+        // catalog seeded from defaults.toml under the mcp block.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
-        let entries = cfg.skills.as_deref().expect("defaults must seed [[skills]]");
+        let entries = cfg.mcp.skills.as_deref().expect("defaults must seed [[mcp.skills]]");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
     }
@@ -522,16 +542,16 @@ level = "{lvl}"
         let p = write_tmp(
             "skills-override.toml",
             r#"
-[[skills]]
+[[mcp.skills]]
 dir = "/opt/skills/team"
 
-[[skills]]
+[[mcp.skills]]
 dir = "~/personal/skills"
 ignore = ["work-*"]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        let entries = cfg.skills.as_deref().expect("override applied");
+        let entries = cfg.mcp.skills.as_deref().expect("override applied");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].dir, PathBuf::from("/opt/skills/team"));
         assert_eq!(entries[1].dir, PathBuf::from("~/personal/skills"));
@@ -544,25 +564,24 @@ ignore = ["work-*"]
         let p = write_tmp(
             "skills-empty.toml",
             r#"
+[mcp]
 skills = []
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
-        assert_eq!(cfg.skills.as_deref(), Some(&[][..]));
-        assert!(cfg.resolved_skills().is_empty());
+        assert_eq!(cfg.mcp.skills.as_deref(), Some(&[][..]));
+        assert!(cfg.mcp.resolved_skills().is_empty());
         fs::remove_file(&p).ok();
     }
 
     #[test]
     fn skills_resolved_expands_tilde() {
-        let cfg = Config {
-            skills: Some(vec![SkillEntry {
-                dir: PathBuf::from("~/.config/hyprpilot/skills"),
-                ignore: None,
-            }]),
-            ..Default::default()
-        };
-        let resolved = cfg.resolved_skills();
+        let mut cfg = Config::default();
+        cfg.mcp.skills = Some(vec![SkillEntry {
+            dir: PathBuf::from("~/.config/hyprpilot/skills"),
+            ignore: None,
+        }]);
+        let resolved = cfg.mcp.resolved_skills();
         assert_eq!(resolved.len(), 1);
         let path = resolved[0].dir.to_string_lossy();
         // Tilde expanded to a real home dir; defensive — accept either

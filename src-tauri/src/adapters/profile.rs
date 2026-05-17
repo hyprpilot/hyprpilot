@@ -268,7 +268,7 @@ mod tests {
                     .collect()
             }),
             mcps: None,
-            skills: None,
+            mcp: None,
             mode: None,
             cwd: None,
             env: Default::default(),
