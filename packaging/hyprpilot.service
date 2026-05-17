@@ -1,5 +1,5 @@
 [Unit]
-Description=hyprpilot — Tauri overlay daemon for agent-driven workflows
+Description=hyprpilot — An overlay daemon that runs coding agents at the edge of your screen.
 Documentation=https://github.com/hyprpilot/hyprpilot
 
 [Service]
@@ -13,7 +13,14 @@ RestartSec=5
 # $XDG_RUNTIME_DIR), so no system-wide access is needed.
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
+# ProtectHome is INTENTIONALLY NOT set — the daemon spawns agents
+# that read + write arbitrary files under $HOME (the captain's
+# projects, notes, dotfiles, anywhere the resolved profile's `cwd`
+# lands). A `read-only` or `tmpfs` value here breaks every write a
+# code-editing agent attempts, with errors that surface as cryptic
+# permission failures inside the agent's tool calls. The unix
+# socket + Tauri overlay are the captain's actual security boundary;
+# the daemon's privilege model is "trust the captain's agents".
 ReadWritePaths=%t %h/.config/hyprpilot %h/.local/state/hyprpilot %h/.local/share/hyprpilot
 
 [Install]

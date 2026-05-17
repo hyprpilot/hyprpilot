@@ -275,12 +275,12 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
     // process. Expand `~` / `$VAR` so a hyprland bind like
     // `--cwd ~/projects/foo` works without a wrapper script.
     //
-    // Resolution: `--cwd` flag wins; otherwise root-level `cwd` from
-    // config (mostly for systemd-unit invocations where there's no
-    // shell-set cwd); otherwise inherit the spawning environment's
-    // cwd (no chdir).
-    let cwd_source = args.cwd.as_deref().or(cfg.cwd.as_deref());
-    if let Some(raw) = cwd_source {
+    // Resolution: ONLY the `--cwd` flag chdir's the daemon. The old
+    // root-level `Config.cwd` was deleted with the patches refactor —
+    // captains who want a profile-wide cwd put it in a `[[patches]]`
+    // entry's `cwd` field; per-instance agent processes pick that up
+    // via the resolved profile, no daemon-level chdir needed.
+    if let Some(raw) = args.cwd.as_deref() {
         let target = paths::resolve_user(&raw.to_string_lossy());
 
         std::env::set_current_dir(&target)
@@ -558,15 +558,15 @@ impl RuntimeState {
         // autocomplete / hydrator all read from the focused
         // instance's registry through `AcpAdapter::focused_skills`.
 
-        // MCP registry — resolved at daemon boot from the JSON files
-        // listed under top-level `mcps`. Empty when no files are
-        // configured (default state for fresh installs). Captain
-        // edits + `daemon/reload` triggers a re-read; existing
-        // instances keep their cached set, only restarted ones pick
-        // up changes (ACP fixes mcpServers at session/new).
-        let mcps_files = shared_config.read().expect("config lock poisoned").resolved_mcps();
-        let mcps_defs = crate::mcp::loader::load_files(&mcps_files);
-        let mcps = Arc::new(MCPsRegistry::new(mcps_defs));
+        // MCP registry — empty at daemon boot. Root-level `mcps`
+        // was removed in the patches refactor; every effective MCP
+        // set is per-instance now, built lazily from the resolved
+        // profile (possibly via `[[patches]]`) in
+        // `acp::instances::build_mcp_registry_with` at spawn time.
+        // The daemon-scoped registry survives only as the
+        // no-instance fallback some RPC handlers reach for; it stays
+        // empty until / unless a future shape repopulates it.
+        let mcps = Arc::new(MCPsRegistry::new(Vec::new()));
         let dispatcher = Arc::new(RpcDispatcher::with_defaults());
 
         let renderer = WindowRenderer::new(window_cfg, wm::detect());

@@ -217,14 +217,19 @@ pub async fn sessions_info(adapter: AdapterState<'_>, id: String) -> Result<Sess
         .ok_or_else(|| format!("no session '{id}'"))?;
     let (agent_id, profile_id) = {
         let cfg = adapter.config.read().expect("AcpAdapter config lock poisoned");
-        let agent_id = cfg
-            .agents
-            .agent
+        // Every spawn flows through a profile; for the session-info
+        // shape we pick `[profile] default`, falling back to the first
+        // entry, then read its agent. Config-load validation ensures
+        // at least one profile exists.
+        let profile = cfg
+            .profile
             .default
-            .clone()
-            .or_else(|| cfg.agents.agents.first().map(|a| a.id.clone()))
-            .unwrap_or_default();
-        (agent_id, cfg.profile.default.clone())
+            .as_deref()
+            .and_then(|id| cfg.profiles.iter().find(|p| p.id == id))
+            .or_else(|| cfg.profiles.first());
+        let agent_id = profile.map(|p| p.agent.clone()).unwrap_or_default();
+        let profile_id = profile.map(|p| p.id.clone());
+        (agent_id, profile_id)
     };
     Ok(SessionInfoResult {
         id: info.session_id.0.to_string(),

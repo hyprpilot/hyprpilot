@@ -1,7 +1,7 @@
 //! Garde predicates for the `config::*` derive surface. Everything
 //! here is `pub(super)`; the outside API is `Config::validate()`.
 
-use super::{AgentConfig, AgentDefaults, KeymapsConfig, Modifier, ProfileConfig, ProfileDefaults};
+use super::{AgentConfig, KeymapsConfig, Modifier, ProfileConfig, ProfileDefaults};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -18,25 +18,17 @@ pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::R
     Ok(())
 }
 
-/// Higher-order custom validator: closes over `&self.agents` so the
-/// `custom(...)` attribute on `AgentsConfig.agent` runs a cross-field
-/// check inside the garde tree walk.
-pub(super) fn validate_agent_default_id<'a>(
-    agents: &'a [AgentConfig],
-) -> impl FnOnce(&AgentDefaults, &()) -> garde::Result + 'a {
-    move |defaults, _ctx| {
-        let Some(active) = defaults.default.as_deref() else {
-            return Ok(());
-        };
-        if agents.iter().any(|a| a.id == active) {
-            return Ok(());
-        }
-        Err(garde::Error::new(format!(
-            "default = '{active}' but no matching [[agents]] entry exists. \
-             Configured ids: [{}]",
-            agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
-        )))
+/// Every spawn flows through a `[[profiles]]` entry — there is no
+/// bare-agent fallback. So the registry must carry at least one
+/// profile, and validation rejects an empty list at config-load.
+pub(super) fn validate_profiles_non_empty(profiles: &[ProfileConfig], _ctx: &()) -> garde::Result {
+    if profiles.is_empty() {
+        return Err(garde::Error::new(
+            "configure at least one [[profiles]] entry — spawn requires a profile (set `--profile <id>` \
+             or `[profile] default = '<id>'`); there is no bare-agent fallback",
+        ));
     }
+    Ok(())
 }
 
 pub(super) fn validate_profiles_ids(profiles: &[ProfileConfig], _ctx: &()) -> garde::Result {

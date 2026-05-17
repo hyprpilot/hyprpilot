@@ -154,16 +154,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_matches_defaults_toml_seeded_values() {
-        // Pairs with `config::tests::defaults_seed_mcp_block`. If a
-        // captain updates defaults.toml without also updating the
-        // `Default` impl (or vice versa), the two tests diverge and
-        // the suite fails.
+    fn default_matches_defaults_toml_seeded_patch_values() {
+        // Pairs with `config::tests::defaults_seed_mcp_via_root_patch`.
+        // `[mcp]` is no longer a root field — it's seeded via a
+        // `[[patches]]` entry. Deserialize that patch's `mcp` sub-
+        // object back into McpConfig and check it equals the typed
+        // `Default::default()`. If a captain updates defaults.toml's
+        // seeded mcp shape without also updating the `Default` impl
+        // (or vice versa), the two paths diverge here.
         let from_toml: super::super::Config = toml::from_str(super::super::DEFAULTS).expect("defaults parse");
+        let patches = from_toml.patches.as_deref().expect("defaults seed [[patches]]");
+        let mcp_value = patches
+            .iter()
+            .find_map(|p| p.as_object()?.get("mcp"))
+            .expect("default patch carries an mcp field");
+        let mcp_from_patch: McpConfig =
+            serde_json::from_value(mcp_value.clone()).expect("patch's mcp deserializes as McpConfig");
         assert_eq!(
-            from_toml.mcp,
+            mcp_from_patch,
             McpConfig::default(),
-            "[mcp] defaults.toml seed must match McpConfig::default()",
+            "default `[[patches]]` mcp seed must match McpConfig::default()",
         );
     }
 }

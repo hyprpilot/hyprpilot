@@ -218,14 +218,92 @@ editor / git noise burns through any debouncer.
 Skill delivery flows exclusively through the palette. Picked skills
 attach to the user turn as `UserTurnInput::Prompt { text, attachments }`.
 
+### Root-level `[[patches]]` — single mechanism for profile-shared knobs
+
+Root-level `[[patches]]: Option<Vec<Value>>` holds partial
+`ProfileConfig` overlays that fold onto whichever profile gets
+picked at resolve time. **There is NO root-level `system_prompt` /
+`mcps` / `mcp` field anymore** — those moved into patches as part
+of the v1 stabilization. The previous "if profile has X then X
+else config.X" cascade was three separate code paths; patches
+replace that with one mechanism shared with `--with-config`.
+
+Each patch is an object whose body is a partial `ProfileConfig`
+shape. An optional `$match: { profile: "<glob>" }` sibling filters
+which profiles the patch applies to — stripped before merging so it
+never lands on the profile shape. Unset `$match` = applies to every
+profile. Patches fold left-to-right via
+`config::patch::merge_values` (same strategic-merge engine
+`--with-config` uses — object-field merge, `$patch: replace`,
+keyed-array merge by id, primitive-array append+dedupe).
+
+```toml
+# Unscoped — every profile gets the shared system_prompt.
+[[patches]]
+[[patches.system_prompt]]
+file = "~/.config/hyprpilot/prompts/base.md"
+
+[[patches.system_prompt]]
+file = "~/.config/hyprpilot/prompts/global.md"
+inject = { on_update = true }
+
+# Scoped to a glob — only profiles whose id matches `personal/*`
+# get this mcps catalog.
+[[patches]]
+"$match" = { profile = "personal/*" }
+[[patches.mcps]]
+file = "~/.config/nvim/utils/mcphub/servers.json"
+ignore = ["*-kilic", "*-laravel", "aws-docs"]
+
+[[patches]]
+"$match" = { profile = "work/*" }
+[[patches.mcps]]
+file = "~/.config/nvim/utils/mcphub/servers.json"
+ignore = ["*-kilic", "gitlab", "playwright"]
+```
+
+Resolution order at submit time (every spawn flows through one
+helper, `adapters::acp::instances::resolve_effective_profile`, so
+`ResolvedInstance` and the MCP / skills registries can't drift):
+
+1. Pick the addressed profile via `--profile <id>`, falling back
+   to `[profile] default`. **Errors with `-32602 invalid_params`**
+   when neither resolves to a real `[[profiles]]` entry — there is
+   no bare-agent fallback. Config-load validation
+   (`validate_profiles_non_empty`) also rejects an empty
+   `[[profiles]]` list at boot, so a captain's setup mistake
+   surfaces at startup rather than per spawn.
+2. Apply each root `[[patches]]` entry in declaration order,
+   filtered by its `$match.profile` glob if present.
+3. Apply each `--with-config` patch in declaration order (no
+   `$match` — those are per-invocation overrides).
+4. Deserialize the resulting `Value` back into `ProfileConfig` +
+   re-run garde validation.
+
+The captain configures a working out-of-the-box default by setting
+`[profile] default = "<id>"` and ensuring a matching `[[profiles]]`
+entry exists. `defaults.toml` seeds one (`claude-code` → the
+`claude-code` agent) so fresh installs spawn without further
+configuration.
+
+**Globs cross `/`**: `globset::Glob::new("personal/*")` matches
+multi-segment ids like `personal/claude/opus` (not gitignore
+semantics). Verified by `match_matches_profile`'s tests.
+
 ### `mcps` — MCP catalog (file paths + inline servers)
 
-`mcps: Option<Vec<McpFile>>` at the TOML root. Each entry carries
-**either** a `file` path **or** an inline `mcp_servers` map (exactly
-one; garde rejects both/neither at config load). File paths follow
-the standard `mcpServers` shape used by Claude Code / Codex / Cursor.
-hyprpilot extends each server entry via an optional `hyprpilot`
-namespace key:
+`mcps: Option<Vec<McpFile>>` on `ProfileConfig` (the `[[profiles]]`
+array). Captains who want shared mcps across every profile put them
+in a root-level `[[patches]]` entry — see "Root-level `[[patches]]`"
+below; the patch's `mcps` field merges onto each profile via the
+same strategic-merge engine `--with-config` uses. There is NO
+root-level `[[mcps]]` field anymore — wholesale-replaced by patches.
+
+Each entry carries **either** a `file` path **or** an inline
+`mcp_servers` map (exactly one; garde rejects both/neither at
+config load). File paths follow the standard `mcpServers` shape
+used by Claude Code / Codex / Cursor. hyprpilot extends each server
+entry via an optional `hyprpilot` namespace key:
 
 ```json
 {
@@ -275,8 +353,12 @@ Equivalent JSON for a `--with-config` patch:
   ignore-glob path; mixing both kinds in one catalog is supported.
   The `hyprpilot` block is typed (works on inline entries too);
   everything else stays as opaque `serde_json::Value`.
-- **Per-profile override**: `[[profiles]] mcps = [...]` wholesale-replaces
-  the global default. `mcps = []` is the explicit "no MCPs" off-switch.
+- **Per-profile override**: `[[profiles]] mcps = [...]` defines the
+  profile's own set. Root `[[patches]]` mcps merge onto whichever
+  profile is picked (filtered by each patch's optional `$match`).
+  `mcps = []` on a profile is the explicit "no MCPs" off-switch
+  (resists patch overlay via `$patch: replace` if the captain wants
+  to wipe a patch-provided list).
 - **ACP injection**: each `session/new` and `session/load` carries the
   resolved set as `mcp_servers`. Stdio / HTTP / SSE project onto the
   typed ACP `McpServer` enum.
@@ -1127,12 +1209,14 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   message. **Authoring shape**: patches address a `ProfileConfig`
   directly — the same TOML shape captains write under `[[profiles]]`.
   Fields: `agent`, `model`, `mode`, `system_prompt`, `mcps`, `skills`,
-  `env`, `cwd`. When no `--profile` is
-  addressed and no `[profile] default` exists, the base is a
-  synthetic bare profile pointing at the resolved default agent — so
-  patches always have somewhere to land. Root-level knobs (theme,
-  daemon.window, the agent registry itself) are deliberately out of
-  scope; those belong in the on-disk config or a `daemon/reload`.
+  `env`, `cwd`. Resolution requires a profile: `--profile <id>`
+  first, then `[profile] default`. When neither addresses a real
+  `[[profiles]]` entry the spawn errors with `-32602
+  invalid_params` (config-load validation already rejects an empty
+  `[[profiles]]` list, so this only fires when the captain
+  references a non-existent id). Root-level knobs (theme,
+  daemon.window, the agent registry itself) are deliberately out
+  of scope; those belong in the on-disk config or a `daemon/reload`.
 - **`overlay/*`** — `show { instanceId? }`, `hide`, `toggle { instanceId? }`.
   `toggle` accepts the same `instanceId` knob as `show`: when the flip
   brings the overlay into view, that instance gets focused; ignored on
@@ -1483,11 +1567,12 @@ sentinel and exit 0.
 ## ACP bridge
 
 The daemon fronts one or more ACP-speaking agent subprocesses.
-`session/submit` resolves the addressed profile (or falls back through
-`[agent] default_profile` → first `[[agents]]` entry), spawns the
-configured vendor on first hit, wires a `Client.builder().connect_with`
-pipeline against its stdio, and streams `SessionUpdate`s through to the
-webview (`acp:transcript` Tauri events) + the `ctl status` broadcast.
+`session/submit` resolves the addressed profile (or falls back to
+`[profile] default`; errors when neither names a real
+`[[profiles]]` entry), spawns the configured vendor on first hit,
+wires a `Client.builder().connect_with` pipeline against its stdio,
+and streams `SessionUpdate`s through to the webview
+(`acp:transcript` Tauri events) + the `ctl status` broadcast.
 
 Follow-up prompts against the same `(agent_id, profile_id)` reuse the
 live session; a different profile against the same agent spawns its own
@@ -1591,10 +1676,6 @@ the default Tauri-managed multi-thread runtime. Transport is
 ### Agents + profiles config (flattened at TOML root)
 
 ```toml
-[agent]                          # singleton: global agent-scope config
-default = "claude-code"
-default_profile = "ask"
-
 [[agents]]                       # registry: per-agent entries
 id = "claude-code"
 provider = "acp-claude-code"     # closed AgentProvider enum
@@ -1604,16 +1685,25 @@ args = ["--bun", "@zed-industries/claude-code-acp"]
 
 [agents.env]                     # optional per-agent env overlay
 
+[profile]                        # singleton: picks default profile
+default = "strict"
+
 [[profiles]]                     # registry: per-profile presets
 id = "strict"
 agent = "claude-code"            # must reference a real [[agents]] id
 model = "claude-opus-4-5"        # profile > agent > vendor
-system_prompt = ["~/.config/hyprpilot/prompts/base.md", "~/.config/hyprpilot/prompts/strict.md"]
+system_prompt = [
+  { file = "~/.config/hyprpilot/prompts/base.md" },
+  { file = "~/.config/hyprpilot/prompts/strict.md" },
+]
 ```
 
-Singular `[agent]` parallels plural `[[agents]]` / `[[profiles]]` —
-TOML's single-table vs array-of-tables distinction carries the "global
-config vs registry" split.
+There is no `[agent]` singleton — every spawn flows through a
+`[[profiles]]` entry (which carries its own `agent` field). The
+captain picks the default with `[profile] default = "<id>"` and
+`validate_profiles_non_empty` rejects an empty `[[profiles]]` list
+at config-load so the captain can't ship a daemon that errors per
+spawn.
 
 **Merge semantics**: user entries with an existing `id` override the
 whole default entry; new `id`s append. Whole-entry replace, no
@@ -1621,12 +1711,13 @@ field-level merge inside an entry.
 
 **Cross-field rules:**
 
-- `agent.default` → `[[agents]].id`.
-- `agent.default_profile` → `[[profiles]].id`.
+- `[profile] default` → `[[profiles]].id` — REQUIRED for spawns
+  that don't pass `--profile`.
 - `profile.agent` → `[[agents]].id`.
-- `profile.system_prompt` is a single field — array of file paths, no
-  inline-string variant. Empty array is the explicit "no prompt"
-  off-switch.
+- `profile.system_prompt` is an array of `{ file, inject? }`
+  entries. Empty array is the explicit "no prompt" off-switch.
+  Captains who want a shared system prompt across every profile
+  use `[[patches]]` instead of duplicating per-profile.
 
 `AgentProvider` is a **closed enum** keyed by wire name
 (`acp-claude-code` / `acp-codex` / `acp-opencode`); adding a provider

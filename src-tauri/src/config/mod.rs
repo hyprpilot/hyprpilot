@@ -20,7 +20,7 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-pub use agents::{AgentConfig, AgentDefaults, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
+pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
 pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
 pub use extensions::{McpFile, SkillEntry};
@@ -32,6 +32,7 @@ pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
 pub use theme::{Theme, Ui};
 use validations::{
     validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
+    validate_profiles_non_empty,
 };
 
 pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
@@ -49,46 +50,6 @@ pub struct Config {
     pub autostart: Autostart,
     #[garde(dive)]
     pub logging: Logging,
-    /// `[[mcps]]` — global MCP catalog files. Each entry is a JSON
-    /// file in the standard `{ "mcpServers": { ... } }` shape plus an
-    /// optional per-entry glob `ignore` array filtering server names
-    /// at load time. The loader merges files in iteration order with
-    /// later-wins on same-name. Profile-level `mcps` wholesale-
-    /// replaces this default. None (unset) → no MCPs; `Some(vec![])`
-    /// → explicit empty list. `~` / env-var expansion at consume time.
-    #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
-    pub mcps: Option<Vec<McpFile>>,
-    /// `[mcp]` — singleton block (mirrors the `[agent]` / `[[agents]]`
-    /// pattern) controlling the in-tree `hyprpilot` MCP server the
-    /// daemon auto-injects into every `session/new`. `enabled`,
-    /// `skills` slug whitelist, `autoAcceptTools`, `autoRejectTools`.
-    /// Per-profile `[profiles.X.mcp]` wholesale-replaces this global
-    /// block (matching the `mcps` / `skills` profile-override pattern).
-    /// Defaults seeded by `defaults.toml`: `enabled = true`,
-    /// `auto_accept_tools = ["*"]`, `auto_reject_tools = []`,
-    /// `skills` unset.
-    #[garde(dive)]
-    pub mcp: McpConfig,
-    /// Root-level fallback cwd. Used at daemon startup as the chdir
-    /// target when `--cwd` isn't passed on the CLI. Mostly useful for
-    /// systemd-unit invocations where there's no shell-set cwd. When
-    /// neither is set, the daemon inherits the spawning environment's
-    /// cwd. `~` / `$VAR` expansion runs at consume time.
-    #[garde(skip)]
-    #[merge(strategy = overwrite_some)]
-    pub cwd: Option<PathBuf>,
-    /// `system_prompt` — root-level fallback every profile uses
-    /// when its own `system_prompt` isn't set. Array of
-    /// `{ file, inject? }` entries, mirroring `[[mcps]]` /
-    /// `[[skills]]`. Each entry's `inject.on_create` /
-    /// `inject.on_update` independently gates whether that file
-    /// rides on Bootstrap::Fresh / Bootstrap::Resume. Profile-level
-    /// `system_prompt` wholesale-replaces this default;
-    /// `system_prompt = []` is the explicit "no prompt" off-switch.
-    #[garde(dive)]
-    #[merge(strategy = overwrite_some)]
-    pub system_prompt: Option<Vec<SystemPromptEntry>>,
     #[garde(dive)]
     pub ui: Ui,
     /// `[[agents]]` + `[agent]` at TOML root, flattened here so
@@ -104,8 +65,12 @@ pub struct Config {
     pub profile: ProfileDefaults,
     /// `[[profiles]]` at TOML root. Each profile binds an agent id to an
     /// optional model override + optional system prompt; resolved into a
-    /// flat `ResolvedInstance` at `session/submit` time.
+    /// flat `ResolvedInstance` at `session/submit` time. **At least one
+    /// entry is required** — there is no bare-agent fallback. Spawn
+    /// picks `--profile <id>` first, then `[profile] default`, then
+    /// errors when neither resolves to a real profile.
     #[garde(dive)]
+    #[garde(custom(validate_profiles_non_empty))]
     #[garde(custom(validate_profiles_ids))]
     #[garde(custom(validate_profile_agent_references(&self.agents.agents)))]
     #[serde(default)]
@@ -132,6 +97,33 @@ pub struct Config {
     /// pair confirmation; no persistent tokens.
     #[garde(dive)]
     pub remote: RemoteConfig,
+    /// `[[patches]]` — root-level profile patches applied AFTER
+    /// profile pick, BEFORE `--with-config` overrides. Each entry
+    /// is a partial `ProfileConfig` shape; per-field merge follows
+    /// the same `config::patch::merge_values` strategic semantics
+    /// the `--with-config` flag already uses (object-field merge,
+    /// `$patch: replace` directive, keyed-array merge by id,
+    /// primitive-array append+dedupe).
+    ///
+    /// An optional `$match: { profile: "<glob>" }` sibling at the
+    /// top of each patch object filters which profiles the patch
+    /// applies to (stripped before merging so it never lands on the
+    /// profile shape). Unset `$match` = applies to every profile.
+    ///
+    /// Replaces the older per-field "root fallback" mechanism
+    /// (`Config.system_prompt`, `Config.mcps`, `Config.mcp` —
+    /// deleted in the same change). Captains who want shared
+    /// settings across profiles put them in a (possibly scoped)
+    /// patch instead of duplicating per-profile.
+    ///
+    /// Stored as `Vec<Value>` so the captain's authoring vocabulary
+    /// is whatever serde supports on `ProfileConfig` — typed
+    /// validation happens AFTER patch application via
+    /// `serde_json::from_value::<ProfileConfig>(...) + garde`.
+    #[serde(default)]
+    #[garde(skip)]
+    #[merge(strategy = overwrite_some)]
+    pub patches: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -180,22 +172,6 @@ pub struct Logging {
 pub struct ResolvedSkillEntry {
     pub dir: PathBuf,
     pub ignore: Option<globset::GlobSet>,
-}
-
-impl Config {
-    /// Resolve every `[[mcps]]` entry to its runtime shape: an
-    /// absolute file path OR a pre-extracted inline server map, plus
-    /// the compiled ignore matcher. Mirrors `resolved_skills`.
-    /// Profile-level `mcps` overrides feed through the same shape via
-    /// `effective_mcps_for`.
-    pub fn resolved_mcps(&self) -> Vec<ResolvedMcpFile> {
-        self.mcps
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(ResolvedMcpFile::from_entry)
-            .collect()
-    }
 }
 
 /// One resolved MCP catalog entry. Mirror of `ResolvedSkillEntry` for
@@ -332,7 +308,6 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
         profile = ?profile,
         agents = cfg.agents.agents.len(),
         profiles = cfg.profiles.len(),
-        default_agent = ?cfg.agents.agent.default,
         default_profile = ?cfg.profile.default,
         "config::load: layers merged"
     );
@@ -380,32 +355,36 @@ mod tests {
     }
 
     #[test]
-    fn defaults_seed_mcp_block() {
-        // Pins every `.expect("[mcp] ... seeded by defaults.toml")`
-        // accessor on `McpConfig`. If a future captain removes a
-        // field from `defaults.toml`, this fails before a runtime
-        // panic ships.
+    fn defaults_seed_mcp_via_root_patch() {
+        // `[mcp]` is no longer a root field — it lives on
+        // `ProfileConfig` and gets seeded via the default
+        // `[[patches]]` entry. Pin the seeded patch shape so a
+        // future captain removing the entry surfaces here instead
+        // of breaking auto-inject silently at runtime.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
-        let m = &cfg.mcp;
-        assert_eq!(m.enabled, Some(true), "[mcp] enabled must default to true");
-        assert_eq!(
-            m.auto_accept_tools.as_deref(),
-            Some(&["*".to_string()][..]),
-            "[mcp] autoAcceptTools must default to [\"*\"]",
-        );
-        assert_eq!(
-            m.auto_reject_tools.as_deref(),
-            Some(&[][..]),
-            "[mcp] autoRejectTools must default to []",
-        );
-        let skills = m.skills.as_deref().expect("[mcp] skills must seed the default XDG dir");
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].dir, std::path::PathBuf::from("~/.config/hyprpilot/skills"));
+        let patches = cfg.patches.as_deref().expect("defaults must seed [[patches]]");
+        assert!(!patches.is_empty(), "defaults must seed at least one root patch");
 
-        // Accessor `.expect()`s must succeed against the seeded block.
-        assert!(m.enabled());
-        assert_eq!(m.auto_accept_tools(), &["*".to_string()]);
-        assert!(m.auto_reject_tools().is_empty());
+        let mcp_patch = patches
+            .iter()
+            .find_map(|p| p.as_object()?.get("mcp"))
+            .expect("a default patch must carry an mcp field");
+        let m = mcp_patch.as_object().expect("mcp patch is an object");
+        assert_eq!(m.get("enabled").and_then(serde_json::Value::as_bool), Some(true));
+        assert_eq!(
+            m.get("autoAcceptTools").and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::String("*".into())]),
+            "default mcp.autoAcceptTools must be [\"*\"]",
+        );
+        let skills = m
+            .get("skills")
+            .and_then(serde_json::Value::as_array)
+            .expect("default mcp.skills");
+        assert_eq!(skills.len(), 1, "default mcp.skills seeds exactly the XDG dir");
+        assert_eq!(
+            skills[0].get("dir").and_then(serde_json::Value::as_str),
+            Some("~/.config/hyprpilot/skills")
+        );
     }
 
     #[test]
@@ -525,71 +504,6 @@ level = "{lvl}"
             cfg.validate().unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
             fs::remove_file(&p).ok();
         }
-    }
-
-    #[test]
-    fn defaults_seed_skills_with_xdg_path() {
-        // `[[mcp.skills]]` (was top-level `[[skills]]` pre-PR) —
-        // catalog seeded from defaults.toml under the mcp block.
-        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
-        let entries = cfg.mcp.skills.as_deref().expect("defaults must seed [[mcp.skills]]");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
-    }
-
-    #[test]
-    fn skills_user_override_replaces_defaults_wholesale() {
-        let p = write_tmp(
-            "skills-override.toml",
-            r#"
-[[mcp.skills]]
-dir = "/opt/skills/team"
-
-[[mcp.skills]]
-dir = "~/personal/skills"
-ignore = ["work-*"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let entries = cfg.mcp.skills.as_deref().expect("override applied");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].dir, PathBuf::from("/opt/skills/team"));
-        assert_eq!(entries[1].dir, PathBuf::from("~/personal/skills"));
-        assert_eq!(entries[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn skills_explicit_empty_disables_loading() {
-        let p = write_tmp(
-            "skills-empty.toml",
-            r#"
-[mcp]
-skills = []
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        assert_eq!(cfg.mcp.skills.as_deref(), Some(&[][..]));
-        assert!(cfg.mcp.resolved_skills().is_empty());
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn skills_resolved_expands_tilde() {
-        let mut cfg = Config::default();
-        cfg.mcp.skills = Some(vec![SkillEntry {
-            dir: PathBuf::from("~/.config/hyprpilot/skills"),
-            ignore: None,
-        }]);
-        let resolved = cfg.mcp.resolved_skills();
-        assert_eq!(resolved.len(), 1);
-        let path = resolved[0].dir.to_string_lossy();
-        // Tilde expanded to a real home dir; defensive — accept either
-        // resolved-form or literal if shellexpand didn't have HOME set.
-        assert!(
-            path.starts_with('/') || path.contains("hyprpilot/skills"),
-            "expected expanded path, got {path}",
-        );
     }
 
     fn binding(mods: &[Modifier], key: Key) -> Binding {
@@ -816,31 +730,42 @@ submit = { modifiers = ["ctrl"], key = "enter" }
         fs::remove_file(&p).ok();
     }
 
+    /// Root-level `[[patches]]` array-of-tables parses + carries the
+    /// captain's `ProfileConfig`-shaped overlay (`system_prompt`,
+    /// `mcps`, `mcp.skills`, `env`, …) through to the resolver.
+    /// Mirrors the deleted `root_system_prompt_parses_as_array_of_tables`
+    /// — same authoring vocabulary, now wrapped under a patch.
     #[test]
-    fn root_system_prompt_parses_as_array_of_tables() {
+    fn root_patches_parse_as_array_of_tables() {
         let p = write_tmp(
-            "root-prompt.toml",
+            "root-patches.toml",
             r#"
-system_prompt = [
-  { file = "~/.config/hyprpilot/prompts/base.md" },
-  { file = "~/.config/hyprpilot/prompts/global.md", inject = { on_update = true } },
-]
+[[patches]]
+[[patches.system_prompt]]
+file = "~/.config/hyprpilot/prompts/base.md"
+
+[[patches.system_prompt]]
+file = "~/.config/hyprpilot/prompts/global.md"
+inject = { on_update = true }
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
+        cfg.validate().expect("root patches validate");
 
-        cfg.validate().expect("root system_prompt validates");
-        let prompts = cfg.system_prompt.as_deref().expect("set");
-        assert_eq!(prompts.len(), 2);
-        assert_eq!(prompts[0].file, PathBuf::from("~/.config/hyprpilot/prompts/base.md"));
-        assert!(prompts[0].inject.on_create);
-        assert!(!prompts[0].inject.on_update);
-        assert_eq!(prompts[1].file, PathBuf::from("~/.config/hyprpilot/prompts/global.md"));
-        assert!(
-            prompts[1].inject.on_create,
-            "on_create stays default-true on partial inject"
+        let patches = cfg.patches.as_deref().expect("set");
+        assert!(!patches.is_empty(), "captain's patch must merge in");
+
+        // Find the patch carrying system_prompt (default seed also
+        // contributes one, so iterate instead of indexing).
+        let prompt_patch = patches
+            .iter()
+            .find_map(|p| p.as_object()?.get("system_prompt")?.as_array())
+            .expect("captain's patch declares system_prompt");
+        assert_eq!(prompt_patch.len(), 2);
+        assert_eq!(
+            prompt_patch[0].get("file").and_then(serde_json::Value::as_str),
+            Some("~/.config/hyprpilot/prompts/base.md")
         );
-        assert!(prompts[1].inject.on_update);
         fs::remove_file(&p).ok();
     }
 }

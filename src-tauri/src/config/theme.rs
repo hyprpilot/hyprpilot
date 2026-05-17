@@ -562,6 +562,32 @@ read = "#123456"
     #[test]
     fn validate_accepts_hex_with_alpha() {
         let cfg = Config {
+            // `validate_profiles_non_empty` requires at least one
+            // profile; this test only exercises hex-color validation,
+            // so seed a trivial profile to satisfy the cross-field
+            // check before reaching the theme rules.
+            agents: super::super::AgentsConfig {
+                agents: vec![super::super::AgentConfig {
+                    id: "cc".into(),
+                    provider: super::super::AgentProvider::AcpClaudeCode,
+                    model: None,
+                    command: "/bin/false".into(),
+                    args: vec![],
+                    cwd: None,
+                    env: std::collections::BTreeMap::new(),
+                }],
+            },
+            profiles: vec![super::super::ProfileConfig {
+                id: "cc".into(),
+                agent: "cc".into(),
+                model: None,
+                system_prompt: None,
+                mcps: None,
+                mcp: None,
+                mode: None,
+                cwd: None,
+                env: std::collections::BTreeMap::new(),
+            }],
             ui: Ui {
                 theme: Theme {
                     window: ThemeWindow {

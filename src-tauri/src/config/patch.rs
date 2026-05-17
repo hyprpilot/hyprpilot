@@ -218,6 +218,54 @@ pub fn merge_patches(base: Value, patches: Vec<Value>) -> Value {
     patches.into_iter().fold(base, merge_values)
 }
 
+/// Fold root-level config patches into a resolved profile value,
+/// filtered by the patch's optional `$match.profile` glob.
+///
+/// Each patch is an object whose body is a partial `ProfileConfig`
+/// shape. An optional `$match: { profile: "<glob>" }` sibling at the
+/// top of the patch object filters which profiles the patch applies
+/// to — the directive is stripped before merging so it never lands
+/// on the profile shape itself. Unset `$match` (or missing `profile`
+/// inside it) means "applies to every profile".
+///
+/// Non-object patch values silently skip — the caller is expected to
+/// have validated the input shape at config-load time (garde +
+/// serde), but defensive skipping keeps the helper total.
+pub fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_id: &str) -> Value {
+    patches.iter().cloned().fold(profile, |acc, patch_value| {
+        let Value::Object(mut patch_obj) = patch_value else {
+            return acc;
+        };
+
+        // Strip the optional `$match` directive before merging.
+        if let Some(match_value) = patch_obj.remove("$match") {
+            if !match_matches_profile(&match_value, profile_id) {
+                return acc;
+            }
+        }
+
+        merge_values(acc, Value::Object(patch_obj))
+    })
+}
+
+/// `true` when `match_value` is `null` / absent-but-defaulted, OR its
+/// `profile` field is a glob that matches `profile_id`. Anything that
+/// fails to parse falls back to `true` so a malformed directive
+/// doesn't silently swallow patches — validation surfaces shape
+/// errors at config-load via garde.
+fn match_matches_profile(match_value: &Value, profile_id: &str) -> bool {
+    let Some(obj) = match_value.as_object() else {
+        return true;
+    };
+    let Some(profile_glob) = obj.get("profile").and_then(|v| v.as_str()) else {
+        return true;
+    };
+    globset::Glob::new(profile_glob)
+        .ok()
+        .map(|g| g.compile_matcher())
+        .is_some_and(|m| m.is_match(profile_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +430,112 @@ mod tests {
                 ]
             })
         );
+    }
+
+    // ── apply_root_patches_to_profile ─────────────────────────────
+
+    #[test]
+    fn root_patch_without_match_applies_to_every_profile() {
+        let profile = json!({ "id": "personal/claude/opus", "agent": "claude-code" });
+        let patches = vec![json!({ "model": "opus[1m]" })];
+        assert_eq!(
+            apply_root_patches_to_profile(profile, &patches, "personal/claude/opus"),
+            json!({ "id": "personal/claude/opus", "agent": "claude-code", "model": "opus[1m]" })
+        );
+    }
+
+    #[test]
+    fn root_patch_with_matching_glob_applies() {
+        let profile = json!({ "id": "personal/claude/opus", "agent": "claude-code" });
+        let patches = vec![json!({
+            "$match": { "profile": "personal/*" },
+            "mode": "plan"
+        })];
+        assert_eq!(
+            apply_root_patches_to_profile(profile, &patches, "personal/claude/opus"),
+            json!({ "id": "personal/claude/opus", "agent": "claude-code", "mode": "plan" })
+        );
+    }
+
+    #[test]
+    fn root_patch_with_non_matching_glob_skips() {
+        let profile = json!({ "id": "work/claude/opus", "agent": "claude-code" });
+        let patches = vec![json!({
+            "$match": { "profile": "personal/*" },
+            "mode": "plan"
+        })];
+        assert_eq!(
+            apply_root_patches_to_profile(profile, &patches, "work/claude/opus"),
+            json!({ "id": "work/claude/opus", "agent": "claude-code" }),
+            "personal/* glob must not match work/* profile"
+        );
+    }
+
+    #[test]
+    fn root_patches_fold_left_to_right_with_per_patch_match() {
+        // Three patches: one unscoped (applies to all), two scoped
+        // to opposite profile families. Verify ordering + scoping
+        // compose correctly.
+        let patches = vec![
+            json!({ "system_prompt": ["/base.md"] }),
+            json!({
+                "$match": { "profile": "personal/*" },
+                "mcps": [{ "file": "/personal.json" }]
+            }),
+            json!({
+                "$match": { "profile": "work/*" },
+                "mcps": [{ "file": "/work.json" }]
+            }),
+        ];
+
+        let personal = apply_root_patches_to_profile(
+            json!({ "id": "personal/claude/opus" }),
+            &patches,
+            "personal/claude/opus",
+        );
+        assert_eq!(
+            personal,
+            json!({
+                "id": "personal/claude/opus",
+                "system_prompt": ["/base.md"],
+                "mcps": [{ "file": "/personal.json" }]
+            })
+        );
+
+        let work = apply_root_patches_to_profile(json!({ "id": "work/claude/opus" }), &patches, "work/claude/opus");
+        assert_eq!(
+            work,
+            json!({
+                "id": "work/claude/opus",
+                "system_prompt": ["/base.md"],
+                "mcps": [{ "file": "/work.json" }]
+            })
+        );
+    }
+
+    #[test]
+    fn root_patch_strips_match_directive_before_merge() {
+        // The directive must NOT land on the profile shape — it's
+        // metadata for the matcher, not a profile field.
+        let profile = json!({ "id": "x" });
+        let patches = vec![json!({
+            "$match": { "profile": "x" },
+            "agent": "claude-code"
+        })];
+        assert_eq!(
+            apply_root_patches_to_profile(profile, &patches, "x"),
+            json!({ "id": "x", "agent": "claude-code" }),
+            "$match must be consumed and absent from the merged result"
+        );
+    }
+
+    #[test]
+    fn root_patch_non_object_value_is_skipped_silently() {
+        // Defensive — config-load validation should reject malformed
+        // patches, but if one slips through the helper must not panic.
+        let profile = json!({ "id": "x" });
+        let patches = vec![json!("not-an-object")];
+        assert_eq!(apply_root_patches_to_profile(profile.clone(), &patches, "x"), profile);
     }
 
     /// Replace one profile's mcps list wholesale (kustomize

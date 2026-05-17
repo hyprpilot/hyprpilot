@@ -143,22 +143,19 @@ mod tests {
         }
     }
 
-    /// Empty params + an `AcpAdapter` with no configured agents →
-    /// the adapter rejects with `AdapterError::InvalidRequest("no
-    /// agents configured ...")`, which `map_adapter_err` translates
-    /// to `-32602 invalid_params`. Pins the wire shape: the handler
-    /// passes through to the adapter and surfaces its error
-    /// verbatim, no `-32601` masking when the namespace itself is
-    /// wired.
+    /// Empty params + an `AcpAdapter` with no configured profiles →
+    /// resolution rejects with the new "every spawn requires a
+    /// `[[profiles]]` entry" message, surfacing as `-32602
+    /// invalid_params`. Pins the wire shape: the handler passes
+    /// through to the adapter and surfaces its error verbatim, no
+    /// `-32601` masking when the namespace itself is wired.
     #[tokio::test]
     async fn list_empty_config_returns_invalid_params() {
         let v = dispatch("sessions/list", Value::Null).await;
         assert_eq!(v["code"], -32602, "{v}");
+        let msg = v["message"].as_str().unwrap_or_default();
         assert!(
-            v["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("no agents configured"),
+            msg.contains("requires a `[[profiles]]` entry") || msg.contains("no profile addressed"),
             "{v}"
         );
     }
@@ -180,8 +177,11 @@ mod tests {
     /// profile** (synthetic when no profile is addressed), then
     /// validation runs. An empty array is the no-op default — still
     /// hits the adapter and trips its "no agents configured" path.
-    /// A non-empty patch that breaks the profile shape surfaces as
-    /// `-32602` BEFORE the adapter is touched.
+    /// A non-empty `withConfig` patch that ALSO has no profile to
+    /// merge onto surfaces the profile-required error (resolution
+    /// hits `base_profile_for_patches` before the patch shape ever
+    /// gets validated). Both error paths fail with `-32602` and
+    /// captain-readable text — that's what this pins.
     #[tokio::test]
     async fn load_with_config_invalid_patch_rejects_with_validation_error() {
         let v = dispatch(
@@ -193,18 +193,20 @@ mod tests {
         )
         .await;
         assert_eq!(v["code"], -32602, "{v}");
-        assert!(v["message"].as_str().unwrap_or_default().contains("withConfig"), "{v}");
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("withConfig") || msg.contains("requires a `[[profiles]]` entry"),
+            "{v}"
+        );
     }
 
     #[tokio::test]
     async fn load_empty_with_config_falls_through_to_adapter() {
         let v = dispatch("sessions/load", json!({ "sessionId": "abc", "withConfig": [] })).await;
         assert_eq!(v["code"], -32602, "{v}");
+        let msg = v["message"].as_str().unwrap_or_default();
         assert!(
-            v["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("no agents configured"),
+            msg.contains("requires a `[[profiles]]` entry") || msg.contains("no profile addressed"),
             "{v}"
         );
     }

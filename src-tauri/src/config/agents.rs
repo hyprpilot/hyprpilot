@@ -11,11 +11,13 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use super::merge_strategies::{merge_agents_by_id, overwrite_some};
-use super::validations::{validate_agent_default_id, validate_agents_ids};
+use super::validations::validate_agents_ids;
 
-/// `[[agents]]` registry + `[agent]` global scope. Entries override
-/// by `id`; new ids append. Cross-field check on `agent.default`
-/// closes over `&self.agents` via the garde custom hook.
+/// `[[agents]]` registry. Entries override by `id`; new ids append.
+///
+/// No `[agent] default` singleton anymore — every spawn flows through
+/// a `[[profiles]]` entry (which carries its own `agent` field), so
+/// the daemon never has to pick an agent independent of a profile.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
@@ -23,26 +25,13 @@ pub struct AgentsConfig {
     #[garde(custom(validate_agents_ids))]
     #[merge(strategy = merge_agents_by_id)]
     pub agents: Vec<AgentConfig>,
-    #[garde(dive)]
-    #[garde(custom(validate_agent_default_id(&self.agents)))]
-    pub agent: AgentDefaults,
 }
 
-/// `[agent]` — global agent-scope config. Future timeout / cwd /
-/// env knobs slot in here. `default` is the agent id used when
-/// `submit` doesn't carry an explicit one.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-#[merge(strategy = overwrite_some)]
-pub struct AgentDefaults {
-    #[garde(skip)]
-    pub default: Option<String>,
-}
-
-/// `[profile]` — global profile-scope config. Mirrors `[agent]`:
-/// singleton scope with `default` for "which `[[profiles]]` entry
-/// to use when the wire / palette doesn't provide one". Cross-field
-/// validation against `[[profiles]].id` lives at `Config` level.
+/// `[profile]` — global profile-scope singleton. `default` is the
+/// `[[profiles]]` id used when `submit` doesn't carry an explicit
+/// one. Spawn fails when neither `--profile` nor `[profile] default`
+/// is set — there is no bare-agent fallback. Cross-field validation
+/// against `[[profiles]].id` lives at `Config` level.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]
@@ -189,8 +178,6 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
-    use merge::Merge as _;
-
     use super::super::{load, Config, DEFAULTS};
     use super::*;
 
@@ -212,9 +199,9 @@ mod tests {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
         assert_eq!(
-            cfg.agents.agent.default.as_deref(),
+            cfg.profile.default.as_deref(),
             Some("claude-code"),
-            "agent.default must be seeded to a concrete id"
+            "[profile] default must be seeded to a concrete profile id (no [agent] default anymore)"
         );
 
         let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
@@ -305,39 +292,21 @@ command = "b"
     }
 
     #[test]
-    fn validate_rejects_unknown_agent_default() {
-        let p = write_tmp(
-            "bad-default.toml",
-            r#"
-[agent]
-default = "does-not-exist"
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject");
+    fn validate_rejects_empty_profiles_list() {
+        // Bypass the defaults-merge path — exercise `validate()`
+        // directly on a Config with `profiles = []`. Every spawn
+        // flows through a profile so this must reject at
+        // config-load instead of erroring per-spawn. (The actual
+        // load() path always merges in the default seed profile so
+        // captains never hit this in practice unless their TOML
+        // explicitly `$patch: replace`s the profiles list.)
+        let cfg = Config {
+            profiles: Vec::new(),
+            ..Default::default()
+        };
+        let err = cfg.validate().expect_err("empty profiles must reject");
         let msg = err.to_string();
-        // garde's report prefixes the field path: the cross-field
-        // custom is attached to `AgentsConfig.agent`, which flattens
-        // to `agents.agent` on `Config`.
-        assert!(msg.contains("agents.agent"), "missing path: {msg}");
-        assert!(msg.contains("default = 'does-not-exist'"), "missing detail: {msg}");
-        assert!(msg.contains("Configured ids:"), "missing id list: {msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn user_override_of_agent_default_wins() {
-        let p = write_tmp(
-            "agent-default.toml",
-            r#"
-[agent]
-default = "codex"
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("load");
-        assert_eq!(cfg.agents.agent.default.as_deref(), Some("codex"));
-        cfg.validate().expect("codex exists in defaults, so valid");
-        fs::remove_file(&p).ok();
+        assert!(msg.contains("at least one [[profiles]] entry"), "missing detail: {msg}");
     }
 
     #[test]
@@ -375,17 +344,27 @@ args = ["--flag"]
         fs::remove_file(&p).ok();
     }
 
-    /// Defaults ship zero profiles and no `[profile] default` —
-    /// profiles are user-supplied, the daemon falls back to the
-    /// `[agent] default` agent when none is selected.
+    /// Defaults seed a single profile (`claude-code` → `claude-code`
+    /// agent) and pin `[profile] default = "claude-code"` so a fresh
+    /// install can spawn out of the box without further configuration.
+    /// At least one profile is required since the bare-agent fallback
+    /// is gone.
     #[test]
-    fn defaults_seed_no_profiles() {
+    fn defaults_seed_a_working_default_profile() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
 
-        assert!(cfg.profiles.is_empty(), "defaults must not seed any profiles");
-        assert!(cfg.profile.default.is_none(), "[profile] default must not be seeded");
+        assert!(!cfg.profiles.is_empty(), "defaults must seed at least one profile");
+        assert_eq!(
+            cfg.profile.default.as_deref(),
+            Some("claude-code"),
+            "[profile] default must point at the seeded profile"
+        );
+        assert!(
+            cfg.profiles.iter().any(|p| p.id == "claude-code"),
+            "default profile id must exist in the [[profiles]] list"
+        );
 
-        cfg.validate().expect("empty profile set validates");
+        cfg.validate().expect("defaults validate");
     }
 
     #[test]
@@ -565,51 +544,6 @@ mcps = [{ file = "/etc/hyprpilot/x.json", ignore = ["[unterminated"] }]
     }
 
     #[test]
-    fn mcps_global_parse() {
-        let p = write_tmp(
-            "mcps-global.toml",
-            r#"
-[[mcps]]
-file = "~/.config/hyprpilot/mcps/base.json"
-
-[[mcps]]
-file = "/etc/hyprpilot/team.json"
-ignore = ["work-*"]
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("load");
-        let mcps = cfg.mcps.as_deref().expect("set");
-        assert_eq!(mcps.len(), 2);
-        assert_eq!(mcps[0].file, Some(PathBuf::from("~/.config/hyprpilot/mcps/base.json")));
-        assert_eq!(mcps[1].file, Some(PathBuf::from("/etc/hyprpilot/team.json")));
-        assert_eq!(mcps[1].ignore.as_deref(), Some(&["work-*".to_string()][..]));
-        cfg.validate().expect("valid global mcps");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn mcps_global_unset_defaults_to_none() {
-        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults parse");
-        assert_eq!(cfg.mcps, None, "defaults must not seed any MCP files");
-    }
-
-    #[test]
-    fn mcps_global_user_overrides_defaults() {
-        let mut base = Config::default();
-        let over: Config = toml::from_str(
-            r#"
-[[mcps]]
-file = "~/work.json"
-"#,
-        )
-        .expect("over parses");
-        base.merge(over);
-        let mcps = base.mcps.as_deref().expect("merged");
-        assert_eq!(mcps.len(), 1);
-        assert_eq!(mcps[0].file, Some(PathBuf::from("~/work.json")));
-    }
-
-    #[test]
     fn profile_skills_parses_array_of_tables() {
         let p = write_tmp(
             "profile-skills.toml",
@@ -678,11 +612,11 @@ skills = []
     }
 
     #[test]
-    /// With no seeded profiles in `defaults.toml` the merged list is
-    /// exactly what the user supplies, in file order. The keyed-list
-    /// merge semantics are pinned separately by
-    /// `user_agent_entry_overrides_default_by_id`; this test just
-    /// confirms that user profiles flow through cleanly.
+    /// User profiles append onto the defaults-seeded one (keyed by
+    /// id). `merge_profiles_by_id` keeps the seed's `claude-code`
+    /// entry and appends the new ids in file order — captain can
+    /// override the default profile by reusing `id = "claude-code"`
+    /// (covered by the merge-by-id test alongside `[[agents]]`).
     fn user_profiles_flow_through_in_order() {
         let p = write_tmp(
             "user-profiles.toml",
@@ -700,7 +634,11 @@ agent = "claude-code"
         let cfg = load(Some(&p), None).expect("load");
 
         let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, vec!["strict", "my-profile"], "user profiles appear in file order");
+        assert_eq!(
+            ids,
+            vec!["claude-code", "strict", "my-profile"],
+            "seeded default profile stays; user entries append in file order"
+        );
 
         let strict = cfg.profiles.iter().find(|p| p.id == "strict").unwrap();
         assert_eq!(strict.agent, "opencode");

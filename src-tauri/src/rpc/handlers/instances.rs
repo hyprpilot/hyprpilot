@@ -767,13 +767,17 @@ mod setters_tests {
     async fn focus_ensure_spawns_and_names_unknown_slug() {
         let cfg: Config = toml::from_str(
             r#"
-[agent]
-default = "dead"
-
 [[agents]]
 id = "dead"
 provider = "acp-claude-code"
 command = "/bin/false"
+
+[profile]
+default = "dead"
+
+[[profiles]]
+id = "dead"
+agent = "dead"
 "#,
         )
         .expect("config parses");
