@@ -524,32 +524,50 @@ onUnmounted(() => {
   border-right: 1px solid var(--theme-border);
 }
 
-/* Two independent accent indicators on opposite sides:
- * - LEFT border: navigation cursor (`data-selected`, moves with
- *   arrows / hover).
- * - RIGHT border: persistent active row (`data-active`, the
- *   captain's currently-picked profile / model / cwd / instance).
- * When a row is both, both borders light up. */
+/* Two independent accent indicators on opposite sides, painted via
+ * inset `box-shadow` rather than `border-left` / `border-right`:
+ *   - LEFT shadow: navigation cursor (`data-selected`, moves with
+ *     arrows / hover).
+ *   - RIGHT shadow: persistent active row (`data-active`, the
+ *     captain's currently-picked profile / model / cwd / instance).
+ * When a row is both, both shadows stack.
+ *
+ * Why box-shadow over `border-*`: a colored border with the row's
+ * `border-radius` leaks a tiny triangle of the border color at the
+ * rounded corners — the border tapers to follow the radius, but the
+ * tapered region paints in the border color, leaving 1-2 px of
+ * accent peeking through where the rounded `background-color` ends.
+ * Inset box-shadows respect `border-radius` cleanly, so the accent
+ * stripes start AND end flush with the rounded edge. */
 .palette-row {
   @apply flex items-center gap-[0.625rem] text-[0.7rem];
   cursor: pointer;
-  padding: 0.375rem 0.625rem;
+  /* Gutter reserved for the L/R accent stripes — keeps row content
+   * from shifting horizontally when an accent lights up. */
+  padding: 0.375rem calc(0.625rem + 0.1875rem);
   border-radius: 0.25rem;
-  border-left: 0.1875rem solid transparent;
-  border-right: 0.1875rem solid transparent;
   color: var(--theme-fg-subtle);
   font-family: var(--theme-font-mono);
   margin-bottom: 1px;
 }
 
 .palette-row[data-active='true'] {
-  border-right-color: var(--theme-accent);
+  box-shadow: inset -0.1875rem 0 0 0 var(--theme-accent);
 }
 
 .palette-row[data-selected='true'] {
   background-color: var(--theme-surface-alt);
-  border-left-color: var(--theme-accent);
+  box-shadow: inset 0.1875rem 0 0 0 var(--theme-accent);
   color: var(--theme-fg);
+}
+
+/* Both states at once — stack the shadows so each edge lights up
+ * independently (otherwise the later selector overrides the earlier
+ * `box-shadow` entirely). */
+.palette-row[data-selected='true'][data-active='true'] {
+  box-shadow:
+    inset 0.1875rem 0 0 0 var(--theme-accent),
+    inset -0.1875rem 0 0 0 var(--theme-accent);
 }
 
 .palette-tick {
