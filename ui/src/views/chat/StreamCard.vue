@@ -60,7 +60,14 @@ const tone = computed(() => (props.kind === StreamKind.Planning ? 'var(--theme-k
 
 const hasItems = computed(() => (props.items?.length ?? 0) > 0)
 const hasSlot = computed(() => Boolean(slots.default))
-const useMarkdown = computed(() => props.kind === StreamKind.Thinking && Boolean(props.text))
+// Treat whitespace-only text as no text at all. Vendors (notably
+// Opus) emit thought chunks whose `text` is `"\n"` / `"\n\n"` as
+// filler between real content — concatenated they become visible
+// blank rows that look like a layout bug. The header chrome
+// (label / elapsed / stats pills) still renders, so the captain
+// still sees "thought · 12s" even when the body is empty.
+const hasNonWhitespaceText = computed(() => typeof props.text === 'string' && props.text.trim() !== '')
+const useMarkdown = computed(() => props.kind === StreamKind.Thinking && hasNonWhitespaceText.value)
 /// No expandable content → header is the whole card (used by the
 /// thinking-time-only fallback path: agent reasoned silently for N
 /// seconds, no prose to render). Hides the chevron + drops the

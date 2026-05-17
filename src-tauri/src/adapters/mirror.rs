@@ -529,6 +529,7 @@ impl InstanceMirror {
             mcps_count: g.meta.mcps_count,
             current_turn_event: g.last_turn_event,
             pending_permissions: g.pending_permissions.clone(),
+            queue: g.queue.clone(),
             usage: g.usage.clone(),
             turns: g.turns.clone(),
             latest_seq,
@@ -665,6 +666,13 @@ pub struct MetaSnapshot {
     pub current_turn_event: Option<TurnEventMarker>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_permissions: Vec<PermissionRequestSnapshot>,
+    /// Per-instance submit queue. Hydrates the UI's queue strip on
+    /// snapshot load (mobile remote, refresh-mid-turn, second-frontend
+    /// hand-off) so captains see "queued behind running turn" without
+    /// waiting for the next `QueueChanged` event. Empty when no
+    /// prompt is queued.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue: Vec<crate::adapters::queue::QueueItem>,
     pub usage: UsageSnapshot,
     /// Per-turn records (oldest-first). Hydrates the UI's `useTurns`
     /// store on snapshot load so the chat header's elapsed + usage

@@ -12,6 +12,7 @@ import {
   markBootDone,
   setBootStatus,
   startGitStatus,
+  startSessionStream,
   startTranscriptPatcher
 } from '@composables'
 import { ensureRemoteConnection, isRemoteHost, subscribePair } from '@ipc/remote-bridge'
@@ -160,6 +161,18 @@ async function boot(): Promise<void> {
     // singleton here, after auth but before any other RPC, means the
     // dispatcher has a listener ready for the first frame.
     await startTranscriptPatcher(queryClient)
+    // Hoist `startSessionStream` BEFORE `applyBootSnapshot` for the
+    // same listener-before-snapshot reason as `startTranscriptPatcher`:
+    // it wires every other `acp:*` listener (turn-started/ended,
+    // instance-state, permission-request, queue-changed, instance-meta,
+    // session/mode/model/usage updates) onto module-level stores. On
+    // remote, events from a captain-issued `prompts/send` fire from
+    // the daemon the moment auth completes; if these listeners
+    // weren't wired by then (they used to live in Overlay.vue's
+    // onMounted), TurnStarted etc. silently dropped at the bridge
+    // and the SPA's phase / stop-button / header pill never reflected
+    // the running turn. The hoist closes that race.
+    await startSessionStream()
     setBootStatus('loading')
 
     if (!(await applyBootSnapshot(queryClient))) {
@@ -178,6 +191,18 @@ async function boot(): Promise<void> {
     // (and so a daemon emitting events during the snapshot fetch
     // gets caught — vanishingly small race on desktop, but free).
     await startTranscriptPatcher(queryClient)
+    // Hoist `startSessionStream` BEFORE `applyBootSnapshot` for the
+    // same listener-before-snapshot reason as `startTranscriptPatcher`:
+    // it wires every other `acp:*` listener (turn-started/ended,
+    // instance-state, permission-request, queue-changed, instance-meta,
+    // session/mode/model/usage updates) onto module-level stores. On
+    // remote, events from a captain-issued `prompts/send` fire from
+    // the daemon the moment auth completes; if these listeners
+    // weren't wired by then (they used to live in Overlay.vue's
+    // onMounted), TurnStarted etc. silently dropped at the bridge
+    // and the SPA's phase / stop-button / header pill never reflected
+    // the running turn. The hoist closes that race.
+    await startSessionStream()
 
     if (!(await applyBootSnapshot(queryClient))) {
       await applyTheme()

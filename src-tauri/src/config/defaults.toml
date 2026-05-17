@@ -268,12 +268,11 @@ provider = "acp-opencode"
 command = "opencode"
 args = ["acp"]
 
-# `[[profiles]]` — at least one entry is required. Every spawn flows
-# through a profile (no bare-agent fallback). `[profile] default`
-# picks which one runs when `--profile <id>` isn't passed.
-[profile]
-default = "claude-code"
-
-[[profiles]]
-id = "claude-code"
-agent = "claude-code"
+# `[[profiles]]` — captain-supplied. NOT seeded by defaults so a
+# fresh install presents a single source of truth for "which profiles
+# exist": the captain's on-disk config. Validation rejects an empty
+# `[[profiles]]` list at config-load, so fresh installs without any
+# profile won't boot — the captain configures at least one before
+# the daemon starts. `[profile] default` picks which profile runs
+# when `--profile <id>` isn't passed; required when more than one
+# profile exists.

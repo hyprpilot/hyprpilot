@@ -160,15 +160,28 @@ impl ResolvedInstance {
         let model = profile.model.clone().or_else(|| agent.model.clone());
         let system_prompt = Self::load_system_prompt(profile)?;
 
-        // Merge profile.env onto a clone of the agent so the spawn
-        // path (which iterates `entry.env`) sees both. Profile entries
-        // override agent entries on key collision — profile is the
-        // more specific scope. `${VAR}` interpolation against the
-        // daemon's process env happens later in `agents/mod.rs::expand_value`.
+        // Project profile-level overrides onto a clone of the agent
+        // so the spawn path (which iterates `entry.env` + reads
+        // `entry.cwd`) sees them. Profile entries are the more
+        // specific scope and win on collision. `${VAR}` interpolation
+        // against the daemon's process env happens later in
+        // `agents/mod.rs::expand_value`.
         let mut agent = agent.clone();
 
         for (k, v) in profile.env.iter() {
             agent.env.insert(k.clone(), v.clone());
+        }
+
+        // `profile.cwd` overrides `agent.cwd` when set. This is the
+        // channel through which root `[[patches]]` `cwd` reaches
+        // the spawn — patches land on `ProfileConfig.cwd`, then
+        // this line projects it onto `AgentConfig.cwd`, which
+        // `AcpAgent::base_command` reads at spawn time. Without
+        // this line, captains writing `cwd: ~/notes` in a patch
+        // saw the agent spawn from `$HOME` (the daemon's inherited
+        // cwd) and the patch silently no-op'd.
+        if let Some(profile_cwd) = profile.cwd.as_ref() {
+            agent.cwd = Some(profile_cwd.clone());
         }
 
         Ok(Self {
