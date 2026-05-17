@@ -3884,12 +3884,23 @@ mod tests {
     }
 
     #[test]
-    fn turn_state_lifts_chunks_starting_with_a_single_newline() {
+    fn turn_state_does_not_double_inject_when_prior_and_chunk_both_carry_a_newline() {
         let mut state = TurnState::default();
         state.note_agent_text("Para 1.\n", None);
-        // Incoming begins with a single \n — promote to \n\n so the
-        // chunk's own leading newline reads as a markdown paragraph
-        // break (some vendors stream `"\nPara 2."` expecting the break).
+        // Prior trailing `\n` + chunk's own leading `\n` already sum
+        // to `\n\n` at the boundary — no lift, no wasted injection.
+        // The combined wire shape is `Para 1.\n\nPara 2.`, which
+        // renders as two paragraphs.
+        assert_eq!(state.note_agent_text("\nPara 2.", None), "");
+    }
+
+    #[test]
+    fn turn_state_lifts_chunk_self_newline_only_when_prior_contributes_nothing() {
+        let mut state = TurnState::default();
+        // Prior trailing is 0 (chunk ends on non-newline). Chunk's
+        // own leading `\n` is just a soft break in markdown — lift
+        // to `\n\n` so it reads as a paragraph break.
+        state.note_agent_text("Para 1.", None);
         assert_eq!(state.note_agent_text("\nPara 2.", None), "\n");
     }
 
