@@ -511,4 +511,91 @@ describe('transcript-patcher singleton', () => {
 
     expect(listeners.size).toBe(firstSize)
   })
+
+  it('stamps wire seq onto live-patched items so head.latestSeq stays aligned with daemon', async() => {
+    const queryClient = buildClient()
+
+    queryClient.setQueryData(['snapshot-chat', 'i-1'], {
+      pages: [chatPage([{ seq: 50, item: { kind: TranscriptItemKind.AgentText, text: 'seed' } as never }])],
+      pageParams: [undefined]
+    })
+
+    await startTranscriptPatcher(queryClient)
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 't-1',
+        seq: 99,
+        item: { kind: TranscriptItemKind.AgentText, text: 'live' }
+      } as never
+    })
+    await flushPromises()
+
+    const page = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0]
+
+    expect(page?.items).toHaveLength(2)
+    expect(page?.items[1].seq).toBe(99)
+    expect(page?.latestSeq).toBe(99)
+  })
+
+  it('dedups a duplicate live event by wire seq (race-safety on remote reconnect)', async() => {
+    const queryClient = buildClient()
+
+    queryClient.setQueryData(['snapshot-chat', 'i-1'], {
+      pages: [chatPage([{ seq: 100, item: { kind: TranscriptItemKind.AgentText, text: 'already-applied' } as never }])],
+      pageParams: [undefined]
+    })
+
+    await startTranscriptPatcher(queryClient)
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 't-1',
+        seq: 100,
+        item: { kind: TranscriptItemKind.AgentText, text: 'duplicate' }
+      } as never
+    })
+    await flushPromises()
+
+    const page = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0]
+
+    expect(page?.items).toHaveLength(1)
+    expect((page?.items[0].item as { text: string }).text).toBe('already-applied')
+  })
+
+  it('falls back to synthesized seq when wire seq is absent (older daemon)', async() => {
+    const queryClient = buildClient()
+
+    queryClient.setQueryData(['snapshot-chat', 'i-1'], {
+      pages: [chatPage([{ seq: 7, item: { kind: TranscriptItemKind.AgentText, text: 'seed' } as never }])],
+      pageParams: [undefined]
+    })
+
+    await startTranscriptPatcher(queryClient)
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        item: { kind: TranscriptItemKind.AgentText, text: 'no-seq' }
+      } as never
+    })
+    await flushPromises()
+
+    const page = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0]
+
+    expect(page?.items).toHaveLength(2)
+    expect(page?.items[1].seq).toBe(8)
+    expect(page?.latestSeq).toBe(8)
+  })
 })

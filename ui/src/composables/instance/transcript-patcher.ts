@@ -107,32 +107,7 @@ export function listSeenInstanceIds(): string[] {
   return [...lastSeenSeqByInstance.keys()]
 }
 
-/// Find the most-recent existing item in the cache that an incoming
-/// `AgentText` / `AgentThought` chunk should accumulate onto. Match
-/// is by `(turnId, kind)` — one accumulator per turn per role. Walks
-/// back-to-front because the captain's reading position is at the
-/// foot; the youngest matching entry is the live accumulator.
-function findAccumulatorIndex(items: SeqTranscriptItem[], kind: TranscriptItemKind, turnId: string | undefined): number {
-  if (turnId === undefined) {
-    return -1
-  }
-
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    const it = items[i]
-
-    if (!it) {
-      continue
-    }
-
-    if (it.item.kind === kind && it.turnId === turnId) {
-      return i
-    }
-  }
-
-  return -1
-}
-
-function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscriptItem | undefined {
+function liveItemFor(payload: TranscriptEventPayload, fallbackSeq: number): SeqTranscriptItem | undefined {
   if (payload.item.kind === TranscriptItemKind.Unknown) {
     return undefined
   }
@@ -141,8 +116,16 @@ function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscrip
     return undefined
   }
 
+  // Prefer the daemon's wire seq when present so the cached entry's
+  // `seq` matches what `instance_snapshot_chat` would return for the
+  // same item. Lets the delta-replay path dedup overlapping items by
+  // seq instead of having to reconcile two parallel numbering
+  // systems (client-synthesized vs daemon-stamped). The `fallbackSeq`
+  // covers older daemons that don't ship `seq` on the wire — the
+  // synthesized number is monotonic per batch flush so the cache
+  // stays internally consistent.
   return {
-    seq,
+    seq: payload.seq ?? fallbackSeq,
     turnId: payload.turnId,
     item: payload.item
   }
@@ -241,8 +224,7 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     let applied = 0
     let mergedCount = 0
     let skipped = 0
-    let accumulated = 0
-    let dedupedDuplicate = 0
+    let dedupedSeq = 0
 
     for (const payload of batch) {
       if (payload.instanceId !== instanceId) {
@@ -255,57 +237,15 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
         continue
       }
 
-      // Per-(turnId, kind) accumulator for AgentText / AgentThought.
-      // The wire ships one SeqTranscriptItem per streamed chunk; the
-      // snapshot-timeline projector folded these at render time, but
-      // duplicate live events (transient WS dispatcher glitch, actor
-      // recovery re-emit) leaked through the projector unchanged and
-      // surfaced as the same message rendered 3x. Captain's call:
-      // collapse at the cache layer using `turnId` as the primary
-      // key, then dedup-by-`endsWith` on the accumulated text so a
-      // duplicate chunk arriving after the accumulator has the
-      // original text is dropped before it can compound.
-      const kind = incoming.item.kind
-
-      if (kind === TranscriptItemKind.AgentText || kind === TranscriptItemKind.AgentThought) {
-        const idx = findAccumulatorIndex(nextItems, kind, incoming.turnId)
-
-        if (idx >= 0) {
-          const existing = nextItems[idx]!
-          const existingText = (existing.item as { text?: string }).text ?? ''
-          const incomingText = (incoming.item as { text?: string }).text ?? ''
-
-          // `endsWith` dedup: if the existing accumulator already
-          // ends with the incoming chunk's exact text, the chunk is
-          // a duplicate of what we just appended (either same-batch
-          // or rapid re-fire across batches). Concatenating again
-          // would render the text twice. Skip — including the seq
-          // update so the dedup is invisible to downstream
-          // bookkeeping.
-          if (incomingText.length > 0 && existingText.endsWith(incomingText)) {
-            dedupedDuplicate += 1
-            continue
-          }
-          // Replace in place with the concatenated text. Cloning
-          // the SeqTranscriptItem (vs mutating the cached entry)
-          // keeps Vue's reactivity tracking honest — vue-query
-          // diffs by object reference at the page level; in-place
-          // mutation would silently desync subscribers that read
-          // `items[i].item.text` through a computed.
-          nextItems[idx] = {
-            seq: existing.seq,
-            turnId: existing.turnId ?? incoming.turnId,
-            item: { ...existing.item, text: existingText + incomingText } as typeof existing.item
-          }
-          accumulated += 1
-          // Track lastSeq from the most recent chunk even though
-          // we didn't push, so the head's latestSeq advances and
-          // the projector's `updatedAt = it.seq` derivation reads
-          // the freshest position.
-          baseSeq += 1
-          lastSeq = incoming.seq
-          continue
-        }
+      // Wire-seq dedup. If the same seq already landed via the
+      // delta-replay path (rare race on remote reconnect), drop the
+      // duplicate live event rather than appending a phantom copy.
+      // Only meaningful when the wire ships seq — older daemons with
+      // synthesized seqs never hit this branch because the
+      // synthesized counter is monotonic per flush.
+      if (payload.seq !== undefined && payload.seq <= lastSeq) {
+        dedupedSeq += 1
+        continue
       }
       const merged = mergeToolCallUpdate(nextItems, incoming)
 
@@ -314,26 +254,14 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       } else {
         nextItems.push(incoming)
       }
-      baseSeq += 1
+      baseSeq = incoming.seq + 1
       lastSeq = incoming.seq
       applied += 1
     }
     pendingByInstance.delete(instanceId)
 
-    // No-op short-circuit when no item changed. Accumulator hits
-    // count too — those mutate `nextItems[idx]` and produce a new
-    // page object, so vue-query needs the new reference to notify
-    // subscribers. mergeToolCallUpdate similarly mutates entries.
-    if (applied === 0 && accumulated === 0 && mergedCount === 0) {
+    if (applied === 0) {
       return old
-    }
-
-    if (dedupedDuplicate > 0) {
-      log.warn('transcript-patcher: dropped duplicate text via endsWith accumulator', {
-        instanceId,
-        batchSize: batch.length,
-        dedupedDuplicate
-      })
     }
 
     log.trace('transcript-patcher.batch-applied', {
@@ -341,9 +269,8 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       batchSize: batch.length,
       applied,
       merged: mergedCount,
-      accumulated,
       skipped,
-      dedupedDuplicate,
+      dedupedSeq,
       headItemCount: nextItems.length
     })
 
@@ -518,15 +445,23 @@ function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items:
     let lastSeq = head.latestSeq ?? 0
 
     for (const incoming of items) {
+      // Dedup against the head's existing max seq. Covers the race
+      // where a live event for the same seq landed between the
+      // resync RPC being sent and its response arriving — without
+      // this guard the captain would see a chunk rendered twice
+      // (live + replay). Because the live patcher now stamps the
+      // wire seq onto cached items, `lastSeq` is comparable across
+      // both paths.
+      if (incoming.seq <= lastSeq) {
+        recordLastSeenSeq(instanceId, incoming.seq)
+        continue
+      }
       const merged = mergeToolCallUpdate(nextItems, incoming)
 
       if (!merged) {
         nextItems.push(incoming)
       }
-
-      if (incoming.seq > lastSeq) {
-        lastSeq = incoming.seq
-      }
+      lastSeq = incoming.seq
       recordLastSeenSeq(instanceId, incoming.seq)
       applied += 1
     }
