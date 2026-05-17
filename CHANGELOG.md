@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/hyprpilot/hyprpilot/compare/v2.0.0...v2.0.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* **ui:** mobile follow-ups — header collapse, seeded cwd, session titles, palette + autocomplete + load chip ([#91](https://github.com/hyprpilot/hyprpilot/issues/91)) ([fd9706e](https://github.com/hyprpilot/hyprpilot/commit/fd9706ef922e6fc2c9bbae77d4e15a24ae4e01af))
+
 ## [2.0.0](https://github.com/hyprpilot/hyprpilot/compare/v1.0.0...v2.0.0) (2026-05-17)
 
 
