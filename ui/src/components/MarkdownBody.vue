@@ -226,22 +226,22 @@ function onRootKeydown(event: KeyboardEvent): void {
   overflow-wrap: anywhere;
 }
 
+/* Spacing follows GitHub's `github-markdown-css` spec: block
+ * elements get `margin: 0 0 1em` so the bottom-edge of every block
+ * (paragraph, list, blockquote, pre, table) carries the gap to the
+ * next block. Em units mean the rhythm scales with the consumer's
+ * font-size — chat bubbles at 0.78rem get a proportional ~12.5px
+ * gap; modals at 0.85rem get ~13.6px. First / last child zeroing
+ * stops the body from gaining unwanted padding inside its
+ * container. */
 .markdown-body :deep(p) {
-  margin: 0.375rem 0;
-}
-
-.markdown-body :deep(p:first-child) {
-  margin-top: 0;
-}
-
-.markdown-body :deep(p:last-child) {
-  margin-bottom: 0;
+  margin: 0 0 1em;
 }
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 0.375rem 0;
-  padding-left: 1.375rem;
+  margin: 0 0 1em;
+  padding-left: 2em;
   font-size: inherit;
   line-height: inherit;
 }
@@ -254,8 +254,17 @@ function onRootKeydown(event: KeyboardEvent): void {
   list-style-type: decimal;
 }
 
-.markdown-body :deep(li) {
-  margin: 0.125rem 0;
+/* `li + li` (not every `li`) so the first item in a list sits flush
+ * against the list's top edge — matches GitHub. */
+.markdown-body :deep(li + li) {
+  margin-top: 0.25em;
+}
+
+/* Nested lists collapse the trailing margin so a `ul > li > ul`
+ * doesn't gain a full em gap on top of its parent's. */
+.markdown-body :deep(li > ul),
+.markdown-body :deep(li > ol) {
+  margin: 0;
 }
 
 /* GFM task-list checkboxes (markdown-it-task-lists) — drop the disc
@@ -279,10 +288,20 @@ function onRootKeydown(event: KeyboardEvent): void {
 .markdown-body :deep(h4),
 .markdown-body :deep(h5),
 .markdown-body :deep(h6) {
-  margin: 0.75rem 0 0.375rem;
+  margin: 1.5em 0 1em;
   font-weight: 700;
   color: var(--theme-fg);
-  line-height: 1.3;
+  line-height: 1.25;
+}
+
+/* No top-margin on the first child — keeps the body flush against
+ * its container's top edge when a heading opens the prose. */
+.markdown-body :deep(> :first-child) {
+  margin-top: 0;
+}
+
+.markdown-body :deep(> :last-child) {
+  margin-bottom: 0;
 }
 
 .markdown-body :deep(h1) {
@@ -296,9 +315,9 @@ function onRootKeydown(event: KeyboardEvent): void {
 }
 
 .markdown-body :deep(blockquote) {
-  margin: 0.375rem 0;
-  padding-left: 0.5rem;
-  border-left: 0.125rem solid var(--theme-border-soft);
+  margin: 0 0 1em;
+  padding: 0 1em;
+  border-left: 0.25em solid var(--theme-border-soft);
   color: var(--theme-fg-dim);
 }
 
@@ -332,8 +351,8 @@ function onRootKeydown(event: KeyboardEvent): void {
  * stays as a safety net for non-wrappable content (e.g. tables nested
  * inside a fence). */
 .markdown-body :deep(pre) {
-  margin: 0.5rem 0;
-  padding: 0.5rem 0.625rem;
+  margin: 0 0 1em;
+  padding: 1em;
   background-color: var(--theme-surface-alt);
   border: 1px solid var(--theme-border-soft);
   border-radius: 0.1875rem;
@@ -350,7 +369,7 @@ function onRootKeydown(event: KeyboardEvent): void {
 /* Fenced-block chrome — caret + lang + spacer + copy. Shared across
  * every consumer; consumers DO NOT re-style this. */
 .markdown-body :deep(.md-codeblock) {
-  margin: 0.5rem 0;
+  margin: 0 0 1em;
   border: 1px solid var(--theme-border);
   border-radius: 0.1875rem;
   background-color: var(--theme-surface-bg);
@@ -513,7 +532,7 @@ function onRootKeydown(event: KeyboardEvent): void {
   display: block;
   overflow-x: auto;
   max-width: 100%;
-  margin: 0.375rem 0;
+  margin: 0 0 1em;
   border-collapse: collapse;
 }
 

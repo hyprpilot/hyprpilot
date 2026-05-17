@@ -55,7 +55,7 @@ const slotEmpty = computed(() => !slots.default)
  * hex theme leaf, so changing `accent.user` retints both the lane
  * stripe and the body fill in lockstep. */
 .chat-body {
-  @apply px-3 py-2 text-[0.78rem] leading-snug relative isolate;
+  @apply px-3 py-2 text-[0.78rem] leading-normal relative isolate;
   color: var(--theme-fg);
   background-color: var(--theme-surface);
   border-top: 1px solid var(--theme-border);
@@ -100,51 +100,36 @@ const slotEmpty = computed(() => !slots.default)
   white-space: pre-wrap;
 }
 
-/* Scoped overrides on top of MarkdownBody — chat surfaces use a
- * smaller body font + tighter line-height than MarkdownBody's spec-
- * sheet defaults. Code-block chrome (.md-codeblock-*) lives inside
- * MarkdownBody and stays untouched. */
+/* Inherit body font-size / line-height into the markdown lane so
+ * MarkdownBody's em-based spacing (GitHub spec — `margin: 0 0 1em`
+ * on block elements) scales to the chat body's 0.78rem / 1.5
+ * rhythm. Spacing + heading sizing live in MarkdownBody; chat
+ * doesn't tighten or override beyond the heading size cap below. */
 .chat-body :deep(.markdown-body) {
   font-size: inherit;
   line-height: inherit;
 }
 
-.chat-body :deep(.markdown-body p) {
-  @apply my-1;
-}
-
 .chat-body :deep(.markdown-body ul),
-.chat-body :deep(.markdown-body ol) {
-  @apply my-1 pl-5;
-  font-size: inherit;
-  line-height: inherit;
-}
-
+.chat-body :deep(.markdown-body ol),
 .chat-body :deep(.markdown-body li) {
-  @apply my-0.5;
   font-size: inherit;
   line-height: inherit;
 }
 
-/* Headings inside chat prose: prose is a stream of paragraphs +
- * lists, so headings shouldn't grow far past body text. Cap at the
- * body size + a slim weight bump. */
-.chat-body :deep(.markdown-body h1),
-.chat-body :deep(.markdown-body h2),
+/* Cap heading sizes inside chat prose — prose is a stream of
+ * paragraphs + lists, so a `# H1` shouldn't dwarf the body. Weight
+ * + the GitHub margin rhythm stays inherited from MarkdownBody. */
+.chat-body :deep(.markdown-body h1) {
+  font-size: 1.15em;
+}
+.chat-body :deep(.markdown-body h2) {
+  font-size: 1.05em;
+}
 .chat-body :deep(.markdown-body h3),
 .chat-body :deep(.markdown-body h4),
 .chat-body :deep(.markdown-body h5),
 .chat-body :deep(.markdown-body h6) {
-  @apply my-2 font-semibold;
-  font-size: inherit;
-  line-height: 1.3;
-  color: var(--theme-fg);
-}
-
-.chat-body :deep(.markdown-body h1) {
-  font-size: 1.05em;
-}
-.chat-body :deep(.markdown-body h2) {
   font-size: 1em;
 }
 </style>
