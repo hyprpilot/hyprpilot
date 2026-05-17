@@ -39,8 +39,8 @@ pub use mirror::{
 #[allow(unused_imports)]
 pub use permission::PermissionRequestSnapshot;
 pub use transcript::{
-    Attachment, PermissionRequestRecord, PlanRecord, PlanStep, ToolCallContentItem, ToolCallRecord, ToolCallState,
-    ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
+    Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
+    ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
 };
 
 /// Closed set of known transport kinds. The string wire-name is stable

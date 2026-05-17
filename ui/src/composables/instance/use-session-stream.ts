@@ -160,7 +160,8 @@ function routeTranscript(payload: TranscriptEventPayload): void {
     case TranscriptItemKind.Plan:
       pushPlan(instanceId, sessionId, {
         sessionUpdate: 'plan',
-        entries: item.steps
+        entries: item.steps,
+        stats: item.stats
       } as Parameters<typeof pushPlan>[2])
 
       return

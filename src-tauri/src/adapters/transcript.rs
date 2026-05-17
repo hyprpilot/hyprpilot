@@ -199,10 +199,29 @@ pub enum ToolCallContentItem {
 /// Agent's execution plan — list of steps the agent intends to
 /// take, ordered. Each entry has a content blob (markdown today)
 /// and a priority hint.
+///
+/// `stats` is a daemon-computed `ChecklistStats` — every `Plan`
+/// mapping recomputes it from `steps` so frontends can render a
+/// `done/total` chip without iterating themselves. Plans update
+/// multiple times across a turn (each agent-emitted plan snapshot
+/// is a full re-emit); the stat reflects the LATEST snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanRecord {
     pub steps: Vec<PlanStep>,
+    pub stats: ChecklistStats,
+}
+
+/// Generic running stat for any **checklist-shaped** record (plans,
+/// todo lists, multi-step run reports, …). `done / total` mirrors
+/// how the captain reads it in chat — `12 of 13 done`. Surfaced as
+/// a separate type so any new wire record carrying a "fraction
+/// resolved" stat reuses the same shape end-to-end.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecklistStats {
+    pub done: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

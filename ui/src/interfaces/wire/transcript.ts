@@ -87,6 +87,20 @@ export interface PlanStep {
 
 export interface PlanRecord {
   steps: PlanStep[]
+  /// Daemon-computed running stat — `done / total` reflect the
+  /// LATEST plan snapshot (each agent emission is a full re-emit).
+  /// Frontends render this as a `N of M done` chip without iterating
+  /// `steps` themselves. Generic shape so any future checklist-shaped
+  /// record can reuse the same UI rendering.
+  stats: ChecklistStats
+}
+
+/// Mirror of Rust `adapters::transcript::ChecklistStats`. Generic
+/// `done / total` running stat — used by `PlanRecord` today, slotted
+/// for any future checklist-shaped record.
+export interface ChecklistStats {
+  done: number
+  total: number
 }
 
 export interface PermissionRequestRecord {
