@@ -1,4 +1,16 @@
-//! `skills://<slug>` token hydrator.
+//! `#{hyprpilot://skills/<slug>}` token hydrator.
+//!
+//! Owns the `hyprpilot` URI scheme. Parses the addressed sub-resource
+//! out of the token's value portion and produces a body-less
+//! `Attachment` for the wire — the actual skill body is fetched
+//! lazily by the agent via the auto-injected `hyprpilot` MCP server
+//! (`mcp__hyprpilot__read_skill`). The daemon's
+//! `attachment_to_block` substitutes a markdown hydration blob at
+//! prompt-build time so the agent knows the URI + how to fetch.
+//!
+//! Today only `hyprpilot://skills/<slug>` is recognised. Future
+//! sub-resources (e.g. `hyprpilot://workspace/...`) extend the
+//! `parse_subresource` match.
 
 use std::sync::Arc;
 
@@ -8,15 +20,16 @@ use crate::adapters::{AcpAdapter, Attachment};
 
 use super::TokenHydrator;
 
-/// Looks the slug up against the focused instance's `SkillsRegistry`
-/// (the only authoritative skills view today — daemon-global skills
-/// are gone) and projects the loaded skill into an `Attachment`.
-/// Registered into the daemon's `TokenHydrators` at boot.
-pub struct SkillTokenHydrator {
+/// Generic hydrator for `#{hyprpilot://<subresource>/<id>}` tokens.
+/// Single hydrator covers every in-tree hyprpilot sub-resource because
+/// they all share the same MCP server (`hyprpilot`) and the same
+/// downstream auto-inject machinery — splitting per-subresource would
+/// just duplicate the lookup.
+pub struct HyprpilotTokenHydrator {
     adapter: Arc<AcpAdapter>,
 }
 
-impl SkillTokenHydrator {
+impl HyprpilotTokenHydrator {
     #[must_use]
     pub fn new(adapter: Arc<AcpAdapter>) -> Self {
         Self { adapter }
@@ -24,32 +37,55 @@ impl SkillTokenHydrator {
 }
 
 #[async_trait]
-impl TokenHydrator for SkillTokenHydrator {
+impl TokenHydrator for HyprpilotTokenHydrator {
     fn scheme(&self) -> &'static str {
-        "skills"
+        "hyprpilot"
     }
 
     async fn hydrate(&self, value: &str) -> Option<Attachment> {
+        let (kind, id) = value.split_once('/')?;
+        match kind {
+            "skills" => self.hydrate_skill(id).await,
+            _ => {
+                tracing::warn!(sub = kind, value, "hyprpilot token hydrator: unknown sub-resource");
+                None
+            }
+        }
+    }
+}
+
+impl HyprpilotTokenHydrator {
+    /// Project a skill slug onto a body-less attachment. The actual
+    /// body never lands on the wire — the daemon's
+    /// `attachment_to_block` swaps in a hydration blob pointing at the
+    /// `hyprpilot://skills/<slug>` MCP resource. Lookup against the
+    /// focused-instance registry still happens because we need the
+    /// path + title for the pill / detection heuristic; `body` stays
+    /// empty.
+    async fn hydrate_skill(&self, slug: &str) -> Option<Attachment> {
         use crate::skills::SkillSlug;
-        let slug = SkillSlug::parse(value).ok()?;
+        let parsed = SkillSlug::parse(slug).ok()?;
         let registry = self.adapter.focused_skills().await?;
-        let skill = registry.get(&slug)?;
-        // Skill bundles live at `<root>/<slug>/SKILL.md`; the path's
-        // basename is always the literal `SKILL.md`, which makes a
-        // useless transcript pill. Prefer the frontmatter `title` when
-        // authored, fall back to slug otherwise.
+        let skill = registry.get(&parsed)?;
         let title = if skill.title.trim().is_empty() {
-            slug.as_str().to_string()
+            parsed.as_str().to_string()
         } else {
             skill.title.clone()
         };
         Some(Attachment {
-            slug: slug.as_str().to_string(),
+            slug: parsed.as_str().to_string(),
             path: skill.path.clone(),
-            body: skill.body.clone(),
+            // Body stays empty — `attachment_to_block` substitutes a
+            // markdown hydration blob pointing at the MCP resource.
+            // Shipping the body here would defeat the lazy-fetch win.
+            body: String::new(),
             title: Some(title),
             data: None,
-            mime: Some("text/markdown".to_string()),
+            // mime intentionally absent — the daemon's
+            // `is_skill_attachment` heuristic detects skill attachments
+            // by slug + `SKILL.md` path + no binary data; an explicit
+            // mime would flip them into the generic text path.
+            mime: None,
         })
     }
 }

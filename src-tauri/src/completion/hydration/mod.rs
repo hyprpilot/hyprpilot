@@ -32,7 +32,7 @@ use crate::adapters::Attachment;
 pub mod file;
 pub mod skills;
 
-pub use skills::SkillTokenHydrator;
+pub use skills::HyprpilotTokenHydrator;
 
 /// One URL scheme's hydration logic. The trait is intentionally
 /// minimal: project the value-portion of a parsed token into an
@@ -141,25 +141,25 @@ mod tests {
     async fn dispatches_to_matching_scheme() {
         let hydrators = TokenHydrators::new()
             .with(Arc::new(FakeHydrator {
-                scheme: "skills",
-                accept: "git-commit",
+                scheme: "hyprpilot",
+                accept: "skills/git-commit",
             }))
             .with(Arc::new(FakeHydrator {
                 scheme: "prompt",
                 accept: "p1",
             }));
         let out = hydrators
-            .hydrate_all("see #{skills://git-commit} and #{prompt://p1} please")
+            .hydrate_all("see #{hyprpilot://skills/git-commit} and #{prompt://p1} please")
             .await;
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].slug, "git-commit");
+        assert_eq!(out[0].slug, "skills/git-commit");
         assert_eq!(out[1].slug, "p1");
     }
 
     #[tokio::test]
     async fn drops_unknown_scheme() {
         let hydrators = TokenHydrators::new().with(Arc::new(FakeHydrator {
-            scheme: "skills",
+            scheme: "hyprpilot",
             accept: "anything",
         }));
         let out = hydrators.hydrate_all("a #{unknown://x} b").await;
@@ -169,20 +169,22 @@ mod tests {
     #[tokio::test]
     async fn drops_unresolved_value() {
         let hydrators = TokenHydrators::new().with(Arc::new(FakeHydrator {
-            scheme: "skills",
-            accept: "git-commit",
+            scheme: "hyprpilot",
+            accept: "skills/git-commit",
         }));
-        let out = hydrators.hydrate_all("a #{skills://nope} b").await;
+        let out = hydrators.hydrate_all("a #{hyprpilot://skills/nope} b").await;
         assert!(out.is_empty());
     }
 
     #[tokio::test]
     async fn handles_back_to_back_tokens() {
         let hydrators = TokenHydrators::new().with(Arc::new(FakeHydrator {
-            scheme: "skills",
-            accept: "x",
+            scheme: "hyprpilot",
+            accept: "skills/x",
         }));
-        let out = hydrators.hydrate_all("#{skills://x}#{skills://x}").await;
+        let out = hydrators
+            .hydrate_all("#{hyprpilot://skills/x}#{hyprpilot://skills/x}")
+            .await;
         assert_eq!(out.len(), 2);
     }
 }

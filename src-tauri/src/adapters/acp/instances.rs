@@ -604,8 +604,8 @@ impl AcpAdapter {
         // `DecisionContext.mcps`. None when no MCP files are wired —
         // the per-server lane short-circuits and every call falls
         // through to AskUser (or trust store).
-        let mcps = build_mcp_registry_with(cfg, profile.as_ref());
         let skills = build_skills_registry_with(cfg, profile.as_ref());
+        let mcps = build_mcp_registry_with(cfg, profile.as_ref(), Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -1200,8 +1200,8 @@ impl AcpAdapter {
             resolved.agent.cwd = Some(c);
         }
         let profile_id_for_instance = resolved.profile_id.clone();
-        let mcps = build_mcp_registry_with(&cfg, effective_profile.as_ref());
         let skills = build_skills_registry_with(&cfg, effective_profile.as_ref());
+        let mcps = build_mcp_registry_with(&cfg, effective_profile.as_ref(), Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
             resolved,
             key,
@@ -1701,15 +1701,35 @@ fn effective_mcp_files_with(
 }
 
 /// `build_mcp_registry_for` against an explicit config.
+///
+/// Prepends an **auto-injected** entry for the in-tree `hyprpilot mcp
+/// skills` server when `skills` is non-empty — the daemon's resolved
+/// per-instance skill set rides through to the agent vendor as a
+/// stdio MCP server it spawns itself. Auto-inject is gated only on
+/// the skills registry; user-declared `mcps = []` does not suppress
+/// it (the user's "no MCPs" off-switch addresses user-declared
+/// catalog entries, not in-tree affordances).
 fn build_mcp_registry_with(
     cfg: &Config,
     profile: Option<&crate::config::ProfileConfig>,
+    skills: Option<&Arc<crate::skills::SkillsRegistry>>,
 ) -> Option<Arc<crate::mcp::MCPsRegistry>> {
     let files = effective_mcp_files_with(cfg, profile);
-    if files.is_empty() {
-        return None;
+    let mut defs = crate::mcp::loader::load_files(&files);
+
+    // Auto-inject the in-tree hyprpilot MCP server when the per-instance
+    // skills registry is non-empty. Source is set to a synthetic path
+    // so the UI's "which file owns this server" hint surfaces a
+    // recognisable label.
+    if let Some(skills_arc) = skills {
+        if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
+            skills_arc,
+            std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
+        ) {
+            defs.insert(0, auto);
+        }
     }
-    let defs = crate::mcp::loader::load_files(&files);
+
     if defs.is_empty() {
         return None;
     }

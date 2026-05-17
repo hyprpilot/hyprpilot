@@ -659,13 +659,13 @@ fn setup_app(
     app.manage(state.adapter.clone());
     state.acp_adapter.spawn_tauri_event_bridge(app.handle().clone());
 
-    // Inline-token hydration. One scheme today (`skills://`); future
-    // schemes (e.g. `prompt://`, `clip://`) plug in by pushing onto
-    // this registry. session_submit pulls it from managed state.
-    // The skills hydrator queries the focused instance's registry
-    // on every call — no daemon-global skills cache.
+    // Inline-token hydration. One scheme today (`hyprpilot://`);
+    // future schemes plug in by pushing onto this registry.
+    // session_submit pulls it from managed state. The hyprpilot
+    // hydrator queries the focused instance's registry on every call —
+    // no daemon-global cache.
     let hydrators = crate::completion::hydration::TokenHydrators::new().with(Arc::new(
-        crate::completion::hydration::SkillTokenHydrator::new(state.acp_adapter.clone()),
+        crate::completion::hydration::HyprpilotTokenHydrator::new(state.acp_adapter.clone()),
     ));
     app.manage(hydrators);
 

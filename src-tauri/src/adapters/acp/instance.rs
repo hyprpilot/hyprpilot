@@ -1378,9 +1378,60 @@ pub(crate) fn build_prompt_blocks(text: &str, attachments: &[Attachment]) -> Vec
     blocks
 }
 
+/// Detect whether an attachment is a palette-picked **skill**. Skill
+/// attachments carry a non-empty `slug`, a `path` ending in
+/// `SKILL.md`, and no binary `data` — that combination uniquely
+/// identifies the palette flow today. (When the wire grows a typed
+/// discriminator on `Attachment`, this heuristic flips over to a
+/// match arm.)
+fn is_skill_attachment(att: &Attachment) -> bool {
+    if att.data.is_some() || att.slug.is_empty() {
+        return false;
+    }
+    att.path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .map(|n| n.eq_ignore_ascii_case("SKILL.md"))
+        .unwrap_or(false)
+}
+
+/// Build the markdown **hydration blob** that replaces a skill's
+/// body on the wire. Tells the agent which MCP resource holds the
+/// full body and how to fetch references — preserving the
+/// lazy-hydration win without shipping the full body in every turn.
+fn skill_hydration_blob(att: &Attachment) -> String {
+    let slug = att.slug.as_str();
+    let title = att.title.as_deref().unwrap_or(slug);
+    format!(
+        "Attached skill **`{slug}`** ({title}).\n\
+\n\
+- **Resource URI**: `hyprpilot://skills/{slug}`\n\
+- **Read the full body**: call `mcp__hyprpilot__read_skill` with `{{\"slug\": \"{slug}\"}}`, \
+or read the resource URI directly via `resources/read`.\n\
+- **Load its declared references**: call `mcp__hyprpilot__load_skill_references` with `{{\"slug\": \"{slug}\"}}`, \
+or read `hyprpilot://skills/{slug}/references`.\n\
+- **Discover other skills**: call `mcp__hyprpilot__list_skills`.\n\
+\n\
+Read this skill's body before acting on its instructions.",
+    )
+}
+
 /// Project a single attachment onto the matching ACP wire variant
 /// based on its MIME type. Pure function — no I/O.
+///
+/// Skill attachments (slug + `SKILL.md` path, no binary data) are
+/// substituted with a markdown hydration blob pointing at the
+/// `hyprpilot://skills/<slug>` MCP resource. The agent fetches the
+/// full body lazily via the auto-injected hyprpilot MCP server only
+/// when it needs it.
 fn attachment_to_block(att: &Attachment) -> ContentBlock {
+    if is_skill_attachment(att) {
+        let mut tr = TextResourceContents::new(skill_hydration_blob(att), att.file_uri());
+        tr.mime_type = Some("text/markdown".to_string());
+        return ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(
+            tr,
+        )));
+    }
     let mime = att.mime_type();
     match mime_category(&mime) {
         MimeCategory::Image => {
@@ -4150,7 +4201,12 @@ mod tests {
     }
 
     #[test]
-    fn build_prompt_blocks_prepends_resources_before_text() {
+    fn build_prompt_blocks_substitutes_skill_with_hydration_blob() {
+        // Skill attachments (slug + path ending in SKILL.md, no binary
+        // data) get a markdown hydration blob substituted for their
+        // body — the agent fetches the full body lazily via
+        // `mcp__hyprpilot__read_skill`. The original body field is
+        // intentionally ignored here.
         let att = Attachment {
             slug: "git-commit".into(),
             path: PathBuf::from("/tmp/skills/git-commit/SKILL.md"),
@@ -4169,7 +4225,23 @@ mod tests {
         };
         assert_eq!(tr.uri, "file:///tmp/skills/git-commit/SKILL.md");
         assert_eq!(tr.mime_type.as_deref(), Some("text/markdown"));
-        assert_eq!(tr.text, "stage and commit");
+        assert!(
+            tr.text.contains("`git-commit`"),
+            "blob mentions the slug verbatim, got {:?}",
+            tr.text
+        );
+        assert!(
+            tr.text.contains("hyprpilot://skills/git-commit"),
+            "blob carries the MCP resource URI"
+        );
+        assert!(
+            tr.text.contains("mcp__hyprpilot__read_skill"),
+            "blob carries the read tool name"
+        );
+        assert!(
+            !tr.text.contains("stage and commit"),
+            "original body must not leak through — body field is ignored for skill attachments"
+        );
         match &blocks[1] {
             ContentBlock::Text(t) => assert_eq!(t.text, "please commit"),
             other => panic!("second block must be text, got {other:?}"),
@@ -4245,6 +4317,73 @@ mod tests {
     }
 
     #[test]
+    fn text_attachment_not_named_skill_md_preserves_body_verbatim() {
+        // Non-skill text attachments (e.g. an arbitrary `.md` the
+        // captain attached) must NOT trigger the hydration-blob
+        // substitution — the body rides through as-is.
+        let att = Attachment {
+            slug: "notes".into(),
+            path: PathBuf::from("/tmp/notes.md"),
+            body: "raw notes body".into(),
+            title: None,
+            data: None,
+            mime: Some("text/markdown".into()),
+        };
+        let blocks = build_prompt_blocks("read", std::slice::from_ref(&att));
+        let ContentBlock::Resource(res) = &blocks[0] else {
+            panic!("expected resource");
+        };
+        let EmbeddedResourceResource::TextResourceContents(tr) = &res.resource else {
+            panic!("expected text contents");
+        };
+        assert_eq!(tr.text, "raw notes body");
+        assert!(!tr.text.contains("hyprpilot://"), "non-skill must not get a blob");
+    }
+
+    #[test]
+    fn is_skill_attachment_recognises_skill_md() {
+        let skill = Attachment {
+            slug: "x".into(),
+            path: PathBuf::from("/p/x/SKILL.md"),
+            body: String::new(),
+            title: None,
+            data: None,
+            mime: None,
+        };
+        assert!(is_skill_attachment(&skill));
+
+        let with_data = Attachment {
+            slug: "x".into(),
+            path: PathBuf::from("/p/x/SKILL.md"),
+            body: String::new(),
+            title: None,
+            data: Some("BIN".into()),
+            mime: None,
+        };
+        assert!(!is_skill_attachment(&with_data), "binary data disqualifies");
+
+        let no_slug = Attachment {
+            slug: String::new(),
+            path: PathBuf::from("/p/x/SKILL.md"),
+            body: String::new(),
+            title: None,
+            data: None,
+            mime: None,
+        };
+        assert!(!is_skill_attachment(&no_slug), "empty slug disqualifies");
+
+        let not_skill_md = Attachment {
+            slug: "x".into(),
+            path: PathBuf::from("/p/x/notes.md"),
+            body: String::new(),
+            title: None,
+            data: None,
+            mime: None,
+        };
+        assert!(!is_skill_attachment(&not_skill_md), "non-SKILL.md disqualifies");
+    }
+
+    #[test]
     fn mime_category_classifies_known_types() {
         assert_eq!(mime_category("image/png"), MimeCategory::Image);
         assert_eq!(mime_category("image/svg+xml"), MimeCategory::Image);
@@ -4277,20 +4416,23 @@ mod tests {
         };
         let blocks = build_prompt_blocks("text", &[a, b]);
         assert_eq!(blocks.len(), 3);
+        // Order matters — slug "a" appears in the first blob, "b" in
+        // the second. Hydration blobs replace the raw bodies but
+        // preserve attachment ordering.
         let ContentBlock::Resource(first) = &blocks[0] else {
             panic!()
         };
         let EmbeddedResourceResource::TextResourceContents(tr0) = &first.resource else {
             panic!()
         };
-        assert_eq!(tr0.text, "A");
+        assert!(tr0.text.contains("`a`"));
         let ContentBlock::Resource(second) = &blocks[1] else {
             panic!()
         };
         let EmbeddedResourceResource::TextResourceContents(tr1) = &second.resource else {
             panic!()
         };
-        assert_eq!(tr1.text, "B");
+        assert!(tr1.text.contains("`b`"));
     }
 
     fn dummy_resolved(id: &str) -> ResolvedInstance {
