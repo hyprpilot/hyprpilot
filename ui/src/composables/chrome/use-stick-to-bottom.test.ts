@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref, type Ref } from 'vue'
 
 import { useStickToBottom } from './use-stick-to-bottom'
@@ -250,6 +250,71 @@ describe('useStickToBottom', () => {
 
     expect(api.stuck.value).toBe(false)
     unmount()
+  })
+
+  /**
+   * Captain-reported regression: while stuck=true, PageUp / mouse
+   * wheel / OS scrollbar did nothing. Cause: any text mutation in
+   * the viewport's subtree (a StreamCard elapsed chip ticking every
+   * second, a tool-call status flipping) fires the MutationObserver
+   * → `scheduleStick` → rAF queued. If the captain's upward gesture
+   * lands inside the ~16ms schedule→fire window, the rAF still
+   * runs `scrollToBottom` (by design — re-checking `stuck.value`
+   * at fire time caused a different bug). The fix is to cancel
+   * the pending rAF from `onScroll` when movement is upward —
+   * direction is the captain's intent signal.
+   */
+  it('cancels a pending scheduleStick rAF when the captain scrolls up before it fires', async() => {
+    const rafCallbacks = new Map<number, FrameRequestCallback>()
+    let rafIdSeq = 0
+    const rafSpy = vi.fn((cb: FrameRequestCallback) => {
+      const id = ++rafIdSeq
+
+      rafCallbacks.set(id, cb)
+
+      return id
+    })
+    const cancelSpy = vi.fn((id: number) => {
+      rafCallbacks.delete(id)
+    })
+
+    vi.stubGlobal('requestAnimationFrame', rafSpy)
+    vi.stubGlobal('cancelAnimationFrame', cancelSpy)
+
+    try {
+      const { api, harness, unmount } = mountHarness()
+
+      // Seed `prevScrollTop` to the at-bottom baseline (500) so the
+      // upward dispatch below registers as a real upward gesture.
+      harness.dispatchScroll()
+      expect(api.stuck.value).toBe(true)
+
+      // Trigger MutationObserver → scheduleStick. jsdom delivers
+      // MutationObserver records on a microtask; await one tick.
+      harness.el.appendChild(document.createElement('div'))
+      await Promise.resolve()
+
+      // rAF was queued by scheduleStick.
+      expect(rafSpy).toHaveBeenCalled()
+      expect(rafCallbacks.size).toBe(1)
+
+      // Captain wheels up before the rAF fires.
+      harness.setLayout({
+        scrollHeight: 2000,
+        clientHeight: 500,
+        scrollTop: 100
+      })
+      harness.dispatchScroll()
+
+      expect(api.stuck.value).toBe(false)
+      // The pending rAF was cancelled — without the cancel, it would
+      // fire on the next frame and snap the captain back to the foot.
+      expect(cancelSpy).toHaveBeenCalled()
+      expect(rafCallbacks.size).toBe(0)
+      unmount()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   /**
