@@ -244,7 +244,17 @@ async function goToBottom(): Promise<void> {
 const PAGE_OVERLAP_RATIO = 0.9
 
 useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
-  if (isEditableTarget(ev.target)) {
+  // PageUp / PageDown are unambiguously about scrolling a big
+  // container — textareas / inputs have no meaningful pageful
+  // navigation. The captain's focus lives in the composer textarea
+  // 99% of the time, so bailing on `isEditableTarget` for them meant
+  // Page keys were effectively dead. Bypass the editable-target gate
+  // for Page keys specifically; Home / End keep the gate because
+  // they ARE useful inside textareas for line navigation.
+  const key = ev.key
+  const isPageKey = key === 'PageUp' || key === 'PageDown'
+
+  if (!isPageKey && isEditableTarget(ev.target)) {
     return
   }
   const el = scrollEl.value
@@ -253,7 +263,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     return
   }
 
-  switch (ev.key) {
+  switch (key) {
     case 'PageDown': {
       ev.preventDefault()
       markUserScrolled()
@@ -273,8 +283,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     case 'Home': {
       // Bare Home jumps to top — `isEditableTarget` already gated
       // out inputs / textareas / contenteditable above, so the
-      // textarea-cursor case is already safe. Ctrl/Cmd modifier is
-      // also accepted for muscle memory parity with browsers.
+      // textarea-cursor case is already safe.
       ev.preventDefault()
       markUserScrolled()
       el.scrollTo({ top: 0, behavior: 'smooth' })
@@ -323,22 +332,35 @@ function onScroll(): void {
   if (!el) {
     return
   }
-  // Gate every "auto" pagination action behind a captain-initiated
-  // input gesture. `useStickToBottom.onMounted` writes `scrollTop =
-  // scrollHeight` on mount + the MutationObserver re-stick passes
-  // write on every chunk; the browser fires synthetic scroll events
-  // for each that are indistinguishable from a captain drag if you
-  // only watch `scrollTop`. The `wheel` / `touchstart` /
-  // `pointerdown` listeners above flip `hasUserScrolled` on real
-  // intent — stick-to-bottom never triggers any of those.
+
+  // **Backward fetch — ungated.**
+  // The original `hasUserScrolled` gate (kept for eviction below)
+  // was redundant for this branch: the mount-time synthetic
+  // `scrollTop = scrollHeight` write moves to the BOTTOM, never
+  // close to the `scrollTop < LOAD_MORE_THRESHOLD_PX` (top)
+  // threshold. Same goes for the per-chunk re-stick passes during
+  // streaming — they land at the bottom too. So the only path that
+  // reaches the threshold is a real upward scroll: wheel, trackpad,
+  // PageUp keypress, OR an OS scrollbar drag. The last is the
+  // motivating case — the native scrollbar widget fires `scroll`
+  // events but no `pointerdown` / `touchstart` / `wheel`, so the
+  // gate would lock the fetch out even though the captain is
+  // legitimately reading older content.
+  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
+    void viewport.fetchNextPage()
+  }
+
+  // **Eviction — kept gated.**
+  // Eviction is theoretically safe to ungate too (idempotent;
+  // mount-time cache has 1 page so always a no-op until at least 4
+  // pages exist; eviction's near-bottom fence + `wasStuck` capture
+  // handle the auto-snap-to-foot case correctly). But the gate
+  // costs nothing and defends against future changes to the
+  // synthetic-scroll surface — keep it as a thin safety belt for
+  // the cache-mutation half.
 
   if (!hasUserScrolled.value) {
     return
-  }
-
-  // Backward fetch.
-  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
-    void viewport.fetchNextPage()
   }
 
   // Eviction trigger — within one viewport of the bottom. Defer

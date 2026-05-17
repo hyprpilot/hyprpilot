@@ -30,6 +30,18 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
   /// then sees the now-stale scrollTop vs the new scrollHeight and
   /// flips `stuck=false`, breaking the auto-follow.
   let suppressNextScrollUpdate = false
+  /// Previous `scrollTop` observed by `onScroll`. Drives upward-
+  /// gesture detection — any non-suppressed scroll event whose
+  /// `scrollTop` is lower than `prevScrollTop` flips `stuck = false`
+  /// immediately, without waiting for the 64px threshold. Captures
+  /// the OS scrollbar drag (native widget — fires `scroll` but NOT
+  /// `pointerdown` on the DOM element) and prevents small-wheel-up
+  /// snap-back during streaming (a 20px wheel-up wouldn't cross the
+  /// threshold; the next MutationObserver-driven `scheduleStick`
+  /// would still see `stuck=true` and yank the captain back to the
+  /// foot). Initialised to 0; the first `scroll` event after mount
+  /// resets it through the suppress branch.
+  let prevScrollTop = 0
 
   function nearBottom(el: HTMLElement): boolean {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
@@ -71,6 +83,7 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
     if (!el) {
       return
     }
+    const current = el.scrollTop
 
     if (suppressNextScrollUpdate) {
       // Programmatic scroll-to-bottom — the scroll event we're seeing
@@ -93,6 +106,31 @@ export function useStickToBottom(scrollEl: Ref<HTMLElement | undefined>, options
       // scroll-to-bottom is always an explicit "follow the live tail".
       suppressNextScrollUpdate = false
       stuck.value = true
+      prevScrollTop = current
+
+      return
+    }
+    // Upward gesture? Exit stick mode immediately — don't wait for the
+    // 64px threshold. Catches both:
+    //   1. Wheel-up of any size, even a single small notch (the captain
+    //      reported the chat snapping back to the foot when they nudged
+    //      the wheel up during streaming because the gesture didn't
+    //      cross the threshold).
+    //   2. OS scrollbar drag toward the top. The native scrollbar is a
+    //      widget pseudo-element — dragging it fires `scroll` events
+    //      on this element but no preceding `pointerdown` /
+    //      `touchstart` / `wheel`, so the only signal we get that the
+    //      captain is reading older content is the decreasing
+    //      `scrollTop`.
+    // Downward / unchanged: fall through to the threshold check so a
+    // following live tail with a brief overshoot doesn't bounce
+    // `stuck` off.
+    const movedUp = current < prevScrollTop
+
+    prevScrollTop = current
+
+    if (movedUp) {
+      stuck.value = false
 
       return
     }

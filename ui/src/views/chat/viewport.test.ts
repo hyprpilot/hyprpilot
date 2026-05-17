@@ -242,13 +242,14 @@ describe('Viewport.vue', () => {
 
     const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
 
-    // The viewport now gates `fetchNextPage` on `hasUserScrolled` —
-    // a synthetic scroll event during the initial mount's anchor
-    // write is treated as bootstrap noise, NOT a captain gesture.
-    // The gate flips on a real input event (`wheel` / `touchstart` /
-    // `pointerdown`), not on distance heuristics — `useStickToBottom`
-    // can move `scrollTop` arbitrarily during mount, so a scroll-only
-    // simulation can't distinguish bootstrap from gesture.
+    // `fetchNextPage` is NOT gated on `hasUserScrolled`. The gate
+    // (still used for eviction) was redundant for the fetch branch:
+    // `useStickToBottom`'s mount-time synthetic write moves to
+    // `scrollHeight` (bottom), never close to the `scrollTop <
+    // LOAD_MORE_THRESHOLD_PX` (top) trigger. Real upward gestures —
+    // wheel, trackpad, PageUp, AND OS scrollbar drag (which fires
+    // `scroll` events but no `pointerdown`) — all land at the top
+    // threshold and pull older pages without further ceremony.
     Object.defineProperty(root, 'scrollHeight', {
       configurable: true,
       value: 5000
@@ -258,10 +259,9 @@ describe('Viewport.vue', () => {
       value: 500
     })
 
-    // Step 1 — captain's wheel/touch input flips the gate.
-    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }))
-
-    // Step 2 — scroll reaches the top, triggers backward fetch.
+    // Scroll reaches the top — triggers backward fetch directly.
+    // No prior gesture event needed; this models the OS-scrollbar-drag
+    // case where `pointerdown` never fires on the DOM element.
     Object.defineProperty(root, 'scrollTop', {
       configurable: true,
       writable: true,
@@ -315,7 +315,14 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
-  it('PageDown is ignored when focus is in an input / textarea', async() => {
+  it('PageDown still scrolls when focus is in an input / textarea', async() => {
+    // The captain's focus lives in the composer textarea ~99% of the
+    // time, so an `isEditableTarget` bailout meant Page keys were
+    // effectively dead. We bypass the bailout for PageUp/PageDown
+    // specifically — they're unambiguously about scrolling a big
+    // container, and textareas have no meaningful pageful navigation.
+    // Home/End keep the bailout (see next test) because they DO have
+    // meaningful in-textarea behaviour.
     const page = chatPage(
       [
         {
@@ -336,10 +343,8 @@ describe('Viewport.vue', () => {
     const scrollBy = vi.fn()
 
     Object.defineProperty(root, 'scrollBy', { configurable: true, value: scrollBy })
+    Object.defineProperty(root, 'clientHeight', { configurable: true, value: 400 })
 
-    // Mount a textarea, focus it, and dispatch keydown from there. The
-    // handler must early-return without scrolling so the user's text
-    // editing keystrokes are untouched.
     const ta = document.createElement('textarea')
 
     document.body.appendChild(ta)
@@ -347,7 +352,51 @@ describe('Viewport.vue', () => {
     ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
     await flushPromises()
 
-    expect(scrollBy).not.toHaveBeenCalled()
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: 360 }))
+
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }))
+    await flushPromises()
+
+    expect(scrollBy).toHaveBeenLastCalledWith(expect.objectContaining({ top: -360 }))
+
+    document.body.removeChild(ta)
+    wrapper.unmount()
+  })
+
+  it('Home / End still bail out when focus is in an input / textarea', async() => {
+    // Home and End ARE useful inside textareas (jump to start / end
+    // of line) — the bailout stays in place for them so editing
+    // keystrokes are untouched.
+    const page = chatPage(
+      [
+        {
+          seq: 1,
+          item: { kind: TranscriptItemKind.AgentText, text: 'page' } as never
+        }
+      ],
+      false
+    )
+
+    invoke.mockResolvedValueOnce(page)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: page })
+
+    await flushPromises()
+    await flushPromises()
+
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+    const scrollTo = vi.fn()
+
+    Object.defineProperty(root, 'scrollTo', { configurable: true, value: scrollTo })
+
+    const ta = document.createElement('textarea')
+
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await flushPromises()
+
+    expect(scrollTo).not.toHaveBeenCalled()
 
     document.body.removeChild(ta)
     wrapper.unmount()

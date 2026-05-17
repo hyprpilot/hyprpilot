@@ -214,4 +214,71 @@ describe('useStickToBottom', () => {
     expect(api.stuck.value).toBe(true)
     unmount()
   })
+
+  /**
+   * Captain-reported regression: a small wheel-up during streaming
+   * (less than the 64px `nearBottom` threshold) didn't flip
+   * `stuck=false`, so the next `scheduleStick` pass from a
+   * MutationObserver chunk snapped the captain back to the foot.
+   * Equivalent surface: dragging the OS scrollbar a few pixels up —
+   * the native scrollbar widget fires `scroll` events but no
+   * `pointerdown` / `wheel`, so without direction-based detection
+   * this would also be invisible to the gate.
+   * Direction-based detection (any decreasing `scrollTop` in a
+   * non-suppressed scroll event) catches both.
+   */
+  it('flips stuck=false on a tiny upward scroll well below the 64px threshold', () => {
+    const { api, harness, unmount } = mountHarness()
+
+    // Establish the at-bottom baseline. Default layout already has
+    // scrollTop=500 of a 1000-scrollHeight / 500-clientHeight box
+    // (distance from bottom = 0). The first scroll event seeds
+    // `prevScrollTop` to that value.
+    expect(api.stuck.value).toBe(true)
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(true)
+
+    // Captain nudges the wheel up by 20px — well within the 64px
+    // threshold. `nearBottom` would still return true, but the
+    // movement is upward, so stuck flips false immediately.
+    harness.setLayout({
+      scrollHeight: 1000,
+      clientHeight: 500,
+      scrollTop: 480
+    })
+    harness.dispatchScroll()
+
+    expect(api.stuck.value).toBe(false)
+    unmount()
+  })
+
+  /**
+   * Downward (or no) movement at-or-near the bottom should NOT
+   * spuriously unstick — the existing threshold check still
+   * governs that direction. A following live tail with brief
+   * overshoot (small jitter past the foot) must keep `stuck=true`.
+   */
+  it('stays stuck on downward / unchanged scroll within the threshold', () => {
+    const { api, harness, unmount } = mountHarness()
+
+    // Seed baseline.
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(true)
+
+    // scrollTop unchanged — still at bottom. nearBottom returns
+    // true, no upward movement. Stuck stays true.
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(true)
+
+    // scrollTop moved down a few px (e.g., browser-internal jitter
+    // during a chunk land). Still within threshold of the foot.
+    harness.setLayout({
+      scrollHeight: 1010,
+      clientHeight: 500,
+      scrollTop: 510
+    })
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(true)
+    unmount()
+  })
 })
