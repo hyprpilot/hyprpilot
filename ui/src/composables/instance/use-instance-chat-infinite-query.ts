@@ -65,11 +65,38 @@ export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId 
         throw new Error('useInstanceChatInfiniteQuery: instanceId is undefined')
       }
 
-      return invoke(TauriCommand.InstanceSnapshotChat, {
-        instanceId: id,
-        before: pageParam,
-        limit: resolveLimit()
-      })
+      try {
+        return await invoke(TauriCommand.InstanceSnapshotChat, {
+          instanceId: id,
+          before: pageParam,
+          limit: resolveLimit()
+        })
+      } catch(err) {
+        // `instance_snapshot_chat` rejects with "not found in registry"
+        // when the instance was minted client-side (palette "new") but
+        // the actor hasn't spawned yet — actors are lazy, spawned only
+        // on the first `session_submit`. Returning an empty snapshot
+        // keeps the query in the SUCCESS state so:
+        //   1. The idle/empty landing renders immediately.
+        //   2. `transcript-patcher`'s `setQueryData` can populate
+        //      pages[0] the moment live events arrive after the captain
+        //      sends a first prompt — rather than hitting the
+        //      "cache cold" guard and dropping frames.
+        // Only the initial (pageParam=undefined) fetch needs this grace
+        // path; backward-pagination fetches for a non-existent instance
+        // are genuine errors.
+        if (pageParam === undefined) {
+          const emptySnapshot: ChatSnapshot = {
+            items: [],
+            hasMore: false,
+            oldestSeq: undefined,
+            latestSeq: undefined
+          }
+
+          return emptySnapshot
+        }
+        throw err
+      }
     },
     // Live `acp:transcript` events are the source of truth for the
     // head page — `transcript-patcher` mutates the cache directly via

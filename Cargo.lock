@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "hyprpilot"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -2610,6 +2610,7 @@ dependencies = [
  "nucleo",
  "nucleo-matcher",
  "once_cell",
+ "open",
  "path-absolutize",
  "qrcode",
  "rand 0.10.1",

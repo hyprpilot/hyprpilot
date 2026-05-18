@@ -167,10 +167,17 @@ pub struct Logging {
 /// One resolved skill catalog entry. `dir` is fully expanded
 /// (`~` / `$VAR` collapsed); `ignore` carries the compiled glob
 /// matcher (or `None` when the entry has no ignore patterns).
+/// `ignore_patterns` stores the raw strings the glob was compiled
+/// from so the auto-inject path can forward them to the sidecar's
+/// `--skill-ignore` CLI arg without losing the human-readable form.
 /// Built from `Config::resolved_skills` at consume time.
 #[derive(Debug, Clone)]
 pub struct ResolvedSkillEntry {
     pub dir: PathBuf,
+    /// Raw glob patterns, preserved alongside the compiled matcher
+    /// so they can be serialised to the sidecar's `--skill-ignore`
+    /// CLI arg. Mirrors `SkillEntry.ignore` from the TOML shape.
+    pub ignore_patterns: Vec<String>,
     pub ignore: Option<globset::GlobSet>,
 }
 

@@ -1,34 +1,29 @@
 //! `hyprpilot mcp serve` — the rmcp-backed in-tree MCP server.
 //!
-//! Today's surface ships a single feature (skills); the structure is
-//! deliberately generic so future features (workspace introspection,
-//! codebase tooling, …) plug in alongside without spawning another
-//! subcommand.
-//!
 //! Spawned by the agent vendor (via stdio) when the daemon auto-injects
 //! the `hyprpilot` server entry into `session/new`'s `mcp_servers`
-//! array. The sidecar reads `SKILL.md` files from paths the daemon
-//! passed via repeated `--skill <slug>=<path>` args; no daemon-socket
-//! dependency.
+//! array. The sidecar reads skills by SCANNING DIRECTORIES directly —
+//! the same discovery logic the daemon's `SkillsRegistry` uses — so
+//! adding a new skill to a configured directory is immediately visible
+//! after `reload`, and the daemon doesn't have to enumerate individual
+//! files when building the spawn command.
 //!
 //! Current surface:
 //! - Resources
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
-//!   - `hyprpilot://skills/<slug>/references` — bundled references the
-//!     skill declares in its frontmatter, resolved relative to its own
-//!     bundle directory
+//!   - `hyprpilot://skills/<slug>/references` — bundled references
 //! - Tools
 //!   - `list_skills` — `[{ slug, title, description, uri }]`
 //!   - `read_skill { slug }` — `{ uri, body }`
 //!   - `load_skill_references { slug }` — `{ uri, body }`
-//!   - `reload` — rescan disk, push list-changed notifications
-//!
-//! References are always accessed **through** the skill that declares
-//! them — never as standalone resources. A skill at
-//! `<root>/git-commit/SKILL.md` with `references: [../references/scm.md]`
-//! resolves to `<root>/references/scm.md` at read time. The sidecar
-//! does not maintain a separate references-root concept.
+//!   - `reload` — rescan dirs, push list-changed notifications
+//!   - `open { path }` — open a URL, file, or directory in the
+//!     OS-default handler (`xdg-open` / `open` / `start`). The MCP
+//!     server is a stdio sidecar (not inside the Tauri webview), so
+//!     `tauri-plugin-shell`'s `open()` isn't reachable from here —
+//!     the cross-platform `open` crate provides the same semantics.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -43,35 +38,58 @@ use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 use tokio::sync::RwLock;
 
+use crate::config::ResolvedSkillEntry;
 use crate::mcp::auto_inject::SKILLS_SERVER_NAME;
+use crate::skills::SkillsRegistry;
 
-use super::skills::manifest::{parse_skill_arg, ManifestEntry};
 use super::skills::references::{bundle_references, parse_frontmatter_references, FrontmatterRefs};
 
-/// Args for `hyprpilot mcp serve`. Each feature contributes its own
-/// arg fields — today only skills. Adding a future feature means
-/// extending this struct + plumbing the new state through into
-/// `HyprpilotServer::new`.
+/// Args for `hyprpilot mcp serve`. Skills are discovered by directory
+/// scan — the daemon passes `--skill-dir <path>` once per configured
+/// root and `--skill-ignore <glob>` for slug patterns to suppress.
+/// This mirrors how the daemon's own `SkillsRegistry` works at boot
+/// and preserves each directory's own ignore list — a skill slug
+/// suppressed in one root is still visible when it appears in
+/// another root with no ignore for that pattern.
 #[derive(Debug, Args, Clone)]
 pub struct ServeArgs {
-    /// Per-skill manifest entry, repeated. Format: `<slug>=<path-to-SKILL.md>`.
-    #[arg(long = "skill", value_parser = parse_skill_arg)]
-    pub skills: Vec<ManifestEntry>,
+    /// JSON-encoded skill root entry. Repeatable — directories are
+    /// searched in declaration order; first-slug-wins on collision.
+    ///
+    /// Shape: `{ "dir": "<abs-path>", "ignore": ["glob1", "glob2"] }`
+    ///
+    /// Encoding per-dir ignore globs inside the same arg keeps each
+    /// entry self-contained: the daemon serializes its resolved
+    /// `ResolvedSkillEntry` set as JSON objects, the sidecar
+    /// deserializes and builds a matching `SkillsRegistry` that
+    /// applies each root's ignore list independently.
+    #[arg(long = "skill-dir", value_parser = parse_skill_dir_arg)]
+    pub skill_dirs: Vec<SkillDirEntry>,
+}
+
+/// One decoded `--skill-dir` entry. The daemon serializes
+/// `ResolvedSkillEntry` as JSON; the sidecar deserializes back.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SkillDirEntry {
+    pub dir: PathBuf,
+    #[serde(default)]
+    pub ignore: Vec<String>,
+}
+
+fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
+    serde_json::from_str::<SkillDirEntry>(raw)
+        .map_err(|e| format!("--skill-dir must be a JSON object `{{\"dir\":\"...\",\"ignore\":[...]}}`: {e}"))
 }
 
 /// Run the rmcp stdio server in the foreground. Returns when the
 /// vendor closes the pipe (or on init error).
 pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     tracing::info!(
-        skills = args.skills.len(),
+        dirs = args.skill_dirs.len(),
         "mcp::server::serve: starting hyprpilot MCP server"
     );
 
-    let handler = HyprpilotServer::new(args);
-    // Synchronously prime the skills cache before opening the
-    // transport — we can't take `blocking_write` from inside the
-    // tokio runtime, and we don't want the first `tools/list` to race
-    // an empty cache.
+    let handler = HyprpilotServer::new(args)?;
     handler.reload_skills().await;
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
@@ -83,96 +101,136 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// In-memory cache of loaded skill bodies. Built once at construction;
-/// refreshed by the `reload` tool. Behind a single `RwLock` because
-/// every tool / resource handler is read-heavy and `reload` is rare.
+// ── In-memory cache ───────────────────────────────────────────────────
+
 #[derive(Debug, Default)]
 struct SkillsCache {
-    /// slug → (manifest entry, parsed body, frontmatter refs).
     skills: std::collections::HashMap<String, LoadedSkill>,
-    /// Insertion-order slug list for stable `list_skills` output.
     order: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 struct LoadedSkill {
-    entry: ManifestEntry,
+    slug: String,
+    /// Absolute path to the `SKILL.md` file. Used to derive
+    /// `bundle_dir` for reference resolution.
+    path: PathBuf,
     title: String,
     description: String,
     body: String,
     refs: FrontmatterRefs,
 }
 
-/// The hyprpilot in-tree MCP server. Today it owns the skills feature
-/// state; future features (e.g. workspace introspection) add their own
-/// caches alongside `skills_cache`.
+impl LoadedSkill {
+    fn bundle_dir(&self) -> Option<&std::path::Path> {
+        self.path.parent()
+    }
+}
+
+// ── Server ────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 struct HyprpilotServer {
-    args: ServeArgs,
+    registry: Arc<SkillsRegistry>,
     skills_cache: Arc<RwLock<SkillsCache>>,
 }
 
 impl HyprpilotServer {
-    fn new(args: ServeArgs) -> Self {
-        Self {
-            args,
+    fn new(args: ServeArgs) -> anyhow::Result<Self> {
+        // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
+        // JSON entry. Each entry carries its OWN ignore list so the
+        // sidecar replicates the daemon's per-dir suppression exactly —
+        // a slug ignored in one root is still visible from another
+        // root that doesn't suppress it. A bad glob is logged + skipped
+        // rather than aborting startup (graceful degradation).
+        let entries: Vec<ResolvedSkillEntry> = args
+            .skill_dirs
+            .into_iter()
+            .map(|entry| {
+                let ignore = if entry.ignore.is_empty() {
+                    None
+                } else {
+                    let mut builder = globset::GlobSetBuilder::new();
+                    for pat in &entry.ignore {
+                        match globset::Glob::new(pat) {
+                            Ok(g) => {
+                                builder.add(g);
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    %err,
+                                    pattern = %pat,
+                                    dir = %entry.dir.display(),
+                                    "mcp::server: bad skill-ignore glob — skipping"
+                                );
+                            }
+                        }
+                    }
+                    builder.build().ok()
+                };
+                ResolvedSkillEntry {
+                    dir: entry.dir,
+                    ignore_patterns: entry.ignore,
+                    ignore,
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            registry: Arc::new(SkillsRegistry::new(entries)),
             skills_cache: Arc::new(RwLock::new(SkillsCache::default())),
-        }
+        })
     }
 
-    /// Re-read every `SKILL.md` from disk into a fresh cache. The
-    /// filesystem reads run on a blocking thread so the rmcp runtime
-    /// stays responsive; the swap takes the async write lock briefly.
-    /// Read failures show up as the slug being absent from
-    /// `list_skills` rather than aborting startup.
     async fn reload_skills(&self) {
-        let entries = self.args.skills.clone();
-        let fresh = tokio::task::spawn_blocking(move || build_cache(&entries))
-            .await
-            .unwrap_or_else(|err| {
-                tracing::error!(%err, "mcp::server::serve: blocking reload join failed");
-                SkillsCache::default()
-            });
+        let registry = self.registry.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            registry.reload().map_err(|e| e.to_string())?;
+            Ok::<Vec<crate::skills::Skill>, String>(registry.list())
+        })
+        .await;
+
+        let skills = match result {
+            Ok(Ok(s)) => s,
+            Ok(Err(err)) => {
+                tracing::error!(%err, "mcp::server: skills reload failed");
+                return;
+            }
+            Err(err) => {
+                tracing::error!(%err, "mcp::server: blocking reload join failed");
+                return;
+            }
+        };
+
         let mut cache = self.skills_cache.write().await;
-        *cache = fresh;
+        *cache = build_cache(skills);
     }
 }
 
-fn build_cache(entries: &[ManifestEntry]) -> SkillsCache {
+fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
     let mut cache = SkillsCache::default();
-    for entry in entries {
-        match std::fs::read_to_string(&entry.path) {
-            Ok(body) => {
-                let refs = parse_frontmatter_references(&body);
-                let (title, description) = extract_title_description(&body, &entry.slug);
-                cache.order.push(entry.slug.clone());
-                cache.skills.insert(
-                    entry.slug.clone(),
-                    LoadedSkill {
-                        entry: entry.clone(),
-                        title,
-                        description,
-                        body,
-                        refs,
-                    },
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    slug = %entry.slug,
-                    path = %entry.path.display(),
-                    %err,
-                    "mcp::server::serve: failed to read SKILL.md — slug will be absent",
-                );
-            }
-        }
+    for skill in skills {
+        let slug = skill.slug.to_string();
+        let refs = parse_frontmatter_references(&skill.body);
+        let (title, description) = extract_title_description(&skill.body, &slug);
+        cache.order.push(slug.clone());
+        cache.skills.insert(
+            slug.clone(),
+            LoadedSkill {
+                slug,
+                path: skill.path,
+                title,
+                description,
+                body: skill.body,
+                refs,
+            },
+        );
     }
     cache
 }
 
-/// Best-effort extraction of `title` + `description` from frontmatter.
-/// Falls back to the slug + a stock description so the lister always
-/// has something to surface.
+// ── Helpers ───────────────────────────────────────────────────────────
+
 fn extract_title_description(body: &str, slug: &str) -> (String, String) {
     let Some(yaml) = strip_frontmatter(body) else {
         return (slug.to_string(), format!("Guidance for {slug}"));
@@ -207,7 +265,6 @@ fn skill_references_uri(slug: &str) -> String {
     format!("hyprpilot://skills/{slug}/references")
 }
 
-/// Parse a `hyprpilot://...` URI into its addressed slice.
 enum ParsedUri<'a> {
     Skill(&'a str),
     SkillReferences(&'a str),
@@ -251,6 +308,49 @@ fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     Arc::new(map)
 }
 
+fn open_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+    let mut map = serde_json::Map::new();
+    map.insert("type".into(), serde_json::Value::String("object".into()));
+    let mut props = serde_json::Map::new();
+    let mut path_prop = serde_json::Map::new();
+    path_prop.insert("type".into(), serde_json::Value::String("string".into()));
+    path_prop.insert(
+        "description".into(),
+        serde_json::Value::String(
+            "URL, file path, or directory path to open in the OS default handler. \
+             Accepts `https://`, `file://`, absolute paths, and relative paths — \
+             the same shapes `xdg-open` / `open` / `start` accept natively."
+                .into(),
+        ),
+    );
+    props.insert("path".into(), serde_json::Value::Object(path_prop));
+    map.insert("properties".into(), serde_json::Value::Object(props));
+    map.insert(
+        "required".into(),
+        serde_json::Value::Array(vec![serde_json::Value::String("path".into())]),
+    );
+    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
+    Arc::new(map)
+}
+
+/// Return a `CallToolResult` with `is_error: true` and a human-readable
+/// message. Uses `CallToolResult::error` so the struct's `#[non_exhaustive]`
+/// guard is respected — direct construction is rejected by the compiler.
+fn tool_error(msg: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![Content::text(msg)])
+}
+
+fn require_string<'a>(
+    args: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<&'a str, rmcp::ErrorData> {
+    args.get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("missing string argument `{key}`"), None))
+}
+
+// ── MCP protocol impl ─────────────────────────────────────────────────
+
 impl ServerHandler for HyprpilotServer {
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
@@ -271,7 +371,8 @@ impl ServerHandler for HyprpilotServer {
                  `hyprpilot://skills/<slug>` resources. Call `list_skills` to \
                  enumerate; `read_skill` to fetch a body; `load_skill_references` \
                  to bundle the references a skill declares in its frontmatter \
-                 (resolved relative to the skill's bundle dir).",
+                 (resolved relative to the skill's bundle dir). Use `open` to \
+                 open a URL, file, or directory in the OS default handler.",
             )
     }
 
@@ -308,11 +409,22 @@ impl ServerHandler for HyprpilotServer {
             Tool::new_with_raw(
                 "reload",
                 Some(
-                    "Rescan every SKILL.md from disk. Use after editing a skill on disk \
-                     to refresh the cache without restarting the session."
+                    "Rescan every skill directory from disk. Use after editing a \
+                     skill file to refresh the cache without restarting the session."
                         .into(),
                 ),
                 empty_object_schema(),
+            ),
+            Tool::new_with_raw(
+                "open",
+                Some(
+                    "Open a URL, file path, or directory in the OS default handler. \
+                     Uses `xdg-open` on Linux, `open` on macOS, `start` on Windows. \
+                     The MCP sidecar is a plain stdio process — this is a native OS \
+                     call, not Tauri."
+                        .into(),
+                ),
+                open_object_schema(),
             ),
         ];
         Ok(ListToolsResult::with_all_items(tools))
@@ -333,10 +445,10 @@ impl ServerHandler for HyprpilotServer {
                     .filter_map(|slug| cache.skills.get(slug))
                     .map(|s| {
                         serde_json::json!({
-                            "slug": s.entry.slug,
+                            "slug": s.slug,
                             "title": s.title,
                             "description": s.description,
-                            "uri": skill_uri(&s.entry.slug),
+                            "uri": skill_uri(&s.slug),
                         })
                     })
                     .collect();
@@ -346,9 +458,7 @@ impl ServerHandler for HyprpilotServer {
                 let slug = require_string(&args, "slug")?;
                 let cache = self.skills_cache.read().await;
                 let Some(skill) = cache.skills.get(slug) else {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "unknown skill: {slug}"
-                    ))]));
+                    return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
                 Ok(CallToolResult::structured(serde_json::json!({
                     "uri": skill_uri(slug),
@@ -359,14 +469,10 @@ impl ServerHandler for HyprpilotServer {
                 let slug = require_string(&args, "slug")?;
                 let cache = self.skills_cache.read().await;
                 let Some(skill) = cache.skills.get(slug) else {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "unknown skill: {slug}"
-                    ))]));
+                    return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
-                let Some(bundle_dir) = skill.entry.bundle_dir() else {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "skill manifest path has no parent directory",
-                    )]));
+                let Some(bundle_dir) = skill.bundle_dir() else {
+                    return Ok(tool_error("skill path has no parent directory"));
                 };
                 let body = bundle_references(bundle_dir, &skill.refs);
                 Ok(CallToolResult::structured(serde_json::json!({
@@ -375,13 +481,20 @@ impl ServerHandler for HyprpilotServer {
                 })))
             }
             "reload" => {
-                // Filesystem reads run on a blocking thread so the
-                // rmcp runtime stays responsive; the cache swap takes
-                // the async write lock briefly.
                 self.reload_skills().await;
+                let count = self.skills_cache.read().await.skills.len();
                 Ok(CallToolResult::structured(serde_json::json!({
-                    "reloaded": self.skills_cache.read().await.skills.len(),
+                    "reloaded": count,
                 })))
+            }
+            "open" => {
+                let path = require_string(&args, "path")?;
+                match open::that_detached(path) {
+                    Ok(()) => Ok(CallToolResult::structured(serde_json::json!({
+                        "opened": path,
+                    }))),
+                    Err(err) => Ok(tool_error(format!("open failed: {err}"))),
+                }
             }
             other => Err(rmcp::ErrorData::new(
                 ErrorCode::METHOD_NOT_FOUND,
@@ -416,15 +529,23 @@ impl ServerHandler for HyprpilotServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
-        let templates = vec![rmcp::model::ResourceTemplate::new(
-            RawResourceTemplate::new("hyprpilot://skills/{slug}/references", "skill-references")
-                .with_description(
-                    "Bundle of every reference declared in the skill's frontmatter, \
-                 concatenated with `--- <basename> ---` delimiters.",
-                )
-                .with_mime_type("text/markdown"),
-            None,
-        )];
+        let templates = vec![
+            rmcp::model::ResourceTemplate::new(
+                RawResourceTemplate::new("hyprpilot://skills/{slug}", "skill")
+                    .with_description("Full SKILL.md body for the addressed skill slug.")
+                    .with_mime_type("text/markdown"),
+                None,
+            ),
+            rmcp::model::ResourceTemplate::new(
+                RawResourceTemplate::new("hyprpilot://skills/{slug}/references", "skill-references")
+                    .with_description(
+                        "Bundle of every reference declared in the skill's frontmatter, \
+                     concatenated with `--- <basename> ---` delimiters.",
+                    )
+                    .with_mime_type("text/markdown"),
+                None,
+            ),
+        ];
         Ok(ListResourceTemplatesResult::with_all_items(templates))
     }
 
@@ -452,9 +573,9 @@ impl ServerHandler for HyprpilotServer {
                 let Some(skill) = cache.skills.get(slug) else {
                     return Err(rmcp::ErrorData::invalid_params(format!("unknown skill: {slug}"), None));
                 };
-                let Some(bundle_dir) = skill.entry.bundle_dir() else {
+                let Some(bundle_dir) = skill.bundle_dir() else {
                     return Err(rmcp::ErrorData::internal_error(
-                        "skill manifest path has no parent directory",
+                        "skill path has no parent directory",
                         None,
                     ));
                 };
@@ -472,16 +593,6 @@ impl ServerHandler for HyprpilotServer {
             )),
         }
     }
-}
-
-/// Resolve a required string arg from an MCP tool call payload.
-fn require_string<'a>(
-    args: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<&'a str, rmcp::ErrorData> {
-    args.get(key)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("missing string argument `{key}`"), None))
 }
 
 #[cfg(test)]

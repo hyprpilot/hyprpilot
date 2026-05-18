@@ -215,6 +215,15 @@ impl SkillsRegistry {
         Ok(())
     }
 
+    /// The configured directory entries this registry scans. Consumed
+    /// by the auto-inject builder to forward `--skill-dir` /
+    /// `--skill-ignore` CLI args to the sidecar without re-deriving
+    /// them from the loaded skills list.
+    #[must_use]
+    pub fn dirs(&self) -> &[crate::config::ResolvedSkillEntry] {
+        &self.entries
+    }
+
     /// Snapshot of every loaded skill, sorted by slug. Clones are
     /// cheap — skill bodies are behind `Arc` / owned strings and the
     /// caller usually pulls one or two per call.
@@ -267,7 +276,11 @@ mod tests {
     }
 
     fn entry(dir: PathBuf) -> crate::config::ResolvedSkillEntry {
-        crate::config::ResolvedSkillEntry { dir, ignore: None }
+        crate::config::ResolvedSkillEntry {
+            dir,
+            ignore_patterns: vec![],
+            ignore: None,
+        }
     }
 
     fn entry_with_ignore(dir: PathBuf, patterns: &[&str]) -> crate::config::ResolvedSkillEntry {
@@ -277,6 +290,7 @@ mod tests {
         }
         crate::config::ResolvedSkillEntry {
             dir,
+            ignore_patterns: patterns.iter().map(|s| s.to_string()).collect(),
             ignore: Some(builder.build().expect("test glob set builds")),
         }
     }
