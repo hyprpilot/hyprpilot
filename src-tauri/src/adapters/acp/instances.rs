@@ -137,22 +137,76 @@ impl AcpAdapter {
     }
 
     /// Per-instance MCP catalog as a flat `Vec<MCPDefinition>`. Drives
-    /// the `mcps_list` Tauri command's preview pane. Routes through
-    /// `resolve_effective_profile` so the palette sees the SAME mcps
-    /// set the spawn-time MCP registry builds — root `[[patches]]`
-    /// included. Without that the captain's patched mcps would be
-    /// invisible in the palette while still being injected into ACP
-    /// at session/new.
+    /// the `mcps_list` Tauri command's preview pane AND backs the
+    /// header chrome's `+N mcps` pill via the daemon mirror's
+    /// `MetaSnapshot.mcpsCount` (the actor's `MetaEmitter` builds its
+    /// count off the same registry).
+    ///
+    /// Resolution mirrors the spawn-time `build_mcp_registry_with` so
+    /// the palette sees:
+    ///   1. **Root `[[patches]]` mcps**, folded onto the profile via
+    ///      `resolve_effective_profile`.
+    ///   2. **`--with-config` patches** the captain supplied at spawn
+    ///      time, pulled off the live instance handle's
+    ///      `config_patches`. Without this the palette saw the base
+    ///      profile's mcps while the actor ran with per-invocation
+    ///      overlays — the captain's spawn-time additions were
+    ///      invisible in the UI.
+    ///   3. **In-tree auto-injected `hyprpilot mcp serve`** server when
+    ///      the resolved `[mcp]` block has `enabled = true` AND the
+    ///      skills registry is non-empty. Without this the auto-inject
+    ///      ran on the wire but the captain saw no entry for it in
+    ///      the palette / header count.
     pub async fn resolve_mcp_catalog(&self, instance_id: Option<&str>) -> Vec<crate::mcp::MCPDefinition> {
-        let profile_id = match instance_id.and_then(|id| InstanceKey::parse(id).ok()) {
-            Some(key) => self.registry.info_for(key).await.ok().and_then(|info| info.profile_id),
+        let key = instance_id.and_then(|id| InstanceKey::parse(id).ok());
+        let handle = match key {
+            Some(k) => self.registry.get(k).await,
             None => None,
         };
+        // `AcpInstance.profile_id` is already `Option<String>`; the
+        // outer Option here would be `Option<Option<String>>` from a
+        // naive `Some(h.profile_id.clone())`. `.and_then(|p| p)`
+        // flattens to `Option<String>` so `as_deref()` works
+        // downstream.
+        let profile_id: Option<String> = handle.as_ref().and_then(|h| h.profile_id.clone());
+        // Pull the live instance's `--with-config` overlays. None when
+        // there's no live instance OR when the spawn didn't carry
+        // any. Empty slice short-circuits in
+        // `resolve_effective_profile` so the no-overlay path stays
+        // cheap.
+        let external_patches = match &handle {
+            Some(h) => h.config_patches.clone(),
+            None => Vec::new(),
+        };
+        let skills_arc = handle.as_ref().map(|h| h.skills.clone());
         let cfg = self.read_config().clone();
-        match resolve_effective_profile(&cfg, profile_id.as_deref(), &[]) {
-            Ok(profile) => crate::mcp::loader::load_files(&effective_mcp_files_with(&profile)),
-            Err(_) => Vec::new(),
+        let profile = match resolve_effective_profile(&cfg, profile_id.as_deref(), &external_patches) {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut defs = crate::mcp::loader::load_files(&effective_mcp_files_with(&profile));
+
+        // Add the auto-injected `hyprpilot mcp serve` server at the
+        // head, same as `build_mcp_registry_with`. Match its
+        // condition: `[mcp].enabled` true AND a non-empty skills
+        // registry to project. Pre-spawn (no live handle) we don't
+        // have a skills registry to feed the auto-inject builder, so
+        // the catalog elides the entry — matches the
+        // pre-`session/new` view where no actor exists.
+        if let Some(skills) = skills_arc {
+            let mcp_cfg = effective_mcp_with(&profile);
+            if mcp_cfg.enabled() {
+                if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
+                    &skills,
+                    &mcp_cfg,
+                    std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
+                ) {
+                    defs.insert(0, auto);
+                }
+            }
         }
+        defs
     }
 
     /// Build the per-instance `SkillsRegistry` from the resolved

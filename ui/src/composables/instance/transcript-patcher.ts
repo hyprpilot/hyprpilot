@@ -78,30 +78,29 @@ let flushScheduled = false
 let started = false
 let unlisteners: UnlistenFn[] = []
 
-/// Build a stable identity for a payload — `undefined` when the
-/// item kind doesn't warrant in-batch dedup (tool-call updates carry
-/// their own state-machine merging; tiny chunks of text legitimately
-/// repeat). `AgentText` / `AgentThought` over the
-/// `DUP_DEDUP_MIN_TEXT_CHARS` threshold are the meaningful candidates:
-/// the daemon's chunk boundaries are arbitrary mid-word but a full
-/// sentence/paragraph landing twice in the same flush burst is almost
-/// always a wire-side mistake.
-const DUP_DEDUP_MIN_TEXT_CHARS = 24
-
-function duplicateSignature(payload: TranscriptEventPayload): string | undefined {
-  const item = payload.item
-
-  if (item.kind === TranscriptItemKind.AgentText || item.kind === TranscriptItemKind.AgentThought) {
-    const text = item.text ?? ''
-
-    if (text.length < DUP_DEDUP_MIN_TEXT_CHARS) {
-      return undefined
-    }
-
-    return `${item.kind}:${payload.turnId ?? ''}:${text}`
+/// Find the most-recent existing item in the cache that an incoming
+/// `AgentText` / `AgentThought` chunk should accumulate onto. Match
+/// is by `(turnId, kind)` — one accumulator per turn per role. Walks
+/// back-to-front because the captain's reading position is at the
+/// foot; the youngest matching entry is the live accumulator.
+function findAccumulatorIndex(items: SeqTranscriptItem[], kind: TranscriptItemKind, turnId: string | undefined): number {
+  if (turnId === undefined) {
+    return -1
   }
 
-  return undefined
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const it = items[i]
+
+    if (!it) {
+      continue
+    }
+
+    if (it.item.kind === kind && it.turnId === turnId) {
+      return i
+    }
+  }
+
+  return -1
 }
 
 function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscriptItem | undefined {
@@ -213,44 +212,71 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     let applied = 0
     let mergedCount = 0
     let skipped = 0
+    let accumulated = 0
     let dedupedDuplicate = 0
-
-    // Defensive in-batch content dedup. Captain reported the same
-    // agent-text message landing in the chat 3 times — the daemon's
-    // broadcast is single-fire per chunk so the duplication is
-    // either a transient browser-side listener-dispatch glitch on
-    // remote-WS reconnect OR the actor genuinely re-emitting in
-    // some recovery path. Either way, identical TranscriptItem
-    // payloads (same turnId + same item shape) inside one flush
-    // batch are a strong duplicate signal — legitimate streaming
-    // chunks are rarely byte-identical at >50 chars. Dedup the
-    // batch up-front so the cache only ever sees the first
-    // occurrence.
-    const seenSignatures = new Set<string>()
-    const filtered: TranscriptEventPayload[] = []
 
     for (const payload of batch) {
       if (payload.instanceId !== instanceId) {
         continue
       }
-      const sig = duplicateSignature(payload)
-
-      if (sig !== undefined) {
-        if (seenSignatures.has(sig)) {
-          dedupedDuplicate += 1
-          continue
-        }
-        seenSignatures.add(sig)
-      }
-      filtered.push(payload)
-    }
-
-    for (const payload of filtered) {
       const incoming = liveItemFor(payload, baseSeq)
 
       if (!incoming) {
         skipped += 1
         continue
+      }
+
+      // Per-(turnId, kind) accumulator for AgentText / AgentThought.
+      // The wire ships one SeqTranscriptItem per streamed chunk; the
+      // snapshot-timeline projector folded these at render time, but
+      // duplicate live events (transient WS dispatcher glitch, actor
+      // recovery re-emit) leaked through the projector unchanged and
+      // surfaced as the same message rendered 3x. Captain's call:
+      // collapse at the cache layer using `turnId` as the primary
+      // key, then dedup-by-`endsWith` on the accumulated text so a
+      // duplicate chunk arriving after the accumulator has the
+      // original text is dropped before it can compound.
+      const kind = incoming.item.kind
+
+      if (kind === TranscriptItemKind.AgentText || kind === TranscriptItemKind.AgentThought) {
+        const idx = findAccumulatorIndex(nextItems, kind, incoming.turnId)
+
+        if (idx >= 0) {
+          const existing = nextItems[idx]!
+          const existingText = (existing.item as { text?: string }).text ?? ''
+          const incomingText = (incoming.item as { text?: string }).text ?? ''
+
+          // `endsWith` dedup: if the existing accumulator already
+          // ends with the incoming chunk's exact text, the chunk is
+          // a duplicate of what we just appended (either same-batch
+          // or rapid re-fire across batches). Concatenating again
+          // would render the text twice. Skip — including the seq
+          // update so the dedup is invisible to downstream
+          // bookkeeping.
+          if (incomingText.length > 0 && existingText.endsWith(incomingText)) {
+            dedupedDuplicate += 1
+            continue
+          }
+          // Replace in place with the concatenated text. Cloning
+          // the SeqTranscriptItem (vs mutating the cached entry)
+          // keeps Vue's reactivity tracking honest — vue-query
+          // diffs by object reference at the page level; in-place
+          // mutation would silently desync subscribers that read
+          // `items[i].item.text` through a computed.
+          nextItems[idx] = {
+            seq: existing.seq,
+            turnId: existing.turnId ?? incoming.turnId,
+            item: { ...existing.item, text: existingText + incomingText } as typeof existing.item
+          }
+          accumulated += 1
+          // Track lastSeq from the most recent chunk even though
+          // we didn't push, so the head's latestSeq advances and
+          // the projector's `updatedAt = it.seq` derivation reads
+          // the freshest position.
+          baseSeq += 1
+          lastSeq = incoming.seq
+          continue
+        }
       }
       const merged = mergeToolCallUpdate(nextItems, incoming)
 
@@ -265,12 +291,16 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     }
     pendingByInstance.delete(instanceId)
 
-    if (applied === 0) {
+    // No-op short-circuit when no item changed. Accumulator hits
+    // count too — those mutate `nextItems[idx]` and produce a new
+    // page object, so vue-query needs the new reference to notify
+    // subscribers. mergeToolCallUpdate similarly mutates entries.
+    if (applied === 0 && accumulated === 0 && mergedCount === 0) {
       return old
     }
 
     if (dedupedDuplicate > 0) {
-      log.warn('transcript-patcher: dropped duplicate payloads in batch', {
+      log.warn('transcript-patcher: dropped duplicate text via endsWith accumulator', {
         instanceId,
         batchSize: batch.length,
         dedupedDuplicate
@@ -282,6 +312,7 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       batchSize: batch.length,
       applied,
       merged: mergedCount,
+      accumulated,
       skipped,
       dedupedDuplicate,
       headItemCount: nextItems.length

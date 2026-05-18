@@ -323,8 +323,64 @@ describe('transcript-patcher singleton', () => {
 
     const items = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0].items
 
-    expect(items).toHaveLength(1 + N)
+    // Per-(turnId, kind) accumulator: the 100 AgentText chunks all
+    // share turnId='t-1', so they collapse into one accumulator
+    // entry behind the seed. seed has no turnId → stays its own
+    // entry. Total: 2 items, second's text is the concatenation.
+    expect(items).toHaveLength(2)
+    expect((items![1].item as { text: string }).text).toBe(Array.from({ length: N }, (_, i) => `chunk-${i}`).join(''))
     expect(chatUpdates).toBe(1)
+  })
+
+  it('dedups a duplicate AgentText chunk via endsWith on the accumulator', async() => {
+    const queryClient = buildClient()
+
+    queryClient.setQueryData(['snapshot-chat', 'i-1'], {
+      pages: [chatPage([])],
+      pageParams: [undefined]
+    })
+
+    await startTranscriptPatcher(queryClient)
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    // First chunk lands as the accumulator's seed.
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 't-1',
+        item: { kind: TranscriptItemKind.AgentText, text: 'Now let me check UI deps were updated.' }
+      } as never
+    })
+    // Second identical chunk arrives — should be dropped via
+    // endsWith because the existing accumulator already ends with
+    // this exact text.
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 't-1',
+        item: { kind: TranscriptItemKind.AgentText, text: 'Now let me check UI deps were updated.' }
+      } as never
+    })
+    // Third identical, same path.
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 't-1',
+        item: { kind: TranscriptItemKind.AgentText, text: 'Now let me check UI deps were updated.' }
+      } as never
+    })
+    await flushPromises()
+
+    const items = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0].items
+
+    expect(items).toHaveLength(1)
+    expect((items![0].item as { text: string }).text).toBe('Now let me check UI deps were updated.')
   })
 
   it('skips live events when no cache exists for the instance', async() => {
