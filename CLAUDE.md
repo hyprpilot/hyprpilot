@@ -1071,12 +1071,18 @@ worth preserving:
   decreasing `scrollTop` in a non-suppressed scroll event (tracking
   `prevScrollTop` between handlers). Catches the scrollbar drag
   AND small wheel-up nudges below the 64px `nearBottom` threshold.
-- **PageUp/PageDown bypass the editable-target gate.** The document
-  keydown handler in `Viewport.vue` routes PageUp/PageDown to the
-  viewport even when the composer textarea holds focus (which is
-  most of the time). Home/End keep the gate — captains expect
-  caret-home / caret-end inside the composer. Only Page keys
-  bypass.
+- **Every viewport-nav key bypasses the editable-target gate.** The
+  document keydown handler in `Viewport.vue` routes PageUp /
+  PageDown / Home / End to the chat viewport even when the composer
+  textarea holds focus (which is most of the time). The captain's
+  primary workflow is "type → submit → scroll back" — caret-line
+  navigation inside the composer is rare enough that `Ctrl+Home` /
+  `Ctrl+End` cover it. Bare Home/End on a focused composer used to
+  collapse the cursor with no visible effect; bypassing the gate
+  makes them scroll the chat history as the captain expects. Non-nav
+  keys (arrow keys, letters, anything else the captain might type)
+  still respect the editable-target gate so typing into the
+  composer works normally.
 - **Backward pagination is NOT gated on `hasUserScrolled`.** The
   intent gate would block `fetchNextPage` on a fresh mount —
   composing-then-streaming flips `hasUserScrolled = false` and the

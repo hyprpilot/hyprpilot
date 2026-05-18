@@ -340,6 +340,12 @@ struct InstanceSnapshotChatParams {
     /// Unset → return the latest `limit` entries (head-anchored).
     #[serde(default)]
     before: Option<u64>,
+    /// Delta-replay cursor: returned items are strictly newer than
+    /// this `seq`, oldest-first. Used by remote frontends on
+    /// reconnect to catch up on missed events without re-fetching
+    /// the entire transcript. Mutually exclusive with `before`.
+    #[serde(default)]
+    after: Option<u64>,
     /// Page size. `0` or unset → mirror's default page size (50).
     #[serde(default)]
     limit: Option<usize>,
@@ -376,9 +382,15 @@ impl RpcHandler for InstanceSnapshotHandler {
             }
             "instance/snapshot/chat" => {
                 let p: InstanceSnapshotChatParams = parse_snapshot_params(params, method)?;
+
+                if p.before.is_some() && p.after.is_some() {
+                    return Err(RpcError::invalid_params(
+                        "instance/snapshot/chat: `before` and `after` are mutually exclusive",
+                    ));
+                }
                 let mirror = require_mirror(adapter.as_ref(), &p.instance_id).await?;
                 let limit = p.limit.unwrap_or(0);
-                let snap = mirror.chat_snapshot(p.before, limit).await;
+                let snap = mirror.chat_snapshot(p.before, p.after, limit).await;
                 serde_json::to_value(snap)
                     .map(HandlerOutcome::Reply)
                     .map_err(|e| RpcError::internal_error(format!("serialize chat snapshot: {e}")))
@@ -487,6 +499,8 @@ mod snapshot_tests {
             session_id: "s-1".into(),
             turn_id: None,
             item: TranscriptItem::AgentText { text: text.into() },
+            // Placeholder; mirror.apply mints the real value.
+            seq: 0,
             meta: None,
         }
     }

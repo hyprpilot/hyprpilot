@@ -105,6 +105,16 @@ pub enum InstanceEvent {
         /// as `TranscriptItem::Unknown` so the wire shape stays
         /// forward-compatible without bricking sessions.
         item: TranscriptItem,
+        /// Monotonic per-instance sequence number stamped by the mirror
+        /// at apply time. Mirrors the `SeqTranscriptItem.seq` value on
+        /// the snapshot side so remote clients can recover from a
+        /// dropped WS by calling `instance_snapshot_chat { after }`
+        /// with the highest seq they observed. Constructors default to
+        /// 0; [`publish`](super::mirror::publish) overwrites with the
+        /// minted value before broadcasting so subscribers see the
+        /// daemon's truth.
+        #[serde(default)]
+        seq: u64,
         /// `_meta` envelope pass-through from the originating
         /// `session/update` notification — vendor-specific extension
         /// data that lives outside the typed protocol shapes.

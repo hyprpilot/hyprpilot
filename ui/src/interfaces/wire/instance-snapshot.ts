@@ -184,12 +184,16 @@ export interface InstanceSnapshotMetaArgs {
 
 /**
  * Args for `instance_snapshot_chat`. `before` strictly-older cursor
- * for backward pagination; `limit` defaults to the daemon's page
- * size (50) when unset or `0`.
+ * for backward pagination; `after` strictly-newer cursor for
+ * delta-replay on remote reconnect (items older than what the
+ * client already cached are skipped). `limit` defaults to the
+ * daemon's page size (50) when unset or `0`. `before` and `after`
+ * are mutually exclusive — passing both errors at the daemon.
  */
 export interface InstanceSnapshotChatArgs {
   instanceId: string
   before?: number
+  after?: number
   limit?: number
 }
 

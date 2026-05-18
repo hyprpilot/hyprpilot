@@ -351,10 +351,21 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 instance_id: String,
                 #[serde(default)]
                 before: Option<u64>,
+                /// Delta-replay cursor — returns items strictly newer
+                /// than the supplied seq, oldest-first. Mutually
+                /// exclusive with `before`.
+                #[serde(default)]
+                after: Option<u64>,
                 #[serde(default)]
                 limit: Option<usize>,
             }
             let args: Args = parse_params(params, "tauri/instance_snapshot_chat")?;
+
+            if args.before.is_some() && args.after.is_some() {
+                return Err(RpcError::invalid_params(
+                    "instance_snapshot_chat: `before` and `after` are mutually exclusive",
+                ));
+            }
             let adapter = adapter_arc(app)?;
             let key = crate::adapters::InstanceKey::parse(&args.instance_id)
                 .map_err(|e| RpcError::invalid_params(e.to_string()))?;
@@ -364,7 +375,9 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 .ok_or_else(|| {
                     RpcError::invalid_params(format!("instance '{}' not found in registry", args.instance_id))
                 })?;
-            let snap = mirror.chat_snapshot(args.before, args.limit.unwrap_or(0)).await;
+            let snap = mirror
+                .chat_snapshot(args.before, args.after, args.limit.unwrap_or(0))
+                .await;
             serde_json::to_value(snap).map_err(|e| RpcError::internal_error(format!("serialize chat snapshot: {e}")))
         }
         "instance_snapshot_terminals" => {

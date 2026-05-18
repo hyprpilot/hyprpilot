@@ -605,26 +605,33 @@ pub async fn instance_snapshot_meta(adapter: AdapterState<'_>, instance_id: Stri
 
 /// Snapshot a windowed page of the addressed instance's transcript.
 /// `before` is a strictly-older cursor (chain `before = oldestSeq`
-/// of the previous page to paginate backwards); unset → return the
-/// latest `limit` entries. `limit = 0` or unset → mirror's default
-/// page size (50).
+/// of the previous page to paginate backwards); `after` is a
+/// strictly-newer cursor (delta-replay on remote reconnect). Unset
+/// `before` + unset `after` → return the latest `limit` entries.
+/// `limit = 0` or unset → mirror's default page size (50). `before`
+/// and `after` are mutually exclusive — caller error if both set.
 #[tauri::command]
 pub async fn instance_snapshot_chat(
     adapter: AdapterState<'_>,
     instance_id: String,
     before: Option<u64>,
+    after: Option<u64>,
     limit: Option<usize>,
 ) -> Result<ChatSnapshot, String> {
+    if before.is_some() && after.is_some() {
+        return Err("instance_snapshot_chat: `before` and `after` are mutually exclusive".to_string());
+    }
     let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
     let mirror = adapter
         .instance_mirror(key)
         .await
         .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
-    let snap = mirror.chat_snapshot(before, limit.unwrap_or(0)).await;
+    let snap = mirror.chat_snapshot(before, after, limit.unwrap_or(0)).await;
     tracing::trace!(
         target: "snapshot::chat",
         instance_id = %instance_id,
         before = ?before,
+        after = ?after,
         items = snap.items.len(),
         oldest_seq = ?snap.oldest_seq,
         latest_seq = ?snap.latest_seq,

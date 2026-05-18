@@ -16,6 +16,15 @@ export interface TranscriptEventPayload {
   turnId?: string
   /// Typed transcript item the UI dispatches on `kind`.
   item: TranscriptItem
+  /// Monotonic per-instance sequence number stamped by the daemon's
+  /// mirror at apply time. Mirrors the `SeqTranscriptItem.seq` value
+  /// on snapshot pages so remote clients can recover from a dropped
+  /// WS by calling `instance_snapshot_chat { after: lastSeen }` —
+  /// the highest `seq` observed in a live event is the captain's
+  /// delta-replay cursor. Older daemons that don't ship `seq` leave
+  /// the field undefined; the patcher then falls back to local
+  /// ordinal tracking.
+  seq?: number
   /// `_meta` envelope pass-through from the originating
   /// `session/update` notification. Vendor-specific extension
   /// payloads live here; observability surface today (no rendering
