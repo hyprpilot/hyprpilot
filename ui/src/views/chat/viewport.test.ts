@@ -137,25 +137,27 @@ function mountViewport(opts: MountOpts) {
 const intersectionCallbacks = new Set<IntersectionObserverCallback>()
 
 class IntersectionObserverStub implements IntersectionObserver {
-  readonly root: Element | Document | null = null
+  public readonly root: Element | Document | null = null
 
-  readonly rootMargin: string = ''
+  public readonly rootMargin: string = ''
 
-  readonly thresholds: ReadonlyArray<number> = []
+  public readonly scrollMargin: string = ''
+
+  public readonly thresholds: readonly number[] = []
 
   constructor(public callback: IntersectionObserverCallback) {
     intersectionCallbacks.add(callback)
   }
 
-  observe(): void {}
+  public observe(): void {}
 
-  unobserve(): void {}
+  public unobserve(): void {}
 
-  disconnect(): void {
+  public disconnect(): void {
     intersectionCallbacks.delete(this.callback)
   }
 
-  takeRecords(): IntersectionObserverEntry[] {
+  public takeRecords(): IntersectionObserverEntry[] {
     return []
   }
 }
