@@ -14,6 +14,14 @@ interface PhaseSignals {
 
 const signals = reactive(new Map<InstanceId, PhaseSignals>())
 
+/**
+ * Push the latest observed `InstanceState` for `id`. Wired from
+ * `use-session-stream`'s `acp:instance-state` listener so the
+ * runtime view of "is this instance alive?" stays current for
+ * consumers that need it (chrome title accent, palette lifecycle
+ * indicators, etc.). NOTE: phase derivation no longer reads this
+ * — see `usePhase` for why.
+ */
 export function pushInstanceState(id: InstanceId, state: InstanceState): void {
   let slot = signals.get(id)
 
@@ -24,33 +32,42 @@ export function pushInstanceState(id: InstanceId, state: InstanceState): void {
   slot.runtimeState = state
 }
 
+/// Read the last-known runtimeState for an instance. `undefined`
+/// when no state event has landed yet. Consumed by the chrome /
+/// palette to colour "this instance is alive vs dead" affordances
+/// without gating the composer's stop button on the same signal
+/// (which produced a race on remote fresh spawns).
+export function runtimeStateFor(id: InstanceId): InstanceState | undefined {
+  return signals.get(id)?.runtimeState
+}
+
 /**
- * Computes the overlay phase for an instance from the typed-store signals
- * + the instance-state events.
+ * Computes the overlay phase for an instance.
  *
  * Decision ladder (first-matching wins):
  *   1. awaiting  ← a pending permission prompt exists (live, not replayed)
- *   2. *busy*    ← instance is running AND a turn is currently open.
- *                  Sub-classified inside the busy gate:
- *                    - pending   if any tool call is non-terminal
+ *   2. *busy*    ← a turn is currently open. Sub-classified:
+ *                    - working   if any tool call is non-terminal
  *                    - streaming if the agent has emitted a chunk
  *                    - working   otherwise (sent prompt, no chunks yet)
  *   3. idle      ← default — including the in-between-turns state where
  *                  the session is alive but no turn is open. Composer
  *                  dispatches in `idle`; routes to queue otherwise.
  *
- * Gating EVERY busy sub-phase on `openTurnId` is the session-restore
- * fix: claude-agent-acp's `session/load` replay streams historical
- * `tool_call` updates with their suspended-time status (e.g.
- * `in_progress`, `pending`). Without the `openTurnId` gate, those
- * stale entries kept phase pinned at `pending` forever — composer
- * disabled, no way out — even though no real work was in flight.
- * Replays don't fire `acp:turn-started` (only live `Prompt`s do), so
- * `openTurnId` stays undefined after restore and phase correctly
- * resolves to `idle`.
+ * `openTurnId` is the sole "we're busy" gate. Replays don't fire
+ * `acp:turn-started` (only a live `Prompt` does), so on `session/load`
+ * `openTurnId` stays undefined and phase correctly resolves to Idle.
  *
- * The same gate also covers the queue-stuck failure mode where phase
- * would stick on `streaming` once the agent had ever spoken.
+ * **No runtimeState AND-gate here** — an earlier shape gated on
+ * `runtimeState === Running` AND `openTurnId`, but the gate was
+ * redundant (the openTurnId check already filters replays since
+ * those never emit TurnStarted) AND racy on remote-host fresh
+ * spawns: the actor's `TurnStarted` broadcast lands ~50ms before
+ * the `InstanceState::Running` event on the WS, so the AND-gate
+ * flipped Idle for that window and the captain's brand-new turn
+ * never showed the stop button. The `signals` map + `runtimeStateFor`
+ * are kept for other consumers (lifecycle title tint, palette
+ * dead-instance dim); they just don't drive phase anymore.
  */
 export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> } {
   const { id: activeId } = useActiveInstance()
@@ -77,18 +94,14 @@ export function usePhase(instanceId?: InstanceId): { phase: ComputedRef<Phase> }
       return Phase.Awaiting
     }
 
-    const sig = signals.get(id)
-
-    if (sig?.runtimeState !== InstanceState.Running || !openTurnId.value) {
-      // No open turn → idle, regardless of historical tool-call state.
+    if (!openTurnId.value) {
       return Phase.Idle
     }
 
-    // O(1) running-tool check via the counter `use-tools` maintains
-    // inline with status mutations. Previously this scanned every
-    // historical tool call per chunk during streaming.
+    // Tool-running shares the working hue with text streaming;
+    // Pending (red) is reserved for terminal errors.
     if (runningCount.value > 0) {
-      return Phase.Pending
+      return Phase.Working
     }
 
     const hasAgentTurn = turns.value.some((t) => t.role === TurnRole.Agent)
