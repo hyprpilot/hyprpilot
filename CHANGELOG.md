@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/hyprpilot/hyprpilot/compare/v2.2.0...v2.2.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **profile:** wire boot listener + daemon-singleton fallback + stderr in error ([#103](https://github.com/hyprpilot/hyprpilot/issues/103)) ([2b63eed](https://github.com/hyprpilot/hyprpilot/commit/2b63eed738349113dcb66805d6a5b2c39cc0074d))
+
 ## [2.2.0](https://github.com/hyprpilot/hyprpilot/compare/v2.1.0...v2.2.0) (2026-05-18)
 
 
