@@ -60,12 +60,30 @@ const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 /// writes.
 #[derive(Debug, Default)]
 struct TurnState {
+    /// Currently open turn id, or `None`. A turn is a turn —
+    /// regardless of whether the captain submitted a prompt or the
+    /// daemon synthesized one to catch out-of-prompt agent activity
+    /// (session/load replay, post-cancel residue, stray
+    /// notifications). The [`Self::prompt_in_flight`] flag tracks
+    /// the captain-submitted case; nothing else cares about the
+    /// distinction. The earlier two-slot model (`current` +
+    /// `synthetic`) collapsed into this one because every
+    /// downstream consumer only ever needed "is some turn open" or
+    /// "is the captain's prompt being awaited" — both answerable
+    /// without naming an "auto" vs "real" category.
     current: Option<String>,
-    synthetic: Option<String>,
+    /// `true` iff a captain `submit_prompt` is awaiting completion
+    /// on [`Self::current`]. Drives the queue-strip decision: when
+    /// `true`, incoming `Prompt` commands auto-enqueue; when
+    /// `false` (idle OR an auto-turn from replay / stray
+    /// notifications), they dispatch immediately. Set inside
+    /// `TurnGuard::new`, cleared in its `Drop` / `complete()` path
+    /// (RAII).
+    prompt_in_flight: bool,
     /// True when the dispatcher routed at least one agent-output
     /// transcript item (`AgentText` / `AgentThought` / `AgentAttachment`
     /// / `ToolCall` / `ToolCallUpdate` / `Plan`) for the currently open
-    /// turn. Reset on every `open_real` / `open_synthetic`. Read by the
+    /// turn. Reset on every `open`. Read by the
     /// prompt-future at completion: a vendor that returned a
     /// `stop_reason: null` AND emitted nothing during the turn used to
     /// surface as a bare `TurnEnded { error: None }`, which downstream
@@ -93,7 +111,7 @@ struct TurnState {
     /// the wire chunk's text — without it, the concat of
     /// `"...prior sentence."` then `"Next sentence..."` reads as
     /// `"...prior sentence.Next sentence..."` (captain's screenshot
-    /// bug). Reset on `open_real` / `open_synthetic`. `None` until
+    /// bug). Reset on `open`. `None` until
     /// the first chunk lands or when the vendor doesn't emit a
     /// messageId on the chunk (gracefully degrades to soft-lift).
     last_agent_text_message_id: Option<String>,
@@ -118,6 +136,50 @@ struct TurnState {
     /// [`Self::non_text_event_since_last_text`] for the thought
     /// stream.
     non_text_event_since_last_thought: bool,
+    /// Role of the last emitted transcript item under
+    /// [`Self::current`]. Drives the role-transition turn split on
+    /// `session/load` replay: ACP streams the prior session's
+    /// history through `session/update` notifications and emits NO
+    /// turn boundaries, so the daemon's only signal that a new
+    /// logical turn started is `user_message_chunk` arriving while
+    /// the prior role was `Agent`. On that transition the daemon
+    /// closes the current turn (emits `TurnEnded`) and opens a
+    /// fresh auto-turn so every consumer sees real per-exchange
+    /// turn ids — same heuristic the nvim plugin's renderer used
+    /// to apply client-side, lifted here so every frontend
+    /// benefits without each implementing the workaround. Reset on
+    /// each turn open.
+    last_role: Option<Role>,
+}
+
+/// Role of the last emitted item under the current turn. Used for
+/// the role-transition turn split on `session/load` replay — see
+/// [`TurnState::last_role`]. Tool calls and thoughts count as
+/// `Agent` because they're part of the agent's work on the same
+/// exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    User,
+    Agent,
+}
+
+impl Role {
+    /// Classify a `TranscriptItem`. Returns `None` for kinds that
+    /// don't participate in role grouping (`PermissionRequest`,
+    /// `Unknown`) — those don't trigger a turn split either way.
+    fn of(item: &crate::adapters::TranscriptItem) -> Option<Self> {
+        use crate::adapters::TranscriptItem as TI;
+        match item {
+            TI::UserPrompt { .. } | TI::UserText { .. } => Some(Self::User),
+            TI::AgentText { .. }
+            | TI::AgentThought { .. }
+            | TI::AgentAttachment(_)
+            | TI::ToolCall(_)
+            | TI::ToolCallUpdate(_)
+            | TI::Plan(_) => Some(Self::Agent),
+            TI::PermissionRequest(_) | TI::Unknown { .. } => None,
+        }
+    }
 }
 
 impl TurnState {
@@ -125,39 +187,33 @@ impl TurnState {
         self.current.as_deref()
     }
 
-    /// `true` only when a real (prompt-driven) turn is open — i.e.,
-    /// `current` is set AND it's not the synthetic placeholder. The
-    /// daemon-side queue uses this to decide whether to enqueue an
-    /// incoming `Prompt` (real turn open → enqueue) vs dispatch it
-    /// immediately (synthetic / no turn → dispatch).
-    fn is_real_turn_open(&self) -> bool {
-        match (&self.current, &self.synthetic) {
-            (Some(_), Some(synth)) => self.current.as_deref() != Some(synth.as_str()),
-            (Some(_), None) => true,
-            _ => false,
-        }
+    /// `true` iff the captain's `submit_prompt` is awaiting
+    /// completion on the current turn. The queue-strip uses this
+    /// to decide whether to enqueue an incoming `Prompt`
+    /// (`true` → enqueue) or dispatch it (`false` → dispatch).
+    /// Auto-opened turns from session/load replay or post-cancel
+    /// residue return `false` here so a captain submitting on top
+    /// of replay output dispatches immediately instead of getting
+    /// stuck in the queue.
+    fn prompt_in_flight(&self) -> bool {
+        self.prompt_in_flight
     }
 
-    /// Open a real (prompt-driven) turn. Clears any prior synthetic —
-    /// the real prompt supersedes whatever the actor was wrapping.
-    fn open_real(&mut self, turn_id: String) {
+    /// Open a turn. Caller MUST have already cleared any prior
+    /// turn (via `take_if_unguarded` or `take_current`) and
+    /// emitted its `TurnEnded`. `prompt_in_flight` resets to
+    /// `false`; the prompt-driven path (TurnGuard::new) sets it
+    /// to `true` immediately after.
+    fn open(&mut self, turn_id: String) {
         self.current = Some(turn_id);
-        self.synthetic = None;
-        self.output_observed = false;
-        self.agent_text_trailing = 0;
-        self.agent_thought_trailing = 0;
-        self.last_agent_text_message_id = None;
-        self.last_agent_thought_message_id = None;
-        self.non_text_event_since_last_text = false;
-        self.non_text_event_since_last_thought = false;
+        self.prompt_in_flight = false;
+        self.reset_per_turn_lift_state();
     }
 
-    /// Mint a synthetic turn — out-of-turn agent activity wraps under
-    /// it so the UI can group the entries instead of scattering them
-    /// into solo blocks.
-    fn open_synthetic(&mut self, turn_id: String) {
-        self.current = Some(turn_id.clone());
-        self.synthetic = Some(turn_id);
+    /// Internal — clear every per-turn lift counter / cache on
+    /// turn open. Called by [`Self::open`] so the boundary state
+    /// is uniform regardless of how the turn was minted.
+    fn reset_per_turn_lift_state(&mut self) {
         self.output_observed = false;
         self.agent_text_trailing = 0;
         self.agent_thought_trailing = 0;
@@ -165,6 +221,7 @@ impl TurnState {
         self.last_agent_thought_message_id = None;
         self.non_text_event_since_last_text = false;
         self.non_text_event_since_last_thought = false;
+        self.last_role = None;
     }
 
     /// Compute the markdown-paragraph lift prefix for an incoming
@@ -271,38 +328,66 @@ impl TurnState {
 
     /// Close the current turn iff `turn_id` still owns the slot.
     /// Returns true when the caller's id matched (so it can emit
-    /// `TurnEnded` exactly once). Clears synthetic too if it matched.
+    /// `TurnEnded` exactly once). Also clears `prompt_in_flight`.
     fn close_if_current(&mut self, turn_id: &str) -> bool {
         if self.current.as_deref() != Some(turn_id) {
             return false;
         }
-        if self.synthetic.as_deref() == Some(turn_id) {
-            self.synthetic = None;
-        }
         self.current = None;
+        self.prompt_in_flight = false;
         true
     }
 
-    /// Take and return the synthetic id; clears current too when the
-    /// two still match (the deferred replay closer + the real-prompt
-    /// supersede paths both call this — single lock means no race
-    /// between the synthetic-take and the current-conditional-clear).
-    fn take_synthetic(&mut self) -> Option<String> {
-        let synth = self.synthetic.take()?;
-        if self.current.as_deref() == Some(synth.as_str()) {
-            self.current = None;
+    /// Take and return the current turn id IFF no captain prompt
+    /// is in flight. Used by:
+    ///   - `submit_prompt`: yank any non-prompt-driven turn so a
+    ///     fresh prompt-driven `open` doesn't collide.
+    ///   - The role-transition split: close the current turn before
+    ///     opening a fresh one for the new exchange.
+    ///   - `LoadSession`-completion: close the last replay turn
+    ///     left dangling when the load response resolves.
+    ///
+    /// Returns `None` when no turn is open OR when a prompt is in
+    /// flight (callers shouldn't yank captain work).
+    fn take_if_unguarded(&mut self) -> Option<String> {
+        if self.prompt_in_flight {
+            return None;
         }
-        Some(synth)
+        self.current.take()
     }
 
-    /// Take and return the current id (real or synthetic). Clears
-    /// synthetic too if it matched. Used by the Cancel path.
+    /// Take and return the current turn id unconditionally,
+    /// clearing `prompt_in_flight`. Used by the Cancel path —
+    /// captain explicitly cancelled, so the prompt-in-flight
+    /// signal must drop even if the prompt-future hasn't returned
+    /// yet.
     fn take_current(&mut self) -> Option<String> {
         let cur = self.current.take()?;
-        if self.synthetic.as_deref() == Some(cur.as_str()) {
-            self.synthetic = None;
-        }
+        self.prompt_in_flight = false;
         Some(cur)
+    }
+
+    /// Record the role of the last item routed under the current
+    /// turn. Read by [`Self::should_split_on`] for the role-
+    /// transition split on `session/load` replay.
+    fn note_role(&mut self, role: Role) {
+        self.last_role = Some(role);
+    }
+
+    /// `true` iff a turn is open AND the captain isn't actively
+    /// awaiting a prompt AND the last emitted role was `Agent`
+    /// AND the incoming role is `User`. That's the role transition
+    /// signalling "new logical exchange started" — split here.
+    /// We guard on `!prompt_in_flight` because real prompt turns
+    /// must NOT be split mid-flight by stray user-side events
+    /// (the agent-side `UserText` echo path is the documented
+    /// only legitimate case, and it doesn't trip this condition
+    /// because the prior role is also user when the echo lands).
+    fn should_split_on(&self, incoming: Role) -> bool {
+        self.current.is_some()
+            && !self.prompt_in_flight
+            && self.last_role == Some(Role::Agent)
+            && incoming == Role::User
     }
 }
 
@@ -320,7 +405,8 @@ fn is_new_content_block(prior: Option<&str>, incoming: Option<&str>) -> bool {
 }
 
 /// RAII handle for one open `session/prompt` turn. Constructor emits
-/// `TurnStarted` + claims the turn slot via `TurnState::open_real`;
+/// `TurnStarted` + claims the turn slot via `TurnState::open` (then
+/// flips `prompt_in_flight = true`);
 /// `complete(...)` emits `TurnEnded` with the agent-supplied stop
 /// reason / error; `Drop` is the leak fallback — when the spawned
 /// prompt task panics, the transport closes mid-turn, or the actor
@@ -353,7 +439,11 @@ impl TurnGuard {
         mirror: Arc<crate::adapters::InstanceMirror>,
         turn_state: SharedTurnState,
     ) -> Self {
-        turn_state.write().await.open_real(turn_id.clone());
+        {
+            let mut s = turn_state.write().await;
+            s.open(turn_id.clone());
+            s.prompt_in_flight = true;
+        }
         let event = InstanceEvent::TurnStarted {
             agent_id: agent_id.clone(),
             instance_id: instance_id.clone(),
@@ -458,61 +548,49 @@ impl Drop for TurnGuard {
     }
 }
 
-/// Spawn a deferred-close timer for a synthetic turn. Synthetic
-/// turns wrap out-of-turn agent activity (replay snapshots,
-/// post-cancel residue, stray notifications post-`EndTurn`) so the
-/// UI groups them into one block instead of scattering. Without a
-/// closer the synthetic id stays in `TurnState::current` forever —
-/// `usePhase` reads `openTurnId.value !== undefined` and routes the
-/// next prompt into the queue strip.
+/// Take the current turn iff it's an auto-turn and emit
+/// `TurnEnded`. Used by every site that needs to close an auto-
+/// turn cleanly: the role-transition split (in the session/update
+/// handler) and the post-LoadSession quiet-down (after the
+/// LoadSessionResponse resolves). Returns the closed turn id (if
+/// any) so the caller can chain.
 ///
-/// Originally only `Bootstrap::Resume` attached a closer (for the
-/// replay-drain window); `Bootstrap::Fresh` instances minted
-/// synthetics on stray notifications with no closer. Promoted to a
-/// universal helper so every `open_synthetic` call site spawns one.
-///
-/// `take_synthetic` is a no-op when a real prompt arrived first
-/// (cleared the slot); same when an earlier timer already drained
-/// it (subsequent timers fire on stale snapshots and exit cleanly).
-/// Single-shot per-synthetic — quiet window is wall-clock, not a
-/// live activity tracker.
-#[allow(clippy::too_many_arguments)]
-fn spawn_synthetic_close_after(
-    quiet_ms: u64,
-    turn_state: SharedTurnState,
-    events_tx: broadcast::Sender<InstanceEvent>,
-    mirror: Arc<crate::adapters::InstanceMirror>,
-    agent_id: String,
-    instance_id: String,
-    session_id: String,
+/// Replaced the previous `spawn_synthetic_close_after` 2500ms
+/// quiet-window timer — wall-clock heuristics are unreliable
+/// under fast replay (events keep coming within 2500ms, timer
+/// never fires) and add background tasks that race the actor's
+/// own lifecycle. Lifecycle-driven explicit closes are the right
+/// shape: a turn closes when something definite happens (role
+/// transition, load response, cancel, prompt completion), not
+/// when an arbitrary timer ticks.
+async fn close_auto_turn_if_open(
+    turn_state: &SharedTurnState,
+    events_tx: &broadcast::Sender<InstanceEvent>,
+    mirror: &Arc<crate::adapters::InstanceMirror>,
+    agent_id: &str,
+    instance_id: &str,
+    session_id: &str,
     stop_reason: &'static str,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(quiet_ms)).await;
-        let synth = match turn_state.write().await.take_synthetic() {
-            Some(s) => s,
-            None => return,
-        };
-        debug!(
-            agent = %agent_id,
-            session = %session_id,
-            turn = %synth,
-            stop_reason,
-            "acp::instance: closing synthetic turn after quiet window"
-        );
-        let event = InstanceEvent::TurnEnded {
-            agent_id,
-            instance_id,
-            session_id,
-            turn_id: synth,
-            stop_reason: Some(stop_reason.into()),
-            error: None,
-            // Pair with the synthetic TurnStarted's `started_at: 0` —
-            // UI hides elapsed when either side is missing real timing.
-            ended_at: 0,
-        };
-        publish(&mirror, &events_tx, event).await;
-    });
+) -> Option<String> {
+    let auto = turn_state.write().await.take_if_unguarded()?;
+    debug!(
+        agent = %agent_id,
+        session = %session_id,
+        turn = %auto,
+        stop_reason,
+        "acp::instance: closing auto-turn"
+    );
+    let event = InstanceEvent::TurnEnded {
+        agent_id: agent_id.to_string(),
+        instance_id: instance_id.to_string(),
+        session_id: session_id.to_string(),
+        turn_id: auto.clone(),
+        stop_reason: Some(stop_reason.into()),
+        error: None,
+        ended_at: 0,
+    };
+    publish(mirror, events_tx, event).await;
+    Some(auto)
 }
 
 /// Register a typed `on_receive_request` handler that delegates to an
@@ -2250,23 +2328,19 @@ async fn run(params: RunParams) {
         crate::config::AgentProvider::Acp => "acp",
     }
     .to_string();
-    // Tracks the in-flight turn id so the notification / permission
-    // arms of the dispatch loop can stamp events with it without
-    // Single-lock turn-id state — replaces two `Arc<RwLock<Option<String>>>`
-    // (current + synthetic) that previously raced across six write
-    // sites. `TurnState` carries both fields under one lock; the
-    // typed methods (`open_real` / `open_synthetic` / `take_*` /
-    // `close_if_current`) capture the synthetic-IS-current invariant
-    // so it can't drift. See `TurnState` declaration above for
-    // the per-method semantics.
+    // Single-lock turn-id state under one RwLock. `TurnState` exposes
+    // typed methods (`open` / `take_*` / `close_if_current`) so the
+    // dispatcher can stamp events with the current turn id without
+    // racing across writers.
     //
-    // Real prompts: TurnGuard::new → open_real, complete/Drop →
-    // close_if_current. Synthetic wrappers (out-of-turn agent
-    // activity): mint via open_synthetic on the first transcript-shape
-    // notification with no open turn; closed via take_synthetic by
-    // the deferred replay-drain closer OR superseded by the next
-    // real prompt. Cancel takes the current id (real or synthetic)
-    // via take_current.
+    // A turn is a turn — origin is just provenance. `prompt_in_flight`
+    // flips `true` inside `TurnGuard::new` (post-`open`) and back
+    // `false` on `complete`/`Drop`, so the queue-strip knows whether
+    // captain work is on the wire. Out-of-prompt activity (session/
+    // load replay, role-transition splits, push notifications) calls
+    // `open` and leaves the flag `false`. `take_current` (cancel) and
+    // `take_if_unguarded` (captain submit / role-split / load-resolve)
+    // clear the slot.
     let turn_state: SharedTurnState = Arc::new(tokio::sync::RwLock::new(TurnState::default()));
 
     // ── Per-instance queue ───────────────────────────────────────
@@ -2725,26 +2799,48 @@ async fn run(params: RunParams) {
                 // Replay is a snapshot, not a live turn. The dispatch
                 // loop hasn't yet drained the queued session/update
                 // notifications (it can't — we're inside the request
-                // future), so any synthetic turn the replay will mint
-                // doesn't exist YET. Spawn a deferred close that fires
-                // after a short quiet window: by the time it runs the
-                // dispatch loop has processed the queued events + the
-                // synthetic turn id is set; we then emit TurnEnded so
-                // the UI's "running" indicator clears. `take_synthetic`
-                // atomically takes the synthetic id and clears
-                // `current` iff they still match — single lock means
-                // no race window between the two operations a real
-                // prompt could slip into.
-                spawn_synthetic_close_after(
-                    1500,
-                    turn_state.clone(),
-                    events_tx_notif.clone(),
-                    mirror_notif.clone(),
-                    agent_id_notif.clone(),
-                    instance_id_notif.clone(),
-                    sid.0.to_string(),
-                    "replay_complete",
-                );
+                // future), so the role-transition splits + auto-turn
+                // mints happen IN the dispatch loop after this future
+                // resolves. By the time the dispatch loop catches up,
+                // the LAST replay turn (the most recent agent
+                // exchange) is still open with no natural closer —
+                // ACP shipped no `TurnEnded` for it. Wait for the
+                // dispatch loop to drain (one Vue tick + some buffer)
+                // then close any remaining auto-turn. This is
+                // explicit lifecycle ("load resolved, then dispatch
+                // drains") rather than the previous wall-clock quiet
+                // heuristic — replay-with-final-quiet-after-last-event
+                // never fires the timer correctly under back-pressure.
+                {
+                    let turn_state = turn_state.clone();
+                    let events_tx = events_tx_notif.clone();
+                    let mirror = mirror_notif.clone();
+                    let agent_id = agent_id_notif.clone();
+                    let instance_id = instance_id_notif.clone();
+                    let session_id = sid.0.to_string();
+                    tokio::spawn(async move {
+                        // 200ms is enough for the notification task to
+                        // drain everything claude-agent-acp queued
+                        // during the LoadSession future. Smaller than
+                        // the previous 1500ms (which was a guess); the
+                        // dispatch loop typically processes 500+ replay
+                        // events in <50ms on local IPC. The role-
+                        // transition splits each close their own
+                        // auto-turn explicitly during the drain — only
+                        // the LAST one waits for this close.
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        close_auto_turn_if_open(
+                            &turn_state,
+                            &events_tx,
+                            &mirror,
+                            &agent_id,
+                            &instance_id,
+                            &session_id,
+                            "replay_complete",
+                        )
+                        .await;
+                    });
+                }
                 // Resumed sessions already saw the system prompt in their
                 // original turn — re-injecting it on the first post-restore
                 // submit would duplicate it in agent context. Drop the
@@ -2802,26 +2898,28 @@ async fn run(params: RunParams) {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
                             };
-                            // Auto-route: if a real turn is in flight OR
-                            // the queue already has waiters, append to
-                            // the queue instead of spawning a parallel
-                            // prompt-future. ACP serialises prompts on
-                            // the wire, but two simultaneous TurnGuards
-                            // would race on `turn_state.open_real` and
-                            // strand the first turn's TurnEnded — so we
-                            // serialise here. Synthetic turns (out-of-
-                            // turn agent activity wrappers) don't gate
-                            // — they're transient and `take_synthetic`
-                            // below closes them out of the way.
+                            // Auto-route: if the captain's prior prompt
+                            // is still awaiting completion OR the queue
+                            // already has waiters, append to the queue
+                            // instead of spawning a parallel prompt-
+                            // future. ACP serialises prompts on the
+                            // wire, but two simultaneous TurnGuards
+                            // would race on `turn_state.open` and strand
+                            // the first turn's TurnEnded — so we
+                            // serialise here. Non-prompt-driven turns
+                            // (out-of-prompt agent activity wrappers
+                            // from replay / post-cancel residue) don't
+                            // gate — `prompt_in_flight()` returns
+                            // false for them, so a captain's submit on
+                            // top of replay output dispatches
+                            // immediately and `take_if_unguarded` below
+                            // closes the replay turn out of the way.
                             //
                             // `force_dispatch` skips the auto-route — set
                             // by `queue/dispatch` so popped items go
                             // on-wire immediately (the captain's "send
                             // now" intent).
-                            let queue_route = !force_dispatch && ({
-                                let snap = turn_state.read().await;
-                                snap.current().is_some() && snap.is_real_turn_open()
-                            } || !queue.is_empty());
+                            let queue_route = !force_dispatch && (turn_state.read().await.prompt_in_flight() || !queue.is_empty());
 
                             if queue_route {
                                 queue_next_seq = queue_next_seq.saturating_add(1);
@@ -2852,30 +2950,22 @@ async fn run(params: RunParams) {
                                 data: None,
                                 mime: Some("text/markdown".into()),
                             });
-                            // Real prompt — if a synthetic out-of-turn turn
-                            // is open, close it cleanly before starting
-                            // the real one.
-                            if let Some(prev) = turn_state.write().await.take_synthetic() {
-                                debug!(
-                                    agent = %agent_id_notif,
-                                    session = %sid,
-                                    turn = %prev,
-                                    "acp::instance: closing synthetic turn before real prompt"
-                                );
-                                let event = InstanceEvent::TurnEnded {
-                                    agent_id: agent_id_notif.clone(),
-                                    instance_id: instance_id_notif.clone(),
-                                    session_id: sid.0.to_string(),
-                                    turn_id: prev,
-                                    // Synthetic turn close — pair with its
-                                    // `started_at: 0`, hide elapsed.
-                                    stop_reason: Some("superseded".into()),
-                                    error: None,
-                                    ended_at: 0,
-                                };
-                                mirror_notif.apply(&event).await;
-                                let _ = events_tx_notif.send(event);
-                            }
+                            // Captain prompt — close any unguarded turn
+                            // first so the fresh `open` doesn't collide.
+                            // `take_if_unguarded` is a no-op when no
+                            // turn is open or when a prompt is in
+                            // flight (the queue-route branch above
+                            // already filtered that case).
+                            close_auto_turn_if_open(
+                                &turn_state,
+                                &events_tx_notif,
+                                &mirror_notif,
+                                &agent_id_notif,
+                                &instance_id_notif,
+                                sid.0.as_ref(),
+                                "superseded",
+                            )
+                            .await;
                             let turn_id = uuid::Uuid::new_v4().to_string();
                             info!(
                                 agent = %agent_id_notif,
@@ -3413,63 +3503,87 @@ async fn run(params: RunParams) {
                                 let mut guard = tool_call_cache.write().await;
                                 map_session_update(update, &mut guard, provider_id_for_fmt.as_str())
                             };
-                            // Out-of-turn detection: if a transcript-shape
-                            // update arrives without an open turn, mint a
-                            // synthetic id + emit TurnStarted so the chat
+                            // Out-of-prompt detection: if a transcript-shape
+                            // update arrives without an open turn, mint an
+                            // auto-turn id + emit TurnStarted so the chat
                             // groups the entries instead of scattering them
                             // into solo blocks. SessionInfo / CurrentMode /
-                            // AvailableCommands updates DO NOT trigger a
-                            // synthetic turn — they're per-session metadata.
-                            let needs_synthetic_turn = matches!(mapped, MappedUpdate::Transcript(_));
+                            // AvailableCommands updates DO NOT trigger an
+                            // auto-turn — they're per-session metadata.
+                            //
+                            // **Role-transition split**: ACP has no turn-
+                            // boundary primitive for `session/load` replay;
+                            // the daemon's only signal that a new logical
+                            // turn started is `user_message_chunk` arriving
+                            // while the prior emitted role was `Agent`. When
+                            // an active auto-turn sees that transition, we
+                            // close it (emit TurnEnded) and fall through to
+                            // mint a fresh auto-turn for the new exchange.
+                            // Without this split, every replayed historical
+                            // exchange collapses under ONE auto-turn id and
+                            // the UI renders it as a single never-finalised
+                            // mega-turn. nvim's `render.lua` did the same
+                            // role-transition heuristic client-side; lifting
+                            // it daemon-side means every frontend benefits
+                            // from one implementation.
+                            let needs_auto_turn = matches!(mapped, MappedUpdate::Transcript(_));
+                            let incoming_role: Option<Role> = match &mapped {
+                                MappedUpdate::Transcript(item) => Role::of(item),
+                                _ => None,
+                            };
+                            if let Some(role) = incoming_role {
+                                if turn_state.read().await.should_split_on(role) {
+                                    close_auto_turn_if_open(
+                                        &turn_state,
+                                        &events_tx_notif,
+                                        &mirror_notif,
+                                        &agent_id_notif,
+                                        &instance_id_notif,
+                                        &sid,
+                                        "role_transition",
+                                    )
+                                    .await;
+                                }
+                            }
                             let mut turn_id = turn_state.read().await.current().map(str::to_string);
-                            if needs_synthetic_turn && turn_id.is_none() {
-                                let synthetic = uuid::Uuid::new_v4().to_string();
+                            if needs_auto_turn && turn_id.is_none() {
+                                let auto = uuid::Uuid::new_v4().to_string();
                                 info!(
                                     agent = %agent_id_notif,
                                     instance = %instance_id_notif,
                                     session = %sid,
-                                    turn = %synthetic,
-                                    "acp::instance: synthetic turn start (out-of-turn agent activity)"
+                                    turn = %auto,
+                                    "acp::instance: auto-turn start (out-of-prompt agent activity)"
                                 );
-                                turn_state.write().await.open_synthetic(synthetic.clone());
-                                // Synthetic turns wrap replay / out-of-turn agent
-                                // activity — there's no meaningful wall-clock for
-                                // them (the captain didn't kick this off, the
-                                // daemon synthesised it). Stamp `started_at: 0`
-                                // so the UI's "no real timing" gate hides the
-                                // elapsed chip instead of rendering replay
-                                // processing time as if it were the turn duration.
+                                turn_state.write().await.open(auto.clone());
+                                // Auto-minted turns wrap replay /
+                                // out-of-prompt agent activity — no
+                                // meaningful wall-clock (the captain
+                                // didn't kick this off, the daemon
+                                // synthesised it). Stamp `started_at: 0`
+                                // so the UI's "no real timing" gate
+                                // hides the elapsed chip instead of
+                                // rendering replay processing time as
+                                // if it were the turn duration.
+                                //
+                                // No 2500ms-quiet-window timer: explicit
+                                // close paths now drive termination
+                                // (role-transition split for intra-
+                                // replay boundaries; LoadSession-
+                                // resolves + 200ms drain wait for the
+                                // final replay turn; `submit_prompt`'s
+                                // `close_auto_turn_if_open` for the
+                                // captain-supersedes case).
                                 let event = InstanceEvent::TurnStarted {
                                     agent_id: agent_id_notif.clone(),
                                     instance_id: instance_id_notif.clone(),
                                     session_id: sid.clone(),
-                                    turn_id: synthetic.clone(),
+                                    turn_id: auto.clone(),
                                     started_at: 0,
                                 };
                                 mirror_notif.apply(&event).await;
                                 let _ = events_tx_notif.send(event);
-                                // Synthetic turns minted from stray notifications
-                                // (post-cancel residue, agent emissions after
-                                // `EndTurn`) have no natural closer — the
-                                // captain's next prompt would clean it up via
-                                // `take_synthetic` in the Prompt arm, but if no
-                                // prompt arrives the slot stays open forever and
-                                // the composer routes everything into the queue.
-                                // Spawn a timer that drains after a quiet
-                                // window. A real prompt arriving first wins the
-                                // race (it takes the synthetic before the timer
-                                // fires; timer becomes a no-op).
-                                spawn_synthetic_close_after(
-                                    2500,
-                                    turn_state.clone(),
-                                    events_tx_notif.clone(),
-                                    mirror_notif.clone(),
-                                    agent_id_notif.clone(),
-                                    instance_id_notif.clone(),
-                                    sid.clone(),
-                                    "synthetic_quiet",
-                                );
-                                turn_id = Some(synthetic);
+                                turn_id = Some(auto);
                             }
                             let evt: Option<InstanceEvent> = match mapped {
                                 MappedUpdate::Transcript(mut item) => {
@@ -3531,7 +3645,7 @@ async fn run(params: RunParams) {
                                     // verbatim instead of splitting into
                                     // bogus paragraphs. Per-turn state
                                     // (counter + last messageId) resets on
-                                    // `open_real` / `open_synthetic`.
+                                    // `open`.
                                     match &mut item {
                                         crate::adapters::TranscriptItem::AgentText { text } => {
                                             let prefix = turn_state
@@ -3682,6 +3796,15 @@ async fn run(params: RunParams) {
                                     );
                                 }
                                 publish(&mirror_notif, &events_tx_notif, evt).await;
+                                // Record the routed item's role under
+                                // the current turn so the next item's
+                                // role-transition check (see the
+                                // `should_split_on` branch above) sees
+                                // the prior role. No-op when no role
+                                // applies (PermissionRequest, Unknown).
+                                if let Some(role) = incoming_role {
+                                    turn_state.write().await.note_role(role);
+                                }
                             }
                         }
                         ClientEvent::PermissionRequested {
@@ -3862,7 +3985,7 @@ mod tests {
     // `acp::paragraph` are covered by their own unit tests; these
     // exercise the `TurnState` integration — counter init, mutation
     // through `note_agent_text` / `note_agent_thought`, reset on
-    // `open_real` / `open_synthetic`, and independence between the
+    // `open`, and independence between the
     // text and thought streams.
 
     #[test]
@@ -3941,28 +4064,18 @@ mod tests {
     }
 
     #[test]
-    fn turn_state_open_real_resets_both_lift_counters() {
+    fn turn_state_open_resets_both_lift_counters() {
         let mut state = TurnState::default();
         state.note_agent_text("Tail 1.\n", None);
         state.note_agent_thought("Thought 1.\n", None);
         assert_eq!(state.agent_text_trailing, 1);
         assert_eq!(state.agent_thought_trailing, 1);
-        // Opening a new real turn — counters reset so the new turn's
-        // first chunk doesn't carry forward the prior turn's tail.
-        state.open_real("turn-2".to_string());
+        // Opening a new turn — counters reset so the new turn's first
+        // chunk doesn't carry forward the prior turn's tail.
+        state.open("turn-2".to_string());
         assert_eq!(state.agent_text_trailing, 0);
         assert_eq!(state.agent_thought_trailing, 0);
         // First chunk of the new turn — no lift on the boundary.
-        assert_eq!(state.note_agent_text("Hello", None), "");
-    }
-
-    #[test]
-    fn turn_state_open_synthetic_resets_both_lift_counters() {
-        let mut state = TurnState::default();
-        state.note_agent_text("Tail.\n", None);
-        assert_eq!(state.agent_text_trailing, 1);
-        state.open_synthetic("synth-1".to_string());
-        assert_eq!(state.agent_text_trailing, 0);
         assert_eq!(state.note_agent_text("Hello", None), "");
     }
 
@@ -4035,13 +4148,13 @@ mod tests {
     }
 
     #[test]
-    fn turn_state_message_id_resets_on_open_real() {
+    fn turn_state_message_id_resets_on_open() {
         // A new turn opens; even if the next chunk's messageId matches
         // a stale id from the prior turn (vendor reuse — unlikely but
         // possible), we don't carry forward state.
         let mut state = TurnState::default();
         state.note_agent_text("Para 1.", Some("msg-1"));
-        state.open_real("turn-2".into());
+        state.open("turn-2".into());
         // Fresh turn — no prior id, so the boundary check returns
         // false; soft-lift path runs and emits nothing for a clean
         // first chunk.
@@ -4095,10 +4208,10 @@ mod tests {
     }
 
     #[test]
-    fn turn_state_non_text_event_clears_on_open_real() {
+    fn turn_state_non_text_event_clears_on_open() {
         let mut state = TurnState::default();
         state.note_non_text_event();
-        state.open_real("turn-2".into());
+        state.open("turn-2".into());
         // Fresh turn — no flagged event, no prior text → soft-lift.
         assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
     }
@@ -4784,24 +4897,24 @@ mod tests {
         drop(handle);
     }
 
-    /// `TurnState::open_real` resets `output_observed` so a fresh turn
+    /// `TurnState::open` resets `output_observed` so a fresh turn
     /// always starts with no agent activity. Captures the invariant
     /// the `TurnGuard::complete` empty-turn heuristic relies on — if
     /// the flag persisted across turns, every turn after the first
     /// would skip the synthesized error.
     #[test]
-    fn turn_state_open_real_resets_output_observed() {
+    fn turn_state_open_resets_output_observed() {
         let mut state = TurnState::default();
-        state.open_real("t-1".into());
+        state.open("t-1".into());
         state.note_agent_output();
         assert!(state.output_observed());
 
         // Close the current turn, then open a fresh one.
         assert!(state.close_if_current("t-1"));
-        state.open_real("t-2".into());
+        state.open("t-2".into());
         assert!(
             !state.output_observed(),
-            "open_real must reset output_observed; otherwise the empty-turn heuristic in TurnGuard::complete would skip the synthesized error on every turn after the first"
+            "open must reset output_observed; otherwise the empty-turn heuristic in TurnGuard::complete would skip the synthesized error on every turn after the first"
         );
     }
 
