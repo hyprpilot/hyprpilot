@@ -285,7 +285,17 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
       rafHandle = undefined
       rafPending = false
     }
-    clearProgrammaticFlag()
+    // Suppress capture across the WebKitGTK compositor's async-wheel
+    // delivery window. Without this, the compositor's delayed scroll
+    // event lands AFTER `releaseAnchor` fires; `onScroll` runs and
+    // captures a new anchor at the still-pre-gesture position. The
+    // very next resize re-locks to that stale anchor and pulls the
+    // captain back — the exact race this primitive's `releaseAnchor`
+    // is meant to close. Marking programmatic-scroll covers the gap
+    // by suppressing capture for `programmaticScrollClearMs` (500ms
+    // default) — long enough for any compositor delivery to land
+    // and be ignored.
+    markProgrammaticScroll()
   }
 
   function scrollToSeq(seq: number, offsetWithinRow = 0): boolean {
@@ -305,6 +315,29 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
     return true
   }
 
+  // Top-level watcher — `stuck` is a Vue ref and doesn't need the
+  // scroll element to exist for the watch to register. Keeping it
+  // outside `onMounted` avoids a silent registration failure if
+  // `scrollEl.value` is undefined at mount time (lazy ref
+  // assignment). The watch body itself reads `scrollEl.value`
+  // defensively before pickAnchorAt.
+  //
+  // When stuck flips true (captain returned to foot), drop the
+  // anchor — foot-follow path owns scroll. When it flips false
+  // (captain scrolled up), capture immediately so the first
+  // resize re-locks to the right row.
+  watch(opts.stuck, (next) => {
+    if (next) {
+      anchor.value = undefined
+    } else if (scrollEl.value) {
+      const picked = pickAnchorAt(scrollEl.value, scrollEl.value.scrollTop)
+
+      if (picked) {
+        anchor.value = picked
+      }
+    }
+  })
+
   onMounted(() => {
     const el = scrollEl.value
 
@@ -323,22 +356,6 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
       // They are NOT — content-box ignores them.
       resizeObs.observe(el, { box: 'content-box' })
     }
-
-    // When stuck flips true (captain returned to foot), drop the
-    // anchor — foot-follow path owns scroll. When it flips false
-    // (captain scrolled up), capture immediately so the first
-    // resize re-locks to the right row.
-    watch(opts.stuck, (next) => {
-      if (next) {
-        anchor.value = undefined
-      } else if (scrollEl.value) {
-        const picked = pickAnchorAt(scrollEl.value, scrollEl.value.scrollTop)
-
-        if (picked) {
-          anchor.value = picked
-        }
-      }
-    })
   })
 
   onUnmounted(() => {

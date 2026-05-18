@@ -414,6 +414,14 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     case 'End': {
       ev.preventDefault()
       markUserScrolled()
+      // End is an explicit jump-to-foot — drop any captured anchor.
+      // Without this, on slow devices the smooth-scroll can take
+      // longer than the 500ms programmatic-scroll suppress window;
+      // when the flag clears mid-animation, `onScroll` captures a
+      // mid-transit anchor and the next resize re-locks to that
+      // transient position. Releasing clears the captured anchor
+      // outright; stuck=true re-engages when the foot lands.
+      releaseAnchor()
       markProgrammaticScroll()
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
       // Smooth-scroll fires `scroll` events along the way, which our
@@ -475,14 +483,26 @@ useIntersectionObserver(
 
 // ── Eviction trigger ────────────────────────────────────────────────
 //
-// Only trim when both `stuck=true` (captain at the foot, foot-follow
-// owns scroll) AND `hasUserScrolled=true` (captain has actually
-// engaged — not the mount-time stuck state where stick-to-bottom's
-// scrollToBottom write made us "at the bottom" without input).
-// Trimming while the captain is mid-history would risk evicting the
-// anchor row itself, breaking the re-lock path. When the captain is
-// at the foot, the anchor mechanism is dormant — trims are safe and
-// stuck=true re-engages `scrollToBottom` after the DOM shrinks.
+// Three-part gate:
+//   1. `hasUserScrolled` — never trim during mount-time synthetic
+//      scrolls (stick-to-bottom's `scrollToBottom` write fires a
+//      scroll event indistinguishable from a captain drag if we
+//      only watched scrollTop). Captain's first input gesture flips
+//      this true.
+//   2. `stuck === true` OR within one viewport of the foot. The
+//      `stuck` 128px threshold is narrow; widening to "within one
+//      viewport" keeps cache cleanup prompt when the captain
+//      returns to the live area, without trimming mid-read. We do
+//      NOT trim when the captain is anchored mid-history — the
+//      anchor row could be in the trim range, and eviction would
+//      break the re-lock path.
+//   3. rAF-defer so the cache mutation lands on the next frame,
+//      after the in-flight scroll gesture finishes — eviction
+//      inside the scroll task removes nodes from the TOP of the DOM
+//      mid-gesture, confusing the browser's anchor heuristic.
+//
+// When `stuck=true`, re-assert `scrollToBottom` after the trim so
+// the captain stays glued to the foot after `scrollHeight` shrinks.
 function onScroll(): void {
   const el = scrollEl.value
 
@@ -493,23 +513,23 @@ function onScroll(): void {
   if (!hasUserScrolled.value) {
     return
   }
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  const nearFoot = stuck.value || distanceFromBottom <= el.clientHeight
 
-  if (!stuck.value) {
+  if (!nearFoot) {
     return
   }
+  const wasStuck = stuck.value
 
-  // Defer the mutation to rAF so the DOM patch doesn't race the
-  // in-flight scroll gesture. `evictExtraPages` is idempotent —
-  // repeated rAF wrappers all observe the same cache state.
   requestAnimationFrame(() => {
     viewport.evictExtraPages()
-    // stuck is still true at this point (eviction is gated on it);
-    // re-assert scrollToBottom so the captain stays glued to the
-    // foot after the cache shrinks scrollHeight.
-    void nextTick(() => {
-      markProgrammaticScroll()
-      scrollToBottom()
-    })
+
+    if (wasStuck) {
+      void nextTick(() => {
+        markProgrammaticScroll()
+        scrollToBottom()
+      })
+    }
   })
 }
 

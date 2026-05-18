@@ -292,4 +292,85 @@ describe('useScrollAnchor', () => {
 
     expect(api.scrollToSeq(99)).toBe(false)
   })
+
+  it('captures anchor immediately on stuck=true → stuck=false transition', async() => {
+    const host = buildHost({
+      stuck: true,
+      rows: [
+        { seq: 10, height: 200 },
+        { seq: 11, height: 200 },
+        { seq: 12, height: 200 }
+      ]
+    })
+
+    Object.defineProperty(host.root, 'scrollTop', {
+      configurable: true, writable: true, value: 250
+    })
+
+    // stuck=true → anchor stays undefined regardless of scrollTop.
+    expect(host.api.anchor.value).toBeUndefined()
+
+    // Flip stuck false — the watcher should fire and synchronously
+    // capture an anchor without waiting for a scroll event.
+    host.stuck.value = false
+    await flushPromises()
+
+    // scrollTop=250 lands inside row[1] (offsetTop=200, height=200).
+    expect(host.api.anchor.value).toEqual({ rowSeq: 11, offsetWithinRow: 50 })
+  })
+
+  it('relock is suppressed while programmaticScroll is set', async() => {
+    const { root, api } = buildHost({
+      stuck: false,
+      rows: [
+        { seq: 10, height: 200 },
+        { seq: 11, height: 200 }
+      ]
+    })
+
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true, writable: true, value: 50
+    })
+    root.dispatchEvent(new Event('scroll'))
+    await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
+    await flushPromises()
+
+    expect(api.anchor.value?.rowSeq).toBe(10)
+
+    // Mark programmatic — relock should NOT write scrollTop even when
+    // the anchor row's offsetTop changes underneath us.
+    api.markProgrammaticScroll()
+    const row0 = root.querySelectorAll('article')[0] as HTMLElement
+
+    Object.defineProperty(row0, 'offsetTop', { configurable: true, value: 100 })
+    const beforeScrollTop = root.scrollTop
+
+    fireAllResizes()
+    await flushPromises()
+
+    expect(root.scrollTop).toBe(beforeScrollTop)
+  })
+
+  it('releaseAnchor cancels a pending capture rAF', async() => {
+    const { root, api } = buildHost({
+      stuck: false,
+      rows: [
+        { seq: 10, height: 200 },
+        { seq: 11, height: 200 }
+      ]
+    })
+
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true, writable: true, value: 50
+    })
+    // Queue an rAF by dispatching scroll, but call release BEFORE
+    // the rAF fires — the cancelled rAF must not capture an anchor.
+    root.dispatchEvent(new Event('scroll'))
+    api.releaseAnchor()
+
+    await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
+    await flushPromises()
+
+    expect(api.anchor.value).toBeUndefined()
+  })
 })

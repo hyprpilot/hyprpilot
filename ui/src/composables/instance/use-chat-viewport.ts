@@ -4,15 +4,19 @@
  * Combines `useInstanceChatInfiniteQuery` (the data layer) with the
  * two concerns the body view needs on top:
  *
- * 1. **Page-trim policy** — when the viewport is at the bottom AND
- *    the cache holds more than `MAX_PAGES_KEPT` pages, drop pages
- *    `0..(N-MAX_PAGES_KEPT)`. Keeps memory bounded under long
+ * 1. **Page-trim policy** — when the cache holds more than
+ *    `MAX_PAGES_KEPT` pages AND the captain is "in the live area"
+ *    (either `stuck=true` at the foot, or within one viewport of
+ *    the foot), drop the oldest pages so only the newest
+ *    `MAX_PAGES_KEPT` remain. Keeps memory bounded under long
  *    sessions without user-visible truncation: the daemon always
- *    serves older pages on backward scroll. Triggered from the
- *    body view's scroll handler whenever the captain is within
- *    ~one viewport of bottom (wider than `useStickToBottom`'s
- *    stick threshold so cleanup is prompt without disturbing
- *    read-history flow). The body view schedules the mutation via
+ *    serves older pages on backward scroll. The combined gate
+ *    `stuck || within-one-viewport-of-foot` is wider than the
+ *    `useStickToBottom` stick threshold (128px) so cleanup is
+ *    prompt when the captain returns from history reading, but
+ *    narrow enough that mid-history scrolls don't risk evicting
+ *    the row the anchor primitive (`use-scroll-anchor`) is locked
+ *    to. The body view schedules the mutation via
  *    `requestAnimationFrame` so the cache write lands outside the
  *    scroll-event task — see Viewport.vue's onScroll for the
  *    timing rationale.

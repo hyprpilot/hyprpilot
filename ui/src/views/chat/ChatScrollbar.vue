@@ -3,10 +3,11 @@
  * Custom scrollbar overlay for the chat viewport.
  *
  * Native scrollbar is suppressed via `scrollbar-width: none` +
- * `::-webkit-scrollbar { display: none }` in `styles.css`. This
- * component renders the replacement: a thin vertical track on the
- * right edge with a thumb whose position + size mirror the captain's
- * scroll position.
+ * `::-webkit-scrollbar { display: none }` in `Viewport.vue`'s scoped
+ * style block (the rules are on `.chat-transcript`). This component
+ * renders the replacement: a thin vertical track on the right edge
+ * with a thumb whose position + size mirror the captain's scroll
+ * position.
  *
  * **Position math is pixel-based** (`scrollTop / scrollHeight`), NOT
  * seq-based. Reason: seq isn't visually proportional — one long
@@ -292,11 +293,21 @@ function onTrackLeave(): void {
 <style scoped>
 @reference '../../assets/styles.css';
 
+/* Visual width is 0.625rem (~10px), but the pointer-events region
+ * is widened to 1.5rem (~24px) so the captain can grab the
+ * scrollbar comfortably on mobile (touch targets below ~24px are
+ * hard to hit reliably; WCAG suggests 44px for primary affordances,
+ * but a chat-secondary scrollbar at 24px is the common compromise
+ * used by Discord / Telegram / Slack web). The visual thumb stays
+ * narrow because the track + thumb children render at the right
+ * 0.625rem; the extra 0.875rem of width is transparent overhang
+ * onto the chat content's right padding (which is 1rem on
+ * `.chat-transcript`, so the overhang doesn't cover text). */
 .chat-scrollbar-track {
   position: absolute;
   top: 0;
   right: 0;
-  width: 0.625rem;
+  width: 1.5rem;
   height: 100%;
   z-index: 4;
   opacity: 0;
@@ -314,8 +325,11 @@ function onTrackLeave(): void {
 
 .chat-scrollbar-thumb {
   position: absolute;
-  left: 0.125rem;
+  /* Anchor visual thumb to the right edge of the track. The track
+   * is 1.5rem wide for hit area; thumb renders 0.5rem wide on the
+   * rightmost 0.625rem so the captain's visual mark stays thin. */
   right: 0.125rem;
+  width: 0.5rem;
   border-radius: 9999px;
   background-color: var(--theme-fg-dim);
   opacity: 0.4;
