@@ -129,9 +129,59 @@ function mountViewport(opts: MountOpts) {
   })
 }
 
+// jsdom doesn't ship `IntersectionObserver`. `@vueuse/core`'s
+// `useIntersectionObserver` no-ops when it's missing. Stub the global
+// with a capture-shim so individual tests can manually invoke the
+// callback the composable registered, simulating the sentinel
+// entering the viewport without a real layout system.
+const intersectionCallbacks = new Set<IntersectionObserverCallback>()
+
+class IntersectionObserverStub implements IntersectionObserver {
+  readonly root: Element | Document | null = null
+
+  readonly rootMargin: string = ''
+
+  readonly thresholds: ReadonlyArray<number> = []
+
+  constructor(public callback: IntersectionObserverCallback) {
+    intersectionCallbacks.add(callback)
+  }
+
+  observe(): void {}
+
+  unobserve(): void {}
+
+  disconnect(): void {
+    intersectionCallbacks.delete(this.callback)
+  }
+
+  takeRecords(): IntersectionObserverEntry[] {
+    return []
+  }
+}
+
+vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
+
+function fireIntersection(isIntersecting: boolean): void {
+  for (const cb of intersectionCallbacks) {
+    cb(
+      [
+        {
+          isIntersecting,
+          intersectionRatio: isIntersecting ? 1 : 0,
+          target: document.createElement('div'),
+          time: performance.now()
+        } as unknown as IntersectionObserverEntry
+      ],
+      {} as IntersectionObserver
+    )
+  }
+}
+
 beforeEach(() => {
   invoke.mockReset()
   listeners.clear()
+  intersectionCallbacks.clear()
   useActiveInstance().id.value = undefined
 })
 
@@ -246,6 +296,43 @@ describe('Viewport.vue', () => {
     const sentinel = wrapper.find('[data-testid="chat-top-sentinel"]')
 
     expect(sentinel.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('manually firing the intersection observer triggers fetchNextPage with the head page cursor', async() => {
+    const first = chatPage(
+      [
+        {
+          seq: 100,
+          item: { kind: TranscriptItemKind.AgentText, text: 'p0' } as never
+        }
+      ],
+      true
+    )
+
+    invoke.mockResolvedValueOnce(first)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: first })
+
+    await flushPromises()
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    invoke.mockClear()
+    invoke.mockResolvedValueOnce(chatPage([], false))
+
+    // Simulate the sentinel entering the viewport. The observer
+    // callback runs `viewport.fetchNextPage()` which invokes
+    // `instance_snapshot_chat` with `before = oldestSeq` of the
+    // current head page.
+    fireIntersection(true)
+    await flushPromises()
+    await flushPromises()
+
+    expect(invoke).toHaveBeenCalled()
+    const lastCall = invoke.mock.calls[invoke.mock.calls.length - 1]
+
+    expect(lastCall?.[0]).toBe('instance_snapshot_chat')
+    expect((lastCall?.[1] as { before?: number })?.before).toBe(100)
     wrapper.unmount()
   })
 
