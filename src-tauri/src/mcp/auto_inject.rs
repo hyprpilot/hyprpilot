@@ -58,15 +58,32 @@ pub fn build_auto_inject_definition(
     cfg: &McpConfig,
     source: PathBuf,
 ) -> Option<MCPDefinition> {
-    let entries = skills.list();
-    if entries.is_empty() {
+    // Gate on dirs having at least one loaded skill — if the
+    // directories are empty or all skills match the ignore globs,
+    // there's nothing to serve.
+    if skills.list().is_empty() {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
     let mut args: Vec<String> = vec!["mcp".to_string(), "serve".to_string()];
-    for entry in &entries {
-        args.push("--skill".to_string());
-        args.push(format!("{}={}", entry.slug.as_str(), entry.path.display()));
+    // Pass directories + de-duplicated ignore globs instead of
+    // enumerating individual `--skill slug=path` entries. The sidecar
+    // scans dirs with the same `SkillsRegistry` discovery code the
+    // daemon uses at boot — adding a new `<slug>/SKILL.md` to a
+    // configured directory is immediately visible on the next `reload`
+    // without restarting the session.
+    // Each directory is serialized as a JSON object so per-dir ignore
+    // lists survive the CLI round-trip without flattening — the sidecar
+    // can reconstruct the exact same `ResolvedSkillEntry` set the
+    // daemon computed, with each root's suppression applied only to
+    // that root's discoveries.
+    for entry in skills.dirs() {
+        let json = serde_json::json!({
+            "dir": entry.dir.display().to_string(),
+            "ignore": entry.ignore_patterns,
+        });
+        args.push("--skill-dir".to_string());
+        args.push(json.to_string());
     }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),

@@ -87,6 +87,11 @@ reqwest = { version = "0.13", default-features = false }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp skills`.
 rmcp = { version = "1", features = ["transport-io"] }
+# Cross-platform OS-level URL / path opener for the `open_url` MCP tool.
+# The MCP server runs as a stdio sidecar (not inside a Tauri webview), so
+# `tauri-plugin-shell`'s `open()` isn't accessible from it — this crate
+# wraps `xdg-open` on Linux, `open` on macOS, `start` on Windows.
+open = "5"
 
 [dev-dependencies]
 tempfile = "3"

@@ -197,6 +197,7 @@ mod tests {
         }
         let registry = Arc::new(SkillsRegistry::new(vec![crate::config::ResolvedSkillEntry {
             dir: PathBuf::from(dir.path()),
+            ignore_patterns: vec![],
             ignore: None,
         }]));
         registry.reload().unwrap();

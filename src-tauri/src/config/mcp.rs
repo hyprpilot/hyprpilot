@@ -143,6 +143,7 @@ impl McpConfig {
             .iter()
             .map(|e| super::ResolvedSkillEntry {
                 dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
+                ignore_patterns: e.ignore.as_deref().map(<[String]>::to_vec).unwrap_or_default(),
                 ignore: e.compile_ignore(),
             })
             .collect()
