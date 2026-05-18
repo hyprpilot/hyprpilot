@@ -1216,21 +1216,40 @@ impl AcpAdapter {
 
     /// Enumerate configured profiles for `config/profiles` +
     /// `profiles/list`.
+    ///
+    /// **Resolution applies root `[[patches]]`** so frontends see the
+    /// same shape the spawn path will produce. Captains commonly put
+    /// shared values (`cwd`, `system_prompt`, `mcps`) in root patches
+    /// scoped by `$match.profile`; reading `cfg.profiles` raw would
+    /// surface the unpatched values + leave header chrome pre-seeds
+    /// stale until the actor's `session/new` lands and overrides.
+    /// Captain reported `cwd` pre-spawn seed broken because their
+    /// profile's cwd lives in a root patch, not directly on the
+    /// profile entry.
     pub fn list_profiles(&self) -> Vec<crate::adapters::ProfileSummary> {
         let cfg = self.read_config();
         let default_profile = cfg.profile.default.as_deref();
         cfg.profiles
             .iter()
-            .map(|p| crate::adapters::ProfileSummary {
-                id: p.id.clone(),
-                agent: p.agent.clone(),
-                model: p.model.clone(),
-                // Ship the raw configured cwd (no `~` expansion) so
-                // frontends can show it before the actor's
-                // `session/new` lands. The spawn path canonicalises
-                // when it actually launches the agent.
-                cwd: p.cwd.as_ref().map(|c| c.display().to_string()),
-                is_default: default_profile == Some(p.id.as_str()),
+            .map(|p| {
+                // Apply root patches to each profile so the summary
+                // mirrors what `resolve_effective_profile` would
+                // produce at spawn-time (minus per-spawn
+                // `--with-config` overlays, which can't be summarised
+                // ahead of time). Falls back to the raw entry on any
+                // patch / validation failure — readonly listing
+                // shouldn't surface a config error.
+                let resolved = resolve_effective_profile(&cfg, Some(p.id.as_str()), &[]).unwrap_or_else(|_| p.clone());
+                crate::adapters::ProfileSummary {
+                    id: resolved.id.clone(),
+                    agent: resolved.agent.clone(),
+                    model: resolved.model.clone(),
+                    // Ship the raw configured cwd (no `~` expansion).
+                    // The spawn path canonicalises when it actually
+                    // launches the agent.
+                    cwd: resolved.cwd.as_ref().map(|c| c.display().to_string()),
+                    is_default: default_profile == Some(p.id.as_str()),
+                }
             })
             .collect()
     }

@@ -22,7 +22,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use bip39::Mnemonic;
-use rand::RngCore;
+// rand 0.10: `RngCore` was demoted to a marker trait; the
+// `fill_bytes` method now lives on the parent `Rng` trait. Import
+// `Rng` to pull the method into scope.
+use rand::Rng;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -45,7 +48,8 @@ impl PairCode {
         // we pull a 12-word mnemonic and slice the first 4. Simpler
         // than building our own 44-bit-from-wordlist primitive.
         let mut entropy = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut entropy);
+        // rand 0.10 renamed `thread_rng()` → `rng()`.
+        rand::rng().fill_bytes(&mut entropy);
         let mnemonic = Mnemonic::from_entropy(&entropy).expect("16 bytes is a valid bip39 entropy length");
         let words: Vec<&str> = mnemonic.words().collect();
         let chosen: Vec<&str> = words.into_iter().take(4).collect();

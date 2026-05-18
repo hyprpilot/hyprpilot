@@ -78,6 +78,32 @@ let flushScheduled = false
 let started = false
 let unlisteners: UnlistenFn[] = []
 
+/// Build a stable identity for a payload — `undefined` when the
+/// item kind doesn't warrant in-batch dedup (tool-call updates carry
+/// their own state-machine merging; tiny chunks of text legitimately
+/// repeat). `AgentText` / `AgentThought` over the
+/// `DUP_DEDUP_MIN_TEXT_CHARS` threshold are the meaningful candidates:
+/// the daemon's chunk boundaries are arbitrary mid-word but a full
+/// sentence/paragraph landing twice in the same flush burst is almost
+/// always a wire-side mistake.
+const DUP_DEDUP_MIN_TEXT_CHARS = 24
+
+function duplicateSignature(payload: TranscriptEventPayload): string | undefined {
+  const item = payload.item
+
+  if (item.kind === TranscriptItemKind.AgentText || item.kind === TranscriptItemKind.AgentThought) {
+    const text = item.text ?? ''
+
+    if (text.length < DUP_DEDUP_MIN_TEXT_CHARS) {
+      return undefined
+    }
+
+    return `${item.kind}:${payload.turnId ?? ''}:${text}`
+  }
+
+  return undefined
+}
+
 function liveItemFor(payload: TranscriptEventPayload, seq: number): SeqTranscriptItem | undefined {
   if (payload.item.kind === TranscriptItemKind.Unknown) {
     return undefined
@@ -187,11 +213,39 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     let applied = 0
     let mergedCount = 0
     let skipped = 0
+    let dedupedDuplicate = 0
+
+    // Defensive in-batch content dedup. Captain reported the same
+    // agent-text message landing in the chat 3 times — the daemon's
+    // broadcast is single-fire per chunk so the duplication is
+    // either a transient browser-side listener-dispatch glitch on
+    // remote-WS reconnect OR the actor genuinely re-emitting in
+    // some recovery path. Either way, identical TranscriptItem
+    // payloads (same turnId + same item shape) inside one flush
+    // batch are a strong duplicate signal — legitimate streaming
+    // chunks are rarely byte-identical at >50 chars. Dedup the
+    // batch up-front so the cache only ever sees the first
+    // occurrence.
+    const seenSignatures = new Set<string>()
+    const filtered: TranscriptEventPayload[] = []
 
     for (const payload of batch) {
       if (payload.instanceId !== instanceId) {
         continue
       }
+      const sig = duplicateSignature(payload)
+
+      if (sig !== undefined) {
+        if (seenSignatures.has(sig)) {
+          dedupedDuplicate += 1
+          continue
+        }
+        seenSignatures.add(sig)
+      }
+      filtered.push(payload)
+    }
+
+    for (const payload of filtered) {
       const incoming = liveItemFor(payload, baseSeq)
 
       if (!incoming) {
@@ -215,12 +269,21 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       return old
     }
 
+    if (dedupedDuplicate > 0) {
+      log.warn('transcript-patcher: dropped duplicate payloads in batch', {
+        instanceId,
+        batchSize: batch.length,
+        dedupedDuplicate
+      })
+    }
+
     log.trace('transcript-patcher.batch-applied', {
       instanceId,
       batchSize: batch.length,
       applied,
       merged: mergedCount,
       skipped,
+      dedupedDuplicate,
       headItemCount: nextItems.length
     })
 

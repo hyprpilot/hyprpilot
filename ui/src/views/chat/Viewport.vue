@@ -61,7 +61,7 @@ import {
   type WireToolCall,
   type InstanceId
 } from '@composables'
-import { format, formatDuration } from '@lib'
+import { format, formatDuration, log } from '@lib'
 
 /// Distance from the top (in px) at which we trigger backward
 /// pagination. Generous enough that `fetchNextPage()` resolves before
@@ -145,6 +145,34 @@ useEventListener(
 )
 useEventListener(scrollEl, 'touchstart', markUserScrolled, { passive: true })
 useEventListener(scrollEl, 'pointerdown', markUserScrolled, { passive: true })
+
+// Mobile / touch path: release stick on the FIRST touchmove. `touchmove`
+// only fires when the captain's finger actually moves (a tap that
+// completes without movement never fires it) — so this is the touch
+// equivalent of the upward-wheel release on desktop. Required because
+// of a MutationObserver-vs-touch race specific to mobile webviews:
+//
+//   1. Live chunk lands → `MutationObserver` → `scheduleStick` → rAF
+//      queued (stuck is still true).
+//   2. Captain's finger starts moving (upward swipe to read older).
+//   3. rAF fires BEFORE the captain's first `scroll` event lands —
+//      iOS Safari / Chrome Android throttle inertia scroll events
+//      relative to the gesture, but the rAF clock is unaffected.
+//      `scrollToBottom()` writes `scrollTop = scrollHeight` and the
+//      captain's swipe is silently cancelled (the synthetic scroll
+//      consumes `suppressNextScrollUpdate` + forces stuck=true again).
+//   4. Captain's next scroll events fire AFTER the snap-back, with
+//      `prevScrollTop` re-baselined at the foot — `movedUp` never
+//      flips, stick stays engaged. Captain reports "I can't break
+//      the lock on mobile."
+//
+// Releasing stick synchronously at the first `touchmove` closes the
+// race the same way `wheel.deltaY<0` does on desktop: the queued rAF
+// short-circuits at `!stuck.value` when it fires, so the snap-back
+// never happens. Taps without movement don't fire `touchmove`, so the
+// stick stays engaged through tap-to-open-attachment / tap-to-copy /
+// long-press-context-menu interactions.
+useEventListener(scrollEl, 'touchmove', releaseStickAndMark, { passive: true })
 
 const viewport = useChatViewport(instanceId, { scrollEl })
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
@@ -388,6 +416,18 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
 /// happening, without delaying the actual content rendering.
 const MIN_CHIP_DURATION_MS = 350
 
+/// Hard ceiling for how long the chip can stay visible. On a remote
+/// WS where the underlying `instance_snapshot_chat` invoke hangs
+/// (mobile network blip during a stuck-in-flight pair handshake,
+/// daemon momentarily backpressured by another peer, browser tab
+/// throttling), vue-query's `fetchNextPage` may never resolve. The
+/// captain reported the chip staying up indefinitely on mobile; this
+/// timeout guarantees the chip clears even when the fetch never
+/// returns, and surfaces a warning into the log so the gap is
+/// diagnosable. Picked > REMOTE_INVOKE_TIMEOUT_MS (30s) + a safety
+/// margin so a normal slow fetch isn't surfaced as a timeout.
+const MAX_CHIP_DURATION_MS = 35_000
+
 const loadingEarlier = ref(false)
 
 /// Captures `scrollHeight - scrollTop` before fetching older pages
@@ -408,9 +448,30 @@ async function triggerBackwardFetch(el: HTMLElement): Promise<void> {
   // the captain reads as if the older content was always there.
   const distanceFromBottom = el.scrollHeight - el.scrollTop
 
+  // Hard-ceiling timer that flips the chip off even when the fetch
+  // never resolves. Captain reported the chip staying visible
+  // forever on mobile while reconnecting through a flaky WS; without
+  // this fallback the UI looks frozen and the captain can't tell
+  // whether the fetch is making progress.
+  const watchdog = setTimeout(() => {
+    if (loadingEarlier.value) {
+      log.warn('chat-viewport: backward fetch exceeded MAX_CHIP_DURATION_MS — clearing chip', {
+        elapsedMs: Date.now() - startedAt
+      })
+      loadingEarlier.value = false
+    }
+  }, MAX_CHIP_DURATION_MS)
+
   try {
     await viewport.fetchNextPage()
+  } catch(err) {
+    // `vue-query.fetchNextPage` normally swallows queryFn errors
+    // into the query result, but the remote-bridge's invoke can
+    // reject during ensureAuthenticated hangs. Surface either path
+    // — the captain otherwise sees a stuck chip with no clue why.
+    log.warn('chat-viewport: backward fetch rejected', undefined, err)
   } finally {
+    clearTimeout(watchdog)
     // Defer the restore until Vue has flushed the new items into the
     // DOM and the browser has measured the updated `scrollHeight`.
     // `nextTick` chained twice catches the second-pass layout that

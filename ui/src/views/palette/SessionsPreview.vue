@@ -108,7 +108,7 @@ watch(
 </template>
 
 <style scoped>
-@reference '../assets/styles.css';
+@reference '../../assets/styles.css';
 
 .palette-sessions-preview {
   @apply flex flex-col gap-1 px-[0.875rem] py-[0.75rem];
