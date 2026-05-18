@@ -219,7 +219,13 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
-  it('scrolling to the top triggers fetchNextPage when hasNextPage', async() => {
+  it('renders the top sentinel when older pages are available so IntersectionObserver can drive backward fetch', async() => {
+    // PR4 refactor: the scrollTop-threshold trigger is gone. Backward
+    // fetch is wired via `useIntersectionObserver` against a top
+    // sentinel that only renders when `hasNextPage` is true. jsdom's
+    // IntersectionObserver is a no-op stub, so we verify the wiring
+    // shape — sentinel present + `hasNextPage` true — instead of
+    // simulating the observer callback.
     const first = chatPage(
       [
         {
@@ -237,45 +243,33 @@ describe('Viewport.vue', () => {
     await flushPromises()
     await wrapper.vm.$nextTick()
 
-    invoke.mockClear()
-    invoke.mockResolvedValueOnce(chatPage([], false))
+    const sentinel = wrapper.find('[data-testid="chat-top-sentinel"]')
 
-    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+    expect(sentinel.exists()).toBe(true)
+    wrapper.unmount()
+  })
 
-    // `fetchNextPage` is NOT gated on `hasUserScrolled`. The gate
-    // (still used for eviction) was redundant for the fetch branch:
-    // `useStickToBottom`'s mount-time synthetic write moves to
-    // `scrollHeight` (bottom), never close to the `scrollTop <
-    // LOAD_MORE_THRESHOLD_PX` (top) trigger. Real upward gestures —
-    // wheel, trackpad, PageUp, AND OS scrollbar drag (which fires
-    // `scroll` events but no `pointerdown`) — all land at the top
-    // threshold and pull older pages without further ceremony.
-    Object.defineProperty(root, 'scrollHeight', {
-      configurable: true,
-      value: 5000
-    })
-    Object.defineProperty(root, 'clientHeight', {
-      configurable: true,
-      value: 500
-    })
+  it('omits the top sentinel when no older pages remain (hasNextPage = false)', async() => {
+    const onlyPage = chatPage(
+      [
+        {
+          seq: 0,
+          item: { kind: TranscriptItemKind.AgentText, text: 'first-ever' } as never
+        }
+      ],
+      false
+    )
 
-    // Scroll reaches the top — triggers backward fetch directly.
-    // No prior gesture event needed; this models the OS-scrollbar-drag
-    // case where `pointerdown` never fires on the DOM element.
-    Object.defineProperty(root, 'scrollTop', {
-      configurable: true,
-      writable: true,
-      value: 0
-    })
-    root.dispatchEvent(new Event('scroll'))
+    invoke.mockResolvedValueOnce(onlyPage)
+    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: onlyPage })
 
     await flushPromises()
     await flushPromises()
+    await wrapper.vm.$nextTick()
 
-    // The infinite query passed `before = oldestSeq` of the latest
-    // page (100) on the next fetch. Wider assertion: at least one
-    // call landed.
-    expect(invoke).toHaveBeenCalled()
+    const sentinel = wrapper.find('[data-testid="chat-top-sentinel"]')
+
+    expect(sentinel.exists()).toBe(false)
     wrapper.unmount()
   })
 

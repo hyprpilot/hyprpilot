@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "hyprpilot"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
