@@ -34,7 +34,7 @@
  * extra Vue watcher needed.
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
-import { useEventListener, useNow } from '@vueuse/core'
+import { useEventListener, useIntersectionObserver, useNow } from '@vueuse/core'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
@@ -63,11 +63,17 @@ import {
 } from '@composables'
 import { format, formatDuration, log } from '@lib'
 
-/// Distance from the top (in px) at which we trigger backward
-/// pagination. Generous enough that `fetchNextPage()` resolves before
-/// the captain runs out of content; tight enough not to fire while
-/// the captain is reading mid-list.
-const LOAD_MORE_THRESHOLD_PX = 240
+/// Sentinel `rootMargin` for the intersection-observer-driven
+/// backward fetch. The sentinel renders 0-height at the top of the
+/// list; expanding its observed root margin upward by this much
+/// pre-fetches before the captain visually reaches the top, so the
+/// chip and the new content land while the captain is still
+/// scrolling. Replaces the prior `LOAD_MORE_THRESHOLD_PX` scroll-
+/// event check — sentinels fire once per visibility transition (no
+/// inertia double-fire), don't compete with scroll-event throttling,
+/// and don't need a manual `loadingEarlier` dedup flag because
+/// vue-query's `isFetchingNextPage` is the truth.
+const LOAD_MORE_SENTINEL_MARGIN_PX = 240
 
 const props = defineProps<{
   /// Captain's "session is restoring" gate — keeps the scoped
@@ -254,9 +260,9 @@ function releaseStickAndMark(): void {
   releaseStick()
 }
 
-// `stuck` is the auto-scroll signal — strict 64px-from-bottom
-// threshold so a captain reading 1 viewport above the foot
-// doesn't get yanked back on every chunk. We do NOT use it for
+// `stuck` is the auto-scroll signal — 128px-from-bottom threshold
+// (tuned in `useStickToBottom`) so a captain reading 1 viewport
+// above the foot doesn't get yanked back on every chunk. We do NOT use it for
 // eviction; eviction fires from `onScroll` whenever the captain
 // is within ~one viewport of the bottom, which is wider than the
 // auto-scroll window so cache cleanup is prompt without
@@ -407,111 +413,148 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
   }
 })
 
-/// Minimum visible duration for the "loading earlier…" chip. The raw
-/// `isFetchingNextPage` flag only stays true for the network round-
-/// trip (often <100ms on Tauri-local), which renders the chip for a
-/// single frame and looks like a flicker to the captain. Pinning the
-/// chip to `MIN_CHIP_DURATION_MS` from fetch start guarantees the
-/// captain sees the indicator long enough to register what's
-/// happening, without delaying the actual content rendering.
-const MIN_CHIP_DURATION_MS = 350
+/// Top-of-list sentinel — a 0-height marker rendered above the first
+/// chat block. `useIntersectionObserver` fires when the sentinel
+/// enters the captain's viewport. Drives the backward fetch. Replaces
+/// the prior scrollTop-threshold check inside `onScroll`.
+const topSentinel = ref<HTMLElement>()
 
-/// Hard ceiling for how long the chip can stay visible. On a remote
-/// WS where the underlying `instance_snapshot_chat` invoke hangs
-/// (mobile network blip during a stuck-in-flight pair handshake,
-/// daemon momentarily backpressured by another peer, browser tab
-/// throttling), vue-query's `fetchNextPage` may never resolve. The
-/// captain reported the chip staying up indefinitely on mobile; this
-/// timeout guarantees the chip clears even when the fetch never
-/// returns, and surfaces a warning into the log so the gap is
-/// diagnosable. Picked > REMOTE_INVOKE_TIMEOUT_MS (30s) + a safety
-/// margin so a normal slow fetch isn't surfaced as a timeout.
-const MAX_CHIP_DURATION_MS = 35_000
+/// Tracks the captain-relative "distance from bottom" snapshotted
+/// right before vue-query starts a backward fetch. The post-fetch
+/// `watch` on `data.pages.length` reads this, restores
+/// `scrollTop = scrollHeight - distance`, then clears it. Holding the
+/// distance in a ref (vs locally scoped to a fetch invocation) makes
+/// the restore robust to vue-query's internal retries — every
+/// successful page that lands while a distance is captured uses the
+/// same anchor, so successive backward pages compose smoothly.
+const restorationDistance = ref<number | undefined>(undefined)
 
-const loadingEarlier = ref(false)
+/// `true` from the moment we ask vue-query for an older page until
+/// the scroll-restore has finished. Gates eviction (we never trim
+/// during a backward fetch) and signals the loading chip. Driven by
+/// vue-query's own `isFetchingNextPage` plus the post-fetch nextTick
+/// settle, so a stuck/long fetch can't leave it stale — vue-query
+/// owns the lifecycle.
+const isRestoringScroll = ref(false)
 
-/// Captures `scrollHeight - scrollTop` before fetching older pages
-/// and restores it once the new pages have rendered, so the
-/// captain's reading position doesn't snap up when content prepends
-/// at the top. Without the restore the rendered chunk gets pushed
-/// down by the new pages' height + chip; the captain's reading line
-/// shifts proportionally and they have to re-locate it.
-async function triggerBackwardFetch(el: HTMLElement): Promise<void> {
-  loadingEarlier.value = true
-  const startedAt = Date.now()
-  // Distance-from-bottom is invariant under top-side prepends: when
-  // the daemon's older items render above the captain's reading
-  // position, their height adds to BOTH `scrollHeight` and `scrollTop`
-  // (because the browser preserves what's pinned at the bottom).
-  // Capturing this delta and re-setting `scrollTop = scrollHeight -
-  // delta` after the DOM update collapses the visual shift to zero —
-  // the captain reads as if the older content was always there.
-  const distanceFromBottom = el.scrollHeight - el.scrollTop
+/// Captures the captain's distance-from-bottom BEFORE asking for
+/// older content. The browser preserves what's pinned at the bottom
+/// of the scroll viewport (`scrollHeight` grows + `scrollTop` grows
+/// by the same delta when items prepend), so `scrollHeight -
+/// scrollTop` is invariant across the prepend. Re-applying it after
+/// the DOM update keeps the captain's reading line at the exact same
+/// visual position.
+function captureBeforeBackwardFetch(): void {
+  const el = scrollEl.value
 
-  // Hard-ceiling timer that flips the chip off even when the fetch
-  // never resolves. Captain reported the chip staying visible
-  // forever on mobile while reconnecting through a flaky WS; without
-  // this fallback the UI looks frozen and the captain can't tell
-  // whether the fetch is making progress.
-  const watchdog = setTimeout(() => {
-    if (loadingEarlier.value) {
-      log.warn('chat-viewport: backward fetch exceeded MAX_CHIP_DURATION_MS — clearing chip', {
-        elapsedMs: Date.now() - startedAt
-      })
-      loadingEarlier.value = false
-    }
-  }, MAX_CHIP_DURATION_MS)
+  if (!el) {
+    return
+  }
 
-  try {
-    await viewport.fetchNextPage()
-  } catch(err) {
-    // `vue-query.fetchNextPage` normally swallows queryFn errors
-    // into the query result, but the remote-bridge's invoke can
-    // reject during ensureAuthenticated hangs. Surface either path
-    // — the captain otherwise sees a stuck chip with no clue why.
-    log.warn('chat-viewport: backward fetch rejected', undefined, err)
-  } finally {
-    clearTimeout(watchdog)
-    // Defer the restore until Vue has flushed the new items into the
-    // DOM and the browser has measured the updated `scrollHeight`.
-    // `nextTick` chained twice catches the second-pass layout that
-    // <Turn> components sometimes do via their own reactive watches.
-    await nextTick()
-    await nextTick()
+  if (restorationDistance.value !== undefined) {
+    // Another fetch is already in flight; vue-query is deduping for
+    // us, so we just keep the original anchor.
+    return
+  }
+  restorationDistance.value = el.scrollHeight - el.scrollTop
+  isRestoringScroll.value = true
+  // Synchronously release stick — the captain is reading older
+  // content, and any in-flight `useStickToBottom` rAF would
+  // otherwise scroll-to-bottom mid-restore and clobber the anchor.
+  releaseStickAndMark()
+}
 
-    const target = el.scrollHeight - distanceFromBottom
+/// Restore the captain's reading position after a backward fetch
+/// resolved + Vue flushed the new DOM. Two `nextTick`s give nested
+/// child watchers (`<Turn>`'s elapsed-timer, `<StreamCard>`'s
+/// markdown render) time to settle before we read `scrollHeight`.
+async function restoreAfterBackwardFetch(): Promise<void> {
+  await nextTick()
+  await nextTick()
+  const el = scrollEl.value
+  const distance = restorationDistance.value
+
+  if (el && distance !== undefined) {
+    const target = el.scrollHeight - distance
 
     if (Math.abs(el.scrollTop - target) > 1) {
       el.scrollTop = target
     }
-    const elapsed = Date.now() - startedAt
-    const remaining = Math.max(0, MIN_CHIP_DURATION_MS - elapsed)
-
-    if (remaining === 0) {
-      loadingEarlier.value = false
-    } else {
-      setTimeout(() => {
-        loadingEarlier.value = false
-      }, remaining)
-    }
   }
+  restorationDistance.value = undefined
+  isRestoringScroll.value = false
 }
 
-// ── Backward pagination + eviction trigger ──────────────────────────
+// ── Backward fetch trigger (intersection-observer driven) ──────────
 //
-// One scroll handler drives two policies:
+// `useIntersectionObserver` against the top-of-list sentinel calls
+// `viewport.fetchNextPage` exactly once per visibility transition.
+// vue-query dedupes concurrent calls internally — its
+// `isFetchingNextPage` flag is the authoritative gate. The captain
+// reported scrollTop-threshold + manual loadingEarlier ref +
+// watchdog (the prior shape) flaked under mobile inertia + remote
+// WS latency; sentinel + vue-query's built-in lifecycle is the
+// canonical TanStack pattern + cuts ~80 lines of state-management
+// scaffolding.
+useIntersectionObserver(
+  topSentinel,
+  ([entry]) => {
+    if (!entry?.isIntersecting) {
+      return
+    }
+
+    if (!viewport.hasNextPage.value) {
+      return
+    }
+
+    if (viewport.isFetchingNextPage.value) {
+      return
+    }
+    captureBeforeBackwardFetch()
+    void viewport.fetchNextPage().catch((err: unknown) => {
+      log.warn('chat-viewport: backward fetch rejected', undefined, err)
+    })
+  },
+  {
+    // Pre-fetch BEFORE the captain visually hits the sentinel.
+    // Expanding the root margin upward by `LOAD_MORE_SENTINEL_MARGIN_PX`
+    // lights the observer when the sentinel is still that many px
+    // outside the viewport's top edge — older content lands while
+    // the captain is still scrolling, no perceptible pause.
+    rootMargin: `${LOAD_MORE_SENTINEL_MARGIN_PX}px 0px 0px 0px`,
+    // 0 = the moment any part of the sentinel enters the (expanded)
+    // root. Sentinel is 0-height + 1px wide so this is
+    // effectively a point-trigger.
+    threshold: 0
+  }
+)
+
+// Watch vue-query's `isFetchingNextPage` for the true→false
+// transition. That's the moment the fetched page has been
+// `setQueryData`-applied — restore the captain's scroll anchor.
+// Conditioned on `restorationDistance` having been captured (we
+// don't try to restore when the fetch wasn't sentinel-driven, e.g.
+// the initial fetch on mount).
+watch(
+  () => viewport.isFetchingNextPage.value,
+  (next, prev) => {
+    if (prev && !next && restorationDistance.value !== undefined) {
+      void restoreAfterBackwardFetch()
+    }
+  }
+)
+
+// ── Eviction trigger ────────────────────────────────────────────────
 //
-// 1. **Backward fetch** when scrollTop crosses
-//    `LOAD_MORE_THRESHOLD_PX` — the captain is reading near the top
-//    edge, pull older content.
-// 2. **Page eviction** when the captain is within ~one viewport of
-//    the bottom AND the cache exceeds `MAX_PAGES_KEPT`. Wider than
-//    `useStickToBottom`'s strict 64px so eviction fires the moment
-//    the captain returns to the live area, not only at the
-//    absolute foot. The composable's eviction is idempotent — we
-//    can safely call it on every scroll tick that satisfies the
-//    near-bottom test; it's a no-op when the cache is already in
-//    budget.
+// Backward pagination lives on the intersection-observer wired
+// below; this handler only drives the page-eviction half: when the
+// captain is within ~one viewport of the bottom AND the cache
+// exceeds `MAX_PAGES_KEPT`, drop the trailing pages. Wider than
+// `useStickToBottom`'s stick threshold so eviction fires the moment the
+// captain returns to the live area, not only at the absolute foot.
+// The composable's eviction is idempotent — we can safely call it
+// on every scroll tick that satisfies the near-bottom test; it's a
+// no-op when the cache is already in budget.
 function onScroll(): void {
   const el = scrollEl.value
 
@@ -519,43 +562,14 @@ function onScroll(): void {
     return
   }
 
-  // **Backward fetch — ungated.**
-  // The original `hasUserScrolled` gate (kept for eviction below)
-  // was redundant for this branch: the mount-time synthetic
-  // `scrollTop = scrollHeight` write moves to the BOTTOM, never
-  // close to the `scrollTop < LOAD_MORE_THRESHOLD_PX` (top)
-  // threshold. Same goes for the per-chunk re-stick passes during
-  // streaming — they land at the bottom too. So the only path that
-  // reaches the threshold is a real upward scroll: wheel, trackpad,
-  // PageUp keypress, OR an OS scrollbar drag. The last is the
-  // motivating case — the native scrollbar widget fires `scroll`
-  // events but no `pointerdown` / `touchstart` / `wheel`, so the
-  // gate would lock the fetch out even though the captain is
-  // legitimately reading older content.
-  // `!loadingEarlier.value` AND `!isFetchingNextPage` both gate the
-  // fetch. The two flags don't flip together:
-  // `loadingEarlier.value = true` runs synchronously at the top of
-  // `triggerBackwardFetch`, BEFORE `await viewport.fetchNextPage()`
-  // returns its first microtask — and so before
-  // `isFetchingNextPage` flips true. A second scroll event landing
-  // in that microtask window otherwise passes the
-  // `isFetchingNextPage`-only guard and launches a duplicate
-  // concurrent fetch (double pages, double scroll restore, off-by-
-  // one captain shift). The `loadingEarlier` guard closes that
-  // window — flagged by the sonnet-tier review of the original PR2
-  // commit.
-  if (viewport.hasNextPage.value && !viewport.isFetchingNextPage.value && !loadingEarlier.value && el.scrollTop < LOAD_MORE_THRESHOLD_PX) {
-    void triggerBackwardFetch(el)
+  // Never trim during a backward fetch + scroll-restore: trimming
+  // the tail (oldest pages) while a head/anchor restore is in
+  // flight changes `scrollHeight` mid-restore and the anchor lands
+  // off by the evicted pages' aggregate height. Eviction can wait
+  // until the next scroll tick after the restore completes.
+  if (isRestoringScroll.value) {
+    return
   }
-
-  // **Eviction — kept gated.**
-  // Eviction is theoretically safe to ungate too (idempotent;
-  // mount-time cache has 1 page so always a no-op until at least 4
-  // pages exist; eviction's near-bottom fence + `wasStuck` capture
-  // handle the auto-snap-to-foot case correctly). But the gate
-  // costs nothing and defends against future changes to the
-  // synthetic-scroll surface — keep it as a thin safety belt for
-  // the cache-mutation half.
 
   if (!hasUserScrolled.value) {
     return
@@ -883,19 +897,21 @@ defineExpose({ scrollEl })
       <slot v-if="isEmpty" name="empty" />
 
       <template v-else>
-        <!-- Loading chip pinned at the top while a backward page is in
-           flight. Sticky so it stays visible at the captain's
-           viewport top regardless of where the chat-transcript has
-           scrolled to during the fetch — without `position: sticky`
-           the chip lived at the absolute top of the transcript and
-           was only visible at scrollTop ≤ chip height, which on a
-           multi-page chat meant the captain often saw nothing while
-           older pages were loading. `loadingEarlier` (manual ref)
-           overrides the raw `isFetchingNextPage` gate so the chip
-           remains visible for at least `MIN_CHIP_DURATION_MS` — fast
-           local fetches that resolve sub-frame would otherwise
-           flicker invisibly. -->
-        <div v-if="loadingEarlier || viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
+        <!-- Top sentinel — 0-height marker the IntersectionObserver
+           watches. When it enters the captain's expanded viewport
+           (rootMargin LOAD_MORE_SENTINEL_MARGIN_PX above the actual
+           top), `viewport.fetchNextPage` fires. Rendered ONLY when
+           older pages still exist so the observer naturally
+           short-circuits at the end of history. -->
+        <div v-if="viewport.hasNextPage.value" ref="topSentinel" class="chat-top-sentinel" aria-hidden="true" data-testid="chat-top-sentinel" />
+
+        <!-- Loading chip — sticky-pinned to the visible top edge so
+           it stays in view regardless of scroll position during the
+           fetch. Combined gate: vue-query's own `isFetchingNextPage`
+           (the fetch is in flight) OR `isRestoringScroll` (vue-query
+           returned but we're still settling the captain's scroll
+           anchor across the next two Vue ticks). -->
+        <div v-if="viewport.isFetchingNextPage.value || isRestoringScroll" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
 
         <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
            re-renders for history rows. Live row keeps re-rendering
@@ -1023,6 +1039,16 @@ defineExpose({ scrollEl })
    * and a visible jump. JS owns the anchoring — disable the native
    * path so the two don't compose. */
   overflow-anchor: none;
+}
+
+.chat-top-sentinel {
+  /* 0-height, full-width marker the IntersectionObserver watches.
+   * `pointer-events: none` so it never intercepts clicks; absolutely
+   * no visual presence. */
+  flex-shrink: 0;
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
 }
 
 .chat-load-chip {

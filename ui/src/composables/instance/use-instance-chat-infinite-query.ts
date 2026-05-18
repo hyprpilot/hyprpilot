@@ -71,7 +71,28 @@ export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId 
         limit: resolveLimit()
       })
     },
-    getNextPageParam: (lastPage) => (lastPage?.hasMore ? lastPage.oldestSeq : undefined),
+    // Live `acp:transcript` events are the source of truth for the
+    // head page — `transcript-patcher` mutates the cache directly via
+    // `setQueryData`. `staleTime: Infinity` blocks vue-query's
+    // automatic refetch on focus / mount / interval, which would
+    // otherwise clobber those patches with a stale daemon snapshot.
+    // The captain triggers a true refetch only via instance switch
+    // (which re-keys the query) or via the resync handler on remote
+    // reconnect. The cache lives until the query is garbage-collected
+    // per the parent `QueryClient`'s `gcTime`.
+    staleTime: Infinity,
+    getNextPageParam: (lastPage) => {
+      if (!lastPage?.hasMore) {
+        return undefined
+      }
+
+      // Defensive: an empty page with `hasMore: true` (theoretical
+      // — daemon doesn't currently produce this) would have
+      // `oldestSeq: undefined`. Passing `undefined` to the queryFn
+      // would re-trigger the initial fetch and infinite-loop. Bail
+      // out cleanly instead.
+      return lastPage.oldestSeq ?? undefined
+    },
     // Forward pagination doesn't exist — live events mutate the
     // latest page in place via `setQueryData`. Returning `undefined`
     // keeps `hasPreviousPage` false; callers don't need to gate on it.
