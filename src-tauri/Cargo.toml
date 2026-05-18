@@ -12,10 +12,10 @@ name = "hyprpilot"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2.5", features = [] }
+tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-agent-client-protocol = { version = "0.11", features = ["unstable"] }
+agent-client-protocol = { version = "0.12", features = ["unstable"] }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4.6", features = ["derive", "env"] }
@@ -36,7 +36,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "tracing-log"] }
-tauri = { version = "2.10", features = ["tray-icon", "image-png"] }
+tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
 tauri-plugin-playwright = { version = "0.2", optional = true }
@@ -59,31 +59,31 @@ grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 path-absolutize = "3.1.1"
 git2 = { version = "0.20.4", default-features = false }
-convert_case = "0.6"
+convert_case = "0.11"
 # Remote bridge — TLS axum HTTP+WS server alongside the Tauri overlay
 # + unix socket. axum brings hyper / tokio-rustls for free. rcgen +
 # rustls + rustls-pemfile drive the self-signed cert auto-generation
 # path; bip39 encodes the per-connection pair codes; qrcode renders
 # the same code as a QR for the camera-scan path.
 axum = { version = "0.8", features = ["ws", "http2"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = "0.23"
 rustls-pemfile = "2"
-rcgen = "0.13"
+rcgen = "0.14"
 bip39 = "2"
 qrcode = "0.14"
 base64 = "0.22"
-sha2 = "0.10"
+sha2 = "0.11"
 hostname = "0.4"
 tower-http = { version = "0.6", features = ["trace"] }
 futures-util = "0.3"
-rand = "0.8"
+rand = "0.10"
 time = "0.3.47"
 # Used by the dev-only Vite proxy in `remote/server.rs`. Plain HTTP
 # only (no TLS, no JSON dance) — `default-features = false` keeps
 # rustls / cookies / gzip out of the binary; localhost-only means
 # none of them are needed. HTTP/1.1 is implicit when `http2` is off.
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.13", default-features = false }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp skills`.
 rmcp = { version = "1", features = ["transport-io"] }

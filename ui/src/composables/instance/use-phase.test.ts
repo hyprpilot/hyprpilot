@@ -68,6 +68,26 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Working)
   })
 
+  it('returns working on a fresh-spawn turn even before the `Running` state event arrives (race fix)', () => {
+    // Remote-host race window: actor emits TurnStarted via the
+    // broadcast before the InstanceState=Running event lands. The
+    // composer's `canCancel = phase !== Idle` gate would drop the
+    // stop button for ~50ms each fresh send without this — captain
+    // reported the stop button missing on remote brand-new turns.
+    useActiveInstance().set('A')
+    // Intentionally NOT calling pushInstanceState — runtimeState is
+    // undefined for this slot.
+    pushTurnStarted('A', {
+      turnId: 't-1',
+      sessionId: 's-a',
+      startedAtMs: 0
+    })
+
+    const { phase } = usePhase()
+
+    expect(phase.value).toBe(Phase.Working)
+  })
+
   it('returns streaming when instance is running, a turn is open, and agent chunks have arrived', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
@@ -110,7 +130,9 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Idle)
   })
 
-  it('returns pending when a tool call is running (beats streaming)', () => {
+  it('returns working when a tool call is running (beats streaming)', () => {
+    // Tool-running shares the working hue with text streaming.
+    // Pending (red) is reserved for terminal errors only.
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
@@ -134,10 +156,10 @@ describe('usePhase', () => {
 
     const { phase } = usePhase()
 
-    expect(phase.value).toBe(Phase.Pending)
+    expect(phase.value).toBe(Phase.Working)
   })
 
-  it('returns awaiting when there is a pending permission prompt (beats pending)', () => {
+  it('returns awaiting when there is a pending permission prompt (beats working)', () => {
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
@@ -174,13 +196,23 @@ describe('usePhase', () => {
     expect(phase.value).toBe(Phase.Awaiting)
   })
 
-  it('returns idle when instance state is ended', () => {
+  it('returns idle once the turn ends, regardless of lifecycle state events', () => {
+    // Phase no longer reads `runtimeState`; the turn-ended event is
+    // the sole "we're idle again" signal. Daemon-side, every
+    // `InstanceState::Ended` transition synthesises a `TurnEnded` for
+    // any open turn — that's the path phase tracks.
     useActiveInstance().set('A')
     pushInstanceState('A', InstanceState.Running)
     pushTurnStarted('A', {
       turnId: 't-1',
       sessionId: 's-a',
       startedAtMs: 0
+    })
+    pushTurnEnded('A', {
+      turnId: 't-1',
+      sessionId: 's-a',
+      stopReason: 'end_turn',
+      endedAtMs: 0
     })
     pushInstanceState('A', InstanceState.Ended)
 
