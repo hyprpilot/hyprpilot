@@ -512,6 +512,7 @@ const REMOTE_NAMESPACE_MAP: Record<string, string> = {
   models_set: 'instances/setModel',
   modes_set: 'instances/setMode',
   config_option_set: 'instances/setOption',
+  profile_set: 'instances/setProfile',
   // queue/* + instance/snapshot/queue have first-class JSON-RPC
   // namespaces; routing through `tauri/queue_*` / `tauri/instance_*`
   // would require duplicate dispatch on the daemon side. Address the
