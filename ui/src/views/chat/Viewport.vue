@@ -905,7 +905,19 @@ defineExpose({ scrollEl })
           </template>
 
           <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-            <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
+            <template v-if="entry.turn.role === TurnRole.Agent">
+              <Body v-if="entry.turn.text.length > 0" :role="Role.Assistant" :text="entry.turn.text" markdown />
+              <!-- Agent attachments (`AgentAttachment` transcript items)
+                 rendered here. nvim's `render_attachment` handles this
+                 explicitly; the Vue UI was silently dropping the
+                 attachments array on agent turns because the previous
+                 template only rendered `<Attachments>` in the user branch. -->
+              <Attachments
+                v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+                :attachments="entry.turn.attachments"
+                @open="(att) => emit('attachment-open', att)"
+              />
+            </template>
             <template v-else>
               <Body :role="Role.User" :text="entry.turn.text" markdown />
               <Attachments
