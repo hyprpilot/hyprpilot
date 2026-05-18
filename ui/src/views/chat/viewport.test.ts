@@ -322,6 +322,15 @@ describe('Viewport.vue', () => {
     invoke.mockClear()
     invoke.mockResolvedValueOnce(chatPage([], false))
 
+    // Flip `hasUserScrolled` true via a real gesture — the IO
+    // callback now gates on this so mount-time intersections during
+    // `useStickToBottom`'s `scrollToBottom` write don't spuriously
+    // fire a backward fetch before the captain has scrolled.
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+
+    root.dispatchEvent(new PointerEvent('pointerdown'))
+    await flushPromises()
+
     // Simulate the sentinel entering the viewport. The observer
     // callback runs `viewport.fetchNextPage()` which invokes
     // `instance_snapshot_chat` with `before = oldestSeq` of the

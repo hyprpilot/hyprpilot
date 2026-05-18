@@ -455,27 +455,64 @@ const topSentinel = ref<HTMLElement>()
 // preservation is automatic via `useScrollAnchor`'s ResizeObserver
 // — the prepended page grows scrollHeight, which fires resize,
 // which re-locks scrollTop so the captain's reading row stays
-// glued to its pixel position. No more captureBefore /
-// restoreAfter dance.
+// glued to its pixel position.
+//
+// **`root: scrollEl` is load-bearing.** Without it the IO defaults to
+// the document viewport, and `rootMargin` then expands the document
+// viewport — not the `.chat-transcript` scroll container. The
+// "fire fetch when captain is within 720px of the top of the chat"
+// intent translates to "within 720px of the SCREEN TOP" instead,
+// which depends on where the chat is positioned relative to chrome
+// + composer + permission rows. On the Tauri overlay (full-screen
+// WebKitGTK) the offset is small; in the remote SPA it can be
+// hundreds of px, making the trigger fire far too late or not at
+// all. Passing `root: scrollEl` makes `rootMargin` expand the
+// chat scroll-container's own clip rect, matching captain intent.
+//
+// **`hasUserScrolled` guard**: without it the IO can fire on mount
+// during `useStickToBottom`'s `scrollTop = scrollHeight` write —
+// the sentinel briefly intersects the expanded root during DOM
+// settle, triggering a phantom backward fetch before the captain
+// has scrolled at all. Same gate the eviction path uses.
 useIntersectionObserver(
   topSentinel,
   ([entry]) => {
+    log.trace('chat-viewport.sentinel.fire', {
+      isIntersecting: entry?.isIntersecting,
+      intersectionRatio: entry?.intersectionRatio,
+      hasUserScrolled: hasUserScrolled.value,
+      hasNextPage: viewport.hasNextPage.value,
+      isFetchingNextPage: viewport.isFetchingNextPage.value
+    })
+
     if (!entry?.isIntersecting) {
       return
     }
 
+    if (!hasUserScrolled.value) {
+      log.trace('chat-viewport.sentinel.gated-hasUserScrolled')
+
+      return
+    }
+
     if (!viewport.hasNextPage.value) {
+      log.trace('chat-viewport.sentinel.gated-hasNextPage')
+
       return
     }
 
     if (viewport.isFetchingNextPage.value) {
+      log.trace('chat-viewport.sentinel.gated-isFetchingNextPage')
+
       return
     }
+    log.trace('chat-viewport.sentinel.fetch-firing')
     void viewport.fetchNextPage().catch((err: unknown) => {
       log.warn('chat-viewport: backward fetch rejected', undefined, err)
     })
   },
   {
+    root: scrollEl,
     rootMargin: `${LOAD_MORE_SENTINEL_MARGIN_PX}px 0px 0px 0px`,
     threshold: 0
   }
