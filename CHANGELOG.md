@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0](https://github.com/hyprpilot/hyprpilot/compare/v2.1.0...v2.2.0) (2026-05-18)
+
+
+### Features
+
+* **rpc:** instances/setProfile — swap profile under same instance id ([#102](https://github.com/hyprpilot/hyprpilot/issues/102)) ([12f10db](https://github.com/hyprpilot/hyprpilot/commit/12f10db1d4de036b880e7c7ec054fbb08990cf7a))
+* **viewport:** seamless scroll via anchor primitive + custom scrollbar ([#101](https://github.com/hyprpilot/hyprpilot/issues/101)) ([e7d2132](https://github.com/hyprpilot/hyprpilot/commit/e7d213206519df5604727c0751b88ae3a0697329))
+
+
+### Bug Fixes
+
+* **remote:** delta-replay reconnect + mid-turn dedup + loading-earlier ([#99](https://github.com/hyprpilot/hyprpilot/issues/99)) ([b629b4c](https://github.com/hyprpilot/hyprpilot/commit/b629b4c170b89443dacc26647276adbd120daa5d))
+
 ## [2.1.0](https://github.com/hyprpilot/hyprpilot/compare/v2.0.3...v2.1.0) (2026-05-18)
 
 
