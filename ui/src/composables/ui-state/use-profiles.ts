@@ -133,11 +133,17 @@ export function useProfiles(): UseProfilesApi {
  * Seed the singleton from a boot snapshot. Called from
  * `applyBootSnapshot` so the first paint already has the daemon's
  * profile list + selected id — no fetch flicker.
+ *
+ * Also wires the `acp:profile-changed` listener — otherwise the
+ * captain's palette pick (`select(id)` → `profile_set` → daemon
+ * mutates + emits) would never reach `selected.value`, leaving the
+ * header pill / idle session list stuck on the boot-time value.
  */
 export function applyBootProfiles(list: ProfileSummary[], selectedId: string | undefined): void {
   profiles.value = list
   selected.value = selectedId
   initialised = true
+  void subscribe()
 }
 
 /** Test-only hook — clears module state between vitest cases. */

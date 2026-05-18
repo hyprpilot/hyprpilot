@@ -1766,6 +1766,14 @@ pub struct AcpInstance {
     /// restart picks up the new base while preserving the captain's
     /// overlays).
     pub config_patches: Vec<serde_json::Value>,
+    /// Rolling tail of the agent subprocess's stderr — last few lines
+    /// captured by the stderr-drain task. Read by the user-facing
+    /// error path when `cmd_tx.send` fails ("actor closed before
+    /// accepting prompt"), so the captain sees WHY the agent died
+    /// without having to grep the daemon log. Bounded at
+    /// `STDERR_TAIL_CAP` lines so a long-running agent with chatty
+    /// stderr doesn't grow unbounded.
+    pub stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     /// Absolute cwd this instance spawned in (NOT display-formatted —
     /// no `~` collapse). Computed once at `start()` time from
     /// `resolved.agent.cwd` (with `std::env::current_dir()` fallback)
@@ -1783,6 +1791,20 @@ pub struct AcpInstance {
 impl AcpInstance {
     pub async fn current_session_id(&self) -> Option<String> {
         self.session_id.read().await.as_ref().map(|id| id.0.to_string())
+    }
+
+    /// Snapshot the rolling stderr tail (last few lines). Returns an
+    /// empty Vec when no stderr has been captured or when the mutex
+    /// is poisoned (lock poisoning means the stderr-drain task
+    /// panicked — fall through cleanly so the user-facing error
+    /// path doesn't compound the failure). Caller joins the lines
+    /// for display.
+    #[must_use]
+    pub fn recent_stderr(&self) -> Vec<String> {
+        self.stderr_tail
+            .lock()
+            .map(|buf| buf.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Snapshot the captain-set name. Returns `None` when the captain
@@ -1884,6 +1906,7 @@ impl AcpInstance {
             tool_calls: Arc::new(tokio::sync::RwLock::new(ToolCallCache::default())),
             mirror,
             config_patches: Vec::new(),
+            stderr_tail: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             cwd: "/tmp/test-stub".into(),
         }
     }
@@ -1960,6 +1983,9 @@ impl AcpInstance {
         }
 
         let cmd_tx_self = cmd_tx.clone();
+        let stderr_tail = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::with_capacity(
+            STDERR_TAIL_CAP,
+        )));
         let instance = AcpInstance {
             key,
             agent_id: resolved.agent.id.clone(),
@@ -1972,10 +1998,12 @@ impl AcpInstance {
             tool_calls: tool_calls.clone(),
             mirror: mirror.clone(),
             config_patches,
+            stderr_tail: stderr_tail.clone(),
             cwd: cwd_absolute,
         };
 
         tokio::spawn(run(RunParams {
+            stderr_tail,
             resolved,
             instance_id,
             cmd_rx,
@@ -2095,7 +2123,18 @@ struct RunParams {
     permissions: Arc<dyn PermissionController>,
     mcps: Option<Arc<crate::mcp::MCPsRegistry>>,
     commands_cache: Option<crate::completion::source::commands::CommandsCache>,
+    /// Rolling stderr tail — shared with the `AcpInstance` handle so
+    /// out-of-actor consumers (the submit_prompt / list_sessions error
+    /// paths) can read the last few lines when the agent dies before
+    /// the actor accepts a command.
+    stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
 }
+
+/// Cap on stderr lines kept in the rolling tail. 20 lines is plenty
+/// of context for the bunx-cache-miss / agent-startup-failure case
+/// without growing the per-instance heap when long-lived agents stream
+/// chatty stderr.
+const STDERR_TAIL_CAP: usize = 20;
 
 /// the child process, the dispatch loop. Spawned by
 /// [`AcpInstance::start`].
@@ -2132,6 +2171,7 @@ async fn run(params: RunParams) {
         permissions,
         mcps,
         commands_cache,
+        stderr_tail,
     } = params;
     let agent_id = resolved.agent.id.clone();
     let starting_event = InstanceEvent::State {
@@ -2204,12 +2244,26 @@ async fn run(params: RunParams) {
     {
         use tokio::io::{AsyncBufReadExt, BufReader};
         let agent_for_stderr = agent_id.clone();
+        let tail_for_stderr = stderr_tail.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
                         tracing::info!(target: "agent_stderr", agent = %agent_for_stderr, "{line}");
+                        // Also push to the rolling tail so the
+                        // user-facing "actor closed before accepting
+                        // prompt" path can surface WHY. Lock briefly,
+                        // append, evict from the front when over the
+                        // cap. Mutex (not RwLock) — this is the only
+                        // writer, contention is the read on a
+                        // submit-failure path.
+                        if let Ok(mut buf) = tail_for_stderr.lock() {
+                            if buf.len() == STDERR_TAIL_CAP {
+                                buf.pop_front();
+                            }
+                            buf.push_back(line);
+                        }
                     }
                     Ok(None) => break,
                     Err(err) => {

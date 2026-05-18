@@ -455,7 +455,13 @@ impl AcpAdapter {
         patches: &[Value],
     ) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
         let cfg = self.read_config().clone();
-        let result = resolve_into_instance_and_profile(&cfg, agent_id, profile_id, patches)?;
+        // Caller-supplied profile_id wins; otherwise fall back to the
+        // daemon-singleton runtime selection (mutable via `profile/set`).
+        // The inner `base_profile_for_patches` falls further through to
+        // `[profile] default` when both are unset.
+        let runtime_default = self.selected_profile_id();
+        let effective_profile_id = profile_id.or(runtime_default.as_deref());
+        let result = resolve_into_instance_and_profile(&cfg, agent_id, effective_profile_id, patches)?;
         tracing::debug!(
             patch_count = patches.len(),
             root_patch_count = cfg.patches.as_deref().map_or(0, <[_]>::len),
@@ -620,7 +626,13 @@ impl AcpAdapter {
         profile_id: Option<&str>,
     ) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
         let cfg = self.read_config();
-        resolve_into_instance_and_profile(&cfg, agent_id, profile_id, &[])
+        // Caller-supplied profile_id wins; otherwise fall back to the
+        // daemon-singleton runtime selection (mutable via `profile/set`).
+        // The inner `base_profile_for_patches` falls further through to
+        // `[profile] default` when both are unset.
+        let runtime_default = self.selected_profile_id();
+        let effective_profile_id = profile_id.or(runtime_default.as_deref());
+        resolve_into_instance_and_profile(&cfg, agent_id, effective_profile_id, &[])
     }
 
     /// Spawn-or-reuse for a given `InstanceKey`. Caller supplies the
@@ -751,10 +763,12 @@ impl AcpAdapter {
         // the moment-in-time the captain submitted.
         let was_busy = self.busy_instance_ids().await.iter().any(|id| id == &key.as_string());
 
-        let cmd_tx = self
-            .cmd_tx_for(&key)
+        let handle = self
+            .registry
+            .get(key)
             .await
             .ok_or_else(|| RpcError::internal_error("instance actor vanished before accepting prompt"))?;
+        let cmd_tx = handle.cmd_tx.clone();
 
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
@@ -768,7 +782,7 @@ impl AcpAdapter {
                 force_dispatch: false,
                 reply: reply_tx,
             })
-            .map_err(|_| RpcError::internal_error("instance actor closed before accepting prompt"))?;
+            .map_err(|_| RpcError::internal_error(prompt_actor_closed_message(&handle)))?;
 
         let session_id = match self.registry.get(key).await {
             Some(h) => h.current_session_id().await,
@@ -1056,7 +1070,15 @@ impl AcpAdapter {
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
             .send(InstanceCommand::ListSessions { cwd, reply: reply_tx })
-            .map_err(|_| RpcError::internal_error("instance actor closed before accepting list request"))?;
+            .map_err(|_| {
+                let summary = ephemeral
+                    .as_ref()
+                    .map(list_actor_closed_summary)
+                    .unwrap_or_else(|| "actor closed".into());
+                RpcError::internal_error(format!(
+                    "instance actor closed before accepting list request: {summary}"
+                ))
+            })?;
 
         let mut response = reply_rx
             .await
@@ -2005,6 +2027,35 @@ fn resolve_into_instance_and_profile(
     }
 
     Ok((resolved, patched))
+}
+
+/// User-facing "agent exited before accepting our prompt" message.
+/// Reads the rolling stderr tail off the handle so the captain sees
+/// WHY the agent died (typical: bunx cache miss, missing OAuth token,
+/// model name rejected) without having to grep the daemon log.
+fn prompt_actor_closed_message(handle: &AcpInstance) -> String {
+    let tail = handle.recent_stderr();
+    if tail.is_empty() {
+        "instance actor closed before accepting prompt (no stderr captured — agent died silently)".into()
+    } else {
+        format!(
+            "instance actor closed before accepting prompt — agent stderr (last {} lines): {}",
+            tail.len(),
+            tail.join(" / ")
+        )
+    }
+}
+
+/// Same shape for the `list_sessions` ephemeral-actor path. The
+/// ephemeral handle is owned locally (never registered) — we read its
+/// stderr tail directly.
+fn list_actor_closed_summary(handle: &AcpInstance) -> String {
+    let tail = handle.recent_stderr();
+    if tail.is_empty() {
+        "no stderr captured".into()
+    } else {
+        format!("agent stderr (last {}): {}", tail.len(), tail.join(" / "))
+    }
 }
 
 fn map_adapter_error_to_rpc(err: AdapterError) -> RpcError {

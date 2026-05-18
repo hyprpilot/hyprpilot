@@ -213,4 +213,36 @@ describe('useProfiles', () => {
     expect(wrapper.get('[data-testid="selected"]').text()).toBe('strict')
     expect(invokeMock).not.toHaveBeenCalled()
   })
+
+  it('applyBootProfiles wires the acp:profile-changed listener (palette pick propagates)', async() => {
+    // Regression: applyBootProfiles used to set initialised=true
+    // without calling subscribe(), so the daemon's
+    // `acp:profile-changed` event never reached `selected.value`.
+    // Captains who picked a profile via the palette saw the daemon
+    // accept the change (toast green) but the header pill + idle
+    // session list stayed stuck on the boot-time value until reload.
+    applyBootProfiles(
+      [
+        {
+          id: 'ask', agent: 'claude-code', isDefault: true
+        },
+        {
+          id: 'strict', agent: 'claude-code', isDefault: false
+        }
+      ],
+      'ask'
+    )
+    const wrapper = mount(host())
+
+    await flushAsync()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('ask')
+
+    const cb = listeners.get(TauriEvent.AcpProfileChanged)
+
+    expect(cb, 'applyBootProfiles must subscribe to acp:profile-changed').toBeDefined()
+    cb!({ payload: { profileId: 'strict' } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('strict')
+  })
 })
