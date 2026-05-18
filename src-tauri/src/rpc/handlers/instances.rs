@@ -145,10 +145,11 @@ struct SetOptionParams {
 /// instance under the SAME `instance_id`. Plugin / overlay chrome
 /// keyed by `instance_id` (chat buffers, window state, queue strip,
 /// permission row) stays addressable across the swap. The actor is
-/// torn down + re-spawned under the new profile; when both profiles
-/// resolve to the same agent_id, the existing session_id is reused
-/// via `Bootstrap::Resume` so the conversation history carries over.
-/// Different agent_ids force a fresh session.
+/// torn down + re-spawned under the new profile in `Bootstrap::ListOnly`
+/// — no session is bound, the agent process serves `sessions/list`
+/// for the new profile's history, and the captain picks a session
+/// via `session_load` (or a fresh prompt requires binding a session
+/// first).
 ///
 /// `withConfig` is `Option<Vec<Value>>`: `None` (field absent) → keep
 /// the captain's stored overlays from the original spawn / last

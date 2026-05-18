@@ -396,10 +396,11 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// `instances/setProfile` — swap the profile on a live instance,
     /// keeping the same `InstanceKey` so chrome keyed by it stays
-    /// addressable. Best-effort session preservation when both
-    /// profiles target the same `agent_id`; fresh session otherwise.
-    /// `with_config = None` preserves the captain's stored overlays;
-    /// `Some(vec)` replaces them (empty list explicitly wipes).
+    /// addressable. The new actor boots in list-only mode (no
+    /// session bound) so the captain can pick history via
+    /// `sessions/list` + `session_load`. `with_config = None`
+    /// preserves the captain's stored overlays; `Some(vec)` replaces
+    /// them (empty list explicitly wipes).
     async fn set_session_profile(
         &self,
         _instance_id: &str,

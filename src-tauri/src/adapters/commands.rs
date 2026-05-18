@@ -434,10 +434,13 @@ pub async fn config_option_set(
 /// Swap the active profile for the addressed instance under the
 /// SAME `instance_id`. Frontends keyed by `instance_id` (chat
 /// buffers, header chrome, queue strip, permission row) stay
-/// addressable across the swap. Best-effort session preservation
-/// when both profiles target the same `agent_id`; fresh session
-/// otherwise. Reply's `sessionPreserved` field signals which path
-/// ran so frontends can decide whether to wipe their cache.
+/// addressable across the swap. The new actor boots in list-only
+/// mode — no session is bound — so the captain can call
+/// `sessions/list` against the new profile's history and pick a
+/// session to load via `session_load`. Prompts against an
+/// unbound actor reject with "no live session in list-only
+/// actor"; bind a session first (either pick from `sessions/list`
+/// or hit "new session" to mint a Fresh one).
 #[tauri::command]
 pub async fn profile_set(
     adapter: AdapterState<'_>,

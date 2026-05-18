@@ -1401,21 +1401,23 @@ impl AcpAdapter {
     }
 
     /// Swap the profile on a live instance under the SAME
-    /// `InstanceKey`. Mirrors `restart_instance` (same
-    /// `drop_preserving_slot` → `resolve_with_patches` →
-    /// `AcpInstance::start` chain) but with a captain-supplied new
-    /// `profile_id` and best-effort session preservation.
+    /// `InstanceKey`. Tears down the live actor and re-spawns at the
+    /// same slot under `Bootstrap::ListOnly` — the new actor's agent
+    /// process is up and `sessions/list` works, but no session is
+    /// bound. Captains pick history via `sessions/list` →
+    /// `session_load`; first prompt against an unbound actor would
+    /// error with "no live session in list-only actor", which is the
+    /// signal to commit on a session before resuming.
     ///
-    /// **Session preservation rule**: when the new profile resolves to
-    /// the same `agent_id` as the existing instance AND the existing
-    /// actor advertises a `session_id`, the new actor boots with
-    /// `Bootstrap::Resume(session_id)` so the ACP `session/load`
-    /// handshake replays the prior conversation. When the agent
-    /// changes (e.g. swapping `claude-acp` → `codex-acp`), the wire
-    /// has no portable session shape, so the new actor boots
-    /// `Bootstrap::Fresh`. The reply's `sessionPreserved` field
-    /// surfaces which path ran so plugin-side chat-buffer wipe logic
-    /// can decide whether to keep history or clear it.
+    /// **Why ListOnly, not Resume(prior_session)**: ACP agents scope
+    /// persisted sessions by cwd. The new profile's cwd is rarely the
+    /// old profile's cwd, so auto-Resume against the prior session id
+    /// would either fail at the agent (`Resource not found`) or
+    /// silently graft the OLD session's transcript onto the NEW
+    /// profile's `system_prompt` / `mcps` / `skills` — never what
+    /// the captain asked for. set_profile is a deliberate config
+    /// swap; session continuity is the captain's call, not the
+    /// daemon's.
     ///
     /// **`with_config` semantic**: `None` keeps the captain's stored
     /// overlays from the original spawn / last restart (carry-over);
@@ -1444,18 +1446,18 @@ impl AcpAdapter {
         let existing_agent_id = existing.agent_id.clone();
         let existing_profile_id = existing.profile_id.clone();
         let existing_patches = existing.config_patches.clone();
-        let existing_session_id = existing.current_session_id().await;
         drop(existing);
 
         // Short-circuit: same profile + no overlays change is a no-op.
-        // Saves a costly teardown / respawn / session-load round-trip
-        // when a sloppy palette double-fires the same selection.
+        // Saves a costly teardown / respawn round-trip when a sloppy
+        // palette double-fires the same selection. The actor's
+        // current bootstrap state (whatever session is or isn't bound)
+        // is preserved — the captain didn't ask for a swap.
         if existing_profile_id.as_deref() == Some(profile_id) && with_config.is_none() {
             return Ok(serde_json::json!({
                 "instanceId": key.as_string(),
                 "profileId": profile_id,
                 "agentId": existing_agent_id,
-                "sessionPreserved": existing_session_id.is_some(),
             }));
         }
 
@@ -1471,18 +1473,6 @@ impl AcpAdapter {
         };
         let (resolved, effective_profile) = self.resolve_with_patches(None, Some(profile_id), &next_patches)?;
         let new_agent_id = resolved.agent.id.clone();
-
-        // Decide session preservation. Same agent + existing session
-        // → resume; everything else → fresh.
-        let bootstrap = if new_agent_id == existing_agent_id {
-            match &existing_session_id {
-                Some(sid) => Bootstrap::Resume(sid.clone()),
-                None => Bootstrap::Fresh,
-            }
-        } else {
-            Bootstrap::Fresh
-        };
-        let session_preserved = matches!(bootstrap, Bootstrap::Resume(_));
 
         // Tear down the live actor under the same key, then re-spawn
         // at the SAME slot so insertion-order + focus pointer stay
@@ -1501,7 +1491,7 @@ impl AcpAdapter {
             key,
             profile_id: profile_id_for_instance.clone(),
             events_tx: self.registry.events_tx(),
-            bootstrap,
+            bootstrap: Bootstrap::ListOnly,
             permissions: self.permissions.clone(),
             mcps,
             skills,
@@ -1517,7 +1507,6 @@ impl AcpAdapter {
             "instanceId": key.as_string(),
             "profileId": profile_id_for_instance,
             "agentId": new_agent_id,
-            "sessionPreserved": session_preserved,
         }))
     }
 
