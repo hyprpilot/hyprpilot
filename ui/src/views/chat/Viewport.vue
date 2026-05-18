@@ -260,9 +260,9 @@ function releaseStickAndMark(): void {
   releaseStick()
 }
 
-// `stuck` is the auto-scroll signal — strict 64px-from-bottom
-// threshold so a captain reading 1 viewport above the foot
-// doesn't get yanked back on every chunk. We do NOT use it for
+// `stuck` is the auto-scroll signal — 128px-from-bottom threshold
+// (tuned in `useStickToBottom`) so a captain reading 1 viewport
+// above the foot doesn't get yanked back on every chunk. We do NOT use it for
 // eviction; eviction fires from `onScroll` whenever the captain
 // is within ~one viewport of the bottom, which is wider than the
 // auto-scroll window so cache cleanup is prompt without
@@ -550,7 +550,7 @@ watch(
 // below; this handler only drives the page-eviction half: when the
 // captain is within ~one viewport of the bottom AND the cache
 // exceeds `MAX_PAGES_KEPT`, drop the trailing pages. Wider than
-// `useStickToBottom`'s strict 64px so eviction fires the moment the
+// `useStickToBottom`'s stick threshold so eviction fires the moment the
 // captain returns to the live area, not only at the absolute foot.
 // The composable's eviction is idempotent — we can safely call it
 // on every scroll tick that satisfies the near-bottom test; it's a

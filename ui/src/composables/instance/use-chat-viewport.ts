@@ -11,7 +11,7 @@
  *    serves older pages on backward scroll. Triggered from the
  *    body view's scroll handler whenever the captain is within
  *    ~one viewport of bottom (wider than `useStickToBottom`'s
- *    strict 64px so cleanup is prompt without disturbing
+ *    stick threshold so cleanup is prompt without disturbing
  *    read-history flow). The body view schedules the mutation via
  *    `requestAnimationFrame` so the cache write lands outside the
  *    scroll-event task — see Viewport.vue's onScroll for the
@@ -243,7 +243,7 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
   // captain is in the live area, dropping older pages won't yank
   // anything they're reading." The body view calls this from its
   // scroll handler when the captain is within ~one viewport of
-  // bottom — wider than `useStickToBottom`'s 64px threshold (which
+  // bottom — wider than `useStickToBottom`'s stick threshold (which
   // gates the auto-scroll behaviour). The wider eviction trigger
   // means the cache cleans up promptly when the captain returns
   // to live, instead of waiting for the strict stuck-at-bottom

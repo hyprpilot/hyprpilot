@@ -25,7 +25,16 @@ export function useStickToBottom(
   scrollToBottom: () => void
   release: () => void
 } {
-  const threshold = options?.threshold ?? 64
+  // Captain-tuned default. The earlier 64px was tight enough that a
+  // single thumb-swipe on mobile or a small trackpad nudge would
+  // reliably overshoot and unstick the viewport — captain reported
+  // stick-to-bottom as "a bit unreliable now". 128px is roughly half
+  // a screenful of breathing room without making the chevron hide
+  // too eagerly (192 was the first attempt; captain tuned down to
+  // 128). The chevron at `Viewport.vue::scroll-to-bottom` reads the
+  // same `stuck` signal — "not snapped in ⇒ show the button" — so
+  // both behaviors stay aligned by virtue of the shared signal.
+  const threshold = options?.threshold ?? 128
   const stuck = ref(true)
   /// Set when `scrollToBottom` writes `scrollTop` and the assignment
   /// will actually move the scroll position (i.e. fire a `scroll`
@@ -40,7 +49,7 @@ export function useStickToBottom(
   /// Previous `scrollTop` observed by `onScroll`. Drives upward-
   /// gesture detection — any non-suppressed scroll event whose
   /// `scrollTop` is lower than `prevScrollTop` flips `stuck = false`
-  /// immediately, without waiting for the 64px threshold. Captures
+  /// immediately, without waiting for the stick threshold. Captures
   /// the OS scrollbar drag (native widget — fires `scroll` but NOT
   /// `pointerdown` on the DOM element) and prevents small-wheel-up
   /// snap-back during streaming (a 20px wheel-up wouldn't cross the
@@ -128,7 +137,7 @@ export function useStickToBottom(
       return
     }
     // Upward gesture? Exit stick mode immediately — don't wait for the
-    // 64px threshold. Catches both:
+    // stick threshold. Catches both:
     //   1. Wheel-up of any size, even a single small notch (the captain
     //      reported the chat snapping back to the foot when they nudged
     //      the wheel up during streaming because the gesture didn't
