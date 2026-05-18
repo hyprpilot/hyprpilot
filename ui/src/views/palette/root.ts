@@ -5,7 +5,7 @@
  * the real content.
  */
 
-import { openCwdLeaf } from './cwd'
+import { pickCwd } from './cwd'
 import { openDaemonLeaf } from './daemon'
 import { openEffortLeaf } from './effort'
 import { openInstanceLeaf } from './instance'
@@ -162,7 +162,7 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       return
 
     case PaletteLeafId.Cwd:
-      openCwdLeaf()
+      void pickCwd()
 
       return
 

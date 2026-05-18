@@ -102,7 +102,6 @@ export enum TauriCommand {
   GetWindowState = 'get_window_state',
   WindowToggle = 'window_toggle',
   GetGitStatus = 'get_git_status',
-  PathsResolve = 'paths_resolve',
   DaemonRpc = 'daemon_rpc',
   ReadFileForAttachment = 'read_file_for_attachment',
   SessionSubmit = 'session_submit',
@@ -179,7 +178,6 @@ export interface TauriCommandArgs {
   [TauriCommand.GetWindowState]: void
   [TauriCommand.WindowToggle]: void
   [TauriCommand.GetGitStatus]: { path: string }
-  [TauriCommand.PathsResolve]: { raw: string; cwdBase?: string }
   [TauriCommand.DaemonRpc]: { method: string; params?: unknown }
   [TauriCommand.ReadFileForAttachment]: { path: string }
   [TauriCommand.SessionSubmit]: SubmitArgs
@@ -235,14 +233,6 @@ export interface TauriCommandResult {
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.WindowToggle]: boolean
   [TauriCommand.GetGitStatus]: GitStatus | null
-  /**
-   * Captain-typed → absolute resolution. `null` when the input is empty
-   * or relative-with-no-cwd-base. The daemon owns `${VAR}` interpolation
-   * (process env), `~` expansion ($HOME), and relative→absolute join
-   * (cwd_base) so the webview doesn't re-derive logic that needs OS
-   * access.
-   */
-  [TauriCommand.PathsResolve]: string | null
   [TauriCommand.DaemonRpc]: unknown
   [TauriCommand.ReadFileForAttachment]: { path: string; body: string; binary: boolean; truncated: boolean }
   [TauriCommand.SessionSubmit]: SubmitResult

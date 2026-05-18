@@ -35,7 +35,6 @@ const props = withDefaults(
     cwdFull?: string
     gitStatus?: GitStatus
     counts?: BreadcrumbCount[]
-    cwdExpanded?: boolean
     /// Total live-instance count. Renders the row-1 instances pill
     /// whenever ≥ 1 so the captain always has a click target into the
     /// instance palette (even when there's only one running — the
@@ -46,7 +45,6 @@ const props = withDefaults(
   {
     phase: Phase.Idle,
     counts: () => [],
-    cwdExpanded: false,
     instancesCount: 0
   }
 )
@@ -160,7 +158,7 @@ const rowOneBg = computed(() => {
       </div>
 
       <div class="frame-row frame-row-2">
-        <button type="button" class="frame-cwd" :aria-expanded="cwdExpanded" :title="cwdFull ?? cwd" @click="emit('toggleCwd')">
+        <button type="button" class="frame-cwd" :title="cwdFull ?? cwd" @click="emit('toggleCwd')">
           <span v-if="cwd" class="frame-cwd-value">{{ cwd }}</span>
           <span v-else class="frame-cwd-value frame-cwd-value-empty">—</span>
           <span v-if="hasGit" class="frame-cwd-git">
