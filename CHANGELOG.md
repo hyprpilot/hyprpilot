@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/hyprpilot/hyprpilot/compare/v2.0.2...v2.0.3) (2026-05-18)
+
+
+### Bug Fixes
+
+* **chat:** sentinel-driven backward pagination via TanStack canonical pattern ([#95](https://github.com/hyprpilot/hyprpilot/issues/95)) ([e97c3d1](https://github.com/hyprpilot/hyprpilot/commit/e97c3d1456d9d870ece6c3a193517e7bf7eadf8c))
+
 ## [2.0.2](https://github.com/hyprpilot/hyprpilot/compare/v2.0.1...v2.0.2) (2026-05-18)
 
 
