@@ -322,6 +322,15 @@ describe('Viewport.vue', () => {
     invoke.mockClear()
     invoke.mockResolvedValueOnce(chatPage([], false))
 
+    // Flip `hasUserScrolled` true via a real gesture — the IO
+    // callback now gates on this so mount-time intersections during
+    // `useStickToBottom`'s `scrollToBottom` write don't spuriously
+    // fire a backward fetch before the captain has scrolled.
+    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
+
+    root.dispatchEvent(new PointerEvent('pointerdown'))
+    await flushPromises()
+
     // Simulate the sentinel entering the viewport. The observer
     // callback runs `viewport.fetchNextPage()` which invokes
     // `instance_snapshot_chat` with `before = oldestSeq` of the
@@ -520,13 +529,16 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
-  it('defers near-bottom eviction to requestAnimationFrame', async() => {
+  it('defers stuck eviction to requestAnimationFrame', async() => {
     // Eviction inside the scroll-event task removes DOM nodes from
     // the TOP of the scroller while the browser is mid-gesture,
-    // confusing scroll-anchoring + concurrent stick-to-bottom
-    // observers. The body view wraps the trigger in rAF so the
-    // cache mutation lands on the next frame, after the browser
-    // has finished the current scroll tick.
+    // confusing concurrent stick-to-bottom observers. The body view
+    // wraps the trigger in rAF so the cache mutation lands on the
+    // next frame, after the browser has finished the current scroll
+    // tick. The current gate fires when `stuck=true` (captain at the
+    // foot, foot-follow path owns scroll) AND `hasUserScrolled=true`
+    // (captain has actually engaged — distinguishing from mount-time
+    // synthetic scrolls).
     const page = chatPage(
       [
         {
@@ -545,9 +557,15 @@ describe('Viewport.vue', () => {
 
     const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
 
-    // Position the captain within one viewport of the bottom. Both
-    // scrollHeight and clientHeight need explicit values for the
-    // distanceFromBottom <= clientHeight check.
+    // `useStickToBottom`'s `stuck` starts true. We want to keep it
+    // true through the rest of the test — wheel-up would flip it to
+    // false via `releaseStickAndAnchor`. Use `pointerdown` to set
+    // `hasUserScrolled` without releasing stick.
+    root.dispatchEvent(new PointerEvent('pointerdown'))
+    await flushPromises()
+
+    // Position the captain at the foot — `useStickToBottom`'s next
+    // `onScroll` sees `nearBottom=true` and keeps `stuck=true`.
     Object.defineProperty(root, 'scrollHeight', {
       configurable: true,
       value: 2000
@@ -556,16 +574,6 @@ describe('Viewport.vue', () => {
       configurable: true,
       value: 800
     })
-
-    // First flip `hasUserScrolled` true with a real input gesture —
-    // the gate listens for `wheel` / `touchstart` / `pointerdown` to
-    // tell captain intent apart from `useStickToBottom` synthetic
-    // scrolls during mount.
-    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }))
-    await flushPromises()
-
-    // Now position within one viewport of the bottom + assert the
-    // rAF-deferred eviction trigger.
     Object.defineProperty(root, 'scrollTop', {
       configurable: true,
       writable: true,

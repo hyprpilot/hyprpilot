@@ -21,6 +21,12 @@ const props = withDefaults(
     /// utilisation + cost. Renders as `120k/200k · $0.74` chips
     /// next to the elapsed pill on assistant turns.
     usage?: TurnUsage
+    /// Daemon-minted seq of the first item in this block. Carried as
+    /// `data-anchor-seq` on the root so `useScrollAnchor` can identify
+    /// the captain's anchor row across re-renders, page evictions, and
+    /// instance flips. Stable per block — `block.startedAt` is set
+    /// when the block is projected and never mutates afterward.
+    anchorSeq?: number
   }>(),
   { live: false }
 )
@@ -68,7 +74,7 @@ const costLabel = computed(() => {
 </script>
 
 <template>
-  <article class="turn" :data-role="role" :data-live="live">
+  <article class="turn" :data-role="role" :data-live="live" :data-anchor-seq="anchorSeq">
     <header class="turn-header">
       <RoleTag :role="role" :label="roleLabel" />
       <div v-if="role === Role.Assistant" class="turn-stats">
@@ -88,20 +94,22 @@ const costLabel = computed(() => {
 
 /* turn lane: 2px stripe, 4px padding-left.
  *
- * `content-visibility: auto` lets the browser skip layout + paint
- * for off-screen turn rows — the chat surface's non-virtualized
- * substitute for windowing. Together with `contain-intrinsic-size:
- * auto Npx`, the browser keeps the scroll geometry honest by
- * remembering each row's last-rendered size; rows that haven't
- * been laid out yet get the placeholder height (240px ≈ median
- * observed turn). Supported on WebKit2GTK 4.1 + Chromium 148+. */
+ * `content-visibility: auto` was previously set here as a paint-cost
+ * optimization, but it makes `offsetTop` of off-screen rows reflect
+ * the `contain-intrinsic-size` placeholder, not the rendered height.
+ * `useScrollAnchor` reads `offsetTop` to keep the captain's reading
+ * line glued to the same row across content growth above — the
+ * placeholder values broke that math for any anchor row in the skip
+ * zone. The page-trim policy already caps live DOM to ~3 pages
+ * (~150 rows); modern Vue handles that without paint cost being a
+ * bottleneck. Production chat apps with anchor-based scroll (Element,
+ * Telegram) likewise don't use `content-visibility` for their
+ * message lists for exactly this reason. */
 .turn {
   @apply flex flex-col py-1;
   padding-left: 0.25rem;
   border-left: 0.125rem solid var(--theme-accent-user);
   position: relative;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 240px;
 }
 
 .turn[data-role='assistant'] {

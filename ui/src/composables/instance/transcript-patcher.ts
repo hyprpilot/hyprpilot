@@ -222,9 +222,6 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     let baseSeq = (head.latestSeq ?? 0) + 1
     let lastSeq = head.latestSeq ?? 0
     let applied = 0
-    let mergedCount = 0
-    let skipped = 0
-    let dedupedSeq = 0
 
     for (const payload of batch) {
       if (payload.instanceId !== instanceId) {
@@ -233,7 +230,6 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       const incoming = liveItemFor(payload, baseSeq)
 
       if (!incoming) {
-        skipped += 1
         continue
       }
 
@@ -244,14 +240,10 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       // synthesized seqs never hit this branch because the
       // synthesized counter is monotonic per flush.
       if (payload.seq !== undefined && payload.seq <= lastSeq) {
-        dedupedSeq += 1
         continue
       }
-      const merged = mergeToolCallUpdate(nextItems, incoming)
 
-      if (merged) {
-        mergedCount += 1
-      } else {
+      if (!mergeToolCallUpdate(nextItems, incoming)) {
         nextItems.push(incoming)
       }
       baseSeq = incoming.seq + 1
@@ -263,16 +255,6 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     if (applied === 0) {
       return old
     }
-
-    log.trace('transcript-patcher.batch-applied', {
-      instanceId,
-      batchSize: batch.length,
-      applied,
-      merged: mergedCount,
-      skipped,
-      dedupedSeq,
-      headItemCount: nextItems.length
-    })
 
     const nextHead: ChatSnapshot = {
       items: nextItems,

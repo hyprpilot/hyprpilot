@@ -4,15 +4,19 @@
  * Combines `useInstanceChatInfiniteQuery` (the data layer) with the
  * two concerns the body view needs on top:
  *
- * 1. **Page-trim policy** — when the viewport is at the bottom AND
- *    the cache holds more than `MAX_PAGES_KEPT` pages, drop pages
- *    `0..(N-MAX_PAGES_KEPT)`. Keeps memory bounded under long
+ * 1. **Page-trim policy** — when the cache holds more than
+ *    `MAX_PAGES_KEPT` pages AND the captain is "in the live area"
+ *    (either `stuck=true` at the foot, or within one viewport of
+ *    the foot), drop the oldest pages so only the newest
+ *    `MAX_PAGES_KEPT` remain. Keeps memory bounded under long
  *    sessions without user-visible truncation: the daemon always
- *    serves older pages on backward scroll. Triggered from the
- *    body view's scroll handler whenever the captain is within
- *    ~one viewport of bottom (wider than `useStickToBottom`'s
- *    stick threshold so cleanup is prompt without disturbing
- *    read-history flow). The body view schedules the mutation via
+ *    serves older pages on backward scroll. The combined gate
+ *    `stuck || within-one-viewport-of-foot` is wider than the
+ *    `useStickToBottom` stick threshold (128px) so cleanup is
+ *    prompt when the captain returns from history reading, but
+ *    narrow enough that mid-history scrolls don't risk evicting
+ *    the row the anchor primitive (`use-scroll-anchor`) is locked
+ *    to. The body view schedules the mutation via
  *    `requestAnimationFrame` so the cache write lands outside the
  *    scroll-event task — see Viewport.vue's onScroll for the
  *    timing rationale.
@@ -215,6 +219,17 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
   // first (page 0); within a page items are oldest-first. To produce
   // an oldest-first stream we walk pages from last to first, then
   // each page's items in their natural order.
+  //
+  // Seq dedup as defense in depth: the daemon's `before` cursor is
+  // exclusive (`mirror.rs::chat_snapshot` filters `seq >= cursor`),
+  // so no overlap is expected today. But the patcher mutates page[0]
+  // independently of backward fetches, and `setQueryData` can race
+  // a backward fetch in flight — if a live event for a seq that's
+  // also returned by the racing fetch lands in both pages, the
+  // projector would render the item twice. A Set-keyed seq filter
+  // is O(N) on a list capped at ~150 rows, basically free, and
+  // closes both the cross-page-boundary race AND any future
+  // off-by-one bug in cursor handling.
   const items = computed<SeqTranscriptItem[]>(() => {
     const data = query.data.value as PatchableInfiniteData | undefined
 
@@ -222,6 +237,7 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
       return []
     }
     const out: SeqTranscriptItem[] = []
+    const seen = new Set<number>()
 
     for (let p = data.pages.length - 1; p >= 0; p -= 1) {
       const page = data.pages[p]
@@ -231,6 +247,10 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
       }
 
       for (const it of page.items) {
+        if (seen.has(it.seq)) {
+          continue
+        }
+        seen.add(it.seq)
         out.push(it)
       }
     }
@@ -256,18 +276,10 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     }
     queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', id], (old) => {
       if (!old) {
-        log.trace('snapshot.page-trim.skipped-no-cache', { instanceId: id })
-
         return old
       }
 
       if (old.pages.length <= MAX_PAGES_KEPT) {
-        log.trace('snapshot.page-trim.skipped-within-budget', {
-          instanceId: id,
-          pages: old.pages.length,
-          max: MAX_PAGES_KEPT
-        })
-
         return old
       }
       // Page 0 is newest. We keep the newest `MAX_PAGES_KEPT` pages

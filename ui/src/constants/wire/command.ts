@@ -102,13 +102,14 @@ export enum TauriCommand {
   GetWindowState = 'get_window_state',
   WindowToggle = 'window_toggle',
   GetGitStatus = 'get_git_status',
-  PathsResolve = 'paths_resolve',
   DaemonRpc = 'daemon_rpc',
   ReadFileForAttachment = 'read_file_for_attachment',
   SessionSubmit = 'session_submit',
   SessionCancel = 'session_cancel',
   AgentsList = 'agents_list',
   ProfilesList = 'profiles_list',
+  ProfileGet = 'profile_get',
+  ProfileSet = 'profile_set',
   SessionList = 'session_list',
   SessionLoad = 'session_load',
   SessionsInfo = 'sessions_info',
@@ -162,6 +163,7 @@ export enum TauriEvent {
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
   AcpQueueChanged = 'acp:queue-changed',
+  AcpProfileChanged = 'acp:profile-changed',
   ComposerDraftAppend = 'composer:draft-append',
   RemotePairRequest = 'remote:pair-request',
   RemotePairResolved = 'remote:pair-resolved'
@@ -179,13 +181,14 @@ export interface TauriCommandArgs {
   [TauriCommand.GetWindowState]: void
   [TauriCommand.WindowToggle]: void
   [TauriCommand.GetGitStatus]: { path: string }
-  [TauriCommand.PathsResolve]: { raw: string; cwdBase?: string }
   [TauriCommand.DaemonRpc]: { method: string; params?: unknown }
   [TauriCommand.ReadFileForAttachment]: { path: string }
   [TauriCommand.SessionSubmit]: SubmitArgs
   [TauriCommand.SessionCancel]: CancelArgs
   [TauriCommand.AgentsList]: void
   [TauriCommand.ProfilesList]: void
+  [TauriCommand.ProfileGet]: void
+  [TauriCommand.ProfileSet]: { profileId: string }
   [TauriCommand.SessionList]: ListSessionsArgs
   [TauriCommand.SessionLoad]: LoadSessionArgs
   [TauriCommand.SessionsInfo]: SessionsInfoArgs
@@ -235,20 +238,14 @@ export interface TauriCommandResult {
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.WindowToggle]: boolean
   [TauriCommand.GetGitStatus]: GitStatus | null
-  /**
-   * Captain-typed → absolute resolution. `null` when the input is empty
-   * or relative-with-no-cwd-base. The daemon owns `${VAR}` interpolation
-   * (process env), `~` expansion ($HOME), and relative→absolute join
-   * (cwd_base) so the webview doesn't re-derive logic that needs OS
-   * access.
-   */
-  [TauriCommand.PathsResolve]: string | null
   [TauriCommand.DaemonRpc]: unknown
   [TauriCommand.ReadFileForAttachment]: { path: string; body: string; binary: boolean; truncated: boolean }
   [TauriCommand.SessionSubmit]: SubmitResult
   [TauriCommand.SessionCancel]: CancelResult
   [TauriCommand.AgentsList]: { agents: AgentSummary[] }
   [TauriCommand.ProfilesList]: { profiles: ProfileSummary[] }
+  [TauriCommand.ProfileGet]: string | null
+  [TauriCommand.ProfileSet]: { profileId: string }
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
@@ -303,6 +300,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.AcpQueueChanged]: AcpQueueChangedPayload
+  [TauriEvent.AcpProfileChanged]: { profileId: string }
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
   [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
   [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload

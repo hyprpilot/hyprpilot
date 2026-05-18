@@ -53,6 +53,7 @@ import {
   useActiveInstance,
   useAgentRegistry,
   useChatViewport,
+  useScrollAnchor,
   useSessionInfo,
   useSnapshotHydration,
   useStickToBottom,
@@ -64,16 +65,14 @@ import {
 import { format, formatDuration, log } from '@lib'
 
 /// Sentinel `rootMargin` for the intersection-observer-driven
-/// backward fetch. The sentinel renders 0-height at the top of the
-/// list; expanding its observed root margin upward by this much
-/// pre-fetches before the captain visually reaches the top, so the
-/// chip and the new content land while the captain is still
-/// scrolling. Replaces the prior `LOAD_MORE_THRESHOLD_PX` scroll-
-/// event check — sentinels fire once per visibility transition (no
-/// inertia double-fire), don't compete with scroll-event throttling,
-/// and don't need a manual `loadingEarlier` dedup flag because
-/// vue-query's `isFetchingNextPage` is the truth.
-const LOAD_MORE_SENTINEL_MARGIN_PX = 240
+/// backward fetch. Sized to ~1 viewport so the fetch lands before
+/// the captain visually reaches the boundary — older content
+/// streams in while they're still scrolling, no perceptible pause.
+/// Wider than the previous 240px and narrower than 1.5×
+/// viewport — 1× keeps the pre-fetch window aggressive enough to
+/// mask round-trip latency without triggering spurious fetches on
+/// initial mount (when scrollHeight is still settling).
+const LOAD_MORE_SENTINEL_MARGIN_PX = 720
 
 const props = defineProps<{
   /// Captain's "session is restoring" gate — keeps the scoped
@@ -132,17 +131,17 @@ function markUserScrolled(): void {
 }
 
 // `wheel` with negative deltaY (or trackpad scroll-up) releases
-// stick SYNCHRONOUSLY before WebKit2GTK's compositor delivers the
-// async scroll event a few frames later. End-of-frame races where a
-// chunk-driven rAF fired first cancel the captain's scroll silently
-// without this. Downward wheel falls through to the same
-// markUserScrolled intent without release.
+// stick + anchor SYNCHRONOUSLY before WebKit2GTK's compositor
+// delivers the async scroll event a few frames later. End-of-frame
+// races where a chunk-driven rAF fired first cancel the captain's
+// scroll silently without this. Downward wheel falls through to the
+// same markUserScrolled intent without release.
 useEventListener(
   scrollEl,
   'wheel',
   (ev: WheelEvent) => {
     if (ev.deltaY < 0) {
-      releaseStickAndMark()
+      releaseStickAndAnchor()
     } else {
       markUserScrolled()
     }
@@ -178,7 +177,7 @@ useEventListener(scrollEl, 'pointerdown', markUserScrolled, { passive: true })
 // never happens. Taps without movement don't fire `touchmove`, so the
 // stick stays engaged through tap-to-open-attachment / tap-to-copy /
 // long-press-context-menu interactions.
-useEventListener(scrollEl, 'touchmove', releaseStickAndMark, { passive: true })
+useEventListener(scrollEl, 'touchmove', releaseStickAndAnchor, { passive: true })
 
 const viewport = useChatViewport(instanceId, { scrollEl })
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
@@ -204,6 +203,18 @@ const adapterForActive = computed(() => {
 })
 
 const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scrollEl)
+
+// Scroll-anchor primitive — tracks `{ rowSeq, offsetWithinRow }`
+// for the topmost visible row when stuck=false. Re-locks scrollTop
+// on every resize so streaming chunks, Shiki late-renders, image
+// loads, and page prepends don't shift the captain's reading line.
+// Replaces the previous `captureBeforeBackwardFetch` /
+// `restoreAfterBackwardFetch` pair (which only covered the prepend
+// case).
+// Anchor is consumed internally by the composable (ResizeObserver
+// re-lock). We only need the imperative escape hatches at this
+// layer — release on gesture start, mark on our own writes.
+const { releaseAnchor, markProgrammaticScroll } = useScrollAnchor(scrollEl, { stuck })
 
 /// Per-mount "first hydration" latch. `useStickToBottom` runs a
 /// `scrollToBottom` in its own `onMounted`, but that fires BEFORE
@@ -247,17 +258,17 @@ watch(
 )
 
 /// Synchronous "captain wants to scroll up" gate. Calls into the
-/// composable to cancel any pending sticky rAF + flip `stuck =
-/// false` BEFORE the input gesture initiates its scroll. Without
-/// this, gestures using `behavior: 'smooth'` (PageUp / Home, the
-/// keyboard handlers below) — or wheel scrolls delivered async by
-/// WebKit2GTK's compositor — get cancelled by a coincident
-/// MutationObserver-driven `scrollToBottom` rAF firing first.
-/// Captain reported the viewport "stays hostage" when stuck at
-/// the bottom; this is the fix.
-function releaseStickAndMark(): void {
+/// composables to cancel any pending sticky rAF + flip `stuck =
+/// false` BEFORE the input gesture initiates its scroll, AND drops
+/// the anchor so a coincident resize-driven re-lock doesn't pull
+/// the captain back to where the anchor was captured pre-gesture.
+/// Same race-closing pattern in both composables — see the
+/// `useScrollAnchor.releaseAnchor` doc + `useStickToBottom.release`
+/// doc for why this synchronous escape exists.
+function releaseStickAndAnchor(): void {
   markUserScrolled()
   releaseStick()
+  releaseAnchor()
 }
 
 // `stuck` is the auto-scroll signal — 128px-from-bottom threshold
@@ -279,6 +290,7 @@ function releaseStickAndMark(): void {
 // pass is queued from chunks that landed while we were unfocused.
 useEventListener(window, 'focus', () => {
   void nextTick(() => {
+    markProgrammaticScroll()
     scrollToBottom()
   })
 })
@@ -298,6 +310,7 @@ useEventListener(window, 'focus', () => {
 async function goToBottom(): Promise<void> {
   viewport.evictExtraPages()
   await nextTick()
+  markProgrammaticScroll()
   scrollToBottom()
 }
 
@@ -367,6 +380,7 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     case 'PageDown': {
       ev.preventDefault()
       markUserScrolled()
+      markProgrammaticScroll()
       el.scrollBy({ top: el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
 
       return
@@ -374,10 +388,12 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
 
     case 'PageUp': {
       ev.preventDefault()
-      // Upward nav: release stick SYNCHRONOUSLY before scrolling,
-      // so a coincident MutationObserver-driven rAF doesn't fire
-      // `scrollToBottom` first and cancel the smooth scroll.
-      releaseStickAndMark()
+      // Upward nav: release stick + anchor SYNCHRONOUSLY before
+      // scrolling, so a coincident rAF-driven `scrollToBottom` or
+      // resize-driven anchor re-lock doesn't fire first and cancel
+      // the smooth scroll.
+      releaseStickAndAnchor()
+      markProgrammaticScroll()
       el.scrollBy({ top: -el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
 
       return
@@ -387,7 +403,8 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
       ev.preventDefault()
       // Same race as PageUp — release synchronously before the
       // smooth scroll's first frame.
-      releaseStickAndMark()
+      releaseStickAndAnchor()
+      markProgrammaticScroll()
       el.scrollTo({ top: 0, behavior: 'smooth' })
 
       return
@@ -396,6 +413,15 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
     case 'End': {
       ev.preventDefault()
       markUserScrolled()
+      // End is an explicit jump-to-foot — drop any captured anchor.
+      // Without this, on slow devices the smooth-scroll can take
+      // longer than the 500ms programmatic-scroll suppress window;
+      // when the flag clears mid-animation, `onScroll` captures a
+      // mid-transit anchor and the next resize re-locks to that
+      // transient position. Releasing clears the captured anchor
+      // outright; stuck=true re-engages when the foot lands.
+      releaseAnchor()
+      markProgrammaticScroll()
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
       // Smooth-scroll fires `scroll` events along the way, which our
       // `onScroll` handler reacts to — but the timing is browser-
@@ -419,142 +445,100 @@ useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
 /// the prior scrollTop-threshold check inside `onScroll`.
 const topSentinel = ref<HTMLElement>()
 
-/// Tracks the captain-relative "distance from bottom" snapshotted
-/// right before vue-query starts a backward fetch. The post-fetch
-/// `watch` on `data.pages.length` reads this, restores
-/// `scrollTop = scrollHeight - distance`, then clears it. Holding the
-/// distance in a ref (vs locally scoped to a fetch invocation) makes
-/// the restore robust to vue-query's internal retries — every
-/// successful page that lands while a distance is captured uses the
-/// same anchor, so successive backward pages compose smoothly.
-const restorationDistance = ref<number | undefined>(undefined)
-
-/// `true` from the moment we ask vue-query for an older page until
-/// the scroll-restore has finished. Gates eviction (we never trim
-/// during a backward fetch) and signals the loading chip. Driven by
-/// vue-query's own `isFetchingNextPage` plus the post-fetch nextTick
-/// settle, so a stuck/long fetch can't leave it stale — vue-query
-/// owns the lifecycle.
-const isRestoringScroll = ref(false)
-
-/// Captures the captain's distance-from-bottom BEFORE asking for
-/// older content. The browser preserves what's pinned at the bottom
-/// of the scroll viewport (`scrollHeight` grows + `scrollTop` grows
-/// by the same delta when items prepend), so `scrollHeight -
-/// scrollTop` is invariant across the prepend. Re-applying it after
-/// the DOM update keeps the captain's reading line at the exact same
-/// visual position.
-function captureBeforeBackwardFetch(): void {
-  const el = scrollEl.value
-
-  if (!el) {
-    return
-  }
-
-  if (restorationDistance.value !== undefined) {
-    // Another fetch is already in flight; vue-query is deduping for
-    // us, so we just keep the original anchor.
-    return
-  }
-  restorationDistance.value = el.scrollHeight - el.scrollTop
-  isRestoringScroll.value = true
-  // Synchronously release stick — the captain is reading older
-  // content, and any in-flight `useStickToBottom` rAF would
-  // otherwise scroll-to-bottom mid-restore and clobber the anchor.
-  releaseStickAndMark()
-}
-
-/// Restore the captain's reading position after a backward fetch
-/// resolved + Vue flushed the new DOM. Two `nextTick`s give nested
-/// child watchers (`<Turn>`'s elapsed-timer, `<StreamCard>`'s
-/// markdown render) time to settle before we read `scrollHeight`.
-async function restoreAfterBackwardFetch(): Promise<void> {
-  await nextTick()
-  await nextTick()
-  const el = scrollEl.value
-  const distance = restorationDistance.value
-
-  if (el && distance !== undefined) {
-    const target = el.scrollHeight - distance
-
-    if (Math.abs(el.scrollTop - target) > 1) {
-      el.scrollTop = target
-    }
-  }
-  restorationDistance.value = undefined
-  isRestoringScroll.value = false
-}
-
 // ── Backward fetch trigger (intersection-observer driven) ──────────
 //
 // `useIntersectionObserver` against the top-of-list sentinel calls
 // `viewport.fetchNextPage` exactly once per visibility transition.
 // vue-query dedupes concurrent calls internally — its
-// `isFetchingNextPage` flag is the authoritative gate. The captain
-// reported scrollTop-threshold + manual loadingEarlier ref +
-// watchdog (the prior shape) flaked under mobile inertia + remote
-// WS latency; sentinel + vue-query's built-in lifecycle is the
-// canonical TanStack pattern + cuts ~80 lines of state-management
-// scaffolding.
+// `isFetchingNextPage` flag is the authoritative gate. Anchor
+// preservation is automatic via `useScrollAnchor`'s ResizeObserver
+// — the prepended page grows scrollHeight, which fires resize,
+// which re-locks scrollTop so the captain's reading row stays
+// glued to its pixel position.
+//
+// **`root: scrollEl` is load-bearing.** Without it the IO defaults to
+// the document viewport, and `rootMargin` then expands the document
+// viewport — not the `.chat-transcript` scroll container. The
+// "fire fetch when captain is within 720px of the top of the chat"
+// intent translates to "within 720px of the SCREEN TOP" instead,
+// which depends on where the chat is positioned relative to chrome
+// + composer + permission rows. On the Tauri overlay (full-screen
+// WebKitGTK) the offset is small; in the remote SPA it can be
+// hundreds of px, making the trigger fire far too late or not at
+// all. Passing `root: scrollEl` makes `rootMargin` expand the
+// chat scroll-container's own clip rect, matching captain intent.
+//
+// **`hasUserScrolled` guard**: without it the IO can fire on mount
+// during `useStickToBottom`'s `scrollTop = scrollHeight` write —
+// the sentinel briefly intersects the expanded root during DOM
+// settle, triggering a phantom backward fetch before the captain
+// has scrolled at all. Same gate the eviction path uses.
 useIntersectionObserver(
   topSentinel,
   ([entry]) => {
+    log.trace('chat-viewport.sentinel.fire', {
+      isIntersecting: entry?.isIntersecting,
+      intersectionRatio: entry?.intersectionRatio,
+      hasUserScrolled: hasUserScrolled.value,
+      hasNextPage: viewport.hasNextPage.value,
+      isFetchingNextPage: viewport.isFetchingNextPage.value
+    })
+
     if (!entry?.isIntersecting) {
       return
     }
 
+    if (!hasUserScrolled.value) {
+      log.trace('chat-viewport.sentinel.gated-hasUserScrolled')
+
+      return
+    }
+
     if (!viewport.hasNextPage.value) {
+      log.trace('chat-viewport.sentinel.gated-hasNextPage')
+
       return
     }
 
     if (viewport.isFetchingNextPage.value) {
+      log.trace('chat-viewport.sentinel.gated-isFetchingNextPage')
+
       return
     }
-    captureBeforeBackwardFetch()
+    log.trace('chat-viewport.sentinel.fetch-firing')
     void viewport.fetchNextPage().catch((err: unknown) => {
       log.warn('chat-viewport: backward fetch rejected', undefined, err)
     })
   },
   {
-    // Pre-fetch BEFORE the captain visually hits the sentinel.
-    // Expanding the root margin upward by `LOAD_MORE_SENTINEL_MARGIN_PX`
-    // lights the observer when the sentinel is still that many px
-    // outside the viewport's top edge — older content lands while
-    // the captain is still scrolling, no perceptible pause.
+    root: scrollEl,
     rootMargin: `${LOAD_MORE_SENTINEL_MARGIN_PX}px 0px 0px 0px`,
-    // 0 = the moment any part of the sentinel enters the (expanded)
-    // root. Sentinel is 0-height + 1px wide so this is
-    // effectively a point-trigger.
     threshold: 0
-  }
-)
-
-// Watch vue-query's `isFetchingNextPage` for the true→false
-// transition. That's the moment the fetched page has been
-// `setQueryData`-applied — restore the captain's scroll anchor.
-// Conditioned on `restorationDistance` having been captured (we
-// don't try to restore when the fetch wasn't sentinel-driven, e.g.
-// the initial fetch on mount).
-watch(
-  () => viewport.isFetchingNextPage.value,
-  (next, prev) => {
-    if (prev && !next && restorationDistance.value !== undefined) {
-      void restoreAfterBackwardFetch()
-    }
   }
 )
 
 // ── Eviction trigger ────────────────────────────────────────────────
 //
-// Backward pagination lives on the intersection-observer wired
-// below; this handler only drives the page-eviction half: when the
-// captain is within ~one viewport of the bottom AND the cache
-// exceeds `MAX_PAGES_KEPT`, drop the trailing pages. Wider than
-// `useStickToBottom`'s stick threshold so eviction fires the moment the
-// captain returns to the live area, not only at the absolute foot.
-// The composable's eviction is idempotent — we can safely call it
-// on every scroll tick that satisfies the near-bottom test; it's a
-// no-op when the cache is already in budget.
+// Three-part gate:
+//   1. `hasUserScrolled` — never trim during mount-time synthetic
+//      scrolls (stick-to-bottom's `scrollToBottom` write fires a
+//      scroll event indistinguishable from a captain drag if we
+//      only watched scrollTop). Captain's first input gesture flips
+//      this true.
+//   2. `stuck === true` OR within one viewport of the foot. The
+//      `stuck` 128px threshold is narrow; widening to "within one
+//      viewport" keeps cache cleanup prompt when the captain
+//      returns to the live area, without trimming mid-read. We do
+//      NOT trim when the captain is anchored mid-history — the
+//      anchor row could be in the trim range, and eviction would
+//      break the re-lock path.
+//   3. rAF-defer so the cache mutation lands on the next frame,
+//      after the in-flight scroll gesture finishes — eviction
+//      inside the scroll task removes nodes from the TOP of the DOM
+//      mid-gesture, confusing the browser's anchor heuristic.
+//
+// When `stuck=true`, re-assert `scrollToBottom` after the trim so
+// the captain stays glued to the foot after `scrollHeight` shrinks.
 function onScroll(): void {
   const el = scrollEl.value
 
@@ -562,59 +546,27 @@ function onScroll(): void {
     return
   }
 
-  // Never trim during a backward fetch + scroll-restore: trimming
-  // the tail (oldest pages) while a head/anchor restore is in
-  // flight changes `scrollHeight` mid-restore and the anchor lands
-  // off by the evicted pages' aggregate height. Eviction can wait
-  // until the next scroll tick after the restore completes.
-  if (isRestoringScroll.value) {
-    return
-  }
-
   if (!hasUserScrolled.value) {
     return
   }
-
-  // Eviction trigger — within one viewport of the bottom. Defer
-  // the actual cache mutation to the next animation frame so the
-  // DOM patch doesn't race the in-flight scroll gesture. When
-  // eviction fires synchronously inside the scroll handler, the
-  // resulting microtask removes nodes from the TOP of the DOM
-  // while the browser is mid-gesture — scroll-anchoring can miss
-  // (the anchor element itself may be evicted), and concurrent
-  // `useStickToBottom` observers queue an rAF off the same DOM
-  // mutation, doubling the disruption. rAF moves the mutation
-  // out of the scroll-event task, after the browser has finished
-  // processing the current tick. `evictExtraPages` is idempotent
-  // — repeated rAF wrappers within a single gesture all observe
-  // the same cache state; at most one mutates, subsequent calls
-  // are within-budget no-ops.
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  const nearFoot = stuck.value || distanceFromBottom <= el.clientHeight
 
-  if (distanceFromBottom <= el.clientHeight) {
-    // Capture whether the captain was at the live tail BEFORE
-    // eviction. Eviction shrinks `scrollHeight` from the TOP — the
-    // browser's `overflow-anchor` heuristic picks SOMETHING to keep
-    // visually stable, but the choice is opaque and the captain
-    // reported "jump to random places" when the anchor lands
-    // somewhere unexpected (the chevron-click path at `goToBottom`
-    // already does evict-then-nextTick-then-scroll for this exact
-    // reason; the auto-eviction path didn't). Mirror that pattern
-    // so the captain who was stuck-at-bottom lands back at the new
-    // bottom after the DOM shrinks, instead of wherever scroll-
-    // anchoring left them.
-    const wasStuck = stuck.value
-
-    requestAnimationFrame(() => {
-      viewport.evictExtraPages()
-
-      if (wasStuck) {
-        void nextTick(() => {
-          scrollToBottom()
-        })
-      }
-    })
+  if (!nearFoot) {
+    return
   }
+  const wasStuck = stuck.value
+
+  requestAnimationFrame(() => {
+    viewport.evictExtraPages()
+
+    if (wasStuck) {
+      void nextTick(() => {
+        markProgrammaticScroll()
+        scrollToBottom()
+      })
+    }
+  })
 }
 
 const liveBlockIdx = computed<number>(() => {
@@ -907,11 +859,12 @@ defineExpose({ scrollEl })
 
         <!-- Loading chip — sticky-pinned to the visible top edge so
            it stays in view regardless of scroll position during the
-           fetch. Combined gate: vue-query's own `isFetchingNextPage`
-           (the fetch is in flight) OR `isRestoringScroll` (vue-query
-           returned but we're still settling the captain's scroll
-           anchor across the next two Vue ticks). -->
-        <div v-if="viewport.isFetchingNextPage.value || isRestoringScroll" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
+           fetch. Gate: vue-query's own `isFetchingNextPage` flag.
+           Previously also gated on `isRestoringScroll` (the manual
+           captureBefore/restoreAfter window); replaced by the
+           anchor primitive's natural ResizeObserver re-lock, which
+           settles inside the same frame as Vue's flush. -->
+        <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
 
         <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
            re-renders for history rows. Live row keeps re-rendering
@@ -941,6 +894,7 @@ defineExpose({ scrollEl })
           :live="blockIdx === liveBlockIdx"
           :elapsed="elapsedFor(block.turnId)"
           :usage="usageFor(block.turnId)"
+          :anchor-seq="block.startedAt"
         >
           <StreamCard
             v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
@@ -987,7 +941,19 @@ defineExpose({ scrollEl })
           </template>
 
           <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-            <Body v-if="entry.turn.role === TurnRole.Agent" :role="Role.Assistant" :text="entry.turn.text" markdown />
+            <template v-if="entry.turn.role === TurnRole.Agent">
+              <Body v-if="entry.turn.text.length > 0" :role="Role.Assistant" :text="entry.turn.text" markdown />
+              <!-- Agent attachments (`AgentAttachment` transcript items)
+                 rendered here. nvim's `render_attachment` handles this
+                 explicitly; the Vue UI was silently dropping the
+                 attachments array on agent turns because the previous
+                 template only rendered `<Attachments>` in the user branch. -->
+              <Attachments
+                v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+                :attachments="entry.turn.attachments"
+                @open="(att) => emit('attachment-open', att)"
+              />
+            </template>
             <template v-else>
               <Body :role="Role.User" :text="entry.turn.text" markdown />
               <Attachments
@@ -1006,7 +972,7 @@ defineExpose({ scrollEl })
          coupled to whatever sits below the viewport (composer, queue,
          permission stack). Visible only when the captain has scrolled
          away from the bottom — `stuck` flips false the moment they
-         move >64px above the foot. Click jumps to the live area AND
+         move >128px above the foot. Click jumps to the live area AND
          immediately drops any extra pages the captain accumulated
          while scrolling up. -->
     <button v-if="!stuck" type="button" class="scroll-to-bottom" data-testid="scroll-to-bottom" aria-label="Scroll to latest" @click="goToBottom">
@@ -1029,15 +995,12 @@ defineExpose({ scrollEl })
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
-  padding: 0 0.875rem 0 0.25rem;
-  /* Disable browser-native scroll anchoring. Chrome / WebKit default
-   * to `overflow-anchor: auto` on scrollable containers, which the
-   * browser uses to compensate scrollTop automatically when content
-   * is added above the visible region. That fights the manual
-   * compensation `triggerBackwardFetch` does (capture scrollHeight -
-   * scrollTop before fetch, restore after), causing double-shift
-   * and a visible jump. JS owns the anchoring — disable the native
-   * path so the two don't compose. */
+  padding: 0 1rem 0 0.25rem;
+  /* Disable browser-native scroll anchoring — `useScrollAnchor`
+   * owns the re-lock path. With both active, the browser's
+   * opaque heuristic compensation would race our explicit
+   * `scrollTop = newTop + offsetWithinRow` write and produce
+   * a visible double-shift. JS owns the anchoring. */
   overflow-anchor: none;
 }
 

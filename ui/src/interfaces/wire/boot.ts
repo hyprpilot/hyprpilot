@@ -25,6 +25,10 @@ export interface BootSnapshot {
   completionConfig: CompletionConfigSnapshot
   agents: { agents: AgentSummary[] }
   profiles: { profiles: ProfileSummary[] }
+  /// Captain's currently-selected default profile id. Seeded from
+  /// `[profile] default`; mutated at runtime via `profile_set`. The
+  /// header pill / palette active marker drive off this value.
+  selectedProfileId?: string
   instances: { instances: InstanceListEntry[]; focusedId?: string }
   /// Per-instance queue snapshots keyed by instance id. Empty queues
   /// are included (as `[]`) so the consumer treats absence as "no

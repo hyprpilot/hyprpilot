@@ -928,7 +928,7 @@ function onQueueSend(itemId: string): void {
 
 <template>
   <Frame
-    :profile="sessionInfo.profileId ?? sessionInfo.agent ?? 'none'"
+    :profile="sessionInfo.profileId ?? selectedProfile ?? sessionInfo.agent ?? 'none'"
     :name="sessionInfo.name"
     :phase="phase"
     :mode-tag="sessionInfo.mode"

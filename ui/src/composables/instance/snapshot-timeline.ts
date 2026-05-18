@@ -191,7 +191,38 @@ function projectEntry(seq: number, item: TranscriptItem, ctx: ProjectionContext)
       } as TimelineTool
 
     case TranscriptItemKind.PermissionRequest:
+      // Live permission requests are owned by `usePermissions()`; the
+      // chat cache doesn't render them while live. The SNAPSHOT path
+      // (this branch fires when a snapshot RPC returns a still-pending
+      // permission) gets rendered as a stream entry so the captain sees
+      // an indicator where the prompt landed in history. nvim's renderer
+      // forwards snapshot permission rows through the live row path too.
+      return {
+        kind: 'stream',
+        createdAt: seq,
+        item: {
+          id: `perm-${seq}`,
+          kind: StreamItemKind.Plan,
+          sessionId: ctx.sessionId,
+          createdAt: seq,
+          updatedAt: seq,
+          entries: [
+            {
+              content: `permission requested: ${item.tool}`,
+              priority: 'medium',
+              status: 'in_progress'
+            }
+          ]
+        }
+      } as TimelineStream
     case TranscriptItemKind.Unknown:
+      // Daemon-version drift — flag in dev tools so the wire mismatch
+      // is visible. Returning null still hides the row from the
+      // viewport; the warning lets a captain debugging "missing
+      // messages" see exactly which variant the daemon shipped.
+      // eslint-disable-next-line no-console
+      console.warn('snapshot-timeline: Unknown transcript item dropped', { seq, wireKind: item.wireKind })
+
       return null
   }
 
@@ -309,15 +340,34 @@ function tryMergeThought(projected: ProjectedItem[], entry: TimelineStream, it: 
 
       return true
     }
+
+    return false
   }
 
-  const prev = projected[projected.length - 1]
+  // Unkeyed thought (turnId === undefined): walk backwards through
+  // contiguous unkeyed items and fold into the first Thought we hit.
+  // Stops on any keyed item — that's a hard turn boundary, the
+  // captain has read past it. Mirrors how nvim accumulates thoughts
+  // into `state.active_thought_block` until a turn header lands.
+  // Without this branch, two unkeyed thought chunks separated by an
+  // unkeyed tool call would land as separate cards instead of one.
+  for (let i = projected.length - 1; i >= 0; i -= 1) {
+    const p = projected[i]
 
-  if (prev && prev.entry.kind === 'stream' && prev.entry.item.kind === StreamItemKind.Thought && prev.turnId === it.turnId) {
-    prev.entry.item.text += entry.item.text
-    prev.entry.item.updatedAt = it.seq
+    if (!p) {
+      continue
+    }
 
-    return true
+    if (p.turnId !== undefined) {
+      return false
+    }
+
+    if (p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Thought) {
+      p.entry.item.text += entry.item.text
+      p.entry.item.updatedAt = it.seq
+
+      return true
+    }
   }
 
   return false
@@ -384,13 +434,33 @@ function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, 
   return false
 }
 
+/// Ranks tool-call states by progress so a stale `ToolCall` arriving
+/// AFTER a `ToolCallUpdate` (out-of-order in the snapshot stream, or
+/// the patcher pushed a `ToolCallUpdate` as an orphan before the
+/// matching `ToolCall` landed) can't downgrade `completed`/`failed`
+/// back to `pending`/`running`. The rule: only accept the incoming
+/// status when its rank is >= the existing one.
+const TOOL_STATE_RANK: Record<string, number> = {
+  pending: 0,
+  in_progress: 1,
+  running: 1,
+  completed: 2,
+  failed: 2,
+  cancelled: 2
+}
+
 function mergeToolCall(target: WireToolCall, incoming: WireToolCall, seq: number): void {
   if (incoming.title !== undefined) {
     target.title = incoming.title
   }
 
   if (incoming.status !== undefined) {
-    target.status = incoming.status
+    const existingRank = TOOL_STATE_RANK[(target.status ?? '').toLowerCase()] ?? 0
+    const incomingRank = TOOL_STATE_RANK[incoming.status.toLowerCase()] ?? 0
+
+    if (incomingRank >= existingRank) {
+      target.status = incoming.status
+    }
   }
 
   if (incoming.kind !== undefined) {

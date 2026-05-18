@@ -23,8 +23,8 @@
 //! pair into bogus paragraphs.
 //!
 //! Per-turn state lives on `TurnState` (`agent_text_trailing` +
-//! `agent_thought_trailing`), reset on every `open_real` /
-//! `open_synthetic`. The actor's notification handler calls
+//! `agent_thought_trailing`), reset on every `TurnState::open`.
+//! The actor's notification handler calls
 //! `TurnState::note_agent_text` / `note_agent_thought` before emit
 //! to get the prefix and update the running tail count.
 

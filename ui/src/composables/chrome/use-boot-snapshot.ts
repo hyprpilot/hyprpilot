@@ -30,6 +30,7 @@ import { applyCompletionConfigFromObject } from '../composer/use-completion'
 import { prefetchInstanceChatFirstPage, prefetchInstanceMeta } from '../instance/use-focus-prefetch'
 import { applyQueueChanged } from '../instance/use-queue'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from '../instance/use-session-info'
+import { applyBootProfiles } from '../ui-state/use-profiles'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
 
@@ -49,6 +50,12 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   applyKeymapsFromObject(snap.keymaps)
   applyCompletionConfigFromObject(snap.completionConfig)
   setDaemonCwd(snap.daemonCwd)
+  // Seed the profiles singleton from the boot snapshot. The daemon's
+  // `[[profiles]]` registry + the runtime-selected default id land
+  // in one shot so the header pill paints correctly on first frame.
+  // Live changes flow through the `acp:profile-changed` event the
+  // singleton subscribes to on first `useProfiles()` call.
+  applyBootProfiles(snap.profiles.profiles, snap.selectedProfileId)
 
   // Seed per-instance session-info from the registry list so the
   // header pills (agent / profile / mode / name) paint correctly the
