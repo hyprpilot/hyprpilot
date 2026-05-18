@@ -276,18 +276,10 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     }
     queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', id], (old) => {
       if (!old) {
-        log.trace('snapshot.page-trim.skipped-no-cache', { instanceId: id })
-
         return old
       }
 
       if (old.pages.length <= MAX_PAGES_KEPT) {
-        log.trace('snapshot.page-trim.skipped-within-budget', {
-          instanceId: id,
-          pages: old.pages.length,
-          max: MAX_PAGES_KEPT
-        })
-
         return old
       }
       // Page 0 is newest. We keep the newest `MAX_PAGES_KEPT` pages
