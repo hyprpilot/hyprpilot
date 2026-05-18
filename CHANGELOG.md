@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/hyprpilot/hyprpilot/compare/v2.0.3...v2.1.0) (2026-05-18)
+
+
+### Features
+
+* **mcp:** audit + open tool + dir-discovery + per-dir ignores + new-instance chat fix ([#97](https://github.com/hyprpilot/hyprpilot/issues/97)) ([3d57636](https://github.com/hyprpilot/hyprpilot/commit/3d5763625e160b9c75540d932da49b843f1f4e3a))
+
 ## [2.0.3](https://github.com/hyprpilot/hyprpilot/compare/v2.0.2...v2.0.3) (2026-05-18)
 
 
