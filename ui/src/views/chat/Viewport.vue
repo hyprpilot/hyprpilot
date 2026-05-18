@@ -40,7 +40,6 @@ import { computed, nextTick, ref, watch } from 'vue'
 import Attachments from './Attachments.vue'
 import Body from './Body.vue'
 import ChangeBanner from './ChangeBanner.vue'
-import ChatScrollbar from './ChatScrollbar.vue'
 import StreamCard from './StreamCard.vue'
 import TerminalCard from './TerminalCard.vue'
 import ToolChips from './ToolChips.vue'
@@ -968,12 +967,6 @@ defineExpose({ scrollEl })
       </template>
     </div>
 
-    <!-- Custom scrollbar overlay. Replaces the native scrollbar
-         (suppressed via CSS in styles.css). Pixel-based math —
-         driven by scrollTop/scrollHeight, kept honest by the anchor
-         primitive re-locking on every resize. -->
-    <ChatScrollbar :scroll-el="scrollEl" :stuck="stuck" />
-
     <!-- Floating scroll-to-bottom chevron. Lives inside the viewport
          (anchored to the chat scroller's bottom-right) so it's not
          coupled to whatever sits below the viewport (composer, queue,
@@ -1002,8 +995,6 @@ defineExpose({ scrollEl })
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
-  /* Right padding leaves room for the custom scrollbar overlay
-   * (`<ChatScrollbar>` is absolute-positioned at right: 0). */
   padding: 0 1rem 0 0.25rem;
   /* Disable browser-native scroll anchoring — `useScrollAnchor`
    * owns the re-lock path. With both active, the browser's
@@ -1011,15 +1002,6 @@ defineExpose({ scrollEl })
    * `scrollTop = newTop + offsetWithinRow` write and produce
    * a visible double-shift. JS owns the anchoring. */
   overflow-anchor: none;
-  /* Suppress native scrollbar — the custom `<ChatScrollbar>`
-   * overlay replaces it. Firefox honours `scrollbar-width: none`;
-   * WebKit (Tauri's WebKitGTK + Safari) honours the
-   * `::-webkit-scrollbar` rule below. */
-  scrollbar-width: none;
-}
-
-.chat-transcript::-webkit-scrollbar {
-  display: none;
 }
 
 .chat-top-sentinel {
