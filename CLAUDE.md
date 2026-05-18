@@ -676,6 +676,25 @@ mapper is dropping a wire variant or a new ACP enum has no Tauri bridge.
   lockstep with the daemon binary. When a design stops making sense,
   **delete it and rewire the call sites**; do not leave typed-shim
   enums, deprecated method aliases, or "legacy" wrappers.
+- **Fix the root cause, not the symptom.** When something is wrong,
+  the first move is to understand WHY and rewire the design — not
+  bolt on a timer, a branch, or a flag to paper over it. The smell:
+  a fix that only makes sense if the reader already knows the
+  failure mode (a 2500ms quiet-window because "events keep
+  arriving so the timer never fires"; an `open_real` /
+  `open_synthetic` split that just tracks "is this a captain
+  prompt"; a `Bootstrap::Resume(prior_session)` auto-fallback to
+  paper over "set_profile drops the actor's session"; an
+  `exchange_index` client-side namespace because "the daemon
+  collapses replay under one synthetic turn"). All four shipped at
+  some point in this repo; all four came back out as one-method
+  refactors once the actual shape was understood. **Why**: every
+  band-aid grows roots — comments referencing it, tests pinning
+  it, follow-up patches stacking on top. Cutting it later is 10×
+  the work. **Rule**: if one code path can handle every case,
+  don't branch. If one type can hold the state, don't split it.
+  Treat every "let me add a flag for this edge case" as a signal
+  to step back and ask what the right shape is.
 - **Stubs panic, they don't pretend.** When a feature isn't wired
   end-to-end, the client-side entry point must `unimplemented!("<verb>:
   <why>")` rather than round-trip to the server and pretty-print a
