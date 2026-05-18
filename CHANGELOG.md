@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/hyprpilot/hyprpilot/compare/v2.0.1...v2.0.2) (2026-05-18)
+
+
+### Bug Fixes
+
+* **ui:** mobile scroll lock, perm header, dep bumps, accumulator dedup, MCP count, stop-button phase ([#93](https://github.com/hyprpilot/hyprpilot/issues/93)) ([86b1f9c](https://github.com/hyprpilot/hyprpilot/commit/86b1f9c0820f6fce7c9df40ce5e2e0c950700826))
+
 ## [2.0.1](https://github.com/hyprpilot/hyprpilot/compare/v2.0.0...v2.0.1) (2026-05-17)
 
 
