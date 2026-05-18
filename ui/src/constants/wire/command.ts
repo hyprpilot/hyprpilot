@@ -108,6 +108,8 @@ export enum TauriCommand {
   SessionCancel = 'session_cancel',
   AgentsList = 'agents_list',
   ProfilesList = 'profiles_list',
+  ProfileGet = 'profile_get',
+  ProfileSet = 'profile_set',
   SessionList = 'session_list',
   SessionLoad = 'session_load',
   SessionsInfo = 'sessions_info',
@@ -161,6 +163,7 @@ export enum TauriEvent {
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
   AcpQueueChanged = 'acp:queue-changed',
+  AcpProfileChanged = 'acp:profile-changed',
   ComposerDraftAppend = 'composer:draft-append',
   RemotePairRequest = 'remote:pair-request',
   RemotePairResolved = 'remote:pair-resolved'
@@ -184,6 +187,8 @@ export interface TauriCommandArgs {
   [TauriCommand.SessionCancel]: CancelArgs
   [TauriCommand.AgentsList]: void
   [TauriCommand.ProfilesList]: void
+  [TauriCommand.ProfileGet]: void
+  [TauriCommand.ProfileSet]: { profileId: string }
   [TauriCommand.SessionList]: ListSessionsArgs
   [TauriCommand.SessionLoad]: LoadSessionArgs
   [TauriCommand.SessionsInfo]: SessionsInfoArgs
@@ -239,6 +244,8 @@ export interface TauriCommandResult {
   [TauriCommand.SessionCancel]: CancelResult
   [TauriCommand.AgentsList]: { agents: AgentSummary[] }
   [TauriCommand.ProfilesList]: { profiles: ProfileSummary[] }
+  [TauriCommand.ProfileGet]: string | null
+  [TauriCommand.ProfileSet]: { profileId: string }
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void
   [TauriCommand.SessionsInfo]: SessionInfoResult
@@ -293,6 +300,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.AcpQueueChanged]: AcpQueueChangedPayload
+  [TauriEvent.AcpProfileChanged]: { profileId: string }
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
   [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload
   [TauriEvent.RemotePairResolved]: RemotePairResolvedEventPayload

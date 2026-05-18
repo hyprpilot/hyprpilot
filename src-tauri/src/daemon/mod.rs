@@ -139,6 +139,13 @@ pub(crate) struct BootSnapshot {
     pub(crate) completion_config: serde_json::Value,
     pub(crate) agents: serde_json::Value,
     pub(crate) profiles: serde_json::Value,
+    /// Captain's currently-selected default profile id. Seeded from
+    /// `[profile] default` at boot; runtime-mutable via `profile/set`.
+    /// `null` when no profile has been configured AND no client has
+    /// set one. Frontends drive their header pill / palette active
+    /// marker off this value, subscribing to `acp:profile-changed`
+    /// for live updates.
+    pub(crate) selected_profile_id: Option<String>,
     pub(crate) instances: serde_json::Value,
     /// Per-instance queue snapshots keyed by instance id. Second-
     /// frontends connecting fresh use this to avoid an N+1 of
@@ -234,6 +241,7 @@ pub(crate) async fn build_boot_snapshot(
         completion_config,
         agents,
         profiles,
+        selected_profile_id: adapter.selected_profile_id(),
         instances: serde_json::Value::Object(instances_payload),
         queues: serde_json::Value::Object(queues),
     })
@@ -391,6 +399,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::models_set,
             adapter_commands::modes_set,
             adapter_commands::config_option_set,
+            adapter_commands::profile_get,
             adapter_commands::profile_set,
             adapter_commands::instance_meta,
             adapter_commands::instance_snapshot_meta,

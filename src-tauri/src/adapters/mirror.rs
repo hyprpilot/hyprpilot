@@ -515,6 +515,7 @@ impl InstanceMirror {
             | InstanceEvent::InstancesFocused { .. }
             | InstanceEvent::InstanceRenamed { .. }
             | InstanceEvent::DaemonReloaded { .. }
+            | InstanceEvent::SelectedProfileChanged { .. }
             | InstanceEvent::SystemPromptInjected { .. } => {}
         }
         minted_seq

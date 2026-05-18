@@ -263,6 +263,11 @@ pub enum InstanceEvent {
         skills_count: usize,
         mcps_count: usize,
     },
+    /// Captain's currently-selected default profile changed. Daemon-
+    /// global singleton mutated via `profile/set`; every frontend
+    /// listens here to sync its header-pill / palette-active marker
+    /// without an extra round-trip. `profile_id` is the new value.
+    SelectedProfileChanged { profile_id: String },
     /// ACP `SessionInfoUpdate` notification — title / updatedAt only,
     /// per the schema. Carried as its own `InstanceEvent` rather than
     /// a transcript item because session metadata isn't transcript
@@ -487,6 +492,7 @@ impl InstanceEvent {
             InstanceEvent::InstanceRenamed { .. } => "instance.renamed",
             InstanceEvent::Terminal { .. } => "terminal.output",
             InstanceEvent::DaemonReloaded { .. } => "daemon.reloaded",
+            InstanceEvent::SelectedProfileChanged { .. } => "profile.changed",
             InstanceEvent::SessionInfoUpdate { .. } => "instance.session_info_update",
             InstanceEvent::CurrentModeUpdate { .. } => "instance.current_mode_update",
             InstanceEvent::UsageUpdate { .. } => "instance.usage_update",
@@ -517,6 +523,7 @@ impl InstanceEvent {
             InstanceEvent::InstanceRenamed { .. } => "acp:instance-renamed",
             InstanceEvent::Terminal { .. } => "acp:terminal",
             InstanceEvent::DaemonReloaded { .. } => "daemon:reloaded",
+            InstanceEvent::SelectedProfileChanged { .. } => "acp:profile-changed",
             InstanceEvent::SessionInfoUpdate { .. } => "acp:session-info-update",
             InstanceEvent::CurrentModeUpdate { .. } => "acp:current-mode-update",
             InstanceEvent::UsageUpdate { .. } => "acp:usage-update",
@@ -551,7 +558,8 @@ impl InstanceEvent {
             | InstanceEvent::QueueChanged { instance_id, .. } => Some(instance_id),
             InstanceEvent::InstancesChanged { .. }
             | InstanceEvent::InstancesFocused { .. }
-            | InstanceEvent::DaemonReloaded { .. } => None,
+            | InstanceEvent::DaemonReloaded { .. }
+            | InstanceEvent::SelectedProfileChanged { .. } => None,
         }
     }
 }

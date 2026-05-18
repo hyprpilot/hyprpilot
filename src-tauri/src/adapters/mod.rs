@@ -394,21 +394,21 @@ pub trait Adapter: Send + Sync + 'static {
         ))
     }
 
-    /// `instances/setProfile` — swap the profile on a live instance,
-    /// keeping the same `InstanceKey` so chrome keyed by it stays
-    /// addressable. The new actor boots in list-only mode (no
-    /// session bound) so the captain can pick history via
-    /// `sessions/list` + `session_load`. `with_config = None`
-    /// preserves the captain's stored overlays; `Some(vec)` replaces
-    /// them (empty list explicitly wipes).
-    async fn set_session_profile(
-        &self,
-        _instance_id: &str,
-        _profile_id: &str,
-        _with_config: Option<Vec<serde_json::Value>>,
-    ) -> AdapterResult<serde_json::Value> {
+    /// Read the daemon-singleton selected profile id. `None` when no
+    /// profile is selected (config `[profile] default` unset AND no
+    /// client has called `profile/set` since). Adapters with no
+    /// concept of profile selection return `None` (default impl).
+    fn selected_profile_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Mutate the daemon-singleton selected profile. Adapters that
+    /// don't support profile selection return `Unsupported`. ACP
+    /// validates the id against the loaded `[[profiles]]` registry +
+    /// publishes `acp:profile-changed` on success.
+    fn set_selected_profile_id(&self, _profile_id: &str) -> AdapterResult<serde_json::Value> {
         Err(AdapterError::Unsupported(
-            "instances/setProfile not supported by this adapter".into(),
+            "profile/set not supported by this adapter".into(),
         ))
     }
 

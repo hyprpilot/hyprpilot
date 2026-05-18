@@ -2,26 +2,51 @@ import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 
-import { __resetUseProfilesForTests } from './use-profiles'
+import { __resetUseProfilesForTests, applyBootProfiles } from './use-profiles'
 import { useProfiles } from '@composables'
+import { TauriCommand, TauriEvent } from '@ipc'
 
-const invokeMock = vi.fn()
-
-// The composable calls `invoke(TauriCommand.ProfilesList)` and reads
-// `r.profiles` off the response. Mock the bridge directly so the
-// typed barrel imports keep their TauriCommand re-export visible.
-vi.mock('@ipc', async() => ({
-  ...(await vi.importActual<object>('@ipc')),
-  invoke: (...args: unknown[]) => invokeMock(...args)
+const { invokeMock, listenMock, listeners } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  listenMock: vi.fn(),
+  listeners: new Map<string, (payload: { payload: unknown }) => void>()
 }))
 
-function setProfiles(profiles: { id: string; agent: string; isDefault: boolean }[]): void {
-  invokeMock.mockResolvedValueOnce({ profiles })
+vi.mock('@ipc', async() => ({
+  ...(await vi.importActual<object>('@ipc')),
+  invoke: (command: string, args?: Record<string, unknown>) => invokeMock(command, args),
+  listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
+    listeners.set(event, cb)
+    listenMock(event, cb)
+
+    return Promise.resolve(() => listeners.delete(event))
+  }
+}))
+
+interface ProfileFixture { id: string; agent: string; isDefault: boolean }
+
+function wireRpc(profiles: ProfileFixture[], selected: string | null): void {
+  invokeMock.mockImplementation((command: string) => {
+    if (command === TauriCommand.ProfilesList) {
+      return Promise.resolve({ profiles })
+    }
+
+    if (command === TauriCommand.ProfileGet) {
+      return Promise.resolve(selected)
+    }
+
+    if (command === TauriCommand.ProfileSet) {
+      return Promise.resolve({ profileId: 'unused' })
+    }
+
+    return Promise.reject(new Error(`unexpected: ${command}`))
+  })
 }
 
 beforeEach(() => {
   invokeMock.mockReset()
-  window.localStorage.clear()
+  listenMock.mockReset()
+  listeners.clear()
   __resetUseProfilesForTests()
 })
 
@@ -45,19 +70,18 @@ async function flushAsync(): Promise<void> {
 }
 
 describe('useProfiles', () => {
-  it('fetches profiles and selects the configured default on mount', async() => {
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: true
-      },
-      {
-        id: 'strict',
-        agent: 'claude-code',
-        isDefault: false
-      }
-    ])
+  it('fetches profiles + the daemon-selected default on mount', async() => {
+    wireRpc(
+      [
+        {
+          id: 'ask', agent: 'claude-code', isDefault: true
+        },
+        {
+          id: 'strict', agent: 'claude-code', isDefault: false
+        }
+      ],
+      'ask'
+    )
 
     const wrapper = mount(host())
 
@@ -68,119 +92,125 @@ describe('useProfiles', () => {
     expect(wrapper.get('[data-testid="selected"]').text()).toBe('ask')
   })
 
+  it('renders "none" when daemon has no selected profile', async() => {
+    wireRpc([{
+      id: 'ask', agent: 'claude-code', isDefault: false
+    }], null)
+
+    const wrapper = mount(host())
+
+    await flushAsync()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('none')
+  })
+
   it('refresh() re-fetches and updates the reactive list', async() => {
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: true
-      }
-    ])
+    wireRpc([{
+      id: 'ask', agent: 'claude-code', isDefault: true
+    }], 'ask')
     const wrapper = mount(host())
 
     await flushAsync()
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="count"]').text()).toBe('1')
 
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: true
-      },
-      {
-        id: 'new-one',
-        agent: 'codex',
-        isDefault: false
-      }
-    ])
+    wireRpc(
+      [
+        {
+          id: 'ask', agent: 'claude-code', isDefault: true
+        },
+        {
+          id: 'new-one', agent: 'codex', isDefault: false
+        }
+      ],
+      'ask'
+    )
     await (wrapper.vm as unknown as ReturnType<typeof useProfiles>).refresh()
     await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[data-testid="count"]').text()).toBe('2')
   })
 
-  it('select() persists the id, but [profile] default still wins on next mount', async() => {
-    // Config-driven default beats localStorage on startup. A captain
-    // who set `[profile] default = "ask"` expects to see ask after a
-    // restart even if they clicked into "strict" in a previous
-    // session.
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: true
-      },
-      {
-        id: 'strict',
-        agent: 'claude-code',
-        isDefault: false
-      }
-    ])
+  it('select() invokes profile_set on the daemon', async() => {
+    wireRpc(
+      [
+        {
+          id: 'ask', agent: 'claude-code', isDefault: true
+        },
+        {
+          id: 'strict', agent: 'claude-code', isDefault: false
+        }
+      ],
+      'ask'
+    )
     const wrapper = mount(host())
 
     await flushAsync()
     await wrapper.vm.$nextTick()
-    ;(wrapper.vm as unknown as ReturnType<typeof useProfiles>).select('strict')
+    await (wrapper.vm as unknown as ReturnType<typeof useProfiles>).select('strict')
 
-    expect(window.localStorage.getItem('hyprpilot:last-profile')).toBe('strict')
-
-    __resetUseProfilesForTests()
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: true
-      },
-      {
-        id: 'strict',
-        agent: 'claude-code',
-        isDefault: false
-      }
-    ])
-    const next = mount(host())
-
-    await flushAsync()
-    await next.vm.$nextTick()
-    // Config default ("ask") wins over the persisted "strict".
-    expect(next.get('[data-testid="selected"]').text()).toBe('ask')
+    expect(invokeMock).toHaveBeenCalledWith(TauriCommand.ProfileSet, { profileId: 'strict' })
   })
 
-  it('falls back to localStorage when no [profile] default is set', async() => {
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: false
-      },
-      {
-        id: 'strict',
-        agent: 'claude-code',
-        isDefault: false
-      }
-    ])
-    window.localStorage.setItem('hyprpilot:last-profile', 'strict')
+  it('select() ignores ids not in the current list (no invoke)', async() => {
+    wireRpc([{
+      id: 'ask', agent: 'claude-code', isDefault: true
+    }], 'ask')
     const wrapper = mount(host())
 
     await flushAsync()
+    await wrapper.vm.$nextTick()
+    invokeMock.mockClear()
+    await (wrapper.vm as unknown as ReturnType<typeof useProfiles>).select('ghost')
+
+    expect(invokeMock).not.toHaveBeenCalled()
+  })
+
+  it('acp:profile-changed event updates selected.value', async() => {
+    wireRpc(
+      [
+        {
+          id: 'ask', agent: 'claude-code', isDefault: true
+        },
+        {
+          id: 'strict', agent: 'claude-code', isDefault: false
+        }
+      ],
+      'ask'
+    )
+    const wrapper = mount(host())
+
+    await flushAsync()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('ask')
+
+    const cb = listeners.get(TauriEvent.AcpProfileChanged)
+
+    expect(cb).toBeDefined()
+    cb!({ payload: { profileId: 'strict' } })
     await wrapper.vm.$nextTick()
     expect(wrapper.get('[data-testid="selected"]').text()).toBe('strict')
   })
 
-  it('ignores select() for ids not in the current list', async() => {
-    setProfiles([
-      {
-        id: 'ask',
-        agent: 'claude-code',
-        isDefault: true
-      }
-    ])
+  it('applyBootProfiles seeds the singleton without invoking', async() => {
+    applyBootProfiles(
+      [
+        {
+          id: 'ask', agent: 'claude-code', isDefault: true
+        },
+        {
+          id: 'strict', agent: 'claude-code', isDefault: false
+        }
+      ],
+      'strict'
+    )
     const wrapper = mount(host())
 
     await flushAsync()
     await wrapper.vm.$nextTick()
-    ;(wrapper.vm as unknown as ReturnType<typeof useProfiles>).select('ghost')
 
-    expect(wrapper.get('[data-testid="selected"]').text()).toBe('ask')
+    expect(wrapper.get('[data-testid="count"]').text()).toBe('2')
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('strict')
+    expect(invokeMock).not.toHaveBeenCalled()
   })
 })

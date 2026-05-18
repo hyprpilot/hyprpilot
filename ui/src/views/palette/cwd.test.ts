@@ -36,7 +36,17 @@ describe('pickCwd', () => {
   it('pops the folder picker and commits the chosen path via instance_restart', async() => {
     useActiveInstance().set('inst-1')
     openDialog.mockResolvedValue('/srv/projects/foo')
-    invoke.mockResolvedValue({ id: 'inst-1' })
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.ProfilesList) {
+        return Promise.resolve({ profiles: [] })
+      }
+
+      if (command === TauriCommand.ProfileGet) {
+        return Promise.resolve(null)
+      }
+
+      return Promise.resolve({ id: 'inst-1' })
+    })
 
     await pickCwd()
 
@@ -70,7 +80,17 @@ describe('pickCwd', () => {
 
   it('forwards ensure:true so the daemon prewarms when no active instance exists', async() => {
     openDialog.mockResolvedValue('/tmp/x')
-    invoke.mockResolvedValue({ id: 'inst-fresh' })
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.ProfilesList) {
+        return Promise.resolve({ profiles: [] })
+      }
+
+      if (command === TauriCommand.ProfileGet) {
+        return Promise.resolve(null)
+      }
+
+      return Promise.resolve({ id: 'inst-fresh' })
+    })
 
     await pickCwd()
 

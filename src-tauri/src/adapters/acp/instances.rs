@@ -60,6 +60,15 @@ pub struct AcpAdapter {
     /// [`Self::set_commands_cache`]; per-instance runtimes write to
     /// it on every `available_commands_update` notification.
     commands_cache: Arc<RwLock<Option<crate::completion::source::commands::CommandsCache>>>,
+    /// Captain's currently-selected default profile id. Daemon-side
+    /// singleton: every frontend (Vue overlay, nvim plugin, ctl)
+    /// reads + writes through here so cross-frontend selections stay
+    /// in sync. Seeded at construction from `config.profile.default`;
+    /// runtime mutations via `profile/set` are in-memory only — a
+    /// daemon restart re-reads from config. Mutation publishes
+    /// `acp:profile-changed` so passive consumers refresh without
+    /// polling.
+    selected_profile_id: RwLock<Option<String>>,
 }
 
 impl std::fmt::Debug for AcpAdapter {
@@ -107,6 +116,15 @@ impl AcpAdapter {
         status: Arc<StatusBroadcast>,
         permissions: Arc<dyn PermissionController>,
     ) -> Self {
+        // Seed the daemon-singleton selection from `[profile] default`
+        // at construction. Config validation (`validate_profiles_non_empty`
+        // + the cross-field check that `[profile] default` references a
+        // real `[[profiles]]` id) already ran at boot, so this clone is
+        // either the captain's chosen default or `None` (no profiles
+        // configured — daemon spawn paths reject before they reach the
+        // singleton, this leaves the slot empty until config gains
+        // entries).
+        let initial_profile = config.read().map(|cfg| cfg.profile.default.clone()).unwrap_or(None);
         Self {
             config,
             status,
@@ -114,6 +132,7 @@ impl AcpAdapter {
             permissions,
             busy_instances: Arc::new(RwLock::new(HashSet::new())),
             commands_cache: Arc::new(RwLock::new(None)),
+            selected_profile_id: RwLock::new(initial_profile),
         }
     }
 
@@ -290,6 +309,47 @@ impl AcpAdapter {
     pub fn busy_instance_ids(&self) -> impl std::future::Future<Output = Vec<String>> + Send {
         let busy = self.busy_instances.clone();
         async move { busy.read().map(|set| set.iter().cloned().collect()).unwrap_or_default() }
+    }
+
+    /// Read the daemon-singleton selected profile id. `None` only when
+    /// `[profile] default` was unset at config-load AND no client has
+    /// called `profile/set` since.
+    #[must_use]
+    pub fn selected_profile_id(&self) -> Option<String> {
+        self.selected_profile_id
+            .read()
+            .expect("selected_profile_id lock poisoned")
+            .clone()
+    }
+
+    /// Mutate the daemon-singleton selected profile. Validates against
+    /// the loaded `[[profiles]]` registry — unknown ids reject with
+    /// `-32602 invalid_params` consistent with the spawn path.
+    /// Publishes `acp:profile-changed` on success so every frontend
+    /// syncs without polling.
+    pub fn set_selected_profile_id(&self, profile_id: &str) -> Result<Value, RpcError> {
+        {
+            let cfg = self.read_config();
+            if !cfg.profiles.iter().any(|p| p.id == profile_id) {
+                return Err(RpcError::invalid_params(format!(
+                    "profile '{profile_id}' is not in the [[profiles]] registry"
+                )));
+            }
+        }
+        {
+            let mut w = self
+                .selected_profile_id
+                .write()
+                .expect("selected_profile_id lock poisoned");
+            *w = Some(profile_id.to_string());
+        }
+        let _ = self
+            .registry
+            .events_tx()
+            .send(crate::adapters::InstanceEvent::SelectedProfileChanged {
+                profile_id: profile_id.to_string(),
+            });
+        Ok(serde_json::json!({ "profileId": profile_id }))
     }
 
     /// Publish a `DaemonReloaded` event onto the registry's broadcast.
@@ -1400,116 +1460,6 @@ impl AcpAdapter {
         Ok(serde_json::json!({ "configId": config_id, "value": value }))
     }
 
-    /// Swap the profile on a live instance under the SAME
-    /// `InstanceKey`. Tears down the live actor and re-spawns at the
-    /// same slot under `Bootstrap::ListOnly` — the new actor's agent
-    /// process is up and `sessions/list` works, but no session is
-    /// bound. Captains pick history via `sessions/list` →
-    /// `session_load`; first prompt against an unbound actor would
-    /// error with "no live session in list-only actor", which is the
-    /// signal to commit on a session before resuming.
-    ///
-    /// **Why ListOnly, not Resume(prior_session)**: ACP agents scope
-    /// persisted sessions by cwd. The new profile's cwd is rarely the
-    /// old profile's cwd, so auto-Resume against the prior session id
-    /// would either fail at the agent (`Resource not found`) or
-    /// silently graft the OLD session's transcript onto the NEW
-    /// profile's `system_prompt` / `mcps` / `skills` — never what
-    /// the captain asked for. set_profile is a deliberate config
-    /// swap; session continuity is the captain's call, not the
-    /// daemon's.
-    ///
-    /// **`with_config` semantic**: `None` keeps the captain's stored
-    /// overlays from the original spawn / last restart (carry-over);
-    /// `Some(vec)` replaces them with exactly that set. Passing
-    /// `Some(vec![])` is the explicit "wipe overlays" form.
-    ///
-    /// **Mode / model carry-over**: the new profile's defaults win.
-    /// `restart_instance` preserves the captain's runtime mode flip,
-    /// but `set_profile` is a deliberate config swap — the captain's
-    /// intent is "give me this profile's behavior". Captains who want
-    /// to keep the runtime mode after swap can re-issue
-    /// `instances/setMode` against the new profile.
-    pub async fn set_session_profile(
-        &self,
-        instance_id: &str,
-        profile_id: &str,
-        with_config: Option<Vec<Value>>,
-    ) -> Result<Value, RpcError> {
-        let key = InstanceKey::parse(instance_id).map_err(map_adapter_error_to_rpc)?;
-        let existing = self
-            .registry
-            .get(key)
-            .await
-            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
-
-        let existing_agent_id = existing.agent_id.clone();
-        let existing_profile_id = existing.profile_id.clone();
-        let existing_patches = existing.config_patches.clone();
-        drop(existing);
-
-        // Short-circuit: same profile + no overlays change is a no-op.
-        // Saves a costly teardown / respawn round-trip when a sloppy
-        // palette double-fires the same selection. The actor's
-        // current bootstrap state (whatever session is or isn't bound)
-        // is preserved — the captain didn't ask for a swap.
-        if existing_profile_id.as_deref() == Some(profile_id) && with_config.is_none() {
-            return Ok(serde_json::json!({
-                "instanceId": key.as_string(),
-                "profileId": profile_id,
-                "agentId": existing_agent_id,
-            }));
-        }
-
-        // Resolve the NEW profile against the daemon's current
-        // `Config`, folding the captain-supplied overlays (when given)
-        // or the existing instance's stored ones (when omitted).
-        // Resolution validates the profile id — unknown profile here
-        // surfaces as `-32602 invalid_params` consistently with the
-        // spawn path.
-        let next_patches = match &with_config {
-            Some(p) => p.clone(),
-            None => existing_patches,
-        };
-        let (resolved, effective_profile) = self.resolve_with_patches(None, Some(profile_id), &next_patches)?;
-        let new_agent_id = resolved.agent.id.clone();
-
-        // Tear down the live actor under the same key, then re-spawn
-        // at the SAME slot so insertion-order + focus pointer stay
-        // stable. Mirrors `restart_instance` lines 1203-1238.
-        let slot = self
-            .registry
-            .drop_preserving_slot(key)
-            .await
-            .map_err(map_adapter_error_to_rpc)?;
-
-        let profile_id_for_instance = resolved.profile_id.clone();
-        let skills = build_skills_registry_with(&effective_profile);
-        let mcps = build_mcp_registry_with(&effective_profile, Some(&skills));
-        let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
-            resolved,
-            key,
-            profile_id: profile_id_for_instance.clone(),
-            events_tx: self.registry.events_tx(),
-            bootstrap: Bootstrap::ListOnly,
-            permissions: self.permissions.clone(),
-            mcps,
-            skills,
-            commands_cache: self.commands_cache(),
-            config_patches: next_patches,
-        });
-        self.registry
-            .insert(key, Arc::new(instance), Some(slot))
-            .await
-            .map_err(map_adapter_error_to_rpc)?;
-
-        Ok(serde_json::json!({
-            "instanceId": key.as_string(),
-            "profileId": profile_id_for_instance,
-            "agentId": new_agent_id,
-        }))
-    }
-
     /// Read the addressed instance's per-instance metadata cache.
     /// The palette pickers (modes, models) call this on every open
     /// so the listed options come straight from the daemon's
@@ -1762,15 +1712,12 @@ impl Adapter for AcpAdapter {
             .map_err(rpc_to_adapter)
     }
 
-    async fn set_session_profile(
-        &self,
-        instance_id: &str,
-        profile_id: &str,
-        with_config: Option<Vec<serde_json::Value>>,
-    ) -> AdapterResult<serde_json::Value> {
-        AcpAdapter::set_session_profile(self, instance_id, profile_id, with_config)
-            .await
-            .map_err(rpc_to_adapter)
+    fn selected_profile_id(&self) -> Option<String> {
+        AcpAdapter::selected_profile_id(self)
+    }
+
+    fn set_selected_profile_id(&self, profile_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_selected_profile_id(self, profile_id).map_err(rpc_to_adapter)
     }
 
     async fn list_sessions(
@@ -2094,6 +2041,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::InstanceRenamed { .. } => "acp:instance-renamed",
         GenEvt::Terminal { .. } => "acp:terminal",
         GenEvt::DaemonReloaded { .. } => "daemon:reloaded",
+        GenEvt::SelectedProfileChanged { .. } => "acp:profile-changed",
         GenEvt::SessionInfoUpdate { .. } => "acp:session-info-update",
         GenEvt::CurrentModeUpdate { .. } => "acp:current-mode-update",
         GenEvt::UsageUpdate { .. } => "acp:usage-update",
