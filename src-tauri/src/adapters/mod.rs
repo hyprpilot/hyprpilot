@@ -394,6 +394,23 @@ pub trait Adapter: Send + Sync + 'static {
         ))
     }
 
+    /// `instances/setProfile` — swap the profile on a live instance,
+    /// keeping the same `InstanceKey` so chrome keyed by it stays
+    /// addressable. Best-effort session preservation when both
+    /// profiles target the same `agent_id`; fresh session otherwise.
+    /// `with_config = None` preserves the captain's stored overlays;
+    /// `Some(vec)` replaces them (empty list explicitly wipes).
+    async fn set_session_profile(
+        &self,
+        _instance_id: &str,
+        _profile_id: &str,
+        _with_config: Option<Vec<serde_json::Value>>,
+    ) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "instances/setProfile not supported by this adapter".into(),
+        ))
+    }
+
     /// `session/set_config_option` — generic config knob. See
     /// `AcpAdapter::set_session_config_option` for usage notes.
     async fn set_session_config_option(

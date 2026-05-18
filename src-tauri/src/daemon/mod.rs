@@ -391,6 +391,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::models_set,
             adapter_commands::modes_set,
             adapter_commands::config_option_set,
+            adapter_commands::profile_set,
             adapter_commands::instance_meta,
             adapter_commands::instance_snapshot_meta,
             adapter_commands::instance_snapshot_chat,

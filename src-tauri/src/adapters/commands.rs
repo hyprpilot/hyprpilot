@@ -431,6 +431,36 @@ pub async fn config_option_set(
     out
 }
 
+/// Swap the active profile for the addressed instance under the
+/// SAME `instance_id`. Frontends keyed by `instance_id` (chat
+/// buffers, header chrome, queue strip, permission row) stay
+/// addressable across the swap. Best-effort session preservation
+/// when both profiles target the same `agent_id`; fresh session
+/// otherwise. Reply's `sessionPreserved` field signals which path
+/// ran so frontends can decide whether to wipe their cache.
+#[tauri::command]
+pub async fn profile_set(
+    adapter: AdapterState<'_>,
+    instance_id: String,
+    profile_id: String,
+    with_config: Option<Vec<Value>>,
+) -> Result<Value, String> {
+    tracing::info!(
+        instance_id = %instance_id,
+        profile_id = %profile_id,
+        with_config_count = ?with_config.as_ref().map(Vec::len),
+        "cmd::profile_set: entry"
+    );
+    let out = adapter
+        .set_session_profile(&instance_id, &profile_id, with_config)
+        .await
+        .map_err(|e| e.message);
+    if let Err(err) = &out {
+        tracing::warn!(%err, "cmd::profile_set: failed");
+    }
+    out
+}
+
 /// Snapshot the addressed instance's per-instance metadata
 /// (cwd, advertised modes/models, current ids). The palette pickers
 /// call this on every open instead of reading the UI-side

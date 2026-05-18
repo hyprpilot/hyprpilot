@@ -141,6 +141,29 @@ struct SetOptionParams {
     value: String,
 }
 
+/// `instances/setProfile` — swap the active profile on a live
+/// instance under the SAME `instance_id`. Plugin / overlay chrome
+/// keyed by `instance_id` (chat buffers, window state, queue strip,
+/// permission row) stays addressable across the swap. The actor is
+/// torn down + re-spawned under the new profile; when both profiles
+/// resolve to the same agent_id, the existing session_id is reused
+/// via `Bootstrap::Resume` so the conversation history carries over.
+/// Different agent_ids force a fresh session.
+///
+/// `withConfig` is `Option<Vec<Value>>`: `None` (field absent) → keep
+/// the captain's stored overlays from the original spawn / last
+/// `instances/restart`; `Some(vec)` (even an empty list) → replace
+/// the overlays with exactly that set. Captains who want to wipe
+/// existing overlays pass `withConfig: []`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SetProfileParams {
+    instance_id: String,
+    profile_id: String,
+    #[serde(default)]
+    with_config: Option<Vec<serde_json::Value>>,
+}
+
 /// `instances/*` namespace. Registry-level operations on the
 /// adapter: list, spawn, focus, restart, shutdown, info, plus
 /// per-session setters (mode / model / config option). Delegates
@@ -291,6 +314,18 @@ impl RpcHandler for InstancesHandler {
                 } = parse_params::<SetOptionParams>(params, method)?;
                 adapter
                     .set_session_config_option(&instance_id, &config_id, &value)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
+            }
+            "instances/setProfile" => {
+                let SetProfileParams {
+                    instance_id,
+                    profile_id,
+                    with_config,
+                } = parse_params::<SetProfileParams>(params, method)?;
+                adapter
+                    .set_session_profile(&instance_id, &profile_id, with_config)
                     .await
                     .map(HandlerOutcome::Reply)
                     .map_err(map_adapter_err)
@@ -922,6 +957,48 @@ agent = "dead"
     async fn instances_unknown_verb_is_method_not_found() {
         let v = dispatch("instances/setBogus", json!({})).await;
         assert_eq!(v["code"], -32601, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_profile_missing_profile_id_is_invalid_params() {
+        let v = dispatch(
+            "instances/setProfile",
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_profile_missing_instance_id_is_invalid_params() {
+        let v = dispatch("instances/setProfile", json!({ "profileId": "strict" })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_profile_unknown_instance_is_invalid_params() {
+        let ghost = "550e8400-e29b-41d4-a716-446655440000";
+        let v = dispatch(
+            "instances/setProfile",
+            json!({ "instanceId": ghost, "profileId": "strict" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+        assert!(v["message"].as_str().unwrap_or_default().contains("not found"), "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_profile_unknown_field_is_invalid_params() {
+        let v = dispatch(
+            "instances/setProfile",
+            json!({
+                "instanceId": "550e8400-e29b-41d4-a716-446655440000",
+                "profileId": "strict",
+                "stray": true,
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
     }
 
     /// `instances/list` ships the per-instance `cwd` on every entry —

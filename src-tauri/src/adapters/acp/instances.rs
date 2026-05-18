@@ -1400,6 +1400,127 @@ impl AcpAdapter {
         Ok(serde_json::json!({ "configId": config_id, "value": value }))
     }
 
+    /// Swap the profile on a live instance under the SAME
+    /// `InstanceKey`. Mirrors `restart_instance` (same
+    /// `drop_preserving_slot` → `resolve_with_patches` →
+    /// `AcpInstance::start` chain) but with a captain-supplied new
+    /// `profile_id` and best-effort session preservation.
+    ///
+    /// **Session preservation rule**: when the new profile resolves to
+    /// the same `agent_id` as the existing instance AND the existing
+    /// actor advertises a `session_id`, the new actor boots with
+    /// `Bootstrap::Resume(session_id)` so the ACP `session/load`
+    /// handshake replays the prior conversation. When the agent
+    /// changes (e.g. swapping `claude-acp` → `codex-acp`), the wire
+    /// has no portable session shape, so the new actor boots
+    /// `Bootstrap::Fresh`. The reply's `sessionPreserved` field
+    /// surfaces which path ran so plugin-side chat-buffer wipe logic
+    /// can decide whether to keep history or clear it.
+    ///
+    /// **`with_config` semantic**: `None` keeps the captain's stored
+    /// overlays from the original spawn / last restart (carry-over);
+    /// `Some(vec)` replaces them with exactly that set. Passing
+    /// `Some(vec![])` is the explicit "wipe overlays" form.
+    ///
+    /// **Mode / model carry-over**: the new profile's defaults win.
+    /// `restart_instance` preserves the captain's runtime mode flip,
+    /// but `set_profile` is a deliberate config swap — the captain's
+    /// intent is "give me this profile's behavior". Captains who want
+    /// to keep the runtime mode after swap can re-issue
+    /// `instances/setMode` against the new profile.
+    pub async fn set_session_profile(
+        &self,
+        instance_id: &str,
+        profile_id: &str,
+        with_config: Option<Vec<Value>>,
+    ) -> Result<Value, RpcError> {
+        let key = InstanceKey::parse(instance_id).map_err(map_adapter_error_to_rpc)?;
+        let existing = self
+            .registry
+            .get(key)
+            .await
+            .ok_or_else(|| RpcError::invalid_params(format!("instance '{instance_id}' not found in registry")))?;
+
+        let existing_agent_id = existing.agent_id.clone();
+        let existing_profile_id = existing.profile_id.clone();
+        let existing_patches = existing.config_patches.clone();
+        let existing_session_id = existing.current_session_id().await;
+        drop(existing);
+
+        // Short-circuit: same profile + no overlays change is a no-op.
+        // Saves a costly teardown / respawn / session-load round-trip
+        // when a sloppy palette double-fires the same selection.
+        if existing_profile_id.as_deref() == Some(profile_id) && with_config.is_none() {
+            return Ok(serde_json::json!({
+                "instanceId": key.as_string(),
+                "profileId": profile_id,
+                "agentId": existing_agent_id,
+                "sessionPreserved": existing_session_id.is_some(),
+            }));
+        }
+
+        // Resolve the NEW profile against the daemon's current
+        // `Config`, folding the captain-supplied overlays (when given)
+        // or the existing instance's stored ones (when omitted).
+        // Resolution validates the profile id — unknown profile here
+        // surfaces as `-32602 invalid_params` consistently with the
+        // spawn path.
+        let next_patches = match &with_config {
+            Some(p) => p.clone(),
+            None => existing_patches,
+        };
+        let (resolved, effective_profile) = self.resolve_with_patches(None, Some(profile_id), &next_patches)?;
+        let new_agent_id = resolved.agent.id.clone();
+
+        // Decide session preservation. Same agent + existing session
+        // → resume; everything else → fresh.
+        let bootstrap = if new_agent_id == existing_agent_id {
+            match &existing_session_id {
+                Some(sid) => Bootstrap::Resume(sid.clone()),
+                None => Bootstrap::Fresh,
+            }
+        } else {
+            Bootstrap::Fresh
+        };
+        let session_preserved = matches!(bootstrap, Bootstrap::Resume(_));
+
+        // Tear down the live actor under the same key, then re-spawn
+        // at the SAME slot so insertion-order + focus pointer stay
+        // stable. Mirrors `restart_instance` lines 1203-1238.
+        let slot = self
+            .registry
+            .drop_preserving_slot(key)
+            .await
+            .map_err(map_adapter_error_to_rpc)?;
+
+        let profile_id_for_instance = resolved.profile_id.clone();
+        let skills = build_skills_registry_with(&effective_profile);
+        let mcps = build_mcp_registry_with(&effective_profile, Some(&skills));
+        let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
+            resolved,
+            key,
+            profile_id: profile_id_for_instance.clone(),
+            events_tx: self.registry.events_tx(),
+            bootstrap,
+            permissions: self.permissions.clone(),
+            mcps,
+            skills,
+            commands_cache: self.commands_cache(),
+            config_patches: next_patches,
+        });
+        self.registry
+            .insert(key, Arc::new(instance), Some(slot))
+            .await
+            .map_err(map_adapter_error_to_rpc)?;
+
+        Ok(serde_json::json!({
+            "instanceId": key.as_string(),
+            "profileId": profile_id_for_instance,
+            "agentId": new_agent_id,
+            "sessionPreserved": session_preserved,
+        }))
+    }
+
     /// Read the addressed instance's per-instance metadata cache.
     /// The palette pickers (modes, models) call this on every open
     /// so the listed options come straight from the daemon's
@@ -1648,6 +1769,17 @@ impl Adapter for AcpAdapter {
         value: &str,
     ) -> AdapterResult<serde_json::Value> {
         AcpAdapter::set_session_config_option(self, instance_id, config_id, value)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn set_session_profile(
+        &self,
+        instance_id: &str,
+        profile_id: &str,
+        with_config: Option<Vec<serde_json::Value>>,
+    ) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_session_profile(self, instance_id, profile_id, with_config)
             .await
             .map_err(rpc_to_adapter)
     }
