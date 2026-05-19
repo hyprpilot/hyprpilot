@@ -29,11 +29,13 @@ export interface PendingPermission {
   rawInput?: Record<string, unknown>
   content: Record<string, unknown>[]
   options: PermissionOptionView[]
-  /// Pre-selected option id picked by the daemon (allow-shaped
-  /// option). UI uses this as the modal's initial focus + the
-  /// `Enter`-commit target. `undefined` when no allow-shaped option
-  /// exists in the offered set.
+  /// Default-highlight option id — `Enter` target. Mirror of
+  /// `allowOptionId`. `undefined` when no allow_once option exists.
   defaultOptionId?: string
+  /// Allow keybind target (Ctrl+G). `undefined` → keybind toasts.
+  allowOptionId?: string
+  /// Deny keybind target (Ctrl+R). `undefined` → keybind toasts.
+  rejectOptionId?: string
   formatted: FormattedToolCall
   createdAt: number
 }
@@ -48,6 +50,8 @@ export interface PermissionRequestRaw {
   content?: Record<string, unknown>[]
   options: PermissionOptionView[]
   defaultOptionId?: string
+  allowOptionId?: string
+  rejectOptionId?: string
   formatted: FormattedToolCall
 }
 
@@ -77,6 +81,8 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     createdAt: seq,
     options: raw.options,
     defaultOptionId: raw.defaultOptionId,
+    allowOptionId: raw.allowOptionId,
+    rejectOptionId: raw.rejectOptionId,
     formatted: raw.formatted
   }
   const current = states.get(id) ?? []
@@ -136,6 +142,8 @@ function buildView(p: PendingPermission, queued: boolean): PermissionView {
     call,
     options: p.options,
     defaultOptionId: p.defaultOptionId,
+    allowOptionId: p.allowOptionId,
+    rejectOptionId: p.rejectOptionId,
     queued
   }
 }

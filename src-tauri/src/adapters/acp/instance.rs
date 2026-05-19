@@ -3897,16 +3897,18 @@ async fn run(params: RunParams) {
                                 };
                                 registry.dispatch(&ctx)
                             };
-                            // Pre-select ONLY when the agent offers a
-                            // single-shot `allow_once`. Captains want
-                            // `Enter` to commit "yes, just this once",
-                            // never "yes forever" — so `allow_always`
-                            // is NOT a fallback for the default
-                            // highlight. Agents that offer no
-                            // `allow_once` ship no default; the captain
-                            // must explicitly pick.
-                            let default_option_id =
+                            // Daemon-side canonical ordering: every
+                            // frontend renders the same button
+                            // arrangement regardless of vendor.
+                            // Reorder THEN compute the option ids
+                            // off the reordered list so the wire
+                            // shape is fully consistent.
+                            let options =
+                                crate::adapters::permission::reorder_options(options);
+                            let allow_option_id =
                                 crate::adapters::permission::pick_allow_once_id(&options);
+                            let reject_option_id =
+                                crate::adapters::permission::pick_reject_option_id(&options);
                             let event = InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
@@ -3919,7 +3921,9 @@ async fn run(params: RunParams) {
                                 raw_input,
                                 content,
                                 options,
-                                default_option_id,
+                                default_option_id: allow_option_id.clone(),
+                                allow_option_id,
+                                reject_option_id,
                                 formatted,
                             };
                             publish(&mirror_notif, &events_tx_notif, event).await;

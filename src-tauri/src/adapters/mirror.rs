@@ -368,6 +368,8 @@ impl InstanceMirror {
                 args,
                 options,
                 default_option_id,
+                allow_option_id,
+                reject_option_id,
                 ..
             } => {
                 // Idempotent: same `request_id` arriving twice would
@@ -380,6 +382,8 @@ impl InstanceMirror {
                         args: Some(args.clone()),
                         options: options.clone(),
                         default_option_id: default_option_id.clone(),
+                        allow_option_id: allow_option_id.clone(),
+                        reject_option_id: reject_option_id.clone(),
                     });
                 }
             }
@@ -1123,6 +1127,8 @@ mod tests {
                 kind: "allow_once".into(),
             }],
             default_option_id: Some("allow".into()),
+            allow_option_id: Some("allow".into()),
+            reject_option_id: None,
             formatted: crate::tools::formatter::types::FormattedToolCall {
                 title: "Bash".into(),
                 stats: Vec::new(),
@@ -1378,6 +1384,8 @@ mod tests {
                 kind: "allow_once".into(),
             }],
             default_option_id: Some("allow".into()),
+            allow_option_id: Some("allow".into()),
+            reject_option_id: None,
             formatted: crate::tools::formatter::types::FormattedToolCall {
                 title: "Bash".into(),
                 stats: Vec::new(),
@@ -1481,6 +1489,8 @@ mod tests {
                     kind: "allow_once".into(),
                 }],
                 default_option_id: Some("allow".into()),
+                allow_option_id: Some("allow".into()),
+                reject_option_id: None,
                 formatted: crate::tools::formatter::types::FormattedToolCall {
                     title: "Bash".into(),
                     stats: Vec::new(),
