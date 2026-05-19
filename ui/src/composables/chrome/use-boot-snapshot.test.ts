@@ -22,6 +22,7 @@
  *     `main.ts` can fall through to the granular loaders.
  */
 
+import { QueryClient } from '@tanstack/vue-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetActiveInstanceForTests, useActiveInstance } from './use-active-instance'
@@ -201,6 +202,60 @@ describe('applyBootSnapshot — focused instance seeding', () => {
 
     await applyBootSnapshot()
     expect(useActiveInstance().id.value).toBeUndefined()
+  })
+})
+
+describe('applyBootSnapshot — chat-cache hydration', () => {
+  it('seeds the TanStack chat cache for every instance shipped in snap.chats', async() => {
+    const chatPage = (instanceId: string, count: number) => ({
+      items: Array.from({ length: count }, (_, i) => ({
+        seq: i + 1,
+        turnId: 't',
+        item: { kind: 'user_prompt', text: `${instanceId}-msg-${i + 1}` }
+      })),
+      oldestSeq: 1,
+      latestSeq: count,
+      hasMore: false
+    })
+
+    invokeMock.mockResolvedValueOnce(
+      snapshotFixture({
+        instances: {
+          instances: [
+            { instanceId: 'i-a', agentId: 'claude-code' },
+            { instanceId: 'i-b', agentId: 'claude-code' }
+          ]
+        },
+        chats: {
+          'i-a': chatPage('i-a', 42),
+          'i-b': chatPage('i-b', 7)
+        }
+      })
+    )
+    const client = new QueryClient()
+
+    await applyBootSnapshot(client)
+
+    const cachedA = client.getQueryData(['snapshot-chat', 'i-a']) as { pages: { items: unknown[] }[] }
+    const cachedB = client.getQueryData(['snapshot-chat', 'i-b']) as { pages: { items: unknown[] }[] }
+
+    expect(cachedA?.pages[0]?.items).toHaveLength(42)
+    expect(cachedB?.pages[0]?.items).toHaveLength(7)
+  })
+
+  it('no-ops when snap.chats is absent (older daemon)', async() => {
+    invokeMock.mockResolvedValueOnce(
+      snapshotFixture({
+        instances: {
+          instances: [{ instanceId: 'i-x', agentId: 'claude-code' }]
+        }
+        // no `chats` key — older daemon shape
+      })
+    )
+    const client = new QueryClient()
+
+    await expect(applyBootSnapshot(client)).resolves.toBe(true)
+    expect(client.getQueryData(['snapshot-chat', 'i-x'])).toBeUndefined()
   })
 })
 
