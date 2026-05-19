@@ -27,12 +27,29 @@ import { applyKeymapsFromObject } from './use-keymaps'
 import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
 import { applyCompletionConfigFromObject } from '../composer/use-completion'
-import { prefetchInstanceChatFirstPage, prefetchInstanceMeta } from '../instance/use-focus-prefetch'
+import { prefetchInstanceMeta } from '../instance/use-focus-prefetch'
 import { applyQueueChanged } from '../instance/use-queue'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from '../instance/use-session-info'
 import { applyBootProfiles } from '../ui-state/use-profiles'
-import { invoke, TauriCommand } from '@ipc'
+import { invoke, TauriCommand, type ChatSnapshot } from '@ipc'
 import { log } from '@lib'
+
+/**
+ * Seed the TanStack chat cache from the boot snapshot's per-instance
+ * `chats` map. Writes one `InfiniteData` shape per instance — same
+ * key (`['snapshot-chat', instanceId]`) the `useInstanceChatInfiniteQuery`
+ * mount reads from, same single-head-page shape
+ * `prefetchInstanceChatFirstPage` produces. ChatViewport mounts
+ * synchronously off the seeded cache.
+ */
+function seedChatCacheFromBoot(queryClient: QueryClient, chats: Record<string, ChatSnapshot>): void {
+  for (const [instanceId, snap] of Object.entries(chats)) {
+    queryClient.setQueryData(['snapshot-chat', instanceId], {
+      pages: [snap],
+      pageParams: [undefined as number | undefined]
+    })
+  }
+}
 
 export async function applyBootSnapshot(queryClient?: QueryClient): Promise<boolean> {
   let snap
@@ -106,6 +123,23 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
     }
   }
 
+  // Seed the per-instance chat cache for EVERY live instance — not
+  // just the focused one. The daemon ships a first chat-page snapshot
+  // per instance in the boot payload (see `BOOT_CHAT_PAGE_LIMIT` in
+  // `src-tauri/src/daemon/mod.rs`); writing each one directly into
+  // the TanStack cache means the captain navigating into ANY visible
+  // instance sees full history on the first frame. Closes the
+  // "I only see the latest message" hydration gap that hit when:
+  //   - the daemon had no `focusedId` (no chat prefetch fired)
+  //   - the captain switched between instances (every flip triggered
+  //     a fresh viewport-sized fetch instead of cache reuse)
+  //   - a session_load replay raced the cache initialisation (the
+  //     transcript-patcher's no-cache guard dropped the replay events
+  //     because no pages existed yet).
+  if (queryClient && snap.chats) {
+    seedChatCacheFromBoot(queryClient, snap.chats)
+  }
+
   // Land the daemon's focused id on `useActiveInstance` immediately —
   // a remote that connects mid-session expects to see the same
   // instance the desktop is on, not "no active instance" empty.
@@ -114,32 +148,16 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   if (snap.instances.focusedId) {
     useActiveInstance().setIfUnset(snap.instances.focusedId)
 
-    // AWAIT the focused instance's meta + chat-first-page prefetches
-    // BEFORE returning. Earlier versions fired these as
-    // `void prefetch(...).catch(...)` so the boot phase completed
-    // before the snapshots landed. On remote that meant Overlay.vue
-    // mounted with an empty cache; `useInstanceChatInfiniteQuery`
-    // fired its own fetch, which on a slow WS could take seconds —
-    // the captain saw an empty viewport until the fetch resolved,
-    // and any live events landing during that gap got patched into
-    // an empty cache and dropped. Awaiting here means the cache is
-    // hot by the time Overlay renders ChatViewport, which then
-    // picks up the cached page synchronously. `Promise.allSettled`
-    // so a meta failure (e.g. permissions race) doesn't block chat;
-    // both errors land in the log + the relevant store stays empty
-    // for that field. TanStack dedupes on queryKey, so the parallel
-    // `brimSync` invocation in Overlay.vue's `onMounted` rides the
-    // cached value.
+    // Meta still rides on the per-instance round-trip — it's a small
+    // payload and the `acp:instance-meta` event would refresh it
+    // anyway on the next state change. Chat is already in the cache
+    // (seeded from `snap.chats` above) so no chat round-trip here.
     if (queryClient) {
-      const results = await Promise.allSettled([prefetchInstanceMeta(queryClient, snap.instances.focusedId), prefetchInstanceChatFirstPage(queryClient, snap.instances.focusedId)])
+      const result = await prefetchInstanceMeta(queryClient, snap.instances.focusedId).catch((err: unknown) => {
+        log.warn('boot-snapshot: focused meta prefetch failed', undefined, err)
+      })
 
-      if (results[0].status === 'rejected') {
-        log.warn('boot-snapshot: focused meta prefetch failed', undefined, results[0].reason)
-      }
-
-      if (results[1].status === 'rejected') {
-        log.warn('boot-snapshot: focused chat prefetch failed', undefined, results[1].reason)
-      }
+      void result
     }
   }
 

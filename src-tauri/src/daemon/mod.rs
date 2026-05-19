@@ -153,7 +153,25 @@ pub(crate) struct BootSnapshot {
     /// (as `[]`) so the consumer can mirror the daemon's per-instance
     /// state set exactly.
     pub(crate) queues: serde_json::Value,
+    /// Per-instance first chat-page snapshots keyed by instance id.
+    /// Mirrors the shape `instance/snapshot/chat` returns (backward
+    /// window anchored at the head, capped at
+    /// [`BOOT_CHAT_PAGE_LIMIT`] items). Frontends seed their TanStack
+    /// cache directly so the captain navigating into ANY visible
+    /// instance sees full chat history immediately — no per-instance
+    /// round-trip on focus, no "I only see the latest message"
+    /// hydration gap when the daemon has no `focusedId` pointer. Empty
+    /// `{ items: [], hasMore: false }` for instances whose mirror has
+    /// no transcript yet so the consumer can rely on every listed
+    /// instance having a chat key in the map.
+    pub(crate) chats: serde_json::Value,
 }
+
+/// First-page chat-snapshot size shipped in the boot payload — one
+/// flat page per live instance. 100 lines up with the Vue overlay's
+/// `BOOT_PAGE_SIZE` and the nvim plugin's `snapshot_limit`, so every
+/// frontend has the same baseline of context on cold connect.
+const BOOT_CHAT_PAGE_LIMIT: usize = 100;
 
 /// Single source of truth for the boot-time payload — both the
 /// `boot_snapshot` Tauri command and the `tauri/boot_snapshot` JSON-RPC
@@ -212,6 +230,15 @@ pub(crate) async fn build_boot_snapshot(
     // an error so the daemon log catches the regression instead of
     // silently shipping an instance with no queue field.
     let mut queues = serde_json::Map::with_capacity(instance_entries.len());
+    // Per-instance first chat page. Same shape `instance/snapshot/chat`
+    // returns (head window of size [`BOOT_CHAT_PAGE_LIMIT`]). Reads
+    // straight off the per-instance mirror — no actor round-trip,
+    // cheap even with many instances. An instance whose mirror was
+    // torn down between `adapter.list()` and the lookup ships an
+    // empty `{items: [], oldestSeq: null, latestSeq: null, hasMore:
+    // false}` shape so the consumer can rely on every listed
+    // instance having a chat key in the map.
+    let mut chats = serde_json::Map::with_capacity(instance_entries.len());
     for entry in &instance_entries {
         let key = crate::adapters::InstanceKey::parse(&entry.instance_id).map_err(|e| {
             format!(
@@ -223,13 +250,29 @@ pub(crate) async fn build_boot_snapshot(
         // down between `adapter.list()` and the mirror lookup — rare
         // race, ship an empty array so consumers don't see a missing
         // key for an instance that was listed.
-        let items = match adapter.instance_mirror(key).await {
-            Some(mirror) => mirror.queue_snapshot().await,
-            None => Vec::new(),
+        let (queue_items, chat_snap) = match adapter.instance_mirror(key).await {
+            Some(mirror) => (
+                mirror.queue_snapshot().await,
+                mirror.chat_snapshot(None, None, BOOT_CHAT_PAGE_LIMIT).await,
+            ),
+            None => (
+                Vec::new(),
+                crate::adapters::mirror::ChatSnapshot {
+                    items: Vec::new(),
+                    oldest_seq: None,
+                    latest_seq: None,
+                    has_more: false,
+                },
+            ),
         };
         queues.insert(
             entry.instance_id.clone(),
-            serde_json::to_value(&items).map_err(|e| format!("serialize queue for {}: {e}", entry.instance_id))?,
+            serde_json::to_value(&queue_items)
+                .map_err(|e| format!("serialize queue for {}: {e}", entry.instance_id))?,
+        );
+        chats.insert(
+            entry.instance_id.clone(),
+            serde_json::to_value(&chat_snap).map_err(|e| format!("serialize chat for {}: {e}", entry.instance_id))?,
         );
     }
 
@@ -244,6 +287,7 @@ pub(crate) async fn build_boot_snapshot(
         selected_profile_id: adapter.selected_profile_id(),
         instances: serde_json::Value::Object(instances_payload),
         queues: serde_json::Value::Object(queues),
+        chats: serde_json::Value::Object(chats),
     })
 }
 

@@ -1,4 +1,5 @@
 import type { CompletionConfigSnapshot } from './completion-config'
+import type { ChatSnapshot } from './instance-snapshot'
 import type { KeymapsConfig } from './keymap'
 import type { QueueItem } from './queue'
 import type { AgentSummary, InstanceListEntry, ProfileSummary } from './session'
@@ -11,9 +12,12 @@ import type { WindowState } from './window'
  * sequential `await invoke(...)` round-trips — load-bearing on the
  * remote bridge where each round-trip rides the same WS.
  *
- * Per-instance snapshot data (chat / terminals) stays on its own
- * RPCs; brim-sync calls those after boot for whichever instance is
- * focused.
+ * Per-instance terminal snapshots stay on their own RPC; the chat
+ * first page + queue snapshots ride inline (one head window per live
+ * instance) so the captain navigating into any instance sees full
+ * history immediately — no per-focus prefetch race, no "I only see
+ * the latest message" hydration gap when the daemon has no
+ * `focusedId` pointer.
  */
 export interface BootSnapshot {
   theme: Theme
@@ -34,4 +38,10 @@ export interface BootSnapshot {
   /// are included (as `[]`) so the consumer treats absence as "no
   /// instance" rather than "queue unknown".
   queues: Record<string, QueueItem[]>
+  /// Per-instance first chat-page snapshots keyed by instance id.
+  /// Frontends seed their TanStack cache so the captain navigating
+  /// into ANY live instance gets full history immediately. Empty
+  /// `{ items: [], hasMore: false }` for instances whose mirror has
+  /// no transcript yet.
+  chats: Record<string, ChatSnapshot>
 }
