@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.3](https://github.com/hyprpilot/hyprpilot/compare/v2.2.2...v2.2.3) (2026-05-19)
+
+
+### Bug Fixes
+
+* **hydration:** ship per-instance chat first page in boot snapshot ([#109](https://github.com/hyprpilot/hyprpilot/issues/109)) ([e87affd](https://github.com/hyprpilot/hyprpilot/commit/e87affd8328893bbe8198274138820732ac427c2))
+* **permission:** default-highlight is allow_once-only — no fallback to allow_always or first option ([#107](https://github.com/hyprpilot/hyprpilot/issues/107)) ([8a1265f](https://github.com/hyprpilot/hyprpilot/commit/8a1265f22f5840cbfabf5a33ce3c596e540ceea2))
+
 ## [2.2.2](https://github.com/hyprpilot/hyprpilot/compare/v2.2.1...v2.2.2) (2026-05-19)
 
 
