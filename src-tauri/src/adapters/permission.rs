@@ -79,6 +79,59 @@ pub fn is_reject_kind(kind: &str) -> bool {
     kind.starts_with("reject")
 }
 
+/// Exact-match aliases for the "allow this operation" intent. Matched
+/// at the TOKEN level (not substring) so `disallow` doesn't trip the
+/// `allow` alias and `allow_all` matches `allow` but not `accept`.
+/// Pulled from real-world ACP adapter option names — claude-agent-acp
+/// ships "Allow", codex CLI ships "Approve Once" / "Approve This
+/// Session", and the general human-input vocabulary captains expect
+/// (Yes / OK).
+const ALLOW_ALIASES: &[&str] = &[
+    "allow", "accept", "approve", "yes", "ok", "okay", "confirm", "proceed", "y",
+];
+
+/// Exact-match aliases for the "reject / deny this operation" intent.
+/// Mirrors [`ALLOW_ALIASES`]; same word-level semantics.
+const DENY_ALIASES: &[&str] = &["deny", "disallow", "reject", "decline", "cancel", "no", "forbid", "n"];
+
+/// The "single-shot, this time only" qualifier. Captains hitting
+/// `Enter` on the default highlight should never commit to a forever
+/// rule, so the strict default-highlight path requires both an allow-
+/// alias token AND a `once`-class token to be present.
+const ONCE_ALIASES: &[&str] = &["once", "single"];
+
+/// Tokenize a vendor-supplied option label / id at the word level.
+/// Splits on whitespace, `-`, `_`, `/`, `.` and lowercases each token.
+///
+/// **Why tokens, not contains():** captain explicitly called out the
+/// substring match's failure mode — `option.name.contains("allow")`
+/// matches `"Disallow"`, and a future kind `"deny_allow_list"` would
+/// falsely register as an allow. Tokenizing + exact-token comparison
+/// keeps `"Disallow"` (single token `"disallow"`) outside the allow
+/// bucket while `"Allow Once"` (tokens `["allow", "once"]`) cleanly
+/// matches the allow-alias.
+fn option_tokens(option: &PermissionOptionView) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+
+    for raw in [&option.name, &option.option_id] {
+        for piece in raw.split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '/' || c == '.') {
+            if piece.is_empty() {
+                continue;
+            }
+            tokens.push(piece.to_ascii_lowercase());
+        }
+    }
+    tokens
+}
+
+/// Does any tokenized word of `option.name` / `option.option_id`
+/// exact-match an alias in `aliases`?
+fn matches_alias(option: &PermissionOptionView, aliases: &[&str]) -> bool {
+    let tokens = option_tokens(option);
+
+    tokens.iter().any(|t| aliases.contains(&t.as_str()))
+}
+
 /// Identity projection of the tool behind a permission request. The
 /// glob chain matches on `name` only; `title` / `raw_args` /
 /// `kind_wire` are carried for the UI and (future) argument-scoped /
@@ -523,7 +576,27 @@ impl PermissionController for DefaultPermissionController {
 /// to send the agent SOME response when an auto-decision fires).
 #[must_use]
 pub fn pick_allow_once_id(options: &[PermissionOptionView]) -> Option<String> {
-    let picked = options.iter().find(|o| o.kind == "allow_once");
+    // 1. Canonical kind match. Lowercased so an upstream vendor that
+    //    ships a mixed-case wire kind (current ACP schema uses
+    //    `snake_case`, but `#[non_exhaustive]` keeps the wire
+    //    surface open) still matches.
+    let picked = options
+        .iter()
+        .find(|o| o.kind.eq_ignore_ascii_case("allow_once"))
+        // 2. Token-level alias match. Captain's "default highlight
+        //    must never commit to forever" rule stays — require BOTH
+        //    an allow-alias token AND a `once`-class token. So
+        //    `"Allow Once"` / `"Approve Once"` / `"Accept Single"`
+        //    match; `"Allow Always"` / `"Approve All"` / bare
+        //    `"Allow"` do NOT.
+        .or_else(|| {
+            options.iter().find(|o| {
+                let tokens = option_tokens(o);
+
+                tokens.iter().any(|t| ALLOW_ALIASES.contains(&t.as_str()))
+                    && tokens.iter().any(|t| ONCE_ALIASES.contains(&t.as_str()))
+            })
+        });
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
@@ -555,18 +628,17 @@ pub fn pick_allow_once_id(options: &[PermissionOptionView]) -> Option<String> {
 #[must_use]
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
     // Prefer `allow_once` over `allow_always` over any other allow-shaped
-    // variant; falls back to a name/id "allow" substring match for
-    // vendors that ship custom labels; final fallback to the first option.
+    // variant; falls back to a token-level alias match on the
+    // vendor-supplied name / id (real-world ACP adapters: claude's
+    // "Allow", codex's "Approve Once"); final fallback to the first
+    // option. Kind comparisons are case-insensitive so a future vendor
+    // shipping mixed-case kinds still routes correctly.
     let picked = options
         .iter()
-        .find(|o| o.kind == "allow_once")
-        .or_else(|| options.iter().find(|o| o.kind == "allow_always"))
-        .or_else(|| options.iter().find(|o| is_allow_kind(&o.kind)))
-        .or_else(|| {
-            options.iter().find(|o| {
-                o.option_id.to_ascii_lowercase().contains("allow") || o.name.to_ascii_lowercase().contains("allow")
-            })
-        })
+        .find(|o| o.kind.eq_ignore_ascii_case("allow_once"))
+        .or_else(|| options.iter().find(|o| o.kind.eq_ignore_ascii_case("allow_always")))
+        .or_else(|| options.iter().find(|o| is_allow_kind(&o.kind.to_ascii_lowercase())))
+        .or_else(|| options.iter().find(|o| matches_alias(o, ALLOW_ALIASES)))
         .or_else(|| options.first());
     if let Some(opt) = picked {
         tracing::debug!(
@@ -586,17 +658,10 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
 pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String> {
     let picked = options
         .iter()
-        .find(|o| o.kind == "reject_once")
-        .or_else(|| options.iter().find(|o| o.kind == "reject_always"))
-        .or_else(|| options.iter().find(|o| is_reject_kind(&o.kind)))
-        .or_else(|| {
-            options.iter().find(|o| {
-                o.option_id.to_ascii_lowercase().contains("reject")
-                    || o.option_id.to_ascii_lowercase().contains("deny")
-                    || o.name.to_ascii_lowercase().contains("reject")
-                    || o.name.to_ascii_lowercase().contains("deny")
-            })
-        });
+        .find(|o| o.kind.eq_ignore_ascii_case("reject_once"))
+        .or_else(|| options.iter().find(|o| o.kind.eq_ignore_ascii_case("reject_always")))
+        .or_else(|| options.iter().find(|o| is_reject_kind(&o.kind.to_ascii_lowercase())))
+        .or_else(|| options.iter().find(|o| matches_alias(o, DENY_ALIASES)));
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
@@ -989,11 +1054,12 @@ mod tests {
         assert_eq!(pick_allow_once_id(&opts), None);
     }
 
-    /// Strict: no substring matching, no first-option fallback.
-    /// Vendors that don't ship a normalized `allow_once` kind get no
-    /// default highlight on the wire.
+    /// Strict-with-aliases: a vendor-supplied name without a `once`
+    /// qualifier doesn't match. "Allow This" is single-token-allow but
+    /// the second token is "this" — no `once` qualifier, so the
+    /// default-highlight picker stays strict and returns `None`.
     #[test]
-    fn pick_allow_once_returns_none_for_substring_only_matches() {
+    fn pick_allow_once_returns_none_for_allow_alias_without_once_qualifier() {
         let opts = vec![
             PermissionOptionView {
                 option_id: "yes".into(),
@@ -1003,6 +1069,64 @@ mod tests {
             PermissionOptionView {
                 option_id: "other".into(),
                 name: "Skip".into(),
+                kind: "unknown".into(),
+            },
+        ];
+        assert_eq!(pick_allow_once_id(&opts), None);
+    }
+
+    /// `"Approve Once"` (codex CLI's wording) matches when the kind
+    /// is unknown — the token pair `["approve", "once"]` satisfies
+    /// both the allow-alias and the once-qualifier checks.
+    #[test]
+    fn pick_allow_once_falls_back_to_alias_plus_once_token() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "approve-once".into(),
+                name: "Approve Once".into(),
+                kind: "unknown".into(),
+            },
+            PermissionOptionView {
+                option_id: "approve-always".into(),
+                name: "Approve This Session".into(),
+                kind: "unknown".into(),
+            },
+            PermissionOptionView {
+                option_id: "reject".into(),
+                name: "Reject".into(),
+                kind: "unknown".into(),
+            },
+        ];
+        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("approve-once"));
+    }
+
+    /// Token-level: `"Disallow"` is a single token "disallow" that is
+    /// NOT an allow-alias even though it contains the substring
+    /// "allow". The strict-with-aliases picker still returns None
+    /// rather than misclassifying.
+    #[test]
+    fn pick_allow_once_rejects_substring_only_disallow() {
+        let opts = vec![PermissionOptionView {
+            option_id: "no".into(),
+            name: "Disallow".into(),
+            kind: "unknown".into(),
+        }];
+        assert_eq!(pick_allow_once_id(&opts), None);
+    }
+
+    /// Allow-alias WITHOUT `once` qualifier (bare "Allow" or
+    /// "Allow Always") never trips the once-strict picker.
+    #[test]
+    fn pick_allow_once_rejects_allow_always_alias() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "allow-always".into(),
+                name: "Allow Always".into(),
+                kind: "unknown".into(),
+            },
+            PermissionOptionView {
+                option_id: "approve-all".into(),
+                name: "Approve All".into(),
                 kind: "unknown".into(),
             },
         ];
@@ -1039,5 +1163,88 @@ mod tests {
             kind: "allow_once".into(),
         }];
         assert!(pick_reject_option_id(&opts).is_none());
+    }
+
+    /// Token-level reject aliases. `"No"` is a deny alias; `"Decline"`
+    /// is a deny alias; `"Cancel"` is a deny alias. Captain's loose
+    /// path picks them when the kind doesn't classify.
+    #[test]
+    fn pick_reject_option_falls_back_to_alias_token() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "no".into(),
+                name: "No".into(),
+                kind: "unknown".into(),
+            },
+            PermissionOptionView {
+                option_id: "skip".into(),
+                name: "Skip".into(),
+                kind: "unknown".into(),
+            },
+        ];
+        assert_eq!(pick_reject_option_id(&opts).as_deref(), Some("no"));
+    }
+
+    /// Substring-only matches must not trip the reject picker.
+    /// `"Disallow"` is a single deny-alias token; `"reject_once"`
+    /// inside a vendor's free-form string only matches when tokenized
+    /// produces an exact alias. A token like `"rejected"` (past
+    /// tense, single token) is NOT in `DENY_ALIASES` so it does NOT
+    /// match — captains can rely on the exact-word semantic.
+    #[test]
+    fn pick_reject_option_rejects_substring_only_rejected() {
+        let opts = vec![PermissionOptionView {
+            option_id: "stale".into(),
+            name: "Rejected".into(),
+            kind: "unknown".into(),
+        }];
+        assert!(pick_reject_option_id(&opts).is_none());
+    }
+
+    /// Real-world adapter shapes pulled from claude-agent-acp +
+    /// codex CLI. Pins the alias coverage so a future vendor renaming
+    /// is caught here before captains report it.
+    #[test]
+    fn pick_allow_option_matches_real_world_adapter_labels() {
+        // claude-agent-acp's "Allow" (single-word, kind classified
+        // upstream as `allow_once`, but include the unknown-kind path
+        // here to exercise the alias fallback specifically).
+        let claude = vec![PermissionOptionView {
+            option_id: "ok".into(),
+            name: "Allow".into(),
+            kind: "unknown".into(),
+        }];
+        assert_eq!(pick_allow_option_id(&claude).as_deref(), Some("ok"));
+
+        // codex CLI's "Approve Once" — token pair `["approve", "once"]`
+        // satisfies the allow-alias check.
+        let codex = vec![PermissionOptionView {
+            option_id: "approve-once".into(),
+            name: "Approve Once".into(),
+            kind: "unknown".into(),
+        }];
+        assert_eq!(pick_allow_option_id(&codex).as_deref(), Some("approve-once"));
+
+        // A "Yes" button (common in confirmation dialogs the agent
+        // surfaces as-is) — single token matches the `yes` alias.
+        let confirm = vec![PermissionOptionView {
+            option_id: "y".into(),
+            name: "Yes".into(),
+            kind: "unknown".into(),
+        }];
+        assert_eq!(pick_allow_option_id(&confirm).as_deref(), Some("y"));
+    }
+
+    /// Defensive: a future vendor shipping mixed-case wire kinds
+    /// (`"Allow_Once"` instead of `"allow_once"`) still routes
+    /// correctly. The kind comparisons use `eq_ignore_ascii_case`.
+    #[test]
+    fn pick_allow_once_lowercases_kind_compare() {
+        let opts = vec![PermissionOptionView {
+            option_id: "ok".into(),
+            name: "Allow Once".into(),
+            kind: "Allow_Once".into(),
+        }];
+        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("ok"));
     }
 }
