@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.4](https://github.com/hyprpilot/hyprpilot/compare/v2.2.3...v2.2.4) (2026-05-19)
+
+
+### Bug Fixes
+
+* **hydration:** replay-aware cache seeding for any externally-minted instance ([#110](https://github.com/hyprpilot/hyprpilot/issues/110)) ([2f12809](https://github.com/hyprpilot/hyprpilot/commit/2f1280905e3b255e526f22f563337f23ea762f2d))
+
 ## [2.2.3](https://github.com/hyprpilot/hyprpilot/compare/v2.2.2...v2.2.3) (2026-05-19)
 
 
