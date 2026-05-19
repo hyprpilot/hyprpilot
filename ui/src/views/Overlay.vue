@@ -55,6 +55,7 @@ import {
   useFocusPrefetch,
   useKeymap,
   useKeymaps,
+  useNotifications,
   usePalette,
   usePermissions,
   useRenameInstanceModal,
@@ -141,6 +142,7 @@ function onRestoreSessionClick(sessionId: string | undefined, cwd: string): void
 }
 
 const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
+const { count: notificationsCount } = useNotifications()
 // Phase C1: chat-body state (timeline blocks, virtualization,
 // stick-to-bottom) lives inside `<ChatViewport>`. Overlay reads only
 // the cross-feature stores that drive surfaces other than the body.
@@ -939,12 +941,14 @@ function onQueueSend(itemId: string): void {
     :cwd-full="headerCwdFull"
     :counts="headerCounts"
     :instances-count="instancesCount"
+    :notifications-count="notificationsCount"
     :git-status="sessionInfo.gitStatus"
     @pill-click="onPillClick"
     @breadcrumb-click="onBreadcrumbClick"
     @toggle-cwd="onToggleCwd"
     @close="onCloseOverlay"
     @instances-click="openRootLeaf(PaletteLeafId.Instances)"
+    @notifications-click="openRootLeaf(PaletteLeafId.Notifications)"
     @palette-click="openRootPalette"
   >
     <template v-if="activeToast" #toast>

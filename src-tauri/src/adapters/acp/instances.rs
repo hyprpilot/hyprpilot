@@ -55,6 +55,13 @@ pub struct AcpAdapter {
     /// `TurnStarted` adds, `TurnEnded` removes. Read by
     /// `daemon/shutdown`'s busy check.
     busy_instances: Arc<RwLock<HashSet<String>>>,
+    /// Daemon-side "needs attention" tracker. Listener task wired in
+    /// [`Self::spawn_tauri_event_bridge`] subscribes to the registry's
+    /// broadcast and raises / clears entries per the policy in
+    /// [`crate::adapters::notifications`]. `submit_prompt` calls
+    /// `clear` directly so a captain engaging via prompt drops the
+    /// row without waiting for the broadcast round-trip.
+    notifications: Arc<crate::adapters::notifications::Notifications>,
     /// Slash-commands cache shared with the composer-autocomplete
     /// `CommandsSource`. Daemon installs it once at boot via
     /// [`Self::set_commands_cache`]; per-instance runtimes write to
@@ -125,15 +132,26 @@ impl AcpAdapter {
         // singleton, this leaves the slot empty until config gains
         // entries).
         let initial_profile = config.read().map(|cfg| cfg.profile.default.clone()).unwrap_or(None);
+        let registry = Arc::new(AdapterRegistry::new());
+        let notifications = Arc::new(crate::adapters::notifications::Notifications::new(registry.events_tx()));
         Self {
             config,
             status,
-            registry: Arc::new(AdapterRegistry::new()),
+            registry,
             permissions,
             busy_instances: Arc::new(RwLock::new(HashSet::new())),
             commands_cache: Arc::new(RwLock::new(None)),
             selected_profile_id: RwLock::new(initial_profile),
+            notifications,
         }
+    }
+
+    /// Notifications tracker handle. Snapshot reads (boot snapshot,
+    /// `notifications/list`, `notifications_list` Tauri command) and
+    /// the `submit_prompt` clear-on-engage path go through this.
+    #[must_use]
+    pub fn notifications(&self) -> &Arc<crate::adapters::notifications::Notifications> {
+        &self.notifications
     }
 
     /// Install the slash-commands cache. Called once at boot from
@@ -493,6 +511,16 @@ impl AcpAdapter {
             }
         });
 
+        // Notifications listener — owns the "needs attention" tracker
+        // off the same registry broadcast. Seeded with `focused_id =
+        // None` because this runs in the Tauri `setup(...)` closure
+        // before any instance has spawned; the listener picks up the
+        // first focus pointer the moment `InstancesFocused` fires
+        // (auto-focus on first spawn is part of the registry contract).
+        let notifications = self.notifications.clone();
+        let notifications_rx = self.registry.subscribe();
+        crate::adapters::notifications::spawn_listener(notifications, notifications_rx, None);
+
         // Busy tracker — subscribes to the same registry broadcast and
         // maintains `busy_instances` off `TurnStarted` / `TurnEnded`.
         // Co-located with the Tauri event bridge so the spawn lands in
@@ -748,6 +776,13 @@ impl AcpAdapter {
         let resolved_profile_id = resolved.profile_id.clone();
 
         let key = self.ensure(key, resolved, effective_profile, Bootstrap::Fresh).await?;
+
+        // Captain is engaging with this instance — drop any pending
+        // "needs attention" entry. Without this clear path the entry
+        // would linger until the next `InstancesFocused` event landed,
+        // which on a remote captain who sends a prompt without
+        // explicitly focusing is "never".
+        self.notifications.clear(&key.as_string());
 
         // Check busy state BEFORE submitting so the wire reply can
         // tell the caller whether the actor was already mid-turn
@@ -1694,6 +1729,10 @@ impl Adapter for AcpAdapter {
         Some(AcpAdapter::permissions(self))
     }
 
+    fn notifications(&self) -> Option<std::sync::Arc<crate::adapters::notifications::Notifications>> {
+        Some(self.notifications.clone())
+    }
+
     async fn instance_mirror(
         &self,
         key: InstanceKey,
@@ -2100,6 +2139,7 @@ fn emit_acp_event(app: &tauri::AppHandle, evt: crate::adapters::InstanceEvent) {
         GenEvt::InstanceMeta { .. } => "acp:instance-meta",
         GenEvt::SystemPromptInjected { .. } => "acp:system-prompt-injected",
         GenEvt::QueueChanged { .. } => "acp:queue-changed",
+        GenEvt::NotificationsChanged { .. } => "acp:notifications-changed",
     };
     match serde_json::to_value(&evt) {
         Ok(v) => {

@@ -380,6 +380,16 @@ pub enum InstanceEvent {
         instance_id: String,
         items: Vec<crate::adapters::queue::QueueItem>,
     },
+    /// Daemon-side "needs attention" tracker updated — an entry was
+    /// raised, cleared, or extended with another reason. Daemon-
+    /// global event carrying the full post-change snapshot (idempotent
+    /// on lossy broadcast — a re-delivered event lands on the same
+    /// map keyed by `instanceId`). Frontends render a header pill +
+    /// palette leaf off this surface; see
+    /// [`crate::adapters::notifications`] for the state machine.
+    NotificationsChanged {
+        items: Vec<crate::adapters::notifications::NotificationEntry>,
+    },
 }
 
 /// Display-friendly snapshot of one ACP `SessionMode`. Mirrors
@@ -500,6 +510,7 @@ impl InstanceEvent {
             InstanceEvent::InstanceMeta { .. } => "instance.meta",
             InstanceEvent::SystemPromptInjected { .. } => "instance.system_prompt_injected",
             InstanceEvent::QueueChanged { .. } => "instance.queue_changed",
+            InstanceEvent::NotificationsChanged { .. } => "notifications.changed",
         }
     }
 
@@ -531,6 +542,7 @@ impl InstanceEvent {
             InstanceEvent::InstanceMeta { .. } => "acp:instance-meta",
             InstanceEvent::SystemPromptInjected { .. } => "acp:system-prompt-injected",
             InstanceEvent::QueueChanged { .. } => "acp:queue-changed",
+            InstanceEvent::NotificationsChanged { .. } => "acp:notifications-changed",
         }
     }
 
@@ -559,7 +571,8 @@ impl InstanceEvent {
             InstanceEvent::InstancesChanged { .. }
             | InstanceEvent::InstancesFocused { .. }
             | InstanceEvent::DaemonReloaded { .. }
-            | InstanceEvent::SelectedProfileChanged { .. } => None,
+            | InstanceEvent::SelectedProfileChanged { .. }
+            | InstanceEvent::NotificationsChanged { .. } => None,
         }
     }
 }

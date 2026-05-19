@@ -15,6 +15,7 @@ pub mod acp;
 pub mod commands;
 pub mod instance;
 pub mod mirror;
+pub mod notifications;
 pub mod permission;
 pub mod profile;
 pub mod queue;
@@ -191,6 +192,14 @@ pub trait Adapter: Send + Sync + 'static {
     /// `AcpAdapter` returns `Some(...)` so the `permissions/*` RPC
     /// handlers can list / resolve pending prompts via the trait.
     fn permissions(&self) -> Option<std::sync::Arc<dyn crate::adapters::permission::PermissionController>> {
+        None
+    }
+
+    /// Daemon-side "needs attention" tracker. Adapters without one
+    /// return `None` — the `notifications/*` RPC + Tauri commands
+    /// surface `-32601 method not found` in that case. `AcpAdapter`
+    /// returns `Some(...)`.
+    fn notifications(&self) -> Option<std::sync::Arc<crate::adapters::notifications::Notifications>> {
         None
     }
 
