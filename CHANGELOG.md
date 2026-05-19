@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.2](https://github.com/hyprpilot/hyprpilot/compare/v2.2.1...v2.2.2) (2026-05-19)
+
+
+### Bug Fixes
+
+* a. ([#105](https://github.com/hyprpilot/hyprpilot/issues/105)) ([89de61f](https://github.com/hyprpilot/hyprpilot/commit/89de61f6471b5a2f2a80b607a0cd6a586db711d9))
+
 ## [2.2.1](https://github.com/hyprpilot/hyprpilot/compare/v2.2.0...v2.2.1) (2026-05-18)
 
 
