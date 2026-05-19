@@ -133,14 +133,18 @@ describe('ChatComposer.vue', () => {
     expect(submit.attributes('aria-label')).toBe('sending')
   })
 
-  it('blocks submit with empty / whitespace-only text even when attachments are pending', async() => {
-    // Pin the rule: text MUST be non-empty for a submit to fire.
-    // Attachments / pills alone don't qualify — an empty-text prompt
-    // lands on the daemon as a turn with no user content, corrupting
-    // the boundary on subsequent prompts.
+  it('blocks submit on a fully empty buffer even when attachments are pending', async() => {
+    // Pin the rule: SOMETHING must be typed for a submit to fire.
+    // Attachments / pills alone don't qualify — an empty-buffer
+    // prompt lands on the daemon as a turn with no user content,
+    // corrupting the boundary on subsequent prompts.
+    //
+    // Whitespace counts as text. Captains who deliberately type
+    // spaces (e.g. as a leading-newline workaround on a coarse
+    // keyboard) can send; we gate on raw `text.length === 0`, not
+    // a trim. `resolvedSubmit` still trims for the wire payload.
     const wrapper = mount(ChatComposer)
 
-    // Drop a pill into the composer's pill slot via the public API.
     const pill: ComposerPill = {
       id: 'pill-1',
       label: 'image.png',
@@ -153,19 +157,13 @@ describe('ChatComposer.vue', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.findAll('.composer-pill')).toHaveLength(1)
 
-    // Submit button is disabled — empty text + a pill is NOT enough.
+    // Submit button is disabled — empty buffer + a pill is NOT enough.
     const submit = wrapper.get('[data-testid="composer-submit"]')
 
     expect(submit.attributes('disabled')).toBeDefined()
     expect(submit.attributes('data-empty')).toBe('true')
 
-    // Whitespace-only text doesn't count either — trim collapses to empty.
-    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
-
-    await textarea.setValue('   \n\t  ')
-    expect(submit.attributes('disabled')).toBeDefined()
-
-    // Form-submit attempt must NOT emit either.
+    // Form-submit attempt on empty buffer must NOT emit.
     await wrapper.trigger('submit')
 
     for (let i = 0; i < 4; i++) {
@@ -173,6 +171,15 @@ describe('ChatComposer.vue', () => {
     }
     await wrapper.vm.$nextTick()
     expect(wrapper.emitted('submit')).toBeUndefined()
+
+    // Whitespace IS valid text — the button enables once anything
+    // is typed. The wire payload is whatever `resolvedSubmit`
+    // produces (trimmed for the wire), but the gate is raw length.
+    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
+
+    await textarea.setValue('   ')
+    expect(submit.attributes('disabled')).toBeUndefined()
+    expect(submit.attributes('data-empty')).toBe('false')
   })
 
   it('emits submit with trimmed text payload', async() => {
