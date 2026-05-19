@@ -141,7 +141,21 @@ function onRestoreSessionClick(sessionId: string | undefined, cwd: string): void
   void restoreSession(sessionId, cwd)
 }
 
-const { id: activeInstanceId, count: instancesCount } = useActiveInstance()
+const { id: activeInstanceId, count: instancesCount, ids: instanceIds, set: setActiveInstance } = useActiveInstance()
+
+// Idle-screen instance-row click → focus that instance. Flips the
+// active pointer locally for an immediate viewport remount, then
+// fires `instances_focus` so the daemon mirror catches up and
+// broadcasts the focus event (any peer frontend sees the change).
+async function onIdleFocusInstance(instanceId: InstanceId): Promise<void> {
+  setActiveInstance(instanceId)
+
+  try {
+    await invoke(TauriCommand.InstancesFocus, { instanceId })
+  } catch(err) {
+    log.warn('overlay: idle-screen focus failed', { instanceId, err: String(err) })
+  }
+}
 const { count: notificationsCount } = useNotifications()
 // Phase C1: chat-body state (timeline blocks, virtualization,
 // stick-to-bottom) lives inside `<ChatViewport>`. Overlay reads only
@@ -982,9 +996,11 @@ function onQueueSend(itemId: string): void {
           :agent="sessionInfo.agent ?? activeProfile?.agent"
           :model="sessionInfo.model ?? activeProfile?.model"
           :cwd="idleCwd"
+          :instances="instanceIds"
           :sessions="sessionListPreview"
           :total-session-count="sessionsForCwd.length"
           @restore-session="onRestoreSessionClick"
+          @focus-instance="onIdleFocusInstance"
           @open-palette="openRootPalette"
         />
       </template>

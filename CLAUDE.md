@@ -1653,16 +1653,18 @@ owns the shared machinery.
 
 - **Empty-registry → first-spawn** auto-focuses and emits
   `InstancesFocused` alongside `InstancesChanged`.
-- **Shutdown of focused → oldest survivor** (insertion-order
-  `order.first()`). Empty registry → focus clears to `None`.
+- **Shutdown of focused → focus clears to `None`.** No auto-pick of
+  a survivor — UIs fall through to their idle landing where the
+  captain explicitly picks the next instance. The earlier "auto-
+  focus oldest survivor" shape stole the captain off their just-
+  shuttered instance onto whatever happened to be oldest in
+  insertion order; captain rejected that flow.
 - **Restart preserves slot.** `drop_preserving_slot` →
   `insert_at_slot(slot, same_key, new_handle)`. The `InstanceKey` (UUID)
   is preserved.
 
 **Documented races**: `shutdown_one` releases all locks before awaiting
-the actor's shutdown ack (2s timeout); a concurrent `insert` between
-drop and auto-focus can land on `order.first()`. Callers reconcile via
-the `InstancesFocused` event stream. `focus` holds `instances` +
+the actor's shutdown ack (2s timeout). `focus` holds `instances` +
 `focused` locks across the check + write (TOCTOU-safe).
 
 **Broadcast contract**: `AdapterRegistry::subscribe` returns a
