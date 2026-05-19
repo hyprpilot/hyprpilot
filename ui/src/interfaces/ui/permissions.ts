@@ -23,15 +23,18 @@ export interface PermissionView {
   request: PermissionRequest
   /// Formatted view drives ALL chrome (icon, title, fields, etc.).
   call: ToolCallView
-  /// ACP-supplied option set ("Allow" / "Deny" / "Always allow"
-  /// / "Always deny"). Each carries a typed `optionId`.
+  /// Options pre-sorted by the daemon: allow_always, allow_once,
+  /// reject_once, then rest.
   options: PermissionOptionView[]
-  /// Daemon-picked default option id — the modal / row's primary
-  /// (solid) button + the `Enter`-commit target. Populated by the
-  /// daemon's allow-kind matcher; `undefined` when no allow-shaped
-  /// option exists. UI falls back to the legacy `allow_once`-solid
-  /// rule when unset.
+  /// Default-highlight option id — primary (solid) button + the
+  /// `Enter`-commit target. Mirror of `allowOptionId`. `undefined`
+  /// when the agent didn't offer an allow_once option.
   defaultOptionId?: string
+  /// Allow keybind (Ctrl+G) target. `undefined` → keybind shows a
+  /// toast instead of firing.
+  allowOptionId?: string
+  /// Deny keybind (Ctrl+R) target. Same toast-when-undefined rule.
+  rejectOptionId?: string
   /// Set when more than one prompt is pending and this one is
   /// behind the head.
   queued?: boolean

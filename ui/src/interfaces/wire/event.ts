@@ -59,13 +59,25 @@ export interface PermissionRequestEventPayload {
   /// instead of on `rawInput`; the modal walks the array directly
   /// to render text / diff / terminal blocks.
   content?: Record<string, unknown>[]
+  /// Options pre-sorted by the daemon into canonical order:
+  /// `allow_always` first, `allow_once` second, `reject_once` third,
+  /// then anything else. Vendor-specific orderings (codex puts
+  /// allow_once first, claude puts allow_always first) are normalised
+  /// daemon-side so every consumer renders the same buttons.
   options: PermissionOptionView[]
-  /// Pre-selected option id — daemon picks the allow-shaped option
-  /// via the same matcher that powers `permissions/respond
-  /// { remember }`. UI uses this as the default highlight + the
-  /// `Enter`-commit target. `undefined` when no allow-shaped option
-  /// exists (the modal still renders without a default).
+  /// Default-highlight option id — what `Enter` commits to. Equal
+  /// to `allowOptionId` today. `undefined` when no allow_once
+  /// option was offered.
   defaultOptionId?: string
+  /// Option id the `allow` keybind (Ctrl+G by default) commits to —
+  /// always the allow_once option, never allow_always. `undefined`
+  /// when the agent didn't offer one; UI's keybind handler shows a
+  /// toast instead of fabricating a target.
+  allowOptionId?: string
+  /// Option id the `deny` keybind (Ctrl+R by default) commits to —
+  /// always reject_once, never reject_always. `undefined` when
+  /// unavailable.
+  rejectOptionId?: string
   /// Daemon-authored presentation view. UI renders verbatim — no
   /// client-side formatting fallback.
   formatted: import('./formatted-tool-call').FormattedToolCall

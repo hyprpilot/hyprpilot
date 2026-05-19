@@ -298,6 +298,8 @@ mod tests {
             content: Vec::new(),
             options: Vec::new(),
             default_option_id: None,
+            allow_option_id: None,
+            reject_option_id: None,
             formatted: FormattedToolCall {
                 title: String::new(),
                 stats: Vec::new(),

@@ -169,16 +169,32 @@ pub enum InstanceEvent {
         content: Vec<serde_json::Value>,
         options: Vec<PermissionOptionView>,
         /// Pre-selected option for the modal / row. Populated by
-        /// `pick_allow_option_id` so captains can `Enter` straight
-        /// through the prompt without picking. Falls back to the
-        /// first option when no allow-shaped option exists, or
-        /// `None` when the agent offered an empty option list (the
-        /// UI then surfaces a disabled "no options" state). External
-        /// frontends (nvim plugin, ws remote) read this directly to
-        /// match desktop ergonomics without re-implementing the
-        /// allow-kind matcher.
+        /// the strict `pick_allow_once_id` so captains can `Enter`
+        /// straight through the prompt without picking — always a
+        /// once-shaped option, never an `allow_always` variant.
+        /// `None` when no once-shaped option is offered; UI then
+        /// renders no default highlight and the captain picks
+        /// explicitly. Today this is always equal to
+        /// `allow_option_id`; kept as a distinct field so a future
+        /// "highlight a different option than the keybind fires"
+        /// shape doesn't require a wire migration.
         #[serde(skip_serializing_if = "Option::is_none")]
         default_option_id: Option<String>,
+        /// Which option the captain's `allow` keybind (Ctrl+G by
+        /// default) commits to. Same strict pick as
+        /// `default_option_id` — `pick_allow_once_id`. Frontends
+        /// (Vue overlay, nvim plugin) read this directly so the
+        /// keybind handler never duplicates the allow-once matcher
+        /// client-side. `None` means the keybind no-ops and the
+        /// captain must click an option.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        allow_option_id: Option<String>,
+        /// Which option the captain's `deny` keybind (Ctrl+R by
+        /// default) commits to. Strict `pick_reject_option_id` —
+        /// reject-once only, never reject-always. `None` when no
+        /// reject-once option is offered.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reject_option_id: Option<String>,
         /// Daemon-authored presentation view, formatted from `tool` +
         /// `kind` + `raw_input` + `content` via the formatter
         /// registry. The UI renders this verbatim on the permission

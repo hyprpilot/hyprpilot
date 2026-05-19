@@ -274,34 +274,32 @@ function firePermission(action: 'allow' | 'deny'): void {
   if (!active) {
     return
   }
-  // Keybind maps to the basic-once variant ONLY: `allow` → exact
-  // `allow_once`, `deny` → exact `reject_once`. The "always" variants
-  // mutate the trust store across sessions — too destructive to bind
-  // a single keystroke to. If the agent didn't offer the basic option
-  // (rare; some plan-mode prompts only offer `allow_once_with_*`
-  // shapes), surface a toast and refuse — typing the wrong key silently
-  // committing an "always" decision is the worst possible outcome.
-  const targetKind = action === 'allow' ? 'allow_once' : 'reject_once'
-  const opt = active.options.find((o) => o.kind === targetKind)
 
-  if (!opt) {
+  // Read the daemon-computed option id directly off the active view.
+  // Daemon's `pick_allow_once_id` / `pick_reject_option_id` are the
+  // single source of truth for "which option does Ctrl+G / Ctrl+R
+  // fire?" — UI never fabricates a target. When the agent didn't
+  // offer a once-shaped option the field is undefined and the
+  // keybind shows a toast instead of silently committing to an
+  // always-shaped option.
+  const optionId = action === 'allow' ? active.allowOptionId : active.rejectOptionId
+
+  if (!optionId) {
     log.info('keybind no-op', {
       action,
       target: 'permission',
-      reason: 'no_basic_variant',
-      offered: active.options.map((o) => o.kind)
+      reason: 'not_available'
     })
-    pushToast(ToastTone.Warn, `${action} keybind: agent didn't offer ${targetKind}; click an option directly`)
+    pushToast(ToastTone.Warn, `${action} not available; click an option directly`)
 
     return
   }
   log.info('keybind invoked', {
     action,
     target: 'permission',
-    optionId: opt.optionId,
-    kind: opt.kind
+    optionId
   })
-  void onPermissionReply(active.request.requestId, opt.optionId)
+  void onPermissionReply(active.request.requestId, optionId)
 }
 
 const { keymaps } = useKeymaps()

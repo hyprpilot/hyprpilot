@@ -152,6 +152,9 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'echo hi',
       options: SAMPLE_OPTIONS,
+      allowOptionId: 'allow-once-id',
+      rejectOptionId: 'reject-once-id',
+      defaultOptionId: 'allow-once-id',
       formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
@@ -188,6 +191,9 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'rm -rf /',
       options: SAMPLE_OPTIONS,
+      allowOptionId: 'allow-once-id',
+      rejectOptionId: 'reject-once-id',
+      defaultOptionId: 'allow-once-id',
       formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
@@ -221,6 +227,9 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'ls',
       options: SAMPLE_OPTIONS,
+      allowOptionId: 'allow-once-id',
+      rejectOptionId: 'reject-once-id',
+      defaultOptionId: 'allow-once-id',
       formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
@@ -254,6 +263,9 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'ls',
       options: SAMPLE_OPTIONS,
+      allowOptionId: 'allow-once-id',
+      rejectOptionId: 'reject-once-id',
+      defaultOptionId: 'allow-once-id',
       formatted: FMT
     })
     invoke.mockResolvedValue(undefined)
@@ -293,6 +305,9 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'ls',
       options: SAMPLE_OPTIONS,
+      allowOptionId: 'allow-once-id',
+      rejectOptionId: 'reject-once-id',
+      defaultOptionId: 'allow-once-id',
       formatted: FMT
     })
     invoke.mockRejectedValue(new Error('permission_reply not implemented'))
@@ -325,6 +340,9 @@ describe('Chat.vue — permission wiring', () => {
       kind: 'bash',
       args: 'ls',
       options: SAMPLE_OPTIONS,
+      allowOptionId: 'allow-once-id',
+      rejectOptionId: 'reject-once-id',
+      defaultOptionId: 'allow-once-id',
       formatted: FMT
     })
 
@@ -382,7 +400,7 @@ describe('Chat.vue — permission wiring', () => {
       .entries.value.map((t) => t.body)
       .filter((b): b is string => typeof b === 'string')
 
-    expect(messages.some((m) => m.includes('allow_once'))).toBe(true)
+    expect(messages.some((m) => m.includes('allow not available'))).toBe(true)
     clearToasts()
     wrapper.unmount()
   })

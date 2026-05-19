@@ -109,13 +109,16 @@ export interface PermissionRequestRecord {
   toolKind: string
   args: string
   rawInput?: Record<string, unknown>
+  /// Options pre-sorted by the daemon into canonical order
+  /// (allow_always, allow_once, reject_once, rest).
   options: PermissionOptionView[]
-  /// Pre-selected option id — populated by the daemon via the same
-  /// allow-kind matcher used by `permissions/respond { remember }`.
-  /// Captains hitting `Enter` on the modal commit this directly;
-  /// external frontends use it as the default highlight. `undefined`
-  /// when no allow-shaped option exists.
+  /// Default-highlight option id — `Enter` target. Equal to
+  /// `allowOptionId`.
   defaultOptionId?: string
+  /// Allow keybind target (Ctrl+G).
+  allowOptionId?: string
+  /// Deny keybind target (Ctrl+R).
+  rejectOptionId?: string
   /// Daemon-authored presentation view, computed via the same
   /// formatter registry the live `acp:permission-request` event
   /// uses. Carries description / fields / output the captain reads
