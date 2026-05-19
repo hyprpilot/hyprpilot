@@ -277,10 +277,19 @@ describe('useFocusPrefetch.start', () => {
     stop()
   })
 
-  it('prefetches meta (only) on acp:instances-changed for every id', async() => {
+  it('prefetches meta + chat on acp:instances-changed for every cache-miss id', async() => {
+    // Each new id triggers BOTH a meta and a chat prefetch — the
+    // captain may navigate to any of these momentarily, and the
+    // chat prefetch covers daemon-side or peer-client spawns (nvim,
+    // ctl, session_load) whose replay events would otherwise hit
+    // the patcher's "no cache → drop" guard.
     invoke.mockImplementation((command: string) => {
       if (command === TauriCommand.InstanceSnapshotMeta) {
         return Promise.resolve({ mcpsCount: 0, usage: { used: 0, size: 0 } })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotChat) {
+        return Promise.resolve({ items: [], hasMore: false })
       }
 
       return Promise.reject(new Error(`unexpected command ${command}`))
@@ -306,9 +315,57 @@ describe('useFocusPrefetch.start', () => {
     const chatCalls = invoke.mock.calls.filter((c) => c[0] === TauriCommand.InstanceSnapshotChat)
 
     expect(metaCalls).toHaveLength(2)
-    expect(chatCalls).toHaveLength(0)
+    expect(chatCalls).toHaveLength(2)
     expect(client.getQueryData(['snapshot-meta', 'i-a'])).toBeDefined()
     expect(client.getQueryData(['snapshot-meta', 'i-b'])).toBeDefined()
+    expect(client.getQueryData(['snapshot-chat', 'i-a'])).toBeDefined()
+    expect(client.getQueryData(['snapshot-chat', 'i-b'])).toBeDefined()
+
+    stop()
+  })
+
+  it('skips chat prefetch on instances-changed when the cache is already hydrated', async() => {
+    // Boot snapshot / prior focus event already seeded the cache for
+    // some ids; instances-changed firing for those same ids must NOT
+    // re-fetch. TanStack's queryKey dedup would handle parallel
+    // in-flight fetches, but a populated cache shouldn't get a stale
+    // refresh either. The cache-miss gate keeps the prefetch tight.
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.InstanceSnapshotMeta) {
+        return Promise.resolve({ mcpsCount: 0, usage: { used: 0, size: 0 } })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotChat) {
+        return Promise.resolve({ items: [], hasMore: false })
+      }
+
+      return Promise.reject(new Error(`unexpected command ${command}`))
+    })
+    const client = buildClient()
+
+    // Pre-seed `i-warm` as if boot snapshot landed it.
+    client.setQueryData(['snapshot-chat', 'i-warm'], { pages: [{ items: [], hasMore: false }], pageParams: [undefined] })
+
+    const api = useFocusPrefetch(client)
+    const stop = await api.start()
+
+    const cb = listeners.get(TauriEvent.AcpInstancesChanged)
+
+    cb!({
+      payload: {
+        instanceIds: ['i-warm', 'i-cold'],
+        focusedId: 'i-warm'
+      }
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const chatCalls = invoke.mock.calls.filter((c) => c[0] === TauriCommand.InstanceSnapshotChat)
+
+    // Only i-cold gets a fetch — i-warm is already in cache.
+    expect(chatCalls).toHaveLength(1)
+    expect(chatCalls[0]?.[1]).toMatchObject({ instanceId: 'i-cold' })
 
     stop()
   })

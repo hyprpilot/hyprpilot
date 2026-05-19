@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/vue-query'
 import { ref, watch, type Ref } from 'vue'
 
 import { setSessionRestoring } from './use-session-info'
@@ -52,6 +53,8 @@ export interface UseSessionHistoryApi {
 }
 
 export function useSessionHistory(agentId: Ref<string | undefined>, profileId: Ref<string | undefined>): UseSessionHistoryApi {
+  const queryClient = useQueryClient()
+
   async function refresh(opts: { force?: boolean } = {}): Promise<void> {
     const agent = agentId.value
 
@@ -121,6 +124,21 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     // sees the spinner and the err toast simultaneously — clearing
     // is the success path.
     setSessionRestoring(target, true)
+
+    // Seed the chat cache for `target` BEFORE the SessionLoad
+    // round-trip. The daemon's session/load replay fires `acp:transcript`
+    // events for every replayed item; `transcript-patcher`'s
+    // "no cache → drop" guard would silently throw those events
+    // away because TanStack hasn't seen the `target` key yet
+    // (ChatViewport mounts later, after the focus event lands).
+    // A single empty head page is enough for the patcher to find
+    // the cache key + append the live items to `head.items`.
+    queryClient.setQueryData(['snapshot-chat', target], {
+      pages: [{
+        items: [], oldestSeq: undefined, latestSeq: undefined, hasMore: false
+      }],
+      pageParams: [undefined as number | undefined]
+    })
 
     try {
       await invoke(TauriCommand.SessionLoad, {

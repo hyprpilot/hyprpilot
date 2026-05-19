@@ -245,11 +245,22 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
         })
       }),
       await listen(TauriEvent.AcpInstancesChanged, (e) => {
-        // New-instance prefetch — the captain may switch focus to any
-        // of these momentarily. Meta only; the chat prefetch waits
-        // for an actual focus event to avoid pulling pages the captain
-        // never looks at. `prefetchQuery` dedupes so already-cached
-        // entries short-circuit.
+        // New-instance prefetch — fires for every membership change
+        // (spawn / shutdown / restart from any client). Meta + chat
+        // both fetched so the captain navigating to a freshly-spawned
+        // instance (nvim spawn, ctl spawn, session_load mint, or a
+        // peer client's spawn) sees full history on first frame.
+        // Without the chat prefetch here, the daemon's replay events
+        // for the new id arrive before any cache exists, the
+        // transcript-patcher's "no cache → drop" guard throws them
+        // away, and the captain's later navigation hits a fresh
+        // viewport-sized fetch missing the replay context.
+        //
+        // Chat prefetch is gated on "cache miss" — already-hydrated
+        // instances (boot snapshot, prior focus event, prior
+        // instances-changed) skip the round-trip via TanStack's
+        // queryKey dedup. Net cost on a quiet event: one cache
+        // lookup per id.
         log.trace('snapshot.focus-prefetch.changed', {
           instanceIds: e.payload.instanceIds,
           focusedId: e.payload.focusedId
@@ -259,6 +270,12 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
           void prefetchInstanceMeta(queryClient, id).catch((err: unknown) => {
             log.warn('focus-prefetch: meta failed (instances-changed)', { instanceId: id, err: String(err) })
           })
+
+          if (queryClient.getQueryData(['snapshot-chat', id]) === undefined) {
+            void prefetchInstanceChatFirstPage(queryClient, id).catch((err: unknown) => {
+              log.warn('focus-prefetch: chat failed (instances-changed)', { instanceId: id, err: String(err) })
+            })
+          }
         }
       })
     )
