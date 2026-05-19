@@ -133,6 +133,48 @@ describe('ChatComposer.vue', () => {
     expect(submit.attributes('aria-label')).toBe('sending')
   })
 
+  it('blocks submit with empty / whitespace-only text even when attachments are pending', async() => {
+    // Pin the rule: text MUST be non-empty for a submit to fire.
+    // Attachments / pills alone don't qualify — an empty-text prompt
+    // lands on the daemon as a turn with no user content, corrupting
+    // the boundary on subsequent prompts.
+    const wrapper = mount(ChatComposer)
+
+    // Drop a pill into the composer's pill slot via the public API.
+    const pill: ComposerPill = {
+      id: 'pill-1',
+      label: 'image.png',
+      kind: ComposerPillKind.Attachment,
+      data: 'AAAA',
+      mimeType: 'image/png'
+    }
+
+    ;(wrapper.vm as unknown as { addPill: (p: ComposerPill) => void }).addPill(pill)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.composer-pill')).toHaveLength(1)
+
+    // Submit button is disabled — empty text + a pill is NOT enough.
+    const submit = wrapper.get('[data-testid="composer-submit"]')
+
+    expect(submit.attributes('disabled')).toBeDefined()
+    expect(submit.attributes('data-empty')).toBe('true')
+
+    // Whitespace-only text doesn't count either — trim collapses to empty.
+    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
+
+    await textarea.setValue('   \n\t  ')
+    expect(submit.attributes('disabled')).toBeDefined()
+
+    // Form-submit attempt must NOT emit either.
+    await wrapper.trigger('submit')
+
+    for (let i = 0; i < 4; i++) {
+      await Promise.resolve()
+    }
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('submit')).toBeUndefined()
+  })
+
   it('emits submit with trimmed text payload', async() => {
     const wrapper = mount(ChatComposer)
     const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')

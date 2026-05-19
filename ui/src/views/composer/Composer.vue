@@ -472,7 +472,14 @@ function trySubmit(): void {
   }
   const { text, attachments } = composer.resolvedSubmit()
 
-  if (!text && attachments.length === 0) {
+  // Require non-empty text on every submit — attachments + pills
+  // alone are not enough. Empty-text submits land on the daemon as
+  // a turn carrying only `ContentBlock::Resource` blocks; agents
+  // dispatch them as if the captain said nothing, which corrupts
+  // the turn boundary on subsequent prompts. Captain's intent on
+  // the send button is "say this AND maybe attach these"; the
+  // attachments are context for the text, not a standalone payload.
+  if (!text) {
     return
   }
   // Drop any open completion before the buffer clears — without
@@ -733,8 +740,8 @@ function onDragOver(e: DragEvent): void {
           type="submit"
           class="composer-submit"
           :aria-label="sending ? 'sending' : 'send'"
-          :data-empty="text.trim().length === 0 && composerPills.length === 0 && attachments.pending.value.length === 0"
-          :disabled="sending || disabled || (text.trim().length === 0 && composerPills.length === 0 && attachments.pending.value.length === 0)"
+          :data-empty="text.trim().length === 0"
+          :disabled="sending || disabled || text.trim().length === 0"
           data-testid="composer-submit"
         >
           <FaIcon :icon="faArrowTurnDown" class="composer-action-icon" aria-hidden="true" />
