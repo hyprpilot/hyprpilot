@@ -24,6 +24,12 @@ struct ClearParams {
     instance_id: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+struct GetParams {
+    instance_id: String,
+}
+
 pub struct NotificationsHandler;
 
 #[async_trait]
@@ -41,6 +47,16 @@ impl RpcHandler for NotificationsHandler {
             "notifications/list" => {
                 let items = notifications.list_snapshot();
                 Ok(HandlerOutcome::Reply(json!({ "items": items })))
+            }
+            "notifications/get" => {
+                let p: GetParams = parse_params(params, method)?;
+                if p.instance_id.is_empty() {
+                    return Err(RpcError::invalid_params(
+                        "notifications/get: instanceId must not be empty",
+                    ));
+                }
+                let entry = notifications.get(&p.instance_id);
+                Ok(HandlerOutcome::Reply(json!({ "entry": entry })))
             }
             "notifications/clear" => {
                 let p: ClearParams = parse_params(params, method)?;

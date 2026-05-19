@@ -32,6 +32,15 @@ export interface NotificationsClearArgs {
   instanceId: string
 }
 
+export interface NotificationsGetArgs {
+  instanceId: string
+}
+
+/** `entry: null` when the instance has nothing pending. */
+export interface NotificationsGetResult {
+  entry: NotificationEntry | null
+}
+
 export interface NotificationsChangedEventPayload {
   items: NotificationEntry[]
 }

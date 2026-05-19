@@ -14,7 +14,7 @@
  * cheap and the wire is the truth.
  */
 
-import { ref, computed, type Ref } from 'vue'
+import { ref, computed, type ComputedRef, type Ref } from 'vue'
 
 import { invoke, listen, TauriCommand, TauriEvent, type NotificationEntry, type UnlistenFn } from '@ipc'
 import { log } from '@lib'
@@ -26,6 +26,11 @@ let subscribed = false
 export interface UseNotificationsApi {
   items: Ref<NotificationEntry[]>
   count: Ref<number>
+  /** Reactive lookup — entry for the given instance id, `undefined`
+   *  when nothing's pending. Tracks the singleton's mirror, so any
+   *  caller watching this computed re-renders when the daemon
+   *  broadcasts a transition (raise / clear / extend reasons). */
+  forInstance: (instanceId: string) => ComputedRef<NotificationEntry | undefined>
   /** Manually clear a single entry — the daemon's normal resolution
    *  paths (focus, permission resolved, prompt sent) cover the common
    *  cases. */
@@ -76,6 +81,7 @@ export function useNotifications(): UseNotificationsApi {
   return {
     items,
     count: computed(() => items.value.length),
+    forInstance: (instanceId: string) => computed(() => items.value.find((e) => e.instanceId === instanceId)),
     dismiss: async(instanceId: string) => {
       try {
         await invoke(TauriCommand.NotificationsClear, { instanceId })

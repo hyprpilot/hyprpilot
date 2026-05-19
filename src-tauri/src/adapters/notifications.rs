@@ -94,6 +94,20 @@ impl Notifications {
         items
     }
 
+    /// Lookup the entry for a single instance. `None` when the id has
+    /// nothing pending. Powers the per-instance query path that
+    /// external plugins (nvim, ctl scripting) drive their own
+    /// per-instance notification surface off — `notifications/list`
+    /// returns the full set; this returns just one row without the
+    /// caller having to filter client-side.
+    pub fn get(&self, instance_id: &str) -> Option<NotificationEntry> {
+        self.inner
+            .read()
+            .expect("notifications lock poisoned")
+            .get(instance_id)
+            .cloned()
+    }
+
     /// Raise — add `reason` to the instance's entry (creating it when
     /// absent). Idempotent on a re-raise of the same reason.
     pub fn raise(&self, instance_id: &str, reason: NotificationReason) {
@@ -433,6 +447,21 @@ mod tests {
         let mut focused: Option<String> = None;
         apply(&n, &mut focused, turn_ended("B"));
         assert_eq!(n.list_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn get_returns_entry_when_pending_none_otherwise() {
+        let (n, _rx) = make();
+        assert!(n.get("B").is_none(), "missing instance → None");
+
+        let mut focused = Some("A".to_string());
+        apply(&n, &mut focused, turn_ended("B"));
+        let entry = n.get("B").expect("entry present after raise");
+        assert_eq!(entry.instance_id, "B");
+        assert!(entry.reasons.contains(&NotificationReason::TurnEnded));
+
+        n.clear("B");
+        assert!(n.get("B").is_none(), "clear drops the entry from get()");
     }
 
     #[test]

@@ -814,6 +814,19 @@ pub async fn notifications_list(adapter: AdapterState<'_>) -> Result<Value, Stri
     Ok(json!({ "items": items }))
 }
 
+/// Per-instance notification lookup. Returns `{ entry: null }` when
+/// the instance has nothing pending; an external plugin polling its
+/// own bell / lualine indicator drives off this without filtering the
+/// full list client-side.
+#[tauri::command]
+pub async fn notifications_get(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    if instance_id.is_empty() {
+        return Err("notifications_get: instanceId must not be empty".to_string());
+    }
+    let entry = adapter.notifications().get(&instance_id);
+    Ok(json!({ "entry": entry }))
+}
+
 /// Manually clear a notification entry. Captain-initiated dismissal —
 /// the normal resolution paths (focus, permission resolved, prompt
 /// sent) cover the common cases; this is the escape hatch.

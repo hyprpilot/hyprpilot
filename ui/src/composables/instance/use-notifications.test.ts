@@ -72,4 +72,22 @@ describe('useNotifications', () => {
 
     expect(invokeMock).toHaveBeenCalledWith('notifications_clear_all', undefined)
   })
+
+  it('forInstance reactively tracks the entry by id', () => {
+    applyBootNotifications({
+      items: [entry('a'), entry('b', [NotificationReason.PermissionRequested])]
+    })
+
+    const { forInstance } = useNotifications()
+    const aRow = forInstance('a')
+    const bRow = forInstance('b')
+    const missing = forInstance('zzz')
+
+    expect(aRow.value?.instanceId).toBe('a')
+    expect(bRow.value?.reasons).toEqual([NotificationReason.PermissionRequested])
+    expect(missing.value).toBeUndefined()
+
+    applyBootNotifications({ items: [entry('a')] })
+    expect(bRow.value).toBeUndefined()
+  })
 })

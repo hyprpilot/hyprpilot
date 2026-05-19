@@ -47,7 +47,13 @@ import type {
   TerminalsSnapshot
 } from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
-import type { NotificationsChangedEventPayload, NotificationsClearArgs, NotificationsSnapshot } from '@interfaces/wire/notifications'
+import type {
+  NotificationsChangedEventPayload,
+  NotificationsClearArgs,
+  NotificationsGetArgs,
+  NotificationsGetResult,
+  NotificationsSnapshot
+} from '@interfaces/wire/notifications'
 import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
 import type {
   AcpQueueChangedPayload,
@@ -136,6 +142,7 @@ export enum TauriCommand {
   QueueClear = 'queue_clear',
   QueueDispatch = 'queue_dispatch',
   NotificationsList = 'notifications_list',
+  NotificationsGet = 'notifications_get',
   NotificationsClear = 'notifications_clear',
   NotificationsClearAll = 'notifications_clear_all',
   CompletionQuery = 'completion_query',
@@ -219,6 +226,7 @@ export interface TauriCommandArgs {
   [TauriCommand.QueueClear]: QueueClearArgs
   [TauriCommand.QueueDispatch]: QueueDispatchArgs
   [TauriCommand.NotificationsList]: void
+  [TauriCommand.NotificationsGet]: NotificationsGetArgs
   [TauriCommand.NotificationsClear]: NotificationsClearArgs
   [TauriCommand.NotificationsClearAll]: void
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
@@ -279,6 +287,7 @@ export interface TauriCommandResult {
   [TauriCommand.QueueClear]: QueueClearResult
   [TauriCommand.QueueDispatch]: QueueDispatchResult
   [TauriCommand.NotificationsList]: NotificationsSnapshot
+  [TauriCommand.NotificationsGet]: NotificationsGetResult
   [TauriCommand.NotificationsClear]: { cleared: boolean }
   [TauriCommand.NotificationsClearAll]: { cleared: boolean }
   [TauriCommand.CompletionQuery]: CompletionQueryResponse

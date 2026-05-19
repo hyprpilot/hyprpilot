@@ -472,6 +472,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::queue_clear,
             adapter_commands::queue_dispatch,
             adapter_commands::notifications_list,
+            adapter_commands::notifications_get,
             adapter_commands::notifications_clear,
             adapter_commands::notifications_clear_all,
             crate::skills::commands::skills_list,
