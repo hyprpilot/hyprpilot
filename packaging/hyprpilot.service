@@ -8,7 +8,5 @@ ExecStart=/usr/bin/hyprpilot daemon --hidden
 Restart=on-failure
 RestartSec=5
 
-ProtectSystem=strict
-
 [Install]
 WantedBy=default.target
