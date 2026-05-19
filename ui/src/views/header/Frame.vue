@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { faArrowDown, faArrowUp, faBars, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faArrowDown, faArrowUp, faBars, faBell, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
 import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
@@ -41,11 +41,16 @@ const props = withDefaults(
     /// pill doubles as the "spawn another" affordance via the palette
     /// leaf's actions).
     instancesCount?: number
+    /// Number of pending notifications (instances needing attention).
+    /// The notifications pill renders only when ≥ 1, slotting between
+    /// the title and the instances pill on row 1.
+    notificationsCount?: number
   }>(),
   {
     phase: Phase.Idle,
     counts: () => [],
-    instancesCount: 0
+    instancesCount: 0,
+    notificationsCount: 0
   }
 )
 
@@ -62,6 +67,10 @@ const emit = defineEmits<{
   /// Emitted when the captain clicks the row-1 instances pill — the
   /// parent opens the instances palette.
   instancesClick: []
+  /// Emitted when the captain clicks the row-1 notifications pill —
+  /// the parent opens the notifications palette (filtered to
+  /// needs-attention instances).
+  notificationsClick: []
   /// Emitted when the captain taps the row-1 palette-open button —
   /// touch surface for `palette.open` (the desktop `Ctrl+K` keybind).
   paletteClick: []
@@ -74,6 +83,7 @@ const hasGit = computed(() => Boolean(props.gitStatus))
 // shows only the digit. Plural / singular still matters for assistive
 // tech ("1 instance" vs "3 instances").
 const instancesLabel = computed(() => (props.instancesCount === 1 ? 'instance' : 'instances'))
+const notificationsLabel = computed(() => (props.notificationsCount === 1 ? 'notification' : 'notifications'))
 // Row-1 background tint — same phase palette as the profile pill, but
 // dialed way down so the bar reads as ambient state rather than a hot
 // surface. `color-mix` blends the phase token against the standard
@@ -137,6 +147,22 @@ const rowOneBg = computed(() => {
           </button>
           <span v-if="title" class="frame-title">{{ title }}</span>
         </HorizontalScroller>
+        <!-- Notifications pill — slots between the title and the
+             instances pill per captain's row-1 layout. Visible only
+             when something needs attention so the bell doesn't add
+             chrome on idle. Distinct accent (warn token) so the
+             captain reads it as "act now" vs the instances pill's
+             neutral switcher affordance. -->
+        <button
+          v-if="notificationsCount >= 1"
+          type="button"
+          class="frame-notifications"
+          :aria-label="`${notificationsCount} ${notificationsLabel} — open notifications`"
+          @click="emit('notificationsClick')"
+        >
+          <FaIcon :icon="faBell" class="frame-notifications-icon" aria-hidden="true" />
+          <span class="frame-notifications-badge">{{ notificationsCount }}</span>
+        </button>
         <button
           v-if="instancesCount >= 1"
           type="button"
@@ -380,6 +406,44 @@ html:not([data-window-anchor]) .frame {
   height: 0.9375rem;
 }
 
+/* Notifications pill — same chrome as `frame-instances` so the row-1
+ * trailing cluster reads uniformly. Badge tint flips to the warn
+ * token (orange/amber) so the captain reads it as "act now" rather
+ * than the neutral switcher accent. Icon stroke also picks up the
+ * warn color when there's anything to surface — the captain sees
+ * the alert state without scanning the badge digit. */
+.frame-notifications {
+  @apply relative inline-flex shrink-0 items-center justify-center border-0 bg-transparent leading-none;
+  color: var(--theme-status-warn);
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-family: var(--theme-font-mono);
+}
+
+.frame-notifications:hover {
+  color: var(--theme-fg);
+}
+
+.frame-notifications-icon {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
+.frame-notifications-badge {
+  @apply pointer-events-none absolute inline-flex items-center justify-center font-bold;
+  top: -0.25rem;
+  right: -0.125rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  background-color: var(--theme-status-warn);
+  color: var(--theme-fg-on-tone);
+  border-radius: 9999px;
+  font-size: 0.625rem;
+  letter-spacing: 0.0125rem;
+  line-height: 1;
+}
+
 .frame-instances-badge {
   /* Notification-style numeric chip. Pinned to the icon's top-right
    * corner via negative offsets so the chip overlaps the icon slightly;
@@ -455,6 +519,11 @@ html:not([data-window-anchor]) .frame {
   }
 
   .frame-instances {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  .frame-notifications {
     min-width: 2.25rem;
     min-height: 2.25rem;
   }

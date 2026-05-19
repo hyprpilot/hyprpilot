@@ -28,6 +28,7 @@ import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
 import { applyCompletionConfigFromObject } from '../composer/use-completion'
 import { prefetchInstanceMeta } from '../instance/use-focus-prefetch'
+import { applyBootNotifications } from '../instance/use-notifications'
 import { applyQueueChanged } from '../instance/use-queue'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from '../instance/use-session-info'
 import { applyBootProfiles } from '../ui-state/use-profiles'
@@ -122,6 +123,13 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
       applyQueueChanged(instanceId, items)
     }
   }
+
+  // Seed the daemon-side "needs attention" tracker. Live updates ride
+  // `acp:notifications-changed` once the composable subscribes; this
+  // covers the captain who comes back to a long-idle remote where
+  // multiple non-focused instances finished their turns while the
+  // browser tab was suspended.
+  applyBootNotifications(snap.notifications)
 
   // Seed the per-instance chat cache for EVERY live instance — not
   // just the focused one. The daemon ships a first chat-page snapshot

@@ -1,6 +1,7 @@
 import type { CompletionConfigSnapshot } from './completion-config'
 import type { ChatSnapshot } from './instance-snapshot'
 import type { KeymapsConfig } from './keymap'
+import type { NotificationsSnapshot } from './notifications'
 import type { QueueItem } from './queue'
 import type { AgentSummary, InstanceListEntry, ProfileSummary } from './session'
 import type { Theme } from './theme'
@@ -44,4 +45,9 @@ export interface BootSnapshot {
   /// `{ items: [], hasMore: false }` for instances whose mirror has
   /// no transcript yet.
   chats: Record<string, ChatSnapshot>
+  /// Daemon-side "needs attention" snapshot. Empty `items: []` when
+  /// nothing's flagged. Frontends seed the header pill / palette
+  /// state directly so a remote captain authenticating mid-session
+  /// sees the pill immediately if anything was already pending.
+  notifications: NotificationsSnapshot
 }

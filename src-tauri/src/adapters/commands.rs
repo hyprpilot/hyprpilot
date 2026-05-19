@@ -803,6 +803,51 @@ pub async fn queue_dispatch(
     serde_json::to_value(res).map_err(|e| format!("queue_dispatch: serialise reply: {e}"))
 }
 
+/// Snapshot of the daemon-side "needs attention" tracker. Frontends
+/// (Vue header pill, future nvim plugin) read this at boot via the
+/// boot snapshot's `notifications` slot; this command exists for
+/// out-of-band refreshes (e.g. on cache miss or focus-mounted palette
+/// leaf hydration).
+#[tauri::command]
+pub async fn notifications_list(adapter: AdapterState<'_>) -> Result<Value, String> {
+    let items = adapter.notifications().list_snapshot();
+    Ok(json!({ "items": items }))
+}
+
+/// Per-instance notification lookup. Returns `{ entry: null }` when
+/// the instance has nothing pending; an external plugin polling its
+/// own bell / lualine indicator drives off this without filtering the
+/// full list client-side.
+#[tauri::command]
+pub async fn notifications_get(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    if instance_id.is_empty() {
+        return Err("notifications_get: instanceId must not be empty".to_string());
+    }
+    let entry = adapter.notifications().get(&instance_id);
+    Ok(json!({ "entry": entry }))
+}
+
+/// Manually clear a notification entry. Captain-initiated dismissal —
+/// the normal resolution paths (focus, permission resolved, prompt
+/// sent) cover the common cases; this is the escape hatch.
+#[tauri::command]
+pub async fn notifications_clear(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    if instance_id.is_empty() {
+        return Err("notifications_clear: instanceId must not be empty".to_string());
+    }
+    adapter.notifications().clear(&instance_id);
+    Ok(json!({ "cleared": true }))
+}
+
+/// Dismiss every pending notification at once. Captain clicked the
+/// header pill's "dismiss all" affordance. Idempotent — already-empty
+/// list stays empty and emits no event.
+#[tauri::command]
+pub async fn notifications_clear_all(adapter: AdapterState<'_>) -> Result<Value, String> {
+    adapter.notifications().clear_all();
+    Ok(json!({ "cleared": true }))
+}
+
 /// servers wired in.
 #[tauri::command]
 pub async fn mcps_list(adapter: AdapterState<'_>, instance_id: Option<String>) -> Result<Value, String> {

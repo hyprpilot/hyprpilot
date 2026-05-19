@@ -47,6 +47,13 @@ import type {
   TerminalsSnapshot
 } from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
+import type {
+  NotificationsChangedEventPayload,
+  NotificationsClearArgs,
+  NotificationsGetArgs,
+  NotificationsGetResult,
+  NotificationsSnapshot
+} from '@interfaces/wire/notifications'
 import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
 import type {
   AcpQueueChangedPayload,
@@ -134,6 +141,10 @@ export enum TauriCommand {
   QueueMove = 'queue_move',
   QueueClear = 'queue_clear',
   QueueDispatch = 'queue_dispatch',
+  NotificationsList = 'notifications_list',
+  NotificationsGet = 'notifications_get',
+  NotificationsClear = 'notifications_clear',
+  NotificationsClearAll = 'notifications_clear_all',
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
   CompletionCancel = 'completion_cancel',
@@ -163,6 +174,7 @@ export enum TauriEvent {
   AcpInstanceMeta = 'acp:instance-meta',
   AcpSystemPromptInjected = 'acp:system-prompt-injected',
   AcpQueueChanged = 'acp:queue-changed',
+  AcpNotificationsChanged = 'acp:notifications-changed',
   AcpProfileChanged = 'acp:profile-changed',
   ComposerDraftAppend = 'composer:draft-append',
   RemotePairRequest = 'remote:pair-request',
@@ -213,6 +225,10 @@ export interface TauriCommandArgs {
   [TauriCommand.QueueMove]: QueueMoveArgs
   [TauriCommand.QueueClear]: QueueClearArgs
   [TauriCommand.QueueDispatch]: QueueDispatchArgs
+  [TauriCommand.NotificationsList]: void
+  [TauriCommand.NotificationsGet]: NotificationsGetArgs
+  [TauriCommand.NotificationsClear]: NotificationsClearArgs
+  [TauriCommand.NotificationsClearAll]: void
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
   [TauriCommand.CompletionCancel]: CompletionCancelArgs
@@ -270,6 +286,10 @@ export interface TauriCommandResult {
   [TauriCommand.QueueMove]: QueueMoveResult
   [TauriCommand.QueueClear]: QueueClearResult
   [TauriCommand.QueueDispatch]: QueueDispatchResult
+  [TauriCommand.NotificationsList]: NotificationsSnapshot
+  [TauriCommand.NotificationsGet]: NotificationsGetResult
+  [TauriCommand.NotificationsClear]: { cleared: boolean }
+  [TauriCommand.NotificationsClearAll]: { cleared: boolean }
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
   [TauriCommand.CompletionCancel]: CompletionCancelResponse
@@ -300,6 +320,7 @@ export interface TauriEventPayload {
   [TauriEvent.AcpInstanceMeta]: InstanceMetaEventPayload
   [TauriEvent.AcpSystemPromptInjected]: SystemPromptInjectedEventPayload
   [TauriEvent.AcpQueueChanged]: AcpQueueChangedPayload
+  [TauriEvent.AcpNotificationsChanged]: NotificationsChangedEventPayload
   [TauriEvent.AcpProfileChanged]: { profileId: string }
   [TauriEvent.ComposerDraftAppend]: ComposerDraftAppendEventPayload
   [TauriEvent.RemotePairRequest]: RemotePairRequestEventPayload

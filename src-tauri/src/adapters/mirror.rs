@@ -516,7 +516,12 @@ impl InstanceMirror {
             | InstanceEvent::InstanceRenamed { .. }
             | InstanceEvent::DaemonReloaded { .. }
             | InstanceEvent::SelectedProfileChanged { .. }
-            | InstanceEvent::SystemPromptInjected { .. } => {}
+            | InstanceEvent::SystemPromptInjected { .. }
+            // `NotificationsChanged` is a daemon-global tracker
+            // surface (see `crate::adapters::notifications`) — sibling
+            // concern to the per-instance mirror, not part of the
+            // snapshot fields.
+            | InstanceEvent::NotificationsChanged { .. } => {}
         }
         minted_seq
     }

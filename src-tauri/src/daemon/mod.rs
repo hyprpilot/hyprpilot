@@ -165,6 +165,13 @@ pub(crate) struct BootSnapshot {
     /// no transcript yet so the consumer can rely on every listed
     /// instance having a chat key in the map.
     pub(crate) chats: serde_json::Value,
+    /// Daemon-side "needs attention" snapshot — same shape the
+    /// `notifications_list` Tauri command and `notifications/list`
+    /// JSON-RPC method return. Empty `items: []` when no instance is
+    /// flagged. Frontends seed their header-pill / palette state
+    /// directly so a remote captain authenticating mid-session sees
+    /// the pill immediately if anything was already pending.
+    pub(crate) notifications: serde_json::Value,
 }
 
 /// First-page chat-snapshot size shipped in the boot payload — one
@@ -276,6 +283,12 @@ pub(crate) async fn build_boot_snapshot(
         );
     }
 
+    let notifications_items = adapter.notifications().list_snapshot();
+    let notifications = serde_json::json!({
+        "items": serde_json::to_value(&notifications_items)
+            .map_err(|e| format!("serialize notifications: {e}"))?,
+    });
+
     Ok(BootSnapshot {
         theme: theme.clone(),
         keymaps: keymaps.clone(),
@@ -288,6 +301,7 @@ pub(crate) async fn build_boot_snapshot(
         instances: serde_json::Value::Object(instances_payload),
         queues: serde_json::Value::Object(queues),
         chats: serde_json::Value::Object(chats),
+        notifications,
     })
 }
 
@@ -457,6 +471,10 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::queue_move,
             adapter_commands::queue_clear,
             adapter_commands::queue_dispatch,
+            adapter_commands::notifications_list,
+            adapter_commands::notifications_get,
+            adapter_commands::notifications_clear,
+            adapter_commands::notifications_clear_all,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
             crate::skills::commands::skills_reload,
