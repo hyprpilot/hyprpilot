@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/hyprpilot/hyprpilot/compare/v2.3.0...v2.3.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* **permission:** vendor-label pickers + canonical ordering + explicit allow/reject ids ([#115](https://github.com/hyprpilot/hyprpilot/issues/115)) ([655c1f6](https://github.com/hyprpilot/hyprpilot/commit/655c1f66a00ccc8543a82c360a62a03f19764cd5))
+
 ## [2.3.0](https://github.com/hyprpilot/hyprpilot/compare/v2.2.4...v2.3.0) (2026-05-19)
 
 

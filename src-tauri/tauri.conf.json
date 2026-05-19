@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "hyprpilot",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "identifier": "dev.kilic.hyprpilot",
   "build": {
     "beforeDevCommand": "pnpm --filter hyprpilot-ui dev",
