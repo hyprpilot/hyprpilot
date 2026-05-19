@@ -9,7 +9,6 @@ Restart=on-failure
 RestartSec=5
 
 ProtectSystem=strict
-ReadWritePaths=%t %h/.config/hyprpilot %h/.local/state/hyprpilot %h/.local/share/hyprpilot
 
 [Install]
 WantedBy=default.target
