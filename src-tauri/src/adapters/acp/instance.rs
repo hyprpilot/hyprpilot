@@ -3897,13 +3897,16 @@ async fn run(params: RunParams) {
                                 };
                                 registry.dispatch(&ctx)
                             };
-                            // Pre-select an allow-shaped option so the
-                            // captain's `Enter` on the modal commits the
-                            // typical "yes" without picking; same allow
-                            // matcher used elsewhere keeps wire +
-                            // permissions/pending agreed.
+                            // Pre-select ONLY when the agent offers a
+                            // single-shot `allow_once`. Captains want
+                            // `Enter` to commit "yes, just this once",
+                            // never "yes forever" — so `allow_always`
+                            // is NOT a fallback for the default
+                            // highlight. Agents that offer no
+                            // `allow_once` ship no default; the captain
+                            // must explicitly pick.
                             let default_option_id =
-                                crate::adapters::permission::pick_allow_option_id(&options);
+                                crate::adapters::permission::pick_allow_once_id(&options);
                             let event = InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),

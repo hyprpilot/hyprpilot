@@ -8,9 +8,9 @@ import type { PermissionOptionView } from '@interfaces/wire/transcript'
  * Pin the daemon-driven default-button selection: when `defaultOptionId`
  * is supplied, ONLY that option renders solid (the visual primary).
  * Other options drop to ghost regardless of their kind. Without
- * `defaultOptionId`, falls back to the legacy `allow_once`-solid rule
- * — kept for compat with older daemon builds that don't ship the
- * field.
+ * `defaultOptionId` (daemon's `pick_allow_once_id` returned `None`
+ * because the agent offered no `allow_once`), NO option highlights —
+ * captains pick explicitly, no UI-side guess.
  */
 describe('PermissionActions', () => {
   const opts: PermissionOptionView[] = [

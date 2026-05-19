@@ -63,9 +63,10 @@ pub struct PermissionOptionView {
 
 /// `true` for any kind whose wire string begins with `allow` (today:
 /// `allow_once` / `allow_always`; future variants like `allow_session`
-/// are auto-classified). Used by `pick_allow_option_id` to drive the
-/// trust-store auto-allow fallback without freezing the set of
-/// recognised allow flavours.
+/// are auto-classified). Used by [`pick_allow_option_id`] (the loose
+/// trust-store auto-allow translator) to keep recognising new vendor
+/// allow-flavours without code changes. NOT used by
+/// [`pick_allow_once_id`] (the strict default-highlight picker).
 #[must_use]
 pub fn is_allow_kind(kind: &str) -> bool {
     kind.starts_with("allow")
@@ -401,7 +402,7 @@ impl PermissionController for DefaultPermissionController {
             instance_id: req.instance_id.clone(),
             tool: req.tool_call.name.clone(),
             args: req.tool_call.raw_args.clone().or_else(|| req.tool_call.title.clone()),
-            default_option_id: pick_allow_option_id(&req.options),
+            default_option_id: pick_allow_once_id(&req.options),
             options: req.options.clone(),
         };
         let mut waiters = self.waiters.lock().await;
@@ -507,12 +508,50 @@ impl PermissionController for DefaultPermissionController {
     }
 }
 
+/// Strict `allow_once` picker — returns `Some(option_id)` only when
+/// the agent offered an option whose normalized `kind` is exactly
+/// `allow_once`. Returns `None` for everything else (including
+/// `allow_always`, vendor-specific allow flavours, and substring
+/// matches on id / name).
+///
+/// Used by the default-highlight path so the captain pressing
+/// `Enter` on a permission prompt commits ONLY to "allow this once",
+/// never to "allow forever". Agents that don't offer a single-shot
+/// allow ship no default; the captain picks explicitly. Distinct
+/// from [`pick_allow_option_id`] which keeps the loose fallback
+/// chain for the trust-store auto-allow translator (that path has
+/// to send the agent SOME response when an auto-decision fires).
+#[must_use]
+pub fn pick_allow_once_id(options: &[PermissionOptionView]) -> Option<String> {
+    let picked = options.iter().find(|o| o.kind == "allow_once");
+    if let Some(opt) = picked {
+        tracing::debug!(
+            option_id = %opt.option_id,
+            kind = %opt.kind,
+            offered = options.len(),
+            "permission::pick_allow_once: option selected"
+        );
+    } else {
+        tracing::debug!(
+            offered = options.len(),
+            "permission::pick_allow_once: no allow_once option offered — frontends render no default highlight"
+        );
+    }
+    picked.map(|o| o.option_id.clone())
+}
+
 /// Pick an `allow`-shaped option id. Used on `Decision::Allow` when
-/// the controller has to translate back to ACP's
-/// `Selected(option_id)` wire. Strategy: first an exact `kind`
-/// match on `allow_once` / `allow_always`, else anything whose
-/// `option_id` or `name` contains "allow" case-insensitively, else
-/// the first option overall.
+/// the controller has to translate the captain's trust-store
+/// decision back into an ACP `Selected(option_id)` response — the
+/// agent MUST get some option back, so this lane stays lenient.
+///
+/// Strategy: exact `kind` match on `allow_once` / `allow_always`,
+/// then anything that classifies as allow-shaped, then a substring
+/// match on `option_id` / `name`, then the first option overall.
+/// The default-highlight path (the captain's `Enter`-commit target)
+/// is intentionally NOT this — it uses
+/// [`pick_allow_once_id`] which returns `None` outside an exact
+/// `allow_once` match.
 #[must_use]
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
     // Prefer `allow_once` over `allow_always` over any other allow-shaped
@@ -917,6 +956,62 @@ mod tests {
             },
         ];
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn pick_allow_once_returns_only_exact_allow_once() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "o1".into(),
+                name: "Allow Always".into(),
+                kind: "allow_always".into(),
+            },
+            PermissionOptionView {
+                option_id: "o2".into(),
+                name: "Allow Once".into(),
+                kind: "allow_once".into(),
+            },
+        ];
+        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("o2"));
+    }
+
+    /// Strict: without an exact `allow_once`, the picker returns
+    /// `None` — `allow_always` is NOT a fallback for the default
+    /// highlight. Captains pressing `Enter` should never commit to
+    /// "allow forever" without an explicit pick.
+    #[test]
+    fn pick_allow_once_returns_none_when_only_allow_always_offered() {
+        let opts = vec![PermissionOptionView {
+            option_id: "o1".into(),
+            name: "Allow Always".into(),
+            kind: "allow_always".into(),
+        }];
+        assert_eq!(pick_allow_once_id(&opts), None);
+    }
+
+    /// Strict: no substring matching, no first-option fallback.
+    /// Vendors that don't ship a normalized `allow_once` kind get no
+    /// default highlight on the wire.
+    #[test]
+    fn pick_allow_once_returns_none_for_substring_only_matches() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "yes".into(),
+                name: "Allow This".into(),
+                kind: "unknown".into(),
+            },
+            PermissionOptionView {
+                option_id: "other".into(),
+                name: "Skip".into(),
+                kind: "unknown".into(),
+            },
+        ];
+        assert_eq!(pick_allow_once_id(&opts), None);
+    }
+
+    #[test]
+    fn pick_allow_once_returns_none_on_empty_options() {
+        assert_eq!(pick_allow_once_id(&[]), None);
     }
 
     #[test]
