@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/hyprpilot/hyprpilot/compare/v2.2.4...v2.3.0) (2026-05-19)
+
+
+### Features
+
+* **notifications:** daemon-side needs-attention tracker + header pill + palette ([#112](https://github.com/hyprpilot/hyprpilot/issues/112)) ([75db92d](https://github.com/hyprpilot/hyprpilot/commit/75db92deef9d326f8c8c7d40cdbae574d603783f))
+
+
+### Bug Fixes
+
+* **viewport, composer:** empty-prompt guard + scroll regressions + restore action ([#114](https://github.com/hyprpilot/hyprpilot/issues/114)) ([6268214](https://github.com/hyprpilot/hyprpilot/commit/6268214900cfa50663f576b3fa2db09cea96f489))
+
 ## [2.2.4](https://github.com/hyprpilot/hyprpilot/compare/v2.2.3...v2.2.4) (2026-05-19)
 
 
