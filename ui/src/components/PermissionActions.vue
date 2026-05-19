@@ -44,16 +44,15 @@ function toneFor(opt: PermissionOptionView): ButtonTone {
 }
 
 function variantFor(opt: PermissionOptionView): ButtonVariant {
-  // When the daemon supplied a default, ONLY that option is solid;
+  // Daemon is the source of truth for the default highlight. When
+  // it ships `defaultOptionId`, ONLY that option renders solid;
   // every other option (including other allow-shaped ones) renders
-  // ghost so the primary action is visually unambiguous. Without a
-  // daemon-supplied default, fall back to the legacy "allow_once is
-  // solid" rule for compat with older daemon builds.
-  if (props.defaultOptionId !== undefined) {
-    return opt.optionId === props.defaultOptionId ? ButtonVariant.Solid : ButtonVariant.Ghost
-  }
-
-  return opt.kind === 'allow_once' ? ButtonVariant.Solid : ButtonVariant.Ghost
+  // ghost so the primary action is visually unambiguous. When the
+  // daemon ships `undefined` (the agent offered no `allow_once`),
+  // NO option highlights — captains pick explicitly. No UI-side
+  // "guess what the captain wants" fallback; the daemon's
+  // `pick_allow_once_id` is authoritative.
+  return opt.optionId === props.defaultOptionId ? ButtonVariant.Solid : ButtonVariant.Ghost
 }
 </script>
 
