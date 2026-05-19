@@ -22,15 +22,18 @@
 
 import { shutdownInstance } from './instances'
 import { buildProfilesPaletteSpec } from './profiles'
+import { buildSessionEntries } from './sessions'
 import { ToastTone } from '@components'
 import {
   type PaletteEntry,
   PaletteMode,
   type PaletteSpec,
   pushInstanceModelState,
+  pushToast,
   setInstanceAgent,
   setInstanceCwd,
   setInstanceProfile,
+  setSessionRestoring,
   useActiveInstance,
   type InstanceId,
   usePalette,
@@ -38,10 +41,11 @@ import {
   useRenameInstanceModal,
   useToasts
 } from '@composables'
-import { invoke, TauriCommand, type ProfileSummary } from '@ipc'
+import { invoke, TauriCommand, type ProfileSummary, type SessionSummary } from '@ipc'
 import { log } from '@lib'
 
 const ACTION_NEW = 'new'
+const ACTION_RESTORE = 'restore'
 const ACTION_RENAME = 'rename'
 const ACTION_SHUTDOWN = 'shutdown'
 
@@ -95,12 +99,26 @@ function startNewInstance(profile: ProfileSummary | undefined, label: string | u
   useToasts().push(ToastTone.Ok, label ? `new instance · ${label}` : 'new instance staged')
 }
 
-function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: string; onPickNew: () => void; onPickRename: () => void; onPickShutdown: () => void }): PaletteSpec {
+interface BuildInstanceLeafSpecArgs {
+  focused?: InstanceId
+  currentName?: string
+  onPickNew: () => void
+  onPickRestore: () => void
+  onPickRename: () => void
+  onPickShutdown: () => void
+}
+
+function buildInstanceLeafSpec(args: BuildInstanceLeafSpecArgs): PaletteSpec {
   const entries: PaletteEntry[] = [
     {
       id: ACTION_NEW,
       name: 'new',
       description: 'spawn a fresh instance.'
+    },
+    {
+      id: ACTION_RESTORE,
+      name: 'restore',
+      description: 'pick a profile, then a session to resume.'
     }
   ]
 
@@ -133,6 +151,12 @@ function buildInstanceLeafSpec(args: { focused?: InstanceId; currentName?: strin
 
       if (pick.id === ACTION_NEW) {
         args.onPickNew()
+
+        return
+      }
+
+      if (pick.id === ACTION_RESTORE) {
+        args.onPickRestore()
 
         return
       }
@@ -187,6 +211,142 @@ function openNewInstanceProfilePicker(): void {
   open({ ...spec, title: 'instance · new' })
 }
 
+/// Restore flow: pick a profile, then a session under that profile.
+/// Two-step picker mirrors `new` (which picks a profile) but instead of
+/// staging an empty instance, the second picker lists existing
+/// sessions for the chosen `(agent, profile)` pair and resumes one.
+function openRestoreInstanceProfilePicker(): void {
+  const { open } = usePalette()
+  const { profiles, selected, loading } = useProfiles()
+  const { id: activeInstanceId } = useActiveInstance()
+
+  if (profiles.value.length === 0) {
+    const message = loading.value ? 'profiles: still loading, try again' : 'profiles: none configured — add [[profiles]] to your config'
+
+    useToasts().push(ToastTone.Warn, message)
+
+    return
+  }
+
+  const spec = buildProfilesPaletteSpec({
+    list: profiles.value,
+    selected: selected.value,
+    activeInstanceId: activeInstanceId.value,
+    // Picking the currently-active profile is the common path for
+    // "restore under the same profile" — fire onSelect unconditionally
+    // instead of the profiles-leaf default skip.
+    fireOnActive: true,
+    onSelect(profileId) {
+      const profile = profiles.value.find((p) => p.id === profileId)
+
+      if (!profile) {
+        return
+      }
+      void openRestoreSessionPicker(profile)
+    }
+  })
+
+  open({ ...spec, title: 'instance · restore' })
+}
+
+/// Second leaf of the restore flow — list sessions filtered to the
+/// picked profile + Enter restores the chosen one against a freshly
+/// minted instance id. Cwd / agent / profile pass through to the
+/// daemon's `session_load` so the resumed actor spawns under the
+/// captain's selection, not the daemon-singleton default.
+async function openRestoreSessionPicker(profile: ProfileSummary): Promise<void> {
+  const palette = usePalette()
+
+  // Open the placeholder spec immediately so the captain doesn't sit
+  // on a static palette while the list round-trips. Empty entries +
+  // `loading: true` renders an inline <Loading> with a status pill.
+  palette.open({
+    mode: PaletteMode.Select,
+    title: `instance · restore · ${profile.id}`,
+    entries: [],
+    loading: true,
+    status: 'fetching session list',
+    onCommit: () => {}
+  })
+
+  let sessions: SessionSummary[]
+
+  try {
+    const r = await invoke(TauriCommand.SessionList, { agentId: profile.agent, profileId: profile.id })
+
+    sessions = r.sessions
+  } catch(err) {
+    log.warn('palette-instance: restore session list failed', { err })
+    pushToast(ToastTone.Err, `sessions list failed: ${String(err)}`)
+    palette.close()
+
+    return
+  }
+
+  if (sessions.length === 0) {
+    palette.close()
+    palette.open({
+      mode: PaletteMode.Select,
+      title: `instance · restore · ${profile.id}`,
+      entries: [
+        {
+          id: 'restore-sessions-empty',
+          name: 'no sessions to restore under this profile.'
+        }
+      ],
+      onCommit: () => {}
+    })
+
+    return
+  }
+
+  const entries = buildSessionEntries(sessions)
+  // Build a session-id → cwd map so the commit handler can pass the
+  // session's stored cwd through to `session_load` (claude-agent-acp
+  // scopes sessions by cwd; resuming under the wrong cwd errors with
+  // "Resource not found"). `buildSessionEntries` strips the cwd off
+  // its public PaletteEntry shape — keep the side-table here.
+  const cwdById = new Map<string, string>()
+
+  for (const s of sessions) {
+    cwdById.set(s.sessionId, s.cwd)
+  }
+
+  palette.close()
+  palette.open({
+    mode: PaletteMode.Select,
+    title: `instance · restore · ${profile.id}`,
+    entries,
+    onCommit(picks) {
+      const pick = picks[0]
+
+      if (!pick) {
+        return
+      }
+      const cwd = cwdById.get(pick.id)
+      const target: InstanceId = crypto.randomUUID()
+
+      // Flip the `restoring` lifecycle flag on the fresh handle so the
+      // chat-transcript <Loading> overlay paints the moment the
+      // captain commits. Cleared by use-session-stream on the first
+      // TurnEnded for `target` (matching `useSessionHistory.load` +
+      // the sessions palette leaf).
+      setSessionRestoring(target, true)
+      void invoke(TauriCommand.SessionLoad, {
+        sessionId: pick.id,
+        instanceId: target,
+        cwd,
+        agentId: profile.agent,
+        profileId: profile.id
+      }).catch((err) => {
+        log.warn('palette-instance: restore load failed', { err })
+        pushToast(ToastTone.Err, `session load failed: ${String(err)}`)
+        setSessionRestoring(target, false)
+      })
+    }
+  })
+}
+
 export async function openInstanceLeaf(): Promise<void> {
   const { id: activeId } = useActiveInstance()
   const focused = activeId.value
@@ -211,6 +371,7 @@ export async function openInstanceLeaf(): Promise<void> {
     focused,
     currentName,
     onPickNew: openNewInstanceProfilePicker,
+    onPickRestore: openRestoreInstanceProfilePicker,
     onPickRename() {
       if (!focused) {
         return

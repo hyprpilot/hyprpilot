@@ -215,15 +215,15 @@ function onTextareaKeydown(e: KeyboardEvent): void {
     e.preventDefault()
     e.stopPropagation()
 
-    // First Tab moves the sentinel (-1) onto the first row instead of
-    // committing — the popover stops auto-highlighting, so a stray
-    // Tab can't accidentally insert a path the captain didn't pick.
-    // Subsequent Tabs commit the (now-selected) row.
+    // Tab commits in one press — auto-select the first row from the
+    // sentinel state so the captain doesn't have to Tab twice (once
+    // to land on row 0, once to commit). Enter on the popover stays
+    // unambiguous because Enter still requires an explicit prior
+    // ArrowDown / ArrowUp to set `selectedIndex >= 0`.
     if (completion.state.value.selectedIndex < 0) {
       completion.selectNext()
-    } else {
-      applyCompletion()
     }
+    applyCompletion()
 
     return
   }
