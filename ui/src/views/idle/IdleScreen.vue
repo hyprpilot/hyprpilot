@@ -1,15 +1,28 @@
 <script setup lang="ts">
 /**
  * Idle landing — paints when the chat surface has no timeline content
- * (fresh daemon, no live turns yet). Centred wordmark + LFG. accent +
- * vertically aligned profile / adapter / model / cwd block + a live
- * sessions preview the captain can click to resume.
+ * (fresh daemon, no live turns yet, OR after a shutdown drops the
+ * captain off any active instance). Layout, top → bottom:
  *
- * Pure-presentational: receives every signal as a prop and emits
- * `restoreSession` for the click. The parent (Overlay.vue) owns
- * which sessions are surfaced and how many — this view just renders.
+ *   wordmark "hyprpilot"
+ *   LFG.
+ *   live instances table (when any are running) — captain re-enters
+ *     a non-focused instance with one click; row owns its own
+ *     useSessionInfo subscription so title / mode updates land
+ *     live.
+ *   profile / adapter / model / cwd context block (defaults the next
+ *     spawn lands under)
+ *   sessions preview (when any exist) — Enter / click restores
+ *   Ctrl+K hint
+ *
+ * Pure-presentational: receives every signal as a prop, emits
+ * `restoreSession` / `focusInstance` / `openPalette`. The parent
+ * (Overlay.vue) owns which instances / sessions are surfaced and
+ * what the click actions do — this view just renders.
  */
+import IdleInstanceRow from './IdleInstanceRow.vue'
 import { KbdHint } from '@components'
+import type { InstanceId } from '@composables'
 import type { SessionSummary } from '@ipc'
 
 defineProps<{
@@ -17,12 +30,17 @@ defineProps<{
   agent?: string
   model?: string
   cwd?: string
+  /** Live instance ids (insertion order). Each row mounts its own
+   *  `useSessionInfo` so live title / mode updates surface without
+   *  a parent re-pass. */
+  instances: InstanceId[]
   sessions: SessionSummary[]
   totalSessionCount: number
 }>()
 
 const emit = defineEmits<{
   restoreSession: [sessionId: string, cwd: string]
+  focusInstance: [instanceId: InstanceId]
   openPalette: []
 }>()
 
@@ -32,12 +50,30 @@ function onRowClick(session: SessionSummary): void {
   }
   emit('restoreSession', session.sessionId, session.cwd)
 }
+
+function onInstancePick(instanceId: InstanceId): void {
+  emit('focusInstance', instanceId)
+}
 </script>
 
 <template>
   <section class="idle-screen" data-testid="idle-screen">
     <div class="idle-wordmark">hyprpilot</div>
     <div class="idle-accent">LFG.</div>
+    <div v-if="instances.length > 0" class="idle-instances" data-testid="idle-instances">
+      <header class="idle-instances-header">
+        <span class="idle-instances-count">{{ instances.length }}</span>
+        <span class="idle-instances-title">instances</span>
+        <span class="idle-instances-line" />
+      </header>
+      <div class="idle-instances-headrow">
+        <span />
+        <span>name</span>
+        <span>cwd</span>
+        <span>agent</span>
+      </div>
+      <IdleInstanceRow v-for="id in instances" :key="id" :instance-id="id" @pick="onInstancePick" />
+    </div>
     <div class="idle-context" data-testid="idle-context">
       <span v-if="profile" class="idle-context-pill">
         <span class="idle-context-label">profile</span><span class="idle-context-value">{{ profile }}</span>
@@ -154,6 +190,55 @@ function onRowClick(session: SessionSummary): void {
    * data column reads as one block. */
   color: var(--theme-fg);
   text-align: left;
+}
+
+/* Instances table — same column geometry + header chrome as the
+ * sessions block below. Slotted between the LFG accent and the
+ * adapter-details context block per captain's layout call. Each row
+ * owns its own `useSessionInfo` subscription (IdleInstanceRow.vue)
+ * so live title / mode updates land without a parent re-render. */
+.idle-instances {
+  width: 100%;
+  max-width: 40rem;
+  margin-top: 1.25rem;
+}
+
+.idle-instances-header {
+  @apply flex items-center;
+  margin-bottom: 0.375rem;
+  font-family: var(--theme-font-mono);
+  font-size: 0.62rem;
+  color: var(--theme-fg-subtle);
+  gap: 0.375rem;
+}
+
+.idle-instances-count {
+  color: var(--theme-state-stream);
+  font-weight: 700;
+}
+
+.idle-instances-title {
+  text-transform: lowercase;
+}
+
+.idle-instances-line {
+  flex: 1;
+  height: 1px;
+  background-color: var(--theme-border);
+  margin-left: 0.5rem;
+}
+
+.idle-instances-headrow {
+  display: grid;
+  grid-template-columns: 0.875rem minmax(0, 1fr) minmax(0, 10.625rem) minmax(0, 6.875rem);
+  column-gap: 0.75rem;
+  padding: 0.25rem 0.625rem;
+  font-family: var(--theme-font-mono);
+  font-size: 0.56rem;
+  color: var(--theme-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03125rem;
+  border-bottom: 1px solid var(--theme-border);
 }
 
 .idle-sessions {

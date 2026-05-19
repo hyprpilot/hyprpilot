@@ -2,27 +2,19 @@
  * Surface composable for the virtualized chat body (Phase C1).
  *
  * Combines `useInstanceChatInfiniteQuery` (the data layer) with the
- * two concerns the body view needs on top:
+ * flattened oldest-first items view + `latestSeq` cursor consumers
+ * read. Backward pagination still rides the underlying
+ * `useInfiniteQuery` handle; the cache holds every fetched page for
+ * the lifetime of the instance.
  *
- * 1. **Page-trim policy** — when the cache holds more than
- *    `MAX_PAGES_KEPT` pages AND the captain is "in the live area"
- *    (either `stuck=true` at the foot, or within one viewport of
- *    the foot), drop the oldest pages so only the newest
- *    `MAX_PAGES_KEPT` remain. Keeps memory bounded under long
- *    sessions without user-visible truncation: the daemon always
- *    serves older pages on backward scroll. The combined gate
- *    `stuck || within-one-viewport-of-foot` is wider than the
- *    `useStickToBottom` stick threshold (128px) so cleanup is
- *    prompt when the captain returns from history reading, but
- *    narrow enough that mid-history scrolls don't risk evicting
- *    the row the anchor primitive (`use-scroll-anchor`) is locked
- *    to. The body view schedules the mutation via
- *    `requestAnimationFrame` so the cache write lands outside the
- *    scroll-event task — see Viewport.vue's onScroll for the
- *    timing rationale.
- *
- * 2. **Flattened oldest-first items view** for the snapshot
- *    projector + a `latestSeq` cursor for diagnostic consumers.
+ * **Note on page eviction**: an earlier shape (Phase C1) trimmed the
+ * cache to the newest `MAX_PAGES_KEPT` pages whenever the captain was
+ * near the foot. It was removed in this PR — under rapid
+ * session-load replay the eviction raced the patcher's
+ * `setQueryData` mutations on the same key and silently dropped
+ * replayed items. The daemon-side ring buffer already bounds the
+ * captain's memory exposure; client-side trimming was protecting
+ * against a problem that didn't materialise.
  *
  * Live patching (`acp:transcript` + `acp:permission-resolved`) lives
  * in the module-level singleton at `./transcript-patcher.ts`. The
@@ -47,13 +39,6 @@ import { useInstanceChatInfiniteQuery, type UseInstanceChatInfiniteQueryReturn }
 import { type InstanceId } from '../chrome/use-active-instance'
 import { type ChatSnapshot, type SeqTranscriptItem } from '@ipc'
 import { log } from '@lib'
-
-/**
- * Cache pages retained when stuck-at-bottom. Each page is sized to
- * cover the viewport (see `viewportPageSize` below), so 3 pages = 3
- * viewports of scrollback in DOM at peak.
- */
-export const MAX_PAGES_KEPT = 3
 
 /**
  * Fallback row-height estimate in CSS px. Used only when no items
@@ -130,16 +115,6 @@ export interface UseChatViewportApi {
   hasNextPage: ComputedRef<boolean>
   /** Trigger a backward fetch; safe to call when in-flight (TanStack dedupes). */
   fetchNextPage: () => Promise<unknown>
-  /**
-   * Drop pages older than `MAX_PAGES_KEPT`. Idempotent — if the cache
-   * is already within budget it's a no-op. The body view calls this
-   * whenever the captain is "in the live area" (within ~one viewport
-   * of bottom) so a re-entry from history reading triggers cleanup
-   * without waiting for the strict stuck-at-bottom threshold the auto-
-   * scroll uses. Newest pages are kept; oldest get dropped — the
-   * daemon serves them again on backward scroll.
-   */
-  evictExtraPages: () => void
 }
 
 interface PatchableInfiniteData extends InfiniteData<ChatSnapshot, number | undefined> {
@@ -258,50 +233,6 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     return out
   })
 
-  // Page-trim policy. Idempotent: drop pages older than the
-  // newest `MAX_PAGES_KEPT` whenever the caller signals "the
-  // captain is in the live area, dropping older pages won't yank
-  // anything they're reading." The body view calls this from its
-  // scroll handler when the captain is within ~one viewport of
-  // bottom — wider than `useStickToBottom`'s stick threshold (which
-  // gates the auto-scroll behaviour). The wider eviction trigger
-  // means the cache cleans up promptly when the captain returns
-  // to live, instead of waiting for the strict stuck-at-bottom
-  // condition that the auto-scroll uses.
-  function evictExtraPages(): void {
-    const id = instanceId.value
-
-    if (id === undefined) {
-      return
-    }
-    queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', id], (old) => {
-      if (!old) {
-        return old
-      }
-
-      if (old.pages.length <= MAX_PAGES_KEPT) {
-        return old
-      }
-      // Page 0 is newest. We keep the newest `MAX_PAGES_KEPT` pages
-      // and drop the rest. The dropped pages live on the daemon — a
-      // backward scroll re-fetches them.
-      const keptPages = old.pages.slice(0, MAX_PAGES_KEPT)
-      const keptParams = old.pageParams.slice(0, MAX_PAGES_KEPT)
-
-      log.trace('snapshot.page-trim.evicted', {
-        instanceId: id,
-        before: old.pages.length,
-        after: keptPages.length
-      })
-
-      return {
-        ...old,
-        pages: keptPages,
-        pageParams: keptParams
-      }
-    })
-  }
-
   // Wrapped fetchNextPage exposing a uniform Promise<unknown> shape
   // — TanStack's typed return is hard to thread through the API
   // surface and consumers don't read it.
@@ -338,7 +269,6 @@ export function useChatViewport(instanceId: ComputedRef<InstanceId | undefined>,
     isInitialLoading,
     isFetchingNextPage,
     hasNextPage,
-    fetchNextPage,
-    evictExtraPages
+    fetchNextPage
   }
 }

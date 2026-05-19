@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, defineComponent, h, ref, type Ref } from 'vue'
 
-import { MAX_PAGES_KEPT, useChatViewport, type UseChatViewportApi } from './use-chat-viewport'
+import { useChatViewport, type UseChatViewportApi } from './use-chat-viewport'
 import type { InstanceId } from '../chrome/use-active-instance'
 import { TranscriptItemKind, type ChatSnapshot, type SeqTranscriptItem } from '@ipc'
 
@@ -101,7 +101,12 @@ describe('useChatViewport', () => {
   // since the listener was hoisted to a module-level singleton (see
   // `transcript-patcher.ts`).
 
-  it('page-trim drops oldest pages when stuck-at-bottom and cache exceeds MAX_PAGES_KEPT', async() => {
+  it('keeps every fetched page across multiple fetchNextPage calls (no page-trim eviction)', async() => {
+    // Pin the regression that drove eviction removal: replay storms
+    // were racing the patcher's `setQueryData` against `evictExtraPages`
+    // on the same `['snapshot-chat', id]` key and silently dropping
+    // items. With eviction gone, every backward fetch's page lands and
+    // stays — the cache grows monotonically per instance.
     invoke
       .mockResolvedValueOnce(chatPage([transcriptText(200, 'p0')], true))
       .mockResolvedValueOnce(chatPage([transcriptText(150, 'p1')], true))
@@ -119,37 +124,8 @@ describe('useChatViewport', () => {
     await api.fetchNextPage()
     await flushPromises()
 
-    // Four pages cached → flattened items count is 4 (one item per
-    // mocked page) before the trim.
+    // All four pages stay in the cache — no eviction trim.
     expect(api.items.value.map((it) => it.seq).sort((a, b) => a - b)).toEqual([50, 100, 150, 200])
-
-    api.evictExtraPages()
-    await flushPromises()
-
-    // After the trim only the newest MAX_PAGES_KEPT pages remain —
-    // the oldest page (seq 50) gets dropped. Items run newest seqs only.
-    const seqs = api.items.value.map((it) => it.seq).sort((a, b) => a - b)
-
-    expect(seqs).toHaveLength(MAX_PAGES_KEPT)
-    expect(seqs).toContain(200)
-    expect(seqs).not.toContain(50)
-    unmount()
-  })
-
-  it('evictExtraPages is a no-op when cache is at or below MAX_PAGES_KEPT', async() => {
-    invoke.mockResolvedValueOnce(chatPage([transcriptText(50, 'p0')], false))
-    const id = ref<InstanceId | undefined>('i-1')
-    const { api, unmount } = mountViewport(id)
-
-    await flushPromises()
-    await flushPromises()
-
-    expect(api.items.value).toHaveLength(1)
-
-    api.evictExtraPages()
-    await flushPromises()
-
-    expect(api.items.value).toHaveLength(1)
     unmount()
   })
 

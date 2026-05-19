@@ -257,17 +257,17 @@ impl<H: InstanceActor> AdapterRegistry<H> {
     }
 
     /// Best-effort shutdown of the instance at `key`. Broadcasts
-    /// `InstancesChanged` after the drop settles + `InstancesFocused`
-    /// if the shut-down instance was focused (auto-focus picks the
-    /// oldest survivor, or clears to `None`).
+    /// `InstancesChanged` after the drop settles + `InstancesFocused
+    /// { instance_id: None }` when the shut-down instance was the
+    /// focused one.
     ///
-    /// **Race:** the actor's shutdown ack is awaited without any
-    /// registry locks held. A concurrent `insert` can land on
-    /// `order.first()` before `auto_focus_after_drop` runs — if the
-    /// shut-down instance was focused, the brand-new key becomes the
-    /// auto-focus target rather than the oldest pre-existing
-    /// survivor. Documented behavior; the UI reconciles via the
-    /// event stream regardless.
+    /// **Focus policy on shutdown:** clears focus rather than picking
+    /// a survivor automatically. UIs fall through to their idle
+    /// landing so the captain explicitly picks the next instance.
+    /// The earlier "auto-focus oldest survivor" shape stole the
+    /// captain off their just-shuttered instance onto whatever
+    /// happened to be oldest in the insertion order — captain
+    /// rejected that flow.
     pub async fn shutdown_one(&self, key: InstanceKey) -> AdapterResult<InstanceKey> {
         let handle = self.remove(key).await?;
         handle.shutdown().await;
@@ -318,12 +318,13 @@ impl<H: InstanceActor> AdapterRegistry<H> {
         if *focused != Some(dropped) {
             return;
         }
-        let order = self.order.lock().await;
-        let next = order.first().copied();
-        *focused = next;
-        let _ = self.events_tx.send(InstanceEvent::InstancesFocused {
-            instance_id: next.map(|k| k.as_string()),
-        });
+        // Clear focus — UIs fall through to the idle landing where the
+        // captain explicitly picks the next instance (or stays). See
+        // [`shutdown_one`] for the rationale.
+        *focused = None;
+        let _ = self
+            .events_tx
+            .send(InstanceEvent::InstancesFocused { instance_id: None });
     }
 }
 
@@ -428,13 +429,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_focused_auto_focuses_oldest_survivor() {
+    async fn shutdown_focused_clears_focus_to_none() {
+        // Captain's policy: shutdown of the focused instance clears
+        // focus rather than picking a survivor automatically. UIs
+        // fall through to the idle landing so the captain explicitly
+        // picks the next instance.
         let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
         let k1 = InstanceKey::new_v4();
         let k2 = InstanceKey::new_v4();
         reg.insert(k1, dummy(k1, "a"), None).await.unwrap();
         reg.insert(k2, dummy(k2, "b"), None).await.unwrap();
         reg.focus(k2).await.unwrap();
+        reg.shutdown_one(k2).await.unwrap();
+        assert!(
+            reg.focused_id().await.is_none(),
+            "focus must clear, not auto-jump to k1"
+        );
+        // Survivors are still in the registry — the captain can re-pick.
+        assert_eq!(reg.ordered_keys().await, vec![k1]);
+    }
+
+    #[tokio::test]
+    async fn shutdown_unfocused_leaves_focus_intact() {
+        // Inverse: shutting down an instance that is NOT focused
+        // must NOT touch the focus pointer.
+        let reg: AdapterRegistry<DummyInstance> = AdapterRegistry::new();
+        let k1 = InstanceKey::new_v4();
+        let k2 = InstanceKey::new_v4();
+        reg.insert(k1, dummy(k1, "a"), None).await.unwrap();
+        reg.insert(k2, dummy(k2, "b"), None).await.unwrap();
+        reg.focus(k1).await.unwrap();
         reg.shutdown_one(k2).await.unwrap();
         assert_eq!(reg.focused_id().await, Some(k1));
     }

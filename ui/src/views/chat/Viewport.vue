@@ -46,7 +46,6 @@ import ToolChips from './ToolChips.vue'
 import Turn from './Turn.vue'
 import { Loading, Role, StreamKind, PlanStatus, type PlanItem } from '@components'
 import {
-  isEditableTarget,
   StreamItemKind,
   TurnRole,
   timelineBlocksFromSnapshot,
@@ -279,37 +278,31 @@ function releaseStickAndAnchor(): void {
 // auto-scroll window so cache cleanup is prompt without
 // disturbing the read-history flow.
 
-// **Window-focus → scroll-to-end.** Captain explicitly asked: when
-// they switch away from the overlay (alt-tab, Hyprland keybind
-// hide/show, browser tab swap on remote) and come back, the chat
-// surface should be at the latest message, not wherever the cursor
-// was. Tauri 2 propagates window focus to the DOM `focus` event;
-// the remote-bridge browser context already fires it natively. We
-// defer to `nextTick` so the layout has a chance to settle —
-// `scrollHeight` could be stale if a `useStickToBottom` MutationObserver
-// pass is queued from chunks that landed while we were unfocused.
+// **Window-focus → scroll-to-end, BUT only when the captain was
+// already stuck at the foot.** Tauri 2 propagates window focus to the
+// DOM `focus` event; browser tabs fire it natively. Unconditionally
+// snapping on focus yanks the captain off whatever older message they
+// were reading the moment they alt-tab back — exactly the
+// scroll-hostage symptom they reported. Gate on `stuck.value` so the
+// snap only fires when they were AT the foot before they switched
+// away (which is the only state where a snap is the right answer
+// anyway: a streaming chunk could have pushed `scrollHeight` while
+// the tab was hidden, leaving a small gap that the snap re-closes).
 useEventListener(window, 'focus', () => {
+  if (!stuck.value) {
+    return
+  }
   void nextTick(() => {
     markProgrammaticScroll()
     scrollToBottom()
   })
 })
 
-/// Floating chevron click — drop extra pages, await Vue's DOM
-/// patch, THEN jump to the foot. Eviction shrinks `data.pages`
-/// from the OLDEST entry, which renders at the TOP of the DOM
-/// (`use-chat-viewport.items` walks pages last→first).
-/// `evictExtraPages()` calls `setQueryData` synchronously, but
-/// Vue's reactive DOM patch flushes on the next microtask — so
-/// without `await nextTick()`, `scrollToBottom()` would read the
-/// PRE-eviction `scrollHeight`, scroll past the new tail, and the
-/// browser would clamp scrollTop in a visible second step.
-/// Awaiting nextTick lets Vue flush the eviction patch first;
-/// `scrollToBottom()` then lands exactly at the new bottom in one
-/// motion.
-async function goToBottom(): Promise<void> {
-  viewport.evictExtraPages()
-  await nextTick()
+/// Floating chevron click — jump straight to the foot. No page
+/// eviction needed (pagination-eviction was removed in this PR —
+/// the cache now holds every replayed page for the lifetime of the
+/// instance, so there's nothing to trim before the jump).
+function goToBottom(): void {
   markProgrammaticScroll()
   scrollToBottom()
 }
@@ -338,106 +331,6 @@ async function goToBottom(): Promise<void> {
 // modern Vue can render that without breaking a sweat. The viewport
 // can be re-virtualized later if a captain hits a real memory
 // ceiling, but the current bottleneck is correctness, not memory.
-
-// ── Keyboard scroll ─────────────────────────────────────────────────
-//
-// The scroll container is a non-focusable `<div>`, so the browser's
-// native PageUp / PageDown / Home / End handling never reaches it —
-// those keys only act on the currently-focused element (or the
-// document scroll, which the overlay layout doesn't have). We hook
-// document-level keydown and translate the navigation keys into
-// scroll operations on the transcript, BUT skip when the focus is in
-// the composer / palette / any text input so editing keystrokes stay
-// untouched. ~90% of the visible scroll viewport is one "page" — that
-// matches the desktop convention (slightly less than full-screen so
-// context overlaps).
-const PAGE_OVERLAP_RATIO = 0.9
-
-useEventListener(document, 'keydown', (ev: KeyboardEvent) => {
-  // PageUp / PageDown / Home / End are unambiguously about
-  // scrolling a big container — textareas / inputs have no
-  // meaningful pageful navigation. The captain's focus lives in
-  // the composer textarea 99% of the time, so bailing on
-  // `isEditableTarget` for them meant these keys were effectively
-  // dead in the captain's primary workflow. Bypass the editable-
-  // target gate for ALL viewport nav keys; line navigation inside
-  // the composer is rare enough that Ctrl+Home / Ctrl+End cover
-  // it (the captain types text, hits Enter, scrolls chat — not
-  // mid-document caret hops).
-  const key = ev.key
-  const isViewportNavKey = key === 'PageUp' || key === 'PageDown' || key === 'Home' || key === 'End'
-
-  if (!isViewportNavKey && isEditableTarget(ev.target)) {
-    return
-  }
-  const el = scrollEl.value
-
-  if (!el) {
-    return
-  }
-
-  switch (key) {
-    case 'PageDown': {
-      ev.preventDefault()
-      markUserScrolled()
-      markProgrammaticScroll()
-      el.scrollBy({ top: el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
-
-      return
-    }
-
-    case 'PageUp': {
-      ev.preventDefault()
-      // Upward nav: release stick + anchor SYNCHRONOUSLY before
-      // scrolling, so a coincident rAF-driven `scrollToBottom` or
-      // resize-driven anchor re-lock doesn't fire first and cancel
-      // the smooth scroll.
-      releaseStickAndAnchor()
-      markProgrammaticScroll()
-      el.scrollBy({ top: -el.clientHeight * PAGE_OVERLAP_RATIO, behavior: 'smooth' })
-
-      return
-    }
-
-    case 'Home': {
-      ev.preventDefault()
-      // Same race as PageUp — release synchronously before the
-      // smooth scroll's first frame.
-      releaseStickAndAnchor()
-      markProgrammaticScroll()
-      el.scrollTo({ top: 0, behavior: 'smooth' })
-
-      return
-    }
-
-    case 'End': {
-      ev.preventDefault()
-      markUserScrolled()
-      // End is an explicit jump-to-foot — drop any captured anchor.
-      // Without this, on slow devices the smooth-scroll can take
-      // longer than the 500ms programmatic-scroll suppress window;
-      // when the flag clears mid-animation, `onScroll` captures a
-      // mid-transit anchor and the next resize re-locks to that
-      // transient position. Releasing clears the captured anchor
-      // outright; stuck=true re-engages when the foot lands.
-      releaseAnchor()
-      markProgrammaticScroll()
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-      // Smooth-scroll fires `scroll` events along the way, which our
-      // `onScroll` handler reacts to — but the timing is browser-
-      // dependent and on some phones the final tick lands AFTER the
-      // browser settles, leaving a brief window where eviction could
-      // be missed. Fire one more pass after a delay covering the
-      // typical smooth-scroll duration.
-      setTimeout(() => viewport.evictExtraPages(), 350)
-
-      return
-    }
-
-    default:
-      return
-  }
-})
 
 /// Top-of-list sentinel — a 0-height marker rendered above the first
 /// chat block. `useIntersectionObserver` fires when the sentinel
@@ -537,37 +430,13 @@ useIntersectionObserver(
 //      inside the scroll task removes nodes from the TOP of the DOM
 //      mid-gesture, confusing the browser's anchor heuristic.
 //
-// When `stuck=true`, re-assert `scrollToBottom` after the trim so
-// the captain stays glued to the foot after `scrollHeight` shrinks.
-function onScroll(): void {
-  const el = scrollEl.value
-
-  if (!el) {
-    return
-  }
-
-  if (!hasUserScrolled.value) {
-    return
-  }
-  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-  const nearFoot = stuck.value || distanceFromBottom <= el.clientHeight
-
-  if (!nearFoot) {
-    return
-  }
-  const wasStuck = stuck.value
-
-  requestAnimationFrame(() => {
-    viewport.evictExtraPages()
-
-    if (wasStuck) {
-      void nextTick(() => {
-        markProgrammaticScroll()
-        scrollToBottom()
-      })
-    }
-  })
-}
+// Scroll handler is a no-op now that pagination-eviction is gone —
+// `useStickToBottom` already maintains the stick state off the same
+// event, and there's no per-scroll cache mutation left to do. Kept
+// as an explicit empty handler so a future eviction policy has an
+// obvious slot to land in (and so the existing `@scroll` binding
+// stays alive for any rAF-driven trace we add later).
+function onScroll(): void {}
 
 const liveBlockIdx = computed<number>(() => {
   const open = openTurnId.value

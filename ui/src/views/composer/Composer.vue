@@ -215,15 +215,14 @@ function onTextareaKeydown(e: KeyboardEvent): void {
     e.preventDefault()
     e.stopPropagation()
 
-    // First Tab moves the sentinel (-1) onto the first row instead of
-    // committing — the popover stops auto-highlighting, so a stray
-    // Tab can't accidentally insert a path the captain didn't pick.
-    // Subsequent Tabs commit the (now-selected) row.
-    if (completion.state.value.selectedIndex < 0) {
-      completion.selectNext()
-    } else {
-      applyCompletion()
-    }
+    // Tab NEVER auto-applies. The popover opens with no row tinted
+    // (selectedIndex = -1 sentinel); first Tab walks the sentinel
+    // onto row 0 so the captain sees the highlight; subsequent
+    // Tabs walk the cursor through the list. Enter is the only
+    // commit verb — auto-applying on Tab was buggy because a stray
+    // Tab (e.g. while typing alongside the popover) inserted a
+    // path the captain didn't pick.
+    completion.selectNext()
 
     return
   }
@@ -470,11 +469,23 @@ function trySubmit(): void {
   if (props.sending || props.disabled) {
     return
   }
-  const { text, attachments } = composer.resolvedSubmit()
 
-  if (!text && attachments.length === 0) {
+  // Require non-empty BUFFER on every submit. Whitespace counts as
+  // text — `resolvedSubmit` trims for the wire (so a "  hi  " buffer
+  // ships as "hi"), but here we gate off the raw textarea value so
+  // a captain who deliberately typed spaces (e.g. as a leading-newline
+  // workaround on a coarse keyboard) can still send. The wire-side
+  // payload is whatever `resolvedSubmit` produced — we only care here
+  // that SOMETHING was typed. Attachments + pills alone are not enough:
+  // an attachments-only turn lands on the daemon as
+  // `ContentBlock::Resource[]` with no user text, agents dispatch it
+  // as if the captain said nothing, and the next prompt's reply
+  // attaches to the wrong turn id.
+  if (composer.text.value.length === 0) {
     return
   }
+  const { text, attachments } = composer.resolvedSubmit()
+
   // Drop any open completion before the buffer clears — without
   // this the popover stays mounted with results computed against
   // the just-submitted text.
@@ -733,8 +744,8 @@ function onDragOver(e: DragEvent): void {
           type="submit"
           class="composer-submit"
           :aria-label="sending ? 'sending' : 'send'"
-          :data-empty="text.trim().length === 0 && composerPills.length === 0 && attachments.pending.value.length === 0"
-          :disabled="sending || disabled || (text.trim().length === 0 && composerPills.length === 0 && attachments.pending.value.length === 0)"
+          :data-empty="text.length === 0"
+          :disabled="sending || disabled || text.length === 0"
           data-testid="composer-submit"
         >
           <FaIcon :icon="faArrowTurnDown" class="composer-action-icon" aria-hidden="true" />
