@@ -340,6 +340,27 @@ impl AcpAdapter {
             .clone()
     }
 
+    /// Resolve the cwd a fresh spawn would land in under the addressed
+    /// profile, with root `[[patches]]` folded onto the base — same
+    /// resolver the spawn path uses (`resolve_effective_profile`),
+    /// just exposed for the UI's pre-spawn preview. `None` when the
+    /// resolved profile has no cwd set after patches (the UI then
+    /// falls back to the daemon's process cwd).
+    ///
+    /// `profile_id = None` falls through to the daemon-singleton
+    /// selected profile, then `[profile] default`. Output is
+    /// display-formatted (`$HOME → ~`).
+    pub fn resolve_spawn_cwd(&self, profile_id: Option<&str>) -> Result<Option<String>, RpcError> {
+        let cfg = self.read_config();
+        let runtime_default = self.selected_profile_id();
+        let effective_profile_id = profile_id.or(runtime_default.as_deref());
+        let patched = resolve_effective_profile(&cfg, effective_profile_id, &[])?;
+        Ok(patched
+            .cwd
+            .as_ref()
+            .map(|p| crate::tools::path::display_cwd(&p.to_string_lossy())))
+    }
+
     /// Mutate the daemon-singleton selected profile. Validates against
     /// the loaded `[[profiles]]` registry — unknown ids reject with
     /// `-32602 invalid_params` consistent with the spawn path.
