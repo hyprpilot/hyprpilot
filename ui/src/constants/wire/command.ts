@@ -145,6 +145,7 @@ export enum TauriCommand {
   NotificationsGet = 'notifications_get',
   NotificationsClear = 'notifications_clear',
   NotificationsClearAll = 'notifications_clear_all',
+  ResolveSpawnCwd = 'resolve_spawn_cwd',
   CompletionQuery = 'completion_query',
   CompletionResolve = 'completion_resolve',
   CompletionCancel = 'completion_cancel',
@@ -229,6 +230,7 @@ export interface TauriCommandArgs {
   [TauriCommand.NotificationsGet]: NotificationsGetArgs
   [TauriCommand.NotificationsClear]: NotificationsClearArgs
   [TauriCommand.NotificationsClearAll]: void
+  [TauriCommand.ResolveSpawnCwd]: { profileId?: string }
   [TauriCommand.CompletionQuery]: CompletionQueryArgs
   [TauriCommand.CompletionResolve]: CompletionResolveArgs
   [TauriCommand.CompletionCancel]: CompletionCancelArgs
@@ -290,6 +292,10 @@ export interface TauriCommandResult {
   [TauriCommand.NotificationsGet]: NotificationsGetResult
   [TauriCommand.NotificationsClear]: { cleared: boolean }
   [TauriCommand.NotificationsClearAll]: { cleared: boolean }
+  /** Rust ships `cwd: null` (not absent) when the resolved
+   *  profile has no cwd after patches — caller coerces `null` to
+   *  `undefined` at the seed site. */
+  [TauriCommand.ResolveSpawnCwd]: { cwd: string | null }
   [TauriCommand.CompletionQuery]: CompletionQueryResponse
   [TauriCommand.CompletionResolve]: CompletionResolveResponse
   [TauriCommand.CompletionCancel]: CompletionCancelResponse

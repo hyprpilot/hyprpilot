@@ -803,6 +803,35 @@ pub async fn queue_dispatch(
     serde_json::to_value(res).map_err(|e| format!("queue_dispatch: serialise reply: {e}"))
 }
 
+/// Resolve the cwd a fresh spawn would land in under the addressed
+/// profile, with root `[[patches]]` folded onto the base. Mirrors
+/// the daemon's spawn-time resolver (`resolve_effective_profile`)
+/// so the UI's pre-spawn cwd preview matches the cwd the agent
+/// actually starts in.
+///
+/// Without this, the pre-spawn preview path
+/// (`instance · new → pick profile`) showed the BASE
+/// `[[profiles]].cwd` value — but a root `[[patches]]` block that
+/// overrides cwd (a common pattern for `personal/*` vs `work/*`
+/// captains) wouldn't apply until after the actor spawned, at
+/// which point the chrome header flipped to the real cwd
+/// disconcertingly. Calling this at the seed site closes the gap.
+///
+/// `profileId = None` falls through to `[profile] default`. Returns
+/// `{ cwd: None }` when neither the profile nor any patch sets a
+/// cwd — the UI then renders the daemon's process cwd as the
+/// fallback (same shape as today).
+///
+/// Display-formatted (`$HOME → ~`) via `tools::path::display_cwd`
+/// so the UI doesn't re-collapse the path.
+#[tauri::command]
+pub async fn resolve_spawn_cwd(adapter: AdapterState<'_>, profile_id: Option<String>) -> Result<Value, String> {
+    let cwd = adapter
+        .resolve_spawn_cwd(profile_id.as_deref())
+        .map_err(|e| e.message)?;
+    Ok(json!({ "cwd": cwd }))
+}
+
 /// Snapshot of the daemon-side "needs attention" tracker. Frontends
 /// (Vue header pill, future nvim plugin) read this at boot via the
 /// boot snapshot's `notifications` slot; this command exists for

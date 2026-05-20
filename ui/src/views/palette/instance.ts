@@ -78,16 +78,30 @@ function startNewInstance(profile: ProfileSummary | undefined, label: string | u
       pushInstanceModelState(id, { currentModelId: profile.model, availableModels: undefined })
     }
 
-    // Seed the cwd pill from the profile's configured cwd (when set)
-    // so the captain sees the spawn target the moment they pick a
-    // profile — without this the header's cwd slot reads "—" until
-    // the actor's `session/new` lands and `MetaSnapshot.cwd` hydrates
-    // (often several seconds in). Raw value (no `~` expansion); the
-    // post-spawn meta snapshot overwrites with the daemon's
-    // canonicalised path.
-    if (profile.cwd) {
-      setInstanceCwd(id, profile.cwd)
-    }
+    // Seed the cwd pill from the DAEMON-RESOLVED cwd — same resolver
+    // the spawn path uses (`resolve_effective_profile`), which folds
+    // root `[[patches]]` onto the base profile. Without this the
+    // pre-spawn pill showed `profile.cwd` raw and patch-overridden
+    // cwds (a common `personal/*` vs `work/*` pattern) only landed
+    // when the actor's `session/new` resolved — disconcerting flip
+    // mid-spawn. Fire-and-forget; the post-spawn meta snapshot
+    // re-asserts the daemon's authoritative cwd if anything drifted.
+    void invoke(TauriCommand.ResolveSpawnCwd, { profileId: profile.id })
+      .then((r) => {
+        if (r.cwd != null) {
+          setInstanceCwd(id, r.cwd)
+        }
+      })
+      .catch((err: unknown) => {
+        log.warn('palette-instance: resolve_spawn_cwd failed; falling back to raw profile.cwd', { profileId: profile.id, err: String(err) })
+
+        // Defensive fallback only when the resolver round-trip
+        // outright failed (no daemon, transport hiccup) — the raw
+        // profile.cwd is still better than an empty pill.
+        if (profile.cwd) {
+          setInstanceCwd(id, profile.cwd)
+        }
+      })
   }
   setActive(id)
   log.info('palette-instance: new instance staged', {

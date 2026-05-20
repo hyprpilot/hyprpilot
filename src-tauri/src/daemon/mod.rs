@@ -475,6 +475,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::notifications_get,
             adapter_commands::notifications_clear,
             adapter_commands::notifications_clear_all,
+            adapter_commands::resolve_spawn_cwd,
             crate::skills::commands::skills_list,
             crate::skills::commands::skills_get,
             crate::skills::commands::skills_reload,
