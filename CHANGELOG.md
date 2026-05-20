@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.2](https://github.com/hyprpilot/hyprpilot/compare/v2.3.1...v2.3.2) (2026-05-20)
+
+
+### Bug Fixes
+
+* **cwd:** pre-spawn preview reflects daemon-resolved cwd including root patches ([#117](https://github.com/hyprpilot/hyprpilot/issues/117)) ([a4edaf0](https://github.com/hyprpilot/hyprpilot/commit/a4edaf0209bfd75d392685baf882e98c0f1b942d))
+
 ## [2.3.1](https://github.com/hyprpilot/hyprpilot/compare/v2.3.0...v2.3.1) (2026-05-19)
 
 
