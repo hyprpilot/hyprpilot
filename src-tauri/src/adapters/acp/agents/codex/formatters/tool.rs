@@ -21,7 +21,7 @@ impl ToolFormatter for ToolFormatterCodex {
         };
 
         let mut fields: Vec<ToolField> = Vec::new();
-        if let Some((server, leaf)) = body.split_once('/') {
+        let is_mcp = if let Some((server, leaf)) = body.split_once('/') {
             fields.push(ToolField {
                 label: "server".into(),
                 value: server.to_string(),
@@ -30,8 +30,12 @@ impl ToolFormatter for ToolFormatterCodex {
                 label: "tool".into(),
                 value: leaf.to_string(),
             });
-        }
-        fields.extend(args_to_fields(ctx.raw_input, &[]));
+            true
+        } else {
+            false
+        };
+        let exclude = if is_mcp { &["server", "tool"][..] } else { &[] };
+        fields.extend(args_to_fields(ctx.raw_input, exclude));
 
         let block_text = crate::tools::formatter::shared::text_blocks(ctx.content);
         let trimmed = block_text.trim();
@@ -51,5 +55,39 @@ impl ToolFormatter for ToolFormatterCodex {
             output,
             fields,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::ToolFormatterCodex;
+    use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
+
+    #[test]
+    fn mcp_tool_does_not_duplicate_server_and_tool_fields() {
+        let raw = json!({
+            "server": "hyprpilot",
+            "tool": "read_skill",
+            "arguments": { "slug": "git-branch" }
+        });
+        let ctx = FormatterContext {
+            wire_name: "Tool: hyprpilot/read_skill",
+            kind: "other",
+            raw_input: Some(&raw),
+            adapter: "acp-codex",
+            content: &[],
+            started_at: 0,
+            completed_at: None,
+        };
+        let formatted = ToolFormatterCodex.format(&ctx);
+
+        assert_eq!(
+            formatted.fields.iter().filter(|field| field.label == "server").count(),
+            1
+        );
+        assert_eq!(formatted.fields.iter().filter(|field| field.label == "tool").count(), 1);
+        assert!(formatted.fields.iter().any(|field| field.label == "arguments"));
     }
 }
