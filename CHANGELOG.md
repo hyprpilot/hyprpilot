@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.4](https://github.com/hyprpilot/hyprpilot/compare/v2.3.3...v2.3.4) (2026-05-26)
+
+
+### Bug Fixes
+
+* **codex:** align acp tool and effort handling ([#121](https://github.com/hyprpilot/hyprpilot/issues/121)) ([27a81e1](https://github.com/hyprpilot/hyprpilot/commit/27a81e196e5a1847db75cd247467e5ad7dfd2bcc))
+
 ## [2.3.3](https://github.com/hyprpilot/hyprpilot/compare/v2.3.2...v2.3.3) (2026-05-26)
 
 
