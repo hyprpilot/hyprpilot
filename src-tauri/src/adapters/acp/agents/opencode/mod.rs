@@ -39,6 +39,7 @@ mod tests {
             id: "opencode".into(),
             provider: AgentProvider::AcpOpenCode,
             model: model.map(|s| s.to_string()),
+            effort: None,
             command: "opencode".into(),
             args: vec!["acp".into()],
             cwd: None,

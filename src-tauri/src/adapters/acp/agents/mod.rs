@@ -83,6 +83,33 @@ fn config_override_arg(key: &str, value: &str) -> String {
     format!("{key}={}", serde_json::to_string(value).expect("str always serializes"))
 }
 
+fn inject_value(args: &mut Vec<String>, user_args: &[String], value: Option<&str>, injection: ModelInjection) {
+    match (value, injection) {
+        (Some(value), ModelInjection::Config(key)) if !has_config_override(user_args, key) => {
+            args.push("-c".to_string());
+            args.push(config_override_arg(key, value));
+        }
+        (Some(value), ModelInjection::Argv(flag)) if !user_args.iter().any(|a| a == flag) => {
+            args.push(flag.to_string());
+            args.push(value.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn inject_env_value(
+    cmd: &mut Command,
+    user_env: &std::collections::BTreeMap<String, String>,
+    value: Option<&str>,
+    injection: ModelInjection,
+) {
+    if let (Some(value), ModelInjection::Env(name)) = (value, injection) {
+        if !user_env.contains_key(name) {
+            cmd.env(name, value);
+        }
+    }
+}
+
 /// Vendor-adapter trait. Implementors are unit structs — state lives
 /// on `AgentConfig`. `command` + `args` come from config (mandatory at
 /// validate time); the trait carries only the per-vendor injection
@@ -95,24 +122,8 @@ pub trait AcpAgent: Send + Sync + 'static {
         let program = expand_value(&entry.command, "agent.command");
         let mut args: Vec<String> = entry.args.clone();
 
-        // Config-style model injection — used by ACP binaries that only
-        // expose Codex's `-c key=value` config override surface.
-        if let (Some(model), ModelInjection::Config(key)) = (entry.model.as_deref(), self.model_injection()) {
-            if !has_config_override(&entry.args, key) {
-                args.push("-c".to_string());
-                args.push(config_override_arg(key, model));
-            }
-        }
-
-        // Argv-style model injection — append flag + value when user
-        // didn't already pass the flag explicitly. Done before
-        // Command::new so the arg ordering reflects user intent.
-        if let (Some(model), ModelInjection::Argv(flag)) = (entry.model.as_deref(), self.model_injection()) {
-            if !entry.args.iter().any(|a| a == flag) {
-                args.push(flag.to_string());
-                args.push(model.to_string());
-            }
-        }
+        inject_value(&mut args, &entry.args, entry.model.as_deref(), self.model_injection());
+        inject_value(&mut args, &entry.args, entry.effort.as_deref(), self.effort_injection());
 
         let mut cmd = Command::new(&program);
         cmd.args(&args);
@@ -120,14 +131,8 @@ pub trait AcpAgent: Send + Sync + 'static {
             cmd.env(k, expand_value(v, "agent.env"));
         }
 
-        // Env-style model injection — set the env var when user didn't
-        // already define it. Runs after envs(entry.env) so the user's
-        // entry overrides the vendor default.
-        if let (Some(model), ModelInjection::Env(name)) = (entry.model.as_deref(), self.model_injection()) {
-            if !entry.env.contains_key(name) {
-                cmd.env(name, model);
-            }
-        }
+        inject_env_value(&mut cmd, &entry.env, entry.model.as_deref(), self.model_injection());
+        inject_env_value(&mut cmd, &entry.env, entry.effort.as_deref(), self.effort_injection());
 
         if let Some(cwd) = entry.cwd.as_ref() {
             cmd.current_dir(expand_value(&cwd.to_string_lossy(), "agent.cwd"));
@@ -144,6 +149,10 @@ pub trait AcpAgent: Send + Sync + 'static {
         ModelInjection::None
     }
 
+    fn effort_injection(&self) -> ModelInjection {
+        ModelInjection::None
+    }
+
     fn display_config_option_id(&self, id: &str) -> String {
         id.to_string()
     }
@@ -153,6 +162,10 @@ pub trait AcpAgent: Send + Sync + 'static {
     }
 
     fn permission_tool_identity(&self, _update: &ToolCallUpdate) -> Option<ToolIdentity> {
+        None
+    }
+
+    fn tool_identity(&self, _title: &str, _raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
         None
     }
 
@@ -202,6 +215,16 @@ pub fn display_config_option_id(adapter_id: &str, id: &str) -> String {
     }
 }
 
+#[must_use]
+pub fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
+    match adapter_id {
+        "acp-claude-code" => AcpAgentClaudeCode.tool_identity(title, raw_input),
+        "acp-codex" => AcpAgentCodex.tool_identity(title, raw_input),
+        "acp-opencode" => AcpAgentOpenCode.tool_identity(title, raw_input),
+        _ => AcpAgentCustom.tool_identity(title, raw_input),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +234,7 @@ mod tests {
             id: id.into(),
             provider: AgentProvider::AcpClaudeCode,
             model: None,
+            effort: None,
             command: "bunx".into(),
             args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
             cwd: None,

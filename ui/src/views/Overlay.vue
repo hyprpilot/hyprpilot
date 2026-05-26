@@ -12,7 +12,7 @@
  *   #toast        — unused today; reserved for a future toast surface.
  *
  * Header rows 1 + 2 are driven by Frame props (profile, modeTag, provider,
- * model, title, cwd, gitStatus, counts) — no named slots for the header.
+ * model, title, cwd, counts) — no named slots for the header.
  *
  * State sources (all from `@composables`):
  *   useAdapter          → bind / submit / lastPermission
@@ -954,7 +954,6 @@ function onQueueSend(itemId: string): void {
     :counts="headerCounts"
     :instances-count="instancesCount"
     :notifications-count="notificationsCount"
-    :git-status="sessionInfo.gitStatus"
     @pill-click="onPillClick"
     @breadcrumb-click="onBreadcrumbClick"
     @toggle-cwd="onToggleCwd"

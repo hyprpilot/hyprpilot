@@ -2,7 +2,6 @@ import { computed, reactive, type ComputedRef } from 'vue'
 
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useProfiles } from '../ui-state/use-profiles'
-import type { GitStatus } from '@components'
 import type { SessionConfigOptionCategory } from '@interfaces/wire/event'
 import type { ProfileSummary } from '@ipc'
 
@@ -47,8 +46,6 @@ export interface SessionModelOption {
  *    surface the active agent (e.g. `claude-code`) even when no
  *    `[[profiles]]` entry exists in config — config profiles are
  *    optional, but every live instance has an agent id.
- *  - `gitStatus` ← daemon-side enrichment (probes the cwd via
- *    `git status`; non-ACP — the agent never reports git state)
  *  - `mcpsCount` ← config-side
  */
 export interface SessionInfo {
@@ -85,7 +82,6 @@ export interface SessionInfo {
   /// completing). Drives the chat-transcript scoped <Loading>
   /// overlay during restore.
   restoring: boolean
-  gitStatus?: GitStatus
 }
 
 export interface SessionInfoState {
@@ -105,7 +101,6 @@ export interface SessionInfoState {
   /// InstanceMeta lands; `useSessionInfo` falls back to 0 then.
   mcpsCount?: number
   restoring: boolean
-  gitStatus?: GitStatus
 }
 
 /**
@@ -309,16 +304,6 @@ export function setInstanceProfile(id: InstanceId, profileId: string | undefined
 }
 
 /**
- * Set the per-instance git status. NOT an ACP signal — the daemon
- * probes the cwd with `git status --porcelain=v2 --branch` and
- * pushes the result here. Pass `undefined` to clear (e.g. when the
- * cwd moves outside a git repo).
- */
-export function setInstanceGitStatus(id: InstanceId, gitStatus: GitStatus | undefined): void {
-  slotFor(id).gitStatus = gitStatus
-}
-
-/**
  * Toggle the transient `restoring` flag — set to `true` when the
  * UI calls `loadSession` so the chat-transcript scoped <Loading>
  * shows a "replaying transcript…" overlay; flips back to `false`
@@ -392,8 +377,7 @@ function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: Pro
     availableModels: slot?.availableModels ?? [],
     configOptions: slot?.configOptions ?? [],
     mcpsCount: slot?.mcpsCount ?? 0,
-    restoring: slot?.restoring ?? false,
-    gitStatus: slot?.gitStatus
+    restoring: slot?.restoring ?? false
   }
 }
 

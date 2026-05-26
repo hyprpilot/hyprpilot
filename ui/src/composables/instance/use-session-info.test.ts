@@ -7,7 +7,6 @@ import {
   pushInstanceModelState,
   pushSessionInfoUpdate,
   setInstanceCwd,
-  setInstanceGitStatus,
   setInstanceProfile,
   useActiveInstance,
   useSessionInfo
@@ -128,26 +127,10 @@ describe('pushInstanceModelState (NewSessionResponse.models)', () => {
   })
 })
 
-describe('setInstanceCwd / setInstanceGitStatus (daemon-side metadata)', () => {
+describe('setInstanceCwd (daemon-side metadata)', () => {
   it('records and clears cwd', () => {
     setInstanceCwd('A', '/home/me/dev/proj')
     expect(useSessionInfo('A').info.value.cwd).toBe('/home/me/dev/proj')
-  })
-
-  it('records and clears gitStatus', () => {
-    setInstanceGitStatus('A', {
-      branch: 'main',
-      ahead: 2,
-      behind: 0
-    })
-    expect(useSessionInfo('A').info.value.gitStatus).toEqual({
-      branch: 'main',
-      ahead: 2,
-      behind: 0
-    })
-
-    setInstanceGitStatus('A', undefined)
-    expect(useSessionInfo('A').info.value.gitStatus).toBeUndefined()
   })
 })
 

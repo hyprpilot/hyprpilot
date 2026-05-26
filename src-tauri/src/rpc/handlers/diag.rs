@@ -117,6 +117,7 @@ mod tests {
             id: "claude-code".into(),
             provider: crate::config::AgentProvider::AcpClaudeCode,
             model: None,
+            effort: None,
             command: "bunx".into(),
             args: Vec::new(),
             env,
@@ -126,6 +127,7 @@ mod tests {
             id: "ask".into(),
             agent: "claude-code".into(),
             model: None,
+            effort: None,
             system_prompt: Some(vec![crate::config::SystemPromptEntry {
                 file: std::path::PathBuf::from("/tmp/hyprpilot-test-prompt.md"),
                 inject: crate::config::SystemPromptInject::default(),

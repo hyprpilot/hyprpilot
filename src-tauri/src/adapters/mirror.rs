@@ -397,6 +397,7 @@ impl InstanceMirror {
                 current_model_id,
                 available_modes,
                 available_models,
+                config_options,
                 mcps_count,
                 ..
             } => {
@@ -407,6 +408,7 @@ impl InstanceMirror {
                 g.meta.current_model_id.clone_from(current_model_id);
                 g.meta.available_modes.clone_from(available_modes);
                 g.meta.available_models.clone_from(available_models);
+                g.meta.config_options.clone_from(config_options);
                 g.meta.mcps_count = *mcps_count;
             }
             InstanceEvent::CurrentModeUpdate { current_mode_id, .. } => {
@@ -865,6 +867,7 @@ mod tests {
             current_model_id: model.map(str::to_string),
             available_modes: Vec::new(),
             available_models: Vec::new(),
+            config_options: Vec::new(),
             mcps_count: 3,
         }
     }

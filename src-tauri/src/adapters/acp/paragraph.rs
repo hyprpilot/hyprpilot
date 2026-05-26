@@ -167,6 +167,10 @@ impl FenceState {
         self.in_fence
     }
 
+    pub(crate) fn pending_fence_opener_needs_newline(&self, incoming: &str) -> bool {
+        !incoming.starts_with('\n') && fence_marker(&self.line).is_some()
+    }
+
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
     }

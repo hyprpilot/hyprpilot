@@ -7,7 +7,7 @@
 //! designs (Vue overlay + future Neovim plugin + `ctl --json`)
 //! render the same shape verbatim.
 //!
-//! Today: file-attachment hydrator + git-status snapshot + raw-text
+//! Today: file-attachment hydrator + raw-text
 //! captain-typed-path resolver. Future XDG paths, monitor scale
 //! overrides, and other desktop-environment knobs land here when
 //! they earn their slot.
@@ -20,16 +20,6 @@
 #[tauri::command]
 pub(crate) async fn read_file_for_attachment(path: String) -> Result<serde_json::Value, String> {
     crate::completion::hydration::file::read_file_for_attachment(path).await
-}
-
-/// Git status snapshot for an arbitrary path — drives the header
-/// `branch ↑N ↓M` pill. The webview calls this with the active
-/// instance's cwd whenever it changes (and on a coarse refresh
-/// cadence while visible). Returns `null` when the path doesn't sit
-/// inside a git repo. Implementation lives at `tools::git`.
-#[tauri::command]
-pub(crate) fn get_git_status(path: String) -> Result<Option<crate::tools::git::GitStatus>, String> {
-    crate::tools::git::snapshot(std::path::Path::new(&path)).map_err(|e| format!("git status failed: {e:#}"))
 }
 
 /// Captain-typed → absolute resolution. Returns `None` when the

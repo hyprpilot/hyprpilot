@@ -437,7 +437,6 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             get_keymaps,
             get_window_state,
             window_toggle,
-            desktop::get_git_status,
             desktop::paths_resolve,
             desktop::daemon_rpc,
             desktop::read_file_for_attachment,

@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { faArrowDown, faArrowUp, faBars, faBell, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons'
+import { faBars, faBell, faLayerGroup, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { computed } from 'vue'
 
-import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount, type GitStatus } from '@components'
+import { BreadcrumbPill, HorizontalScroller, Phase, phaseToCssSuffix, type BreadcrumbCount } from '@components'
 
 /**
  * Overlay chrome — Frame template:
  *
  *   row 1  [phase profile pill (·dot pulses when active)]
  *          [provider/model] [mode pill?] [session title?]   [✕]
- *   row 2  [cwd · git ↑↓ status (inline, accent left stripe)]
+ *   row 2  [cwd (accent left stripe)]
  *          [+22 mcps] [+4 skills]  (counts via BreadcrumbPill)
  *   body   absolute toast card (slot) + caller children
  *
@@ -33,7 +33,6 @@ const props = withDefaults(
     title?: string
     cwd?: string
     cwdFull?: string
-    gitStatus?: GitStatus
     counts?: BreadcrumbCount[]
     /// Total live-instance count. Renders the row-1 instances pill
     /// whenever ≥ 1 so the captain always has a click target into the
@@ -78,7 +77,6 @@ const emit = defineEmits<{
 
 const phaseColor = computed(() => `var(--theme-state-${phaseToCssSuffix(props.phase)})`)
 const isPulsing = computed(() => props.phase === Phase.Streaming || props.phase === Phase.Working || props.phase === Phase.Awaiting || props.phase === Phase.Pending)
-const hasGit = computed(() => Boolean(props.gitStatus))
 // `aria-label` reuses this for screen readers; the visible badge
 // shows only the digit. Plural / singular still matters for assistive
 // tech ("1 instance" vs "3 instances").
@@ -187,13 +185,6 @@ const rowOneBg = computed(() => {
         <button type="button" class="frame-cwd" :title="cwdFull ?? cwd" @click="emit('toggleCwd')">
           <span v-if="cwd" class="frame-cwd-value">{{ cwd }}</span>
           <span v-else class="frame-cwd-value frame-cwd-value-empty">—</span>
-          <span v-if="hasGit" class="frame-cwd-git">
-            <span class="frame-cwd-git-branch">{{ gitStatus!.branch }}</span>
-            <span v-if="gitStatus!.ahead && gitStatus!.ahead > 0" class="frame-cwd-git-ahead">
-              <FaIcon :icon="faArrowUp" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.ahead }}
-            </span>
-            <span class="frame-cwd-git-behind"> <FaIcon :icon="faArrowDown" class="frame-cwd-git-arrow" aria-hidden="true" />{{ gitStatus!.behind ?? 0 }} </span>
-          </span>
         </button>
         <HorizontalScroller v-if="counts.length > 0" class="frame-counts">
           <button v-for="c in counts" :key="c.label" type="button" class="frame-pill-button" :aria-label="c.id ?? c.label" @click="emit('breadcrumbClick', c.id ?? c.label)">
@@ -464,12 +455,6 @@ html:not([data-window-anchor]) .frame {
   line-height: 1;
 }
 
-.frame-cwd-git-arrow {
-  width: 0.4375rem;
-  height: 0.4375rem;
-  margin-right: 0.0625rem;
-}
-
 .frame-close {
   @apply shrink-0 border-0 bg-transparent px-1 leading-none;
   font-size: 0.9rem;
@@ -530,8 +515,8 @@ html:not([data-window-anchor]) .frame {
 }
 
 /* Row 2 — cwd pill on the left (flex:1, accent yellow left-stripe,
- * surface fill, embedded git status pill on the right). Counts (mcps
- * / skills / etc.) sit alongside as breadcrumb pills. */
+ * surface fill). Counts (mcps / skills / etc.) sit alongside as
+ * breadcrumb pills. */
 .frame-cwd {
   @apply inline-flex min-w-0 flex-1 items-center;
   padding: 0.1875rem 0.625rem;
@@ -553,28 +538,6 @@ html:not([data-window-anchor]) .frame {
 }
 
 .frame-cwd-value-empty {
-  color: var(--theme-fg-dim);
-}
-
-.frame-cwd-git {
-  @apply ml-auto inline-flex shrink-0 items-center;
-  padding: 0.0625rem 0.4375rem;
-  gap: 0.375rem;
-  border-radius: 0.1875rem;
-  background-color: var(--theme-surface-alt);
-  border: 1px solid var(--theme-border-soft);
-}
-
-.frame-cwd-git-branch {
-  font-weight: 700;
-  color: var(--theme-status-ok);
-}
-
-.frame-cwd-git-ahead {
-  color: var(--theme-state-stream);
-}
-
-.frame-cwd-git-behind {
   color: var(--theme-fg-dim);
 }
 
@@ -613,7 +576,7 @@ html:not([data-window-anchor]) .frame {
  * a glance; the HorizontalScroller already makes them swipable when
  * they overflow. The row-2 breadcrumbs are duplicates of palette
  * leaves and cost more horizontal space than they earn on a phone,
- * so the cwd + git pill gets the full row to itself.
+ * so the cwd pill gets the full row to itself.
  *
  * 32rem (~512px) is the phone-portrait threshold — tablets in
  * landscape see the full chrome. */

@@ -523,6 +523,7 @@ mod snapshot_tests {
                 current_model_id: Some("sonnet".into()),
                 available_modes: Vec::new(),
                 available_models: Vec::new(),
+                config_options: Vec::new(),
                 mcps_count: 4,
             })
             .await;

@@ -207,7 +207,6 @@ const MOCK_INVOKE_FIXTURES: Record<string, unknown> = {
   skills_reload: { count: 5 },
   paths_resolve: null,
   get_daemon_cwd: '/home/dev',
-  get_git_status: null,
   completion_query: {
     items: [
       { id: 'git-commit', label: 'git-commit', sourceId: 'skills', description: 'Draft a conventional commit message.' },
@@ -299,7 +298,6 @@ async function exposeDevHelpers(): Promise<void> {
     pushInstanceModelState: composables.pushInstanceModelState,
     pushConfigOptionsUpdate: composables.pushConfigOptionsUpdate,
     setInstanceCwd: composables.setInstanceCwd,
-    setInstanceGitStatus: composables.setInstanceGitStatus,
     setInstanceMcpsCount: composables.setInstanceMcpsCount,
     setInstanceProfile: composables.setInstanceProfile,
     useActiveInstance: composables.useActiveInstance,
@@ -317,7 +315,7 @@ async function exposeDevHelpers(): Promise<void> {
 
 /**
  * Plausible session-info defaults so the header chrome paints with
- * real chips (cwd / git / title / mode) in browser-only previews.
+ * real chips (cwd / title / mode) in browser-only previews.
  * Each setter mirrors the per-source ACP / daemon split — the live
  * wire pushes the same way once the Rust event variants land.
  */
@@ -330,7 +328,6 @@ function seedHeaderPreview(composables: typeof import('@composables')): void {
   composables.pushCurrentModeUpdate(previewId, { currentModeId: 'plan' })
   composables.pushInstanceModelState(previewId, { currentModelId: 'claude-opus-4' })
   composables.setInstanceCwd(previewId, '~/dev/hyprpilot')
-  composables.setInstanceGitStatus(previewId, { branch: 'main', ahead: 2, behind: 0 })
 
   // Seed a turn + thought so the thinking card renders in browser
   // mode without the daemon. Verifies the full pipeline:

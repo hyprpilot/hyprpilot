@@ -53,6 +53,10 @@ pub struct AgentConfig {
     /// Vendor-translated at spawn time: env var or CLI flag per vendor.
     #[garde(skip)]
     pub model: Option<String>,
+    /// Vendor-translated at spawn time when the adapter exposes a
+    /// reasoning-effort/config override surface.
+    #[garde(skip)]
+    pub effort: Option<String>,
     /// Spawn binary. Mandatory — no per-provider fallback table at
     /// the trait layer. defaults.toml supplies one for every named
     /// provider; user `[[agents]]` entries (named or `acp`)
@@ -134,6 +138,10 @@ pub struct ProfileConfig {
     pub agent: String,
     #[garde(inner(length(min = 1)))]
     pub model: Option<String>,
+    /// Profile-level reasoning effort. Adapter-specific spawn code
+    /// maps this common knob to the vendor's config surface.
+    #[garde(inner(length(min = 1)))]
+    pub effort: Option<String>,
     /// Profile-level system-prompt list. Same shape as the root
     /// `system_prompt`: array of `{ file, inject? }` entries.
     /// Captains compose layered prompts (base persona + project-

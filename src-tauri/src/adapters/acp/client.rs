@@ -152,8 +152,13 @@ fn tool_call_ref(
         .unwrap_or_default();
     let raw_input = update.fields.raw_input.clone();
     let raw_args = raw_input.as_ref().and_then(|raw| {
-        if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
+        if let Some(cmd) = raw.get("command_string").and_then(|v| v.as_str()) {
             Some(cmd.to_string())
+        } else if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
+            Some(cmd.to_string())
+        } else if let Some(args) = raw.get("command").and_then(|v| v.as_array()) {
+            let parts: Vec<&str> = args.iter().filter_map(serde_json::Value::as_str).collect();
+            (!parts.is_empty()).then(|| parts.join(" "))
         } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
             Some(path.to_string())
         } else {
