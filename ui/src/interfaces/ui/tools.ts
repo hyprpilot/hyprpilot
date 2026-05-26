@@ -10,6 +10,7 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 
 import type { PermissionUi, ToolKind, ToolState } from '@constants/ui'
 import type { FormattedToolCall, Stat, ToolField as WireToolField } from '@interfaces/wire/formatted-tool-call'
+import type { ToolIdentity } from '@interfaces/wire/transcript'
 
 export type { ToolField } from '@interfaces/wire/formatted-tool-call'
 
@@ -18,8 +19,8 @@ export interface ToolCallView {
   id: string
   /// ACP `tool_call.kind` classification.
   kind: ToolKind
-  /// Raw wire tool name ("Bash", "mcp__playwright__browser_navigate").
-  /// Trust-store keying + permission glob matching read this verbatim.
+  /// Raw wire tool name ("Bash", "Read", "Tool: server/leaf").
+  /// Cross-cutting identity such as MCP lives on `identity`.
   name: string
   /// UI tone state — derived from the wire raw `ToolCallState`.
   state: ToolState
@@ -64,6 +65,7 @@ export interface WireToolCall {
   /// `tool_call_update` chunks for the same `toolCallId`.
   turnId?: string
   toolCallId: string
+  identity?: ToolIdentity
   title?: string
   status?: string
   kind?: string

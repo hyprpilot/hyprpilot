@@ -6,8 +6,8 @@
 //!    registration of `"Edit"` matches both `"Edit"` (claude-agent-acp
 //!    ≤0.31) and `"Edit /tmp/foo"` (≥0.32 prose-title shape) and
 //!    codex's `"Edit a.rs, b.rs"` — same `edit` key for all three.
-//!    The mcp__ prefix exception routes `mcp__server__leaf` titles
-//!    to the literal key `"mcp"` regardless of leading token.
+//!    MCP identity routes to the literal key `"mcp"` regardless of
+//!    title shape.
 //! 2. **Per-(adapter, matcher)** — predicate-driven dispatch for
 //!    tools whose title gives no stable signal (claude-agent-acp's
 //!    `switch_mode` emits `"Ready to code?"` / `"EnterPlanMode"`
@@ -22,7 +22,7 @@
 //!
 //! ```text
 //! (adapter, leading_token_snake) exact
-//!   → (adapter, "mcp") if wire_name.starts_with("mcp__")
+//!   → (adapter, "mcp") if identity is MCP
 //!   → (adapter, matcher) — first match wins
 //!   → kind default
 //!   → "other"
@@ -32,6 +32,7 @@ use std::collections::HashMap;
 
 use convert_case::{Case, Casing};
 
+use crate::adapters::ToolIdentity;
 use crate::tools::formatter::types::FormattedToolCall;
 
 /// Per-formatter input. Carries everything a formatter needs to
@@ -42,6 +43,10 @@ pub struct FormatterContext<'a> {
     /// updates). Used both for adapter override dispatch and as the
     /// default formatter's title fallback.
     pub wire_name: &'a str,
+    /// Structured identity projected at the adapter boundary. Used
+    /// for cross-cutting dynamic families like MCP tools without
+    /// string-prefix checks in the registry.
+    pub identity: &'a ToolIdentity,
     /// ACP `tool_call.kind` — the closed-set classification. Drives
     /// the default tier when adapter override misses.
     pub kind: &'a str,
@@ -147,8 +152,8 @@ impl FormatterRegistry {
             return f.format(ctx);
         }
 
-        // (2) `mcp__server__leaf` → (adapter, "mcp") prefix exception
-        if ctx.wire_name.starts_with("mcp__") {
+        // (2) MCP identity → (adapter, "mcp") family override
+        if ctx.identity.is_mcp() {
             if let Some(f) = self.overrides.get(&(ctx.adapter.to_string(), "mcp".to_string())) {
                 return f.format(ctx);
             }

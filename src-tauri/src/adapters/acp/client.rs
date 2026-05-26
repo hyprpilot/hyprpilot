@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent_client_protocol::schema::ToolCallUpdate;
 use agent_client_protocol::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
@@ -27,10 +28,13 @@ use crate::adapters::permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
     PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
 };
+use crate::adapters::ToolIdentity;
 use crate::mcp::MCPsRegistry;
 use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals};
 
 use self::error::{fs_error, terminal_error};
+
+type PermissionToolIdentityFn = dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync;
 
 /// Notification shape for `session/update`. Carries `update` as raw
 /// JSON so the boundary doesn't depend on the upstream typed
@@ -62,6 +66,7 @@ pub enum ClientEvent {
         session_id: String,
         request_id: String,
         tool: String,
+        identity: ToolIdentity,
         kind: String,
         args: String,
         /// Raw `tool_call.rawInput` JSON object — passed through verbatim
@@ -101,9 +106,9 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 /// - `kind = Other` is the catch-all — for MCP tools the agent never
 ///   classifies them, so the wire string is "other" and the actual
 ///   identity is in `title` (`mcp__filesystem__read_file`). Prefer
-///   the title in that case so `parse_mcp_tool_name`
-///   downstream can attribute the call to its server, and the UI
-///   gets a meaningful name to render.
+///   the title in that case so the adapter-boundary parser can
+///   attribute the call to its server, and the UI gets a meaningful
+///   name to render.
 /// - For every other kind we keep the wire string as `name` (Bash,
 ///   Read, …) so registered formatters key off the canonical kind.
 /// - `kind_wire` stays separate (carries the original "other" /
@@ -114,54 +119,65 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 /// `path` for fs tools, else single-line JSON of `raw_input`.
 impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
-        let title = update.fields.title.clone();
-        // ACP's `ToolKind` is `#[serde(rename_all = "snake_case")]`
-        // upstream — let serde produce the wire string instead of
-        // duplicating the match locally. `Other` is `#[serde(other)]`
-        // so any future variant collapses onto it; the
-        // `unwrap_or_else` is the safety net.
-        let kind_wire = update
-            .fields
-            .kind
-            .as_ref()
-            .map(|k| serde_plain::to_string(k).unwrap_or_else(|_| "other".to_string()));
-        // Prefer the agent's `title` — that's the tool's actual identity
-        // (`Bash`, `Read`, `mcp__server__leaf`). Kind is a *classification*
-        // (`execute`, `read`); using it as the dispatch key collapses every
-        // execute-kind tool to "execute · cmd" in the formatter and breaks
-        // glob-by-name in the trust store ("Bash*" never matches "execute").
-        let name = title
-            .clone()
-            .or_else(|| kind_wire.clone())
-            .unwrap_or_else(|| "tool".to_string());
-        let raw_input = update.fields.raw_input.clone();
-        let raw_args = raw_input.as_ref().and_then(|raw| {
-            if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
-                Some(cmd.to_string())
-            } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
-                Some(path.to_string())
-            } else {
-                serde_json::to_string(raw).ok()
-            }
-        });
-        let content = update
-            .fields
-            .content
-            .as_ref()
-            .and_then(|blocks| serde_json::to_value(blocks).ok())
-            .and_then(|v| match v {
-                serde_json::Value::Array(a) => Some(a),
-                _ => None,
-            })
-            .unwrap_or_default();
-        ToolCallRef {
-            name,
-            title,
-            raw_args,
-            raw_input,
-            kind_wire,
-            content,
+        tool_call_ref(update, None)
+    }
+}
+
+fn tool_call_ref(
+    update: &agent_client_protocol::schema::ToolCallUpdate,
+    identity: Option<ToolIdentity>,
+) -> ToolCallRef {
+    let title = update.fields.title.clone();
+    // ACP's `ToolKind` is `#[serde(rename_all = "snake_case")]`
+    // upstream — let serde produce the wire string instead of
+    // duplicating the match locally. `Other` is `#[serde(other)]`
+    // so any future variant collapses onto it; the
+    // `unwrap_or_else` is the safety net.
+    let kind_wire = update
+        .fields
+        .kind
+        .as_ref()
+        .map(|k| serde_plain::to_string(k).unwrap_or_else(|_| "other".to_string()));
+    // Prefer the agent's `title` — that's the tool's actual identity
+    // (`Bash`, `Read`, `mcp__server__leaf`). Kind is a *classification*
+    // (`execute`, `read`); using it as the dispatch key collapses every
+    // execute-kind tool to "execute · cmd" in the formatter and breaks
+    // glob-by-name in the trust store ("Bash*" never matches "execute").
+    let name = title
+        .clone()
+        .or_else(|| kind_wire.clone())
+        .unwrap_or_else(|| "tool".to_string());
+    let identity = identity
+        .or_else(|| ToolIdentity::from_mcp_name(&name))
+        .unwrap_or_default();
+    let raw_input = update.fields.raw_input.clone();
+    let raw_args = raw_input.as_ref().and_then(|raw| {
+        if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
+            Some(cmd.to_string())
+        } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
+            Some(path.to_string())
+        } else {
+            serde_json::to_string(raw).ok()
         }
+    });
+    let content = update
+        .fields
+        .content
+        .as_ref()
+        .and_then(|blocks| serde_json::to_value(blocks).ok())
+        .and_then(|v| match v {
+            serde_json::Value::Array(a) => Some(a),
+            _ => None,
+        })
+        .unwrap_or_default();
+    ToolCallRef {
+        name,
+        identity,
+        title,
+        raw_args,
+        raw_input,
+        kind_wire,
+        content,
     }
 }
 
@@ -205,6 +221,7 @@ pub struct AcpClient {
     /// `hyprpilot.autoAcceptTools` / `autoRejectTools` lists used by
     /// `PermissionController::decide` lane 2.
     mcps: Option<Arc<MCPsRegistry>>,
+    permission_tool_identity: Arc<PermissionToolIdentityFn>,
 }
 
 impl std::fmt::Debug for AcpClient {
@@ -233,7 +250,14 @@ impl AcpClient {
             permissions,
             instance_id,
             mcps,
+            permission_tool_identity: Arc::new(|_| None),
         })
+    }
+
+    pub fn with_permission_tool_identity(mut self, permission_tool_identity: Arc<PermissionToolIdentityFn>) -> Self {
+        self.permission_tool_identity = permission_tool_identity;
+
+        self
     }
 
     /// Forward a raw session/update notification to the actor. Closed
@@ -260,7 +284,7 @@ impl AcpClient {
         req: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
         let options = req.options.iter().map(option_view_from).collect::<Vec<_>>();
-        let tool_call = ToolCallRef::from(&req.tool_call);
+        let tool_call = tool_call_ref(&req.tool_call, (self.permission_tool_identity)(&req.tool_call));
         let request_id = uuid::Uuid::new_v4().to_string();
 
         let decision_req = PermissionRequest {
@@ -328,6 +352,7 @@ impl AcpClient {
             }
             Decision::AskUser => {
                 let tool = tool_call.name.clone();
+                let identity = tool_call.identity.clone();
                 let kind = tool_call.permission_kind_wire();
                 let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
                 let raw_input = tool_call.raw_input.clone();
@@ -339,6 +364,7 @@ impl AcpClient {
                     session_id: req.session_id.0.to_string(),
                     request_id: request_id.clone(),
                     tool,
+                    identity,
                     kind,
                     args,
                     raw_input,

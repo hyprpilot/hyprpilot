@@ -6,7 +6,7 @@
  *
  * ```text
  * (adapter, wire_name_snake) exact
- *   → (adapter, "mcp") if wire_name.startsWith("mcp__")
+ *   → (adapter, "mcp") if identity is MCP
  *   → kind default
  *   → "other"
  * ```
@@ -25,6 +25,7 @@ import { claudeCodeOverrides } from '@adapters/acp/claude-code/presentation'
 import { codexOverrides } from '@adapters/acp/codex/presentation'
 import { opencodeOverrides } from '@adapters/acp/opencode/presentation'
 import { AdapterId, PermissionUi, ToolKind } from '@constants/ui'
+import type { ToolIdentity } from '@interfaces/wire/transcript'
 
 export interface Presentation {
   icon: IconDefinition
@@ -96,7 +97,8 @@ export function presentationFor(
   kind: ToolKind | string | undefined,
   adapter: AdapterId | undefined,
   wireName: string | undefined,
-  rawInput?: Record<string, unknown>
+  rawInput?: Record<string, unknown>,
+  identity?: ToolIdentity
 ): Presentation {
   if (adapter !== undefined && wireName !== undefined && wireName.length > 0) {
     const overrides = adapterOverrides[adapter]
@@ -109,8 +111,7 @@ export function presentationFor(
         return hit
       }
 
-      // mcp__server__leaf prefix shortcut for MCP tools.
-      if (wireName.startsWith('mcp__')) {
+      if (identity?.kind === 'mcp') {
         const mcp = overrides.mcp
 
         if (mcp) {

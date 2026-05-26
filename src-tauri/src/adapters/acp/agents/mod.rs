@@ -6,6 +6,9 @@ pub mod opencode;
 
 use tokio::process::Command;
 
+use agent_client_protocol::schema::ToolCallUpdate;
+
+use crate::adapters::ToolIdentity;
 use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::formatter::registry::FormatterRegistry;
 
@@ -29,6 +32,9 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 ///   already define it.
 /// - `Argv(flag)` — append `flag <model>` to argv when `entry.args`
 ///   doesn't already include `flag`.
+/// - `Config(key)` — append `-c key="<model>"` when `entry.args`
+///   doesn't already carry a Codex-style `-c` / `--config` override
+///   for `key`.
 ///
 /// "User value wins" enforcement lives in the trait-default `spawn()`
 /// — vendors only declare *where* the injection lands.
@@ -36,7 +42,9 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 pub enum ModelInjection {
     None,
     Env(&'static str),
+    #[allow(dead_code)]
     Argv(&'static str),
+    Config(&'static str),
 }
 
 /// Expand `~` and `$VAR` / `${VAR}` references against the daemon's
@@ -58,6 +66,23 @@ fn expand_value(raw: &str, ctx: &str) -> String {
     }
 }
 
+fn has_config_override(args: &[String], key: &str) -> bool {
+    args.iter()
+        .filter_map(|arg| arg.strip_prefix("--config="))
+        .chain(
+            args.windows(2)
+                .filter_map(|w| matches!(w[0].as_str(), "-c" | "--config").then_some(w[1].as_str())),
+        )
+        .any(|raw| {
+            raw.split_once('=')
+                .is_some_and(|(candidate, _)| candidate.trim() == key)
+        })
+}
+
+fn config_override_arg(key: &str, value: &str) -> String {
+    format!("{key}={}", serde_json::to_string(value).expect("str always serializes"))
+}
+
 /// Vendor-adapter trait. Implementors are unit structs — state lives
 /// on `AgentConfig`. `command` + `args` come from config (mandatory at
 /// validate time); the trait carries only the per-vendor injection
@@ -69,6 +94,15 @@ pub trait AcpAgent: Send + Sync + 'static {
 
         let program = expand_value(&entry.command, "agent.command");
         let mut args: Vec<String> = entry.args.clone();
+
+        // Config-style model injection — used by ACP binaries that only
+        // expose Codex's `-c key=value` config override surface.
+        if let (Some(model), ModelInjection::Config(key)) = (entry.model.as_deref(), self.model_injection()) {
+            if !has_config_override(&entry.args, key) {
+                args.push("-c".to_string());
+                args.push(config_override_arg(key, model));
+            }
+        }
 
         // Argv-style model injection — append flag + value when user
         // didn't already pass the flag explicitly. Done before
@@ -110,6 +144,18 @@ pub trait AcpAgent: Send + Sync + 'static {
         ModelInjection::None
     }
 
+    fn display_config_option_id(&self, id: &str) -> String {
+        id.to_string()
+    }
+
+    fn wire_config_option_id(&self, id: &str) -> String {
+        id.to_string()
+    }
+
+    fn permission_tool_identity(&self, _update: &ToolCallUpdate) -> Option<ToolIdentity> {
+        None
+    }
+
     /// Default drops the prompt — vendors without a hook degrade silently
     /// rather than failing spawn.
     fn inject_system_prompt(&self, _cmd: &mut Command, _prompt: &str) -> SystemPromptInjection {
@@ -143,6 +189,16 @@ pub fn match_provider_agent(provider: AgentProvider) -> Box<dyn AcpAgent> {
         AgentProvider::AcpCodex => Box::new(AcpAgentCodex),
         AgentProvider::AcpOpenCode => Box::new(AcpAgentOpenCode),
         AgentProvider::Acp => Box::new(AcpAgentCustom),
+    }
+}
+
+#[must_use]
+pub fn display_config_option_id(adapter_id: &str, id: &str) -> String {
+    match adapter_id {
+        "acp-claude-code" => AcpAgentClaudeCode.display_config_option_id(id),
+        "acp-codex" => AcpAgentCodex.display_config_option_id(id),
+        "acp-opencode" => AcpAgentOpenCode.display_config_option_id(id),
+        _ => AcpAgentCustom.display_config_option_id(id),
     }
 }
 
@@ -185,6 +241,45 @@ mod tests {
         assert_eq!(cmd.as_std().get_program(), "my-acp-binary");
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args, vec!["--serve"]);
+    }
+
+    #[test]
+    fn argv_model_injection_appends_missing_flag() {
+        struct ArgvAgent;
+
+        impl AcpAgent for ArgvAgent {
+            fn model_injection(&self) -> ModelInjection {
+                ModelInjection::Argv("--model")
+            }
+        }
+
+        let mut entry = stub_entry("argv");
+        entry.model = Some("test-model".into());
+        let cmd = ArgvAgent.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+
+        assert!(args.windows(2).any(|w| w == ["--model", "test-model"]));
+    }
+
+    #[test]
+    fn argv_model_injection_preserves_user_flag() {
+        struct ArgvAgent;
+
+        impl AcpAgent for ArgvAgent {
+            fn model_injection(&self) -> ModelInjection {
+                ModelInjection::Argv("--model")
+            }
+        }
+
+        let mut entry = stub_entry("argv");
+        entry.model = Some("config-model".into());
+        entry.args.push("--model".into());
+        entry.args.push("user-model".into());
+        let cmd = ArgvAgent.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+
+        assert_eq!(args.iter().filter(|arg| **arg == "--model").count(), 1);
+        assert!(args.windows(2).any(|w| w == ["--model", "user-model"]));
     }
 
     #[test]

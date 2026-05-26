@@ -3,9 +3,9 @@
 //! making the standard exact-match `(adapter, wire_name_snake)`
 //! dispatch sufficient. MCP tools follow the
 //! `<sanitized_server>_<sanitized_tool>` convention (single
-//! underscore, NOT claude-code's double-underscore prefix), so the
-//! generic `mcp__` prefix exception in the registry does NOT fire
-//! for opencode — those land on the kind defaults.
+//! underscore, NOT claude-code's canonical MCP title), so they land
+//! on the kind defaults until the adapter maps a structured MCP
+//! identity for them.
 //!
 //! Source: opencode's `packages/opencode/src/acp/agent.ts` +
 //! per-tool definitions under `packages/opencode/src/tool/`.

@@ -292,6 +292,7 @@ mod tests {
             turn_id: None,
             request_id: "r".into(),
             tool: "Bash".into(),
+            identity: crate::adapters::ToolIdentity::Native,
             kind: "execute".into(),
             args: String::new(),
             raw_input: None,

@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::permission::PermissionOptionView;
+use super::ToolIdentity;
 use crate::tools::formatter::types::FormattedToolCall;
 
 /// One entry in an instance's transcript. Covers user-side
@@ -98,6 +99,8 @@ pub enum TranscriptItem {
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRecord {
     pub id: String,
+    #[serde(default)]
+    pub identity: ToolIdentity,
     /// Closed-set kind wire string (ACP `ToolKind`). Lower-cased.
     pub tool_kind: String,
     /// Human-readable title the agent supplied ("Read package.json").
@@ -144,6 +147,8 @@ pub struct ToolCallRecord {
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallUpdateRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<ToolIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +283,8 @@ pub enum PlanStepStatus {
 pub struct PermissionRequestRecord {
     pub request_id: String,
     pub tool: String,
+    #[serde(default)]
+    pub identity: ToolIdentity,
     pub tool_kind: String,
     pub args: String,
     /// Agent's raw `tool_call.rawInput` JSON object, passed through
@@ -439,6 +446,7 @@ mod tests {
     fn tool_call_record_round_trips() {
         let record = ToolCallRecord {
             id: "tc-1".into(),
+            identity: ToolIdentity::Native,
             tool_kind: "read".into(),
             title: "Read package.json".into(),
             state: ToolCallState::Running,

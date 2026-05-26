@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, Mutex};
 
 use crate::adapters::instance::InstanceEvent;
+use crate::adapters::ToolIdentity;
 use crate::mcp::MCPsRegistry;
 
 /// Sentinel `option_id` used on the `PermissionResolved` event when
@@ -182,18 +183,23 @@ pub fn reorder_options(options: Vec<PermissionOptionView>) -> Vec<PermissionOpti
     out
 }
 
-/// Identity projection of the tool behind a permission request. The
-/// glob chain matches on `name` only; `title` / `raw_args` /
-/// `kind_wire` are carried for the UI and (future) argument-scoped /
-/// kind-scoped rules — they are opaque to the allowlist decision
-/// today.
+/// Identity projection of the tool behind a permission request.
+/// `identity` drives the MCP glob chain; `name` / `title` /
+/// `raw_args` / `kind_wire` are carried for the UI and (future)
+/// argument-scoped / kind-scoped rules — they are opaque to the
+/// allowlist decision today.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRef {
-    /// Canonical tool name for glob matching. Adapters populate with
-    /// the most stable identifier their wire exposes (for ACP: the
-    /// ToolKind wire name, falling back to the tool's `title`).
+    /// Display / adapter key. Adapters populate with the most stable
+    /// identifier their wire exposes (for ACP: the tool's title,
+    /// falling back to the ToolKind wire name).
     pub name: String,
+    /// Structured tool identity for non-native surfaces. MCP tool
+    /// matching is based on this field, not on a stringly
+    /// `mcp__server__tool` display name.
+    #[serde(default)]
+    pub identity: ToolIdentity,
     pub title: Option<String>,
     /// Short human-readable summary of args the UI displays below
     /// the tool name (e.g. the `command` for a Bash call). Opaque to
@@ -310,16 +316,15 @@ pub struct PermissionRequestSnapshot {
 /// provides the per-server hyprpilot-extension globs; when `None`
 /// every decision falls through to `AskUser`.
 ///
-/// Tool→server attribution is by prefix convention — `mcp__<server>__<tool>`,
-/// the shared shape across claude-agent-acp / codex-acp / opencode-acp
-/// (all three namespace MCP tools the same way). Vendor-side native
-/// tools (Bash, Read, …) carry no `mcp__` prefix and skip the lookup
+/// Tool→server attribution is structured on [`ToolIdentity`].
+/// Adapters that receive legacy `mcp__<server>__<tool>` strings may
+/// parse those at the adapter boundary, but the controller never
+/// matches against the string form. Vendor-side native tools (Bash,
+/// Read, …) carry `ToolIdentity::Native` and skip the lookup
 /// entirely.
 pub struct DecisionContext<'a> {
     pub mcps: Option<&'a MCPsRegistry>,
 }
-
-pub use crate::mcp::permission_match::parse_mcp_tool_name;
 
 /// The decision + waiter surface. `decide` is synchronous (pure
 /// lookups against the per-server MCP glob config). `register_pending`
@@ -461,24 +466,24 @@ impl PermissionController for DefaultPermissionController {
     fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision {
         let tool = req.tool_call.name.as_str();
 
-        // Per-server hyprpilot extension globs. Attribute the tool to
-        // its server via the `mcp__<server>__<leaf>` prefix convention,
-        // then match the SERVER-RELATIVE leaf against that server's
+        // Per-server hyprpilot extension globs. The adapter boundary
+        // attributes MCP calls to `{ server, leaf }`; the controller
+        // matches the SERVER-RELATIVE leaf against that server's
         // accept / reject globs. Captains write `read_*` / `delete_*`
-        // under the server block; the `mcp__<server>__` prefix is
-        // implicit. Reject beats accept. Vendor-native tools (no
-        // prefix) skip this lane entirely.
+        // under the server block; the server namespace is implicit.
+        // Reject beats accept. Vendor-native tools skip this lane
+        // entirely.
         if let Some(registry) = ctx.mcps {
-            if let Some((server_name, leaf)) = parse_mcp_tool_name(tool) {
+            if let ToolIdentity::Mcp { server, leaf } = &req.tool_call.identity {
                 // Cached globs — built once at MCPsRegistry construction.
                 // Reject hits short-circuit before the accept set is even
                 // examined; both are precompiled so neither path allocates.
-                if let Some((reject_set, accept_set)) = registry.globs_for(server_name) {
+                if let Some((reject_set, accept_set)) = registry.globs_for(server) {
                     if reject_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
-                            server = %server_name,
+                            server = %server,
                             leaf,
                             "permission::decide: per-server reject glob hit"
                         );
@@ -488,7 +493,7 @@ impl PermissionController for DefaultPermissionController {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
-                            server = %server_name,
+                            server = %server,
                             leaf,
                             "permission::decide: per-server accept glob hit"
                         );
@@ -747,6 +752,7 @@ mod tests {
             request_id: id.into(),
             tool_call: ToolCallRef {
                 name: tool.into(),
+                identity: ToolIdentity::from_mcp_name(tool).unwrap_or_default(),
                 title: Some(tool.into()),
                 raw_args: None,
                 raw_input: None,

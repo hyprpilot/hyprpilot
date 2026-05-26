@@ -1,21 +1,18 @@
-//! claude-code's MCP tool family. Wire names are dynamic
-//! (`mcp__<server>__<leaf>`), so the registry's `mcp__` prefix
-//! exception routes every dynamic name to the single key
-//! `(adapter, "mcp")` we register here.
+//! claude-code's MCP tool family. The formatter registry routes the
+//! structured MCP identity to the single `(adapter, "mcp")` key we
+//! register here.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, duration_stats, parse_mcp, pick, text_blocks};
+use crate::tools::formatter::shared::{args_to_fields, duration_stats, pick, text_blocks};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct McpFormatter;
 
 impl ToolFormatter for McpFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let lower = ctx.wire_name.to_ascii_lowercase();
-        let parsed = parse_mcp(&lower);
-        let title = match &parsed {
-            Some(p) => format!("{} · {}", p.server, p.leaf),
-            None => format!("mcp · {}", ctx.wire_name),
+        let title = match ctx.identity {
+            crate::adapters::ToolIdentity::Mcp { server, leaf } => format!("{server} · {leaf}"),
+            crate::adapters::ToolIdentity::Native => format!("mcp · {}", ctx.wire_name),
         };
 
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());

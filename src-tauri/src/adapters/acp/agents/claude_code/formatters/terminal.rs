@@ -69,6 +69,7 @@ mod tests {
     fn ctx<'a>(raw: &'a serde_json::Value, content: &'a [serde_json::Value]) -> FormatterContext<'a> {
         FormatterContext {
             wire_name: "Terminal",
+            identity: &crate::adapters::ToolIdentity::Native,
             kind: "execute",
             raw_input: Some(raw),
             adapter: "acp-claude-code",

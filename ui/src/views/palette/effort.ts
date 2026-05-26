@@ -1,14 +1,13 @@
 /**
  * Effort palette leaf — single-select picker over the active
- * instance's adapter-advertised `effort` config option (claude-
- * agent-acp 0.21+ adaptive thinking — `low | medium | high | xhigh
- * | max`). The agent ships the option list via `config_option_update`
- * notifications; we read the cached snapshot off `useSessionInfo`
- * and route the commit through the catch-all `config_option_set`
- * Tauri command.
+ * instance's adapter-advertised `effort` config option. The backend
+ * normalizes adapter wire ids (for example Codex ACP's
+ * `reasoning_effort`) onto this common category before they reach the
+ * palette, then maps `effort` back to the adapter wire id when
+ * committing.
  *
  * The palette is generic over any config-option category the agent
- * advertises (vendor extensions show up here too) — `effort` is the
+ * advertises (vendor extensions show up here too) — effort is the
  * first concrete leaf; future categories slot in by reusing
  * `openConfigOptionLeaf(categoryId)` with a different id.
  */
@@ -108,7 +107,7 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
   }
 
   if (category.options.length === 0) {
-    open(noOptionsSpec(`${categoryId}: agent advertised the category but no values yet`))
+    open(noOptionsSpec(`${category.id}: agent advertised the category but no values yet`))
 
     return
   }
@@ -154,10 +153,10 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
       try {
         await invoke(TauriCommand.ConfigOptionSet, {
           instanceId: targetInstance,
-          configId: categoryId,
+          configId: category.id,
           value: pick.id
         })
-        pushToast(ToastTone.Ok, `${categoryId} → ${pick.name}`)
+        pushToast(ToastTone.Ok, `${category.id} → ${pick.name}`)
 
         // Captain-initiated change → leave a chapter-break banner in
         // the transcript matching mode / model commits. pushConfigOptionChange
@@ -165,7 +164,7 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
         // `config_option_update` won't stack a second card.
         if (snapshot.sessionId) {
           pushConfigOptionChange(targetInstance, snapshot.sessionId, {
-            categoryId,
+            categoryId: category.id,
             value: pick.id,
             name: pick.name,
             prevValue: prev?.value,
@@ -177,11 +176,11 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
 
         log.warn('config_option_set failed', {
           instanceId: targetInstance,
-          categoryId,
+          categoryId: category.id,
           value: pick.id,
           err: message
         })
-        pushToast(ToastTone.Err, `${categoryId}: ${message}`)
+        pushToast(ToastTone.Err, `${category.id}: ${message}`)
       }
     }
   })

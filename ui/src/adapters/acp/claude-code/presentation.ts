@@ -5,8 +5,8 @@
  * Keys are snake_case wire names (matches the daemon's
  * `wire_name.to_case(Case::Snake)` lookup so frontend resolution
  * stays in lockstep). The literal `"mcp"` key is the dispatch
- * target for every dynamic `mcp__server__leaf` tool — handled
- * by the central `presentationFor()` prefix exception.
+ * target for dynamic MCP identities — handled by the central
+ * `presentationFor()` identity branch.
  */
 
 import {
@@ -54,7 +54,7 @@ export const claudeCodeOverrides: Record<string, Presentation> = {
   todo_write: { icon: faListCheck, permissionUi: Row },
   skill: { icon: faPuzzlePiece, permissionUi: Row },
   task: { icon: faUserGear, permissionUi: Row },
-  // Dispatch target for every dynamic `mcp__<server>__<leaf>` name —
-  // central `presentationFor()` routes mcp__-prefixed wire names here.
+  // Dispatch target for every dynamic MCP tool — central
+  // `presentationFor()` routes structured MCP identities here.
   mcp: { icon: faPlug, permissionUi: Row }
 }

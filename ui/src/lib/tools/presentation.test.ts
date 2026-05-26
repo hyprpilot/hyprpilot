@@ -16,6 +16,16 @@ describe('presentationFor', () => {
     expect(p.permissionUi).toBe(PermissionUi.Row)
   })
 
+  it('routes MCP tools through structured identity instead of wire-name prefixes', () => {
+    const p = presentationFor(ToolKind.Other, AdapterId.ClaudeCode, 'Read skill', undefined, {
+      kind: 'mcp',
+      server: 'hyprpilot',
+      leaf: 'read_skill'
+    })
+
+    expect(p.permissionUi).toBe(PermissionUi.Row)
+  })
+
   /**
    * Regression: claude-agent-acp ≥0.32 emits the plan-exit permission
    * with a prose title (`Ready to code?`, `EnterPlanMode`, etc.) that
