@@ -6,6 +6,8 @@ pub mod opencode;
 
 use tokio::process::Command;
 
+use agent_client_protocol::schema::ToolCallUpdate;
+
 use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::formatter::registry::FormatterRegistry;
 
@@ -146,6 +148,10 @@ pub trait AcpAgent: Send + Sync + 'static {
 
     fn wire_config_option_id(&self, id: &str) -> String {
         id.to_string()
+    }
+
+    fn permission_tool_name(&self, _update: &ToolCallUpdate) -> Option<String> {
+        None
     }
 
     /// Default drops the prompt — vendors without a hook degrade silently

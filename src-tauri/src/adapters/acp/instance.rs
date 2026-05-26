@@ -2342,7 +2342,10 @@ async fn run(params: RunParams) {
         mcps.clone(),
         Some(instance_id.clone()),
     ) {
-        Ok(c) => c,
+        Ok(c) => {
+            let agent = match_provider_agent(cfg.provider);
+            c.with_permission_tool_name(Arc::new(move |update| agent.permission_tool_name(update)))
+        }
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
             let event = InstanceEvent::State {

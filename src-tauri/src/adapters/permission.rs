@@ -319,7 +319,7 @@ pub struct DecisionContext<'a> {
     pub mcps: Option<&'a MCPsRegistry>,
 }
 
-pub use crate::mcp::permission_match::parse_mcp_permission;
+pub use crate::mcp::permission_match::parse_mcp_tool_name;
 
 /// The decision + waiter surface. `decide` is synchronous (pure
 /// lookups against the per-server MCP glob config). `register_pending`
@@ -469,27 +469,27 @@ impl PermissionController for DefaultPermissionController {
         // implicit. Reject beats accept. Vendor-native tools (no
         // prefix) skip this lane entirely.
         if let Some(registry) = ctx.mcps {
-            if let Some((server_name, leaf)) = parse_mcp_permission(tool, req.tool_call.raw_input.as_ref()) {
+            if let Some((server_name, leaf)) = parse_mcp_tool_name(tool) {
                 // Cached globs — built once at MCPsRegistry construction.
                 // Reject hits short-circuit before the accept set is even
                 // examined; both are precompiled so neither path allocates.
-                if let Some((reject_set, accept_set)) = registry.globs_for(&server_name) {
-                    if reject_set.as_ref().is_some_and(|gs| gs.is_match(leaf.as_str())) {
+                if let Some((reject_set, accept_set)) = registry.globs_for(server_name) {
+                    if reject_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
                             server = %server_name,
-                            leaf = %leaf,
+                            leaf,
                             "permission::decide: per-server reject glob hit"
                         );
                         return Decision::Deny;
                     }
-                    if accept_set.as_ref().is_some_and(|gs| gs.is_match(leaf.as_str())) {
+                    if accept_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
                             server = %server_name,
-                            leaf = %leaf,
+                            leaf,
                             "permission::decide: per-server accept glob hit"
                         );
                         return Decision::Allow;
@@ -768,13 +768,6 @@ mod tests {
         }
     }
 
-    fn request_with_raw_input(id: &str, tool: &str, raw_input: serde_json::Value) -> PermissionRequest {
-        let mut req = request(id, tool);
-        req.tool_call.raw_input = Some(raw_input);
-
-        req
-    }
-
     fn registry_with(name: &str, accept: &[&str], reject: &[&str]) -> MCPsRegistry {
         MCPsRegistry::new(vec![MCPDefinition {
             name: name.into(),
@@ -816,23 +809,6 @@ mod tests {
         let registry = registry_with("filesystem", &["read_*"], &[]);
         let d = controller.decide(
             &request("r1", "mcp__filesystem__read_file"),
-            &DecisionContext { mcps: Some(&registry) },
-        );
-        assert_eq!(d, Decision::Allow);
-    }
-
-    #[test]
-    fn decide_codex_mcp_approval_metadata_matches_server_glob() {
-        let controller = DefaultPermissionController::new();
-        let registry = registry_with("hyprpilot", &["read_*"], &[]);
-        let raw_input = json!({
-            "request": {
-                "_meta": { "codex_approval_kind": "mcp_tool_call" },
-                "message": "Allow the hyprpilot MCP server to run tool \"read_skill\"?"
-            }
-        });
-        let d = controller.decide(
-            &request_with_raw_input("r1", "Approve MCP tool call", raw_input),
             &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::Allow);

@@ -8,6 +8,9 @@ pub mod formatters;
 
 use tokio::process::Command;
 
+use agent_client_protocol::schema::ToolCallUpdate;
+use serde_json::Value;
+
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
 
 pub struct AcpAgentCodex;
@@ -31,6 +34,13 @@ impl AcpAgent for AcpAgentCodex {
         }
     }
 
+    fn permission_tool_name(&self, update: &ToolCallUpdate) -> Option<String> {
+        let raw = update.fields.raw_input.as_ref()?;
+        let (server, tool) = mcp_approval_identity(raw)?;
+
+        Some(format!("mcp__{server}__{tool}"))
+    }
+
     /// codex-acp only exposes `-c key=value` overrides; the TOML
     /// `instructions` key is the system-prompt slot.
     fn inject_system_prompt(&self, cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
@@ -45,9 +55,52 @@ impl AcpAgent for AcpAgentCodex {
     }
 }
 
+fn mcp_approval_identity(raw: &Value) -> Option<(String, String)> {
+    let request = raw.get("request").unwrap_or(raw);
+    let meta = approval_meta(request).or_else(|| approval_meta(raw))?;
+    if meta.get("codex_approval_kind").and_then(Value::as_str) != Some("mcp_tool_call") {
+        return None;
+    }
+
+    if let Some(tool_title) = meta
+        .get("tool_title")
+        .or_else(|| request.get("tool_title"))
+        .and_then(Value::as_str)
+    {
+        if let Some((server, tool)) = tool_title.split_once('/') {
+            if !server.trim().is_empty() && !tool.trim().is_empty() {
+                return Some((server.to_string(), tool.to_string()));
+            }
+        }
+    }
+
+    let message = request
+        .get("message")
+        .or_else(|| raw.get("message"))
+        .and_then(Value::as_str)?;
+    let server = message.strip_prefix("Allow the ")?.split_once(" MCP server")?.0.trim();
+    let tool = message.split_once("run tool \"")?.1.split_once('"')?.0.trim();
+
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+
+    Some((server.to_string(), tool.to_string()))
+}
+
+fn approval_meta(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    value
+        .get("_meta")
+        .or_else(|| value.get("meta"))
+        .and_then(Value::as_object)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use agent_client_protocol::schema::{ToolCallId, ToolCallUpdate, ToolCallUpdateFields};
+    use serde_json::json;
 
     use crate::config::{AgentConfig, AgentProvider};
 
@@ -141,6 +194,52 @@ mod tests {
         assert_eq!(AcpAgentCodex.wire_config_option_id("effort"), "reasoning_effort");
         assert_eq!(AcpAgentCodex.display_config_option_id("model"), "model");
         assert_eq!(AcpAgentCodex.wire_config_option_id("model"), "model");
+    }
+
+    #[test]
+    fn mcp_approval_permission_tool_name_uses_canonical_mcp_name() {
+        let raw = json!({
+            "server_name": "hyprpilot",
+            "request": {
+                "meta": {
+                    "codex_approval_kind": "mcp_tool_call",
+                    "tool_title": "hyprpilot/read_skill"
+                },
+                "message": "Allow the hyprpilot MCP server to run tool \"read_skill\"?"
+            }
+        });
+        let update = ToolCallUpdate::new(
+            ToolCallId::new("tc-1"),
+            ToolCallUpdateFields::new()
+                .title("Approve hyprpilot/read_skill")
+                .raw_input(raw),
+        );
+
+        assert_eq!(
+            AcpAgentCodex.permission_tool_name(&update).as_deref(),
+            Some("mcp__hyprpilot__read_skill")
+        );
+    }
+
+    #[test]
+    fn mcp_approval_permission_tool_name_accepts_legacy_meta_shape() {
+        let raw = json!({
+            "request": {
+                "_meta": { "codex_approval_kind": "mcp_tool_call" },
+                "message": "Allow the hyprpilot MCP server to run tool \"read_skill\"?"
+            }
+        });
+        let update = ToolCallUpdate::new(
+            ToolCallId::new("tc-1"),
+            ToolCallUpdateFields::new()
+                .title("Approve MCP tool call")
+                .raw_input(raw),
+        );
+
+        assert_eq!(
+            AcpAgentCodex.permission_tool_name(&update).as_deref(),
+            Some("mcp__hyprpilot__read_skill")
+        );
     }
 
     #[test]
