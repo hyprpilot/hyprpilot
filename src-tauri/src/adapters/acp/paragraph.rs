@@ -148,6 +148,84 @@ pub(crate) fn fold_trailing(prior: u8, prefix: &str, chunk: &str) -> u8 {
     ((count + prior as u32).min(2)) as u8
 }
 
+/// Streaming markdown-fence tracker. Paragraph lifting is useful for
+/// prose boundaries but destructive inside fenced code blocks: an
+/// injected blank line becomes part of the code. Track fences across
+/// arbitrary ACP text chunks so `TurnState` can suppress boundary
+/// prefixes while the accumulated markdown is inside a fence.
+#[derive(Debug, Default)]
+pub(crate) struct FenceState {
+    in_fence: bool,
+    fence_char: char,
+    fence_len: usize,
+    line: String,
+}
+
+impl FenceState {
+    #[must_use]
+    pub(crate) fn in_fence(&self) -> bool {
+        self.in_fence
+    }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn observe(&mut self, prefix: &str, chunk: &str) {
+        self.observe_fragment(prefix);
+        self.observe_fragment(chunk);
+    }
+
+    fn observe_fragment(&mut self, fragment: &str) {
+        for c in fragment.chars() {
+            if c == '\n' {
+                self.observe_line_end();
+                self.line.clear();
+            } else if self.line.len() < 512 {
+                self.line.push(c);
+            }
+        }
+    }
+
+    fn observe_line_end(&mut self) {
+        let Some((ch, len, rest)) = fence_marker(&self.line) else {
+            return;
+        };
+
+        if self.in_fence {
+            if ch == self.fence_char && len >= self.fence_len && rest.trim().is_empty() {
+                self.in_fence = false;
+                self.fence_char = '\0';
+                self.fence_len = 0;
+            }
+
+            return;
+        }
+
+        self.in_fence = true;
+        self.fence_char = ch;
+        self.fence_len = len;
+    }
+}
+
+fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return None;
+    }
+    let ch = trimmed.chars().next()?;
+    if ch != '`' && ch != '~' {
+        return None;
+    }
+    let len = trimmed.chars().take_while(|c| *c == ch).count();
+    if len < 3 {
+        return None;
+    }
+    let rest = &trimmed[ch.len_utf8() * len..];
+
+    Some((ch, len, rest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +475,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn fence_state_tracks_fence_across_chunks() {
+        let mut state = FenceState::default();
+
+        state.observe("", "```rust\n");
+        assert!(state.in_fence());
+
+        state.observe("", "let x = 1;\n");
+        assert!(state.in_fence());
+
+        state.observe("", "```\n");
+        assert!(!state.in_fence());
     }
 }

@@ -103,6 +103,12 @@ struct TurnState {
     /// independently because thoughts ride a separate rendering
     /// surface (the thinking card) from agent text.
     agent_thought_trailing: u8,
+    /// Streaming markdown-fence state for `AgentText`. Boundary
+    /// prefixes are suppressed while inside a fenced code block so
+    /// paragraph repair never injects blank lines into code.
+    agent_text_fence: super::paragraph::FenceState,
+    /// Same markdown-fence state for the `AgentThought` stream.
+    agent_thought_fence: super::paragraph::FenceState,
     /// Most-recent vendor-emitted `messageId` on this turn's
     /// `agent_message_chunk` stream. Claude / Codex emit a fresh id
     /// per content block; a tool call between two text chunks
@@ -217,6 +223,8 @@ impl TurnState {
         self.output_observed = false;
         self.agent_text_trailing = 0;
         self.agent_thought_trailing = 0;
+        self.agent_text_fence.reset();
+        self.agent_thought_fence.reset();
         self.last_agent_text_message_id = None;
         self.last_agent_thought_message_id = None;
         self.non_text_event_since_last_text = false;
@@ -266,13 +274,16 @@ impl TurnState {
         let id_boundary = is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id);
         let event_boundary = self.non_text_event_since_last_text;
         let boundary = id_boundary || event_boundary;
-        let prefix = if boundary {
+        let prefix = if self.agent_text_fence.in_fence() {
+            ""
+        } else if boundary {
             super::paragraph::paragraph_break_prefix(prior, incoming)
         } else {
             super::paragraph::soft_lift_prefix(prior, incoming)
         };
 
         self.agent_text_trailing = super::paragraph::fold_trailing(prior, prefix, incoming);
+        self.agent_text_fence.observe(prefix, incoming);
         if let Some(id) = message_id {
             self.last_agent_text_message_id = Some(id.to_string());
         }
@@ -289,13 +300,16 @@ impl TurnState {
         let id_boundary = is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id);
         let event_boundary = self.non_text_event_since_last_thought;
         let boundary = id_boundary || event_boundary;
-        let prefix = if boundary {
+        let prefix = if self.agent_thought_fence.in_fence() {
+            ""
+        } else if boundary {
             super::paragraph::paragraph_break_prefix(prior, incoming)
         } else {
             super::paragraph::soft_lift_prefix(prior, incoming)
         };
 
         self.agent_thought_trailing = super::paragraph::fold_trailing(prior, prefix, incoming);
+        self.agent_thought_fence.observe(prefix, incoming);
         if let Some(id) = message_id {
             self.last_agent_thought_message_id = Some(id.to_string());
         }
@@ -2344,7 +2358,7 @@ async fn run(params: RunParams) {
     ) {
         Ok(c) => {
             let agent = match_provider_agent(cfg.provider);
-            c.with_permission_tool_name(Arc::new(move |update| agent.permission_tool_name(update)))
+            c.with_permission_tool_identity(Arc::new(move |update| agent.permission_tool_identity(update)))
         }
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
@@ -4272,6 +4286,23 @@ mod tests {
         // Should emit nothing (soft-lift; no trailing newline on
         // "...solid.", no leading newline on " More text.").
         assert_eq!(state.note_agent_text(" More text.", Some("msg-1")), "");
+    }
+
+    #[test]
+    fn turn_state_does_not_inject_paragraph_break_inside_code_fence() {
+        let mut state = TurnState::default();
+
+        assert_eq!(state.note_agent_text("```rust\n", Some("msg-1")), "");
+        state.note_non_text_event();
+
+        assert_eq!(
+            state.note_agent_text("let value = 1;\n", Some("msg-1")),
+            "",
+            "paragraph repair must not insert blank lines inside fenced code"
+        );
+        assert_eq!(state.note_agent_text("```\n", Some("msg-1")), "");
+        state.note_non_text_event();
+        assert_eq!(state.note_agent_text("Back to prose.", Some("msg-1")), "\n");
     }
 
     #[test]

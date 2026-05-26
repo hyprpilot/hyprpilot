@@ -8,6 +8,7 @@ use tokio::process::Command;
 
 use agent_client_protocol::schema::ToolCallUpdate;
 
+use crate::adapters::permission::ToolIdentity;
 use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::formatter::registry::FormatterRegistry;
 
@@ -150,7 +151,7 @@ pub trait AcpAgent: Send + Sync + 'static {
         id.to_string()
     }
 
-    fn permission_tool_name(&self, _update: &ToolCallUpdate) -> Option<String> {
+    fn permission_tool_identity(&self, _update: &ToolCallUpdate) -> Option<ToolIdentity> {
         None
     }
 

@@ -173,7 +173,7 @@ mod tests {
     use super::*;
     use crate::adapters::permission::{
         DefaultPermissionController, PermissionController, PermissionOptionView, PermissionOutcome, PermissionRequest,
-        ToolCallRef,
+        ToolCallRef, ToolIdentity,
     };
     use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
@@ -202,6 +202,7 @@ mod tests {
             request_id: request_id.into(),
             tool_call: ToolCallRef {
                 name: tool.into(),
+                identity: ToolIdentity::Native,
                 title: Some(tool.into()),
                 raw_args: Some(format!("{tool} args")),
                 raw_input: None,

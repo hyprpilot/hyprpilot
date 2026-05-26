@@ -26,8 +26,9 @@ use agent_client_protocol::schema::PermissionOptionKind;
 
 use crate::adapters::permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
-    PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
+    PermissionOutcome, PermissionRequest, ToolCallRef, ToolIdentity, WAITER_TIMEOUT,
 };
+use crate::mcp::permission_match::parse_mcp_tool_name;
 use crate::mcp::MCPsRegistry;
 use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals};
 
@@ -102,9 +103,9 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 /// - `kind = Other` is the catch-all — for MCP tools the agent never
 ///   classifies them, so the wire string is "other" and the actual
 ///   identity is in `title` (`mcp__filesystem__read_file`). Prefer
-///   the title in that case so `parse_mcp_tool_name`
-///   downstream can attribute the call to its server, and the UI
-///   gets a meaningful name to render.
+///   the title in that case so the adapter-boundary parser can
+///   attribute the call to its server, and the UI gets a meaningful
+///   name to render.
 /// - For every other kind we keep the wire string as `name` (Bash,
 ///   Read, …) so registered formatters key off the canonical kind.
 /// - `kind_wire` stays separate (carries the original "other" /
@@ -119,7 +120,10 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     }
 }
 
-fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, name_override: Option<String>) -> ToolCallRef {
+fn tool_call_ref(
+    update: &agent_client_protocol::schema::ToolCallUpdate,
+    identity: Option<ToolIdentity>,
+) -> ToolCallRef {
     let title = update.fields.title.clone();
     // ACP's `ToolKind` is `#[serde(rename_all = "snake_case")]`
     // upstream — let serde produce the wire string instead of
@@ -136,10 +140,18 @@ fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, name_ov
     // (`execute`, `read`); using it as the dispatch key collapses every
     // execute-kind tool to "execute · cmd" in the formatter and breaks
     // glob-by-name in the trust store ("Bash*" never matches "execute").
-    let name = name_override
-        .or_else(|| title.clone())
+    let name = title
+        .clone()
         .or_else(|| kind_wire.clone())
         .unwrap_or_else(|| "tool".to_string());
+    let identity = identity
+        .or_else(|| {
+            parse_mcp_tool_name(&name).map(|(server, leaf)| ToolIdentity::Mcp {
+                server: server.to_string(),
+                leaf: leaf.to_string(),
+            })
+        })
+        .unwrap_or_default();
     let raw_input = update.fields.raw_input.clone();
     let raw_args = raw_input.as_ref().and_then(|raw| {
         if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
@@ -162,6 +174,7 @@ fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, name_ov
         .unwrap_or_default();
     ToolCallRef {
         name,
+        identity,
         title,
         raw_args,
         raw_input,
@@ -210,7 +223,7 @@ pub struct AcpClient {
     /// `hyprpilot.autoAcceptTools` / `autoRejectTools` lists used by
     /// `PermissionController::decide` lane 2.
     mcps: Option<Arc<MCPsRegistry>>,
-    permission_tool_name: Arc<dyn Fn(&ToolCallUpdate) -> Option<String> + Send + Sync>,
+    permission_tool_identity: Arc<dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync>,
 }
 
 impl std::fmt::Debug for AcpClient {
@@ -239,15 +252,15 @@ impl AcpClient {
             permissions,
             instance_id,
             mcps,
-            permission_tool_name: Arc::new(|_| None),
+            permission_tool_identity: Arc::new(|_| None),
         })
     }
 
-    pub fn with_permission_tool_name(
+    pub fn with_permission_tool_identity(
         mut self,
-        permission_tool_name: Arc<dyn Fn(&ToolCallUpdate) -> Option<String> + Send + Sync>,
+        permission_tool_identity: Arc<dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync>,
     ) -> Self {
-        self.permission_tool_name = permission_tool_name;
+        self.permission_tool_identity = permission_tool_identity;
 
         self
     }
@@ -276,7 +289,7 @@ impl AcpClient {
         req: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
         let options = req.options.iter().map(option_view_from).collect::<Vec<_>>();
-        let tool_call = tool_call_ref(&req.tool_call, (self.permission_tool_name)(&req.tool_call));
+        let tool_call = tool_call_ref(&req.tool_call, (self.permission_tool_identity)(&req.tool_call));
         let request_id = uuid::Uuid::new_v4().to_string();
 
         let decision_req = PermissionRequest {
