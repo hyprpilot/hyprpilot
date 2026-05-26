@@ -141,16 +141,6 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 }
             }))
         }
-        "get_git_status" => {
-            #[derive(Deserialize)]
-            struct Args {
-                path: String,
-            }
-            let args: Args = parse_params(params, "tauri/get_git_status")?;
-            crate::tools::git::snapshot(std::path::Path::new(&args.path))
-                .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
-                .map_err(|e| RpcError::internal_error(format!("git status failed: {e:#}")))
-        }
         "paths_resolve" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]

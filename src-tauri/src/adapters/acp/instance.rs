@@ -274,7 +274,9 @@ impl TurnState {
         let id_boundary = is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id);
         let event_boundary = self.non_text_event_since_last_text;
         let boundary = id_boundary || event_boundary;
-        let prefix = if self.agent_text_fence.in_fence() {
+        let prefix = if self.agent_text_fence.pending_fence_opener_needs_newline(incoming) {
+            "\n"
+        } else if self.agent_text_fence.in_fence() {
             ""
         } else if boundary {
             super::paragraph::paragraph_break_prefix(prior, incoming)
@@ -300,7 +302,9 @@ impl TurnState {
         let id_boundary = is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id);
         let event_boundary = self.non_text_event_since_last_thought;
         let boundary = id_boundary || event_boundary;
-        let prefix = if self.agent_thought_fence.in_fence() {
+        let prefix = if self.agent_thought_fence.pending_fence_opener_needs_newline(incoming) {
+            "\n"
+        } else if self.agent_thought_fence.in_fence() {
             ""
         } else if boundary {
             super::paragraph::paragraph_break_prefix(prior, incoming)
@@ -755,6 +759,7 @@ pub struct MetaSnapshot {
     pub current_model_id: Option<String>,
     pub available_modes: Vec<crate::adapters::SessionModeInfo>,
     pub available_models: Vec<crate::adapters::SessionModelInfo>,
+    pub config_options: Vec<crate::adapters::SessionConfigOptionCategory>,
     pub mcps_count: usize,
 }
 
@@ -884,6 +889,7 @@ struct MetaEmitter {
     current_model: Arc<tokio::sync::RwLock<Option<String>>>,
     available_modes: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModeInfo>>>,
     available_models: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModelInfo>>>,
+    config_options: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionConfigOptionCategory>>>,
     mcps_count: usize,
     mirror: Arc<crate::adapters::InstanceMirror>,
 }
@@ -900,6 +906,7 @@ impl MetaEmitter {
             current_model_id: self.current_model.read().await.clone(),
             available_modes: self.available_modes.read().await.clone(),
             available_models: self.available_models.read().await.clone(),
+            config_options: self.config_options.read().await.clone(),
             mcps_count: self.mcps_count,
         };
         publish(&self.mirror, events_tx, event).await;
@@ -927,34 +934,61 @@ fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::V
         return identity;
     }
 
-    if adapter_id == "acp-codex" {
-        if let Some((server, leaf)) = title.strip_prefix("Tool: ").and_then(|body| body.split_once('/')) {
-            if !server.trim().is_empty() && !leaf.trim().is_empty() {
-                return ToolIdentity::Mcp {
-                    server: server.trim().to_string(),
-                    leaf: leaf.trim().to_string(),
-                };
-            }
-        }
-        if let Some(raw) = raw_input {
-            let server = raw
-                .get("server")
-                .and_then(|v| v.as_str())
-                .filter(|v| !v.trim().is_empty());
-            let leaf = raw
-                .get("tool")
-                .and_then(|v| v.as_str())
-                .filter(|v| !v.trim().is_empty());
-            if let (Some(server), Some(leaf)) = (server, leaf) {
-                return ToolIdentity::Mcp {
-                    server: server.trim().to_string(),
-                    leaf: leaf.trim().to_string(),
-                };
-            }
-        }
+    if let Some(identity) = super::agents::tool_identity(adapter_id, title, raw_input) {
+        return identity;
     }
 
     ToolIdentity::Native
+}
+
+fn project_session_config_options(
+    adapter_id: &str,
+    config_options: &[agent_client_protocol::schema::SessionConfigOption],
+) -> Vec<crate::adapters::SessionConfigOptionCategory> {
+    use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue};
+    use agent_client_protocol::schema::{SessionConfigKind, SessionConfigSelectOptions};
+
+    config_options
+        .iter()
+        .map(|option| {
+            let (current_value, options) = match &option.kind {
+                SessionConfigKind::Select(select) => {
+                    let values = match &select.options {
+                        SessionConfigSelectOptions::Ungrouped(options) => options
+                            .iter()
+                            .map(|option| SessionConfigOptionValue {
+                                value: option.value.0.to_string(),
+                                name: option.name.clone(),
+                                description: option.description.clone(),
+                            })
+                            .collect(),
+                        SessionConfigSelectOptions::Grouped(groups) => groups
+                            .iter()
+                            .flat_map(|group| {
+                                group.options.iter().map(|option| SessionConfigOptionValue {
+                                    value: option.value.0.to_string(),
+                                    name: option.name.clone(),
+                                    description: option.description.clone(),
+                                })
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    (Some(select.current_value.0.to_string()), values)
+                }
+                #[allow(unreachable_patterns)]
+                _ => (None, Vec::new()),
+            };
+
+            SessionConfigOptionCategory {
+                id: super::agents::display_config_option_id(adapter_id, option.id.0.as_ref()),
+                name: option.name.clone(),
+                description: option.description.clone(),
+                current_value,
+                options,
+            }
+        })
+        .collect()
 }
 
 /// Wall-clock now in epoch milliseconds. Used by the per-instance
@@ -1350,6 +1384,45 @@ pub(crate) fn map_session_update(
                 content_blocks = content.len(),
                 "acp::instance: tool_call payload (formatter input)"
             );
+            if let Some(running) = tool_calls.get_mut(&id) {
+                running.wire_name = title.clone();
+                running.identity = tool_identity(adapter_id, &title, raw_input.as_ref());
+                running.tool_kind = tool_kind.clone();
+                running.raw_input = raw_input.clone();
+                running.content = update
+                    .get("content")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if running.completed_at.is_none() && matches!(state, ToolCallState::Completed | ToolCallState::Failed) {
+                    running.completed_at = Some(now_epoch_ms());
+                }
+                let formatted = format_running(adapter_id, running);
+                let identity = running.identity.clone();
+                let started_at_ms = running.started_at;
+                let completed_at_ms = running.completed_at;
+                let is_terminal = matches!(state, ToolCallState::Completed | ToolCallState::Failed);
+                if is_terminal {
+                    tool_calls.remove(&id);
+                }
+
+                return MappedSessionUpdate {
+                    message_id,
+                    meta,
+                    mapped: MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
+                        id,
+                        identity: Some(identity),
+                        tool_kind: Some(tool_kind),
+                        title: Some(title),
+                        state: Some(state),
+                        raw_input,
+                        content,
+                        formatted,
+                        started_at_ms,
+                        completed_at_ms,
+                    })),
+                };
+            }
             // Update the per-id running cache so future updates
             // re-format against merged state. `started_at` captures
             // wall-clock at this first observation; `completed_at`
@@ -2249,6 +2322,7 @@ async fn run(params: RunParams) {
     let cfg = {
         let mut cfg = resolved.agent.clone();
         cfg.model = resolved.model.clone();
+        cfg.effort = resolved.effort.clone();
         cfg
     };
     // Filter the per-entry system_prompt list against the bootstrap
@@ -2594,6 +2668,8 @@ async fn run(params: RunParams) {
             Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let available_models_meta: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionModelInfo>>> =
             Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let config_options_meta: Arc<tokio::sync::RwLock<Vec<crate::adapters::SessionConfigOptionCategory>>> =
+            Arc::new(tokio::sync::RwLock::new(Vec::new()));
 
         // Project the per-instance MCP catalog onto ACP's typed
         // `McpServer` Vec for injection at `session/new` /
@@ -2622,6 +2698,7 @@ async fn run(params: RunParams) {
             current_model: current_model_meta.clone(),
             available_modes: available_modes_meta.clone(),
             available_models: available_models_meta.clone(),
+            config_options: config_options_meta.clone(),
             mcps_count,
             mirror: mirror_notif.clone(),
         };
@@ -2768,6 +2845,19 @@ async fn run(params: RunParams) {
                         }
                     }
                 }
+                if let Some(options) = &new_session.config_options {
+                    let categories = project_session_config_options(cfg.provider.wire_id(), options);
+                    for category in &categories {
+                        if let Some(value) = category.current_value.as_ref() {
+                            match category.id.as_str() {
+                                "mode" => *current_mode_meta.write().await = Some(value.clone()),
+                                "model" => *current_model_meta.write().await = Some(value.clone()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    *config_options_meta.write().await = categories;
+                }
                 let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
@@ -2815,7 +2905,7 @@ async fn run(params: RunParams) {
                 // got. Resume + Load share the same `modes` / `models`
                 // shape; collapse both branches via a tiny tuple to
                 // avoid duplicating the projection logic.
-                let (modes_state, models_state) = if load_supported {
+                let (modes_state, models_state, config_options_state) = if load_supported {
                     debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/load");
                     let mut load_req = LoadSessionRequest::new(sid.clone(), cwd.clone());
                     load_req.mcp_servers = mcp_servers.clone();
@@ -2840,7 +2930,7 @@ async fn run(params: RunParams) {
                         session = %sid,
                         "acp::instance: session/load accepted"
                     );
-                    (load_resp.modes, load_resp.models)
+                    (load_resp.modes, load_resp.models, load_resp.config_options)
                 } else {
                     use agent_client_protocol::schema::ResumeSessionRequest;
                     debug!(agent = %agent_id_notif, session = %sid, "acp::instance: sending session/resume");
@@ -2867,7 +2957,7 @@ async fn run(params: RunParams) {
                         session = %sid,
                         "acp::instance: session/resume accepted"
                     );
-                    (resp.modes, resp.models)
+                    (resp.modes, resp.models, resp.config_options)
                 };
                 // Mirror the Fresh path's `NewSessionResponse.modes/models`
                 // read against `(Resume|Load)SessionResponse`. Both
@@ -2898,6 +2988,19 @@ async fn run(params: RunParams) {
                         .collect();
                     *available_models_meta.write().await = advertised;
                     *current_model_meta.write().await = Some(models.current_model_id.0.to_string());
+                }
+                if let Some(options) = &config_options_state {
+                    let categories = project_session_config_options(cfg.provider.wire_id(), options);
+                    for category in &categories {
+                        if let Some(value) = category.current_value.as_ref() {
+                            match category.id.as_str() {
+                                "mode" => *current_mode_meta.write().await = Some(value.clone()),
+                                "model" => *current_model_meta.write().await = Some(value.clone()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    *config_options_meta.write().await = categories;
                 }
                 // Suspended sessions can resume with a half-finished
                 // turn — pending tool call awaiting permission, agent
@@ -3297,6 +3400,8 @@ async fn run(params: RunParams) {
                             let conn = connection.clone();
                             let events_tx_done = events_tx_notif.clone();
                             let meta_emitter = meta_emitter.clone();
+                            let config_options_done = config_options_meta.clone();
+                            let adapter_id = cfg.provider.wire_id().to_string();
                             let session_log = sid.clone();
                             tokio::spawn(async move {
                                 use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
@@ -3306,7 +3411,8 @@ async fn run(params: RunParams) {
                                     SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
                                 );
                                 let res = conn.send_request(req).block_task().await.map_err(|e| e.to_string());
-                                if res.is_ok() {
+                                if let Ok(resp) = &res {
+                                    *config_options_done.write().await = project_session_config_options(&adapter_id, &resp.config_options);
                                     // Refresh InstanceMeta after a successful
                                     // config_option change — keeps the header
                                     // chrome consistent with set_mode /
@@ -3386,6 +3492,7 @@ async fn run(params: RunParams) {
                                 current_model_id: current_model_meta.read().await.clone(),
                                 available_modes: available_modes_meta.read().await.clone(),
                                 available_models: available_models_meta.read().await.clone(),
+                                config_options: config_options_meta.read().await.clone(),
                                 mcps_count,
                             };
                             let _ = reply.send(snap);
@@ -3885,6 +3992,7 @@ async fn run(params: RunParams) {
                                             }
                                         }
                                     }
+                                    *config_options_meta.write().await = categories.clone();
                                     Some(InstanceEvent::ConfigOptionsUpdate {
                                         agent_id: agent_id_notif.clone(),
                                         instance_id: instance_id_notif.clone(),
@@ -4358,6 +4466,14 @@ mod tests {
     }
 
     #[test]
+    fn turn_state_inserts_newline_after_split_fence_opener() {
+        let mut state = TurnState::default();
+
+        assert_eq!(state.note_agent_text("```rust", Some("msg-1")), "");
+        assert_eq!(state.note_agent_text("let value = 1;\n", Some("msg-1")), "\n");
+    }
+
+    #[test]
     fn turn_state_non_text_event_clears_on_open() {
         let mut state = TurnState::default();
         state.note_non_text_event();
@@ -4472,6 +4588,64 @@ mod tests {
                 server: "hyprpilot".into(),
                 leaf: "read_skill".into()
             }
+        );
+    }
+
+    #[test]
+    fn map_session_update_codex_tool_call_after_pending_update_merges_to_same_id() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let pending = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-1",
+            "title": "Approve hyprpilot/read_skill",
+            "status": "pending",
+            "rawInput": {
+                "server_name": "hyprpilot",
+                "request": {
+                    "meta": {
+                        "codex_approval_kind": "mcp_tool_call",
+                        "tool_title": "hyprpilot/read_skill"
+                    },
+                    "message": "Allow the hyprpilot MCP server to run tool \"read_skill\"?"
+                }
+            }
+        });
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCallUpdate(pending)) =
+            map_session_update(pending, &mut cache, "acp-codex").mapped
+        else {
+            panic!("expected pending tool update");
+        };
+        assert_eq!(pending.id, "call-1");
+
+        let start = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-1",
+            "title": "hyprpilot.read_skill",
+            "kind": "fetch",
+            "status": "in_progress",
+            "rawInput": {
+                "server": "hyprpilot",
+                "tool": "read_skill",
+                "arguments": { "slug": "git-branch" }
+            }
+        });
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCallUpdate(record)) =
+            map_session_update(start, &mut cache, "acp-codex").mapped
+        else {
+            panic!("expected tool update against existing call");
+        };
+
+        assert_eq!(record.id, "call-1");
+        assert_eq!(record.title.as_deref(), Some("hyprpilot.read_skill"));
+        assert!(record.started_at_ms > 0);
+        assert_eq!(
+            record.identity,
+            Some(ToolIdentity::Mcp {
+                server: "hyprpilot".into(),
+                leaf: "read_skill".into()
+            })
         );
     }
 
@@ -4893,9 +5067,11 @@ mod tests {
                 cwd: None,
                 env: Default::default(),
                 model: None,
+                effort: None,
             },
             profile_id: None,
             model: None,
+            effort: None,
             system_prompt: Vec::new(),
             mode: None,
         }

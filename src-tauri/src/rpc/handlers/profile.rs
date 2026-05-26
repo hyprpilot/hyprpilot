@@ -72,6 +72,7 @@ mod tests {
                 id: id.into(),
                 agent: "claude-code".into(),
                 model: None,
+                effort: None,
                 system_prompt: None,
                 mcps: None,
                 mcp: None,

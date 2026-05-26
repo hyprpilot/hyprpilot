@@ -11,10 +11,18 @@ use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct ExecFormatter;
 
+pub fn matches(ctx: &FormatterContext) -> bool {
+    let Some(raw) = ctx.raw_input else {
+        return false;
+    };
+
+    raw.get("command_string").is_some() || raw.get("command").is_some() || raw.get("parsed_cmd").is_some()
+}
+
 impl ToolFormatter for ExecFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
         let raw = ctx.raw_input;
-        let command = pick::<String>(raw, "command").filter(|s| !s.is_empty());
+        let command = command_string(raw);
         let cwd = pick::<String>(raw, "cwd").filter(|s| !s.is_empty());
         let pid = pick::<i64>(raw, "process_id");
 
@@ -63,4 +71,16 @@ impl ToolFormatter for ExecFormatter {
             fields,
         }
     }
+}
+
+fn command_string(raw: Option<&serde_json::Value>) -> Option<String> {
+    pick::<String>(raw, "command_string")
+        .filter(|s| !s.is_empty())
+        .or_else(|| pick::<String>(raw, "command").filter(|s| !s.is_empty()))
+        .or_else(|| {
+            let args = raw?.get("command")?.as_array()?;
+            let parts: Vec<&str> = args.iter().filter_map(serde_json::Value::as_str).collect();
+
+            (!parts.is_empty()).then(|| parts.join(" "))
+        })
 }

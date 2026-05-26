@@ -23,6 +23,8 @@ pub fn register_all(reg: &mut FormatterRegistry) {
     reg.register_adapter(adapter, "Read", Box::new(exec::ExecFormatter));
     reg.register_adapter(adapter, "List", Box::new(exec::ExecFormatter));
     reg.register_adapter(adapter, "Search", Box::new(exec::ExecFormatter));
+    reg.register_adapter(adapter, "Ran", Box::new(exec::ExecFormatter));
+    reg.register_adapter_match(adapter, exec::matches, Box::new(exec::ExecFormatter));
     // ApplyPatch — `Edit ...`.
     reg.register_adapter(adapter, "Edit", Box::new(edit::EditFormatter));
     // ViewImage — `View Image <path>`. Leading token is `View`.
@@ -43,6 +45,7 @@ pub fn register_all(reg: &mut FormatterRegistry) {
     // `Tool:` snake-cases to `tool` (the colon drops); registering
     // `Tool` matches both `"Tool:"` and bare `"Tool"`.
     reg.register_adapter(adapter, "Tool", Box::new(tool::ToolFormatterCodex));
+    reg.register_adapter(adapter, "mcp", Box::new(tool::ToolFormatterCodex));
     // MCP elicitation approval — `Approve <tool>` / `Approve MCP tool call`.
     reg.register_adapter(adapter, "Approve", Box::new(approve::ApproveFormatter));
     // RequestPermissionsEvent — title is either `Permissions Request`

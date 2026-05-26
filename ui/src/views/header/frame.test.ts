@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import Frame from './Frame.vue'
-import { Phase, type GitStatus } from '@components'
+import { Phase } from '@components'
 
 describe('Frame.vue', () => {
   it('renders header rows 1 + 2 + body slot', () => {
@@ -79,40 +79,6 @@ describe('Frame.vue', () => {
     expect(streaming.find('.frame-profile-dot').classes()).toContain('animate-pulse')
     expect(working.find('.frame-profile-dot').classes()).toContain('animate-pulse')
     expect(idle.find('.frame-profile-dot').classes()).not.toContain('animate-pulse')
-  })
-
-  it('renders git branch + ahead/behind chip when gitStatus is set', () => {
-    const gitStatus: GitStatus = {
-      branch: 'feat/k-250',
-      ahead: 2,
-      behind: 1
-    }
-    const wrapper = mount(Frame, {
-      props: {
-        profile: 'captain',
-        cwd: '~/dev/hyprpilot',
-        gitStatus
-      }
-    })
-
-    expect(wrapper.find('.frame-cwd-git').exists()).toBe(true)
-    expect(wrapper.text()).toContain('feat/k-250')
-    expect(wrapper.find('.frame-cwd-git-ahead').exists()).toBe(true)
-    expect(wrapper.find('.frame-cwd-git-ahead').text()).toContain('2')
-    expect(wrapper.find('.frame-cwd-git-behind').text()).toContain('1')
-  })
-
-  it('omits ahead chip when ahead is zero; behind always renders (↓0 default)', () => {
-    const wrapper = mount(Frame, {
-      props: {
-        profile: 'captain',
-        cwd: '~/dev/hyprpilot',
-        gitStatus: { branch: 'main' }
-      }
-    })
-
-    expect(wrapper.find('.frame-cwd-git-ahead').exists()).toBe(false)
-    expect(wrapper.text()).toContain('main')
   })
 
   it('emits pillClick with target=mode when the mode pill is clicked', async() => {

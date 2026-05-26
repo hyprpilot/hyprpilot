@@ -1,8 +1,9 @@
 //! Codex ACP adapter.
 //!
 //! Launches via `bunx --bun @zed-industries/codex-acp`. Model selection
-//! rides on a `-c model="..."` TOML override; the system prompt rides
-//! on a `-c instructions="..."` TOML override.
+//! rides on a `-c model="..."` TOML override; effort rides on
+//! `-c model_reasoning_effort="..."`; the system prompt rides on a
+//! `-c instructions="..."` TOML override.
 
 pub(crate) mod approval;
 pub mod formatters;
@@ -21,9 +22,13 @@ impl AcpAgent for AcpAgentCodex {
         ModelInjection::Config("model")
     }
 
+    fn effort_injection(&self) -> ModelInjection {
+        ModelInjection::Config("model_reasoning_effort")
+    }
+
     fn display_config_option_id(&self, id: &str) -> String {
         match id {
-            "reasoning_effort" => "effort".to_string(),
+            "reasoning_effort" | "model_reasoning_effort" => "effort".to_string(),
             _ => id.to_string(),
         }
     }
@@ -36,7 +41,32 @@ impl AcpAgent for AcpAgentCodex {
     }
 
     fn permission_tool_identity(&self, update: &ToolCallUpdate) -> Option<ToolIdentity> {
-        approval::parse_mcp(update.fields.raw_input.as_ref(), &[]).map(|approval| approval.identity())
+        approval::parse_mcp(update.fields.raw_input.as_ref(), &[])
+            .map(|approval| approval.identity())
+            .or_else(|| update.fields.title.as_deref().and_then(identity_from_mcp_title))
+    }
+
+    fn tool_identity(&self, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
+        identity_from_mcp_title(title)
+            .or_else(|| {
+                title
+                    .strip_prefix("Tool: ")
+                    .and_then(|body| body.split_once('/'))
+                    .and_then(|(server, leaf)| identity_from_parts(server, leaf))
+            })
+            .or_else(|| {
+                let raw = raw_input?;
+                let server = raw
+                    .get("server")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())?;
+                let leaf = raw
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())?;
+
+                identity_from_parts(server, leaf)
+            })
     }
 
     /// codex-acp only exposes `-c key=value` overrides; the TOML
@@ -51,6 +81,27 @@ impl AcpAgent for AcpAgentCodex {
         ));
         SystemPromptInjection::Handled
     }
+}
+
+fn identity_from_mcp_title(title: &str) -> Option<ToolIdentity> {
+    let title = title.split_once(" (").map_or(title, |(head, _)| head).trim();
+    let (server, leaf) = title.split_once('.')?;
+
+    identity_from_parts(server, leaf)
+}
+
+fn identity_from_parts(server: &str, leaf: &str) -> Option<ToolIdentity> {
+    let server = server.trim();
+    let leaf = leaf.trim();
+
+    if server.is_empty() || leaf.is_empty() || leaf.contains('.') {
+        return None;
+    }
+
+    Some(ToolIdentity::Mcp {
+        server: server.to_string(),
+        leaf: leaf.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -71,6 +122,7 @@ mod tests {
             id: "codex".into(),
             provider: AgentProvider::AcpCodex,
             model: model.map(|s| s.to_string()),
+            effort: None,
             command: "bunx".into(),
             args: vec!["--bun".into(), "@zed-industries/codex-acp".into()],
             cwd: None,
@@ -137,6 +189,41 @@ mod tests {
     }
 
     #[test]
+    fn effort_appends_reasoning_effort_config_override() {
+        let mut entry = entry_with_model(None);
+        entry.effort = Some("high".into());
+        let cmd = AcpAgentCodex.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == r#"model_reasoning_effort="high""#),
+            "expected -c model_reasoning_effort=\"high\" in {args:?}"
+        );
+    }
+
+    #[test]
+    fn user_effort_config_override_wins_over_config() {
+        let mut entry = entry_with_model(None);
+        entry.effort = Some("high".into());
+        entry.args = vec![
+            "--bun".into(),
+            "@zed-industries/codex-acp".into(),
+            "-c".into(),
+            "model_reasoning_effort=\"medium\"".into(),
+        ];
+        let cmd = AcpAgentCodex.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+        let effort_positions: Vec<_> = args
+            .windows(2)
+            .filter(|w| w[0] == "-c" && w[1].starts_with("model_reasoning_effort="))
+            .collect();
+
+        assert_eq!(effort_positions.len(), 1);
+        assert_eq!(effort_positions[0][1], "model_reasoning_effort=\"medium\"");
+    }
+
+    #[test]
     fn no_model_means_no_model_config_override() {
         let entry = entry_with_model(None);
         let cmd = AcpAgentCodex.spawn(&entry);
@@ -150,6 +237,10 @@ mod tests {
     #[test]
     fn effort_config_option_uses_common_display_id() {
         assert_eq!(AcpAgentCodex.display_config_option_id("reasoning_effort"), "effort");
+        assert_eq!(
+            AcpAgentCodex.display_config_option_id("model_reasoning_effort"),
+            "effort"
+        );
         assert_eq!(AcpAgentCodex.wire_config_option_id("effort"), "reasoning_effort");
         assert_eq!(AcpAgentCodex.display_config_option_id("model"), "model");
         assert_eq!(AcpAgentCodex.wire_config_option_id("model"), "model");

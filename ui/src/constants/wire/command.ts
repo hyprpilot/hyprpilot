@@ -8,7 +8,6 @@
  * event name so `invoke` / `listen` infer it automatically.
  */
 
-import type { GitStatus } from '@interfaces/ui/header'
 import type { BootSnapshot } from '@interfaces/wire/boot'
 import type {
   CandidateItem,
@@ -47,13 +46,7 @@ import type {
   TerminalsSnapshot
 } from '@interfaces/wire/instance-snapshot'
 import type { KeymapsConfig } from '@interfaces/wire/keymap'
-import type {
-  NotificationsChangedEventPayload,
-  NotificationsClearArgs,
-  NotificationsGetArgs,
-  NotificationsGetResult,
-  NotificationsSnapshot
-} from '@interfaces/wire/notifications'
+import type { NotificationsChangedEventPayload, NotificationsClearArgs, NotificationsGetArgs, NotificationsGetResult, NotificationsSnapshot } from '@interfaces/wire/notifications'
 import type { AcpPermissionResolvedPayload } from '@interfaces/wire/permission-resolved'
 import type {
   AcpQueueChangedPayload,
@@ -108,7 +101,6 @@ export enum TauriCommand {
   GetKeymaps = 'get_keymaps',
   GetWindowState = 'get_window_state',
   WindowToggle = 'window_toggle',
-  GetGitStatus = 'get_git_status',
   DaemonRpc = 'daemon_rpc',
   ReadFileForAttachment = 'read_file_for_attachment',
   SessionSubmit = 'session_submit',
@@ -193,7 +185,6 @@ export interface TauriCommandArgs {
   [TauriCommand.GetKeymaps]: void
   [TauriCommand.GetWindowState]: void
   [TauriCommand.WindowToggle]: void
-  [TauriCommand.GetGitStatus]: { path: string }
   [TauriCommand.DaemonRpc]: { method: string; params?: unknown }
   [TauriCommand.ReadFileForAttachment]: { path: string }
   [TauriCommand.SessionSubmit]: SubmitArgs
@@ -255,7 +246,6 @@ export interface TauriCommandResult {
   [TauriCommand.GetKeymaps]: KeymapsConfig
   [TauriCommand.GetWindowState]: WindowState
   [TauriCommand.WindowToggle]: boolean
-  [TauriCommand.GetGitStatus]: GitStatus | null
   [TauriCommand.DaemonRpc]: unknown
   [TauriCommand.ReadFileForAttachment]: { path: string; body: string; binary: boolean; truncated: boolean }
   [TauriCommand.SessionSubmit]: SubmitResult

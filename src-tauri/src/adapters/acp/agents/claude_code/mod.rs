@@ -44,6 +44,7 @@ mod tests {
             id: "claude-code".into(),
             provider: AgentProvider::AcpClaudeCode,
             model: model.map(|s| s.to_string()),
+            effort: None,
             command: "bunx".into(),
             args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
             cwd: None,

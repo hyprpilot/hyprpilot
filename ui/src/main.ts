@@ -12,7 +12,6 @@ import {
   markBootDone,
   resyncFromRemote,
   setBootStatus,
-  startGitStatus,
   startSessionStream,
   startTranscriptPatcher
 } from '@composables'
@@ -224,11 +223,6 @@ async function boot(): Promise<void> {
     }
     app.mount('#app')
   }
-
-  // Watch the active instance's cwd and pull a fresh git-status
-  // snapshot on every change — drives the header `branch ↑N ↓M`
-  // pill. Idempotent.
-  startGitStatus()
 
   // Flip `bootDone` so the App root can drop the fullscreen
   // overlay. Anything that needs the keymaps (Overlay.vue's keymap

@@ -7,7 +7,6 @@
 
 pub mod formatter;
 pub mod fs;
-pub mod git;
 pub mod path;
 pub mod sandbox;
 pub mod terminal;

@@ -14,21 +14,20 @@ pub struct ToolFormatterCodex;
 impl ToolFormatter for ToolFormatterCodex {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
         let body = ctx.wire_name.strip_prefix("Tool: ").unwrap_or(ctx.wire_name);
-        let title = if body.contains('/') {
-            format!("mcp · {}", body)
-        } else {
-            format!("tool · {}", body)
+        let title = match ctx.identity {
+            crate::adapters::ToolIdentity::Mcp { server, leaf } => format!("mcp · {server}/{leaf}"),
+            crate::adapters::ToolIdentity::Native => format!("tool · {}", body),
         };
 
         let mut fields: Vec<ToolField> = Vec::new();
-        let is_mcp = if let Some((server, leaf)) = body.split_once('/') {
+        let is_mcp = if let crate::adapters::ToolIdentity::Mcp { server, leaf } = ctx.identity {
             fields.push(ToolField {
                 label: "server".into(),
-                value: server.to_string(),
+                value: server.clone(),
             });
             fields.push(ToolField {
                 label: "tool".into(),
-                value: leaf.to_string(),
+                value: leaf.clone(),
             });
             true
         } else {

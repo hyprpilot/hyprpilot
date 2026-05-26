@@ -29,6 +29,7 @@ pub struct ResolvedInstance {
     pub agent: AgentConfig,
     pub profile_id: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<String>,
     /// Resolved per-entry system-prompt list. Each entry carries its
     /// own pre-read body + inject toggles; the actor filters the
     /// list against the bootstrap variant (Fresh vs Resume) at spawn
@@ -158,6 +159,7 @@ impl ResolvedInstance {
             })?;
 
         let model = profile.model.clone().or_else(|| agent.model.clone());
+        let effort = profile.effort.clone().or_else(|| agent.effort.clone());
         let system_prompt = Self::load_system_prompt(profile)?;
 
         // Project profile-level overrides onto a clone of the agent
@@ -188,6 +190,7 @@ impl ResolvedInstance {
             agent,
             profile_id: Some(profile.id.clone()),
             model,
+            effort,
             system_prompt,
             mode: profile.mode.clone(),
         })
@@ -272,6 +275,7 @@ mod tests {
             id: id.into(),
             provider: AgentProvider::AcpClaudeCode,
             model: model.map(|s| s.to_string()),
+            effort: None,
             command: "/bin/false".into(),
             args: vec![],
             cwd: None,
@@ -284,6 +288,7 @@ mod tests {
             id: id.into(),
             agent: agent.into(),
             model: model.map(|s| s.to_string()),
+            effort: None,
             system_prompt: prompt_files.map(|files| {
                 files
                     .into_iter()
