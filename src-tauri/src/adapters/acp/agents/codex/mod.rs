@@ -45,7 +45,7 @@ impl AcpAgent for AcpAgentCodex {
         categories: &mut Vec<SessionConfigOptionCategory>,
         configured_effort: Option<&str>,
     ) {
-        ensure_effort_option(categories, configured_effort);
+        add_missing_effort_option(categories, configured_effort);
     }
 
     fn config_option_model_id(&self, id: &str, value: &str, current_model: Option<&str>) -> Option<String> {
@@ -74,19 +74,7 @@ impl AcpAgent for AcpAgentCodex {
                     .and_then(|body| body.split_once('/'))
                     .and_then(|(server, leaf)| identity_from_parts(server, leaf))
             })
-            .or_else(|| {
-                let raw = raw_input?;
-                let server = raw
-                    .get("server")
-                    .and_then(|v| v.as_str())
-                    .filter(|v| !v.trim().is_empty())?;
-                let leaf = raw
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .filter(|v| !v.trim().is_empty())?;
-
-                identity_from_parts(server, leaf)
-            })
+            .or_else(|| raw_mcp_parts(raw_input).and_then(|(server, leaf)| identity_from_parts(server, leaf)))
     }
 
     /// codex-acp only exposes `-c key=value` overrides; the TOML
@@ -103,7 +91,7 @@ impl AcpAgent for AcpAgentCodex {
     }
 }
 
-fn ensure_effort_option(categories: &mut Vec<SessionConfigOptionCategory>, configured_effort: Option<&str>) {
+fn add_missing_effort_option(categories: &mut Vec<SessionConfigOptionCategory>, configured_effort: Option<&str>) {
     if categories.iter().any(|category| category.id == "effort") {
         return;
     }
@@ -117,19 +105,29 @@ fn ensure_effort_option(categories: &mut Vec<SessionConfigOptionCategory>, confi
             .into_iter()
             .map(|value| SessionConfigOptionValue {
                 value: value.into(),
-                name: title_case(value),
+                name: value.into(),
                 description: None,
             })
             .collect(),
     });
 }
 
-fn title_case(value: &str) -> String {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
+fn raw_mcp_parts(raw_input: Option<&serde_json::Value>) -> Option<(&str, &str)> {
+    let raw = raw_input?;
+    let server = raw
+        .get("server")
+        .or_else(|| raw.get("server_name"))
+        .or_else(|| raw.get("serverName"))
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())?;
+    let leaf = raw
+        .get("tool")
+        .or_else(|| raw.get("tool_name"))
+        .or_else(|| raw.get("toolName"))
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())?;
+
+    Some((server, leaf))
 }
 
 fn identity_from_mcp_title(title: &str) -> Option<ToolIdentity> {
@@ -317,22 +315,22 @@ mod tests {
             vec![
                 SessionConfigOptionValue {
                     value: "minimal".into(),
-                    name: "Minimal".into(),
+                    name: "minimal".into(),
                     description: None,
                 },
                 SessionConfigOptionValue {
                     value: "low".into(),
-                    name: "Low".into(),
+                    name: "low".into(),
                     description: None,
                 },
                 SessionConfigOptionValue {
                     value: "medium".into(),
-                    name: "Medium".into(),
+                    name: "medium".into(),
                     description: None,
                 },
                 SessionConfigOptionValue {
                     value: "high".into(),
-                    name: "High".into(),
+                    name: "high".into(),
                     description: None,
                 },
             ]

@@ -28,7 +28,6 @@ pub mod agents;
 pub mod client;
 pub mod instance;
 pub mod instances;
-pub mod paragraph;
 
 pub use instances::AcpAdapter;
 

@@ -1,40 +1,37 @@
-//! codex-acp's plugin / MCP tool calls. Title shape is
-//! `Tool: <tool>` (dynamic plugin) or `Tool: <server>/<leaf>` (MCP).
-//! RawInput is whatever the agent passed as `arguments` (free-form
-//! JSON for plugin tools; `McpInvocation { server, tool, arguments }`
-//! for MCP). We pass the title through and dump rawInput as a
-//! single field for visibility — per-server overrides land later.
+//! codex-acp's plugin / MCP tool calls. Codex emits dynamic tools as
+//! `Tool: <tool>` and MCP tools as `Tool: <server>/<leaf>` with
+//! `rawInput` set to the serialized MCP invocation (`server`, `tool`,
+//! `arguments`). Keep formatting adapter-local: higher layers only pass
+//! the parsed identity when they have one.
 
+use serde_json::Value;
+
+use crate::adapters::ToolIdentity;
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
 use crate::tools::formatter::shared::{args_to_fields, duration_stats};
-use crate::tools::formatter::types::{FormattedToolCall, ToolField};
+use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct ToolFormatterCodex;
+
+struct McpParts<'a> {
+    server: &'a str,
+    leaf: &'a str,
+    arguments: Option<&'a Value>,
+}
 
 impl ToolFormatter for ToolFormatterCodex {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
         let body = ctx.wire_name.strip_prefix("Tool: ").unwrap_or(ctx.wire_name);
-        let title = match ctx.identity {
-            crate::adapters::ToolIdentity::Mcp { server, leaf } => format!("mcp · {server}/{leaf}"),
-            crate::adapters::ToolIdentity::Native => format!("tool · {}", body),
+        let mcp = mcp_parts(ctx.identity, ctx.raw_input);
+        let title = match &mcp {
+            Some(parts) => format!("mcp · {}/{}", parts.server, parts.leaf),
+            None => format!("tool · {}", body),
         };
 
-        let mut fields: Vec<ToolField> = Vec::new();
-        let is_mcp = if let crate::adapters::ToolIdentity::Mcp { server, leaf } = ctx.identity {
-            fields.push(ToolField {
-                label: "server".into(),
-                value: server.clone(),
-            });
-            fields.push(ToolField {
-                label: "tool".into(),
-                value: leaf.clone(),
-            });
-            true
-        } else {
-            false
+        let fields = match &mcp {
+            Some(parts) => args_to_fields(parts.arguments, &[]),
+            None => args_to_fields(ctx.raw_input, &[]),
         };
-        let exclude = if is_mcp { &["server", "tool"][..] } else { &[] };
-        fields.extend(args_to_fields(ctx.raw_input, exclude));
 
         let block_text = crate::tools::formatter::shared::text_blocks(ctx.content);
         let trimmed = block_text.trim();
@@ -57,6 +54,40 @@ impl ToolFormatter for ToolFormatterCodex {
     }
 }
 
+fn mcp_parts<'a>(identity: &'a ToolIdentity, raw_input: Option<&'a Value>) -> Option<McpParts<'a>> {
+    let raw = raw_input;
+    match identity {
+        ToolIdentity::Mcp { server, leaf } => Some(McpParts {
+            server,
+            leaf,
+            arguments: raw.and_then(|value| value.get("arguments")),
+        }),
+        ToolIdentity::Native => raw_mcp_parts(raw),
+    }
+}
+
+fn raw_mcp_parts(raw_input: Option<&Value>) -> Option<McpParts<'_>> {
+    let raw = raw_input?;
+    let server = raw
+        .get("server")
+        .or_else(|| raw.get("server_name"))
+        .or_else(|| raw.get("serverName"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    let leaf = raw
+        .get("tool")
+        .or_else(|| raw.get("tool_name"))
+        .or_else(|| raw.get("toolName"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+
+    Some(McpParts {
+        server,
+        leaf,
+        arguments: raw.get("arguments"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -65,7 +96,7 @@ mod tests {
     use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
 
     #[test]
-    fn mcp_tool_does_not_duplicate_server_and_tool_fields() {
+    fn mcp_tool_formats_from_raw_invocation_without_duplicate_wrapper_fields() {
         let raw = json!({
             "server": "hyprpilot",
             "tool": "read_skill",
@@ -83,11 +114,33 @@ mod tests {
         };
         let formatted = ToolFormatterCodex.format(&ctx);
 
-        assert_eq!(
-            formatted.fields.iter().filter(|field| field.label == "server").count(),
-            1
-        );
-        assert_eq!(formatted.fields.iter().filter(|field| field.label == "tool").count(), 1);
-        assert!(formatted.fields.iter().any(|field| field.label == "arguments"));
+        assert_eq!(formatted.title, "mcp · hyprpilot/read_skill");
+        assert!(formatted.fields.iter().all(|field| field.label != "server"));
+        assert!(formatted.fields.iter().all(|field| field.label != "tool"));
+        assert!(formatted.fields.iter().all(|field| field.label != "arguments"));
+        assert!(formatted.fields.iter().any(|field| field.label == "slug"));
+    }
+
+    #[test]
+    fn mcp_tool_accepts_codex_approval_style_names() {
+        let raw = json!({
+            "server_name": "memory",
+            "tool_name": "read_graph",
+            "arguments": {}
+        });
+        let ctx = FormatterContext {
+            wire_name: "Tool: memory/read_graph",
+            identity: &crate::adapters::ToolIdentity::Native,
+            kind: "other",
+            raw_input: Some(&raw),
+            adapter: "acp-codex",
+            content: &[],
+            started_at: 0,
+            completed_at: None,
+        };
+        let formatted = ToolFormatterCodex.format(&ctx);
+
+        assert_eq!(formatted.title, "mcp · memory/read_graph");
+        assert!(formatted.fields.is_empty());
     }
 }

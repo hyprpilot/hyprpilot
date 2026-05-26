@@ -127,6 +127,7 @@ function liveItemFor(payload: TranscriptEventPayload, fallbackSeq: number): SeqT
   return {
     seq: payload.seq ?? fallbackSeq,
     turnId: payload.turnId,
+    messageId: payload.messageId,
     item: payload.item
   }
 }

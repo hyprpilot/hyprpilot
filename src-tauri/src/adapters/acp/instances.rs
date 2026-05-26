@@ -222,7 +222,9 @@ impl AcpAdapter {
             Err(_) => return Vec::new(),
         };
 
+        let mcp_cfg = effective_mcp_with(&profile);
         let mut defs = crate::mcp::loader::load_files(&effective_mcp_files_with(&profile));
+        apply_mcp_glob_defaults(&mut defs, &mcp_cfg);
 
         // Add the auto-injected `hyprpilot mcp serve` server at the
         // head, same as `build_mcp_registry_with`. Match its
@@ -232,7 +234,6 @@ impl AcpAdapter {
         // the catalog elides the entry — matches the
         // pre-`session/new` view where no actor exists.
         if let Some(skills) = skills_arc {
-            let mcp_cfg = effective_mcp_with(&profile);
             if mcp_cfg.enabled() {
                 if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
                     &skills,
@@ -1913,15 +1914,16 @@ fn build_mcp_registry_with(
     profile: &ProfileConfig,
     skills: Option<&Arc<crate::skills::SkillsRegistry>>,
 ) -> Option<Arc<crate::mcp::MCPsRegistry>> {
+    let mcp_cfg = effective_mcp_with(profile);
     let files = effective_mcp_files_with(profile);
     let mut defs = crate::mcp::loader::load_files(&files);
+    apply_mcp_glob_defaults(&mut defs, &mcp_cfg);
 
     // Auto-inject only when the effective [mcp] block opts in AND
     // there's a non-empty skills registry to project. Source is a
     // synthetic path so the UI's "which file owns this server"
     // surfaces a recognisable label.
     if let Some(skills_arc) = skills {
-        let mcp_cfg = effective_mcp_with(profile);
         if mcp_cfg.enabled() {
             if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
                 skills_arc,
@@ -1937,6 +1939,18 @@ fn build_mcp_registry_with(
         return None;
     }
     Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
+}
+
+fn apply_mcp_glob_defaults(defs: &mut [crate::mcp::MCPDefinition], cfg: &crate::config::McpConfig) {
+    for def in defs {
+        if def.hyprpilot.auto_accept_tools.is_empty() {
+            def.hyprpilot.auto_accept_tools = cfg.auto_accept_tools().to_vec();
+        }
+
+        if def.hyprpilot.auto_reject_tools.is_empty() {
+            def.hyprpilot.auto_reject_tools = cfg.auto_reject_tools().to_vec();
+        }
+    }
 }
 
 /// Resolved `[mcp]` block for an instance — reads ONLY from the
@@ -2476,6 +2490,26 @@ dir = "{skills}"
             slugs.contains(&"from-patch".to_string()),
             "patch-supplied skill `from-patch` must reach the skills registry, got: {slugs:?}"
         );
+    }
+
+    #[test]
+    fn mcp_config_globs_apply_to_external_servers_without_per_server_policy() {
+        let mut defs = vec![crate::mcp::MCPDefinition {
+            name: "memory".into(),
+            raw: serde_json::json!({ "command": "/bin/false" }),
+            hyprpilot: crate::mcp::HyprpilotExtension::default(),
+            source: std::path::PathBuf::from("test.json"),
+        }];
+        let cfg = crate::config::McpConfig {
+            auto_accept_tools: Some(vec!["read_*".into()]),
+            auto_reject_tools: Some(vec!["delete_*".into()]),
+            ..Default::default()
+        };
+
+        apply_mcp_glob_defaults(&mut defs, &cfg);
+
+        assert_eq!(defs[0].hyprpilot.auto_accept_tools, vec!["read_*"]);
+        assert_eq!(defs[0].hyprpilot.auto_reject_tools, vec!["delete_*"]);
     }
 
     /// `instance_skills` returns `None` for a key that isn't live;

@@ -72,8 +72,14 @@ pub struct MCPDefinition {
 /// short-circuits.
 pub type CompiledGlobs = (Option<globset::GlobSet>, Option<globset::GlobSet>);
 
-fn expand_value(raw: &str, ctx: &str) -> String {
-    match shellexpand::full(raw) {
+fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let tilde = shellexpand::tilde(raw);
+    match shellexpand::env_with_context(tilde.as_ref(), |name| {
+        Ok::<Option<String>, std::convert::Infallible>(lookup(name))
+    }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {
             tracing::warn!(value = raw, ctx, %err, "mcp::expand_value: expansion failed; using raw value");
@@ -82,11 +88,17 @@ fn expand_value(raw: &str, ctx: &str) -> String {
     }
 }
 
-fn expand_raw_strings(def: &MCPDefinition, raw: &Value) -> Value {
-    fn expand_object_strings(obj: &mut serde_json::Map<String, Value>, ctx: &str) {
+fn expand_raw_strings_with<F>(def: &MCPDefinition, raw: &Value, lookup: &mut F) -> Value
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    fn expand_object_strings<F>(obj: &mut serde_json::Map<String, Value>, ctx: &str, lookup: &mut F)
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
         for (key, value) in obj.iter_mut() {
             if let Value::String(raw) = value {
-                *raw = expand_value(raw, &format!("{ctx}.{key}"));
+                *raw = expand_value_with(raw, &format!("{ctx}.{key}"), lookup);
             }
         }
     }
@@ -97,23 +109,23 @@ fn expand_raw_strings(def: &MCPDefinition, raw: &Value) -> Value {
     };
 
     if let Some(Value::String(command)) = obj.get_mut("command") {
-        *command = expand_value(command, &format!("mcp.{}.command", def.name));
+        *command = expand_value_with(command, &format!("mcp.{}.command", def.name), lookup);
     }
 
     if let Some(Value::Array(args)) = obj.get_mut("args") {
         for (idx, arg) in args.iter_mut().enumerate() {
             if let Value::String(raw) = arg {
-                *raw = expand_value(raw, &format!("mcp.{}.args[{idx}]", def.name));
+                *raw = expand_value_with(raw, &format!("mcp.{}.args[{idx}]", def.name), lookup);
             }
         }
     }
 
     if let Some(Value::Object(env)) = obj.get_mut("env") {
-        expand_object_strings(env, &format!("mcp.{}.env", def.name));
+        expand_object_strings(env, &format!("mcp.{}.env", def.name), lookup);
     }
 
     if let Some(Value::Object(headers)) = obj.get_mut("headers") {
-        expand_object_strings(headers, &format!("mcp.{}.headers", def.name));
+        expand_object_strings(headers, &format!("mcp.{}.headers", def.name), lookup);
     }
 
     expanded
@@ -172,10 +184,20 @@ pub struct MCPsRegistry {
 /// brick session/new.
 #[must_use]
 pub fn project_to_acp(def: &MCPDefinition) -> Option<agent_client_protocol::schema::McpServer> {
+    project_to_acp_with_lookup(def, &mut |name| std::env::var(name).ok())
+}
+
+fn project_to_acp_with_lookup<F>(
+    def: &MCPDefinition,
+    lookup: &mut F,
+) -> Option<agent_client_protocol::schema::McpServer>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     use agent_client_protocol::schema::{
         EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
     };
-    let expanded = expand_raw_strings(def, &def.raw);
+    let expanded = expand_raw_strings_with(def, &def.raw, lookup);
     let obj = expanded.as_object()?;
 
     // Stdio: presence of `command` is the discriminator. Standard
@@ -362,10 +384,6 @@ mod tests {
 
     #[test]
     fn project_to_acp_expands_stdio_command_args_and_env() {
-        unsafe {
-            std::env::set_var("HYPRPILOT_TEST_MCP_BIN", "/tmp/mcp-bin");
-            std::env::set_var("HYPRPILOT_TEST_MCP_ENV", "expanded-env");
-        }
         let def = MCPDefinition {
             name: "memory".into(),
             raw: serde_json::json!({
@@ -377,25 +395,22 @@ mod tests {
             source: PathBuf::from("test.json"),
         };
 
-        let projected = project_to_acp(&def).expect("stdio projects");
+        let projected = project_to_acp_with_lookup(&def, &mut |name| match name {
+            "HYPRPILOT_TEST_MCP_BIN" => Some("/tmp/mcp-bin".into()),
+            "HYPRPILOT_TEST_MCP_ENV" => Some("expanded-env".into()),
+            _ => None,
+        })
+        .expect("stdio projects");
         let agent_client_protocol::schema::McpServer::Stdio(stdio) = projected else {
             panic!("expected stdio server");
         };
         assert_eq!(stdio.command.to_string_lossy(), "/tmp/mcp-bin");
         assert_eq!(stdio.args, vec!["--path", "expanded-env"]);
         assert_eq!(stdio.env[0].value, "expanded-env/memory.jsonl");
-
-        unsafe {
-            std::env::remove_var("HYPRPILOT_TEST_MCP_BIN");
-            std::env::remove_var("HYPRPILOT_TEST_MCP_ENV");
-        }
     }
 
     #[test]
     fn project_to_acp_expands_http_headers() {
-        unsafe {
-            std::env::set_var("HYPRPILOT_TEST_MCP_TOKEN", "secret-token");
-        }
         let def = MCPDefinition {
             name: "github".into(),
             raw: serde_json::json!({
@@ -406,15 +421,15 @@ mod tests {
             source: PathBuf::from("test.json"),
         };
 
-        let projected = project_to_acp(&def).expect("http projects");
+        let projected = project_to_acp_with_lookup(&def, &mut |name| match name {
+            "HYPRPILOT_TEST_MCP_TOKEN" => Some("secret-token".into()),
+            _ => None,
+        })
+        .expect("http projects");
         let agent_client_protocol::schema::McpServer::Http(http) = projected else {
             panic!("expected http server");
         };
         assert_eq!(http.headers[0].value, "Bearer secret-token");
-
-        unsafe {
-            std::env::remove_var("HYPRPILOT_TEST_MCP_TOKEN");
-        }
     }
 
     #[test]

@@ -56,14 +56,24 @@ pub enum ModelInjection {
 /// error here would refuse to spawn the agent over a typo, worse
 /// than letting the agent inherit a literal `$FOO` and fail visibly
 /// downstream.
-fn expand_value(raw: &str, ctx: &str) -> String {
-    match shellexpand::full(raw) {
+fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let tilde = shellexpand::tilde(raw);
+    match shellexpand::env_with_context(tilde.as_ref(), |name| {
+        Ok::<Option<String>, std::convert::Infallible>(lookup(name))
+    }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {
             tracing::warn!(value = raw, ctx, %err, "agent spawn: env expansion failed; using raw value");
             raw.to_string()
         }
     }
+}
+
+fn expand_value(raw: &str, ctx: &str) -> String {
+    expand_value_with(raw, ctx, &mut |name| std::env::var(name).ok())
 }
 
 fn has_config_override(args: &[String], key: &str) -> bool {
@@ -331,29 +341,18 @@ mod tests {
     }
 
     #[test]
-    fn spawn_expands_env_values_against_process_env() {
-        // SAFETY: tests in this module run in the same process; no
-        // other test reads HYPRPILOT_TEST_ENV_EXPAND so this is safe.
-        unsafe {
-            std::env::set_var("HYPRPILOT_TEST_ENV_EXPAND", "expanded-value");
-        }
-        let mut entry = stub_entry("env-expand");
+    fn expand_value_uses_supplied_environment_lookup() {
+        let expanded =
+            expand_value_with(
+                "prefix-${HYPRPILOT_TEST_ENV_EXPAND}-suffix",
+                "agent.env",
+                &mut |name| match name {
+                    "HYPRPILOT_TEST_ENV_EXPAND" => Some("expanded-value".into()),
+                    _ => None,
+                },
+            );
 
-        entry
-            .env
-            .insert("FOO".into(), "prefix-${HYPRPILOT_TEST_ENV_EXPAND}-suffix".into());
-        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
-        let envs: Vec<_> = cmd
-            .as_std()
-            .get_envs()
-            .filter_map(|(k, v)| v.map(|vv| (k.to_owned(), vv.to_owned())))
-            .collect();
-        let foo = envs.iter().find(|(k, _)| k == "FOO").expect("FOO is set");
-        assert_eq!(foo.1.to_str().unwrap(), "prefix-expanded-value-suffix");
-
-        unsafe {
-            std::env::remove_var("HYPRPILOT_TEST_ENV_EXPAND");
-        }
+        assert_eq!(expanded, "prefix-expanded-value-suffix");
     }
 
     #[test]

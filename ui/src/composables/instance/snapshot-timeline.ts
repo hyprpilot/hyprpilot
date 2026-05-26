@@ -137,7 +137,9 @@ function projectToolCall(
  * the body doesn't render (PermissionRequest, Unknown, Plan handled
  * separately).
  */
-function projectEntry(seq: number, item: TranscriptItem, ctx: ProjectionContext): TimelineEntry | null {
+function projectEntry(it: SeqTranscriptItem, ctx: ProjectionContext): TimelineEntry | null {
+  const { seq, item } = it
+
   switch (item.kind) {
     case TranscriptItemKind.UserPrompt:
     case TranscriptItemKind.UserText:
@@ -154,7 +156,7 @@ function projectEntry(seq: number, item: TranscriptItem, ctx: ProjectionContext)
         kind: 'stream',
         createdAt: seq,
         item: {
-          id: `thought-${seq}`,
+          id: it.messageId ?? `thought-${seq}`,
           kind: StreamItemKind.Thought,
           sessionId: ctx.sessionId,
           createdAt: seq,
@@ -289,13 +291,9 @@ function tryMergeTurn(projected: ProjectedItem[], entry: TimelineEntry & { kind:
     const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => p.entry.kind === 'turn' && p.entry.turn.role === TurnRole.Agent && p.entry.turn.attachments.length === 0)
 
     if (target && target.entry.kind === 'turn') {
-      // Verbatim concat — the daemon bakes the
-      // markdown-paragraph-lift prefix onto every `AgentText` chunk
-      // it emits (see `adapters/acp/paragraph.rs` +
-      // `TurnState::note_agent_text`). Frontends just append. Doing
-      // it once on the daemon side means nvim, Vue, and any future
-      // second-frontend render the same paragraph-correct text
-      // without re-implementing the lift logic.
+      // Verbatim concat — the daemon bakes any content-block
+      // boundary prefix onto each `AgentText` chunk before emission.
+      // Snapshot replay must append exactly what the live path saw.
       target.entry.turn.text += entry.turn.text
       target.entry.turn.updatedAt = it.seq
 
@@ -331,10 +329,16 @@ function tryMergeThought(projected: ProjectedItem[], entry: TimelineStream, it: 
   }
 
   if (it.turnId !== undefined) {
-    const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Thought)
+    const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => {
+      if (p.entry.kind !== 'stream' || p.entry.item.kind !== StreamItemKind.Thought) {
+        return false
+      }
+
+      return it.messageId !== undefined ? p.entry.item.id === it.messageId : p.entry.item.id.startsWith('thought-')
+    })
 
     if (target && target.entry.kind === 'stream' && target.entry.item.kind === StreamItemKind.Thought) {
-      // Verbatim concat — daemon-side lift bakes the prefix in.
+      // Verbatim concat — daemon-side chunk text is already final.
       target.entry.item.text += entry.item.text
       target.entry.item.updatedAt = it.seq
 
@@ -501,7 +505,7 @@ export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId
   const projected: ProjectedItem[] = []
 
   for (const it of items) {
-    const entry = projectEntry(it.seq, it.item, ctx)
+    const entry = projectEntry(it, ctx)
 
     if (!entry) {
       continue

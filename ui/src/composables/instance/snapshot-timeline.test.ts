@@ -26,10 +26,11 @@ function agentText(seq: number, turnId: string | undefined, text: string): SeqTr
   }
 }
 
-function agentThought(seq: number, turnId: string | undefined, text: string): SeqTranscriptItem {
+function agentThought(seq: number, turnId: string | undefined, text: string, messageId?: string): SeqTranscriptItem {
   return {
     seq,
     turnId,
+    messageId,
     item: { kind: TranscriptItemKind.AgentThought, text }
   }
 }
@@ -87,10 +88,9 @@ describe('timelineBlocksFromSnapshot', () => {
   it('merges streamed agent text chunks within a turn into one turnEntry (verbatim concat)', () => {
     // Each `agent_message_chunk` lands as a separate
     // SeqTranscriptItem; the projector folds them by turnId. The
-    // daemon bakes any markdown-paragraph-lift prefix onto the
-    // chunk text BEFORE emission (see `adapters/acp/paragraph.rs`),
-    // so the projector just concatenates — no client-side
-    // separator logic.
+    // daemon bakes any content-boundary prefix onto chunk text
+    // BEFORE emission, so the projector just concatenates — no
+    // client-side separator logic.
     const items: SeqTranscriptItem[] = [
       userPrompt(1, 't-1', 'hey'),
       agentText(2, 't-1', 'Hey! '),
@@ -105,13 +105,10 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(blocks[1].turnEntries[0].turn.text).toBe('Hey! Doing well — what\'s on your mind?')
   })
 
-  it('preserves daemon-baked paragraph-lift prefixes when folding chunks (verbatim concat)', () => {
-    // The daemon's `TurnState::note_agent_text` prepends a `\n` to
-    // a chunk when the prior accumulated text ended with a single
-    // `\n`, lifting the boundary to `\n\n` for proper markdown
-    // paragraph rendering. The projector's job is to faithfully
-    // concatenate the chunks the daemon ships — no further
-    // mutation. This test pins that contract.
+  it('preserves daemon-baked content-boundary prefixes when folding chunks (verbatim concat)', () => {
+    // The daemon prefixes explicit content-block id switches with
+    // `\n\n`. The projector's job is to faithfully concatenate
+    // the chunks the daemon ships — no further mutation.
     const items: SeqTranscriptItem[] = [userPrompt(1, 't-1', 'go'), agentText(2, 't-1', 'Paragraph one.\n'), agentText(3, 't-1', '\nParagraph two.')]
     const blocks = timelineBlocksFromSnapshot(items)
     const assistant = blocks.find((b) => b.role === Role.Assistant)
@@ -179,6 +176,30 @@ describe('timelineBlocksFromSnapshot', () => {
 
     if (thought?.item.kind === 'thought') {
       expect(thought.item.text).toBe('first half — second half.')
+    }
+  })
+
+  it('uses thought messageId to keep distinct thought blocks separate during snapshot replay', () => {
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'go'),
+      agentThought(2, 't-1', 'first half ', 'thought-a'),
+      agentThought(3, 't-1', 'continues', 'thought-a'),
+      agentThought(4, 't-1', 'second thought', 'thought-b')
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistant = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistant?.streamEntries).toHaveLength(2)
+    const [first, second] = assistant?.streamEntries ?? []
+
+    if (first?.item.kind === 'thought') {
+      expect(first.item.text).toBe('first half continues')
+      expect(first.item.id).toBe('thought-a')
+    }
+
+    if (second?.item.kind === 'thought') {
+      expect(second.item.text).toBe('second thought')
+      expect(second.item.id).toBe('thought-b')
     }
   })
 

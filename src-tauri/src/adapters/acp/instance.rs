@@ -91,57 +91,16 @@ struct TurnState {
     /// "Internal error" with no actionable signal. With this flag we
     /// can synthesize a specific error message instead.
     output_observed: bool,
-    /// Trailing-newline count (capped at 2) of the accumulated
-    /// `AgentText` chunks for the open turn. Drives the markdown
-    /// paragraph lift in `note_agent_text` — when prior trailing == 1
-    /// and the next chunk doesn't begin with `\n`, we prepend `\n`
-    /// to the chunk so the boundary reaches `\n\n` and markdown
-    /// renders two paragraphs instead of one with a soft break. See
-    /// `acp::paragraph` for the rule.
-    agent_text_trailing: u8,
-    /// Same counter for the `AgentThought` stream — applied
-    /// independently because thoughts ride a separate rendering
-    /// surface (the thinking card) from agent text.
-    agent_thought_trailing: u8,
-    /// Streaming markdown-fence state for `AgentText`. Boundary
-    /// prefixes are suppressed while inside a fenced code block so
-    /// paragraph repair never injects blank lines into code.
-    agent_text_fence: super::paragraph::FenceState,
-    /// Same markdown-fence state for the `AgentThought` stream.
-    agent_thought_fence: super::paragraph::FenceState,
     /// Most-recent vendor-emitted `messageId` on this turn's
-    /// `agent_message_chunk` stream. Claude / Codex emit a fresh id
-    /// per content block; a tool call between two text chunks
-    /// produces two distinct messageIds. When the next chunk's id
-    /// differs from this, we force a markdown paragraph break in
-    /// the wire chunk's text — without it, the concat of
-    /// `"...prior sentence."` then `"Next sentence..."` reads as
-    /// `"...prior sentence.Next sentence..."` (captain's screenshot
-    /// bug). Reset on `open`. `None` until
-    /// the first chunk lands or when the vendor doesn't emit a
-    /// messageId on the chunk (gracefully degrades to soft-lift).
+    /// `agent_message_chunk` stream. When the next non-empty id differs,
+    /// the daemon prefixes the new chunk with `\n\n` so every frontend
+    /// sees a simple markdown content-block boundary. Vendors that omit
+    /// `messageId` flow through verbatim.
     last_agent_text_message_id: Option<String>,
     /// Same as [`Self::last_agent_text_message_id`] for the thought
     /// stream — independent because the two render on different
     /// surfaces.
     last_agent_thought_message_id: Option<String>,
-    /// `true` when a non-`AgentText` transcript item (typically a
-    /// `ToolCall` / `ToolCallUpdate` / `Plan` / `AgentAttachment`)
-    /// has landed since the last `AgentText` chunk. The next
-    /// `AgentText` chunk treats this as a content-block boundary
-    /// equivalent to a `messageId` switch — vendors don't always
-    /// allocate a fresh `messageId` after a tool call returns
-    /// (Claude regularly reuses the same id across text→tool→text),
-    /// and without this flag the resumed text would concat directly
-    /// onto the prior sentence ("...behind.Now bg..."). Reset after
-    /// the next text chunk consumes it. Independent flag for the
-    /// thought stream below — same reasoning, different stream.
-    non_text_event_since_last_text: bool,
-    /// `true` when a non-`AgentThought` transcript item has landed
-    /// since the last `AgentThought` chunk. Mirrors
-    /// [`Self::non_text_event_since_last_text`] for the thought
-    /// stream.
-    non_text_event_since_last_thought: bool,
     /// Role of the last emitted transcript item under
     /// [`Self::current`]. Drives the role-transition turn split on
     /// `session/load` replay: ACP streams the prior session's
@@ -216,119 +175,47 @@ impl TurnState {
         self.reset_per_turn_lift_state();
     }
 
-    /// Internal — clear every per-turn lift counter / cache on
-    /// turn open. Called by [`Self::open`] so the boundary state
-    /// is uniform regardless of how the turn was minted.
+    /// Internal — clear every per-turn stream cache on turn open.
+    /// Called by [`Self::open`] so boundary state is uniform regardless
+    /// of how the turn was minted.
     fn reset_per_turn_lift_state(&mut self) {
         self.output_observed = false;
-        self.agent_text_trailing = 0;
-        self.agent_thought_trailing = 0;
-        self.agent_text_fence.reset();
-        self.agent_thought_fence.reset();
         self.last_agent_text_message_id = None;
         self.last_agent_thought_message_id = None;
-        self.non_text_event_since_last_text = false;
-        self.non_text_event_since_last_thought = false;
         self.last_role = None;
     }
 
-    /// Compute the markdown-paragraph lift prefix for an incoming
-    /// `AgentText` chunk AND fold the new trailing-newline count into
-    /// the running tally. Returns the prefix (`""`, `"\n"`, or `"\n\n"`)
-    /// — the caller is responsible for prepending it to the chunk
-    /// text before emitting / persisting.
-    ///
-    /// `message_id` is the vendor-emitted content-block id (when
-    /// present). When it differs from the prior chunk's id, the
-    /// stronger `paragraph_break_prefix` runs instead of the
-    /// soft-lift — Claude / Codex emit fresh ids per content block,
-    /// and a tool call between two text chunks produces two distinct
-    /// ids. The forced break turns "...prior sentence.New sentence"
-    /// (the screenshot bug) into "...prior sentence.\n\nNew sentence"
-    /// for every consumer of the concat.
-    ///
-    /// `None` for `message_id` falls back to soft-lift only — vendors
-    /// without the `unstable_message_id` feature simply lose the
-    /// content-block boundary detection (the soft-lift still catches
-    /// the cases it can).
-    ///
-    /// Mutates state regardless of whether the prefix is non-empty —
-    /// the tally must track every chunk so the NEXT chunk's lift
-    /// decision sees the right prior state.
-    ///
-    /// Two boundary triggers force the stronger `paragraph_break_prefix`
-    /// path (vs the conservative soft-lift):
-    ///   1. **messageId switch** — the vendor opened a fresh content
-    ///      block (Claude / Codex emit a new id per block).
-    ///   2. **non-text event interrupt** — a `ToolCall` /
-    ///      `ToolCallUpdate` / `Plan` / `AgentAttachment` landed
-    ///      between the prior text chunk and this one. Vendors often
-    ///      keep the SAME messageId across text→tool→text, so the
-    ///      messageId check alone misses this case and the resumed
-    ///      sentence concats directly onto the prior one. The
-    ///      `non_text_event_since_last_text` flag closes the gap.
-    ///
-    /// Either trigger consumes (clears) `non_text_event_since_last_text`.
-    fn note_agent_text(&mut self, incoming: &str, message_id: Option<&str>) -> &'static str {
-        let prior = self.agent_text_trailing;
-        let id_boundary = is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id);
-        let event_boundary = self.non_text_event_since_last_text;
-        let boundary = id_boundary || event_boundary;
-        let prefix = if let Some(prefix) = self.agent_text_fence.pending_fence_opener_prefix(incoming) {
-            prefix
-        } else if self.agent_text_fence.in_fence() {
-            ""
-        } else if boundary {
-            super::paragraph::paragraph_break_prefix(prior, incoming)
+    /// Return the prefix needed before an incoming `AgentText` chunk.
+    /// We only synthesize a boundary when the vendor gives two
+    /// different non-empty content ids; missing ids are assumed to
+    /// already carry the vendor's intended whitespace.
+    fn note_agent_text(&mut self, _incoming: &str, message_id: Option<&str>) -> &'static str {
+        let prefix = if is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id) {
+            "\n\n"
         } else {
-            super::paragraph::soft_lift_prefix(prior, incoming)
+            ""
         };
 
-        self.agent_text_trailing = super::paragraph::fold_trailing(prior, prefix, incoming);
-        self.agent_text_fence.observe(prefix, incoming);
         if let Some(id) = message_id {
             self.last_agent_text_message_id = Some(id.to_string());
         }
-        self.non_text_event_since_last_text = false;
+
         prefix
     }
 
-    /// `note_agent_text` for the `AgentThought` stream — independent
-    /// trailing counter + messageId tracker + non-text-event flag
-    /// since thoughts render on a separate surface (the thinking
-    /// card) and have their own content-block id stream.
-    fn note_agent_thought(&mut self, incoming: &str, message_id: Option<&str>) -> &'static str {
-        let prior = self.agent_thought_trailing;
-        let id_boundary = is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id);
-        let event_boundary = self.non_text_event_since_last_thought;
-        let boundary = id_boundary || event_boundary;
-        let prefix = if let Some(prefix) = self.agent_thought_fence.pending_fence_opener_prefix(incoming) {
-            prefix
-        } else if self.agent_thought_fence.in_fence() {
-            ""
-        } else if boundary {
-            super::paragraph::paragraph_break_prefix(prior, incoming)
+    /// `note_agent_text` for the `AgentThought` stream.
+    fn note_agent_thought(&mut self, _incoming: &str, message_id: Option<&str>) -> &'static str {
+        let prefix = if is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id) {
+            "\n\n"
         } else {
-            super::paragraph::soft_lift_prefix(prior, incoming)
+            ""
         };
 
-        self.agent_thought_trailing = super::paragraph::fold_trailing(prior, prefix, incoming);
-        self.agent_thought_fence.observe(prefix, incoming);
         if let Some(id) = message_id {
             self.last_agent_thought_message_id = Some(id.to_string());
         }
-        self.non_text_event_since_last_thought = false;
-        prefix
-    }
 
-    /// Mark that a non-text transcript item (tool call, plan, attachment,
-    /// …) landed in the open turn. The NEXT `AgentText` /
-    /// `AgentThought` chunk treats this as a content-block boundary
-    /// (forces `paragraph_break_prefix`). Cleared by the next text /
-    /// thought chunk. Idempotent.
-    fn note_non_text_event(&mut self) {
-        self.non_text_event_since_last_text = true;
-        self.non_text_event_since_last_thought = true;
+        prefix
     }
 
     /// Mark the current turn as having emitted at least one agent-
@@ -837,10 +724,8 @@ pub(crate) struct MappedSessionUpdate {
     /// `unstable_message_id` feature). `None` for non-chunk updates
     /// and for vendors that don't emit one. Threaded into
     /// `TurnState::note_agent_text` / `note_agent_thought` so the
-    /// daemon-side paragraph lift can detect content-block
-    /// boundaries (a tool call between two text chunks switches
-    /// the id; the lift forces `\n\n` across the boundary so the
-    /// concat reads as two paragraphs).
+    /// daemon can prefix explicit content-block id switches with
+    /// `\n\n` before broadcasting.
     pub message_id: Option<String>,
 }
 
@@ -1073,10 +958,9 @@ pub(crate) fn map_session_update(
     // ACP's `agent_message_chunk` / `agent_thought_chunk` carry an
     // optional `messageId` (camelCase on the wire) when the vendor
     // ships under the `unstable_message_id` feature. Claude / Codex
-    // both emit fresh ids per content block — a tool call between
-    // two text chunks produces two distinct ids. Threaded through
-    // to the dispatcher so `TurnState` can force a paragraph break
-    // across the boundary. Only meaningful on chunk variants; we
+    // both emit fresh ids per content block. Threaded through to
+    // the dispatcher so `TurnState` can prefix id switches with
+    // `\n\n`. Only meaningful on chunk variants; we
     // capture for every update and let the dispatcher ignore it
     // for non-chunk kinds.
     let message_id = update.get("messageId").and_then(|v| v.as_str()).map(str::to_string);
@@ -3894,44 +3778,12 @@ async fn run(params: RunParams) {
                                         turn_state.write().await.note_agent_output();
                                     }
 
-                                    // Markdown-paragraph lift. Each
-                                    // `agent_message_chunk` /
-                                    // `agent_thought_chunk` is a wire
-                                    // fragment; frontends concatenate them
-                                    // verbatim. Two signals decide the
-                                    // prefix:
-                                    //
-                                    // 1. **messageId switch** — vendor's
-                                    //    `messageId` (ACP `unstable_message_id`)
-                                    //    changed between two chunks within
-                                    //    one turn. Claude / Codex emit a
-                                    //    fresh id per content block, and a
-                                    //    tool call between text chunks
-                                    //    produces two distinct ids. Force
-                                    //    `\n\n` so the concat reads
-                                    //    `"...prior sentence.\n\nNew sentence"`.
-                                    // 2. **Soft-lift trailing-newline** —
-                                    //    accumulated tail ends with a
-                                    //    single `\n` and the next chunk
-                                    //    doesn't begin with one. Prepend
-                                    //    `\n` so the boundary reaches
-                                    //    `\n\n` naturally. Also handles
-                                    //    chunks that lead with a single
-                                    //    `\n` themselves.
-                                    //
-                                    // Baking the prefix onto the outgoing
-                                    // chunk means every frontend — Vue
-                                    // desktop, Vue remote, hyprpilot.nvim,
-                                    // ctl — sees concatenation-safe text
-                                    // without having to re-implement the
-                                    // lift. Never injects a break on a
-                                    // non-newline / non-messageId-switch
-                                    // boundary, so streaming token bursts
-                                    // (`"Hello, "` + `"world"`) emit
-                                    // verbatim instead of splitting into
-                                    // bogus paragraphs. Per-turn state
-                                    // (counter + last messageId) resets on
-                                    // `open`.
+                                    // Content-block boundary lift. Vendors that
+                                    // provide ACP `messageId` are explicit about
+                                    // distinct text/thought blocks. Prefix only
+                                    // those id switches with `\n\n`; missing ids
+                                    // flow through verbatim so Codex can keep its
+                                    // own whitespace.
                                     match &mut item {
                                         crate::adapters::TranscriptItem::AgentText { text } => {
                                             let prefix = turn_state
@@ -3961,14 +3813,7 @@ async fn run(params: RunParams) {
                                                 *text = lifted;
                                             }
                                         }
-                                        // Tool call / plan / attachment / etc. — flag the
-                                        // turn so the NEXT text or thought chunk forces a
-                                        // markdown paragraph break, even when the vendor
-                                        // reuses the same messageId across the interrupt
-                                        // (Claude does this regularly).
-                                        _ => {
-                                            turn_state.write().await.note_non_text_event();
-                                        }
+                                        _ => {}
                                     }
 
                                     Some(InstanceEvent::Transcript {
@@ -4289,307 +4134,68 @@ mod tests {
     use crate::adapters::permission::DefaultPermissionController;
     use crate::config::{AgentConfig, AgentProvider};
 
-    // ── TurnState markdown-paragraph lift ──────────────────────────────
-    //
-    // Tests for the per-turn lift counters. The pure helpers in
-    // `acp::paragraph` are covered by their own unit tests; these
-    // exercise the `TurnState` integration — counter init, mutation
-    // through `note_agent_text` / `note_agent_thought`, reset on
-    // `open`, and independence between the
-    // text and thought streams.
+    // ── TurnState content-block boundary lift ─────────────────────────
 
     #[test]
-    fn turn_state_lift_starts_at_zero_trailing() {
+    fn turn_state_does_not_prefix_first_text_chunk() {
         let mut state = TurnState::default();
-        // First chunk on a fresh turn — prior trailing is 0 → no lift.
-        assert_eq!(state.note_agent_text("First chunk", None), "");
-        assert_eq!(state.agent_text_trailing, 0);
+
+        assert_eq!(state.note_agent_text("First chunk", Some("msg-1")), "");
     }
 
     #[test]
-    fn turn_state_lifts_a_soft_newline_to_paragraph_break() {
+    fn turn_state_does_not_prefix_chunks_without_message_ids() {
         let mut state = TurnState::default();
-        // Chunk 1 leaves trailing \n.
-        assert_eq!(state.note_agent_text("Para 1.\n", None), "");
-        assert_eq!(state.agent_text_trailing, 1);
-        // Chunk 2 starts with non-newline → daemon prepends \n so the
-        // boundary reaches \n\n in the concat.
-        assert_eq!(state.note_agent_text("Para 2.", None), "\n");
-        // After the lift, the chunk ends on non-newline → counter reset.
-        assert_eq!(state.agent_text_trailing, 0);
+
+        assert_eq!(state.note_agent_text("First", None), "");
+        assert_eq!(state.note_agent_text("Second", None), "");
     }
 
     #[test]
-    fn turn_state_does_not_double_inject_when_prior_and_chunk_both_carry_a_newline() {
+    fn turn_state_does_not_prefix_same_message_id() {
         let mut state = TurnState::default();
-        state.note_agent_text("Para 1.\n", None);
-        // Prior trailing `\n` + chunk's own leading `\n` already sum
-        // to `\n\n` at the boundary — no lift, no wasted injection.
-        // The combined wire shape is `Para 1.\n\nPara 2.`, which
-        // renders as two paragraphs.
-        assert_eq!(state.note_agent_text("\nPara 2.", None), "");
-    }
 
-    #[test]
-    fn turn_state_lifts_chunk_self_newline_only_when_prior_contributes_nothing() {
-        let mut state = TurnState::default();
-        // Prior trailing is 0 (chunk ends on non-newline). Chunk's
-        // own leading `\n` is just a soft break in markdown — lift
-        // to `\n\n` so it reads as a paragraph break.
-        state.note_agent_text("Para 1.", None);
-        assert_eq!(state.note_agent_text("\nPara 2.", None), "\n");
-    }
-
-    #[test]
-    fn turn_state_does_not_lift_when_chunk_already_starts_with_double_newline() {
-        let mut state = TurnState::default();
-        state.note_agent_text("Para 1.\n", None);
-        // `\n\n` already carries its own paragraph break — no lift.
-        assert_eq!(state.note_agent_text("\n\nPara 2.", None), "");
-    }
-
-    #[test]
-    fn turn_state_does_not_lift_a_non_newline_boundary() {
-        let mut state = TurnState::default();
-        // Token streaming inside one paragraph — no lift between chunks.
-        assert_eq!(state.note_agent_text("Hello, ", None), "");
-        assert_eq!(state.note_agent_text("world", None), "");
-        assert_eq!(state.note_agent_text("!", None), "");
-    }
-
-    #[test]
-    fn turn_state_text_and_thought_counters_are_independent() {
-        let mut state = TurnState::default();
-        // Build trailing newline on the text axis.
-        state.note_agent_text("Para 1.\n", None);
-        assert_eq!(state.agent_text_trailing, 1);
-        // Thought axis is untouched.
-        assert_eq!(state.agent_thought_trailing, 0);
-        // Thought chunk doesn't see the text-side trailing — first
-        // thought is a fresh boundary, no lift.
-        assert_eq!(state.note_agent_thought("First thought.", None), "");
-        // And the text axis counter is still 1 — the thought
-        // operation didn't bleed across.
-        assert_eq!(state.agent_text_trailing, 1);
-    }
-
-    #[test]
-    fn turn_state_open_resets_both_lift_counters() {
-        let mut state = TurnState::default();
-        state.note_agent_text("Tail 1.\n", None);
-        state.note_agent_thought("Thought 1.\n", None);
-        assert_eq!(state.agent_text_trailing, 1);
-        assert_eq!(state.agent_thought_trailing, 1);
-        // Opening a new turn — counters reset so the new turn's first
-        // chunk doesn't carry forward the prior turn's tail.
-        state.open("turn-2".to_string());
-        assert_eq!(state.agent_text_trailing, 0);
-        assert_eq!(state.agent_thought_trailing, 0);
-        // First chunk of the new turn — no lift on the boundary.
-        assert_eq!(state.note_agent_text("Hello", None), "");
-    }
-
-    #[test]
-    fn turn_state_caps_trailing_at_two() {
-        let mut state = TurnState::default();
-        // A chunk ending on \n\n\n caps at 2.
-        state.note_agent_text("Para 1.\n\n\n", None);
-        assert_eq!(state.agent_text_trailing, 2);
-        // Already paragraph-shaped → no further lift on next chunk.
-        assert_eq!(state.note_agent_text("Para 2.", None), "");
-    }
-
-    #[test]
-    fn turn_state_forces_paragraph_break_across_message_id_switch() {
-        // Captain's screenshot bug: tool_use between two text chunks
-        // produces two distinct messageIds. Prior text ends with `.`
-        // (no trailing newline), incoming starts with a capital
-        // (no leading whitespace). Soft-lift would correctly refuse
-        // to inject (avoiding mid-sentence splits); messageId
-        // boundary forces `\n\n` anyway.
-        let mut state = TurnState::default();
-        assert_eq!(
-            state.note_agent_text("...so it hides whatever's behind.", Some("msg-1")),
-            ""
-        );
-        assert_eq!(
-            state.note_agent_text("Now bg is solid rgb(255, 255, 255).", Some("msg-2")),
-            "\n\n"
-        );
-    }
-
-    #[test]
-    fn turn_state_same_message_id_keeps_soft_lift_path() {
-        // Within one content block (same messageId), the vendor
-        // streams tokens — bare token bursts must NOT be split into
-        // bogus paragraphs.
-        let mut state = TurnState::default();
         assert_eq!(state.note_agent_text("Hello, ", Some("msg-1")), "");
-        assert_eq!(state.note_agent_text("world!", Some("msg-1")), "");
+        assert_eq!(state.note_agent_text("world", Some("msg-1")), "");
     }
 
     #[test]
-    fn turn_state_forces_paragraph_break_across_thought_message_id_switch() {
-        // Thought stream gets the same treatment — vendors emit fresh
-        // messageIds per thought content block. Tool reasoning that
-        // resumes after a tool call produces two distinct ids, and
-        // the thinking card needs the same paragraph break or the
-        // concatenated reasoning reads as one run-on.
+    fn turn_state_prefixes_text_message_id_switch_with_double_newline() {
         let mut state = TurnState::default();
-        assert_eq!(state.note_agent_thought("Stepping through.", Some("th-1")), "");
-        assert_eq!(
-            state.note_agent_thought("Now checking the next case.", Some("th-2")),
-            "\n\n"
-        );
+
+        assert_eq!(state.note_agent_text("First block.", Some("msg-1")), "");
+        assert_eq!(state.note_agent_text("Second block.", Some("msg-2")), "\n\n");
+    }
+
+    #[test]
+    fn turn_state_prefixes_thought_message_id_switch_with_double_newline() {
+        let mut state = TurnState::default();
+
+        assert_eq!(state.note_agent_thought("First thought.", Some("th-1")), "");
+        assert_eq!(state.note_agent_thought("Second thought.", Some("th-2")), "\n\n");
     }
 
     #[test]
     fn turn_state_text_and_thought_message_ids_are_independent() {
-        // Text and thought streams track their own messageIds — a
-        // text messageId switch must NOT trigger a thought-stream
-        // paragraph break (or vice versa).
         let mut state = TurnState::default();
-        state.note_agent_text("text-1", Some("msg-1"));
-        // Switching the text messageId after writing a thought.
-        state.note_agent_thought("thought-1", Some("th-1"));
-        // Thought-stream chunk with a still-matching thought id —
-        // soft-lift only, no forced break.
-        assert_eq!(state.note_agent_thought(" continues", Some("th-1")), "");
+
+        state.note_agent_text("text", Some("text-1"));
+        state.note_agent_thought("thought", Some("thought-1"));
+
+        assert_eq!(state.note_agent_text(" text", Some("text-1")), "");
+        assert_eq!(state.note_agent_thought(" thought", Some("thought-1")), "");
+        assert_eq!(state.note_agent_text("new text", Some("text-2")), "\n\n");
+        assert_eq!(state.note_agent_thought("new thought", Some("thought-2")), "\n\n");
     }
 
     #[test]
     fn turn_state_message_id_resets_on_open() {
-        // A new turn opens; even if the next chunk's messageId matches
-        // a stale id from the prior turn (vendor reuse — unlikely but
-        // possible), we don't carry forward state.
         let mut state = TurnState::default();
         state.note_agent_text("Para 1.", Some("msg-1"));
+
         state.open("turn-2".into());
-        // Fresh turn — no prior id, so the boundary check returns
-        // false; soft-lift path runs and emits nothing for a clean
-        // first chunk.
+
         assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
-    }
-
-    #[test]
-    fn turn_state_forces_paragraph_break_after_tool_call_even_with_same_message_id() {
-        // The regression PR #79 didn't catch: Claude often reuses the
-        // SAME messageId across text → tool call → text. With only the
-        // messageId-switch check, the resumed text would concat
-        // directly onto the prior sentence. The
-        // `non_text_event_since_last_text` flag forces a break.
-        let mut state = TurnState::default();
-        state.note_agent_text("...behind.", Some("msg-1"));
-        // A tool call lands — dispatcher catch-all flags non-text event.
-        state.note_non_text_event();
-        // Next text chunk: same messageId, no leading newline.
-        // Without the flag → soft-lift would do nothing → captain sees
-        // "...behind.Now bg...". With the flag → paragraph_break_prefix
-        // injects "\n\n" so the boundary renders as a paragraph break.
-        assert_eq!(state.note_agent_text("Now bg is solid", Some("msg-1")), "\n\n");
-    }
-
-    #[test]
-    fn turn_state_forces_paragraph_break_after_tool_call_with_no_message_id() {
-        // Vendors that never emit messageId (or stopped emitting after
-        // the tool) still get the paragraph break via the
-        // non-text-event flag.
-        let mut state = TurnState::default();
-        state.note_agent_text("Pre-tool.", None);
-        state.note_non_text_event();
-        assert_eq!(state.note_agent_text("Post-tool.", None), "\n\n");
-    }
-
-    #[test]
-    fn turn_state_non_text_event_flag_is_consumed_by_next_text_chunk() {
-        // After the next text chunk uses the flag, a subsequent chunk
-        // without an intervening non-text event should NOT get a
-        // forced break — falls back to soft-lift (no break on clean
-        // token concat).
-        let mut state = TurnState::default();
-        state.note_agent_text("...behind.", Some("msg-1"));
-        state.note_non_text_event();
-        // First chunk consumes the flag.
-        assert_eq!(state.note_agent_text("Now bg is solid.", Some("msg-1")), "\n\n");
-        // Second chunk: same messageId, no new non-text event since.
-        // Should emit nothing (soft-lift; no trailing newline on
-        // "...solid.", no leading newline on " More text.").
-        assert_eq!(state.note_agent_text(" More text.", Some("msg-1")), "");
-    }
-
-    #[test]
-    fn turn_state_does_not_inject_paragraph_break_inside_code_fence() {
-        let mut state = TurnState::default();
-
-        assert_eq!(state.note_agent_text("```rust\n", Some("msg-1")), "");
-        state.note_non_text_event();
-
-        assert_eq!(
-            state.note_agent_text("let value = 1;\n", Some("msg-1")),
-            "",
-            "paragraph repair must not insert blank lines inside fenced code"
-        );
-        assert_eq!(state.note_agent_text("```\n", Some("msg-1")), "");
-        state.note_non_text_event();
-        assert_eq!(state.note_agent_text("Back to prose.", Some("msg-1")), "\n");
-    }
-
-    #[test]
-    fn turn_state_inserts_newline_after_split_fence_opener() {
-        let mut state = TurnState::default();
-
-        assert_eq!(state.note_agent_text("```rust", Some("msg-1")), "");
-        assert_eq!(state.note_agent_text("let value = 1;\n", Some("msg-1")), "\n");
-    }
-
-    #[test]
-    fn turn_state_keeps_split_fence_language_on_opener_line() {
-        let mut state = TurnState::default();
-
-        let mut out = String::new();
-        for chunk in ["```", "rust", "AcpAgent::set_effort(...)"] {
-            out.push_str(state.note_agent_text(chunk, Some("msg-1")));
-            out.push_str(chunk);
-        }
-
-        assert_eq!(out, "```rust\nAcpAgent::set_effort(...)");
-    }
-
-    #[test]
-    fn turn_state_does_not_paragraph_lift_split_fence_opener_newline() {
-        let mut state = TurnState::default();
-
-        let mut out = String::new();
-        for chunk in ["```rust", "\n", "let value = 1;\n", "```\n"] {
-            out.push_str(state.note_agent_text(chunk, Some("msg-1")));
-            out.push_str(chunk);
-        }
-
-        assert_eq!(out, "```rust\nlet value = 1;\n```\n");
-    }
-
-    #[test]
-    fn turn_state_non_text_event_clears_on_open() {
-        let mut state = TurnState::default();
-        state.note_non_text_event();
-        state.open("turn-2".into());
-        // Fresh turn — no flagged event, no prior text → soft-lift.
-        assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
-    }
-
-    #[test]
-    fn turn_state_text_and_thought_non_text_flags_are_independent() {
-        // A non-text event flags BOTH streams, but consuming via text
-        // does NOT consume the thought flag (and vice versa).
-        let mut state = TurnState::default();
-        state.note_agent_text("Text 1.", Some("text-1"));
-        state.note_agent_thought("Thought 1.", Some("th-1"));
-        state.note_non_text_event();
-        // Text chunk consumes its flag.
-        assert_eq!(state.note_agent_text("Text 2.", Some("text-1")), "\n\n");
-        // Thought stream still has its flag set — should fire on next
-        // thought chunk independently.
-        assert_eq!(state.note_agent_thought("Thought 2.", Some("th-1")), "\n\n");
     }
 
     // ── existing tests ─────────────────────────────────────────────────
@@ -4788,7 +4394,7 @@ mod tests {
     /// `messageId` (ACP `unstable_message_id`) round-trips through
     /// `map_session_update` for both `agent_message_chunk` and
     /// `agent_thought_chunk` — the emit site uses it to detect
-    /// content-block boundaries and force a markdown paragraph break.
+    /// content-block boundaries.
     #[test]
     fn map_session_update_extracts_message_id_from_chunk_payloads() {
         use serde_json::json;

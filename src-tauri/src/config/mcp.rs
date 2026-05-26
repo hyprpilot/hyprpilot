@@ -1,6 +1,6 @@
-//! `[mcp]` config block — controls the in-tree `hyprpilot` MCP server
-//! the daemon auto-injects into `session/new`'s `mcp_servers`, and
-//! owns the **skills catalog** the server exposes.
+//! `[mcp]` config block — controls MCP defaults, the in-tree
+//! `hyprpilot` MCP server the daemon auto-injects into `session/new`'s
+//! `mcp_servers`, and owns the **skills catalog** the server exposes.
 //!
 //! Singleton block mirroring the `[agent]` / `[[agents]]` pattern:
 //! `[mcp]` is the global config for our in-tree MCP server; `[[mcps]]`
@@ -29,15 +29,16 @@ use super::SkillEntry;
 
 /// `[mcp]` block. Controls auto-injection of the in-tree
 /// `hyprpilot mcp serve` MCP server entry into `session/new` /
-/// `session/load`'s `mcp_servers` array, and owns the **skills
-/// catalog** that server exposes.
+/// `session/load`'s `mcp_servers` array, owns the **skills catalog**
+/// that server exposes, and provides default tool glob policy for
+/// MCP servers that do not declare their own `hyprpilot` extension.
 ///
 /// `auto_accept_tools` / `auto_reject_tools` ride through to the
-/// auto-injected entry's `HyprpilotExtension` namespace key so
-/// `PermissionController::decide` lane 2 sees them like any
-/// user-declared MCP. The default `["*"]` accept makes
-/// `mcp__hyprpilot__*` calls frictionless; the captain can tighten
-/// per-profile if they want explicit gates around `read_skill` etc.
+/// auto-injected entry's `HyprpilotExtension` namespace key and are
+/// also copied onto user-declared MCP definitions with no per-server
+/// override. `PermissionController::decide` then sees one uniform
+/// per-server glob shape. The default `["*"]` accept makes MCP calls
+/// frictionless; captains can tighten per-profile or per-server.
 ///
 /// `skills` is the **catalog of skill root directories** the server
 /// scans and exposes. Same `SkillEntry { dir, ignore }` shape that
@@ -66,12 +67,12 @@ pub struct McpConfig {
     #[garde(dive)]
     pub skills: Option<Vec<SkillEntry>>,
 
-    /// Glob patterns matching `mcp__hyprpilot__<tool>` leaf names for
+    /// Default glob patterns matching MCP tool leaf names for
     /// auto-accept. Default `["*"]` (seeded by defaults.toml) → every
-    /// `tools/call` against the auto-injected server short-circuits
-    /// to `Decision::Allow` at `PermissionController::decide` lane 2.
-    /// Tighten by setting `auto_accept_tools = ["list_*", "read_*"]`
-    /// (and leaving `reload` to AskUser, say).
+    /// MCP `tools/call` on servers without a stricter per-server
+    /// extension short-circuits to `Decision::Allow` at
+    /// `PermissionController::decide` lane 2. Tighten by setting
+    /// `auto_accept_tools = ["list_*", "read_*"]`.
     #[garde(skip)]
     pub auto_accept_tools: Option<Vec<String>>,
 
