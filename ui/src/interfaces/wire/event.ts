@@ -47,6 +47,7 @@ export interface PermissionRequestEventPayload {
   turnId?: string
   requestId: string
   tool: string
+  identity: import('./transcript').ToolIdentity
   kind: string
   args: string
   /// Raw `tool_call.rawInput` JSON (pass-through). UI consumers

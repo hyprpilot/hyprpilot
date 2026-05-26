@@ -12,7 +12,7 @@ use tokio::process::Command;
 use agent_client_protocol::schema::ToolCallUpdate;
 
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
-use crate::adapters::permission::ToolIdentity;
+use crate::adapters::ToolIdentity;
 
 pub struct AcpAgentCodex;
 
@@ -64,7 +64,7 @@ mod tests {
 
     use super::AcpAgentCodex;
     use crate::adapters::acp::agents::AcpAgent;
-    use crate::adapters::permission::ToolIdentity;
+    use crate::adapters::ToolIdentity;
 
     fn entry_with_model(model: Option<&str>) -> AgentConfig {
         AgentConfig {

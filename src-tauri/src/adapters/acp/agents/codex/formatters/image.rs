@@ -49,6 +49,7 @@ mod tests {
         })];
         let ctx = FormatterContext {
             wire_name: "Image generation",
+            identity: &crate::adapters::ToolIdentity::Native,
             kind: "other",
             raw_input: None,
             adapter: "acp-codex",

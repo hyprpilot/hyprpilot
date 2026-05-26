@@ -26,8 +26,11 @@ export interface PermissionOptionView {
 
 export type ToolCallContentItem = { kind: 'text'; text: string } | { kind: 'file'; path: string; snippet?: string } | { kind: 'json'; value: unknown }
 
+export type ToolIdentity = { kind: 'native' } | { kind: 'mcp'; server: string; leaf: string }
+
 export interface ToolCallRecord {
   id: string
+  identity?: ToolIdentity
   /// Closed-set tool kind wire string (ACP `ToolKind`). Named
   /// `toolKind` (not `kind`) because the parent `TranscriptItem`
   /// uses `kind` as its discriminator tag.
@@ -52,6 +55,7 @@ export interface ToolCallRecord {
 
 export interface ToolCallUpdateRecord {
   id: string
+  identity?: ToolIdentity
   toolKind?: string
   title?: string
   state?: ToolCallState
@@ -106,6 +110,7 @@ export interface ChecklistStats {
 export interface PermissionRequestRecord {
   requestId: string
   tool: string
+  identity?: ToolIdentity
   toolKind: string
   args: string
   rawInput?: Record<string, unknown>

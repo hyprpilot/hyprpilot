@@ -35,7 +35,7 @@ use crate::adapters::instance::{InstanceActor, InstanceInfo, InstanceKey};
 use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
-use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
+use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk, ToolIdentity};
 use crate::config::AgentConfig;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
@@ -852,6 +852,7 @@ pub(crate) struct MappedSessionUpdate {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RunningToolCall {
     pub wire_name: String,
+    pub identity: ToolIdentity,
     pub tool_kind: String,
     pub raw_input: Option<serde_json::Value>,
     pub content: Vec<serde_json::Value>,
@@ -910,6 +911,7 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
     let registry = crate::adapters::acp::formatter_registry();
     let ctx = FormatterContext {
         wire_name: running.wire_name.as_str(),
+        identity: &running.identity,
         kind: running.tool_kind.as_str(),
         raw_input: running.raw_input.as_ref(),
         adapter: adapter_id,
@@ -918,6 +920,41 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
         completed_at: running.completed_at,
     };
     registry.dispatch(&ctx)
+}
+
+fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> ToolIdentity {
+    if let Some(identity) = ToolIdentity::from_mcp_name(title) {
+        return identity;
+    }
+
+    if adapter_id == "acp-codex" {
+        if let Some((server, leaf)) = title.strip_prefix("Tool: ").and_then(|body| body.split_once('/')) {
+            if !server.trim().is_empty() && !leaf.trim().is_empty() {
+                return ToolIdentity::Mcp {
+                    server: server.trim().to_string(),
+                    leaf: leaf.trim().to_string(),
+                };
+            }
+        }
+        if let Some(raw) = raw_input {
+            let server = raw
+                .get("server")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty());
+            let leaf = raw
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty());
+            if let (Some(server), Some(leaf)) = (server, leaf) {
+                return ToolIdentity::Mcp {
+                    server: server.trim().to_string(),
+                    leaf: leaf.trim().to_string(),
+                };
+            }
+        }
+    }
+
+    ToolIdentity::Native
 }
 
 /// Wall-clock now in epoch milliseconds. Used by the per-instance
@@ -1319,6 +1356,7 @@ pub(crate) fn map_session_update(
             // stays None until a state transition lands below.
             let running = RunningToolCall {
                 wire_name: title.clone(),
+                identity: tool_identity(adapter_id, &title, raw_input.as_ref()),
                 tool_kind: tool_kind.clone(),
                 raw_input: raw_input.clone(),
                 content: update
@@ -1330,6 +1368,7 @@ pub(crate) fn map_session_update(
                 completed_at: None,
             };
             let formatted = format_running(adapter_id, &running);
+            let identity = running.identity.clone();
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
             // Some agents emit the initial `tool_call` already in a
@@ -1343,6 +1382,7 @@ pub(crate) fn map_session_update(
             }
             MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
+                identity,
                 tool_kind,
                 title,
                 state,
@@ -1393,6 +1433,7 @@ pub(crate) fn map_session_update(
             if running.wire_name.is_empty() {
                 if let Some(t) = title.as_deref() {
                     running.wire_name = t.to_string();
+                    running.identity = tool_identity(adapter_id, t, raw_input.as_ref());
                 }
             }
             if let Some(k) = tool_kind.as_deref() {
@@ -1400,6 +1441,9 @@ pub(crate) fn map_session_update(
             }
             if let Some(rv) = raw_input.as_ref() {
                 running.raw_input = Some(rv.clone());
+                if matches!(running.identity, ToolIdentity::Native) {
+                    running.identity = tool_identity(adapter_id, running.wire_name.as_str(), Some(rv));
+                }
             }
             if let Some(arr) = update.get("content").and_then(|v| v.as_array()) {
                 running.content.extend(arr.iter().cloned());
@@ -1415,6 +1459,7 @@ pub(crate) fn map_session_update(
                 running.completed_at = Some(now_epoch_ms());
             }
             let formatted = format_running(adapter_id, running);
+            let identity = running.identity.clone();
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
             // Drop the cache entry once the tool has reached a terminal
@@ -1429,6 +1474,7 @@ pub(crate) fn map_session_update(
             }
             MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
+                identity: Some(identity),
                 tool_kind,
                 title,
                 state,
@@ -1493,6 +1539,7 @@ pub(crate) fn map_session_update(
                 .get("options")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            let identity = tool_identity(adapter_id, &tool, raw_input.as_ref());
             // Same formatter dispatch the live `InstanceEvent::PermissionRequest`
             // emit uses (instance.rs ~2949). `started_at: 0` /
             // `completed_at: None` so formatters that key on
@@ -1503,6 +1550,7 @@ pub(crate) fn map_session_update(
                 let registry = crate::adapters::acp::formatter_registry();
                 let ctx = FormatterContext {
                     wire_name: tool.as_str(),
+                    identity: &identity,
                     kind: tool_kind.as_str(),
                     raw_input: raw_input.as_ref(),
                     adapter: adapter_id,
@@ -1515,6 +1563,7 @@ pub(crate) fn map_session_update(
             MappedUpdate::Transcript(TranscriptItem::PermissionRequest(PermissionRequestRecord {
                 request_id,
                 tool,
+                identity,
                 tool_kind,
                 args,
                 raw_input,
@@ -3885,6 +3934,7 @@ async fn run(params: RunParams) {
                             session_id: sid,
                             request_id,
                             tool,
+                            identity,
                             kind,
                             args,
                             raw_input,
@@ -3908,6 +3958,7 @@ async fn run(params: RunParams) {
                                 // skip emitting Stat::Duration here.
                                 let ctx = FormatterContext {
                                     wire_name: tool.as_str(),
+                                    identity: &identity,
                                     kind: kind.as_str(),
                                     raw_input: raw_input.as_ref(),
                                     adapter: provider_id_for_fmt.as_str(),
@@ -3936,6 +3987,7 @@ async fn run(params: RunParams) {
                                 turn_id,
                                 request_id,
                                 tool,
+                                identity,
                                 kind,
                                 args,
                                 raw_input,
@@ -4390,6 +4442,37 @@ mod tests {
         assert_eq!(plan.steps[1].content, "implement feature");
         assert_eq!(plan.stats.done, 2, "two completed");
         assert_eq!(plan.stats.total, 4, "four total");
+    }
+
+    #[test]
+    fn map_session_update_sets_codex_mcp_tool_identity() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-1",
+            "title": "Tool: hyprpilot/read_skill",
+            "kind": "other",
+            "status": "running",
+            "rawInput": {
+                "server": "hyprpilot",
+                "tool": "read_skill",
+                "arguments": { "slug": "git-branch" }
+            }
+        });
+        let mapped = map_session_update(update, &mut cache, "acp-codex").mapped;
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCall(record)) = mapped else {
+            panic!("expected tool call");
+        };
+
+        assert_eq!(
+            record.identity,
+            ToolIdentity::Mcp {
+                server: "hyprpilot".into(),
+                leaf: "read_skill".into()
+            }
+        );
     }
 
     /// Pin every wire shape `chunk_text` extracts text from. Bare-text

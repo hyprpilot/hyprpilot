@@ -304,28 +304,6 @@ pub fn comment_for_lang(lang: &str) -> Option<&'static str> {
     })
 }
 
-/// `mcp__server__leaf` parsing. Empty server / leaf returns `None`.
-pub struct McpName<'a> {
-    pub server: &'a str,
-    pub leaf: String,
-}
-
-pub fn parse_mcp(canonical: &str) -> Option<McpName<'_>> {
-    if !canonical.starts_with("mcp__") {
-        return None;
-    }
-    let parts: Vec<&str> = canonical.split("__").collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let server = parts[1];
-    let leaf = parts[2..].join("__");
-    if server.is_empty() || leaf.is_empty() {
-        return None;
-    }
-    Some(McpName { server, leaf })
-}
-
 /// Path → fenced-code language hint. Mirrors the TS
 /// `inferMimeFromPath`+`resolveShikiLang` chain — this returns the
 /// Shiki language name directly (skipping the MIME hop) since the

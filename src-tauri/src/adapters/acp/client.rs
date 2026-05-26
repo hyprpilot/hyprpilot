@@ -26,9 +26,9 @@ use agent_client_protocol::schema::PermissionOptionKind;
 
 use crate::adapters::permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
-    PermissionOutcome, PermissionRequest, ToolCallRef, ToolIdentity, WAITER_TIMEOUT,
+    PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
 };
-use crate::mcp::permission_match::parse_mcp_tool_name;
+use crate::adapters::ToolIdentity;
 use crate::mcp::MCPsRegistry;
 use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals};
 
@@ -64,6 +64,7 @@ pub enum ClientEvent {
         session_id: String,
         request_id: String,
         tool: String,
+        identity: ToolIdentity,
         kind: String,
         args: String,
         /// Raw `tool_call.rawInput` JSON object — passed through verbatim
@@ -145,12 +146,7 @@ fn tool_call_ref(
         .or_else(|| kind_wire.clone())
         .unwrap_or_else(|| "tool".to_string());
     let identity = identity
-        .or_else(|| {
-            parse_mcp_tool_name(&name).map(|(server, leaf)| ToolIdentity::Mcp {
-                server: server.to_string(),
-                leaf: leaf.to_string(),
-            })
-        })
+        .or_else(|| ToolIdentity::from_mcp_name(&name))
         .unwrap_or_default();
     let raw_input = update.fields.raw_input.clone();
     let raw_args = raw_input.as_ref().and_then(|raw| {
@@ -357,6 +353,7 @@ impl AcpClient {
             }
             Decision::AskUser => {
                 let tool = tool_call.name.clone();
+                let identity = tool_call.identity.clone();
                 let kind = tool_call.permission_kind_wire();
                 let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
                 let raw_input = tool_call.raw_input.clone();
@@ -368,6 +365,7 @@ impl AcpClient {
                     session_id: req.session_id.0.to_string(),
                     request_id: request_id.clone(),
                     tool,
+                    identity,
                     kind,
                     args,
                     raw_input,

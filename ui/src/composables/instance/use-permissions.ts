@@ -8,6 +8,7 @@ import { ToolKind } from '@constants/ui'
 import type { ToolCallState } from '@constants/wire/transcript'
 import type { PermissionView } from '@interfaces/ui'
 import type { FormattedToolCall } from '@interfaces/wire/formatted-tool-call'
+import type { ToolIdentity } from '@interfaces/wire/transcript'
 import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
 import { log, projectFormatted } from '@lib'
 
@@ -24,6 +25,7 @@ export interface PendingPermission {
   requestId: string
   sessionId: string
   tool: string
+  identity: ToolIdentity
   kind: string
   args: string
   rawInput?: Record<string, unknown>
@@ -44,6 +46,7 @@ export interface PermissionRequestRaw {
   agentId: string
   requestId: string
   tool: string
+  identity?: ToolIdentity
   kind?: string
   args?: string
   rawInput?: Record<string, unknown>
@@ -74,6 +77,7 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     requestId: raw.requestId,
     sessionId,
     tool: raw.tool,
+    identity: raw.identity ?? { kind: 'native' },
     kind: raw.kind ?? 'other',
     args: raw.args ?? '',
     rawInput: raw.rawInput,
@@ -126,6 +130,7 @@ function buildView(p: PendingPermission, queued: boolean): PermissionView {
   const call = projectFormatted(p.formatted, {
     id: p.requestId,
     wireName: p.tool,
+    identity: p.identity,
     kind: (p.kind as ToolKind | undefined) ?? ToolKind.Other,
     state: 'pending' as ToolCallState,
     adapter: adapterFor(p.agentId),

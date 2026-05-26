@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::adapters::permission::ToolIdentity;
+use crate::adapters::ToolIdentity;
 use crate::tools::formatter::shared::text_blocks;
 use crate::tools::formatter::types::ToolField;
 

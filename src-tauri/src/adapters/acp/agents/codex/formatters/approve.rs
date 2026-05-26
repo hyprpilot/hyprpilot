@@ -73,6 +73,7 @@ mod tests {
         });
         let ctx = FormatterContext {
             wire_name: "Approve MCP tool call",
+            identity: &crate::adapters::ToolIdentity::Native,
             kind: "other",
             raw_input: Some(&raw),
             adapter: "acp-codex",
@@ -111,6 +112,7 @@ mod tests {
         });
         let ctx = FormatterContext {
             wire_name: "Approve hyprpilot/read_skill",
+            identity: &crate::adapters::ToolIdentity::Native,
             kind: "other",
             raw_input: Some(&raw),
             adapter: "acp-codex",

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::permission::PermissionOptionView;
 use super::transcript::TranscriptItem;
-use super::AdapterError;
+use super::{AdapterError, ToolIdentity};
 
 /// Registry key. A UUID per live instance — collisions across twin
 /// profiles are impossible by construction. Wire shape is the v4
@@ -150,6 +150,8 @@ pub enum InstanceEvent {
         turn_id: Option<String>,
         request_id: String,
         tool: String,
+        #[serde(default)]
+        identity: ToolIdentity,
         kind: String,
         args: String,
         /// Raw `tool_call.rawInput` JSON (pass-through). Populated when

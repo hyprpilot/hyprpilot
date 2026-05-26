@@ -8,7 +8,7 @@ use tokio::process::Command;
 
 use agent_client_protocol::schema::ToolCallUpdate;
 
-use crate::adapters::permission::ToolIdentity;
+use crate::adapters::ToolIdentity;
 use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::formatter::registry::FormatterRegistry;
 

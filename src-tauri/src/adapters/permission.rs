@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, Mutex};
 
 use crate::adapters::instance::InstanceEvent;
+use crate::adapters::ToolIdentity;
 use crate::mcp::MCPsRegistry;
 
 /// Sentinel `option_id` used on the `PermissionResolved` event when
@@ -180,20 +181,6 @@ pub fn reorder_options(options: Vec<PermissionOptionView>) -> Vec<PermissionOpti
     }
     out.extend(rest);
     out
-}
-
-/// Stable identity for the tool behind a permission request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ToolIdentity {
-    Native,
-    Mcp { server: String, leaf: String },
-}
-
-impl Default for ToolIdentity {
-    fn default() -> Self {
-        Self::Native
-    }
 }
 
 /// Identity projection of the tool behind a permission request.
@@ -765,12 +752,7 @@ mod tests {
             request_id: id.into(),
             tool_call: ToolCallRef {
                 name: tool.into(),
-                identity: crate::mcp::permission_match::parse_mcp_tool_name(tool)
-                    .map(|(server, leaf)| ToolIdentity::Mcp {
-                        server: server.to_string(),
-                        leaf: leaf.to_string(),
-                    })
-                    .unwrap_or_default(),
+                identity: ToolIdentity::from_mcp_name(tool).unwrap_or_default(),
                 title: Some(tool.into()),
                 raw_args: None,
                 raw_input: None,

@@ -173,9 +173,9 @@ mod tests {
     use super::*;
     use crate::adapters::permission::{
         DefaultPermissionController, PermissionController, PermissionOptionView, PermissionOutcome, PermissionRequest,
-        ToolCallRef, ToolIdentity,
+        ToolCallRef,
     };
-    use crate::adapters::{AcpAdapter, Adapter};
+    use crate::adapters::{AcpAdapter, Adapter, ToolIdentity};
     use crate::config::Config;
     use crate::rpc::handler::HandlerCtx;
 

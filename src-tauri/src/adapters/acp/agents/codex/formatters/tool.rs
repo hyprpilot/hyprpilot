@@ -74,6 +74,7 @@ mod tests {
         });
         let ctx = FormatterContext {
             wire_name: "Tool: hyprpilot/read_skill",
+            identity: &crate::adapters::ToolIdentity::Native,
             kind: "other",
             raw_input: Some(&raw),
             adapter: "acp-codex",
