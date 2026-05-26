@@ -27,6 +27,8 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 /// - `None` — vendor doesn't accept a model override.
 /// - `Env(name)` — set `name=<model>` env when `entry.env` doesn't
 ///   already define it.
+/// - `Argv(flag)` — append `flag <model>` to argv when `entry.args`
+///   doesn't already include `flag`.
 /// - `Config(key)` — append `-c key="<model>"` when `entry.args`
 ///   doesn't already carry a Codex-style `-c` / `--config` override
 ///   for `key`.
@@ -37,6 +39,7 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 pub enum ModelInjection {
     None,
     Env(&'static str),
+    Argv(&'static str),
     Config(&'static str),
 }
 
@@ -97,6 +100,16 @@ pub trait AcpAgent: Send + Sync + 'static {
             }
         }
 
+        // Argv-style model injection — append flag + value when user
+        // didn't already pass the flag explicitly. Done before
+        // Command::new so the arg ordering reflects user intent.
+        if let (Some(model), ModelInjection::Argv(flag)) = (entry.model.as_deref(), self.model_injection()) {
+            if !entry.args.iter().any(|a| a == flag) {
+                args.push(flag.to_string());
+                args.push(model.to_string());
+            }
+        }
+
         let mut cmd = Command::new(&program);
         cmd.args(&args);
         for (k, v) in entry.env.iter() {
@@ -125,6 +138,14 @@ pub trait AcpAgent: Send + Sync + 'static {
     /// `None` means the vendor doesn't accept a model override.
     fn model_injection(&self) -> ModelInjection {
         ModelInjection::None
+    }
+
+    fn display_config_option_id(&self, id: &str) -> String {
+        id.to_string()
+    }
+
+    fn wire_config_option_id(&self, id: &str) -> String {
+        id.to_string()
     }
 
     /// Default drops the prompt — vendors without a hook degrade silently
@@ -160,6 +181,16 @@ pub fn match_provider_agent(provider: AgentProvider) -> Box<dyn AcpAgent> {
         AgentProvider::AcpCodex => Box::new(AcpAgentCodex),
         AgentProvider::AcpOpenCode => Box::new(AcpAgentOpenCode),
         AgentProvider::Acp => Box::new(AcpAgentCustom),
+    }
+}
+
+#[must_use]
+pub fn display_config_option_id(adapter_id: &str, id: &str) -> String {
+    match adapter_id {
+        "acp-claude-code" => AcpAgentClaudeCode.display_config_option_id(id),
+        "acp-codex" => AcpAgentCodex.display_config_option_id(id),
+        "acp-opencode" => AcpAgentOpenCode.display_config_option_id(id),
+        _ => AcpAgentCustom.display_config_option_id(id),
     }
 }
 
@@ -202,6 +233,45 @@ mod tests {
         assert_eq!(cmd.as_std().get_program(), "my-acp-binary");
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args, vec!["--serve"]);
+    }
+
+    #[test]
+    fn argv_model_injection_appends_missing_flag() {
+        struct ArgvAgent;
+
+        impl AcpAgent for ArgvAgent {
+            fn model_injection(&self) -> ModelInjection {
+                ModelInjection::Argv("--model")
+            }
+        }
+
+        let mut entry = stub_entry("argv");
+        entry.model = Some("test-model".into());
+        let cmd = ArgvAgent.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+
+        assert!(args.windows(2).any(|w| w == ["--model", "test-model"]));
+    }
+
+    #[test]
+    fn argv_model_injection_preserves_user_flag() {
+        struct ArgvAgent;
+
+        impl AcpAgent for ArgvAgent {
+            fn model_injection(&self) -> ModelInjection {
+                ModelInjection::Argv("--model")
+            }
+        }
+
+        let mut entry = stub_entry("argv");
+        entry.model = Some("config-model".into());
+        entry.args.push("--model".into());
+        entry.args.push("user-model".into());
+        let cmd = ArgvAgent.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+
+        assert_eq!(args.iter().filter(|arg| **arg == "--model").count(), 1);
+        assert!(args.windows(2).any(|w| w == ["--model", "user-model"]));
     }
 
     #[test]

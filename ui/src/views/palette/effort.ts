@@ -1,16 +1,15 @@
 /**
  * Effort palette leaf — single-select picker over the active
- * instance's adapter-advertised reasoning-effort config option. Codex
- * ACP exposes `reasoning_effort`; claude-agent-acp exposes `effort`.
- * The agent ships the option list via `config_option_update`
- * notifications; we read the cached snapshot off `useSessionInfo`
- * and route the commit through the catch-all `config_option_set`
- * Tauri command.
+ * instance's adapter-advertised `effort` config option. The backend
+ * normalizes adapter wire ids (for example Codex ACP's
+ * `reasoning_effort`) onto this common category before they reach the
+ * palette, then maps `effort` back to the adapter wire id when
+ * committing.
  *
  * The palette is generic over any config-option category the agent
  * advertises (vendor extensions show up here too) — effort is the
  * first concrete leaf; future categories slot in by reusing
- * `openConfigOptionLeaf(categoryIds)` with different ids.
+ * `openConfigOptionLeaf(categoryId)` with a different id.
  */
 
 import { ToastTone } from '@components'
@@ -21,7 +20,6 @@ import { log } from '@lib'
 
 const EMPTY_ROW_ID = '__no-effort__'
 const ERROR_ROW_ID = '__effort-fetch-failed__'
-const EFFORT_CATEGORY_IDS = ['reasoning_effort', 'effort']
 
 function noOptionsSpec(message: string): PaletteSpec {
   return {
@@ -63,10 +61,10 @@ function errorSpec(err: string): PaletteSpec {
  * via the per-instance Arc<RwLock>.
  */
 export async function openEffortLeaf(): Promise<void> {
-  return openConfigOptionLeaf(EFFORT_CATEGORY_IDS, 'effort')
+  return openConfigOptionLeaf('effort', 'effort')
 }
 
-async function openConfigOptionLeaf(categoryIds: string[], paletteTitle: string): Promise<void> {
+async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): Promise<void> {
   const { open } = usePalette()
   const { id } = useActiveInstance()
   const { profiles, selected } = useProfiles()
@@ -90,7 +88,7 @@ async function openConfigOptionLeaf(categoryIds: string[], paletteTitle: string)
   } catch(err) {
     const message = String(err)
 
-    log.warn(`${paletteTitle} instance_meta failed`, { instanceId, err: message })
+    log.warn(`instance_meta failed (${categoryId} leaf)`, { instanceId, err: message })
     open(errorSpec(message))
 
     return
@@ -100,10 +98,10 @@ async function openConfigOptionLeaf(categoryIds: string[], paletteTitle: string)
   // instance_meta snapshot (mode + model + cwd live there but
   // configOptions is on a separate notification path). Read the
   // UI-side cache populated by the `config_option_update` listener.
-  const category = info.value.configOptions.find((c) => categoryIds.includes(c.id))
+  const category = info.value.configOptions.find((c) => c.id === categoryId)
 
   if (!category) {
-    open(noOptionsSpec(`no ${categoryIds.join(' / ')} category advertised yet — wait for the agent to push config_option_update`))
+    open(noOptionsSpec(`no ${categoryId} category advertised yet — wait for the agent to push config_option_update`))
 
     return
   }

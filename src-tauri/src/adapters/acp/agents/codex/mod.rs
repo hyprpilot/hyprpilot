@@ -17,6 +17,20 @@ impl AcpAgent for AcpAgentCodex {
         ModelInjection::Config("model")
     }
 
+    fn display_config_option_id(&self, id: &str) -> String {
+        match id {
+            "reasoning_effort" => "effort".to_string(),
+            _ => id.to_string(),
+        }
+    }
+
+    fn wire_config_option_id(&self, id: &str) -> String {
+        match id {
+            "effort" => "reasoning_effort".to_string(),
+            _ => id.to_string(),
+        }
+    }
+
     /// codex-acp only exposes `-c key=value` overrides; the TOML
     /// `instructions` key is the system-prompt slot.
     fn inject_system_prompt(&self, cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
@@ -119,6 +133,14 @@ mod tests {
             !args.windows(2).any(|w| w[0] == "-c" && w[1].starts_with("model=")),
             "unexpected -c model=... in {args:?}"
         );
+    }
+
+    #[test]
+    fn effort_config_option_uses_common_display_id() {
+        assert_eq!(AcpAgentCodex.display_config_option_id("reasoning_effort"), "effort");
+        assert_eq!(AcpAgentCodex.wire_config_option_id("effort"), "reasoning_effort");
+        assert_eq!(AcpAgentCodex.display_config_option_id("model"), "model");
+        assert_eq!(AcpAgentCodex.wire_config_option_id("model"), "model");
     }
 
     #[test]

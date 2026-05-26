@@ -1213,7 +1213,8 @@ pub(crate) fn map_session_update(
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|cat| {
-                            let id = cat.get("id").and_then(|v| v.as_str())?.to_string();
+                            let raw_id = cat.get("id").and_then(|v| v.as_str())?;
+                            let id = super::agents::display_config_option_id(adapter_id, raw_id);
                             let name = cat.get("name").and_then(|v| v.as_str())?.to_string();
                             let description = cat.get("description").and_then(|v| v.as_str()).map(str::to_string);
                             let current_value = cat.get("currentValue").and_then(|v| v.as_str()).map(str::to_string);
@@ -3218,10 +3219,12 @@ async fn run(params: RunParams) {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
                             };
+                            let wire_config_id = match_provider_agent(cfg.provider).wire_config_option_id(&config_id);
                             info!(
                                 agent = %agent_id_notif,
                                 session = %sid,
-                                config_id,
+                                config_id = %wire_config_id,
+                                display_config_id = %config_id,
                                 value,
                                 "acp::instance: session/set_config_option requested"
                             );
@@ -3233,7 +3236,7 @@ async fn run(params: RunParams) {
                                 use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
                                 let req = SetSessionConfigOptionRequest::new(
                                     sid.clone(),
-                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(wire_config_id.as_str())),
                                     SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
                                 );
                                 let res = conn.send_request(req).block_task().await.map_err(|e| e.to_string());
@@ -4544,6 +4547,32 @@ mod tests {
             ]
         });
         let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+        match mapped {
+            MappedUpdate::ConfigOptions { categories } => {
+                assert_eq!(categories.len(), 1);
+                assert_eq!(categories[0].id, "effort");
+                assert_eq!(categories[0].current_value.as_deref(), Some("high"));
+            }
+            _ => panic!("expected ConfigOptions variant"),
+        }
+    }
+
+    #[test]
+    fn map_session_update_codex_config_options_normalizes_effort_id() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+                {
+                    "id": "reasoning_effort",
+                    "name": "Reasoning Effort",
+                    "currentValue": "high",
+                    "options": []
+                }
+            ]
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "acp-codex");
         match mapped {
             MappedUpdate::ConfigOptions { categories } => {
                 assert_eq!(categories.len(), 1);
