@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.3](https://github.com/hyprpilot/hyprpilot/compare/v2.3.2...v2.3.3) (2026-05-26)
+
+
+### Bug Fixes
+
+* **acp:** pass Codex model via config override ([#119](https://github.com/hyprpilot/hyprpilot/issues/119)) ([f3d00e7](https://github.com/hyprpilot/hyprpilot/commit/f3d00e70d1ffc95efeaf8e21b2b8ab0af0ff5575))
+
 ## [2.3.2](https://github.com/hyprpilot/hyprpilot/compare/v2.3.1...v2.3.2) (2026-05-20)
 
 
