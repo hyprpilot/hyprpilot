@@ -27,8 +27,9 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 /// - `None` — vendor doesn't accept a model override.
 /// - `Env(name)` — set `name=<model>` env when `entry.env` doesn't
 ///   already define it.
-/// - `Argv(flag)` — append `flag <model>` to argv when `entry.args`
-///   doesn't already include `flag`.
+/// - `Config(key)` — append `-c key="<model>"` when `entry.args`
+///   doesn't already carry a Codex-style `-c` / `--config` override
+///   for `key`.
 ///
 /// "User value wins" enforcement lives in the trait-default `spawn()`
 /// — vendors only declare *where* the injection lands.
@@ -36,7 +37,7 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 pub enum ModelInjection {
     None,
     Env(&'static str),
-    Argv(&'static str),
+    Config(&'static str),
 }
 
 /// Expand `~` and `$VAR` / `${VAR}` references against the daemon's
@@ -58,6 +59,23 @@ fn expand_value(raw: &str, ctx: &str) -> String {
     }
 }
 
+fn has_config_override(args: &[String], key: &str) -> bool {
+    args.iter()
+        .filter_map(|arg| arg.strip_prefix("--config="))
+        .chain(
+            args.windows(2)
+                .filter_map(|w| matches!(w[0].as_str(), "-c" | "--config").then_some(w[1].as_str())),
+        )
+        .any(|raw| {
+            raw.split_once('=')
+                .is_some_and(|(candidate, _)| candidate.trim() == key)
+        })
+}
+
+fn config_override_arg(key: &str, value: &str) -> String {
+    format!("{key}={}", serde_json::to_string(value).expect("str always serializes"))
+}
+
 /// Vendor-adapter trait. Implementors are unit structs — state lives
 /// on `AgentConfig`. `command` + `args` come from config (mandatory at
 /// validate time); the trait carries only the per-vendor injection
@@ -70,13 +88,12 @@ pub trait AcpAgent: Send + Sync + 'static {
         let program = expand_value(&entry.command, "agent.command");
         let mut args: Vec<String> = entry.args.clone();
 
-        // Argv-style model injection — append flag + value when user
-        // didn't already pass the flag explicitly. Done before
-        // Command::new so the arg ordering reflects user intent.
-        if let (Some(model), ModelInjection::Argv(flag)) = (entry.model.as_deref(), self.model_injection()) {
-            if !entry.args.iter().any(|a| a == flag) {
-                args.push(flag.to_string());
-                args.push(model.to_string());
+        // Config-style model injection — used by ACP binaries that only
+        // expose Codex's `-c key=value` config override surface.
+        if let (Some(model), ModelInjection::Config(key)) = (entry.model.as_deref(), self.model_injection()) {
+            if !has_config_override(&entry.args, key) {
+                args.push("-c".to_string());
+                args.push(config_override_arg(key, model));
             }
         }
 

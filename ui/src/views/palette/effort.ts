@@ -1,16 +1,16 @@
 /**
  * Effort palette leaf — single-select picker over the active
- * instance's adapter-advertised `effort` config option (claude-
- * agent-acp 0.21+ adaptive thinking — `low | medium | high | xhigh
- * | max`). The agent ships the option list via `config_option_update`
+ * instance's adapter-advertised reasoning-effort config option. Codex
+ * ACP exposes `reasoning_effort`; claude-agent-acp exposes `effort`.
+ * The agent ships the option list via `config_option_update`
  * notifications; we read the cached snapshot off `useSessionInfo`
  * and route the commit through the catch-all `config_option_set`
  * Tauri command.
  *
  * The palette is generic over any config-option category the agent
- * advertises (vendor extensions show up here too) — `effort` is the
+ * advertises (vendor extensions show up here too) — effort is the
  * first concrete leaf; future categories slot in by reusing
- * `openConfigOptionLeaf(categoryId)` with a different id.
+ * `openConfigOptionLeaf(categoryIds)` with different ids.
  */
 
 import { ToastTone } from '@components'
@@ -21,6 +21,7 @@ import { log } from '@lib'
 
 const EMPTY_ROW_ID = '__no-effort__'
 const ERROR_ROW_ID = '__effort-fetch-failed__'
+const EFFORT_CATEGORY_IDS = ['reasoning_effort', 'effort']
 
 function noOptionsSpec(message: string): PaletteSpec {
   return {
@@ -62,10 +63,10 @@ function errorSpec(err: string): PaletteSpec {
  * via the per-instance Arc<RwLock>.
  */
 export async function openEffortLeaf(): Promise<void> {
-  return openConfigOptionLeaf('effort', 'effort')
+  return openConfigOptionLeaf(EFFORT_CATEGORY_IDS, 'effort')
 }
 
-async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): Promise<void> {
+async function openConfigOptionLeaf(categoryIds: string[], paletteTitle: string): Promise<void> {
   const { open } = usePalette()
   const { id } = useActiveInstance()
   const { profiles, selected } = useProfiles()
@@ -89,7 +90,7 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
   } catch(err) {
     const message = String(err)
 
-    log.warn(`instance_meta failed (${categoryId} leaf)`, { instanceId, err: message })
+    log.warn(`${paletteTitle} instance_meta failed`, { instanceId, err: message })
     open(errorSpec(message))
 
     return
@@ -99,16 +100,16 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
   // instance_meta snapshot (mode + model + cwd live there but
   // configOptions is on a separate notification path). Read the
   // UI-side cache populated by the `config_option_update` listener.
-  const category = info.value.configOptions.find((c) => c.id === categoryId)
+  const category = info.value.configOptions.find((c) => categoryIds.includes(c.id))
 
   if (!category) {
-    open(noOptionsSpec(`no ${categoryId} category advertised yet — wait for the agent to push config_option_update`))
+    open(noOptionsSpec(`no ${categoryIds.join(' / ')} category advertised yet — wait for the agent to push config_option_update`))
 
     return
   }
 
   if (category.options.length === 0) {
-    open(noOptionsSpec(`${categoryId}: agent advertised the category but no values yet`))
+    open(noOptionsSpec(`${category.id}: agent advertised the category but no values yet`))
 
     return
   }
@@ -154,10 +155,10 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
       try {
         await invoke(TauriCommand.ConfigOptionSet, {
           instanceId: targetInstance,
-          configId: categoryId,
+          configId: category.id,
           value: pick.id
         })
-        pushToast(ToastTone.Ok, `${categoryId} → ${pick.name}`)
+        pushToast(ToastTone.Ok, `${category.id} → ${pick.name}`)
 
         // Captain-initiated change → leave a chapter-break banner in
         // the transcript matching mode / model commits. pushConfigOptionChange
@@ -165,7 +166,7 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
         // `config_option_update` won't stack a second card.
         if (snapshot.sessionId) {
           pushConfigOptionChange(targetInstance, snapshot.sessionId, {
-            categoryId,
+            categoryId: category.id,
             value: pick.id,
             name: pick.name,
             prevValue: prev?.value,
@@ -177,11 +178,11 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
 
         log.warn('config_option_set failed', {
           instanceId: targetInstance,
-          categoryId,
+          categoryId: category.id,
           value: pick.id,
           err: message
         })
-        pushToast(ToastTone.Err, `${categoryId}: ${message}`)
+        pushToast(ToastTone.Err, `${category.id}: ${message}`)
       }
     }
   })

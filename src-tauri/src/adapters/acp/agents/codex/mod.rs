@@ -1,8 +1,8 @@
 //! Codex ACP adapter.
 //!
 //! Launches via `bunx --bun @zed-industries/codex-acp`. Model selection
-//! rides on the `--model` argv flag; the system prompt rides on a
-//! `-c instructions="..."` TOML override.
+//! rides on a `-c model="..."` TOML override; the system prompt rides
+//! on a `-c instructions="..."` TOML override.
 
 pub mod formatters;
 
@@ -14,7 +14,7 @@ pub struct AcpAgentCodex;
 
 impl AcpAgent for AcpAgentCodex {
     fn model_injection(&self) -> ModelInjection {
-        ModelInjection::Argv("--model")
+        ModelInjection::Config("model")
     }
 
     /// codex-acp only exposes `-c key=value` overrides; the TOML
@@ -53,40 +53,72 @@ mod tests {
     }
 
     #[test]
-    fn model_appends_model_flag() {
+    fn model_appends_model_config_override() {
         let entry = entry_with_model(Some("codex-mini-latest"));
         let cmd = AcpAgentCodex.spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
         assert!(
             args.windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "codex-mini-latest"),
-            "expected --model codex-mini-latest in {args:?}"
+                .any(|w| w[0] == "-c" && w[1] == r#"model="codex-mini-latest""#),
+            "expected -c model=\"codex-mini-latest\" in {args:?}"
         );
     }
 
     #[test]
-    fn user_model_flag_wins_over_config() {
+    fn user_model_config_override_wins_over_config() {
         let mut entry = entry_with_model(Some("codex-mini-latest"));
         entry.args = vec![
             "--bun".into(),
             "@zed-industries/codex-acp".into(),
-            "--model".into(),
-            "o4-mini".into(),
+            "-c".into(),
+            "model=\"o4-mini\"".into(),
         ];
         let cmd = AcpAgentCodex.spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        // --model must appear exactly once and with the user value.
-        let model_positions: Vec<_> = args.windows(2).filter(|w| w[0] == "--model").collect();
-        assert_eq!(model_positions.len(), 1, "expected exactly one --model in {args:?}");
-        assert_eq!(model_positions[0][1], "o4-mini");
+        // -c model=... must appear exactly once and with the user value.
+        let model_positions: Vec<_> = args
+            .windows(2)
+            .filter(|w| w[0] == "-c" && w[1].starts_with("model="))
+            .collect();
+        assert_eq!(
+            model_positions.len(),
+            1,
+            "expected exactly one -c model=... in {args:?}"
+        );
+        assert_eq!(model_positions[0][1], "model=\"o4-mini\"");
     }
 
     #[test]
-    fn no_model_means_no_model_flag() {
+    fn user_long_model_config_override_wins_over_config() {
+        let mut entry = entry_with_model(Some("codex-mini-latest"));
+        entry.args = vec![
+            "--bun".into(),
+            "@zed-industries/codex-acp".into(),
+            "--config=model=\"o4-mini\"".into(),
+        ];
+        let cmd = AcpAgentCodex.spawn(&entry);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
+
+        assert_eq!(
+            args.iter().filter(|arg| arg.starts_with("--config=model=")).count(),
+            1,
+            "expected user --config=model=... to be preserved in {args:?}"
+        );
+        assert!(
+            !args.windows(2).any(|w| w[0] == "-c" && w[1].starts_with("model=")),
+            "unexpected injected -c model=... in {args:?}"
+        );
+    }
+
+    #[test]
+    fn no_model_means_no_model_config_override() {
         let entry = entry_with_model(None);
         let cmd = AcpAgentCodex.spawn(&entry);
         let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.contains(&"--model"), "unexpected --model in {args:?}");
+        assert!(
+            !args.windows(2).any(|w| w[0] == "-c" && w[1].starts_with("model=")),
+            "unexpected -c model=... in {args:?}"
+        );
     }
 
     #[test]
