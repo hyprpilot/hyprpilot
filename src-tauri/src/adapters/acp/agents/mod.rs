@@ -161,6 +161,17 @@ pub trait AcpAgent: Send + Sync + 'static {
         id.to_string()
     }
 
+    fn augment_config_options(
+        &self,
+        _categories: &mut Vec<crate::adapters::SessionConfigOptionCategory>,
+        _configured_effort: Option<&str>,
+    ) {
+    }
+
+    fn config_option_model_id(&self, _id: &str, _value: &str, _current_model: Option<&str>) -> Option<String> {
+        None
+    }
+
     fn permission_tool_identity(&self, _update: &ToolCallUpdate) -> Option<ToolIdentity> {
         None
     }
@@ -212,6 +223,19 @@ pub fn display_config_option_id(adapter_id: &str, id: &str) -> String {
         "acp-codex" => AcpAgentCodex.display_config_option_id(id),
         "acp-opencode" => AcpAgentOpenCode.display_config_option_id(id),
         _ => AcpAgentCustom.display_config_option_id(id),
+    }
+}
+
+pub fn augment_config_options(
+    adapter_id: &str,
+    categories: &mut Vec<crate::adapters::SessionConfigOptionCategory>,
+    configured_effort: Option<&str>,
+) {
+    match adapter_id {
+        "acp-claude-code" => AcpAgentClaudeCode.augment_config_options(categories, configured_effort),
+        "acp-codex" => AcpAgentCodex.augment_config_options(categories, configured_effort),
+        "acp-opencode" => AcpAgentOpenCode.augment_config_options(categories, configured_effort),
+        _ => AcpAgentCustom.augment_config_options(categories, configured_effort),
     }
 }
 

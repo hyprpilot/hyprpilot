@@ -852,6 +852,7 @@ mod tests {
             // insertion time. Test helpers never assert on the
             // event's `seq` field directly — they read mirror state.
             seq: 0,
+            message_id: None,
             meta: None,
         }
     }

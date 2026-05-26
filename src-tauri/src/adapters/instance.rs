@@ -115,6 +115,12 @@ pub enum InstanceEvent {
         /// daemon's truth.
         #[serde(default)]
         seq: u64,
+        /// Vendor-emitted content-block id from ACP's `unstable_message_id`
+        /// chunks. UI stream stores use it to keep separate thought blocks
+        /// distinct when an adapter emits multiple reasoning blocks in one
+        /// turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
         /// `_meta` envelope pass-through from the originating
         /// `session/update` notification — vendor-specific extension
         /// data that lives outside the typed protocol shapes.

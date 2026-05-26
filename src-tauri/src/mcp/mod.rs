@@ -72,6 +72,53 @@ pub struct MCPDefinition {
 /// short-circuits.
 pub type CompiledGlobs = (Option<globset::GlobSet>, Option<globset::GlobSet>);
 
+fn expand_value(raw: &str, ctx: &str) -> String {
+    match shellexpand::full(raw) {
+        Ok(expanded) => expanded.into_owned(),
+        Err(err) => {
+            tracing::warn!(value = raw, ctx, %err, "mcp::expand_value: expansion failed; using raw value");
+            raw.to_string()
+        }
+    }
+}
+
+fn expand_raw_strings(def: &MCPDefinition, raw: &Value) -> Value {
+    fn expand_object_strings(obj: &mut serde_json::Map<String, Value>, ctx: &str) {
+        for (key, value) in obj.iter_mut() {
+            if let Value::String(raw) = value {
+                *raw = expand_value(raw, &format!("{ctx}.{key}"));
+            }
+        }
+    }
+
+    let mut expanded = raw.clone();
+    let Some(obj) = expanded.as_object_mut() else {
+        return expanded;
+    };
+
+    if let Some(Value::String(command)) = obj.get_mut("command") {
+        *command = expand_value(command, &format!("mcp.{}.command", def.name));
+    }
+
+    if let Some(Value::Array(args)) = obj.get_mut("args") {
+        for (idx, arg) in args.iter_mut().enumerate() {
+            if let Value::String(raw) = arg {
+                *raw = expand_value(raw, &format!("mcp.{}.args[{idx}]", def.name));
+            }
+        }
+    }
+
+    if let Some(Value::Object(env)) = obj.get_mut("env") {
+        expand_object_strings(env, &format!("mcp.{}.env", def.name));
+    }
+
+    if let Some(Value::Object(headers)) = obj.get_mut("headers") {
+        expand_object_strings(headers, &format!("mcp.{}.headers", def.name));
+    }
+
+    expanded
+}
+
 /// Compile a list of glob patterns into a `GlobSet`. `None` when the
 /// input is empty or every pattern fails to compile (logged). The
 /// per-server tool-name globs are tiny so build cost is negligible at
@@ -128,7 +175,8 @@ pub fn project_to_acp(def: &MCPDefinition) -> Option<agent_client_protocol::sche
     use agent_client_protocol::schema::{
         EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
     };
-    let obj = def.raw.as_object()?;
+    let expanded = expand_raw_strings(def, &def.raw);
+    let obj = expanded.as_object()?;
 
     // Stdio: presence of `command` is the discriminator. Standard
     // `mcpServers` JSON shape.
@@ -310,6 +358,63 @@ mod tests {
         ]);
         let names: Vec<String> = reg.list().into_iter().map(|m| m.name).collect();
         assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn project_to_acp_expands_stdio_command_args_and_env() {
+        unsafe {
+            std::env::set_var("HYPRPILOT_TEST_MCP_BIN", "/tmp/mcp-bin");
+            std::env::set_var("HYPRPILOT_TEST_MCP_ENV", "expanded-env");
+        }
+        let def = MCPDefinition {
+            name: "memory".into(),
+            raw: serde_json::json!({
+                "command": "${HYPRPILOT_TEST_MCP_BIN}",
+                "args": ["--path", "${HYPRPILOT_TEST_MCP_ENV}"],
+                "env": { "MEMORY_FILE_PATH": "${HYPRPILOT_TEST_MCP_ENV}/memory.jsonl" }
+            }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: PathBuf::from("test.json"),
+        };
+
+        let projected = project_to_acp(&def).expect("stdio projects");
+        let agent_client_protocol::schema::McpServer::Stdio(stdio) = projected else {
+            panic!("expected stdio server");
+        };
+        assert_eq!(stdio.command.to_string_lossy(), "/tmp/mcp-bin");
+        assert_eq!(stdio.args, vec!["--path", "expanded-env"]);
+        assert_eq!(stdio.env[0].value, "expanded-env/memory.jsonl");
+
+        unsafe {
+            std::env::remove_var("HYPRPILOT_TEST_MCP_BIN");
+            std::env::remove_var("HYPRPILOT_TEST_MCP_ENV");
+        }
+    }
+
+    #[test]
+    fn project_to_acp_expands_http_headers() {
+        unsafe {
+            std::env::set_var("HYPRPILOT_TEST_MCP_TOKEN", "secret-token");
+        }
+        let def = MCPDefinition {
+            name: "github".into(),
+            raw: serde_json::json!({
+                "url": "https://example.test/mcp",
+                "headers": { "Authorization": "Bearer ${HYPRPILOT_TEST_MCP_TOKEN}" }
+            }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: PathBuf::from("test.json"),
+        };
+
+        let projected = project_to_acp(&def).expect("http projects");
+        let agent_client_protocol::schema::McpServer::Http(http) = projected else {
+            panic!("expected http server");
+        };
+        assert_eq!(http.headers[0].value, "Bearer secret-token");
+
+        unsafe {
+            std::env::remove_var("HYPRPILOT_TEST_MCP_TOKEN");
+        }
     }
 
     #[test]

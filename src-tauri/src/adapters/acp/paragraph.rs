@@ -167,8 +167,18 @@ impl FenceState {
         self.in_fence
     }
 
-    pub(crate) fn pending_fence_opener_needs_newline(&self, incoming: &str) -> bool {
-        !incoming.starts_with('\n') && fence_marker(&self.line).is_some()
+    pub(crate) fn pending_fence_opener_prefix(&self, incoming: &str) -> Option<&'static str> {
+        let (_, _, rest) = fence_marker(&self.line)?;
+
+        if incoming.starts_with('\n') {
+            return Some("");
+        }
+
+        if rest.trim().is_empty() && looks_like_fence_info_continuation(incoming) {
+            return Some("");
+        }
+
+        Some("\n")
     }
 
     pub(crate) fn reset(&mut self) {
@@ -210,6 +220,43 @@ impl FenceState {
         self.fence_char = ch;
         self.fence_len = len;
     }
+}
+
+fn looks_like_fence_info_continuation(incoming: &str) -> bool {
+    let first_line = incoming.split_once('\n').map_or(incoming, |(line, _)| line).trim();
+    matches!(
+        first_line,
+        "bash"
+            | "css"
+            | "diff"
+            | "dockerfile"
+            | "go"
+            | "html"
+            | "javascript"
+            | "js"
+            | "jsx"
+            | "json"
+            | "markdown"
+            | "md"
+            | "py"
+            | "python"
+            | "rs"
+            | "rust"
+            | "scss"
+            | "sh"
+            | "shell"
+            | "sql"
+            | "svelte"
+            | "toml"
+            | "ts"
+            | "tsx"
+            | "txt"
+            | "typescript"
+            | "vue"
+            | "xml"
+            | "yaml"
+            | "yml"
+    )
 }
 
 fn fence_marker(line: &str) -> Option<(char, usize, &str)> {

@@ -155,7 +155,8 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       markThinkingStart(instanceId, sessionId)
       pushThoughtChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_thought_chunk',
-        content: { type: 'text', text: item.text }
+        content: { type: 'text', text: item.text },
+        messageId: payload.messageId
       } as Parameters<typeof pushThoughtChunk>[2])
 
       return

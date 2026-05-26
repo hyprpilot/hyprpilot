@@ -13,7 +13,7 @@ use tokio::process::Command;
 use agent_client_protocol::schema::ToolCallUpdate;
 
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
-use crate::adapters::ToolIdentity;
+use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue, ToolIdentity};
 
 pub struct AcpAgentCodex;
 
@@ -38,6 +38,26 @@ impl AcpAgent for AcpAgentCodex {
             "effort" => "reasoning_effort".to_string(),
             _ => id.to_string(),
         }
+    }
+
+    fn augment_config_options(
+        &self,
+        categories: &mut Vec<SessionConfigOptionCategory>,
+        configured_effort: Option<&str>,
+    ) {
+        ensure_effort_option(categories, configured_effort);
+    }
+
+    fn config_option_model_id(&self, id: &str, value: &str, current_model: Option<&str>) -> Option<String> {
+        if id != "effort" {
+            return None;
+        }
+
+        let model = current_model
+            .map(|model| model.split_once('/').map_or(model, |(model, _)| model))
+            .filter(|model| !model.trim().is_empty())?;
+
+        Some(format!("{model}/{value}"))
     }
 
     fn permission_tool_identity(&self, update: &ToolCallUpdate) -> Option<ToolIdentity> {
@@ -83,6 +103,35 @@ impl AcpAgent for AcpAgentCodex {
     }
 }
 
+fn ensure_effort_option(categories: &mut Vec<SessionConfigOptionCategory>, configured_effort: Option<&str>) {
+    if categories.iter().any(|category| category.id == "effort") {
+        return;
+    }
+
+    categories.push(SessionConfigOptionCategory {
+        id: "effort".into(),
+        name: "Effort".into(),
+        description: Some("Choose how much reasoning effort Codex should use".into()),
+        current_value: configured_effort.map(str::to_string).or_else(|| Some("medium".into())),
+        options: ["minimal", "low", "medium", "high"]
+            .into_iter()
+            .map(|value| SessionConfigOptionValue {
+                value: value.into(),
+                name: title_case(value),
+                description: None,
+            })
+            .collect(),
+    });
+}
+
+fn title_case(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 fn identity_from_mcp_title(title: &str) -> Option<ToolIdentity> {
     let title = title.split_once(" (").map_or(title, |(head, _)| head).trim();
     let (server, leaf) = title.split_once('.')?;
@@ -115,7 +164,7 @@ mod tests {
 
     use super::AcpAgentCodex;
     use crate::adapters::acp::agents::AcpAgent;
-    use crate::adapters::ToolIdentity;
+    use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue, ToolIdentity};
 
     fn entry_with_model(model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -244,6 +293,82 @@ mod tests {
         assert_eq!(AcpAgentCodex.wire_config_option_id("effort"), "reasoning_effort");
         assert_eq!(AcpAgentCodex.display_config_option_id("model"), "model");
         assert_eq!(AcpAgentCodex.wire_config_option_id("model"), "model");
+    }
+
+    #[test]
+    fn effort_config_option_is_added_when_codex_omits_it() {
+        let mut categories = vec![SessionConfigOptionCategory {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            current_value: Some("gpt-5.5".into()),
+            options: Vec::new(),
+        }];
+
+        AcpAgentCodex.augment_config_options(&mut categories, Some("high"));
+
+        let effort = categories
+            .iter()
+            .find(|category| category.id == "effort")
+            .expect("effort category added");
+        assert_eq!(effort.current_value.as_deref(), Some("high"));
+        assert_eq!(
+            effort.options,
+            vec![
+                SessionConfigOptionValue {
+                    value: "minimal".into(),
+                    name: "Minimal".into(),
+                    description: None,
+                },
+                SessionConfigOptionValue {
+                    value: "low".into(),
+                    name: "Low".into(),
+                    description: None,
+                },
+                SessionConfigOptionValue {
+                    value: "medium".into(),
+                    name: "Medium".into(),
+                    description: None,
+                },
+                SessionConfigOptionValue {
+                    value: "high".into(),
+                    name: "High".into(),
+                    description: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn effort_config_option_does_not_duplicate_codex_native_option() {
+        let mut categories = vec![SessionConfigOptionCategory {
+            id: "effort".into(),
+            name: "Reasoning Effort".into(),
+            description: None,
+            current_value: Some("low".into()),
+            options: Vec::new(),
+        }];
+
+        AcpAgentCodex.augment_config_options(&mut categories, Some("high"));
+
+        assert_eq!(categories.len(), 1);
+        assert_eq!(categories[0].current_value.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn effort_config_option_routes_through_model_id_for_live_change() {
+        assert_eq!(
+            AcpAgentCodex.config_option_model_id("effort", "high", Some("gpt-5.5")),
+            Some("gpt-5.5/high".into())
+        );
+        assert_eq!(
+            AcpAgentCodex.config_option_model_id("effort", "low", Some("gpt-5.5/high")),
+            Some("gpt-5.5/low".into())
+        );
+        assert_eq!(
+            AcpAgentCodex.config_option_model_id("model", "gpt-5.5", Some("gpt-5.5")),
+            None
+        );
     }
 
     #[test]

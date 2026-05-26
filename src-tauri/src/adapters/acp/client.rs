@@ -721,6 +721,65 @@ mod tests {
         assert!(rx.try_recv().is_err(), "no UI event for per-server accept decisions");
     }
 
+    #[tokio::test]
+    async fn codex_mcp_approval_with_metadata_short_circuits_ui() {
+        use crate::adapters::acp::agents::{AcpAgent, AcpAgentCodex};
+        use crate::mcp::{HyprpilotExtension, MCPDefinition};
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mcps = Arc::new(MCPsRegistry::new(vec![MCPDefinition {
+            name: "memory".into(),
+            raw: json!({ "command": "echo" }),
+            hyprpilot: HyprpilotExtension {
+                auto_accept_tools: vec!["read_*".into()],
+                auto_reject_tools: vec![],
+            },
+            source: PathBuf::from("test.json"),
+        }]));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let controller = Arc::new(DefaultPermissionController::new()) as Arc<dyn PermissionController>;
+        let client = AcpClient::with_instance_id(
+            tx,
+            dir.path().to_path_buf(),
+            controller,
+            Some(mcps),
+            Some("instance-test".into()),
+        )
+        .expect("sandbox constructs")
+        .with_permission_tool_identity(Arc::new(|update| AcpAgentCodex.permission_tool_identity(update)));
+
+        let raw = json!({
+            "server_name": "memory",
+            "request": {
+                "meta": {
+                    "codex_approval_kind": "mcp_tool_call",
+                    "tool_title": "memory/read_graph"
+                },
+                "message": "Allow the memory MCP server to run tool \"read_graph\"?"
+            }
+        });
+        let fields = ToolCallUpdateFields::new()
+            .title("Approve memory/read_graph")
+            .raw_input(raw);
+        let req = RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(ToolCallId::new("tc-1"), fields),
+            vec![PermissionOption::new(
+                PermissionOptionId::new("approved"),
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+
+        let resp = client.request_permission(&req).await.expect("auto-accept");
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => assert_eq!(&*sel.option_id.0, "approved"),
+            other => panic!("expected Selected, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no UI event for Codex MCP approval autoaccept");
+    }
+
     #[test]
     fn tool_call_ref_other_kind_falls_back_to_title() {
         // ACP `kind = Other` is the catch-all for MCP / unmapped

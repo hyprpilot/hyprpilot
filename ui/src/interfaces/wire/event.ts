@@ -25,6 +25,8 @@ export interface TranscriptEventPayload {
   /// the field undefined; the patcher then falls back to local
   /// ordinal tracking.
   seq?: number
+  /// Vendor-emitted content-block id from ACP's `unstable_message_id` chunks.
+  messageId?: string
   /// `_meta` envelope pass-through from the originating
   /// `session/update` notification. Vendor-specific extension
   /// payloads live here; observability surface today (no rendering

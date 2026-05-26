@@ -274,8 +274,8 @@ impl TurnState {
         let id_boundary = is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id);
         let event_boundary = self.non_text_event_since_last_text;
         let boundary = id_boundary || event_boundary;
-        let prefix = if self.agent_text_fence.pending_fence_opener_needs_newline(incoming) {
-            "\n"
+        let prefix = if let Some(prefix) = self.agent_text_fence.pending_fence_opener_prefix(incoming) {
+            prefix
         } else if self.agent_text_fence.in_fence() {
             ""
         } else if boundary {
@@ -302,8 +302,8 @@ impl TurnState {
         let id_boundary = is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id);
         let event_boundary = self.non_text_event_since_last_thought;
         let boundary = id_boundary || event_boundary;
-        let prefix = if self.agent_thought_fence.pending_fence_opener_needs_newline(incoming) {
-            "\n"
+        let prefix = if let Some(prefix) = self.agent_thought_fence.pending_fence_opener_prefix(incoming) {
+            prefix
         } else if self.agent_thought_fence.in_fence() {
             ""
         } else if boundary {
@@ -941,14 +941,25 @@ fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::V
     ToolIdentity::Native
 }
 
+fn apply_config_option_selection(
+    categories: &mut [crate::adapters::SessionConfigOptionCategory],
+    id: &str,
+    value: &str,
+) {
+    if let Some(category) = categories.iter_mut().find(|category| category.id == id) {
+        category.current_value = Some(value.to_string());
+    }
+}
+
 fn project_session_config_options(
     adapter_id: &str,
     config_options: &[agent_client_protocol::schema::SessionConfigOption],
+    configured_effort: Option<&str>,
 ) -> Vec<crate::adapters::SessionConfigOptionCategory> {
     use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue};
     use agent_client_protocol::schema::{SessionConfigKind, SessionConfigSelectOptions};
 
-    config_options
+    let mut categories: Vec<_> = config_options
         .iter()
         .map(|option| {
             let (current_value, options) = match &option.kind {
@@ -988,7 +999,11 @@ fn project_session_config_options(
                 options,
             }
         })
-        .collect()
+        .collect();
+
+    super::agents::augment_config_options(adapter_id, &mut categories, configured_effort);
+
+    categories
 }
 
 /// Wall-clock now in epoch milliseconds. Used by the per-instance
@@ -1082,28 +1097,36 @@ pub(crate) fn map_session_update(
         fn pick_nonempty(v: Option<&serde_json::Value>) -> Option<String> {
             v.and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
         }
-        let content = match update.get("content") {
-            Some(v) => v,
-            None => return String::new(),
-        };
-        if let Some(s) = pick_nonempty(content.get("thinking")) {
-            return s;
-        }
-        if let Some(s) = pick_nonempty(content.get("text")) {
-            return s;
-        }
-        if let Some(arr) = content.as_array() {
-            let mut out = String::new();
-            for block in arr {
-                if let Some(s) = pick_nonempty(block.get("thinking")) {
-                    out.push_str(&s);
-                } else if let Some(s) = pick_nonempty(block.get("text")) {
-                    out.push_str(&s);
+
+        fn text_from_content(content: &serde_json::Value) -> String {
+            if let Some(text) = pick_nonempty(Some(content)) {
+                return text;
+            }
+
+            if let Some(arr) = content.as_array() {
+                let mut out = String::new();
+
+                for block in arr {
+                    out.push_str(&text_from_content(block));
+                }
+
+                return out;
+            }
+
+            for key in ["thinking", "text", "data", "delta", "summary", "reasoning"] {
+                if let Some(text) = pick_nonempty(content.get(key)) {
+                    return text;
                 }
             }
-            return out;
+
+            if let Some(nested) = content.get("content") {
+                return text_from_content(nested);
+            }
+
+            String::new()
         }
-        String::new()
+
+        update.get("content").map_or_else(String::new, text_from_content)
     }
 
     /// Project a single agent-emitted `ContentBlock` (the chunk's
@@ -2846,7 +2869,8 @@ async fn run(params: RunParams) {
                     }
                 }
                 if let Some(options) = &new_session.config_options {
-                    let categories = project_session_config_options(cfg.provider.wire_id(), options);
+                    let categories =
+                        project_session_config_options(cfg.provider.wire_id(), options, cfg.effort.as_deref());
                     for category in &categories {
                         if let Some(value) = category.current_value.as_ref() {
                             match category.id.as_str() {
@@ -2990,7 +3014,8 @@ async fn run(params: RunParams) {
                     *current_model_meta.write().await = Some(models.current_model_id.0.to_string());
                 }
                 if let Some(options) = &config_options_state {
-                    let categories = project_session_config_options(cfg.provider.wire_id(), options);
+                    let categories =
+                        project_session_config_options(cfg.provider.wire_id(), options, cfg.effort.as_deref());
                     for category in &categories {
                         if let Some(value) = category.current_value.as_ref() {
                             match category.id.as_str() {
@@ -3228,6 +3253,7 @@ async fn run(params: RunParams) {
                                 // Placeholder; `publish` overwrites with the
                                 // seq minted by `mirror.apply`.
                                 seq: 0,
+                                message_id: None,
                                 // User-prompt items are minted daemon-side
                                 // from the captain's submit, not from a
                                 // session/update notification — no `_meta`
@@ -3388,42 +3414,72 @@ async fn run(params: RunParams) {
                                 let _ = reply.send(Err("no live session in list-only actor".into()));
                                 continue;
                             };
-                            let wire_config_id = match_provider_agent(cfg.provider).wire_config_option_id(&config_id);
+                            let agent = match_provider_agent(cfg.provider);
+                            let current_model_for_option = current_model_meta
+                                .read()
+                                .await
+                                .clone()
+                                .or_else(|| cfg.model.clone());
+                            let model_id = agent.config_option_model_id(
+                                &config_id,
+                                &value,
+                                current_model_for_option.as_deref(),
+                            );
+                            let wire_config_id = agent.wire_config_option_id(&config_id);
                             info!(
                                 agent = %agent_id_notif,
                                 session = %sid,
                                 config_id = %wire_config_id,
                                 display_config_id = %config_id,
                                 value,
+                                model_id = ?model_id,
                                 "acp::instance: session/set_config_option requested"
                             );
                             let conn = connection.clone();
                             let events_tx_done = events_tx_notif.clone();
                             let meta_emitter = meta_emitter.clone();
                             let config_options_done = config_options_meta.clone();
+                            let current_model_done = current_model_meta.clone();
                             let adapter_id = cfg.provider.wire_id().to_string();
                             let session_log = sid.clone();
                             tokio::spawn(async move {
-                                use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
-                                let req = SetSessionConfigOptionRequest::new(
-                                    sid.clone(),
-                                    SessionConfigId::from(std::sync::Arc::<str>::from(wire_config_id.as_str())),
-                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
-                                );
-                                let res = conn.send_request(req).block_task().await.map_err(|e| e.to_string());
-                                if let Ok(resp) = &res {
-                                    *config_options_done.write().await = project_session_config_options(&adapter_id, &resp.config_options);
-                                    // Refresh InstanceMeta after a successful
-                                    // config_option change — keeps the header
-                                    // chrome consistent with set_mode /
-                                    // set_model paths. The underlying mode /
-                                    // model RwLocks are updated by the
-                                    // `config_option_update` notification path,
-                                    // so this emit picks up whatever values the
-                                    // agent advertised post-change.
+                                let res: Result<(), String> = if let Some(model_id) = model_id {
+                                    use agent_client_protocol::schema::{ModelId, SetSessionModelRequest};
+                                    let req = SetSessionModelRequest::new(
+                                        sid.clone(),
+                                        ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                    );
+                                    conn.send_request(req).block_task().await.map(|_| ()).map_err(|e| e.to_string())
+                                } else {
+                                    use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
+                                    let req = SetSessionConfigOptionRequest::new(
+                                        sid.clone(),
+                                        SessionConfigId::from(std::sync::Arc::<str>::from(wire_config_id.as_str())),
+                                        SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
+                                    );
+                                    match conn.send_request(req).block_task().await {
+                                        Ok(resp) => {
+                                            *config_options_done.write().await =
+                                                project_session_config_options(&adapter_id, &resp.config_options, None);
+                                            Ok(())
+                                        }
+                                        Err(err) => Err(err.to_string()),
+                                    }
+                                };
+                                if res.is_ok() {
+                                    if let Some(model) = current_model_for_option {
+                                        *current_model_done.write().await = Some(
+                                            model.split_once('/')
+                                                .map_or(model.as_str(), |(model, _)| model)
+                                                .to_string(),
+                                        );
+                                    }
+                                    let mut categories = config_options_done.write().await;
+                                    super::agents::augment_config_options(&adapter_id, &mut categories, None);
+                                    apply_config_option_selection(&mut categories, &config_id, &value);
                                     meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
                                 }
-                                let _ = reply.send(res.map(|_| ()));
+                                let _ = reply.send(res);
                             });
                         }
                         InstanceCommand::SetModel { model_id, reply } => {
@@ -3924,6 +3980,7 @@ async fn run(params: RunParams) {
                                         // Placeholder; `publish` overwrites
                                         // with the seq minted by `mirror.apply`.
                                         seq: 0,
+                                        message_id,
                                         meta,
                                     })
                                 }
@@ -3973,7 +4030,19 @@ async fn run(params: RunParams) {
                                     size,
                                     cost,
                                 }),
-                                MappedUpdate::ConfigOptions { categories } => {
+                                MappedUpdate::ConfigOptions { mut categories } => {
+                                    let current_effort = config_options_meta
+                                        .read()
+                                        .await
+                                        .iter()
+                                        .find(|category| category.id == "effort")
+                                        .and_then(|category| category.current_value.clone());
+                                    super::agents::augment_config_options(
+                                        cfg.provider.wire_id(),
+                                        &mut categories,
+                                        current_effort.as_deref(),
+                                    );
+
                                     // claude-agent-acp can ride mode / model on the
                                     // configOptions channel instead of dedicated
                                     // current_mode_update / current_model_update notifications.
@@ -4474,6 +4543,32 @@ mod tests {
     }
 
     #[test]
+    fn turn_state_keeps_split_fence_language_on_opener_line() {
+        let mut state = TurnState::default();
+
+        let mut out = String::new();
+        for chunk in ["```", "rust", "AcpAgent::set_effort(...)"] {
+            out.push_str(state.note_agent_text(chunk, Some("msg-1")));
+            out.push_str(chunk);
+        }
+
+        assert_eq!(out, "```rust\nAcpAgent::set_effort(...)");
+    }
+
+    #[test]
+    fn turn_state_does_not_paragraph_lift_split_fence_opener_newline() {
+        let mut state = TurnState::default();
+
+        let mut out = String::new();
+        for chunk in ["```rust", "\n", "let value = 1;\n", "```\n"] {
+            out.push_str(state.note_agent_text(chunk, Some("msg-1")));
+            out.push_str(chunk);
+        }
+
+        assert_eq!(out, "```rust\nlet value = 1;\n```\n");
+    }
+
+    #[test]
     fn turn_state_non_text_event_clears_on_open() {
         let mut state = TurnState::default();
         state.note_non_text_event();
@@ -4669,6 +4764,14 @@ mod tests {
             (
                 "AB",
                 json!({"sessionUpdate": "agent_thought_chunk", "content": [{"type": "thinking", "thinking": "A"}, {"type": "text", "text": "B"}]}),
+            ),
+            (
+                "codex data",
+                json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "data": "codex data"}}),
+            ),
+            (
+                "nested data",
+                json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "content", "content": {"data": "nested data"}}}),
             ),
         ];
         for (expected, update) in cases {
