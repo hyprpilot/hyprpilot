@@ -42,6 +42,7 @@ pub fn register_all_formatters(reg: &mut FormatterRegistry) {
 pub enum ModelInjection {
     None,
     Env(&'static str),
+    #[allow(dead_code)]
     Argv(&'static str),
     Config(&'static str),
 }

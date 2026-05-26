@@ -34,6 +34,8 @@ use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals}
 
 use self::error::{fs_error, terminal_error};
 
+type PermissionToolIdentityFn = dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync;
+
 /// Notification shape for `session/update`. Carries `update` as raw
 /// JSON so the boundary doesn't depend on the upstream typed
 /// `SessionUpdate` enum (which is `#[non_exhaustive]` with no
@@ -219,7 +221,7 @@ pub struct AcpClient {
     /// `hyprpilot.autoAcceptTools` / `autoRejectTools` lists used by
     /// `PermissionController::decide` lane 2.
     mcps: Option<Arc<MCPsRegistry>>,
-    permission_tool_identity: Arc<dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync>,
+    permission_tool_identity: Arc<PermissionToolIdentityFn>,
 }
 
 impl std::fmt::Debug for AcpClient {
@@ -252,10 +254,7 @@ impl AcpClient {
         })
     }
 
-    pub fn with_permission_tool_identity(
-        mut self,
-        permission_tool_identity: Arc<dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync>,
-    ) -> Self {
+    pub fn with_permission_tool_identity(mut self, permission_tool_identity: Arc<PermissionToolIdentityFn>) -> Self {
         self.permission_tool_identity = permission_tool_identity;
 
         self

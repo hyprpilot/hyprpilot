@@ -1,17 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 /// Stable identity for the tool behind a tool call / permission request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolIdentity {
+    #[default]
     Native,
-    Mcp { server: String, leaf: String },
-}
-
-impl Default for ToolIdentity {
-    fn default() -> Self {
-        Self::Native
-    }
+    Mcp {
+        server: String,
+        leaf: String,
+    },
 }
 
 impl ToolIdentity {
