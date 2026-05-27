@@ -372,7 +372,7 @@ pub enum InstanceEvent {
         available_modes: Vec<SessionModeInfo>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_models: Vec<SessionModelInfo>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
         config_options: Vec<SessionConfigOptionCategory>,
         /// Number of MCP servers wired to this instance — drives the
         /// header `+N mcps` pill. Computed from

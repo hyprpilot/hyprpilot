@@ -13,7 +13,7 @@
  */
 
 import { ToastTone } from '@components'
-import { pushConfigOptionChange, useActiveInstance, useProfiles, useSessionInfo, pushToast } from '@composables'
+import { pushConfigOptionChange, pushConfigOptionsUpdate, useActiveInstance, useProfiles, useSessionInfo, pushToast } from '@composables'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
@@ -94,11 +94,14 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
     return
   }
 
-  // The daemon doesn't yet pipe `configOptions` through the
-  // instance_meta snapshot (mode + model + cwd live there but
-  // configOptions is on a separate notification path). Read the
-  // UI-side cache populated by the `config_option_update` listener.
-  const category = info.value.configOptions.find((c) => c.id === categoryId)
+  const snapshotOptions = snapshot.configOptions ?? []
+
+  if (snapshot.instanceId && snapshot.configOptions !== undefined) {
+    pushConfigOptionsUpdate(snapshot.instanceId, snapshotOptions)
+  }
+
+  const categories = snapshotOptions.length > 0 ? snapshotOptions : info.value.configOptions
+  const category = categories.find((c) => c.id === categoryId)
 
   if (!category) {
     open(noOptionsSpec(`no ${categoryId} category advertised yet — wait for the agent to push config_option_update`))

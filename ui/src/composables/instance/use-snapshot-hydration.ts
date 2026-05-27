@@ -190,7 +190,7 @@ function applySessionInfoFromMeta(instanceId: InstanceId, data: MetaSnapshot): v
     })
   }
 
-  if (data.configOptions && data.configOptions.length > 0) {
+  if (data.configOptions !== undefined) {
     pushConfigOptionsUpdate(instanceId, data.configOptions)
   }
 }
