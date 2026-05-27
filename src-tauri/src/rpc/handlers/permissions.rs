@@ -42,6 +42,12 @@ struct RespondParams {
     /// regardless of payload shape.
     #[serde(default)]
     feedback: Option<String>,
+    /// Optional focus hint for external clients. Defaults to false so
+    /// permission responses can resolve in the background without
+    /// stealing the focused instance. Clients that want the permission
+    /// owner focused can opt in explicitly.
+    #[serde(default)]
+    focus: bool,
 }
 
 pub struct PermissionsHandler;
@@ -72,6 +78,7 @@ impl RpcHandler for PermissionsHandler {
                     request_id,
                     option_id,
                     feedback,
+                    focus,
                 } = parse_params(params, method)?;
 
                 // Snapshot the pending request BEFORE resolving so we
@@ -97,6 +104,20 @@ impl RpcHandler for PermissionsHandler {
                 }
 
                 if let Some(snap) = snapshot {
+                    if focus {
+                        if let Some(instance_id) = snap.instance_id.as_deref() {
+                            if let Some(key) = ctx.adapter.resolve_token(instance_id).await {
+                                ctx.adapter.focus(key).await.map_err(super::util::map_adapter_err)?;
+                            } else {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    instance_id,
+                                    "permissions/respond: focus requested but instance no longer resolves"
+                                );
+                            }
+                        }
+                    }
+
                     let feedback_trimmed = feedback.as_deref().map(str::trim).filter(|s| !s.is_empty());
                     if let Some(text) = feedback_trimmed {
                         let picked_kind = snap
@@ -290,7 +311,7 @@ mod tests {
         let v = dispatch_with_controller(
             controller,
             "permissions/respond",
-            json!({ "requestId": "req-resp", "optionId": "allow-once" }),
+            json!({ "requestId": "req-resp", "optionId": "allow-once", "focus": false }),
         )
         .await;
         assert_eq!(v["resolved"], true);

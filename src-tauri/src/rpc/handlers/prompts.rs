@@ -73,6 +73,10 @@ struct SendParams {
     /// instance's config is already frozen). Applied in declaration
     /// order; stored on the spawned instance for restart replay.
     with_config: Vec<Value>,
+    /// Optional focus hint for external clients. Defaults to false so
+    /// `prompts/send` remains a background-safe RPC; callers that want
+    /// the resolved instance to become focused can opt in explicitly.
+    focus: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -197,6 +201,10 @@ impl RpcHandler for PromptsHandler {
                 // instance lands. Errors (collision / bad-slug) propagate.
                 if let Some(name) = spawn_name {
                     adapter.rename(resolved, Some(name)).await.map_err(map_adapter_err)?;
+                }
+
+                if p.focus {
+                    adapter.focus(resolved).await.map_err(map_adapter_err)?;
                 }
 
                 // Draft path: emit a `composer:draft-append` Tauri
@@ -416,6 +424,29 @@ mod tests {
         );
     }
 
+    /// External clients (notably `hyprpilot.nvim`) can explicitly
+    /// say that a prompt should NOT steal instance focus. Pin the
+    /// field as accepted by the parser; the over-cap slug means the
+    /// call reaches resolution before rejecting.
+    #[tokio::test]
+    async fn send_accepts_focus_false_hint() {
+        let v = dispatch(
+            "prompts/send",
+            json!({
+                "instanceId": "this-name-is-deliberately-longer-than-the-sixty-four-character-slug-ceiling",
+                "text": "hi",
+                "focus": false,
+            }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602);
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("not a valid name slug"),
+            "expected resolution-step error, got: {v}"
+        );
+    }
+
     /// Populated `attachments` parses (same field shape as
     /// `tauri/session_submit`). Reaches the resolution step, where
     /// the over-cap slug id rejects.
@@ -443,6 +474,43 @@ mod tests {
         assert!(
             msg.contains("not a valid name slug"),
             "expected resolution-step error, got: {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_focus_true_switches_resolved_instance() {
+        let adapter = dead_child_adapter();
+        let first = dispatch_with_adapter(
+            adapter.clone(),
+            "prompts/send",
+            json!({ "instanceId": "first", "text": "one" }),
+        )
+        .await;
+        let first_id = first["instanceId"].as_str().expect("first id").to_string();
+
+        let second = dispatch_with_adapter(
+            adapter.clone(),
+            "prompts/send",
+            json!({ "instanceId": "second", "text": "two", "focus": false }),
+        )
+        .await;
+        let second_id = second["instanceId"].as_str().expect("second id").to_string();
+
+        assert_eq!(
+            adapter.focused_id().await.map(|k| k.as_string()).as_deref(),
+            Some(first_id.as_str())
+        );
+
+        let v = dispatch_with_adapter(
+            adapter.clone(),
+            "prompts/send",
+            json!({ "instanceId": "second", "text": "again", "focus": true }),
+        )
+        .await;
+        assert_eq!(v["accepted"], true, "focus opt-in should still submit: {v}");
+        assert_eq!(
+            adapter.focused_id().await.map(|k| k.as_string()).as_deref(),
+            Some(second_id.as_str())
         );
     }
 

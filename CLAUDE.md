@@ -1466,12 +1466,17 @@ ordering guarantee is what makes that drop correct.
 rides existing JSON-RPC verbs on the **same connection** — no
 separate write socket, no auth handshake:
 
-- Submit a prompt: `prompts/send { instanceId | name, text }` or
-  `tauri/session_submit { ... }` (full attachment surface).
+- Submit a prompt: `prompts/send { instanceId | name, text, focus? }`
+  or `tauri/session_submit { ... }` (full attachment surface).
+  `focus` defaults to `false`; external frontends send
+  `focus: false` when dispatching in the background and opt into
+  `focus: true` only when the resolved instance should become active.
 - Cancel an in-flight turn: `prompts/cancel { instanceId }` or
   `tauri/session_cancel`.
 - Answer a permission prompt: `permissions/respond {
-  instanceId, requestId, optionId }` or `tauri/permission_reply`.
+  instanceId, requestId, optionId, focus? }` or
+  `tauri/permission_reply`. `focus` follows the same default-false
+  background-safe convention as `prompts/send`.
 - Switch mode / model: `tauri/modes_set` / `tauri/models_set`.
 - Resume a stored session: `tauri/session_load`.
 - Spawn / focus / restart / rename / shutdown an instance:
