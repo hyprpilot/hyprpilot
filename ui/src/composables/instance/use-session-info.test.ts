@@ -9,6 +9,7 @@ import {
   pushSessionInfoUpdate,
   setInstanceCwd,
   setInstanceProfile,
+  setSessionTitleFromPrompt,
   useActiveInstance,
   useSessionInfo
 } from '@composables'
@@ -62,6 +63,16 @@ describe('pushSessionInfoUpdate (ACP SessionInfoUpdate)', () => {
     pushSessionInfoUpdate('A', { updatedAt: '2026-04-30T10:00:00Z' })
 
     expect(useSessionInfo('A').info.value.title).toBe('first')
+  })
+})
+
+describe('setSessionTitleFromPrompt', () => {
+  it('keeps the full prompt-derived title and leaves truncation to CSS', () => {
+    const title = 'this is a long prompt-derived title that should remain intact for the header flex layout'
+
+    setSessionTitleFromPrompt('A', title)
+
+    expect(useSessionInfo('A').info.value.title).toBe(title)
   })
 })
 

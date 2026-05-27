@@ -212,14 +212,13 @@ pub fn merge_values(left: Value, right: Value) -> Value {
     }
 }
 
-/// Fold N patches into a base value, left-to-right. Returns the
-/// merged tree.
-pub fn merge_patches(base: Value, patches: Vec<Value>) -> Value {
+#[cfg(test)]
+fn merge_patches(base: Value, patches: Vec<Value>) -> Value {
     patches.into_iter().fold(base, merge_values)
 }
 
-/// Fold root-level config patches into a resolved profile value,
-/// filtered by the patch's optional `$match.profile` glob.
+/// Fold profile-shaped patches into a resolved profile value,
+/// filtered by each patch's optional `$match.profile` glob.
 ///
 /// Each patch is an object whose body is a partial `ProfileConfig`
 /// shape. An optional `$match: { profile: "<glob>" }` sibling at the
@@ -231,7 +230,7 @@ pub fn merge_patches(base: Value, patches: Vec<Value>) -> Value {
 /// Non-object patch values silently skip — the caller is expected to
 /// have validated the input shape at config-load time (garde +
 /// serde), but defensive skipping keeps the helper total.
-pub fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_id: &str) -> Value {
+pub fn apply_profile_patches(profile: Value, patches: &[Value], profile_id: &str) -> Value {
     patches.iter().cloned().fold(profile, |acc, patch_value| {
         let Value::Object(mut patch_obj) = patch_value else {
             return acc;
@@ -246,6 +245,11 @@ pub fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_
 
         merge_values(acc, Value::Object(patch_obj))
     })
+}
+
+/// Backwards-readable alias for root `[[patches]]` call sites.
+pub fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_id: &str) -> Value {
+    apply_profile_patches(profile, patches, profile_id)
 }
 
 /// `true` when `match_value` is `null` / absent-but-defaulted, OR its

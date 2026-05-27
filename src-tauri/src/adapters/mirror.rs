@@ -218,6 +218,8 @@ pub struct MirrorInner {
 pub struct MirrorMetaCache {
     pub profile_id: Option<String>,
     pub session_id: Option<String>,
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
     pub cwd: Option<String>,
     pub current_mode_id: Option<String>,
     pub current_model_id: Option<String>,
@@ -408,8 +410,14 @@ impl InstanceMirror {
                 mcps_count,
                 ..
             } => {
+                let session_changed = g.meta.session_id != *session_id;
+
                 g.meta.profile_id.clone_from(profile_id);
                 g.meta.session_id.clone_from(session_id);
+                if session_changed {
+                    g.meta.title = None;
+                    g.meta.updated_at = None;
+                }
                 g.meta.cwd = Some(cwd.clone());
                 g.meta.current_mode_id.clone_from(current_mode_id);
                 g.meta.current_model_id.clone_from(current_model_id);
@@ -424,12 +432,15 @@ impl InstanceMirror {
             InstanceEvent::ConfigOptionsUpdate { categories, .. } => {
                 g.meta.config_options.clone_from(categories);
             }
-            InstanceEvent::SessionInfoUpdate { .. } => {
-                // No-op: title / updatedAt are session-storage
-                // metadata, not part of the in-flight mirror today.
-                // Phase A5's `instance/snapshot/meta` doesn't surface
-                // them; if it ever does, fold them into
-                // `MirrorMetaCache` here.
+            InstanceEvent::SessionInfoUpdate {
+                title, updated_at, ..
+            } => {
+                if title.is_some() {
+                    g.meta.title.clone_from(title);
+                }
+                if updated_at.is_some() {
+                    g.meta.updated_at.clone_from(updated_at);
+                }
             }
 
             // ── usage tally ──────────────────────────────────────
@@ -546,6 +557,8 @@ impl InstanceMirror {
         MetaSnapshot {
             profile_id: g.meta.profile_id.clone(),
             session_id: g.meta.session_id.clone(),
+            title: g.meta.title.clone(),
+            updated_at: g.meta.updated_at.clone(),
             cwd: g.meta.cwd.clone(),
             current_mode_id: g.meta.current_mode_id.clone(),
             current_model_id: g.meta.current_model_id.clone(),
@@ -730,6 +743,10 @@ pub struct MetaSnapshot {
     pub profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1046,13 +1063,6 @@ mod tests {
                 instance_id: "i-1".into(),
                 files: vec!["/tmp/p.md".into()],
             },
-            InstanceEvent::SessionInfoUpdate {
-                agent_id: "claude-code".into(),
-                instance_id: "i-1".into(),
-                session_id: "s-1".into(),
-                title: Some("renamed".into()),
-                updated_at: None,
-            },
         ];
         for ev in noops {
             mirror.apply(&ev).await;
@@ -1073,6 +1083,54 @@ mod tests {
             serde_json::to_value(&after_chat).unwrap(),
             "chat snapshot unchanged after no-op events"
         );
+    }
+
+    #[tokio::test]
+    async fn meta_snapshot_reflects_latest_session_info_title() {
+        let mirror = InstanceMirror::new();
+        mirror
+            .apply(&InstanceEvent::SessionInfoUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                title: Some("renamed".into()),
+                updated_at: Some("2026-05-27T10:00:00Z".into()),
+            })
+            .await;
+
+        let snap = mirror.meta_snapshot().await;
+
+        assert_eq!(snap.title.as_deref(), Some("renamed"));
+        assert_eq!(snap.updated_at.as_deref(), Some("2026-05-27T10:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn meta_snapshot_clears_session_title_when_instance_meta_switches_session() {
+        let mirror = InstanceMirror::new();
+        mirror
+            .apply(&meta_event("/tmp/proj", Some("plan"), Some("sonnet")))
+            .await;
+        mirror
+            .apply(&InstanceEvent::SessionInfoUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                title: Some("old title".into()),
+                updated_at: Some("2026-05-27T10:00:00Z".into()),
+            })
+            .await;
+
+        let mut next = meta_event("/tmp/proj", Some("plan"), Some("sonnet"));
+        if let InstanceEvent::InstanceMeta { session_id, .. } = &mut next {
+            *session_id = Some("s-2".into());
+        }
+        mirror.apply(&next).await;
+
+        let snap = mirror.meta_snapshot().await;
+
+        assert_eq!(snap.session_id.as_deref(), Some("s-2"));
+        assert!(snap.title.is_none());
+        assert!(snap.updated_at.is_none());
     }
 
     /// `meta_snapshot` reflects the latest applied `InstanceMeta`

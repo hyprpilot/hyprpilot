@@ -22,7 +22,7 @@
 import InstancesPreview from './InstancesPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette, useActiveInstance, type InstanceId } from '@composables'
-import { usePhase, useQueue, useSessionInfo, useTerminals, pushToast } from '@composables'
+import { applyMetaSnapshotToStores, usePhase, useQueue, useSessionInfo, useTerminals, pushToast } from '@composables'
 import { invoke, TauriCommand, type InstanceListEntry } from '@ipc'
 import { log } from '@lib'
 
@@ -97,6 +97,16 @@ function rowFor(entry: InstanceListEntry, activeInstanceId: string | undefined):
   }
 }
 
+async function refreshInstanceMeta(instanceId: InstanceId): Promise<void> {
+  try {
+    const meta = await invoke(TauriCommand.InstanceSnapshotMeta, { instanceId })
+
+    applyMetaSnapshotToStores(instanceId, meta)
+  } catch(err) {
+    log.debug('palette-instances: instance meta refresh failed', { instanceId, err: String(err) })
+  }
+}
+
 async function fetchInstances(): Promise<InstanceListEntry[]> {
   try {
     const r = await invoke(TauriCommand.InstancesList)
@@ -134,6 +144,8 @@ export async function openInstancesLeaf(): Promise<void> {
   const activeInstanceId = activeId.value
 
   const instances = await fetchInstances()
+
+  await Promise.allSettled(instances.map((i) => refreshInstanceMeta(i.instanceId)))
 
   if (instances.length === 0) {
     palette.open({
@@ -179,6 +191,8 @@ export async function openInstancesLeaf(): Promise<void> {
       // literal bypasses Vue's proxy — usePaletteFilter never re-
       // fires and the row list goes stale.
       const next = await fetchInstances()
+
+      await Promise.allSettled(next.map((i) => refreshInstanceMeta(i.instanceId)))
 
       if (next.length === 0) {
         update([

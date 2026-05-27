@@ -54,7 +54,10 @@ describe('useStream', () => {
 
   it('pushes compaction stream items', () => {
     pushCompaction('A', 's-a', {
-      text: 'summary', auto: true, overflow: true, tailStartId: 'm-1'
+      text: 'summary',
+      auto: true,
+      overflow: true,
+      tailStartId: 'm-1'
     })
 
     const items = useStream('A').items.value

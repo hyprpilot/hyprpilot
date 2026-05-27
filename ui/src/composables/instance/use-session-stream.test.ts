@@ -213,7 +213,9 @@ describe('useSessionStream', () => {
       sessionId: 's-a',
       instanceId: 'A',
       item: {
-        kind: 'plan', steps: [{ content: 'step-1' }], stats: { done: 0, total: 1 }
+        kind: 'plan',
+        steps: [{ content: 'step-1' }],
+        stats: { done: 0, total: 1 }
       }
     })
     emit(TauriEvent.AcpTranscript, {
@@ -221,7 +223,11 @@ describe('useSessionStream', () => {
       sessionId: 's-a',
       instanceId: 'A',
       item: {
-        kind: 'compaction', text: 'compact summary', auto: true, overflow: true, tailStartId: 'm-1'
+        kind: 'compaction',
+        text: 'compact summary',
+        auto: true,
+        overflow: true,
+        tailStartId: 'm-1'
       }
     })
     emit(TauriEvent.AcpTranscript, {

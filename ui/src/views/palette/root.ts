@@ -151,7 +151,7 @@ export function openRootLeaf(leafId: PaletteLeafId, ctx: RootLeafContext = {}): 
       return
 
     case PaletteLeafId.Profiles:
-      openProfilesLeaf()
+      void openProfilesLeaf()
 
       return
 

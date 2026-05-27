@@ -39,6 +39,7 @@ import {
   pushCurrentModeUpdate,
   pushInstanceModeState,
   pushInstanceModelState,
+  pushSessionInfoUpdate,
   setInstanceCwd,
   setInstanceMcpsCount,
   setInstanceProfile
@@ -88,7 +89,7 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
       }
       const { id, data } = snap
 
-      applySessionInfoFromMeta(id, data)
+      applyMetaSnapshotToStores(id, data)
 
       const turns = data.turns ?? []
 
@@ -149,7 +150,14 @@ export function useSnapshotHydration(instanceId: ComputedRef<InstanceId | undefi
  * live event router overrides our snapshot value, which is the
  * correct behaviour (live truth beats cached snapshot).
  */
-function applySessionInfoFromMeta(instanceId: InstanceId, data: MetaSnapshot): void {
+export function applyMetaSnapshotToStores(instanceId: InstanceId, data: MetaSnapshot): void {
+  if (data.title !== undefined || data.updatedAt !== undefined) {
+    pushSessionInfoUpdate(instanceId, {
+      title: data.title,
+      updatedAt: data.updatedAt
+    })
+  }
+
   if (data.cwd != null) {
     setInstanceCwd(instanceId, data.cwd)
   }

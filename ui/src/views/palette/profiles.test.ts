@@ -5,6 +5,7 @@ import { buildProfilesLeafEntries, buildProfilesPaletteSpec, openProfilesLeaf } 
 import { __resetPaletteStackForTests, usePalette } from '@composables'
 
 const selectMock = vi.fn()
+const refreshMock = vi.fn().mockResolvedValue(undefined)
 const profilesRef = ref<{ id: string; agent: string; model?: string; isDefault: boolean }[]>([])
 const selectedRef = ref<string | undefined>(undefined)
 const loadingRef = ref(false)
@@ -17,6 +18,7 @@ vi.mock('@composables', async(importOriginal) => ({
     profiles: profilesRef,
     selected: selectedRef,
     loading: loadingRef,
+    refresh: refreshMock,
     select: selectMock
   }),
   useActiveInstance: () => ({
@@ -28,6 +30,8 @@ vi.mock('@composables', async(importOriginal) => ({
 beforeEach(() => {
   __resetPaletteStackForTests()
   selectMock.mockReset()
+  refreshMock.mockReset()
+  refreshMock.mockResolvedValue(undefined)
   pushToastMock.mockReset()
   profilesRef.value = []
   selectedRef.value = undefined
@@ -170,7 +174,7 @@ describe('buildProfilesPaletteSpec', () => {
 })
 
 describe('openProfilesLeaf', () => {
-  it('pushes the profiles spec onto the palette stack with profiles loaded', () => {
+  it('pushes the profiles spec onto the palette stack with profiles loaded', async() => {
     profilesRef.value = [
       {
         id: 'ask',
@@ -186,7 +190,7 @@ describe('openProfilesLeaf', () => {
     ]
     selectedRef.value = 'ask'
 
-    openProfilesLeaf()
+    await openProfilesLeaf()
 
     const { stack } = usePalette()
 
@@ -198,11 +202,11 @@ describe('openProfilesLeaf', () => {
     expect(spec?.entries[0]?.kind).toBe('active')
   })
 
-  it('toasts "still loading" and bails when the registry is mid-fetch', () => {
+  it('toasts "still loading" and bails when the registry is mid-fetch', async() => {
     profilesRef.value = []
     loadingRef.value = true
 
-    openProfilesLeaf()
+    await openProfilesLeaf()
 
     const { stack } = usePalette()
 
@@ -211,11 +215,11 @@ describe('openProfilesLeaf', () => {
     expect(pushToastMock.mock.calls[0]?.[1]).toMatch(/still loading/i)
   })
 
-  it('toasts "none configured" and bails when the registry is fetched but empty', () => {
+  it('toasts "none configured" and bails when the registry is fetched but empty', async() => {
     profilesRef.value = []
     loadingRef.value = false
 
-    openProfilesLeaf()
+    await openProfilesLeaf()
 
     const { stack } = usePalette()
 
@@ -224,7 +228,7 @@ describe('openProfilesLeaf', () => {
     expect(pushToastMock.mock.calls[0]?.[1]).toMatch(/none configured/i)
   })
 
-  it('committing a different row routes through useProfiles().select and toasts ok', () => {
+  it('committing a different row routes through useProfiles().select and toasts ok', async() => {
     profilesRef.value = [
       {
         id: 'ask',
@@ -239,7 +243,7 @@ describe('openProfilesLeaf', () => {
     ]
     selectedRef.value = 'ask'
 
-    openProfilesLeaf()
+    await openProfilesLeaf()
     const { stack } = usePalette()
     const spec = stack.value[0]
 

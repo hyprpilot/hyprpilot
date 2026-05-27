@@ -113,9 +113,16 @@ export function buildProfilesPaletteSpec(args: ProfilesPaletteSpecArgs): Palette
  * `useProfiles().select` (which writes to `localStorage` + flips
  * `selected.value`, the source of truth `useAdapter().submit` reads).
  */
-export function openProfilesLeaf(): void {
+export async function openProfilesLeaf(): Promise<void> {
   const { open } = usePalette()
-  const { profiles, selected, loading, select } = useProfiles()
+  const { profiles, selected, loading, select, refresh } = useProfiles()
+
+  try {
+    await refresh()
+  } catch(err) {
+    log.warn('palette-profiles: refresh failed', { err: String(err) })
+    pushToast(ToastTone.Err, `profiles refresh failed: ${String(err)}`)
+  }
   const { id: activeInstanceId } = useActiveInstance()
 
   if (profiles.value.length === 0) {
