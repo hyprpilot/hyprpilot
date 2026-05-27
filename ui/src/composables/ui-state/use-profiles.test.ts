@@ -23,7 +23,11 @@ vi.mock('@ipc', async() => ({
   }
 }))
 
-interface ProfileFixture { id: string; agent: string; isDefault: boolean }
+interface ProfileFixture {
+  id: string
+  agent: string
+  isDefault: boolean
+}
 
 function wireRpc(profiles: ProfileFixture[], selected: string | null): void {
   invokeMock.mockImplementation((command: string) => {
@@ -74,10 +78,14 @@ describe('useProfiles', () => {
     wireRpc(
       [
         {
-          id: 'ask', agent: 'claude-code', isDefault: true
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
         },
         {
-          id: 'strict', agent: 'claude-code', isDefault: false
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
         }
       ],
       'ask'
@@ -93,9 +101,16 @@ describe('useProfiles', () => {
   })
 
   it('renders "none" when daemon has no selected profile', async() => {
-    wireRpc([{
-      id: 'ask', agent: 'claude-code', isDefault: false
-    }], null)
+    wireRpc(
+      [
+        {
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: false
+        }
+      ],
+      null
+    )
 
     const wrapper = mount(host())
 
@@ -105,9 +120,16 @@ describe('useProfiles', () => {
   })
 
   it('refresh() re-fetches and updates the reactive list', async() => {
-    wireRpc([{
-      id: 'ask', agent: 'claude-code', isDefault: true
-    }], 'ask')
+    wireRpc(
+      [
+        {
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
+        }
+      ],
+      'ask'
+    )
     const wrapper = mount(host())
 
     await flushAsync()
@@ -117,10 +139,14 @@ describe('useProfiles', () => {
     wireRpc(
       [
         {
-          id: 'ask', agent: 'claude-code', isDefault: true
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
         },
         {
-          id: 'new-one', agent: 'codex', isDefault: false
+          id: 'new-one',
+          agent: 'codex',
+          isDefault: false
         }
       ],
       'ask'
@@ -135,10 +161,14 @@ describe('useProfiles', () => {
     wireRpc(
       [
         {
-          id: 'ask', agent: 'claude-code', isDefault: true
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
         },
         {
-          id: 'strict', agent: 'claude-code', isDefault: false
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
         }
       ],
       'ask'
@@ -153,9 +183,16 @@ describe('useProfiles', () => {
   })
 
   it('select() ignores ids not in the current list (no invoke)', async() => {
-    wireRpc([{
-      id: 'ask', agent: 'claude-code', isDefault: true
-    }], 'ask')
+    wireRpc(
+      [
+        {
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
+        }
+      ],
+      'ask'
+    )
     const wrapper = mount(host())
 
     await flushAsync()
@@ -170,10 +207,14 @@ describe('useProfiles', () => {
     wireRpc(
       [
         {
-          id: 'ask', agent: 'claude-code', isDefault: true
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
         },
         {
-          id: 'strict', agent: 'claude-code', isDefault: false
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
         }
       ],
       'ask'
@@ -196,10 +237,14 @@ describe('useProfiles', () => {
     applyBootProfiles(
       [
         {
-          id: 'ask', agent: 'claude-code', isDefault: true
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
         },
         {
-          id: 'strict', agent: 'claude-code', isDefault: false
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
         }
       ],
       'strict'
@@ -224,10 +269,14 @@ describe('useProfiles', () => {
     applyBootProfiles(
       [
         {
-          id: 'ask', agent: 'claude-code', isDefault: true
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
         },
         {
-          id: 'strict', agent: 'claude-code', isDefault: false
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
         }
       ],
       'ask'

@@ -6,7 +6,7 @@ import ToolDetails from './ToolDetails.vue'
 import { PermissionUi, ToolKind, ToolState, type ToolCallView } from '@components'
 
 describe('ToolDetails.vue', () => {
-  it('renders title and duration stat', () => {
+  it('renders title and duration stat without a running pulse dot', () => {
     const view: ToolCallView = {
       id: 'tc-1',
       kind: ToolKind.Execute,
@@ -22,5 +22,6 @@ describe('ToolDetails.vue', () => {
 
     expect(wrapper.text()).toContain('bash · pnpm test')
     expect(wrapper.text()).toContain('1s')
+    expect(wrapper.find('.tool-details-dot').exists()).toBe(false)
   })
 })

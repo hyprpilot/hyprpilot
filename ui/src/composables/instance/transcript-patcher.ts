@@ -376,16 +376,16 @@ export function __resetTranscriptPatcherForTests(): void {
   stopTranscriptPatcher()
 }
 
-/// Max items the delta-replay path will pull per instance per
-/// reconnect. Picked at 500 because the mirror's ring buffer caps at
-/// 5000, and 500 covers minutes of streaming at typical agent
-/// throughput (~30 chunks/s burst, sub-1/s sustained). When the
-/// daemon has more than 500 newer-than-cursor items, the response's
-/// `hasMore` stays `true` — the patcher then logs and stops, leaving
-/// the captain a one-page-stale view; a manual scroll-to-bottom +
-/// next live event closes the gap. For longer offline windows the
-/// captain can refresh manually.
-const DELTA_REPLAY_PAGE_SIZE = 500
+/// Max items pulled per delta-replay RPC. Replay loops until the
+/// daemon reports exhaustion, yielding between pages so a reconnect or
+/// instance switch that has thousands of missed chunks does not pin the
+/// UI thread in one long cache-merge burst.
+const DELTA_REPLAY_BATCH_SIZE = 25
+const DELTA_REPLAY_YIELD_MS = 0
+
+function yieldReplayTurn(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, DELTA_REPLAY_YIELD_MS))
+}
 
 /// Outcome of [`applyChatDeltaPage`]. `kind = 'cache-cold'` means the
 /// `['snapshot-chat', instanceId]` query has no cached pages yet
@@ -475,54 +475,70 @@ function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items:
 /// — those items can't be patched in-place without producing a
 /// half-rendered view, so the orchestrator degrades to the page
 /// reload that the bridge falls back to.
-type ReplayOutcome = 'applied' | 'cache-cold' | 'failed'
+export type ReplayOutcome = 'applied' | 'cache-cold' | 'failed'
 
-async function replayDeltaForInstance(queryClient: QueryClient, instanceId: string): Promise<ReplayOutcome> {
-  const after = lastSeenSeqByInstance.get(instanceId)
+export async function replayAvailableForInstance(queryClient: QueryClient, instanceId: string): Promise<ReplayOutcome> {
+  let after = lastSeenSeqByInstance.get(instanceId)
 
   if (after === undefined) {
     return 'applied'
   }
 
   try {
-    const snap = (await invoke(TauriCommand.InstanceSnapshotChat, {
-      instanceId,
-      after,
-      limit: DELTA_REPLAY_PAGE_SIZE
-    })) as ChatSnapshot
+    for (;;) {
+      const snap = (await invoke(TauriCommand.InstanceSnapshotChat, {
+        instanceId,
+        after,
+        limit: DELTA_REPLAY_BATCH_SIZE
+      })) as ChatSnapshot
 
-    const outcome = applyChatDeltaPage(queryClient, instanceId, snap.items)
-
-    log.trace('snapshot.delta-replay.applied', {
-      instanceId,
-      after,
-      received: snap.items.length,
-      outcome,
-      hasMore: snap.hasMore,
-      latestSeq: snap.latestSeq
-    })
-
-    if (snap.hasMore) {
-      log.warn(
-        'transcript-patcher: delta-replay page exhausted with more items waiting — captain may need to refresh',
-        {
+      if (snap.items.length === 0) {
+        log.trace('snapshot.delta-replay.empty', {
           instanceId,
           after,
-          pageSize: DELTA_REPLAY_PAGE_SIZE
-        }
-      )
-    }
+          hasMore: snap.hasMore
+        })
 
-    if (outcome.kind === 'cache-cold' && outcome.received > 0) {
-      // We had a cursor (live event recorded a seq) but no cached
-      // query pages to merge into — most often because the captain
-      // hit the page before any chat component subscribed to the
-      // infinite query. Surface this so the orchestrator can reload
-      // rather than silently drop the items.
-      return 'cache-cold'
-    }
+        return snap.hasMore ? 'failed' : 'applied'
+      }
+      const outcome = applyChatDeltaPage(queryClient, instanceId, snap.items)
 
-    return 'applied'
+      log.trace('snapshot.delta-replay.applied', {
+        instanceId,
+        after,
+        received: snap.items.length,
+        outcome,
+        hasMore: snap.hasMore,
+        latestSeq: snap.latestSeq
+      })
+
+      if (outcome.kind === 'cache-cold' && outcome.received > 0) {
+        // We had a cursor (live event recorded a seq) but no cached
+        // query pages to merge into — most often because the captain
+        // hit the page before any chat component subscribed to the
+        // infinite query. Surface this so the orchestrator can reload
+        // rather than silently drop the items.
+        return 'cache-cold'
+      }
+
+      if (!snap.hasMore) {
+        return 'applied'
+      }
+      const nextAfter = getLastSeenSeq(instanceId) ?? snap.latestSeq
+
+      if (nextAfter === undefined || nextAfter <= after) {
+        log.warn('transcript-patcher: delta-replay cursor did not advance', {
+          instanceId,
+          after,
+          nextAfter,
+          pageSize: DELTA_REPLAY_BATCH_SIZE
+        })
+
+        return 'failed'
+      }
+      after = nextAfter
+      await yieldReplayTurn()
+    }
   } catch(err) {
     log.warn('transcript-patcher: delta-replay failed', { instanceId, after }, err)
 
@@ -533,8 +549,9 @@ async function replayDeltaForInstance(queryClient: QueryClient, instanceId: stri
 /**
  * Top-level resync hook for the remote bridge. Called on silent
  * reauth after a dropped WS. For every instance we've ever seen on
- * this page, pulls a delta page (`instance_snapshot_chat { after }`)
- * and patches the head. Meta / terminals / queue / instances list
+ * this page, pulls every available newer delta page
+ * (`instance_snapshot_chat { after }`) and patches the head. Meta /
+ * terminals / queue / instances list
  * stay current via vue-query invalidations — UI subscribers refetch
  * automatically.
  *
@@ -556,7 +573,12 @@ export async function resyncFromRemote(queryClient: QueryClient): Promise<boolea
     return false
   }
 
-  const outcomes = await Promise.all(instanceIds.map((id) => replayDeltaForInstance(queryClient, id)))
+  const outcomes: ReplayOutcome[] = []
+
+  for (const id of instanceIds) {
+    outcomes.push(await replayAvailableForInstance(queryClient, id))
+    await yieldReplayTurn()
+  }
 
   if (outcomes.some((o) => o !== 'applied')) {
     log.warn('transcript-patcher: resync degraded to reload', {

@@ -198,7 +198,12 @@ function onTextareaKeydown(e: KeyboardEvent): void {
   if (e.key === 'ArrowDown') {
     e.preventDefault()
     e.stopPropagation()
-    completion.selectNext()
+
+    if (e.shiftKey) {
+      completion.selectPrev()
+    } else {
+      completion.selectNext()
+    }
 
     return
   }
@@ -215,14 +220,16 @@ function onTextareaKeydown(e: KeyboardEvent): void {
     e.preventDefault()
     e.stopPropagation()
 
-    // Tab NEVER auto-applies. The popover opens with no row tinted
-    // (selectedIndex = -1 sentinel); first Tab walks the sentinel
-    // onto row 0 so the captain sees the highlight; subsequent
-    // Tabs walk the cursor through the list. Enter is the only
-    // commit verb — auto-applying on Tab was buggy because a stray
-    // Tab (e.g. while typing alongside the popover) inserted a
-    // path the captain didn't pick.
-    completion.selectNext()
+    // Tab NEVER auto-applies. Auto-open keeps the -1 sentinel;
+    // manual Tab-open starts on the first row (or last for Shift+Tab)
+    // so the captain can immediately walk candidates. Enter is the
+    // only commit verb — auto-applying on Tab was buggy because a
+    // stray Tab inserted a path the captain didn't pick.
+    if (e.shiftKey) {
+      completion.selectPrev()
+    } else {
+      completion.selectNext()
+    }
 
     return
   }
@@ -294,7 +301,7 @@ function repositionPopover(): void {
   completionLeft.value = coord.left
 }
 
-function fireCompletionQuery(opts?: { manual?: boolean }): void {
+function fireCompletionQuery(opts?: { manual?: boolean; initialSelection?: 'none' | 'first' | 'last' }): void {
   const el = textareaRef.value
 
   if (!el) {
@@ -312,7 +319,8 @@ function fireCompletionQuery(opts?: { manual?: boolean }): void {
   completion.query(el.value, cursor, {
     manual: opts?.manual ?? false,
     cwd: sessionInfo.value.cwd ?? cwdFallback.value,
-    instanceId: activeId
+    instanceId: activeId,
+    initialSelection: opts?.initialSelection
   })
 }
 
@@ -511,7 +519,7 @@ function onEnter(e: KeyboardEvent): boolean {
   return true
 }
 
-function onTab(): boolean {
+function onTab(e: KeyboardEvent): boolean {
   log.debug('composer keybind', { key: 'Tab', target: 'completion' })
 
   // When the popover is open, `onTextareaKeydown` already handled
@@ -521,7 +529,7 @@ function onTab(): boolean {
   if (completion.state.value.open) {
     return true
   }
-  fireCompletionQuery({ manual: true })
+  fireCompletionQuery({ manual: true, initialSelection: e.shiftKey ? 'last' : 'first' })
 
   return true
 }

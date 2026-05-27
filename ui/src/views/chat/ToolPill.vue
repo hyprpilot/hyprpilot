@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons'
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
 import ToolBody from './ToolBody.vue'
 import ToolPillStats from './ToolPillStats.vue'
-import { ToolState, toolStateTone, type ToolCallView } from '@components'
+import { toolStateTone, type ToolCallView } from '@components'
 
 /**
  * Tool-call pill — collapsible 3-section row with an expandable body.
@@ -16,44 +16,17 @@ import { ToolState, toolStateTone, type ToolCallView } from '@components'
  * pill renders it as one ellipsised string. Tone (border-left + icon
  * color) tracks `view.state` per visual law #3.
  *
- * Auto-expand: running / awaiting → expanded; pending / done /
- * failed → collapsed. Manual toggle suspends auto-default for that
- * pill so subsequent state transitions don't override.
+ * Tools start collapsed. The state tone is enough to show live / done /
+ * failed status; expanding for args, diffs, and output is an explicit
+ * captain drill-in.
  */
 const props = defineProps<{
   view: ToolCallView
 }>()
 
-/// Default-expand policy: live calls show their guts, finalized
-/// calls collapse to free chat real estate.
-///   - Running / Awaiting → expanded (the captain wants to see what's
-///     happening as it streams).
-///   - Pending / Done / Failed → collapsed. The status indicator
-///     (border tone + chevron + stat pills) tells the captain "this
-///     finished cleanly / failed / hasn't started"; expanding to read
-///     args / diff / output is the captain's drill-in.
-///
-/// Manual toggle wins. Once the captain clicks the chevron, that
-/// pill stays in their chosen state — subsequent state transitions
-/// don't override.
-function autoExpand(state: ToolState): boolean {
-  return state === ToolState.Running || state === ToolState.Awaiting
-}
-
-const expanded = ref(autoExpand(props.view.state))
-let manuallyToggled = false
-
-watch(
-  () => props.view.state,
-  (next) => {
-    if (!manuallyToggled) {
-      expanded.value = autoExpand(next)
-    }
-  }
-)
+const expanded = ref(false)
 
 function toggle(): void {
-  manuallyToggled = true
   expanded.value = !expanded.value
 }
 
@@ -74,7 +47,6 @@ const isInteractive = computed(() => hasBody.value)
       @keydown.space.prevent="isInteractive && toggle()"
     >
       <span class="tool-pill-icon-cell" :aria-label="view.title">
-        <span v-if="view.state === ToolState.Running" class="tool-pill-dot" aria-hidden="true" />
         <FaIcon :icon="view.icon" class="tool-pill-icon" aria-hidden="true" />
       </span>
       <span class="tool-pill-title">{{ view.title }}</span>
@@ -128,11 +100,6 @@ const isInteractive = computed(() => hasBody.value)
 .tool-pill-icon-cell {
   @apply flex items-center gap-[0.25rem];
   flex-shrink: 0;
-}
-
-.tool-pill-dot {
-  @apply inline-block h-[0.25rem] w-[0.25rem] shrink-0 animate-pulse rounded-full;
-  background-color: var(--tone);
 }
 
 .tool-pill-icon {

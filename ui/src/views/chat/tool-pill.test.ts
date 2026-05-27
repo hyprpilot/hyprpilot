@@ -38,24 +38,17 @@ describe('ToolPill.vue', () => {
     expect(wrapper.attributes('data-state')).toBe('running')
   })
 
-  /**
-   * Auto-expand policy: live calls show their guts, finalized calls
-   * collapse. Captain wants to watch streaming output as it lands
-   * (Running / Awaiting) and reclaim chat space once the call
-   * finishes — the status indicator (border tone + stat pills)
-   * communicates the outcome at-a-glance, expanding for details
-   * is a deliberate drill-in.
-   */
-  it('expands on Running state', () => {
+  it('starts collapsed on Running state without a pulse dot', () => {
     const wrapper = mount(ToolPill, { props: { view: makeView({ state: ToolState.Running }) } })
 
-    expect(wrapper.attributes('data-expanded')).toBe('true')
+    expect(wrapper.attributes('data-expanded')).toBe('false')
+    expect(wrapper.find('.tool-pill-dot').exists()).toBe(false)
   })
 
-  it('expands on Awaiting state', () => {
+  it('starts collapsed on Awaiting state', () => {
     const wrapper = mount(ToolPill, { props: { view: makeView({ state: ToolState.Awaiting }) } })
 
-    expect(wrapper.attributes('data-expanded')).toBe('true')
+    expect(wrapper.attributes('data-expanded')).toBe('false')
   })
 
   it('collapses on Done state regardless of description / fields content', () => {

@@ -145,14 +145,14 @@ export interface MetaSnapshot {
   turns?: TurnSnapshot[]
   /**
    * Latest `SeqTranscriptItem.seq` in the mirror; `undefined` when the
-   * transcript is empty. UI seeds the chat infinite-query off this so
-   * the first page request anchors at the right cursor.
+   * transcript is empty. UI seeds the chat cache and reconnect delta cursor from this so
+   * newer-message replay starts at the right point.
    */
   latestSeq?: number
 }
 
 /**
- * Mirrors Rust `mirror::ChatSnapshot`. Windowed transcript page;
+ * Mirrors Rust `mirror::ChatSnapshot`. Transcript snapshot page;
  * `oldestSeq` / `latestSeq` absent when `items` is empty.
  *
  * Pagination cursor: pass `before = oldestSeq` of the previous page

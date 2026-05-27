@@ -165,7 +165,7 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
 
   /**
    * Pick the anchor row at the current scroll position. Walks
-   * children once — cheap for ~150 rows (the page-trim ceiling).
+   * children once — bounded by the daemon transcript ring.
    * Does NOT trigger forced layout: called inside scroll handlers
    * (rAF-throttled) and resize observers, where layout is already
    * clean. Returns `undefined` when no row qualifies (empty viewport,

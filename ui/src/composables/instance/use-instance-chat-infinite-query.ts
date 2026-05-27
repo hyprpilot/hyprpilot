@@ -1,17 +1,15 @@
 /**
  * TanStack Query wrapper around the daemon's
- * `instance_snapshot_chat` Tauri command. Drives the chat surface's
- * windowed viewport (Phase C1) — the first page anchors at the
- * latest turn (`before = undefined`); calling `fetchNextPage`
- * passes `before = oldestSeq` of the previous page, so successive
- * pages reach further back in history. `getPreviousPageParam`
- * always returns `undefined` because forward pagination doesn't
- * exist — live `acp:transcript` events update the latest page
- * directly via `setQueryData` instead.
+ * `instance_snapshot_chat` Tauri command. The Vue chat surface asks
+ * for the daemon's full transcript ring in one snapshot and keeps the
+ * infinite-query cache shape only because boot seeding + live patching
+ * already speak that structure.
  *
- * Disabled when no instance is in focus. The caller wires intersection-
- * triggered `fetchNextPage` calls at the top of the scroll viewport
- * (Phase C1).
+ * Older-page lazy loading is intentionally disabled. Live
+ * `acp:transcript` events update the latest page directly via
+ * `setQueryData`, while remote reconnect uses the separate
+ * `instance_snapshot_chat { after }` delta path in
+ * `transcript-patcher.ts`.
  */
 
 import { useInfiniteQuery } from '@tanstack/vue-query'
@@ -21,25 +19,12 @@ import { recordLastSeenSeq } from './transcript-patcher'
 import { type InstanceId } from '../chrome/use-active-instance'
 import { invoke, TauriCommand, type ChatSnapshot } from '@ipc'
 
-/**
- * Fallback page size when no caller supplies one. Used by the
- * `prefetchInstanceChatFirstPage` brim-sync helper that doesn't have
- * a viewport handle; in production the chat viewport always supplies
- * a viewport-derived page size via `useChatViewport`. Mirrors the
- * daemon's `DEFAULT_CHAT_LIMIT` for symmetry.
- */
-export const DEFAULT_CHAT_LIMIT = 50
+/** Daemon mirror transcript-ring size. Frontend snapshots ask for the whole retained ring. */
+export const FULL_CHAT_LIMIT = 5_000
 
 export interface UseInstanceChatInfiniteQueryOptions {
-  /**
-   * Page size — either a fixed number or a getter that re-reads on
-   * every fetch. Pass a getter when the page size depends on
-   * viewport height so a window resize on the next backward fetch
-   * pulls the right number of turns. The query key intentionally
-   * does NOT include the limit, so changing it doesn't invalidate
-   * existing pages — only future fetches honour the new value.
-   */
-  limit?: number | (() => number)
+  /** Fixed snapshot size. Defaults to the full daemon transcript ring. */
+  limit?: number
 }
 
 export type UseInstanceChatInfiniteQueryReturn = ReturnType<
@@ -47,13 +32,7 @@ export type UseInstanceChatInfiniteQueryReturn = ReturnType<
 >
 
 export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId | undefined>, opts: UseInstanceChatInfiniteQueryOptions = {}): UseInstanceChatInfiniteQueryReturn {
-  const resolveLimit = (): number => {
-    if (typeof opts.limit === 'function') {
-      return opts.limit()
-    }
-
-    return opts.limit ?? DEFAULT_CHAT_LIMIT
-  }
+  const limit = computed(() => opts.limit ?? FULL_CHAT_LIMIT)
 
   return useInfiniteQuery({
     queryKey: computed(() => ['snapshot-chat', instanceId.value]),
@@ -69,15 +48,15 @@ export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId 
       const snap = await invoke(TauriCommand.InstanceSnapshotChat, {
         instanceId: id,
         before: pageParam,
-        limit: resolveLimit()
+        limit: limit.value
       })
 
       // Seed the delta-replay cursor whenever a snapshot page lands.
       // Head-page fetches (pageParam undefined) carry the freshest
       // `latestSeq` — that's the right baseline for "what the daemon
-      // believes the highest seq is right now". Backward-pagination
-      // pages also carry their slice's `latestSeq` (older), so the
-      // max() inside `recordLastSeenSeq` keeps the cursor monotonic.
+      // believes the highest seq is right now". Delta replay also
+      // uses max() inside `recordLastSeenSeq`, so the cursor remains
+      // monotonic if a manual refetch ever lands out of order.
       recordLastSeenSeq(id, snap.latestSeq)
 
       return snap
@@ -87,26 +66,11 @@ export function useInstanceChatInfiniteQuery(instanceId: ComputedRef<InstanceId 
     // `setQueryData`. `staleTime: Infinity` blocks vue-query's
     // automatic refetch on focus / mount / interval, which would
     // otherwise clobber those patches with a stale daemon snapshot.
-    // The captain triggers a true refetch only via instance switch
-    // (which re-keys the query) or via the resync handler on remote
-    // reconnect. The cache lives until the query is garbage-collected
-    // per the parent `QueryClient`'s `gcTime`.
     staleTime: Infinity,
-    getNextPageParam: (lastPage) => {
-      if (!lastPage?.hasMore) {
-        return undefined
-      }
-
-      // Defensive: an empty page with `hasMore: true` (theoretical
-      // — daemon doesn't currently produce this) would have
-      // `oldestSeq: undefined`. Passing `undefined` to the queryFn
-      // would re-trigger the initial fetch and infinite-loop. Bail
-      // out cleanly instead.
-      return lastPage.oldestSeq ?? undefined
-    },
-    // Forward pagination doesn't exist — live events mutate the
-    // latest page in place via `setQueryData`. Returning `undefined`
-    // keeps `hasPreviousPage` false; callers don't need to gate on it.
+    // The frontend no longer lazy-loads older windows. The initial
+    // snapshot asks for the whole daemon ring; reconnect/newer-message
+    // recovery uses the independent `after` delta path.
+    getNextPageParam: () => undefined,
     getPreviousPageParam: () => undefined
   })
 }

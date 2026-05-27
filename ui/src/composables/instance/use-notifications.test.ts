@@ -35,7 +35,9 @@ beforeEach(() => {
 
 function entry(instanceId: string, reasons: NotificationReason[] = [NotificationReason.TurnEnded]): NotificationEntry {
   return {
-    instanceId, reasons, since: 0
+    instanceId,
+    reasons,
+    since: 0
   }
 }
 

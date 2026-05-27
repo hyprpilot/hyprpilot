@@ -142,10 +142,21 @@ function onRestoreSessionClick(sessionId: string | undefined, cwd: string): void
 }
 
 const { id: activeInstanceId, count: instancesCount, ids: instanceIds, set: setActiveInstance } = useActiveInstance()
+const viewportInstanceIds = computed<InstanceId[]>(() => {
+  const ids = [...instanceIds.value]
+  const active = activeInstanceId.value
+
+  if (active && !ids.includes(active)) {
+    ids.push(active)
+  }
+
+  return ids
+})
+const hasViewportInstances = computed(() => activeInstanceId.value !== undefined && viewportInstanceIds.value.length > 0)
 
 // Idle-screen instance-row click → focus that instance. Flips the
-// active pointer locally for an immediate viewport remount, then
-// fires `instances_focus` so the daemon mirror catches up and
+// active pointer locally for an immediate visible viewport switch,
+// then fires `instances_focus` so the daemon mirror catches up and
 // broadcasts the focus event (any peer frontend sees the change).
 async function onIdleFocusInstance(instanceId: InstanceId): Promise<void> {
   setActiveInstance(instanceId)
@@ -967,26 +978,41 @@ function onQueueSend(itemId: string): void {
     </template>
 
     <!--
-      Chat transcript viewport (Phase C1 — virtualized over daemon
-      snapshot pages). The component owns its own scroll element,
-      `useStickToBottom`, infinite-query data, page-trim policy,
-      live-event patches, and intersection-based load-more sentinel.
-      Idle landing renders inside the `empty` slot so the empty-gate
-      reads off the viewport's snapshot items, not the accumulator.
+      Chat transcript viewports stay mounted per known instance.
+      Focus switches only flip the `active` prop; inactive roots are
+      CSS-hidden inside `<ChatViewport>` so scroll position, anchor
+      state, and hydrated transcript DOM are retained instead of
+      remounted/deleted on every instance switch. Idle landing renders
+      inside the active viewport's `empty` slot so the empty-gate reads
+      off the viewport's snapshot items, not the accumulator.
     -->
-    <!-- `:key="activeInstanceId"` forces a clean remount on every
-         instance flip. Every viewport-local concern (scroll position,
-         `useStickToBottom.stuck`, `useChatViewport`'s listener IIFE +
-         `pendingPatches` queue, `useSnapshotHydration`'s dedup sets)
-         resets atomically. `useStickToBottom.onMounted` calls
-         `scrollToBottom()` so the captain always lands at the latest
-         message of the freshly-focused instance — no "loading
-         earlier history" misfire because the new viewport hasn't
-         scrolled yet (`hasUserScrolled` gate in `onScroll`). TanStack
-         keeps the per-instance chat cache keyed by `instanceId` so
-         content paints from cache the moment the new mount reads
-         `query.data.value` — no IPC round-trip cost on the flip. -->
-    <ChatViewport :key="activeInstanceId ?? 'idle'" :restoring="sessionInfo.restoring" @cancel="onCancel" @attachment-open="onAttachmentOpen">
+    <template v-if="hasViewportInstances">
+      <ChatViewport
+        v-for="id in viewportInstanceIds"
+        :key="id"
+        :instance-id="id"
+        :active="id === activeInstanceId"
+        :restoring="id === activeInstanceId ? sessionInfo.restoring : false"
+        @cancel="onCancel"
+        @attachment-open="onAttachmentOpen"
+      >
+        <template #empty>
+          <IdleScreen
+            :profile="selectedProfile"
+            :agent="sessionInfo.agent ?? activeProfile?.agent"
+            :model="sessionInfo.model ?? activeProfile?.model"
+            :cwd="idleCwd"
+            :instances="instanceIds"
+            :sessions="sessionListPreview"
+            :total-session-count="sessionsForCwd.length"
+            @restore-session="onRestoreSessionClick"
+            @focus-instance="onIdleFocusInstance"
+            @open-palette="openRootPalette"
+          />
+        </template>
+      </ChatViewport>
+    </template>
+    <ChatViewport v-else key="idle" :active="true" :restoring="sessionInfo.restoring" @cancel="onCancel" @attachment-open="onAttachmentOpen">
       <template #empty>
         <IdleScreen
           :profile="selectedProfile"
