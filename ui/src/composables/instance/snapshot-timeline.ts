@@ -27,11 +27,22 @@ import { Role } from '@components'
 import type { WireToolCall } from '@interfaces/ui'
 import { type SeqTranscriptItem, TranscriptItemKind, type TranscriptItem } from '@ipc'
 
-const KIND_ORDER = {
-  turn: 0,
-  stream: 1,
-  tool: 2
-} as const
+const TIMELINE_ENTRY_SORT_ORDER = ['turn', 'stream', 'tool'] as const
+const EMPTY_SNAPSHOT_ANCHOR_SEQ = 0
+const UNKNOWN_STARTED_AT_MS = 0
+const FALLBACK_TOOL_STATE = 'pending'
+
+type ProjectionPlacement = 'before-anchor' | 'snapshot' | 'after-anchor'
+
+const PROJECTION_PLACEMENT_SORT_ORDER: ProjectionPlacement[] = ['before-anchor', 'snapshot', 'after-anchor']
+
+function timelineEntrySortRank(kind: TimelineEntry['kind']): number {
+  return TIMELINE_ENTRY_SORT_ORDER.indexOf(kind)
+}
+
+function projectionPlacementSortRank(placement: ProjectionPlacement): number {
+  return PROJECTION_PLACEMENT_SORT_ORDER.indexOf(placement)
+}
 
 interface ProjectionContext {
   /// Synthetic session id for snapshot items — the daemon's
@@ -162,7 +173,7 @@ function projectEntry(it: SeqTranscriptItem, ctx: ProjectionContext): TimelineEn
           createdAt: seq,
           updatedAt: seq,
           text: item.text,
-          startedAtMs: 0
+          startedAtMs: UNKNOWN_STARTED_AT_MS
         }
       } as TimelineStream
 
@@ -252,6 +263,8 @@ function projectEntry(it: SeqTranscriptItem, ctx: ProjectionContext): TimelineEn
 
 interface ProjectedItem {
   seq: number
+  placement: ProjectionPlacement
+  overlayOrdinal?: number
   turnId?: string
   entry: TimelineEntry
 }
@@ -272,41 +285,45 @@ export function isSnapshotOverlayStreamItem(item: StreamItem): item is SnapshotO
   )
 }
 
-function overlaySeq(item: SnapshotOverlayStreamItem, snapshotItems: readonly SeqTranscriptItem[], ordinal: number): number {
-  const offset = (ordinal + 1) / 1000
-
-  if (item.kind === StreamItemKind.SystemPromptInjected) {
-    return (snapshotItems[0]?.seq ?? 0) - 1 + offset
-  }
-
-  if (item.turnId !== undefined) {
-    const lastTurnSeq = snapshotItems.reduce<number | undefined>((latest, snapshotItem) => {
-      if (snapshotItem.turnId !== item.turnId) {
-        return latest
-      }
-
-      return latest === undefined ? snapshotItem.seq : Math.max(latest, snapshotItem.seq)
-    }, undefined)
-
-    if (lastTurnSeq !== undefined) {
-      return lastTurnSeq + offset
+function lastSeqForTurn(snapshotItems: readonly SeqTranscriptItem[], turnId: string): number | undefined {
+  return snapshotItems.reduce<number | undefined>((latest, snapshotItem) => {
+    if (snapshotItem.turnId !== turnId) {
+      return latest
     }
-  }
 
-  return (snapshotItems[snapshotItems.length - 1]?.seq ?? 0) + 1 + ordinal
+    return latest === undefined ? snapshotItem.seq : Math.max(latest, snapshotItem.seq)
+  }, undefined)
 }
 
-function projectOverlayStream(item: SnapshotOverlayStreamItem, seq: number): ProjectedItem {
+function overlayProjectionAnchor(item: SnapshotOverlayStreamItem, snapshotItems: readonly SeqTranscriptItem[]): Pick<ProjectedItem, 'seq' | 'placement'> {
+  // Meta advertisements can arrive before TurnStarted, so they have
+  // no turnId. In the snapshot view, keep those bootstrap-time banners
+  // at the top instead of appending them to the latest turn.
+  if (item.kind === StreamItemKind.SystemPromptInjected || item.turnId === undefined) {
+    return { seq: snapshotItems[0]?.seq ?? EMPTY_SNAPSHOT_ANCHOR_SEQ, placement: 'before-anchor' }
+  }
+
+  const lastTurnSeq = lastSeqForTurn(snapshotItems, item.turnId)
+
+  if (lastTurnSeq !== undefined) {
+    return { seq: lastTurnSeq, placement: 'after-anchor' }
+  }
+
+  return { seq: snapshotItems[snapshotItems.length - 1]?.seq ?? EMPTY_SNAPSHOT_ANCHOR_SEQ, placement: 'after-anchor' }
+}
+
+function projectOverlayStream(item: SnapshotOverlayStreamItem, anchor: Pick<ProjectedItem, 'seq' | 'placement'>, ordinal: number): ProjectedItem {
   return {
-    seq,
+    ...anchor,
+    overlayOrdinal: ordinal,
     turnId: item.turnId,
     entry: {
       kind: 'stream',
-      createdAt: seq,
+      createdAt: anchor.seq,
       item: {
         ...item,
-        createdAt: seq,
-        updatedAt: Math.max(item.updatedAt, seq)
+        createdAt: anchor.seq,
+        updatedAt: Math.max(item.updatedAt, anchor.seq)
       }
     } as TimelineStream
   }
@@ -327,6 +344,7 @@ function projectSnapshotItems(items: SeqTranscriptItem[], ctx: ProjectionContext
     }
     projected.push({
       seq: it.seq,
+      placement: 'snapshot',
       turnId: it.turnId,
       entry
     })
@@ -337,7 +355,7 @@ function projectSnapshotItems(items: SeqTranscriptItem[], ctx: ProjectionContext
 
 function appendOverlayStreamItems(projected: ProjectedItem[], items: SeqTranscriptItem[], overlays: readonly StreamItem[]): void {
   for (const [idx, item] of overlays.filter(isSnapshotOverlayStreamItem).entries()) {
-    projected.push(projectOverlayStream(item, overlaySeq(item, items, idx)))
+    projected.push(projectOverlayStream(item, overlayProjectionAnchor(item, items), idx))
   }
 }
 
@@ -562,13 +580,11 @@ function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, 
 /// matching `ToolCall` landed) can't downgrade `completed`/`failed`
 /// back to `pending`/`running`. The rule: only accept the incoming
 /// status when its rank is >= the existing one.
-const TOOL_STATE_RANK: Record<string, number> = {
-  pending: 0,
-  in_progress: 1,
-  running: 1,
-  completed: 2,
-  failed: 2,
-  cancelled: 2
+const TOOL_STATE_PROGRESS_ORDER = [['pending'], ['in_progress', 'running'], ['completed', 'failed', 'cancelled']] as const
+const TOOL_STATE_RANK: ReadonlyMap<string, number> = new Map(TOOL_STATE_PROGRESS_ORDER.flatMap((states, rank) => states.map((state) => [state, rank] as const)))
+
+function toolStateRank(state: string | undefined): number {
+  return TOOL_STATE_RANK.get(state?.toLowerCase() ?? FALLBACK_TOOL_STATE) ?? TOOL_STATE_RANK.get(FALLBACK_TOOL_STATE) ?? Number.NEGATIVE_INFINITY
 }
 
 function mergeToolCall(target: WireToolCall, incoming: WireToolCall, seq: number): void {
@@ -577,8 +593,8 @@ function mergeToolCall(target: WireToolCall, incoming: WireToolCall, seq: number
   }
 
   if (incoming.status !== undefined) {
-    const existingRank = TOOL_STATE_RANK[(target.status ?? '').toLowerCase()] ?? 0
-    const incomingRank = TOOL_STATE_RANK[incoming.status.toLowerCase()] ?? 0
+    const existingRank = toolStateRank(target.status)
+    const incomingRank = toolStateRank(incoming.status)
 
     if (incomingRank >= existingRank) {
       target.status = incoming.status
@@ -623,7 +639,13 @@ export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId
   const projected = projectSnapshotItems(items, ctx)
 
   appendOverlayStreamItems(projected, items, overlays)
-  projected.sort((a, b) => a.seq - b.seq || KIND_ORDER[a.entry.kind] - KIND_ORDER[b.entry.kind])
+  projected.sort(
+    (a, b) =>
+      a.seq - b.seq ||
+      projectionPlacementSortRank(a.placement) - projectionPlacementSortRank(b.placement) ||
+      (a.overlayOrdinal ?? 0) - (b.overlayOrdinal ?? 0) ||
+      timelineEntrySortRank(a.entry.kind) - timelineEntrySortRank(b.entry.kind)
+  )
 
   const out: TimelineBlock[] = []
   let assistantRunIdx = 0

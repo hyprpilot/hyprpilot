@@ -372,6 +372,59 @@ describe('timelineBlocksFromSnapshot', () => {
     })
   })
 
+  it('places pre-turn change banners before the first snapshot turn', () => {
+    const items: SeqTranscriptItem[] = [userPrompt(10, undefined, 'what mode are you in?'), agentText(11, 't-1', 'I am in build mode.')]
+    const overlays: StreamItem[] = [
+      {
+        kind: StreamItemKind.ModelChange,
+        id: 'model-s-a-0',
+        sessionId: 's-a',
+        turnId: undefined,
+        createdAt: 1,
+        updatedAt: 1,
+        modelId: 'gpt-5',
+        name: 'GPT-5',
+        prevModelId: 'gpt-5.3-codex-spark',
+        prevName: 'GPT-5.3 Codex Spark'
+      },
+      {
+        kind: StreamItemKind.ModeChange,
+        id: 'mode-s-a-1',
+        sessionId: 's-a',
+        turnId: undefined,
+        createdAt: 2,
+        updatedAt: 2,
+        modeId: 'build',
+        name: 'Build',
+        prevModeId: 'plan',
+        prevName: 'Plan'
+      },
+      {
+        kind: StreamItemKind.ConfigOptionChange,
+        id: 'cfg-effort-s-a-2',
+        sessionId: 's-a',
+        turnId: undefined,
+        createdAt: 3,
+        updatedAt: 3,
+        categoryId: 'effort',
+        value: 'xhigh',
+        name: 'XHigh',
+        prevValue: 'none',
+        prevName: 'None'
+      }
+    ]
+
+    const blocks = timelineBlocksFromSnapshot(items, 'snapshot', overlays)
+
+    expect(blocks[0].role).toBe(Role.Assistant)
+    expect(blocks[0].turnId).toBeUndefined()
+    expect(blocks[0].streamEntries.map((entry) => entry.item.kind)).toEqual([StreamItemKind.ModelChange, StreamItemKind.ModeChange, StreamItemKind.ConfigOptionChange])
+    expect(blocks[1].role).toBe(Role.User)
+    expect(blocks[1].turnEntries[0]?.turn.text).toBe('what mode are you in?')
+    expect(blocks[2].role).toBe(Role.Assistant)
+    expect(blocks[2].turnEntries[0]?.turn.text).toBe('I am in build mode.')
+  })
+
   it('places system prompt overlay banners before the first snapshot turn', () => {
     const overlays: StreamItem[] = [
       {
