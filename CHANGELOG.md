@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.12](https://github.com/hyprpilot/hyprpilot/compare/v2.3.11...v2.3.12) (2026-05-27)
+
+
+### Bug Fixes
+
+* **ui:** keep pre-turn banners ahead of snapshots ([#137](https://github.com/hyprpilot/hyprpilot/issues/137)) ([ec079ce](https://github.com/hyprpilot/hyprpilot/commit/ec079ce29097d8204b2717038c450964cff2bcfb))
+
 ## [2.3.11](https://github.com/hyprpilot/hyprpilot/compare/v2.3.10...v2.3.11) (2026-05-27)
 
 
