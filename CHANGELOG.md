@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.9](https://github.com/hyprpilot/hyprpilot/compare/v2.3.8...v2.3.9) (2026-05-27)
+
+
+### Bug Fixes
+
+* **opencode:** repair MCP and thinking surfaces ([#131](https://github.com/hyprpilot/hyprpilot/issues/131)) ([8cef0e8](https://github.com/hyprpilot/hyprpilot/commit/8cef0e8c865a497e836e6f611b4649c3e7251db1))
+
 ## [2.3.8](https://github.com/hyprpilot/hyprpilot/compare/v2.3.7...v2.3.8) (2026-05-27)
 
 
