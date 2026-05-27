@@ -1089,6 +1089,12 @@ worth preserving:
   decreasing `scrollTop` in a non-suppressed scroll event (tracking
   `prevScrollTop` between handlers). Catches the scrollbar drag
   AND small wheel-up nudges below the 64px `nearBottom` threshold.
+- **Layout-only growth must not unstick while already following.**
+  Large streamed chunks / tool rows can make `scrollHeight` jump by
+  more than the 64px `nearBottom` threshold before the observer pass
+  scrolls the viewport back down. If `scrollTop` did not move upward
+  and the viewport was already stuck, keep the latch true; only an
+  upward scroll is captain intent to stop following.
 - **Every viewport-nav key bypasses the editable-target gate.** The
   document keydown handler in `Viewport.vue` routes PageUp /
   PageDown / Home / End to the chat viewport even when the composer
@@ -1114,6 +1120,10 @@ worth preserving:
   fetch the full retained ring, warm caches drain every available
   newer `after` page. Keep the event-loop yield between pages / ids so
   restoring or reconnecting a large session does not peg the UI.
+  Boot chat seeding must merge with any existing live transcript cache
+  rather than overwriting it: remote frontends can receive live
+  `acp:transcript` frames before `boot_snapshot` finishes, and a blind
+  boot overwrite drops those early turns.
 - **Retain per-instance viewports.** `Overlay.vue` renders one
   `<ChatViewport>` per known instance and flips an `active` prop;
   inactive viewport roots are CSS-hidden (`content-visibility:
@@ -1125,10 +1135,11 @@ worth preserving:
   absolutely pinned to the bottom of `Frame`'s body so new approval
   prompts do not shrink the active `<ChatViewport>` or shove the
   scroll-to-bottom affordance around.
-- **Tool transcript surfaces start collapsed.** `ToolChips.vue` and
-  `ToolPill.vue` default to collapsed; state color/metadata indicate
-  running/done/failed. Do not reintroduce running pulse dots — color
-  is the activity signal and details are an explicit drill-in.
+- **Tool transcript drill-ins start collapsed, not the whole card.**
+  `ToolChips.vue` keeps the turn-level tools card expanded by default;
+  each individual `ToolPill.vue` starts collapsed. State color/metadata
+  indicate running/done/failed. Do not reintroduce running pulse dots —
+  color is the activity signal and details are an explicit drill-in.
 - **Completion Tab navigates, Enter commits.** The composer keeps
   auto-open completions at the `selectedIndex = -1` sentinel. A manual
   Tab open selects the first row (Shift+Tab selects the last), then

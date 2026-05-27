@@ -58,6 +58,8 @@ export function useStickToBottom(
   /// foot). Initialised to 0; the first `scroll` event after mount
   /// resets it through the suppress branch.
   let prevScrollTop = 0
+  let prevScrollHeight = 0
+  let prevClientHeight = 0
 
   // rAF coalescing — observers fire per text mutation during
   // streaming (one per chunk × N children). Each callback synchronously
@@ -96,6 +98,9 @@ export function useStickToBottom(
     // throw and CI exits 1 even though every assertion passed.
     try {
       el.scrollTop = el.scrollHeight
+      prevScrollTop = el.scrollTop
+      prevScrollHeight = el.scrollHeight
+      prevClientHeight = el.clientHeight
     } catch {
       // Assignment failed — the scroll event won't fire, so don't
       // leave the suppress flag set.
@@ -110,6 +115,9 @@ export function useStickToBottom(
       return
     }
     const current = el.scrollTop
+    const oldScrollHeight = prevScrollHeight
+    const oldClientHeight = prevClientHeight
+    const layoutChanged = el.scrollHeight !== oldScrollHeight || el.clientHeight !== oldClientHeight
 
     if (suppressNextScrollUpdate) {
       // Programmatic scroll-to-bottom — the scroll event we're seeing
@@ -133,6 +141,8 @@ export function useStickToBottom(
       suppressNextScrollUpdate = false
       stuck.value = true
       prevScrollTop = current
+      prevScrollHeight = el.scrollHeight
+      prevClientHeight = el.clientHeight
 
       return
     }
@@ -153,7 +163,18 @@ export function useStickToBottom(
     // `stuck` off.
     const movedUp = current < prevScrollTop
 
+    if (oldScrollHeight === 0 && oldClientHeight === 0) {
+      stuck.value = nearBottom(el)
+      prevScrollTop = current
+      prevScrollHeight = el.scrollHeight
+      prevClientHeight = el.clientHeight
+
+      return
+    }
+
     prevScrollTop = current
+    prevScrollHeight = el.scrollHeight
+    prevClientHeight = el.clientHeight
 
     if (movedUp) {
       stuck.value = false
@@ -174,6 +195,18 @@ export function useStickToBottom(
         rafPending = false
       }
 
+      return
+    }
+
+    if (stuck.value && layoutChanged) {
+      // Still in auto-follow mode and the scroll did not move upward.
+      // A large append can fire a browser scroll event before the
+      // MutationObserver / ResizeObserver pass gets to pull us back to
+      // the foot. In that transient frame `nearBottom` may be false by
+      // more than the threshold, but there was no upward captain
+      // gesture. Keep the latch engaged so the already-scheduled (or
+      // soon-to-be scheduled) stick pass continues following the live
+      // tail.
       return
     }
     stuck.value = nearBottom(el)

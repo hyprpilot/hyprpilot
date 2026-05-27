@@ -317,6 +317,28 @@ describe('useStickToBottom', () => {
     }
   })
 
+  it('stays stuck when a large append temporarily moves the bottom beyond the threshold', () => {
+    const { api, harness, unmount } = mountHarness()
+
+    harness.dispatchScroll()
+    expect(api.stuck.value).toBe(true)
+
+    // A large DOM insertion lands while the captain is already at the
+    // foot. The browser can deliver a scroll event before the observer
+    // pass scrolls to the new bottom. Since there was no upward
+    // movement, the sticky latch must remain engaged even though the
+    // transient distance from bottom exceeds the threshold.
+    harness.setLayout({
+      scrollHeight: 3000,
+      clientHeight: 500,
+      scrollTop: 500
+    })
+    harness.dispatchScroll()
+
+    expect(api.stuck.value).toBe(true)
+    unmount()
+  })
+
   /**
    * Downward (or no) movement at-or-near the bottom should NOT
    * spuriously unstick — the existing threshold check still

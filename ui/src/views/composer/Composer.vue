@@ -342,7 +342,11 @@ function onTextareaInput(): void {
  * `!open` short-circuit keeps a closed popover dormant (no daemon
  * round-trip per cursor move).
  */
-function onTextareaCursorMove(): void {
+function onTextareaCursorMove(event?: Event): void {
+  if (event instanceof KeyboardEvent && event.key === 'Tab') {
+    return
+  }
+
   if (!completion.state.value.open) {
     return
   }

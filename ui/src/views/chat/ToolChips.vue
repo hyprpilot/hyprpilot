@@ -24,7 +24,7 @@ const props = withDefaults(
   { label: 'tools' }
 )
 
-const expanded = ref(false)
+const expanded = ref(true)
 
 function toggle(): void {
   expanded.value = !expanded.value
