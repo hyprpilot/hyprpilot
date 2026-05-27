@@ -64,6 +64,11 @@ pub enum ClientEvent {
     /// reshaping the rest.
     PermissionRequested {
         session_id: String,
+        /// ACP `toolCallId`. Runtime approval formatting can use this
+        /// to hydrate a sparse permission prompt from the richer
+        /// `session/update` tool-call cache when an adapter sends
+        /// `rawInput: {}` on the approval request itself.
+        tool_call_id: String,
         request_id: String,
         tool: String,
         tool_kind: ToolKind,
@@ -113,8 +118,9 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 /// - `tool_kind` keeps the typed classification, including structured
 ///   MCP attribution when the adapter can prove it.
 ///
-/// `raw_args` pulls `command` from `raw_input` for Bash-family tools,
-/// `path` for fs tools, else single-line JSON of `raw_input`.
+/// `raw_args` pulls command-shaped fields from `raw_input` for
+/// Bash-family tools, path-shaped fields for fs tools, else single-line
+/// JSON of `raw_input`.
 impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     fn from(update: &agent_client_protocol::schema::ToolCallUpdate) -> Self {
         tool_call_ref(update, None)
@@ -144,22 +150,7 @@ fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, mcp: Op
         .unwrap_or_else(|| "tool".to_string());
     let tool_kind = ToolKind::from_wire(kind_wire.as_deref(), mcp.or_else(|| ToolKind::from_mcp_name(&name)));
     let raw_input = update.fields.raw_input.clone();
-    let raw_args = raw_input.as_ref().and_then(|raw| {
-        if let Some(cmd) = raw.get("command_string").and_then(|v| v.as_str()) {
-            Some(cmd.to_string())
-        } else if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
-            Some(cmd.to_string())
-        } else if let Some(cmd) = raw.get("cmd").and_then(|v| v.as_str()) {
-            Some(cmd.to_string())
-        } else if let Some(args) = raw.get("command").and_then(|v| v.as_array()) {
-            let parts: Vec<&str> = args.iter().filter_map(serde_json::Value::as_str).collect();
-            (!parts.is_empty()).then(|| parts.join(" "))
-        } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()) {
-            Some(path.to_string())
-        } else {
-            serde_json::to_string(raw).ok()
-        }
-    });
+    let raw_args = raw_input.as_ref().and_then(raw_args_from_input);
     let content = update
         .fields
         .content
@@ -177,6 +168,35 @@ fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, mcp: Op
         raw_args,
         raw_input,
         content,
+    }
+}
+
+pub(crate) fn raw_args_from_input(raw: &serde_json::Value) -> Option<String> {
+    if raw.as_object().is_some_and(serde_json::Map::is_empty) {
+        None
+    } else if let Some(cmd) = raw
+        .get("command_string")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(cmd.to_string())
+    } else if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(cmd.to_string())
+    } else if let Some(cmd) = raw.get("cmd").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(cmd.to_string())
+    } else if let Some(args) = raw.get("command").and_then(|v| v.as_array()) {
+        let parts: Vec<&str> = args.iter().filter_map(serde_json::Value::as_str).collect();
+        (!parts.is_empty()).then(|| parts.join(" "))
+    } else if let Some(path) = raw.get("filePath").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(path.to_string())
+    } else if let Some(path) = raw.get("filepath").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(path.to_string())
+    } else if let Some(path) = raw.get("file_path").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(path.to_string())
+    } else if let Some(path) = raw.get("path").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(path.to_string())
+    } else {
+        serde_json::to_string(raw).ok()
     }
 }
 
@@ -351,6 +371,7 @@ impl AcpClient {
             }
             Decision::AskUser => {
                 let tool = tool_call.name.clone();
+                let tool_call_id = req.tool_call.tool_call_id.0.to_string();
                 let tool_kind = tool_call.tool_kind.clone();
                 let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
                 let raw_input = tool_call.raw_input.clone();
@@ -360,6 +381,7 @@ impl AcpClient {
 
                 let _ = self.events.send(ClientEvent::PermissionRequested {
                     session_id: req.session_id.0.to_string(),
+                    tool_call_id,
                     request_id: request_id.clone(),
                     tool,
                     tool_kind,
@@ -642,17 +664,19 @@ mod tests {
             .await
             .expect("event emitted")
             .expect("channel open");
-        let (request_id, tool, tool_kind, args) = match evt {
+        let (request_id, tool_call_id, tool, tool_kind, args) = match evt {
             ClientEvent::PermissionRequested {
                 request_id,
+                tool_call_id,
                 tool,
                 tool_kind,
                 args,
                 ..
-            } => (request_id, tool, tool_kind, args),
+            } => (request_id, tool_call_id, tool, tool_kind, args),
             other => panic!("expected PermissionRequested, got {other:?}"),
         };
         assert!(!request_id.is_empty());
+        assert_eq!(tool_call_id, "tc-1");
         // `tool` is the agent's title (e.g. "Bash"); kind is the
         // ACP-spec classification (`execute`).
         assert_eq!(tool, "Bash");
@@ -819,6 +843,18 @@ mod tests {
         let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
         let tool_ref = ToolCallRef::from(&update);
         assert_eq!(tool_ref.name, "execute");
+    }
+
+    #[test]
+    fn raw_args_from_input_reads_opencode_file_path() {
+        let raw = serde_json::json!({ "filePath": "/tmp/hyprpilot.txt" });
+
+        assert_eq!(raw_args_from_input(&raw).as_deref(), Some("/tmp/hyprpilot.txt"));
+    }
+
+    #[test]
+    fn raw_args_from_input_ignores_empty_objects() {
+        assert_eq!(raw_args_from_input(&serde_json::json!({})), None);
     }
 
     #[test]

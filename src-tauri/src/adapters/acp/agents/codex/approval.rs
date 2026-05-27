@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::tools::formatter::shared::text_blocks;
+use crate::tools::formatter::shared::dedupe_output;
 use crate::tools::formatter::types::ToolField;
 use crate::tools::ToolKind;
 
@@ -63,12 +63,7 @@ pub fn parse_mcp(raw: Option<&Value>, content: &[Value]) -> Option<McpApproval> 
         .or_else(|| (!message_tool.trim().is_empty()).then_some(message_tool.as_str()))
         .or_else(|| (!title_tool.trim().is_empty()).then_some(title_tool))?
         .to_string();
-    let content_text = text_blocks(content);
-    let description = if content_text.trim().is_empty() {
-        description_from_payload(meta, request, message)
-    } else {
-        Some(content_text.trim().to_string())
-    };
+    let description = dedupe_output(content, None).or_else(|| description_from_payload(meta, request, message));
     let mut fields = vec![
         ToolField {
             label: "server".into(),

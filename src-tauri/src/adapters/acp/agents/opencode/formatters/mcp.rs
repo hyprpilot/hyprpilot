@@ -3,7 +3,7 @@
 //! before dispatch reaches this formatter.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, duration_stats, text_blocks};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, duration_stats};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct McpFormatter;
@@ -15,13 +15,7 @@ impl ToolFormatter for McpFormatter {
             _ => format!("mcp · {}", ctx.wire_name),
         };
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
+        let output = dedupe_output(ctx.content, None);
 
         FormattedToolCall {
             title,

@@ -4,7 +4,7 @@
 //! summary of requested filesystem / network access.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct PermissionsFormatter;
@@ -15,13 +15,6 @@ impl ToolFormatter for PermissionsFormatter {
             "permissions request".to_string()
         } else {
             ctx.wire_name.trim().to_string()
-        };
-        let body = text_blocks(ctx.content);
-        let trimmed = body.trim();
-        let description = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
         };
         let mut fields = Vec::new();
 
@@ -35,7 +28,7 @@ impl ToolFormatter for PermissionsFormatter {
         FormattedToolCall {
             title,
             stats: Vec::new(),
-            description,
+            description: dedupe_output(ctx.content, None),
             diff: None,
             output: None,
             fields,

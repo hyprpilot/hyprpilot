@@ -3,7 +3,7 @@
 //! register here.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, duration_stats, pick, text_blocks};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, duration_stats, pick};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct McpFormatter;
@@ -18,13 +18,7 @@ impl ToolFormatter for McpFormatter {
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());
         let fields = args_to_fields(ctx.raw_input, &["description"]);
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if !trimmed.is_empty() && trimmed != description.as_deref().unwrap_or("").trim() {
-            Some(trimmed.to_string())
-        } else {
-            None
-        };
+        let output = dedupe_output(ctx.content, description.as_deref());
 
         let stats = duration_stats(ctx);
 

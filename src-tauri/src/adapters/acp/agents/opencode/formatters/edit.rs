@@ -4,7 +4,7 @@
 //! extension resolves; `\`\`\`diff` fallback otherwise).
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{format_diff_hunk, format_git_diff, pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, format_diff_hunk, format_git_diff, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct EditFormatter;
@@ -46,20 +46,12 @@ impl ToolFormatter for EditFormatter {
             });
         }
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         FormattedToolCall {
             title,
             stats: Vec::new(),
             description,
             diff,
-            output,
+            output: dedupe_output(ctx.content, None),
             fields,
         }
     }

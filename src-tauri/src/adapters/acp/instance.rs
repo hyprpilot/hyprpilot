@@ -32,7 +32,7 @@ use tracing::{debug, error, info, trace, warn};
 use super::agents::{match_provider_agent, ConfigOptionRoute, SystemPromptInjection};
 use super::client::{AcpClient, ClientEvent, SessionUpdateNotification};
 use crate::adapters::instance::{InstanceActor, InstanceInfo, InstanceKey};
-use crate::adapters::permission::PermissionController;
+use crate::adapters::permission::{PermissionController, PermissionOptionView};
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
@@ -845,6 +845,191 @@ fn mcp_tool(
 ) -> Option<ToolKind> {
     ToolKind::from_mcp_name(title)
         .or_else(|| super::agents::mcp_tool_with_servers(adapter_id, title, raw_input, mcp_server_names))
+}
+
+#[derive(Debug)]
+struct PermissionToolContext {
+    tool: String,
+    tool_kind: ToolKind,
+    raw_input: Option<serde_json::Value>,
+    content: Vec<serde_json::Value>,
+}
+
+#[derive(Debug)]
+struct PermissionFanout {
+    agent_id: String,
+    instance_id: String,
+    session_id: String,
+    turn_id: Option<String>,
+    provider_id: String,
+    tool_call_id: String,
+    request_id: String,
+    tool: String,
+    tool_kind: ToolKind,
+    args: String,
+    raw_input: Option<serde_json::Value>,
+    content: Vec<serde_json::Value>,
+    options: Vec<PermissionOptionView>,
+    wait_for_args: bool,
+}
+
+fn has_meaningful_raw_input(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::Object(map)) => !map.is_empty(),
+        Some(serde_json::Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn merge_running_tool_context(ctx: &mut PermissionToolContext, running: &RunningToolCall) {
+    if (ctx.tool.is_empty() || ctx.tool == "tool") && !running.wire_name.is_empty() {
+        ctx.tool = running.wire_name.clone();
+    }
+
+    if matches!(ctx.tool_kind, ToolKind::Other) && !matches!(running.tool_kind, ToolKind::Other) {
+        ctx.tool_kind = running.tool_kind.clone();
+    }
+
+    if !has_meaningful_raw_input(ctx.raw_input.as_ref()) && has_meaningful_raw_input(running.raw_input.as_ref()) {
+        ctx.raw_input = running.raw_input.clone();
+    }
+
+    if ctx.content.is_empty() && !running.content.is_empty() {
+        ctx.content = running.content.clone();
+    }
+}
+
+async fn hydrate_permission_tool_context(
+    tool_call_cache: &Arc<tokio::sync::RwLock<ToolCallCache>>,
+    tool_call_id: &str,
+    mut ctx: PermissionToolContext,
+    wait_for_args: bool,
+) -> PermissionToolContext {
+    if tool_call_id.is_empty() {
+        return ctx;
+    }
+
+    let attempts = if wait_for_args && !has_meaningful_raw_input(ctx.raw_input.as_ref()) {
+        8
+    } else {
+        1
+    };
+
+    for attempt in 0..attempts {
+        {
+            let cache = tool_call_cache.read().await;
+
+            if let Some(running) = cache.get(tool_call_id) {
+                merge_running_tool_context(&mut ctx, running);
+            }
+        }
+
+        if has_meaningful_raw_input(ctx.raw_input.as_ref()) || attempt + 1 == attempts {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    ctx
+}
+
+fn permission_args_are_placeholder(args: &str, tool: &str) -> bool {
+    let trimmed = args.trim();
+
+    trimmed.is_empty() || trimmed == "{}" || trimmed == tool
+}
+
+async fn publish_permission_request(
+    mirror: &Arc<crate::adapters::InstanceMirror>,
+    events_tx: &broadcast::Sender<InstanceEvent>,
+    tool_call_cache: &Arc<tokio::sync::RwLock<ToolCallCache>>,
+    mut request: PermissionFanout,
+) {
+    let args_were_placeholder = permission_args_are_placeholder(&request.args, &request.tool);
+    let PermissionToolContext {
+        tool,
+        tool_kind,
+        raw_input,
+        content,
+    } = hydrate_permission_tool_context(
+        tool_call_cache,
+        &request.tool_call_id,
+        PermissionToolContext {
+            tool: request.tool,
+            tool_kind: request.tool_kind,
+            raw_input: request.raw_input,
+            content: request.content,
+        },
+        request.wait_for_args,
+    )
+    .await;
+
+    request.tool = tool;
+    request.tool_kind = tool_kind;
+    request.raw_input = raw_input;
+    request.content = content;
+
+    if args_were_placeholder || permission_args_are_placeholder(&request.args, &request.tool) {
+        if let Some(raw_args) = request.raw_input.as_ref().and_then(super::client::raw_args_from_input) {
+            request.args = raw_args;
+        }
+    }
+
+    let formatted = {
+        use crate::tools::formatter::registry::FormatterContext;
+        let registry = crate::adapters::acp::formatter_registry();
+        let ctx = FormatterContext {
+            wire_name: request.tool.as_str(),
+            tool_kind: &request.tool_kind,
+            raw_input: request.raw_input.as_ref(),
+            adapter: request.provider_id.as_str(),
+            content: &request.content,
+            started_at: 0,
+            completed_at: None,
+        };
+        registry.dispatch(&ctx)
+    };
+    let options = crate::adapters::permission::reorder_options(request.options);
+    let allow_option_id = crate::adapters::permission::pick_allow_once_id(&options);
+    let reject_option_id = crate::adapters::permission::pick_reject_option_id(&options);
+    let transcript_event = InstanceEvent::Transcript {
+        agent_id: request.agent_id.clone(),
+        instance_id: request.instance_id.clone(),
+        session_id: request.session_id.clone(),
+        turn_id: request.turn_id.clone(),
+        item: crate::adapters::TranscriptItem::PermissionRequest(crate::adapters::PermissionRequestRecord {
+            request_id: request.request_id.clone(),
+            tool: request.tool.clone(),
+            tool_kind: request.tool_kind.clone(),
+            args: request.args.clone(),
+            raw_input: request.raw_input.clone(),
+            options: options.clone(),
+            formatted: formatted.clone(),
+        }),
+        seq: 0,
+        message_id: None,
+        meta: None,
+    };
+    publish(mirror, events_tx, transcript_event).await;
+    let event = InstanceEvent::PermissionRequest {
+        agent_id: request.agent_id,
+        instance_id: request.instance_id,
+        session_id: request.session_id,
+        turn_id: request.turn_id,
+        request_id: request.request_id,
+        tool: request.tool,
+        tool_kind: request.tool_kind,
+        args: request.args,
+        raw_input: request.raw_input,
+        content: request.content,
+        options,
+        default_option_id: allow_option_id.clone(),
+        allow_option_id,
+        reject_option_id,
+        formatted,
+    };
+    publish(mirror, events_tx, event).await;
 }
 
 fn apply_config_option_selection(
@@ -4220,6 +4405,7 @@ async fn run(params: RunParams) {
                         }
                         ClientEvent::PermissionRequested {
                             session_id: sid,
+                            tool_call_id,
                             request_id,
                             tool,
                             tool_kind,
@@ -4236,62 +4422,15 @@ async fn run(params: RunParams) {
                                 "acp::instance: fan out permission prompt to UI"
                             );
                             let turn_id = turn_state.read().await.current().map(str::to_string);
-                            let formatted = {
-                                use crate::tools::formatter::registry::FormatterContext;
-                                let registry = crate::adapters::acp::formatter_registry();
-                                // Permission-request path: the tool isn't running
-                                // yet, so timing isn't meaningful. Pass zeros so
-                                // formatters that key on `completed_at.is_some()`
-                                // skip emitting Stat::Duration here.
-                                let ctx = FormatterContext {
-                                    wire_name: tool.as_str(),
-                                    tool_kind: &tool_kind,
-                                    raw_input: raw_input.as_ref(),
-                                    adapter: provider_id_for_fmt.as_str(),
-                                    content: &content,
-                                    started_at: 0,
-                                    completed_at: None,
-                                };
-                                registry.dispatch(&ctx)
-                            };
-                            // Daemon-side canonical ordering: every
-                            // frontend renders the same button
-                            // arrangement regardless of vendor.
-                            // Reorder THEN compute the option ids
-                            // off the reordered list so the wire
-                            // shape is fully consistent.
-                            let options =
-                                crate::adapters::permission::reorder_options(options);
-                            let allow_option_id =
-                                crate::adapters::permission::pick_allow_once_id(&options);
-                            let reject_option_id =
-                                crate::adapters::permission::pick_reject_option_id(&options);
-                            let transcript_event = InstanceEvent::Transcript {
-                                agent_id: agent_id_notif.clone(),
-                                instance_id: instance_id_notif.clone(),
-                                session_id: sid.clone(),
-                                turn_id: turn_id.clone(),
-                                item: crate::adapters::TranscriptItem::PermissionRequest(
-                                    crate::adapters::PermissionRequestRecord {
-                                        request_id: request_id.clone(),
-                                        tool: tool.clone(),
-                                        tool_kind: tool_kind.clone(),
-                                        args: args.clone(),
-                                        raw_input: raw_input.clone(),
-                                        options: options.clone(),
-                                        formatted: formatted.clone(),
-                                    },
-                                ),
-                                seq: 0,
-                                message_id: None,
-                                meta: None,
-                            };
-                            publish(&mirror_notif, &events_tx_notif, transcript_event).await;
-                            let event = InstanceEvent::PermissionRequest {
+                            let wait_for_args =
+                                provider_id_for_fmt == "acp-opencode" && !has_meaningful_raw_input(raw_input.as_ref());
+                            let request = PermissionFanout {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
                                 session_id: sid,
                                 turn_id,
+                                provider_id: provider_id_for_fmt.clone(),
+                                tool_call_id,
                                 request_id,
                                 tool,
                                 tool_kind,
@@ -4299,12 +4438,18 @@ async fn run(params: RunParams) {
                                 raw_input,
                                 content,
                                 options,
-                                default_option_id: allow_option_id.clone(),
-                                allow_option_id,
-                                reject_option_id,
-                                formatted,
+                                wait_for_args,
                             };
-                            publish(&mirror_notif, &events_tx_notif, event).await;
+                            if request.wait_for_args {
+                                let mirror = mirror_notif.clone();
+                                let events_tx = events_tx_notif.clone();
+                                let tool_call_cache = tool_call_cache.clone();
+                                tokio::spawn(async move {
+                                    publish_permission_request(&mirror, &events_tx, &tool_call_cache, request).await;
+                                });
+                            } else {
+                                publish_permission_request(&mirror_notif, &events_tx_notif, &tool_call_cache, request).await;
+                            }
                         }
                     }
                 }
@@ -4694,6 +4839,165 @@ mod tests {
 
         assert_eq!(record.raw_input, Some(json!({ "command": "echo hi" })));
         assert_eq!(record.formatted.title, "bash · echo");
+    }
+
+    #[tokio::test]
+    async fn permission_context_hydrates_sparse_opencode_request_from_tool_cache() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        cache.insert(
+            "tc-1".to_string(),
+            RunningToolCall {
+                wire_name: "bash".to_string(),
+                tool_kind: ToolKind::Execute,
+                raw_input: Some(json!({ "command": "echo hi" })),
+                content: vec![json!({ "type": "text", "text": "pending" })],
+                started_at: 1,
+                completed_at: None,
+            },
+        );
+        let cache = Arc::new(tokio::sync::RwLock::new(cache));
+        let ctx = PermissionToolContext {
+            tool: "tool".to_string(),
+            tool_kind: ToolKind::Other,
+            raw_input: Some(json!({})),
+            content: Vec::new(),
+        };
+
+        let hydrated = hydrate_permission_tool_context(&cache, "tc-1", ctx, false).await;
+
+        assert_eq!(hydrated.tool, "bash");
+        assert_eq!(hydrated.tool_kind, ToolKind::Execute);
+        assert_eq!(hydrated.raw_input, Some(json!({ "command": "echo hi" })));
+        assert_eq!(hydrated.content, vec![json!({ "type": "text", "text": "pending" })]);
+    }
+
+    #[tokio::test]
+    async fn permission_context_keeps_non_empty_permission_raw_input() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        cache.insert(
+            "tc-1".to_string(),
+            RunningToolCall {
+                wire_name: "write".to_string(),
+                tool_kind: ToolKind::Edit,
+                raw_input: Some(json!({ "filePath": "/tmp/other" })),
+                content: Vec::new(),
+                started_at: 1,
+                completed_at: None,
+            },
+        );
+        let cache = Arc::new(tokio::sync::RwLock::new(cache));
+        let ctx = PermissionToolContext {
+            tool: "write".to_string(),
+            tool_kind: ToolKind::Edit,
+            raw_input: Some(json!({ "external_directory": "/tmp/project" })),
+            content: Vec::new(),
+        };
+
+        let hydrated = hydrate_permission_tool_context(&cache, "tc-1", ctx, false).await;
+
+        assert_eq!(
+            hydrated.raw_input,
+            Some(json!({ "external_directory": "/tmp/project" }))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn permission_fanout_waits_off_loop_for_later_tool_cache_args() {
+        use serde_json::json;
+
+        let cache = Arc::new(tokio::sync::RwLock::new(ToolCallCache::default()));
+        let mirror = Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(8);
+        let request = PermissionFanout {
+            agent_id: "opencode".to_string(),
+            instance_id: "i-1".to_string(),
+            session_id: "s-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            provider_id: "acp-opencode".to_string(),
+            tool_call_id: "tc-1".to_string(),
+            request_id: "req-1".to_string(),
+            tool: "tool".to_string(),
+            tool_kind: ToolKind::Other,
+            args: "tool".to_string(),
+            raw_input: Some(json!({})),
+            content: Vec::new(),
+            options: vec![
+                PermissionOptionView {
+                    option_id: "allow-once".to_string(),
+                    name: "Allow".to_string(),
+                    kind: "allow_once".to_string(),
+                },
+                PermissionOptionView {
+                    option_id: "reject-once".to_string(),
+                    name: "Reject".to_string(),
+                    kind: "reject_once".to_string(),
+                },
+            ],
+            wait_for_args: true,
+        };
+
+        let task_cache = cache.clone();
+        let task_mirror = mirror.clone();
+        let task_tx = events_tx.clone();
+        let handle = tokio::spawn(async move {
+            publish_permission_request(&task_mirror, &task_tx, &task_cache, request).await;
+        });
+        tokio::task::yield_now().await;
+
+        {
+            let mut guard = cache.write().await;
+            guard.insert(
+                "tc-1".to_string(),
+                RunningToolCall {
+                    wire_name: "bash".to_string(),
+                    tool_kind: ToolKind::Execute,
+                    raw_input: Some(json!({ "command": "echo hi" })),
+                    content: vec![json!({ "type": "text", "text": "pending" })],
+                    started_at: 1,
+                    completed_at: None,
+                },
+            );
+        }
+
+        tokio::time::advance(Duration::from_millis(25)).await;
+        handle.await.expect("permission fanout task completes");
+
+        let transcript_event = events_rx.recv().await.expect("transcript permission emitted");
+        let permission_event = events_rx.recv().await.expect("permission prompt emitted");
+
+        match transcript_event {
+            InstanceEvent::Transcript {
+                item: crate::adapters::TranscriptItem::PermissionRequest(record),
+                ..
+            } => {
+                assert_eq!(record.tool, "bash");
+                assert_eq!(record.tool_kind, ToolKind::Execute);
+                assert_eq!(record.args, "echo hi");
+                assert_eq!(record.raw_input, Some(json!({ "command": "echo hi" })));
+            }
+            other => panic!("expected transcript permission request, got {other:?}"),
+        }
+        match permission_event {
+            InstanceEvent::PermissionRequest {
+                tool,
+                tool_kind,
+                args,
+                raw_input,
+                content,
+                ..
+            } => {
+                assert_eq!(tool, "bash");
+                assert_eq!(tool_kind, ToolKind::Execute);
+                assert_eq!(args, "echo hi");
+                assert_eq!(raw_input, Some(json!({ "command": "echo hi" })));
+                assert_eq!(content, vec![json!({ "type": "text", "text": "pending" })]);
+            }
+            other => panic!("expected permission request, got {other:?}"),
+        }
     }
 
     #[test]

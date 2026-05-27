@@ -75,6 +75,14 @@ export function useStickToBottom(
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
   }
 
+  function maxScrollTop(scrollHeight: number, clientHeight: number): number {
+    return Math.max(0, scrollHeight - clientHeight)
+  }
+
+  function atScrollLimit(scrollTop: number, max: number): boolean {
+    return scrollTop >= max - 1
+  }
+
   function scrollToBottom(): void {
     const el = scrollEl.value
 
@@ -84,7 +92,7 @@ export function useStickToBottom(
     // Only set the suppress flag when the assignment will actually
     // change scrollTop — otherwise no scroll event fires and the flag
     // would stick across the next user-initiated scroll.
-    const target = el.scrollHeight - el.clientHeight
+    const target = maxScrollTop(el.scrollHeight, el.clientHeight)
 
     if (el.scrollTop !== target) {
       suppressNextScrollUpdate = true
@@ -97,7 +105,7 @@ export function useStickToBottom(
     // no-op in production. Without it, vitest catches the post-test
     // throw and CI exits 1 even though every assertion passed.
     try {
-      el.scrollTop = el.scrollHeight
+      el.scrollTop = target
       prevScrollTop = el.scrollTop
       prevScrollHeight = el.scrollHeight
       prevClientHeight = el.clientHeight
@@ -118,6 +126,7 @@ export function useStickToBottom(
     const oldScrollHeight = prevScrollHeight
     const oldClientHeight = prevClientHeight
     const layoutChanged = el.scrollHeight !== oldScrollHeight || el.clientHeight !== oldClientHeight
+    const newMaxScrollTop = maxScrollTop(el.scrollHeight, el.clientHeight)
 
     if (suppressNextScrollUpdate) {
       // Programmatic scroll-to-bottom — the scroll event we're seeing
@@ -176,6 +185,18 @@ export function useStickToBottom(
     prevScrollHeight = el.scrollHeight
     prevClientHeight = el.clientHeight
 
+    if (stuck.value && layoutChanged && movedUp && atScrollLimit(current, newMaxScrollTop)) {
+      // Layout-driven clamp while we were already auto-following, not
+      // captain intent. This happens when a long composer prompt
+      // clears, the viewport grows, and the browser lowers scrollTop to
+      // the new maximum. Keep the latch engaged and leave any pending
+      // stick rAF alive so it can re-close the bottom gap after the
+      // DOM settles.
+      scheduleStick()
+
+      return
+    }
+
     if (movedUp) {
       stuck.value = false
 
@@ -207,6 +228,8 @@ export function useStickToBottom(
       // gesture. Keep the latch engaged so the already-scheduled (or
       // soon-to-be scheduled) stick pass continues following the live
       // tail.
+      scheduleStick()
+
       return
     }
     stuck.value = nearBottom(el)

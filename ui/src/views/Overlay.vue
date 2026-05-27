@@ -65,6 +65,9 @@ import {
   useRemotePair,
   useSessionHistory,
   useSessionInfo,
+  applyMetaSnapshotToStores,
+  setInstanceAgent,
+  setInstanceProfile,
   useToasts,
   type KeymapEntry,
   startRemotePairListener,
@@ -237,6 +240,25 @@ function onPillClick(target: 'profile' | 'mode' | 'effort' | 'provider'): void {
 
       return
   }
+}
+
+function refreshSubmittedInstanceMeta(result: { instanceId?: string; agentId: string; profileId?: string }): void {
+  const instanceId = result.instanceId
+
+  if (!instanceId) {
+    return
+  }
+
+  setInstanceAgent(instanceId, result.agentId)
+  setInstanceProfile(instanceId, result.profileId)
+
+  void invoke(TauriCommand.InstanceSnapshotMeta, { instanceId })
+    .then((snapshot) => {
+      applyMetaSnapshotToStores(instanceId, snapshot)
+    })
+    .catch((err: unknown) => {
+      log.warn('overlay: submitted instance meta refresh failed', { instanceId, err: String(err) })
+    })
 }
 
 function onBreadcrumbClick(id: string): void {
@@ -783,12 +805,13 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   // pre-resolved as wire `Attachment`s).
   const fileAttachments = pillsToAttachments(attachments)
   const wireAttachments = [...skillAttachments, ...fileAttachments]
+  const submitProfileId = sessionInfo.value.profileId ?? selectedProfile.value
 
   log.info('composer submit', {
     text_len: text.length,
     file_attachments: fileAttachments.length,
     skill_attachments: skillAttachments.length,
-    profileId: selectedProfile.value,
+    profileId: submitProfileId,
     editing: editingQueueSlot.value !== undefined
   })
 
@@ -847,7 +870,7 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
   submit({
     text,
     instanceId,
-    profileId: selectedProfile.value,
+    profileId: submitProfileId,
     attachments: wireAttachments
   })
     .then((result) => {
@@ -861,6 +884,8 @@ function onSubmit(payload: { text: string; attachments: ComposerPill[] }): void 
       // would race the daemon-pushed `acp:instances-focused` event on
       // a follow-up submit; the `!activeInstanceId.value` gate keeps
       // the reply path advisory.
+      refreshSubmittedInstanceMeta(result)
+
       if (result.instanceId && !activeInstanceId.value) {
         useActiveInstance().set(result.instanceId)
       }
@@ -1004,7 +1029,7 @@ function onQueueSend(itemId: string): void {
       >
         <template #empty>
           <IdleScreen
-            :profile="selectedProfile"
+            :profile="sessionInfo.profileId ?? selectedProfile"
             :agent="sessionInfo.agent ?? activeProfile?.agent"
             :model="sessionInfo.model ?? activeProfile?.model"
             :cwd="idleCwd"
@@ -1021,7 +1046,7 @@ function onQueueSend(itemId: string): void {
     <ChatViewport v-else key="idle" :active="true" :restoring="sessionInfo.restoring" @cancel="onCancel" @attachment-open="onAttachmentOpen">
       <template #empty>
         <IdleScreen
-          :profile="selectedProfile"
+          :profile="sessionInfo.profileId ?? selectedProfile"
           :agent="sessionInfo.agent ?? activeProfile?.agent"
           :model="sessionInfo.model ?? activeProfile?.model"
           :cwd="idleCwd"

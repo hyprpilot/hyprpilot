@@ -6,7 +6,7 @@
 //! `command` (the raw shell line), `cwd`, `process_id`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{duration_stats, pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, duration_stats, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct ExecFormatter;
@@ -60,14 +60,6 @@ impl ToolFormatter for ExecFormatter {
             });
         }
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         let stats = duration_stats(ctx);
 
         FormattedToolCall {
@@ -75,7 +67,7 @@ impl ToolFormatter for ExecFormatter {
             stats,
             description: None,
             diff: None,
-            output,
+            output: dedupe_output(ctx.content, None),
             fields,
         }
     }

@@ -87,15 +87,16 @@ async function select(id: string): Promise<void> {
   if (!profiles.value.some((p) => p.id === id)) {
     return
   }
+  const previous = selected.value
+
+  selected.value = id
 
   try {
     await invoke(TauriCommand.ProfileSet, { profileId: id })
-    // The daemon's `acp:profile-changed` event will fire and
-    // update `selected.value` — we don't write it locally first
-    // (that would flicker if the daemon rejected the id, which
-    // shouldn't happen given the guard above but stays
-    // single-sourced through the daemon either way).
   } catch(err) {
+    if (selected.value === id) {
+      selected.value = previous
+    }
     pushToast(ToastTone.Err, `profile set failed: ${String(err)}`)
   }
 }

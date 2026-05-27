@@ -240,11 +240,11 @@ impl AcpAdapter {
                     &mcp_cfg,
                     std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
                 ) {
-                    defs.insert(0, auto);
+                    prepend_auto_mcp_definition(&mut defs, auto);
                 }
             }
         }
-        defs
+        crate::mcp::MCPsRegistry::new(defs).list()
     }
 
     /// Build the per-instance `SkillsRegistry` from the resolved
@@ -1974,7 +1974,7 @@ fn build_mcp_registry_with(
                 &mcp_cfg,
                 std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
             ) {
-                defs.insert(0, auto);
+                prepend_auto_mcp_definition(&mut defs, auto);
             }
         }
     }
@@ -1983,6 +1983,20 @@ fn build_mcp_registry_with(
         return None;
     }
     Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
+}
+
+fn prepend_auto_mcp_definition(defs: &mut Vec<crate::mcp::MCPDefinition>, auto: crate::mcp::MCPDefinition) {
+    let reserved_name = auto.name.clone();
+    let before = defs.len();
+
+    defs.retain(|def| def.name != reserved_name);
+    if defs.len() != before {
+        tracing::warn!(
+            server = %reserved_name,
+            "acp::adapter: replacing configured MCP server with reserved auto-injected server"
+        );
+    }
+    defs.insert(0, auto);
 }
 
 fn apply_mcp_glob_defaults(defs: &mut [crate::mcp::MCPDefinition], cfg: &crate::config::McpConfig) {
@@ -2559,6 +2573,84 @@ dir = "{skills}"
 
         assert_eq!(defs[0].hyprpilot.auto_accept_tools, vec!["read_*"]);
         assert_eq!(defs[0].hyprpilot.auto_reject_tools, vec!["delete_*"]);
+    }
+
+    #[test]
+    fn auto_injected_hyprpilot_replaces_configured_hyprpilot_server() {
+        let skills_dir = tempfile::tempdir().unwrap();
+
+        seed_skill(skills_dir.path(), "list-skills");
+
+        let mut servers = serde_json::Map::new();
+        servers.insert(
+            crate::mcp::auto_inject::SKILLS_SERVER_NAME.to_string(),
+            serde_json::json!({ "command": "/bin/false" }),
+        );
+        servers.insert("memory".to_string(), serde_json::json!({ "command": "/bin/true" }));
+
+        let profile = ProfileConfig {
+            id: "p1".into(),
+            agent: "cc".into(),
+            model: None,
+            effort: None,
+            system_prompt: None,
+            mcps: Some(vec![crate::config::McpFile {
+                file: None,
+                mcp_servers: Some(servers),
+                ignore: None,
+            }]),
+            mcp: Some(crate::config::McpConfig {
+                enabled: Some(true),
+                skills: Some(vec![crate::config::SkillEntry {
+                    dir: skills_dir.path().to_path_buf(),
+                    ignore: None,
+                }]),
+                auto_accept_tools: Some(vec!["*".into()]),
+                auto_reject_tools: Some(Vec::new()),
+            }),
+            mode: None,
+            cwd: None,
+            env: std::collections::BTreeMap::new(),
+        };
+
+        let skills = build_skills_registry_with(&profile);
+
+        assert_eq!(skills.list().len(), 1, "fixture skill should load");
+
+        let registry =
+            build_mcp_registry_with(&profile, Some(&skills)).expect("registry should contain external + auto mcps");
+        let defs = registry.list();
+        let hyprpilot_defs: Vec<_> = defs
+            .iter()
+            .filter(|def| def.name == crate::mcp::auto_inject::SKILLS_SERVER_NAME)
+            .collect();
+
+        assert_eq!(hyprpilot_defs.len(), 1, "reserved hyprpilot server must be unique");
+        assert!(
+            defs.iter().any(|def| def.name == "memory"),
+            "non-conflicting configured servers should remain"
+        );
+
+        let hyprpilot = hyprpilot_defs[0];
+        assert_ne!(
+            hyprpilot.raw.get("command").and_then(serde_json::Value::as_str),
+            Some("/bin/false"),
+            "configured hyprpilot entry must not override auto-inject"
+        );
+        assert_eq!(
+            hyprpilot
+                .raw
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|args| {
+                    args.iter()
+                        .take(2)
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec!["mcp", "serve"]),
+            "auto-injected hyprpilot server should run the in-tree MCP sidecar"
+        );
     }
 
     /// `instance_skills` returns `None` for a key that isn't live;

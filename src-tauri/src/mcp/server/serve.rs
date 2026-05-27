@@ -13,7 +13,7 @@
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
 //!   - `hyprpilot://skills/<slug>/references` — bundled references
 //! - Tools
-//!   - `list_skills` — `[{ slug, title, description, uri }]`
+//!   - `list_skills` — `{ skills: [{ slug, title, description, uri }] }`
 //!   - `read_skill { slug }` — `{ uri, body }`
 //!   - `load_skill_references { slug }` — `{ uri, body }`
 //!   - `reload` — rescan dirs, push list-changed notifications
@@ -265,6 +265,24 @@ fn skill_references_uri(slug: &str) -> String {
     format!("hyprpilot://skills/{slug}/references")
 }
 
+fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = cache
+        .order
+        .iter()
+        .filter_map(|slug| cache.skills.get(slug))
+        .map(|s| {
+            serde_json::json!({
+                "slug": s.slug,
+                "title": s.title,
+                "description": s.description,
+                "uri": skill_uri(&s.slug),
+            })
+        })
+        .collect();
+
+    serde_json::json!({ "skills": entries })
+}
+
 enum ParsedUri<'a> {
     Skill(&'a str),
     SkillReferences(&'a str),
@@ -439,20 +457,7 @@ impl ServerHandler for HyprpilotServer {
         match request.name.as_ref() {
             "list_skills" => {
                 let cache = self.skills_cache.read().await;
-                let entries: Vec<serde_json::Value> = cache
-                    .order
-                    .iter()
-                    .filter_map(|slug| cache.skills.get(slug))
-                    .map(|s| {
-                        serde_json::json!({
-                            "slug": s.slug,
-                            "title": s.title,
-                            "description": s.description,
-                            "uri": skill_uri(&s.slug),
-                        })
-                    })
-                    .collect();
-                Ok(CallToolResult::structured(serde_json::Value::Array(entries)))
+                Ok(CallToolResult::structured(list_skills_payload(&cache)))
             }
             "read_skill" => {
                 let slug = require_string(&args, "slug")?;
@@ -626,5 +631,38 @@ mod tests {
         let (t, d) = extract_title_description("no frontmatter", "myslug");
         assert_eq!(t, "myslug");
         assert_eq!(d, "Guidance for myslug");
+    }
+
+    #[test]
+    fn list_skills_payload_is_record_rooted() {
+        let mut cache = SkillsCache::default();
+
+        cache.order.push("plan-hard".to_string());
+        cache.skills.insert(
+            "plan-hard".to_string(),
+            LoadedSkill {
+                slug: "plan-hard".to_string(),
+                path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
+                title: "Plan hard".to_string(),
+                description: "Deep planning".to_string(),
+                body: String::new(),
+                refs: FrontmatterRefs::default(),
+            },
+        );
+
+        let payload = list_skills_payload(&cache);
+
+        assert!(payload.is_object());
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "skills": [{
+                    "slug": "plan-hard",
+                    "title": "Plan hard",
+                    "description": "Deep planning",
+                    "uri": "hyprpilot://skills/plan-hard"
+                }]
+            })
+        );
     }
 }

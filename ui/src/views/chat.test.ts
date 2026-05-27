@@ -3,7 +3,17 @@ import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Chat from './Overlay.vue'
-import { useActiveInstance, __resetKeymapsForTests, loadKeymaps, pushPermissionRequest, resetPermissions, clearToasts, useToasts } from '@composables'
+import {
+  useActiveInstance,
+  __resetKeymapsForTests,
+  loadKeymaps,
+  pushPermissionRequest,
+  resetPermissions,
+  clearToasts,
+  useToasts,
+  applyBootProfiles,
+  setInstanceProfile
+} from '@composables'
 import { Modifier, TauriCommand } from '@ipc'
 
 // Phase C1 wires `useChatViewport` inside Overlay.vue. The composable
@@ -354,6 +364,65 @@ describe('Chat.vue — permission wiring', () => {
     await flushMicrotasks()
 
     expect(invoke).not.toHaveBeenCalledWith(TauriCommand.PermissionReply, expect.anything())
+    wrapper.unmount()
+  })
+
+  it('submits with the active instance profile instead of a stale selected profile', async() => {
+    applyBootProfiles(
+      [
+        {
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
+        },
+        {
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
+        }
+      ],
+      'ask'
+    )
+    setInstanceProfile('A', 'strict')
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.SessionSubmit) {
+        return Promise.resolve({
+          accepted: true,
+          agentId: 'claude-code',
+          profileId: 'strict',
+          instanceId: 'A',
+          disposition: 'sent',
+          wasBusy: false
+        })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotMeta) {
+        return Promise.resolve({
+          profileId: 'strict',
+          cwd: '~/repo',
+          mcpsCount: 0,
+          usage: { used: 0, size: 0 }
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    const wrapper = mount(Chat, chatMountOptions())
+
+    await flushMicrotasks()
+    await wrapper.get('[data-testid="composer-textarea"]').setValue('hello')
+    await wrapper.get('[data-testid="composer-submit"]').trigger('click')
+    await flushMicrotasks()
+
+    expect(invoke).toHaveBeenCalledWith(
+      TauriCommand.SessionSubmit,
+      expect.objectContaining({
+        text: 'hello',
+        instanceId: 'A',
+        profileId: 'strict'
+      })
+    )
     wrapper.unmount()
   })
 
