@@ -156,12 +156,18 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
     return []
   }
 
-  return [
+  const tabEntries: KeymapEntry[] = completion.state.value.open
+    ? [
+      { binding: keymaps.value.composer.tab_completion, handler: onCompletionTab },
+      { binding: keymaps.value.composer.shift_tab, handler: onCompletionTab }
+    ]
+    : []
+
+  const entries: KeymapEntry[] = [
     { binding: keymaps.value.chat.submit, handler: onEnter },
     { binding: keymaps.value.chat.newline, handler: () => false },
     { binding: keymaps.value.composer.paste, handler: onPasteImage },
-    { binding: keymaps.value.composer.tab_completion, handler: onCompletionTab },
-    { binding: keymaps.value.composer.shift_tab, handler: onCompletionTab },
+    ...tabEntries,
     {
       // Force-open completion (manual ripgrep / chat-buffer scan).
       // Falls back to hardcoded Ctrl+Space when the wire-loaded
@@ -181,6 +187,8 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
       allowRepeat: true
     }
   ]
+
+  return entries
 })
 
 /**
@@ -526,12 +534,10 @@ function onEnter(e: KeyboardEvent): boolean {
 function onCompletionTab(): boolean {
   log.debug('composer keybind', { key: 'Tab', target: 'completion' })
 
-  // When the popover is open, `onTextareaKeydown` already handled
-  // Tab and prevented default; the keymap chain shouldn't run. When
-  // closed, Tab is intentionally a no-op because Ctrl+Space owns the
-  // manual completion trigger. Either way we swallow the event so
-  // native focus traversal does not steal focus from the composer.
-  return true
+  // The closed-popover path does not install Tab bindings at all. If a
+  // race still routes here, do not swallow native Tab; autocomplete only
+  // owns Tab while its popover is visible.
+  return completion.state.value.open
 }
 
 function onManualCompletion(): boolean {

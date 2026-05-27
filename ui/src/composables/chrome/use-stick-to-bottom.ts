@@ -1,5 +1,7 @@
 import { onMounted, onUnmounted, ref, type Ref } from 'vue'
 
+const SETTLE_FRAME_COUNT = 4
+
 /**
  * Auto-scroll behavior for a long-running feed (the chat transcript).
  * Sticks to the bottom while the user is already there; pauses
@@ -70,6 +72,17 @@ export function useStickToBottom(
   // rAF when an upward gesture lands inside the schedule→fire window.
   let rafPending = false
   let rafHandle: number | undefined
+  let settleFramesRemaining = 0
+
+  function cancelStickFrame(): void {
+    if (rafHandle === undefined) {
+      return
+    }
+    cancelAnimationFrame(rafHandle)
+    rafHandle = undefined
+    rafPending = false
+    settleFramesRemaining = 0
+  }
 
   function nearBottom(el: HTMLElement): boolean {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
@@ -210,11 +223,7 @@ export function useStickToBottom(
       // cancel here closes the race in the OTHER direction: when the
       // movement is explicitly upward, the captain's intent
       // overrides whatever the schedule-time decision was.
-      if (rafHandle !== undefined) {
-        cancelAnimationFrame(rafHandle)
-        rafHandle = undefined
-        rafPending = false
-      }
+      cancelStickFrame()
 
       return
     }
@@ -238,12 +247,16 @@ export function useStickToBottom(
   let resizeObs: ResizeObserver | undefined
   let mutationObs: MutationObserver | undefined
 
-  function scheduleStick(): void {
+  function scheduleStick(settleFrames = SETTLE_FRAME_COUNT): void {
+    settleFramesRemaining = Math.max(settleFramesRemaining, settleFrames)
+
     if (rafPending) {
       return
     }
 
     if (!stuck.value) {
+      settleFramesRemaining = 0
+
       return
     }
     rafPending = true
@@ -280,6 +293,18 @@ export function useStickToBottom(
       // mutation-driven engage matches the captain's intent ("I was
       // at the bottom; keep me there as content streams in").
       scrollToBottom()
+
+      // DOM/layout can keep growing for a few frames after the first
+      // mutation: long prompts resize the composer, streamed thoughts
+      // expand nested cards, and Shiki/code blocks swap in highlighted
+      // DOM after the markdown node already landed. Observers do not
+      // reliably fire for every scrollHeight-only change, so keep a
+      // short settle loop while the latch is still engaged. User upward
+      // gestures cancel the loop via `release()` / the movedUp branch.
+      if (stuck.value && settleFramesRemaining > 0) {
+        settleFramesRemaining -= 1
+        scheduleStick(0)
+      }
     })
   }
 
@@ -297,12 +322,12 @@ export function useStickToBottom(
     // initial scroll-to-bottom still runs and the user can scroll
     // manually.
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObs = new ResizeObserver(scheduleStick)
+      resizeObs = new ResizeObserver(() => scheduleStick())
       resizeObs.observe(el)
     }
 
     if (typeof MutationObserver !== 'undefined') {
-      mutationObs = new MutationObserver(scheduleStick)
+      mutationObs = new MutationObserver(() => scheduleStick())
       mutationObs.observe(el, {
         childList: true,
         subtree: true,
@@ -322,11 +347,7 @@ export function useStickToBottom(
     resizeObs?.disconnect()
     mutationObs?.disconnect()
 
-    if (rafHandle !== undefined) {
-      cancelAnimationFrame(rafHandle)
-      rafHandle = undefined
-      rafPending = false
-    }
+    cancelStickFrame()
   })
 
   /// Synchronously release auto-follow + cancel any in-flight
@@ -359,11 +380,7 @@ export function useStickToBottom(
     // scroll event runs through the normal `movedUp` branch.
     suppressNextScrollUpdate = false
 
-    if (rafHandle !== undefined) {
-      cancelAnimationFrame(rafHandle)
-      rafHandle = undefined
-      rafPending = false
-    }
+    cancelStickFrame()
   }
 
   return {

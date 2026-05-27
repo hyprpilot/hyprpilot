@@ -77,30 +77,20 @@ describe('ToolBody.vue', () => {
   })
 
   /**
-   * Output renders through MarkdownBody — same component the
-   * description path uses. The agent's tool responses are typically
-   * narrative prose plus fenced code blocks (```bash, ```console,
-   * ```diff, ```json), and rendering as markdown means the captain
-   * sees a clean Shiki-highlighted code box instead of the literal
-   * triple-backtick markers + open empty space that an xterm or
-   * raw `<pre>` would produce.
-   *
-   * Real streaming terminal output (the Terminal tool with a
-   * terminal_id) bypasses ToolBody entirely — it goes through
-   * `<TerminalCard>` which hosts xterm.js fed by the live
-   * `useTerminals` store.
+   * Output is the raw adapter payload. Human descriptions still render
+   * markdown above, but output blocks must preserve leading whitespace
+   * and fences exactly so command/file output does not get reshaped by
+   * markdown parsing.
    */
-  it('renders the output via MarkdownBody so fenced code blocks render Shiki-highlighted', () => {
-    // MarkdownBody emits a wrapper div even on a single fenced
-    // block. We assert the section uses it (not a plain pre) and
-    // that the rendered DOM contains the fenced block's content.
+  it('renders output as raw preformatted text without trimming or markdown parsing', () => {
+    const raw = '  leading spaces\n```console\nHTTP/2 301\n```\n'
     const wrapper = mount(ToolBody, {
       props: {
         view: makeView({
           kind: ToolKind.Execute,
           name: 'Bash',
           state: ToolState.Running,
-          output: '```console\nHTTP/2 301\n```'
+          output: raw
         })
       }
     })
@@ -108,18 +98,8 @@ describe('ToolBody.vue', () => {
     const body = wrapper.find('.tool-body-output-body')
 
     expect(body.exists()).toBe(true)
-    // The literal triple-backtick markers must NOT survive into the
-    // rendered text — markdown rendering consumes them. Asserting
-    // their absence in `text()` (visible content, no HTML comments)
-    // catches regressions to the old `<pre>{{ output }}</pre>` path
-    // which would echo the markers verbatim.
-    expect(body.text()).not.toContain('```console')
-    expect(body.text()).not.toContain('```')
-    // Code-block content survives, proving markdown rendering
-    // produced the inner block (Shiki tokenizes asynchronously, so
-    // the immediate DOM may still show plain text inside a code
-    // element on the first frame).
-    expect(body.text()).toContain('HTTP/2 301')
+    expect(body.element.tagName).toBe('PRE')
+    expect(body.element.textContent).toBe(raw)
   })
 
   it('renders description before fields before output', () => {

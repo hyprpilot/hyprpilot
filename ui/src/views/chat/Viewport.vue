@@ -43,6 +43,7 @@ import { Loading, Role, StreamKind, PlanStatus, type PlanItem } from '@component
 import {
   StreamItemKind,
   TurnRole,
+  isSnapshotOverlayStreamItem,
   timelineBlocksFromSnapshot,
   useAgentRegistry,
   useChatViewport,
@@ -50,6 +51,7 @@ import {
   useSessionInfo,
   useSnapshotHydration,
   useStickToBottom,
+  useStream,
   useTurns,
   type PlanEntry,
   type WireToolCall,
@@ -164,7 +166,8 @@ useEventListener(scrollEl, 'pointerdown', markUserScrolled, { passive: true })
 useEventListener(scrollEl, 'touchmove', releaseStickAndAnchor, { passive: true })
 
 const viewport = useChatViewport(instanceId)
-const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
+const { items: overlayStreamItems } = useStream(props.instanceId)
+const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot', overlayStreamItems.value.filter(isSnapshotOverlayStreamItem)))
 
 const { adapterFor } = useAgentRegistry()
 const { info: sessionInfo } = useSessionInfo()

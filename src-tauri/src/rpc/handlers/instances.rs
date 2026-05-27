@@ -442,8 +442,11 @@ impl RpcHandler for InstanceSnapshotHandler {
             }
             "instance/snapshot/queue" => {
                 let p: InstanceSnapshotQueueParams = parse_snapshot_params(params, method)?;
-                let mirror = require_mirror(adapter.as_ref(), &p.instance_id).await?;
-                let items = mirror.queue_snapshot().await;
+                let key = InstanceKey::parse(&p.instance_id).map_err(map_adapter_err)?;
+                let items = match adapter.instance_mirror(key).await {
+                    Some(mirror) => mirror.queue_snapshot().await,
+                    None => Vec::new(),
+                };
                 Ok(HandlerOutcome::Reply(json!({ "items": items })))
             }
             other => Err(RpcError::method_not_found(other)),
@@ -708,8 +711,8 @@ mod snapshot_tests {
         assert_eq!(terms["t-done"]["exitCode"], 0);
     }
 
-    /// Missing `instanceId` field → `-32602 invalid_params` for each
-    /// of the three verbs.
+    /// Missing `instanceId` field → `-32602 invalid_params` for all
+    /// snapshot verbs.
     #[tokio::test]
     async fn snapshot_missing_instance_id_is_invalid_params() {
         let adapter = fresh_adapter();
@@ -717,6 +720,7 @@ mod snapshot_tests {
             "instance/snapshot/meta",
             "instance/snapshot/chat",
             "instance/snapshot/terminals",
+            "instance/snapshot/queue",
         ] {
             let v = dispatch_with_adapter(adapter.clone(), method, Value::Null).await;
             assert_eq!(v["code"], -32602, "{method} with null params: {v}");
@@ -744,6 +748,13 @@ mod snapshot_tests {
                 "{method} message: {v}"
             );
         }
+
+        let v = dispatch_with_adapter(adapter, "instance/snapshot/queue", json!({ "instanceId": ghost })).await;
+        assert_eq!(
+            v["items"].as_array().unwrap().len(),
+            0,
+            "stale queue refresh should be empty: {v}"
+        );
     }
 
     /// Malformed UUID → `-32602` from the `InstanceKey::parse` path.
