@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "2.3.4"
+version = "2.3.5"
 license = "MIT"
 authors = ["Cenk Kılıç <cenk1cenk2cenk3@gmail.com>"]
 repository = "https://gitlab.kilic.dev/utils/hyprpilot"
