@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.10](https://github.com/hyprpilot/hyprpilot/compare/v2.3.9...v2.3.10) (2026-05-27)
+
+
+### Bug Fixes
+
+* **core:** repair session and tool surfaces ([#133](https://github.com/hyprpilot/hyprpilot/issues/133)) ([5f97f4f](https://github.com/hyprpilot/hyprpilot/commit/5f97f4f8801fa1e1ae881e4755289c6204bb98b6))
+
 ## [2.3.9](https://github.com/hyprpilot/hyprpilot/compare/v2.3.8...v2.3.9) (2026-05-27)
 
 
