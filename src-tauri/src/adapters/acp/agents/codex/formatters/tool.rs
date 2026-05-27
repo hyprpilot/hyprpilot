@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, duration_stats};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output, duration_stats};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct ToolFormatterCodex;
@@ -36,13 +36,7 @@ impl ToolFormatter for ToolFormatterCodex {
             None => args_to_fields(ctx.raw_input, &[]),
         };
 
-        let block_text = crate::tools::formatter::shared::text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
+        let output = dedupe_output(ctx.content, None);
 
         let stats = duration_stats(ctx);
 

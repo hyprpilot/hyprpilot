@@ -200,18 +200,21 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     if (!old || old.pages.length === 0) {
       const seedItems: SeqTranscriptItem[] = []
       let latestSeq = 0
+      const containsUserPrompt = batch.some((payload) => payload.instanceId === instanceId && payload.item.kind === TranscriptItemKind.UserPrompt)
 
-      for (const payload of batch) {
-        if (payload.instanceId !== instanceId || payload.item.kind !== TranscriptItemKind.UserPrompt) {
-          continue
-        }
-        const incoming = liveItemFor(payload, latestSeq + 1)
+      if (containsUserPrompt) {
+        for (const payload of batch) {
+          if (payload.instanceId !== instanceId) {
+            continue
+          }
+          const incoming = liveItemFor(payload, latestSeq + 1)
 
-        if (!incoming) {
-          continue
+          if (!incoming) {
+            continue
+          }
+          seedItems.push(incoming)
+          latestSeq = Math.max(latestSeq, incoming.seq)
         }
-        seedItems.push(incoming)
-        latestSeq = incoming.seq
       }
 
       if (seedItems.length > 0) {

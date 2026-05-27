@@ -67,7 +67,7 @@ interface CompletionQueryOptions {
 let singleton: UseCompletionApi | undefined
 // Captain-tunable debounce override sourced from `[completion.ripgrep]
 // debounce_ms` at boot. Auto-triggered queries (regular typing) honour
-// this; manual queries (Tab / Ctrl+Space) skip the debounce so the
+// this; manual queries (Ctrl+Space) skip the debounce so the
 // captain's explicit ask fires immediately.
 let autoDebounceMs = DEFAULT_QUERY_DEBOUNCE_MS
 
@@ -107,8 +107,8 @@ export function useCompletion(): UseCompletionApi {
   // `selectedIndex: -1` is the "nothing highlighted yet" sentinel —
   // not just an empty list. The popover opens with rows visible but
   // no row tinted, so Enter is unambiguous: it submits the buffer.
-  // Tab is the explicit "I want a completion" verb; it walks -1 → 0
-  // and from there cycles normally.
+  // Ctrl+Space is the explicit "I want a completion" verb; Tab only
+  // walks rows after the popover is already visible.
   const state = ref<CompletionState>({
     open: false,
     items: [],

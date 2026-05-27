@@ -3,7 +3,7 @@
 //! agent's input. Title shows a chars-summary of the patch.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, pick};
 use crate::tools::formatter::types::{FormattedToolCall, Stat, ToolField};
 
 pub struct PatchFormatter;
@@ -43,20 +43,12 @@ impl ToolFormatter for PatchFormatter {
 
         let description = patch.map(|p| format!("```diff\n{}\n```", p));
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         FormattedToolCall {
             title,
             stats,
             description,
             diff: None,
-            output,
+            output: dedupe_output(ctx.content, None),
             fields: Vec::<ToolField>::new(),
         }
     }

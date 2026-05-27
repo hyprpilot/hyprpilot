@@ -1,7 +1,7 @@
 //! opencode's `webfetch` tool. RawInput: `{ url, format?, timeout? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{duration_stats, pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, duration_stats, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct WebFetchFormatter;
@@ -30,14 +30,6 @@ impl ToolFormatter for WebFetchFormatter {
             });
         }
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         let stats = duration_stats(ctx);
 
         FormattedToolCall {
@@ -45,7 +37,7 @@ impl ToolFormatter for WebFetchFormatter {
             stats,
             description: None,
             diff: None,
-            output,
+            output: dedupe_output(ctx.content, None),
             fields,
         }
     }

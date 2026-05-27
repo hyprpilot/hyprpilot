@@ -5,7 +5,7 @@
 //! `output` (streamed; opencode dedupes via hash).
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{duration_stats, pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, duration_stats, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct BashFormatter;
@@ -52,15 +52,8 @@ impl ToolFormatter for BashFormatter {
             });
         }
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         let stats = duration_stats(ctx);
+        let output = dedupe_output(ctx.content, description.as_deref());
 
         FormattedToolCall {
             title,

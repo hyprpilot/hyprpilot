@@ -4,7 +4,7 @@
 //! `Approve MCP tool call`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, text_blocks};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output};
 use crate::tools::formatter::types::FormattedToolCall;
 
 use super::super::approval;
@@ -30,20 +30,12 @@ impl ToolFormatter for ApproveFormatter {
             ctx.wire_name.trim().to_string()
         };
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let description = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         let fields = args_to_fields(ctx.raw_input, &[]);
 
         FormattedToolCall {
             title,
             stats: Vec::new(),
-            description,
+            description: dedupe_output(ctx.content, None),
             diff: None,
             output: None,
             fields,

@@ -75,11 +75,13 @@ pub fn args_to_fields(raw: Option<&Value>, exclude: &[&str]) -> Vec<ToolField> {
     out
 }
 
-/// `text_blocks` projection that drops the result when it matches
-/// the LLM-supplied `description` arg verbatim. Some agents echo
-/// `rawInput.description` into the initial `tool_call.content` as a
-/// preview; without this dedupe the same prose renders twice — once
-/// in the formatted `description`, once in the `output` block.
+/// `text_blocks` projection that drops the result when it matches the
+/// LLM-supplied `description` arg verbatim. The returned output keeps
+/// the agent's bytes as-is; trimming is only for empty/duplicate
+/// comparisons. Some agents echo `rawInput.description` into the
+/// initial `tool_call.content` as a preview; without this dedupe the
+/// same prose renders twice — once in the formatted `description`,
+/// once in the `output` block.
 pub fn dedupe_output(content: &[Value], description: Option<&str>) -> Option<String> {
     let text = text_blocks(content);
     let trimmed = text.trim();
@@ -90,7 +92,7 @@ pub fn dedupe_output(content: &[Value], description: Option<&str>) -> Option<Str
     if !desc.is_empty() && trimmed == desc {
         return None;
     }
-    Some(trimmed.to_string())
+    Some(text)
 }
 
 /// Joined text from every wire content block. Handles both ACP shapes:
@@ -343,7 +345,32 @@ pub fn lang_from_path(path: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    #[test]
+    fn dedupe_output_preserves_visible_whitespace() {
+        let content = vec![json!({
+            "type": "text",
+            "text": "    first line\n  second line\n"
+        })];
+
+        assert_eq!(
+            dedupe_output(&content, None).as_deref(),
+            Some("    first line\n  second line\n")
+        );
+    }
+
+    #[test]
+    fn dedupe_output_trims_for_duplicate_comparison_only() {
+        let content = vec![json!({
+            "type": "text",
+            "text": "  repeated description\n"
+        })];
+
+        assert!(dedupe_output(&content, Some("repeated description")).is_none());
+    }
 
     #[test]
     fn line_magnitudes_all_add_when_old_empty() {

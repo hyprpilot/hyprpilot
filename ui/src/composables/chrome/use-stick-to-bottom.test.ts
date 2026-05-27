@@ -339,6 +339,53 @@ describe('useStickToBottom', () => {
     unmount()
   })
 
+  it('keeps a pending stick rAF when layout clamps scrollTop down to the new bottom', async() => {
+    const rafCallbacks = new Map<number, FrameRequestCallback>()
+    let rafIdSeq = 0
+    const rafSpy = vi.fn((cb: FrameRequestCallback) => {
+      const id = ++rafIdSeq
+
+      rafCallbacks.set(id, cb)
+
+      return id
+    })
+    const cancelSpy = vi.fn((id: number) => {
+      rafCallbacks.delete(id)
+    })
+
+    vi.stubGlobal('requestAnimationFrame', rafSpy)
+    vi.stubGlobal('cancelAnimationFrame', cancelSpy)
+
+    try {
+      const { api, harness, unmount } = mountHarness()
+
+      harness.dispatchScroll()
+      expect(api.stuck.value).toBe(true)
+
+      harness.el.appendChild(document.createElement('div'))
+      await Promise.resolve()
+
+      expect(rafCallbacks.size).toBe(1)
+
+      // The composer / viewport layout changes while stuck. Browser
+      // clamps scrollTop down to the new max (1200 - 800 = 400), which
+      // looks like upward movement but is still exactly the bottom.
+      harness.setLayout({
+        scrollHeight: 1200,
+        clientHeight: 800,
+        scrollTop: 400
+      })
+      harness.dispatchScroll()
+
+      expect(api.stuck.value).toBe(true)
+      expect(cancelSpy).not.toHaveBeenCalled()
+      expect(rafCallbacks.size).toBe(1)
+      unmount()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   /**
    * Downward (or no) movement at-or-near the bottom should NOT
    * spuriously unstick — the existing threshold check still

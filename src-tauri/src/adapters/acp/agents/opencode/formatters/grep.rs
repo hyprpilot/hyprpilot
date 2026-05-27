@@ -1,7 +1,7 @@
 //! opencode's `grep` tool. RawInput: `{ pattern, path?, include? }`.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct GrepFormatter;
@@ -38,20 +38,12 @@ impl ToolFormatter for GrepFormatter {
             });
         }
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let output = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         FormattedToolCall {
             title,
             stats: Vec::new(),
             description: None,
             diff: None,
-            output,
+            output: dedupe_output(ctx.content, None),
             fields,
         }
     }

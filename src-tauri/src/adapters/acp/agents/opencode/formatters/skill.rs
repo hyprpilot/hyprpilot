@@ -2,7 +2,7 @@
 //! skill from opencode's registry; output is the skill body.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{pick, text_blocks};
+use crate::tools::formatter::shared::{dedupe_output, pick};
 use crate::tools::formatter::types::{FormattedToolCall, ToolField};
 
 pub struct SkillFormatter;
@@ -24,18 +24,10 @@ impl ToolFormatter for SkillFormatter {
             });
         }
 
-        let block_text = text_blocks(ctx.content);
-        let trimmed = block_text.trim();
-        let description = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         FormattedToolCall {
             title,
             stats: Vec::new(),
-            description,
+            description: dedupe_output(ctx.content, None),
             diff: None,
             output: None,
             fields,

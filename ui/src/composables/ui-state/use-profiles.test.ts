@@ -180,6 +180,40 @@ describe('useProfiles', () => {
     await (wrapper.vm as unknown as ReturnType<typeof useProfiles>).select('strict')
 
     expect(invokeMock).toHaveBeenCalledWith(TauriCommand.ProfileSet, { profileId: 'strict' })
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('strict')
+  })
+
+  it('select() rolls back the optimistic selected profile when the daemon rejects it', async() => {
+    wireRpc(
+      [
+        {
+          id: 'ask',
+          agent: 'claude-code',
+          isDefault: true
+        },
+        {
+          id: 'strict',
+          agent: 'claude-code',
+          isDefault: false
+        }
+      ],
+      'ask'
+    )
+    const wrapper = mount(host())
+
+    await flushAsync()
+    await wrapper.vm.$nextTick()
+    invokeMock.mockImplementation((command: string) => {
+      if (command === TauriCommand.ProfileSet) {
+        return Promise.reject(new Error('rejected'))
+      }
+
+      return Promise.reject(new Error(`unexpected: ${command}`))
+    })
+    await (wrapper.vm as unknown as ReturnType<typeof useProfiles>).select('strict')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-testid="selected"]').text()).toBe('ask')
   })
 
   it('select() ignores ids not in the current list (no invoke)', async() => {

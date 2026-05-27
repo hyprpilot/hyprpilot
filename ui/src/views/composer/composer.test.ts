@@ -221,7 +221,7 @@ describe('ChatComposer.vue', () => {
     })
   })
 
-  it('keeps the first Tab selection when the Tab keyup follows the manual completion query', async() => {
+  it('keeps the first Ctrl+Space selection when a Tab keyup follows the manual completion query', async() => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === TauriCommand.GetKeymaps) {
         return Promise.resolve(DEFAULT_KEYMAPS)
@@ -255,7 +255,7 @@ describe('ChatComposer.vue', () => {
     await textarea.setValue('#g')
     textarea.element.setSelectionRange(2, 2)
     textarea.element.focus()
-    await textarea.trigger('keydown', { key: 'Tab' })
+    await textarea.trigger('keydown', { key: ' ', ctrlKey: true })
     await new Promise((resolve) => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
     await textarea.trigger('keyup', { key: 'Tab' })
@@ -263,6 +263,46 @@ describe('ChatComposer.vue', () => {
 
     expect(document.body.querySelector('.completion-popover-wrap')).not.toBeNull()
     expect(document.body.querySelector('[data-active="true"]')?.textContent).toContain('git-commit')
+
+    wrapper.unmount()
+  })
+
+  it('swallows closed Tab without opening completion', async() => {
+    const wrapper = mount(ChatComposer, { attachTo: document.body })
+    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
+
+    textarea.element.value = '#g'
+    textarea.element.setSelectionRange(2, 2)
+    textarea.element.focus()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    invokeMock.mockClear()
+
+    const tab = new KeyboardEvent('keydown', {
+      key: 'Tab', bubbles: true, cancelable: true
+    })
+
+    textarea.element.dispatchEvent(tab)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(tab.defaultPrevented).toBe(true)
+    expect(invokeMock).not.toHaveBeenCalledWith(TauriCommand.CompletionQuery, expect.anything())
+    expect(document.body.querySelector('.completion-popover-wrap')).toBeNull()
+
+    const shiftTab = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true
+    })
+
+    textarea.element.dispatchEvent(shiftTab)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(shiftTab.defaultPrevented).toBe(true)
+    expect(invokeMock).not.toHaveBeenCalledWith(TauriCommand.CompletionQuery, expect.anything())
+    expect(document.body.querySelector('.completion-popover-wrap')).toBeNull()
 
     wrapper.unmount()
   })

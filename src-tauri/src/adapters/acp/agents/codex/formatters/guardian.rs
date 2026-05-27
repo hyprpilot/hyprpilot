@@ -5,26 +5,19 @@
 //! `description` so it renders as markdown.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::{args_to_fields, text_blocks};
+use crate::tools::formatter::shared::{args_to_fields, dedupe_output};
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct GuardianFormatter;
 
 impl ToolFormatter for GuardianFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let body = text_blocks(ctx.content);
-        let trimmed = body.trim();
-        let description = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
         let fields = args_to_fields(ctx.raw_input, &[]);
 
         FormattedToolCall {
             title: "guardian review".to_string(),
             stats: Vec::new(),
-            description,
+            description: dedupe_output(ctx.content, None),
             diff: None,
             output: None,
             fields,

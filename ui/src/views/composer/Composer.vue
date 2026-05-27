@@ -160,15 +160,15 @@ useKeymap(textareaRef, (): KeymapEntry[] => {
     { binding: keymaps.value.chat.submit, handler: onEnter },
     { binding: keymaps.value.chat.newline, handler: () => false },
     { binding: keymaps.value.composer.paste, handler: onPasteImage },
-    { binding: keymaps.value.composer.tab_completion, handler: onTab },
-    { binding: keymaps.value.composer.shift_tab, handler: onTab },
+    { binding: keymaps.value.composer.tab_completion, handler: onCompletionTab },
+    { binding: keymaps.value.composer.shift_tab, handler: onCompletionTab },
     {
       // Force-open completion (manual ripgrep / chat-buffer scan).
       // Falls back to hardcoded Ctrl+Space when the wire-loaded
-      // keymap predates the field. Same handler as Tab — when the
-      // popover is already open, commits the active row.
+      // keymap predates the field. Tab only participates after this
+      // popover is open.
       binding: keymaps.value.composer.completion ?? { modifiers: [Modifier.Ctrl], key: 'space' },
-      handler: onTab
+      handler: onManualCompletion
     },
     {
       binding: keymaps.value.composer.history_up,
@@ -220,11 +220,11 @@ function onTextareaKeydown(e: KeyboardEvent): void {
     e.preventDefault()
     e.stopPropagation()
 
-    // Tab NEVER auto-applies. Auto-open keeps the -1 sentinel;
-    // manual Tab-open starts on the first row (or last for Shift+Tab)
-    // so the captain can immediately walk candidates. Enter is the
-    // only commit verb — auto-applying on Tab was buggy because a
-    // stray Tab inserted a path the captain didn't pick.
+    // Tab NEVER auto-applies. Manual Ctrl+Space-open starts on the
+    // first row, and Tab/Shift+Tab only walk candidates while this
+    // popover is visible. Enter is the only commit verb — auto-
+    // applying on Tab was buggy because a stray Tab inserted a path
+    // the captain didn't pick.
     if (e.shiftKey) {
       completion.selectPrev()
     } else {
@@ -523,17 +523,23 @@ function onEnter(e: KeyboardEvent): boolean {
   return true
 }
 
-function onTab(e: KeyboardEvent): boolean {
+function onCompletionTab(): boolean {
   log.debug('composer keybind', { key: 'Tab', target: 'completion' })
 
   // When the popover is open, `onTextareaKeydown` already handled
   // Tab and prevented default; the keymap chain shouldn't run. When
-  // closed, Tab here means "force-open completion" (manual ripgrep
-  // trigger). Either way we swallow the event from the keymap chain.
-  if (completion.state.value.open) {
-    return true
+  // closed, Tab is intentionally a no-op because Ctrl+Space owns the
+  // manual completion trigger. Either way we swallow the event so
+  // native focus traversal does not steal focus from the composer.
+  return true
+}
+
+function onManualCompletion(): boolean {
+  log.debug('composer keybind', { key: 'Ctrl+Space', target: 'completion' })
+
+  if (!completion.state.value.open) {
+    fireCompletionQuery({ manual: true, initialSelection: 'first' })
   }
-  fireCompletionQuery({ manual: true, initialSelection: e.shiftKey ? 'last' : 'first' })
 
   return true
 }

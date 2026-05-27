@@ -5,25 +5,17 @@
 //! formatter layer does not consume today.
 
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
-use crate::tools::formatter::shared::text_blocks;
+use crate::tools::formatter::shared::dedupe_output;
 use crate::tools::formatter::types::FormattedToolCall;
 
 pub struct ImageFormatter;
 
 impl ToolFormatter for ImageFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let body = text_blocks(ctx.content);
-        let trimmed = body.trim();
-        let description = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-
         FormattedToolCall {
             title: "image generation".to_string(),
             stats: Vec::new(),
-            description,
+            description: dedupe_output(ctx.content, None),
             diff: None,
             output: None,
             fields: Vec::new(),

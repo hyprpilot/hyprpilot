@@ -362,6 +362,12 @@ Equivalent JSON for a `--with-config` patch:
 - **ACP injection**: each `session/new` and `session/load` carries the
   resolved set as `mcp_servers`. Stdio / HTTP / SSE project onto the
   typed ACP `McpServer` enum.
+- **Reserved name**: the in-tree auto-injected server owns the
+  `hyprpilot` MCP name. When `[mcp].enabled = true` and skills are
+  non-empty, any configured MCP server with the same name is replaced
+  before the catalog is sent to adapters or shown in the UI. Set
+  `[mcp].enabled = false` if a profile intentionally wants a custom
+  server named `hyprpilot`.
 - **Permission integration**: `hyprpilot.autoAcceptTools` /
   `autoRejectTools` matched at `PermissionController::decide` lane 2.
   Globs are **server-relative** — write `read_*` inside the server
