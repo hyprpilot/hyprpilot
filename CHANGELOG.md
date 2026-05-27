@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.11](https://github.com/hyprpilot/hyprpilot/compare/v2.3.10...v2.3.11) (2026-05-27)
+
+
+### Bug Fixes
+
+* **core:** harden chat follow and tool output surfaces ([#135](https://github.com/hyprpilot/hyprpilot/issues/135)) ([c8a7e85](https://github.com/hyprpilot/hyprpilot/commit/c8a7e85828cc58caf3c044f5beca5427b2a5de49))
+
 ## [2.3.10](https://github.com/hyprpilot/hyprpilot/compare/v2.3.9...v2.3.10) (2026-05-27)
 
 
