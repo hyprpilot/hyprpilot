@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.5](https://github.com/hyprpilot/hyprpilot/compare/v2.3.4...v2.3.5) (2026-05-27)
+
+
+### Bug Fixes
+
+* **codex:** stabilize ACP tool handling ([#123](https://github.com/hyprpilot/hyprpilot/issues/123)) ([5689ae2](https://github.com/hyprpilot/hyprpilot/commit/5689ae22cc387a152b9145af5b07921664a50a44))
+
 ## [2.3.4](https://github.com/hyprpilot/hyprpilot/compare/v2.3.3...v2.3.4) (2026-05-26)
 
 
