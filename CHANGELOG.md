@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.7](https://github.com/hyprpilot/hyprpilot/compare/v2.3.6...v2.3.7) (2026-05-27)
+
+
+### Bug Fixes
+
+* **frontend:** stabilize chat follow behavior ([#127](https://github.com/hyprpilot/hyprpilot/issues/127)) ([4829b59](https://github.com/hyprpilot/hyprpilot/commit/4829b590d042da10019451058aeb2070edb21dd3))
+
 ## [2.3.6](https://github.com/hyprpilot/hyprpilot/compare/v2.3.5...v2.3.6) (2026-05-27)
 
 
