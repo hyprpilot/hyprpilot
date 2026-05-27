@@ -956,6 +956,7 @@ function onQueueSend(itemId: string): void {
     :profile="sessionInfo.profileId ?? selectedProfile ?? sessionInfo.agent ?? 'none'"
     :name="sessionInfo.name"
     :phase="phase"
+    :effort-tag="sessionInfo.effort"
     :mode-tag="sessionInfo.mode"
     :provider="sessionInfo.agent"
     :model="sessionInfo.model"

@@ -154,6 +154,10 @@ export function closeTurn(id: InstanceId, sessionId: string): void {
   slot.openPlanBySession.delete(sessionId)
 }
 
+export function closeThought(id: InstanceId, sessionId: string): void {
+  states.get(id)?.openThoughtBySession.delete(sessionId)
+}
+
 interface ThoughtUpdate {
   sessionUpdate: string
   content?: { text?: string }

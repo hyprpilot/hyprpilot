@@ -138,10 +138,10 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(assistant?.streamEntries).toHaveLength(1)
   })
 
-  it('folds thought chunks across an interleaved tool call within the same turn', () => {
-    // Same shape as the agent-text fold, applied to the Thought
-    // stream — a tool call between thought chunks must not split
-    // the thinking block.
+  it('splits thought chunks across an interleaved tool call within the same turn', () => {
+    // OpenAI/opencode can emit distinct reasoning parts around tool
+    // calls while reusing the message id. A tool boundary means the
+    // second reasoning chunk belongs in a new thinking block.
     const toolCall = (seq: number, turnId: string, id: string): SeqTranscriptItem => ({
       seq,
       turnId,
@@ -169,13 +169,15 @@ describe('timelineBlocksFromSnapshot', () => {
     const assistant = blocks.find((b) => b.role === Role.Assistant)
 
     expect(assistant).toBeDefined()
-    expect(assistant?.streamEntries).toHaveLength(1)
-    const thought = assistant?.streamEntries[0]
+    expect(assistant?.streamEntries).toHaveLength(2)
+    const [first, second] = assistant?.streamEntries ?? []
 
-    expect(thought?.item.kind).toBe('thought')
+    if (first?.item.kind === 'thought') {
+      expect(first.item.text).toBe('first half — ')
+    }
 
-    if (thought?.item.kind === 'thought') {
-      expect(thought.item.text).toBe('first half — second half.')
+    if (second?.item.kind === 'thought') {
+      expect(second.item.text).toBe('second half.')
     }
   })
 

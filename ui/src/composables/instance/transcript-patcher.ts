@@ -198,6 +198,37 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
 
   queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', instanceId], (old) => {
     if (!old || old.pages.length === 0) {
+      const seedItems: SeqTranscriptItem[] = []
+      let latestSeq = 0
+
+      for (const payload of batch) {
+        if (payload.instanceId !== instanceId || payload.item.kind !== TranscriptItemKind.UserPrompt) {
+          continue
+        }
+        const incoming = liveItemFor(payload, latestSeq + 1)
+
+        if (!incoming) {
+          continue
+        }
+        seedItems.push(incoming)
+        latestSeq = incoming.seq
+      }
+
+      if (seedItems.length > 0) {
+        pendingByInstance.delete(instanceId)
+
+        return {
+          pages: [
+            {
+              items: seedItems,
+              oldestSeq: seedItems[0]?.seq ?? latestSeq,
+              latestSeq,
+              hasMore: false
+            }
+          ],
+          pageParams: [undefined]
+        }
+      }
       // No cached pages yet — the snapshot RPC hasn't landed. Drop the
       // batch: per the wire-ordering invariant (`biased;` select in
       // `remote/ws.rs`), events emitted before the snapshot response is

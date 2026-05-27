@@ -329,13 +329,29 @@ function tryMergeThought(projected: ProjectedItem[], entry: TimelineStream, it: 
   }
 
   if (it.turnId !== undefined) {
-    const target = findFoldTargetWithinTurn(projected, it.turnId, (p) => {
-      if (p.entry.kind !== 'stream' || p.entry.item.kind !== StreamItemKind.Thought) {
-        return false
+    let target: ProjectedItem | undefined
+
+    for (let i = projected.length - 1; i >= 0; i -= 1) {
+      const p = projected[i]
+
+      if (!p || p.turnId !== it.turnId) {
+        break
       }
 
-      return it.messageId !== undefined ? p.entry.item.id === it.messageId : p.entry.item.id.startsWith('thought-')
-    })
+      if (p.entry.kind === 'tool') {
+        break
+      }
+
+      if (p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Thought) {
+        const sameMessage = it.messageId !== undefined ? p.entry.item.id === it.messageId : p.entry.item.id.startsWith('thought-')
+
+        if (sameMessage) {
+          target = p
+        }
+
+        break
+      }
+    }
 
     if (target && target.entry.kind === 'stream' && target.entry.item.kind === StreamItemKind.Thought) {
       // Verbatim concat — daemon-side chunk text is already final.

@@ -22,6 +22,7 @@ import {
   useSessionInfo
 } from './use-session-info'
 import {
+  closeThought,
   closeTurn,
   deleteStreamByTurnId,
   pushConfigOptionChange,
@@ -185,6 +186,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       // Tool execution also pauses the thinking clock — the agent
       // stopped reasoning long enough to dispatch a tool call.
       markThinkingEnd(instanceId, sessionId)
+      closeThought(instanceId, sessionId)
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call',
         toolCallId: item.id,
@@ -201,6 +203,7 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       return
 
     case TranscriptItemKind.ToolCallUpdate:
+      closeThought(instanceId, sessionId)
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call_update',
         toolCallId: item.id,

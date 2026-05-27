@@ -36,7 +36,7 @@ use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::ToolKind;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
@@ -814,8 +814,19 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
     registry.dispatch(&ctx)
 }
 
-fn mcp_tool(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
-    ToolKind::from_mcp_name(title).or_else(|| super::agents::mcp_tool(adapter_id, title, raw_input))
+fn mcp_tool(
+    adapter_id: &str,
+    title: &str,
+    raw_input: Option<&serde_json::Value>,
+    mcp_server_names: &[String],
+) -> Option<ToolKind> {
+    ToolKind::from_mcp_name(title)
+        .or_else(|| super::agents::mcp_tool(adapter_id, title, raw_input))
+        .or_else(|| {
+            (adapter_id == "acp-opencode")
+                .then(|| super::agents::opencode::mcp_tool_from_single_underscore_name(title, mcp_server_names))
+                .flatten()
+        })
 }
 
 fn apply_config_option_selection(
@@ -931,10 +942,20 @@ fn strip_plan_step_header(content: &str) -> String {
     rest.trim_end().to_string()
 }
 
+#[cfg(test)]
 pub(crate) fn map_session_update(
     update: serde_json::Value,
     tool_calls: &mut ToolCallCache,
     adapter_id: &str,
+) -> MappedSessionUpdate {
+    map_session_update_with_mcp_servers(update, tool_calls, adapter_id, &[])
+}
+
+pub(crate) fn map_session_update_with_mcp_servers(
+    update: serde_json::Value,
+    tool_calls: &mut ToolCallCache,
+    adapter_id: &str,
+    mcp_server_names: &[String],
 ) -> MappedSessionUpdate {
     use crate::adapters::{
         Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
@@ -1288,7 +1309,7 @@ pub(crate) fn map_session_update(
                 running.wire_name = title.clone();
                 running.tool_kind = ToolKind::from_wire(
                     Some(tool_kind.as_str()),
-                    mcp_tool(adapter_id, &title, raw_input.as_ref()),
+                    mcp_tool(adapter_id, &title, raw_input.as_ref(), mcp_server_names),
                 );
                 running.raw_input = raw_input.clone();
                 running.content = update
@@ -1332,7 +1353,7 @@ pub(crate) fn map_session_update(
                 wire_name: title.clone(),
                 tool_kind: ToolKind::from_wire(
                     Some(tool_kind.as_str()),
-                    mcp_tool(adapter_id, &title, raw_input.as_ref()),
+                    mcp_tool(adapter_id, &title, raw_input.as_ref(), mcp_server_names),
                 ),
                 raw_input: raw_input.clone(),
                 content: update
@@ -1408,15 +1429,22 @@ pub(crate) fn map_session_update(
             if running.wire_name.is_empty() {
                 if let Some(t) = title.as_deref() {
                     running.wire_name = t.to_string();
-                    running.tool_kind =
-                        ToolKind::from_wire(tool_kind.as_deref(), mcp_tool(adapter_id, t, raw_input.as_ref()));
+                    running.tool_kind = ToolKind::from_wire(
+                        tool_kind.as_deref(),
+                        mcp_tool(adapter_id, t, raw_input.as_ref(), mcp_server_names),
+                    );
                 }
             }
             if let Some(k) = tool_kind.as_deref() {
                 if !running.tool_kind.is_mcp() {
                     running.tool_kind = ToolKind::from_wire(
                         Some(k),
-                        mcp_tool(adapter_id, running.wire_name.as_str(), raw_input.as_ref()),
+                        mcp_tool(
+                            adapter_id,
+                            running.wire_name.as_str(),
+                            raw_input.as_ref(),
+                            mcp_server_names,
+                        ),
                     );
                 }
             }
@@ -1425,7 +1453,7 @@ pub(crate) fn map_session_update(
                 if !running.tool_kind.is_mcp() {
                     running.tool_kind = ToolKind::from_wire(
                         tool_kind.as_deref(),
-                        mcp_tool(adapter_id, running.wire_name.as_str(), Some(rv)),
+                        mcp_tool(adapter_id, running.wire_name.as_str(), Some(rv), mcp_server_names),
                     );
                 }
             }
@@ -1524,7 +1552,7 @@ pub(crate) fn map_session_update(
                 .unwrap_or_default();
             let tool_kind = ToolKind::from_wire(
                 Some(tool_kind.as_str()),
-                mcp_tool(adapter_id, &tool, raw_input.as_ref()),
+                mcp_tool(adapter_id, &tool, raw_input.as_ref(), mcp_server_names),
             );
             // Same formatter dispatch the live `InstanceEvent::PermissionRequest`
             // emit uses (instance.rs ~2949). `started_at: 0` /
@@ -2392,7 +2420,22 @@ async fn run(params: RunParams) {
     ) {
         Ok(c) => {
             let agent = match_provider_agent(cfg.provider);
-            c.with_permission_mcp_tool(Arc::new(move |update| agent.permission_mcp_tool(update)))
+            let provider = cfg.provider;
+            let mcps = mcps.clone();
+            c.with_permission_mcp_tool(Arc::new(move |update| {
+                agent.permission_mcp_tool(update).or_else(|| {
+                    if provider != AgentProvider::AcpOpenCode {
+                        return None;
+                    }
+
+                    let title = update.fields.title.as_deref().unwrap_or_default();
+                    let server_names = mcps
+                        .as_ref()
+                        .map(|registry| registry.list().into_iter().map(|def| def.name).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    super::agents::opencode::mcp_tool_from_single_underscore_name(title, &server_names)
+                })
+            }))
         }
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
@@ -2596,6 +2639,11 @@ async fn run(params: RunParams) {
         // `InstanceMeta` emit. Reads via `list().len()` because the
         // registry's `count()` accessor is `cfg(test)` only.
         let mcps_count = mcps.as_ref().map(|reg| reg.list().len()).unwrap_or(0);
+        let mcp_server_names: Arc<Vec<String>> = Arc::new(
+            mcps.as_ref()
+                .map(|reg| reg.list().into_iter().map(|def| def.name).collect())
+                .unwrap_or_default(),
+        );
 
         // Single emitter for every `InstanceMeta` refresh in this
         // actor. Cloned into spawned tasks; reads the four `RwLock`
@@ -3675,7 +3723,12 @@ async fn run(params: RunParams) {
                                 message_id,
                             } = {
                                 let mut guard = tool_call_cache.write().await;
-                                map_session_update(update, &mut guard, provider_id_for_fmt.as_str())
+                                map_session_update_with_mcp_servers(
+                                    update,
+                                    &mut guard,
+                                    provider_id_for_fmt.as_str(),
+                                    mcp_server_names.as_ref(),
+                                )
                             };
                             // Out-of-prompt detection: if a transcript-shape
                             // update arrives without an open turn, mint an
@@ -4313,6 +4366,36 @@ mod tests {
                 tool: "read_skill".into()
             }
         );
+    }
+
+    #[test]
+    fn map_session_update_sets_opencode_mcp_tool_from_single_underscore_name() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-1",
+            "title": "linear-kilic-dev_list_issues",
+            "kind": "other",
+            "status": "running",
+            "rawInput": { "query": "open" }
+        });
+        let mapped =
+            map_session_update_with_mcp_servers(update, &mut cache, "acp-opencode", &["linear-kilic-dev".to_string()])
+                .mapped;
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCall(record)) = mapped else {
+            panic!("expected tool call");
+        };
+
+        assert_eq!(
+            record.tool_kind,
+            ToolKind::Mcp {
+                server: "linear-kilic-dev".into(),
+                tool: "list_issues".into()
+            }
+        );
+        assert_eq!(record.formatted.title, "linear-kilic-dev · list_issues");
     }
 
     #[test]

@@ -28,6 +28,7 @@ const props = withDefaults(
     name?: string
     phase?: Phase
     modeTag?: string
+    effortTag?: string
     provider?: string
     model?: string
     title?: string
@@ -139,6 +140,9 @@ const rowOneBg = computed(() => {
           </button>
           <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
             {{ model }}
+          </button>
+          <button v-if="effortTag" type="button" class="frame-effort-pill" aria-label="effort" @click="emit('pillClick', 'mode')">
+            {{ effortTag }}
           </button>
           <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">
             {{ modeTag }}
@@ -319,6 +323,7 @@ html:not([data-window-anchor]) .frame {
  *   mode     → accent (yellow, the operational lever) */
 .frame-adapter-pill,
 .frame-model-pill,
+.frame-effort-pill,
 .frame-mode-pill {
   @apply inline-flex shrink-0 items-center whitespace-nowrap rounded-sm leading-tight;
   padding: 0.1875rem 0.5625rem;
@@ -345,6 +350,10 @@ html:not([data-window-anchor]) .frame {
 
 .frame-mode-pill {
   color: var(--theme-accent);
+}
+
+.frame-effort-pill {
+  color: var(--theme-kind-think);
 }
 
 .frame-pill-button {

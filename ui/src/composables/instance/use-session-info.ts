@@ -65,6 +65,7 @@ export interface SessionInfo {
   /// for bare-agent spawns or before the first InstanceMeta lands.
   profileId?: string
   mode?: string
+  effort?: string
   model?: string
   availableModes: SessionModeOption[]
   availableModels: SessionModelOption[]
@@ -394,6 +395,7 @@ function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: Pro
     name: slot?.name,
     profileId: slot?.profileId,
     mode: slot?.mode,
+    effort: slot?.configOptions.find((category) => category.id === 'effort')?.currentValue,
     model: slot?.model ?? slotProfile?.model,
     availableModes: slot?.availableModes ?? [],
     availableModels: slot?.availableModels ?? [],

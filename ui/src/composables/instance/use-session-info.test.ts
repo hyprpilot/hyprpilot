@@ -5,6 +5,7 @@ import {
   pushCurrentModeUpdate,
   pushInstanceModeState,
   pushInstanceModelState,
+  pushConfigOptionsUpdate,
   pushSessionInfoUpdate,
   setInstanceCwd,
   setInstanceProfile,
@@ -124,6 +125,24 @@ describe('pushInstanceModelState (NewSessionResponse.models)', () => {
     pushInstanceModelState('A', { currentModelId: 'opus' })
 
     expect(useSessionInfo('A').info.value.model).toBe('opus')
+  })
+})
+
+describe('pushConfigOptionsUpdate (adapter config options)', () => {
+  it('derives effort from the effort config option current value', () => {
+    pushConfigOptionsUpdate('A', [
+      {
+        id: 'effort',
+        name: 'Effort',
+        currentValue: 'high',
+        options: [
+          { value: 'medium', name: 'medium' },
+          { value: 'high', name: 'high' }
+        ]
+      }
+    ])
+
+    expect(useSessionInfo('A').info.value.effort).toBe('high')
   })
 })
 

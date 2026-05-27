@@ -15,6 +15,7 @@ pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod lsp;
+pub mod mcp;
 pub mod patch;
 pub mod read;
 pub mod skill;
@@ -42,4 +43,5 @@ pub fn register_all(reg: &mut FormatterRegistry) {
     reg.register_adapter(adapter, "skill", Box::new(skill::SkillFormatter));
     reg.register_adapter(adapter, "patch", Box::new(patch::PatchFormatter));
     reg.register_adapter(adapter, "lsp", Box::new(lsp::LspFormatter));
+    reg.register_adapter(adapter, "mcp", Box::new(mcp::McpFormatter));
 }
