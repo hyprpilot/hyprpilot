@@ -19,7 +19,7 @@
  * — caller decides whether to fall back to the granular loaders.
  */
 
-import { type QueryClient } from '@tanstack/vue-query'
+import { type InfiniteData, type QueryClient } from '@tanstack/vue-query'
 
 import { applyInstancesSnapshot, useActiveInstance } from './use-active-instance'
 import { setDaemonCwd } from './use-daemon-cwd'
@@ -44,12 +44,49 @@ import { log } from '@lib'
  * `prefetchInstanceChat` produces. ChatViewport mounts
  * synchronously off the seeded cache.
  */
+interface ChatInfiniteData extends InfiniteData<ChatSnapshot, number | undefined> {
+  pages: ChatSnapshot[]
+  pageParams: (number | undefined)[]
+}
+
+function mergeChatSnapshot(existing: ChatInfiniteData | undefined, snap: ChatSnapshot): ChatSnapshot {
+  if (!existing || existing.pages.length === 0) {
+    return snap
+  }
+  const bySeq = new Map<number, ChatSnapshot['items'][number]>()
+
+  for (const item of snap.items) {
+    bySeq.set(item.seq, item)
+  }
+
+  for (const page of existing.pages) {
+    for (const item of page.items) {
+      bySeq.set(item.seq, item)
+    }
+  }
+  const items = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  const oldestSeq = items[0]?.seq
+  const latestSeq = items.at(-1)?.seq
+
+  return {
+    items,
+    oldestSeq,
+    latestSeq,
+    hasMore: snap.hasMore
+  }
+}
+
 function seedChatCacheFromBoot(queryClient: QueryClient, chats: Record<string, ChatSnapshot>): void {
   for (const [instanceId, snap] of Object.entries(chats)) {
-    recordLastSeenSeq(instanceId, snap.latestSeq)
-    queryClient.setQueryData(['snapshot-chat', instanceId], {
-      pages: [snap],
-      pageParams: [undefined as number | undefined]
+    queryClient.setQueryData<ChatInfiniteData>(['snapshot-chat', instanceId], (existing) => {
+      const merged = mergeChatSnapshot(existing, snap)
+
+      recordLastSeenSeq(instanceId, merged.latestSeq)
+
+      return {
+        pages: [merged],
+        pageParams: [undefined as number | undefined]
+      }
     })
   }
 }

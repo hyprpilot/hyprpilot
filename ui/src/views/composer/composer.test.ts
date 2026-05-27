@@ -1,12 +1,19 @@
 import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ChatComposer from './Composer.vue'
 import { ComposerPillKind, type ComposerPill } from '@components'
-import { __resetComposerForTests, __resetKeymapsForTests, useKeymaps } from '@composables'
-import { Modifier, TauriCommand } from '@ipc'
+import { __resetComposerForTests, __resetKeymapsForTests, __resetUseCompletionForTests, useKeymaps } from '@composables'
+import { CompletionKind, Modifier, TauriCommand } from '@ipc'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
+
+const EMPTY_COMPLETION_RESPONSE = {
+  requestId: 'completion-empty',
+  sourceId: null,
+  replacementRange: null,
+  items: []
+}
 
 vi.mock('@ipc', async() => ({
   ...(await vi.importActual<typeof import('@ipc')>('@ipc')),
@@ -49,12 +56,18 @@ const DEFAULT_KEYMAPS = {
 
 describe('ChatComposer.vue', () => {
   beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn()
     __resetKeymapsForTests()
     __resetComposerForTests()
+    __resetUseCompletionForTests()
     invokeMock.mockReset()
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === TauriCommand.GetKeymaps) {
         return Promise.resolve(DEFAULT_KEYMAPS)
+      }
+
+      if (cmd === TauriCommand.CompletionQuery) {
+        return Promise.resolve(EMPTY_COMPLETION_RESPONSE)
       }
 
       return Promise.resolve(undefined)
@@ -63,6 +76,11 @@ describe('ChatComposer.vue', () => {
     // which the test harness fails to mock cleanly here. Direct write
     // bypasses the noise.
     useKeymaps().keymaps.value = DEFAULT_KEYMAPS as never
+  })
+
+  afterEach(() => {
+    __resetUseCompletionForTests()
+    document.body.innerHTML = ''
   })
 
   it('renders pills + removes them', async() => {
@@ -201,6 +219,52 @@ describe('ChatComposer.vue', () => {
       text: 'hello',
       attachments: []
     })
+  })
+
+  it('keeps the first Tab selection when the Tab keyup follows the manual completion query', async() => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === TauriCommand.GetKeymaps) {
+        return Promise.resolve(DEFAULT_KEYMAPS)
+      }
+
+      if (cmd === TauriCommand.CompletionQuery) {
+        return Promise.resolve({
+          requestId: 'completion-1',
+          sourceId: 'skills',
+          replacementRange: { start: 0, end: 2 },
+          items: [
+            {
+              label: 'git-commit',
+              kind: CompletionKind.Skill,
+              replacement: { range: { start: 0, end: 2 }, text: '#{hyprpilot://skills/git-commit}' }
+            },
+            {
+              label: 'git-branch',
+              kind: CompletionKind.Skill,
+              replacement: { range: { start: 0, end: 2 }, text: '#{hyprpilot://skills/git-branch}' }
+            }
+          ]
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+    const wrapper = mount(ChatComposer, { attachTo: document.body })
+    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
+
+    await textarea.setValue('#g')
+    textarea.element.setSelectionRange(2, 2)
+    textarea.element.focus()
+    await textarea.trigger('keydown', { key: 'Tab' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    await textarea.trigger('keyup', { key: 'Tab' })
+    await wrapper.vm.$nextTick()
+
+    expect(document.body.querySelector('.completion-popover-wrap')).not.toBeNull()
+    expect(document.body.querySelector('[data-active="true"]')?.textContent).toContain('git-commit')
+
+    wrapper.unmount()
   })
 
   it('Enter submits; Shift+Enter does not', async() => {
