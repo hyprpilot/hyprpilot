@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.6](https://github.com/hyprpilot/hyprpilot/compare/v2.3.5...v2.3.6) (2026-05-27)
+
+
+### Bug Fixes
+
+* **frontend:** retain chat viewports ([#125](https://github.com/hyprpilot/hyprpilot/issues/125)) ([cae8b09](https://github.com/hyprpilot/hyprpilot/commit/cae8b09f891dda5ed346ccc4787c5d19338fecb8))
+
 ## [2.3.5](https://github.com/hyprpilot/hyprpilot/compare/v2.3.4...v2.3.5) (2026-05-27)
 
 
