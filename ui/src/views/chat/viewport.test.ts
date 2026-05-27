@@ -3,7 +3,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Viewport from './Viewport.vue'
-import { useActiveInstance } from '@composables'
 import { TranscriptItemKind, type ChatSnapshot, type SeqTranscriptItem } from '@ipc'
 
 const { invoke, listeners } = vi.hoisted(() => ({
@@ -20,50 +19,6 @@ vi.mock('@ipc', async() => ({
     return Promise.resolve(() => listeners.delete(event))
   }
 }))
-
-// `@tanstack/vue-virtual`'s `useVirtualizer` reaches for live layout
-// (offsetHeight / scroll metrics) that JSDOM doesn't compute. We
-// stub the helper to return a tiny synchronous virtualizer that
-// renders all rows — Viewport.vue's template binds to
-// `getVirtualItems()` and `getTotalSize()`, and we want every block
-// in the DOM so the assertions can find them by data-attr.
-//
-// Imports `computed` lazily inside the factory because vi.mock
-// runs before module evaluation; top-of-file imports aren't
-// available at this point.
-vi.mock('@tanstack/vue-virtual', async() => {
-  const { computed } = await import('vue')
-
-  return {
-    useVirtualizer: (optsRef: unknown) => {
-      const readCount = (): number => {
-        const raw = (optsRef as { value?: unknown }).value !== undefined ? (optsRef as { value: { count?: number } }).value : (optsRef as { count?: number })
-
-        return raw?.count ?? 0
-      }
-
-      // Return a Ref-like wrapper with a stable `.value` shape so
-      // `virtualizer.value.getVirtualItems()` works in the template.
-      // The stub re-reads `count` each time `getVirtualItems` runs
-      // so reactive blocks-length flips are picked up.
-      return computed(() => ({
-        getVirtualItems: () => {
-          const count = readCount()
-
-          return Array.from({ length: count }, (_, i) => ({
-            index: i,
-            key: i,
-            start: i * 160,
-            size: 160
-          }))
-        },
-        getTotalSize: () => readCount() * 160,
-        measureElement: () => undefined,
-        scrollToIndex: () => undefined
-      }))
-    }
-  }
-})
 
 function buildClient(): QueryClient {
   return new QueryClient({
@@ -107,11 +62,11 @@ function mountViewport(opts: MountOpts) {
     seedQueryData(qc, opts.instanceId, opts.seedPage)
   }
 
-  // Fix the focused instance id BEFORE mount so the composable's
-  // `enabled` flag flips on at first render.
-  useActiveInstance().id.value = opts.instanceId
-
   return mount(Viewport, {
+    props: {
+      instanceId: opts.instanceId,
+      active: true
+    },
     global: {
       plugins: [[VueQueryPlugin, { queryClient: qc }]],
       stubs: {
@@ -129,62 +84,9 @@ function mountViewport(opts: MountOpts) {
   })
 }
 
-// jsdom doesn't ship `IntersectionObserver`. `@vueuse/core`'s
-// `useIntersectionObserver` no-ops when it's missing. Stub the global
-// with a capture-shim so individual tests can manually invoke the
-// callback the composable registered, simulating the sentinel
-// entering the viewport without a real layout system.
-const intersectionCallbacks = new Set<IntersectionObserverCallback>()
-
-class IntersectionObserverStub implements IntersectionObserver {
-  public readonly root: Element | Document | null = null
-
-  public readonly rootMargin: string = ''
-
-  public readonly scrollMargin: string = ''
-
-  public readonly thresholds: readonly number[] = []
-
-  constructor(public callback: IntersectionObserverCallback) {
-    intersectionCallbacks.add(callback)
-  }
-
-  public observe(): void {}
-
-  public unobserve(): void {}
-
-  public disconnect(): void {
-    intersectionCallbacks.delete(this.callback)
-  }
-
-  public takeRecords(): IntersectionObserverEntry[] {
-    return []
-  }
-}
-
-vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
-
-function fireIntersection(isIntersecting: boolean): void {
-  for (const cb of intersectionCallbacks) {
-    cb(
-      [
-        {
-          isIntersecting,
-          intersectionRatio: isIntersecting ? 1 : 0,
-          target: document.createElement('div'),
-          time: performance.now()
-        } as unknown as IntersectionObserverEntry
-      ],
-      {} as IntersectionObserver
-    )
-  }
-}
-
 beforeEach(() => {
   invoke.mockReset()
   listeners.clear()
-  intersectionCallbacks.clear()
-  useActiveInstance().id.value = undefined
 })
 
 describe('Viewport.vue', () => {
@@ -225,8 +127,8 @@ describe('Viewport.vue', () => {
 
   it('renders the empty slot when the snapshot has no items', async() => {
     invoke.mockResolvedValueOnce(chatPage([], false))
-    useActiveInstance().id.value = 'i-empty'
     const wrapper = mount(Viewport, {
+      props: { instanceId: 'i-empty', active: true },
       slots: { empty: '<div data-testid="empty-slot">no chat yet</div>' },
       global: {
         plugins: [[VueQueryPlugin, { queryClient: buildClient() }]],
@@ -248,130 +150,33 @@ describe('Viewport.vue', () => {
     wrapper.unmount()
   })
 
-  it('hides the load chip when hasNextPage is false', async() => {
-    const exhausted = chatPage(
-      [
-        {
-          seq: 5,
-          item: { kind: TranscriptItemKind.AgentText, text: 'all there is' } as never
-        }
-      ],
-      false
-    )
-
-    invoke.mockResolvedValueOnce(exhausted)
-    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: exhausted })
-
-    await flushPromises()
-    await flushPromises()
-    // Chip only renders while `isFetchingNextPage` is true; with
-    // `hasMore: false` the next fetch never fires, so the chip stays
-    // hidden through the lifecycle.
-    expect(wrapper.find('[data-testid="chat-load-chip"]').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('renders the top sentinel when older pages are available so IntersectionObserver can drive backward fetch', async() => {
-    // PR4 refactor: the scrollTop-threshold trigger is gone. Backward
-    // fetch is wired via `useIntersectionObserver` against a top
-    // sentinel that only renders when `hasNextPage` is true. jsdom's
-    // IntersectionObserver is a no-op stub, so we verify the wiring
-    // shape — sentinel present + `hasNextPage` true — instead of
-    // simulating the observer callback.
-    const first = chatPage(
-      [
-        {
-          seq: 100,
-          item: { kind: TranscriptItemKind.AgentText, text: 'p0' } as never
-        }
-      ],
-      true
-    )
-
-    invoke.mockResolvedValueOnce(first)
-    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: first })
-
-    await flushPromises()
-    await flushPromises()
-    await wrapper.vm.$nextTick()
-
-    const sentinel = wrapper.find('[data-testid="chat-top-sentinel"]')
-
-    expect(sentinel.exists()).toBe(true)
-    wrapper.unmount()
-  })
-
-  it('manually firing the intersection observer triggers fetchNextPage with the head page cursor', async() => {
-    const first = chatPage(
-      [
-        {
-          seq: 100,
-          item: { kind: TranscriptItemKind.AgentText, text: 'p0' } as never
-        }
-      ],
-      true
-    )
-
-    invoke.mockResolvedValueOnce(first)
-    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: first })
-
-    await flushPromises()
-    await flushPromises()
-    await wrapper.vm.$nextTick()
-
-    invoke.mockClear()
+  it('marks inactive retained viewports as hidden at the root', async() => {
     invoke.mockResolvedValueOnce(chatPage([], false))
-
-    // Flip `hasUserScrolled` true via a real gesture — the IO
-    // callback now gates on this so mount-time intersections during
-    // `useStickToBottom`'s `scrollToBottom` write don't spuriously
-    // fire a backward fetch before the captain has scrolled.
-    const root = wrapper.find('[data-testid="chat-transcript"]').element as HTMLElement
-
-    root.dispatchEvent(new PointerEvent('pointerdown'))
-    await flushPromises()
-
-    // Simulate the sentinel entering the viewport. The observer
-    // callback runs `viewport.fetchNextPage()` which invokes
-    // `instance_snapshot_chat` with `before = oldestSeq` of the
-    // current head page.
-    fireIntersection(true)
-    await flushPromises()
-    await flushPromises()
-
-    expect(invoke).toHaveBeenCalled()
-    const lastCall = invoke.mock.calls[invoke.mock.calls.length - 1]
-
-    expect(lastCall?.[0]).toBe('instance_snapshot_chat')
-    expect((lastCall?.[1] as { before?: number })?.before).toBe(100)
-    wrapper.unmount()
-  })
-
-  it('omits the top sentinel when no older pages remain (hasNextPage = false)', async() => {
-    const onlyPage = chatPage(
-      [
-        {
-          seq: 0,
-          item: { kind: TranscriptItemKind.AgentText, text: 'first-ever' } as never
+    const wrapper = mount(Viewport, {
+      props: { instanceId: 'i-hidden', active: false },
+      slots: { empty: '<div />' },
+      global: {
+        plugins: [[VueQueryPlugin, { queryClient: buildClient() }]],
+        stubs: {
+          Turn: { template: '<div />' },
+          StreamCard: { template: '<div />' },
+          ChangeBanner: { template: '<div />' },
+          ToolChips: { template: '<div />' },
+          TerminalCard: { template: '<div />' },
+          Body: { template: '<div />' },
+          Attachments: { template: '<div />' }
         }
-      ],
-      false
-    )
-
-    invoke.mockResolvedValueOnce(onlyPage)
-    const wrapper = mountViewport({ instanceId: 'i-1', initialPage: onlyPage })
+      }
+    })
 
     await flushPromises()
     await flushPromises()
-    await wrapper.vm.$nextTick()
 
-    const sentinel = wrapper.find('[data-testid="chat-top-sentinel"]')
-
-    expect(sentinel.exists()).toBe(false)
+    expect(wrapper.find('.chat-viewport-root').attributes('data-active')).toBe('false')
     wrapper.unmount()
   })
 
-  it('does not refetch on scroll when there are no older pages', async() => {
+  it('does not refetch on scroll because lazy loading is disabled', async() => {
     const exhausted = chatPage(
       [
         {
@@ -400,5 +205,4 @@ describe('Viewport.vue', () => {
     expect(invoke).not.toHaveBeenCalled()
     wrapper.unmount()
   })
-
 })

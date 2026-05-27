@@ -54,6 +54,11 @@ const activeIndex = computed(() => {
 
 .permission-panel {
   @apply flex flex-col overflow-y-auto;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
   background-color: var(--theme-permission-bg);
   border-top: 0.125rem solid var(--theme-status-warn);
   max-height: 45dvh;

@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref, type Ref } from 'vue'
 
-import { DEFAULT_CHAT_LIMIT, useInstanceChatInfiniteQuery } from './use-instance-chat-infinite-query'
+import { FULL_CHAT_LIMIT, useInstanceChatInfiniteQuery } from './use-instance-chat-infinite-query'
 import { TauriCommand, type ChatSnapshot, type SeqTranscriptItem } from '@ipc'
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
@@ -86,50 +86,34 @@ describe('useInstanceChatInfiniteQuery', () => {
     expect(invoke).toHaveBeenCalledWith(TauriCommand.InstanceSnapshotChat, {
       instanceId: 'i-1',
       before: undefined,
-      limit: DEFAULT_CHAT_LIMIT
+      limit: FULL_CHAT_LIMIT
     })
-    expect(probe.hasNextPage.value).toBe(true)
+    expect(probe.hasNextPage.value).toBe(false)
     expect(probe.hasPreviousPage.value).toBe(false)
     unmount()
   })
 
-  it('fetchNextPage passes before=oldestSeq from the last page', async() => {
+  it('does not advertise older-page lazy loading even when the daemon has more', async() => {
     const first: ChatSnapshot = {
       items: [transcript(150)],
       oldestSeq: 150,
       latestSeq: 150,
       hasMore: true
     }
-    const second: ChatSnapshot = {
-      items: [transcript(100)],
-      oldestSeq: 100,
-      latestSeq: 100,
-      hasMore: false
-    }
 
-    invoke.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    invoke.mockResolvedValueOnce(first)
     const id = ref<string | undefined>('i-1')
     const { probe, unmount } = mountWith(id)
 
     await flushPromises()
     await flushPromises()
 
-    await probe.fetchNextPage()
-    await flushPromises()
-    await flushPromises()
-
-    expect(invoke).toHaveBeenCalledTimes(2)
-    expect(invoke).toHaveBeenLastCalledWith(TauriCommand.InstanceSnapshotChat, {
-      instanceId: 'i-1',
-      before: 150,
-      limit: DEFAULT_CHAT_LIMIT
-    })
-    // Second page reported `hasMore = false` so `hasNextPage` flips off.
+    expect(invoke).toHaveBeenCalledTimes(1)
     expect(probe.hasNextPage.value).toBe(false)
     unmount()
   })
 
-  it('hasNextPage reflects hasMore on the latest fetched page', async() => {
+  it('hasNextPage stays false when the daemon reports the retained ring is exhausted', async() => {
     const exhausted: ChatSnapshot = {
       items: [transcript(0)],
       oldestSeq: 0,

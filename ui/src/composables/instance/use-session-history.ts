@@ -134,9 +134,14 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
     // A single empty head page is enough for the patcher to find
     // the cache key + append the live items to `head.items`.
     queryClient.setQueryData(['snapshot-chat', target], {
-      pages: [{
-        items: [], oldestSeq: undefined, latestSeq: undefined, hasMore: false
-      }],
+      pages: [
+        {
+          items: [],
+          oldestSeq: undefined,
+          latestSeq: undefined,
+          hasMore: false
+        }
+      ],
       pageParams: [undefined as number | undefined]
     })
 

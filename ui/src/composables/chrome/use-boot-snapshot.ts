@@ -27,6 +27,7 @@ import { applyKeymapsFromObject } from './use-keymaps'
 import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
 import { applyCompletionConfigFromObject } from '../composer/use-completion'
+import { recordLastSeenSeq } from '../instance/transcript-patcher'
 import { prefetchInstanceMeta } from '../instance/use-focus-prefetch'
 import { applyBootNotifications } from '../instance/use-notifications'
 import { applyQueueChanged } from '../instance/use-queue'
@@ -40,11 +41,12 @@ import { log } from '@lib'
  * `chats` map. Writes one `InfiniteData` shape per instance — same
  * key (`['snapshot-chat', instanceId]`) the `useInstanceChatInfiniteQuery`
  * mount reads from, same single-head-page shape
- * `prefetchInstanceChatFirstPage` produces. ChatViewport mounts
+ * `prefetchInstanceChat` produces. ChatViewport mounts
  * synchronously off the seeded cache.
  */
 function seedChatCacheFromBoot(queryClient: QueryClient, chats: Record<string, ChatSnapshot>): void {
   for (const [instanceId, snap] of Object.entries(chats)) {
+    recordLastSeenSeq(instanceId, snap.latestSeq)
     queryClient.setQueryData(['snapshot-chat', instanceId], {
       pages: [snap],
       pageParams: [undefined as number | undefined]
@@ -132,7 +134,7 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   applyBootNotifications(snap.notifications)
 
   // Seed the per-instance chat cache for EVERY live instance — not
-  // just the focused one. The daemon ships a first chat-page snapshot
+  // just the focused one. The daemon ships a full-ring chat snapshot
   // per instance in the boot payload (see `BOOT_CHAT_PAGE_LIMIT` in
   // `src-tauri/src/daemon/mod.rs`); writing each one directly into
   // the TanStack cache means the captain navigating into ANY visible
@@ -140,7 +142,7 @@ export async function applyBootSnapshot(queryClient?: QueryClient): Promise<bool
   // "I only see the latest message" hydration gap that hit when:
   //   - the daemon had no `focusedId` (no chat prefetch fired)
   //   - the captain switched between instances (every flip triggered
-  //     a fresh viewport-sized fetch instead of cache reuse)
+  //     a fresh full-ring fetch instead of cache reuse)
   //   - a session_load replay raced the cache initialisation (the
   //     transcript-patcher's no-cache guard dropped the replay events
   //     because no pages existed yet).

@@ -256,7 +256,7 @@ describe('useSessionStream', () => {
 
     expect(thoughts).toHaveLength(2)
     expect(thoughts.map((item) => item.id)).toEqual(['thought-a', 'thought-b'])
-    expect(thoughts.map((item) => item.kind === 'thought' ? item.text : '')).toEqual(['first', 'second'])
+    expect(thoughts.map((item) => (item.kind === 'thought' ? item.text : ''))).toEqual(['first', 'second'])
   })
 
   it('routes acp:terminal output and exit chunks to useTerminals', async() => {

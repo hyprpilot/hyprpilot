@@ -1,8 +1,7 @@
 <script setup lang="ts">
 /**
- * Chat transcript viewport. Reads off `useChatViewport` (which wraps
- * `useInstanceChatInfiniteQuery` + live-event patches + page-trim
- * policy) and feeds the resulting blocks into a plain `v-for` render.
+ * Chat transcript viewport. Reads off `useChatViewport` and feeds the
+ * resulting blocks into a plain `v-for` render.
  *
  * **No virtualization.** TanStack Vue Virtual was tried twice and
  * pulled out twice. Variable-height content + streaming chunks
@@ -18,15 +17,11 @@
  *
  * Vue caps the loop at 100 iterations and throws "Maximum recursive
  * updates exceeded in component <Viewport>". The non-virtualized
- * `v-for` is stable: page-trim already bounds the live DOM to ~150
- * rows (`useChatViewport.MAX_PAGES_KEPT` × `DEFAULT_CHAT_LIMIT`),
- * which Vue handles without breaking a sweat. Re-virtualize later
- * if a real memory ceiling shows up; the bottleneck today is
- * correctness.
- *
- * **Backward pagination**: a `@scroll` handler watches `scrollTop` and
- * triggers `viewport.fetchNextPage()` when the captain crosses
- * `LOAD_MORE_THRESHOLD_PX` from the top.
+ * `v-for` is stable and the daemon-side transcript ring is the only
+ * history bound. Inactive instance viewports stay mounted and are
+ * hidden with viewport-level CSS rather than row-level
+ * `content-visibility`, because row-level visibility breaks the
+ * scroll-anchor offset math documented in `Turn.vue`.
  *
  * **Stick-to-bottom**: `useStickToBottom` already runs a
  * MutationObserver + ResizeObserver pair on the scroll container and
@@ -34,7 +29,7 @@
  * extra Vue watcher needed.
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
-import { useEventListener, useIntersectionObserver, useNow } from '@vueuse/core'
+import { useEventListener, useNow } from '@vueuse/core'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import Attachments from './Attachments.vue'
@@ -49,7 +44,6 @@ import {
   StreamItemKind,
   TurnRole,
   timelineBlocksFromSnapshot,
-  useActiveInstance,
   useAgentRegistry,
   useChatViewport,
   useScrollAnchor,
@@ -61,24 +55,23 @@ import {
   type WireToolCall,
   type InstanceId
 } from '@composables'
-import { format, formatDuration, log } from '@lib'
+import { format, formatDuration } from '@lib'
 
-/// Sentinel `rootMargin` for the intersection-observer-driven
-/// backward fetch. Sized to ~1 viewport so the fetch lands before
-/// the captain visually reaches the boundary — older content
-/// streams in while they're still scrolling, no perceptible pause.
-/// Wider than the previous 240px and narrower than 1.5×
-/// viewport — 1× keeps the pre-fetch window aggressive enough to
-/// mask round-trip latency without triggering spurious fetches on
-/// initial mount (when scrollHeight is still settling).
-const LOAD_MORE_SENTINEL_MARGIN_PX = 720
-
-const props = defineProps<{
-  /// Captain's "session is restoring" gate — keeps the scoped
-  /// `<Loading>` overlay painted on top while transcript replay is
-  /// in flight.
-  restoring?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    /// Instance whose transcript this retained viewport renders.
+    instanceId?: InstanceId
+    /// Whether this retained viewport is currently visible/focusable.
+    active?: boolean
+    /// Captain's "session is restoring" gate — keeps the scoped
+    /// `<Loading>` overlay painted on top while transcript replay is
+    /// in flight.
+    restoring?: boolean
+  }>(),
+  {
+    active: true
+  }
+)
 
 const emit = defineEmits<{
   /// Fires when the captain hits the per-tool-call cancel button on
@@ -88,19 +81,11 @@ const emit = defineEmits<{
   'attachment-open': [attachment: import('@ipc').Attachment]
 }>()
 
-const { id: activeInstanceId } = useActiveInstance()
-const instanceId = computed<InstanceId | undefined>(() => activeInstanceId.value)
-
-// `scrollEl` declared up-front so `useChatViewport` can derive its
-// fetch page size from `clientHeight`. The ref is undefined until
-// mount; `viewportPageSize`'s fallback returns the minimum size so
-// the initial fetch races a sane lower bound, and every backward
-// page picks up the real viewport extent.
+const instanceId = computed<InstanceId | undefined>(() => props.instanceId)
 const scrollEl = ref<HTMLElement>()
 /// Flipped on the first captain-initiated input gesture after mount.
-/// Both `fetchNextPage` (load older) and `evictExtraPages` (drop
-/// trailing pages) gate on this so they don't fire during the
-/// initial paint of a freshly-mounted viewport.
+/// Gesture latch used by stick/anchor release paths so synthetic
+/// mount-time scrolls do not look like captain intent.
 ///
 /// **Why a gesture listener, not a scroll-event heuristic.**
 /// `useStickToBottom.onMounted` writes `scrollTop = scrollHeight` on
@@ -111,16 +96,16 @@ const scrollEl = ref<HTMLElement>()
 /// gate (the previous shape) had two failure modes: (1) on a small
 /// upward drag, `distanceFromBottom < threshold` so the gate stayed
 /// locked, burning the gesture; (2) on a large drag past the
-/// threshold, the gate unlocked but the same scroll tick also
-/// satisfied the load-more condition, racing the fetch.
+/// threshold, the gate unlocked only after the scroll gesture had already
+/// started, racing sticky/anchor release.
 ///
 /// `wheel` / `touchstart` / `pointerdown` are pure intent signals —
-/// stick-to-bottom never fires them. First one flips the gate; from
-/// that point on, every scroll handler tick can pull older pages.
+/// stick-to-bottom never fires them. First one flips the gate so
+/// later gesture-sensitive paths know the captain has interacted.
 ///
-/// Resets to `false` on every mount (the `:key="activeInstanceId"`
-/// on `<ChatViewport>` in `Overlay.vue` forces a clean remount per
-/// instance flip, so this ref is freshly `false` for each instance).
+/// Resets to `false` on every retained viewport mount. Focus flips
+/// no longer remount the viewport, so each instance keeps its own
+/// latch and scroll position.
 const hasUserScrolled = ref(false)
 
 function markUserScrolled(): void {
@@ -178,7 +163,7 @@ useEventListener(scrollEl, 'pointerdown', markUserScrolled, { passive: true })
 // long-press-context-menu interactions.
 useEventListener(scrollEl, 'touchmove', releaseStickAndAnchor, { passive: true })
 
-const viewport = useChatViewport(instanceId, { scrollEl })
+const viewport = useChatViewport(instanceId)
 const blocks = computed(() => timelineBlocksFromSnapshot(viewport.items.value, instanceId.value ?? 'snapshot'))
 
 const { adapterFor } = useAgentRegistry()
@@ -233,15 +218,14 @@ const { releaseAnchor, markProgrammaticScroll } = useScrollAnchor(scrollEl, { st
 /// closes the gap explicitly — the first transition from "no items"
 /// to "items present" per mount triggers an explicit
 /// `scrollToBottom` after Vue has flushed the DOM, regardless of
-/// whether the MutationObserver fired. `<ChatViewport>` is keyed
-/// on `activeInstanceId` in `Overlay.vue`, so this watcher fires
-/// once per instance-flip.
+/// whether the MutationObserver fired. Retained viewports mount once
+/// per known instance, so this watcher fires once per instance.
 let firstHydrationLanded = false
 
 watch(
-  () => viewport.items.value.length,
-  async(count) => {
-    if (firstHydrationLanded || count === 0) {
+  () => [viewport.items.value.length, props.active] as const,
+  async([count, active]) => {
+    if (firstHydrationLanded || count === 0 || !active) {
       return
     }
     firstHydrationLanded = true
@@ -251,6 +235,7 @@ watch(
     // child watchers that run their own `nextTick` for layout
     // measurement (markdown render passes, syntax-highlight swaps).
     await nextTick()
+    markProgrammaticScroll()
     scrollToBottom()
   },
   { immediate: true }
@@ -272,11 +257,9 @@ function releaseStickAndAnchor(): void {
 
 // `stuck` is the auto-scroll signal — 128px-from-bottom threshold
 // (tuned in `useStickToBottom`) so a captain reading 1 viewport
-// above the foot doesn't get yanked back on every chunk. We do NOT use it for
-// eviction; eviction fires from `onScroll` whenever the captain
-// is within ~one viewport of the bottom, which is wider than the
-// auto-scroll window so cache cleanup is prompt without
-// disturbing the read-history flow.
+// above the foot doesn't get yanked back on every chunk. There is no
+// viewport-window eviction anymore; the daemon transcript ring is the
+// only history bound.
 
 // **Window-focus → scroll-to-end, BUT only when the captain was
 // already stuck at the foot.** Tauri 2 propagates window focus to the
@@ -309,134 +292,11 @@ function goToBottom(): void {
 
 // ── Rendering ──────────────────────────────────────────────────────
 //
-// **No virtualization.** TanStack Vue Virtual was tried twice and
-// pulled out twice for the same root cause: variable-height content
-// + streaming chunks creates a tight ResizeObserver / `triggerRef` /
-// re-measure cycle that never converges:
-//
-//   1. virtualizer.measureElement(row) → onChange → triggerRef(state)
-//   2. virtualRows recomputes (positions shift)
-//   3. Vue re-renders the row, content unchanged but ref re-fires
-//   4. ResizeObserver fires for the changed-size row (head row keeps
-//      growing during streaming)
-//   5. Goto 1
-//
-// Vue caps the loop at 100 iterations and throws "Maximum recursive
-// updates exceeded in component <Viewport>". Under streaming reply
-// or session/load replay it fires every chunk.
-//
-// The non-virtualized `v-for` over `blocks` is stable: page-trim
-// already bounds the live DOM to ~150 rows
-// (`useChatViewport.MAX_PAGES_KEPT` × `DEFAULT_CHAT_LIMIT`), and
-// modern Vue can render that without breaking a sweat. The viewport
-// can be re-virtualized later if a captain hits a real memory
-// ceiling, but the current bottleneck is correctness, not memory.
-
-/// Top-of-list sentinel — a 0-height marker rendered above the first
-/// chat block. `useIntersectionObserver` fires when the sentinel
-/// enters the captain's viewport. Drives the backward fetch. Replaces
-/// the prior scrollTop-threshold check inside `onScroll`.
-const topSentinel = ref<HTMLElement>()
-
-// ── Backward fetch trigger (intersection-observer driven) ──────────
-//
-// `useIntersectionObserver` against the top-of-list sentinel calls
-// `viewport.fetchNextPage` exactly once per visibility transition.
-// vue-query dedupes concurrent calls internally — its
-// `isFetchingNextPage` flag is the authoritative gate. Anchor
-// preservation is automatic via `useScrollAnchor`'s ResizeObserver
-// — the prepended page grows scrollHeight, which fires resize,
-// which re-locks scrollTop so the captain's reading row stays
-// glued to its pixel position.
-//
-// **`root: scrollEl` is load-bearing.** Without it the IO defaults to
-// the document viewport, and `rootMargin` then expands the document
-// viewport — not the `.chat-transcript` scroll container. The
-// "fire fetch when captain is within 720px of the top of the chat"
-// intent translates to "within 720px of the SCREEN TOP" instead,
-// which depends on where the chat is positioned relative to chrome
-// + composer + permission rows. On the Tauri overlay (full-screen
-// WebKitGTK) the offset is small; in the remote SPA it can be
-// hundreds of px, making the trigger fire far too late or not at
-// all. Passing `root: scrollEl` makes `rootMargin` expand the
-// chat scroll-container's own clip rect, matching captain intent.
-//
-// **`hasUserScrolled` guard**: without it the IO can fire on mount
-// during `useStickToBottom`'s `scrollTop = scrollHeight` write —
-// the sentinel briefly intersects the expanded root during DOM
-// settle, triggering a phantom backward fetch before the captain
-// has scrolled at all. Same gate the eviction path uses.
-useIntersectionObserver(
-  topSentinel,
-  ([entry]) => {
-    log.trace('chat-viewport.sentinel.fire', {
-      isIntersecting: entry?.isIntersecting,
-      intersectionRatio: entry?.intersectionRatio,
-      hasUserScrolled: hasUserScrolled.value,
-      hasNextPage: viewport.hasNextPage.value,
-      isFetchingNextPage: viewport.isFetchingNextPage.value
-    })
-
-    if (!entry?.isIntersecting) {
-      return
-    }
-
-    if (!hasUserScrolled.value) {
-      log.trace('chat-viewport.sentinel.gated-hasUserScrolled')
-
-      return
-    }
-
-    if (!viewport.hasNextPage.value) {
-      log.trace('chat-viewport.sentinel.gated-hasNextPage')
-
-      return
-    }
-
-    if (viewport.isFetchingNextPage.value) {
-      log.trace('chat-viewport.sentinel.gated-isFetchingNextPage')
-
-      return
-    }
-    log.trace('chat-viewport.sentinel.fetch-firing')
-    void viewport.fetchNextPage().catch((err: unknown) => {
-      log.warn('chat-viewport: backward fetch rejected', undefined, err)
-    })
-  },
-  {
-    root: scrollEl,
-    rootMargin: `${LOAD_MORE_SENTINEL_MARGIN_PX}px 0px 0px 0px`,
-    threshold: 0
-  }
-)
-
-// ── Eviction trigger ────────────────────────────────────────────────
-//
-// Three-part gate:
-//   1. `hasUserScrolled` — never trim during mount-time synthetic
-//      scrolls (stick-to-bottom's `scrollToBottom` write fires a
-//      scroll event indistinguishable from a captain drag if we
-//      only watched scrollTop). Captain's first input gesture flips
-//      this true.
-//   2. `stuck === true` OR within one viewport of the foot. The
-//      `stuck` 128px threshold is narrow; widening to "within one
-//      viewport" keeps cache cleanup prompt when the captain
-//      returns to the live area, without trimming mid-read. We do
-//      NOT trim when the captain is anchored mid-history — the
-//      anchor row could be in the trim range, and eviction would
-//      break the re-lock path.
-//   3. rAF-defer so the cache mutation lands on the next frame,
-//      after the in-flight scroll gesture finishes — eviction
-//      inside the scroll task removes nodes from the TOP of the DOM
-//      mid-gesture, confusing the browser's anchor heuristic.
-//
-// Scroll handler is a no-op now that pagination-eviction is gone —
-// `useStickToBottom` already maintains the stick state off the same
-// event, and there's no per-scroll cache mutation left to do. Kept
-// as an explicit empty handler so a future eviction policy has an
-// obvious slot to land in (and so the existing `@scroll` binding
-// stays alive for any rAF-driven trace we add later).
-function onScroll(): void {}
+// **No virtualization and no lazy viewport window.** The initial
+// snapshot asks for the daemon's retained transcript ring. The plain
+// `v-for` keeps history in DOM for the active viewport; inactive
+// viewports are hidden at the root with CSS so focus switches do not
+// delete viewport-local scroll/anchor state.
 
 const liveBlockIdx = computed<number>(() => {
   const open = openTurnId.value
@@ -711,30 +571,13 @@ defineExpose({ scrollEl })
 </script>
 
 <template>
-  <div class="chat-viewport-root">
-    <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''" @scroll="onScroll">
+  <div class="chat-viewport-root" :data-active="props.active ? 'true' : 'false'">
+    <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''">
       <Loading v-if="props.restoring" mode="scoped" status="restoring session — replaying transcript" />
 
       <slot v-if="isEmpty" name="empty" />
 
       <template v-else>
-        <!-- Top sentinel — 0-height marker the IntersectionObserver
-           watches. When it enters the captain's expanded viewport
-           (rootMargin LOAD_MORE_SENTINEL_MARGIN_PX above the actual
-           top), `viewport.fetchNextPage` fires. Rendered ONLY when
-           older pages still exist so the observer naturally
-           short-circuits at the end of history. -->
-        <div v-if="viewport.hasNextPage.value" ref="topSentinel" class="chat-top-sentinel" aria-hidden="true" data-testid="chat-top-sentinel" />
-
-        <!-- Loading chip — sticky-pinned to the visible top edge so
-           it stays in view regardless of scroll position during the
-           fetch. Gate: vue-query's own `isFetchingNextPage` flag.
-           Previously also gated on `isRestoringScroll` (the manual
-           captureBefore/restoreAfter window); replaced by the
-           anchor primitive's natural ResizeObserver re-lock, which
-           settles inside the same frame as Vue's flush. -->
-        <div v-if="viewport.isFetchingNextPage.value" class="chat-load-chip animate-pulse" data-testid="chat-load-chip">loading earlier…</div>
-
         <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
            re-renders for history rows. Live row keeps re-rendering
            every chunk because `latestUpdatedAt(block)` advances per
@@ -841,9 +684,8 @@ defineExpose({ scrollEl })
          coupled to whatever sits below the viewport (composer, queue,
          permission stack). Visible only when the captain has scrolled
          away from the bottom — `stuck` flips false the moment they
-         move >128px above the foot. Click jumps to the live area AND
-         immediately drops any extra pages the captain accumulated
-         while scrolling up. -->
+         move >128px above the foot. Click jumps to the live area and
+         resumes auto-follow. -->
     <button v-if="!stuck" type="button" class="scroll-to-bottom" data-testid="scroll-to-bottom" aria-label="Scroll to latest" @click="goToBottom">
       <FaIcon :icon="faChevronDown" />
     </button>
@@ -861,6 +703,21 @@ defineExpose({ scrollEl })
   @apply relative flex min-h-0 flex-1 flex-col;
 }
 
+.chat-viewport-root[data-active='false'] {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  content-visibility: hidden;
+  contain: layout style paint;
+}
+
+.chat-viewport-root[data-active='true'] {
+  position: relative;
+  visibility: visible;
+  content-visibility: visible;
+}
+
 .chat-transcript {
   @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
   position: relative;
@@ -873,35 +730,6 @@ defineExpose({ scrollEl })
   overflow-anchor: none;
 }
 
-.chat-top-sentinel {
-  /* 0-height, full-width marker the IntersectionObserver watches.
-   * `pointer-events: none` so it never intercepts clicks; absolutely
-   * no visual presence. */
-  flex-shrink: 0;
-  height: 1px;
-  width: 100%;
-  pointer-events: none;
-}
-
-.chat-load-chip {
-  @apply rounded text-[0.7rem];
-  /* Sticky to the top of the scroll viewport so the chip stays
-   * visible while older content loads. `top: 0.5rem` matches the
-   * margin so the chip's resting position looks identical to the
-   * pre-sticky version when scrolled to the head; while scrolled
-   * down it rides the top edge of the visible area. `z-index: 1`
-   * keeps it above the (non-positioned) <Turn> rows. */
-  position: sticky;
-  top: 0.5rem;
-  z-index: 1;
-  margin: 0.5rem auto 0.25rem;
-  padding: 0.125rem 0.5rem;
-  background-color: var(--theme-surface-alt);
-  color: var(--theme-fg-dim);
-  border: 1px solid var(--theme-border-soft);
-  align-self: center;
-}
-
 /* Floating chevron — bottom-right of the chat surface. Sits above
  * the inner scroller so it doesn't move with content. Compact so
  * it doesn't hog vertical space on mobile; rem-based so the
@@ -910,15 +738,16 @@ defineExpose({ scrollEl })
   position: absolute;
   bottom: 0.625rem;
   right: 0.625rem;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 2rem;
+  height: 2rem;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background-color: var(--theme-surface-alt);
-  color: var(--theme-fg-dim);
-  border: 1px solid var(--theme-border-soft);
+  background-color: var(--theme-surface);
+  color: var(--theme-accent);
+  border: 1px solid var(--theme-accent);
+  box-shadow: 0 0.375rem 1.25rem rgba(0, 0, 0, 0.35);
   cursor: pointer;
   font-size: 0.7rem;
   transition:
@@ -929,7 +758,7 @@ defineExpose({ scrollEl })
 }
 
 .scroll-to-bottom:hover {
-  background-color: var(--theme-surface);
+  background-color: var(--theme-surface-alt);
   color: var(--theme-fg);
 }
 

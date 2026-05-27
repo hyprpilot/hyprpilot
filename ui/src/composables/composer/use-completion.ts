@@ -41,7 +41,7 @@ export interface UseCompletionApi {
    * during detect — drives palette modes that want autocomplete
    * from a specific source only (cwd → `['path']`).
    */
-  query: (text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }) => void
+  query: (text: string, cursor: number, opts?: CompletionQueryOptions) => void
   /** Cancel the in-flight query (ripgrep specifically) and close the popover. */
   close: () => void
   /** Move selection within `items` — wraps at boundaries. */
@@ -53,6 +53,16 @@ export interface UseCompletionApi {
 
 const DEFAULT_QUERY_DEBOUNCE_MS = 30
 const RESOLVE_DEBOUNCE_MS = 80
+
+type CompletionInitialSelection = 'none' | 'first' | 'last'
+
+interface CompletionQueryOptions {
+  manual?: boolean
+  cwd?: string
+  instanceId?: string
+  sources?: CompletionSourceId[]
+  initialSelection?: CompletionInitialSelection
+}
 
 let singleton: UseCompletionApi | undefined
 // Captain-tunable debounce override sourced from `[completion.ripgrep]
@@ -125,7 +135,7 @@ export function useCompletion(): UseCompletionApi {
   /// `state.open = true` and the cancel RPC is best-effort.
   let queryGeneration = 0
 
-  function query(text: string, cursor: number, opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }): void {
+  function query(text: string, cursor: number, opts?: CompletionQueryOptions): void {
     if (queryDebounce) {
       clearTimeout(queryDebounce)
     }
@@ -154,12 +164,7 @@ export function useCompletion(): UseCompletionApi {
     }, debounce)
   }
 
-  async function runQuery(
-    text: string,
-    cursor: number,
-    generation: number,
-    opts?: { manual?: boolean; cwd?: string; instanceId?: string; sources?: CompletionSourceId[] }
-  ): Promise<void> {
+  async function runQuery(text: string, cursor: number, generation: number, opts?: CompletionQueryOptions): Promise<void> {
     let response: CompletionQueryResponse
 
     try {
@@ -208,13 +213,15 @@ export function useCompletion(): UseCompletionApi {
 
     state.value.open = true
     state.value.items = response.items
-    // Open with the sentinel — captain must Tab / arrow to pick a row.
-    state.value.selectedIndex = -1
+    const initialSelection = opts?.initialSelection ?? 'none'
+
+    state.value.selectedIndex = initialSelection === 'first' ? 0 : initialSelection === 'last' ? response.items.length - 1 : -1
     state.value.sourceId = response.sourceId ?? null
     state.value.documentation = null
-    // No `scheduleResolve()` — nothing is selected, so there's nothing
-    // to fetch docs for. The first selectNext / selectPrev call kicks
-    // resolve off naturally.
+
+    if (state.value.selectedIndex >= 0) {
+      scheduleResolve()
+    }
   }
 
   function close(): void {

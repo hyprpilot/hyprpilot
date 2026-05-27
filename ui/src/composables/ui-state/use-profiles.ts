@@ -43,10 +43,7 @@ async function refresh(): Promise<void> {
   lastErr.value = undefined
   inflight = (async() => {
     try {
-      const [list, current] = await Promise.all([
-        invoke(TauriCommand.ProfilesList),
-        invoke(TauriCommand.ProfileGet)
-      ])
+      const [list, current] = await Promise.all([invoke(TauriCommand.ProfilesList), invoke(TauriCommand.ProfileGet)])
 
       profiles.value = list.profiles
 

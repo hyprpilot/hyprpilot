@@ -308,7 +308,7 @@ use super::prompts::resolve_or_focused;
 /// - `instance/snapshot/meta` — header chrome + pending permissions +
 ///   usage tally + `latestSeq` cursor. Cheap; pulled on focus-switch.
 /// - `instance/snapshot/chat` — windowed transcript page anchored at
-///   `before` (cursor) with a default `limit` of 50. Caller paginates
+///   `before` (cursor). Unset/zero `limit` returns the retained ring. Caller paginates
 ///   backward by chaining `before = oldestSeq` from the previous page.
 /// - `instance/snapshot/terminals` — full per-`terminal_id` map.
 ///
@@ -346,7 +346,7 @@ struct InstanceSnapshotChatParams {
     /// the entire transcript. Mutually exclusive with `before`.
     #[serde(default)]
     after: Option<u64>,
-    /// Page size. `0` or unset → mirror's default page size (50).
+    /// Page size. `0` or unset → mirror's retained-ring default.
     #[serde(default)]
     limit: Option<usize>,
 }

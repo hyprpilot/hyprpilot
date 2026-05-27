@@ -629,7 +629,7 @@ pub async fn instance_snapshot_meta(adapter: AdapterState<'_>, instance_id: Stri
 /// of the previous page to paginate backwards); `after` is a
 /// strictly-newer cursor (delta-replay on remote reconnect). Unset
 /// `before` + unset `after` → return the latest `limit` entries.
-/// `limit = 0` or unset → mirror's default page size (50). `before`
+/// `limit = 0` or unset → mirror's retained-ring default. `before`
 /// and `after` are mutually exclusive — caller error if both set.
 #[tauri::command]
 pub async fn instance_snapshot_chat(

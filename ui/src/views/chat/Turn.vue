@@ -100,8 +100,8 @@ const costLabel = computed(() => {
  * `useScrollAnchor` reads `offsetTop` to keep the captain's reading
  * line glued to the same row across content growth above — the
  * placeholder values broke that math for any anchor row in the skip
- * zone. The page-trim policy already caps live DOM to ~3 pages
- * (~150 rows); modern Vue handles that without paint cost being a
+ * zone. The daemon transcript ring bounds live DOM; modern Vue
+ * handles that without paint cost being a
  * bottleneck. Production chat apps with anchor-based scroll (Element,
  * Telegram) likewise don't use `content-visibility` for their
  * message lists for exactly this reason. */

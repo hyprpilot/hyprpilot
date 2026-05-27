@@ -61,17 +61,14 @@ use super::transcript::TranscriptItem;
 /// sets this at "sane upper bound (e.g. 5000)" — comfortably above
 /// any real session length while still capping daemon memory growth.
 /// User-visible truncation is **not** part of the contract: the
-/// captain never sees a "truncated" indicator, and the UI's windowed
-/// query asks only for visible pages anyway.
+/// captain never sees a "truncated" indicator, and the Vue UI now
+/// asks for the retained ring instead of lazy viewport windows.
 pub const DEFAULT_TRANSCRIPT_CAP: usize = 5_000;
 
-/// Default page size when the snapshot RPC caller passes `0`. The
-/// daemon does NOT clamp caller-supplied limits — frontends own the
-/// viewport sizing axis (a 4K monitor wants different pages than a
-/// phone) and the mirror's own ring-buffer cap [`DEFAULT_TRANSCRIPT_CAP`]
-/// is the natural ceiling. Trust the frontend; the backend serves
-/// what it asks for.
-const DEFAULT_CHAT_LIMIT: usize = 50;
+/// Default snapshot size when the snapshot RPC caller passes `0`.
+/// The default matches the daemon transcript ring so clients that do
+/// not specify a limit still receive the retained conversation.
+const DEFAULT_CHAT_LIMIT: usize = DEFAULT_TRANSCRIPT_CAP;
 
 /// Marker for the most-recent turn boundary the mirror has seen.
 /// UI's phase derivation reads it without re-walking the transcript.
@@ -589,10 +586,9 @@ impl InstanceMirror {
     /// with both set.
     ///
     /// `limit = 0` falls through to [`DEFAULT_CHAT_LIMIT`]. Any other
-    /// value is honoured verbatim — frontends compute their own
-    /// viewport-relative page size, and clamping daemon-side would
-    /// force a one-size-fits-all heuristic that doesn't suit every
-    /// consumer (phone vs 4K monitor vs neovim-side reader).
+    /// value is honoured verbatim. The default returns the retained
+    /// daemon ring; callers can still request smaller slices for
+    /// specialized views or delta recovery.
     pub async fn chat_snapshot(&self, before: Option<u64>, after: Option<u64>, limit: usize) -> ChatSnapshot {
         let limit = if limit == 0 { DEFAULT_CHAT_LIMIT } else { limit };
         let g = self.inner.read().await;
@@ -766,13 +762,13 @@ pub struct MetaSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turns: Vec<TurnSnapshot>,
     /// Latest [`SeqTranscriptItem::seq`] in the mirror; `None` when
-    /// the transcript is empty. UI seeds the chat infinite-query off
-    /// this so the first page request anchors at the right cursor.
+    /// the transcript is empty. UI seeds the chat cache and reconnect delta cursor from
+    /// this so newer-message replay starts at the right point.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_seq: Option<u64>,
 }
 
-/// Windowed transcript page. `oldest_seq` / `latest_seq` are absent
+/// Transcript snapshot page. `oldest_seq` / `latest_seq` are absent
 /// when `items` is empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1004,7 +1000,7 @@ mod tests {
 
     /// `limit = 0` falls through to the default page size.
     #[tokio::test]
-    async fn chat_snapshot_zero_limit_uses_default() {
+    async fn chat_snapshot_zero_limit_uses_ring_default() {
         let mirror = InstanceMirror::new();
         for i in 0..(DEFAULT_CHAT_LIMIT + 10) {
             mirror.apply(&transcript_event(&format!("msg-{i}"))).await;

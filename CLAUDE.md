@@ -572,8 +572,7 @@ The `webview=trace` directive is load-bearing for UI-side
 
 UI-side counterparts run through structured `log.trace(...)`. Search
 prefixes: `snapshot.brim-sync.*`, `snapshot.focus-prefetch.*`,
-`snapshot.live-patch.*`, `snapshot.fetch-older.*`,
-`snapshot.page-trim.evicted`, `snapshot.hydrate.*`.
+`snapshot.live-patch.*`, `snapshot.hydrate.*`.
 
 ## Frontend testing
 
@@ -1102,14 +1101,39 @@ worth preserving:
   keys (arrow keys, letters, anything else the captain might type)
   still respect the editable-target gate so typing into the
   composer works normally.
-- **Backward pagination is NOT gated on `hasUserScrolled`.** The
-  intent gate would block `fetchNextPage` on a fresh mount —
-  composing-then-streaming flips `hasUserScrolled = false` and the
-  initial scroll-to-bottom assignment is the only scroll event the
-  viewport sees, so a captain who immediately scrolls up gets no
-  fetch. Eviction stays gated (eviction destroys cached data —
-  earn the intent check); pagination just fetches more data, so
-  ungating is safe.
+- **No frontend history window / lazy older-page fetch.** The Vue
+  chat viewport asks for the daemon's full retained transcript ring
+  (`FULL_CHAT_LIMIT = 5_000`) and renders it with a plain `v-for`.
+  Do not reintroduce the top sentinel / `fetchNextPage` path unless
+  the daemon ring size changes enough to make full-ring snapshots
+  untenable. Reconnect/newer-message repair still uses the separate
+  `instance/snapshot/chat { after }` delta path.
+- **Hydrate/replay every listed instance gradually.** Boot seeds the
+  full-ring chat cache for every live instance. Later brim-sync /
+  focus-change paths walk listed instances sequentially: cold caches
+  fetch the full retained ring, warm caches drain every available
+  newer `after` page. Keep the event-loop yield between pages / ids so
+  restoring or reconnecting a large session does not peg the UI.
+- **Retain per-instance viewports.** `Overlay.vue` renders one
+  `<ChatViewport>` per known instance and flips an `active` prop;
+  inactive viewport roots are CSS-hidden (`content-visibility:
+  hidden`, `visibility: hidden`, `pointer-events: none`) instead of
+  unmounted. This preserves scroll/anchor state when focus changes.
+  Keep row-level `content-visibility: auto` out of `<Turn>` — it
+  breaks `useScrollAnchor`'s `offsetTop` math.
+- **Permission rows overlay the chat body.** `PermissionStack.vue` is
+  absolutely pinned to the bottom of `Frame`'s body so new approval
+  prompts do not shrink the active `<ChatViewport>` or shove the
+  scroll-to-bottom affordance around.
+- **Tool transcript surfaces start collapsed.** `ToolChips.vue` and
+  `ToolPill.vue` default to collapsed; state color/metadata indicate
+  running/done/failed. Do not reintroduce running pulse dots — color
+  is the activity signal and details are an explicit drill-in.
+- **Completion Tab navigates, Enter commits.** The composer keeps
+  auto-open completions at the `selectedIndex = -1` sentinel. A manual
+  Tab open selects the first row (Shift+Tab selects the last), then
+  Tab/Shift+Tab cycle candidates. Tab never inserts; Enter commits
+  only when a row is selected.
 
 `useStickToBottom`'s `suppressNextScrollUpdate` flag absorbs the
 scroll event from a programmatic `scrollToBottom` and re-asserts
@@ -1401,12 +1425,11 @@ A new connection:
 2. Calls `instance/snapshot/meta { instanceId }` for header chrome
    (mode, model, pending permissions, usage). One RPC.
 3. Calls `instance/snapshot/chat { instanceId, limit }` for the
-   most-recent transcript page. Backward-paginates via
-   `before: <oldestSeq>` cursors when the captain scrolls up.
-   `limit` defaults to 100 in both reference clients (nvim
-   `snapshot_limit = 100`, Vue `BOOT_PAGE_SIZE = 100`) — a
-   smaller initial page can leave a long session looking
-   truncated even though the daemon mirror has every turn.
+   retained transcript ring. Vue uses `FULL_CHAT_LIMIT = 5_000`, and
+   the daemon boot snapshot uses the same `BOOT_CHAT_PAGE_LIMIT` so
+   TanStack boot seeding and mounted chat queries agree. The old
+   `before: <oldestSeq>` lazy-scroll path is disabled in Vue; newer
+   reconnect deltas still use `after: <lastSeenSeq>`.
 4. Calls `instance/snapshot/terminals { instanceId }` only when
    needed (the chat snapshot mentions a terminal id).
 

@@ -163,6 +163,64 @@ describe('useCompletion', () => {
     expect(c.state.value.open).toBe(false)
   })
 
+  it('manual query can open with the first row selected', async() => {
+    invoke.mockResolvedValueOnce({
+      requestId: 'r1',
+      sourceId: 'skills',
+      replacementRange: { start: 0, end: 1 },
+      items: [
+        {
+          label: 'a',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 1 }, text: 'a' }
+        },
+        {
+          label: 'b',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 1 }, text: 'b' }
+        }
+      ]
+    })
+    invoke.mockResolvedValueOnce({ cancelled: true })
+    const c = useCompletion()
+
+    c.query('#a', 2, { manual: true, initialSelection: 'first' })
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(c.state.value.selectedIndex).toBe(0)
+    expect(c.commit()?.label).toBe('a')
+  })
+
+  it('manual query can open with the last row selected', async() => {
+    invoke.mockResolvedValueOnce({
+      requestId: 'r1',
+      sourceId: 'skills',
+      replacementRange: { start: 0, end: 1 },
+      items: [
+        {
+          label: 'a',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 1 }, text: 'a' }
+        },
+        {
+          label: 'b',
+          kind: CompletionKind.Skill,
+          replacement: { range: { start: 0, end: 1 }, text: 'b' }
+        }
+      ]
+    })
+    invoke.mockResolvedValueOnce({ cancelled: true })
+    const c = useCompletion()
+
+    c.query('#a', 2, { manual: true, initialSelection: 'last' })
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(c.state.value.selectedIndex).toBe(1)
+    expect(c.commit()?.label).toBe('b')
+  })
+
   it('close cancels the in-flight request via completion/cancel', async() => {
     invoke.mockResolvedValueOnce({
       requestId: 'r1',

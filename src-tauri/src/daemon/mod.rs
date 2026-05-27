@@ -153,10 +153,9 @@ pub(crate) struct BootSnapshot {
     /// (as `[]`) so the consumer can mirror the daemon's per-instance
     /// state set exactly.
     pub(crate) queues: serde_json::Value,
-    /// Per-instance first chat-page snapshots keyed by instance id.
-    /// Mirrors the shape `instance/snapshot/chat` returns (backward
-    /// window anchored at the head, capped at
-    /// [`BOOT_CHAT_PAGE_LIMIT`] items). Frontends seed their TanStack
+    /// Per-instance chat snapshots keyed by instance id.
+    /// Mirrors the shape `instance/snapshot/chat` returns (latest
+    /// snapshot capped at [`BOOT_CHAT_PAGE_LIMIT`] items). Frontends seed their TanStack
     /// cache directly so the captain navigating into ANY visible
     /// instance sees full chat history immediately — no per-instance
     /// round-trip on focus, no "I only see the latest message"
@@ -174,11 +173,11 @@ pub(crate) struct BootSnapshot {
     pub(crate) notifications: serde_json::Value,
 }
 
-/// First-page chat-snapshot size shipped in the boot payload — one
-/// flat page per live instance. 100 lines up with the Vue overlay's
-/// `BOOT_PAGE_SIZE` and the nvim plugin's `snapshot_limit`, so every
-/// frontend has the same baseline of context on cold connect.
-const BOOT_CHAT_PAGE_LIMIT: usize = 100;
+/// Chat-snapshot size shipped in the boot payload — one full daemon
+/// transcript ring per live instance. Keep this aligned with the Vue
+/// `FULL_CHAT_LIMIT` so boot seeding and mounted chat queries share
+/// the same cache shape.
+const BOOT_CHAT_PAGE_LIMIT: usize = 5_000;
 
 /// Single source of truth for the boot-time payload — both the
 /// `boot_snapshot` Tauri command and the `tauri/boot_snapshot` JSON-RPC
@@ -237,8 +236,8 @@ pub(crate) async fn build_boot_snapshot(
     // an error so the daemon log catches the regression instead of
     // silently shipping an instance with no queue field.
     let mut queues = serde_json::Map::with_capacity(instance_entries.len());
-    // Per-instance first chat page. Same shape `instance/snapshot/chat`
-    // returns (head window of size [`BOOT_CHAT_PAGE_LIMIT`]). Reads
+    // Per-instance chat snapshot. Same shape `instance/snapshot/chat`
+    // returns (retained ring of size [`BOOT_CHAT_PAGE_LIMIT`]). Reads
     // straight off the per-instance mirror — no actor round-trip,
     // cheap even with many instances. An instance whose mirror was
     // torn down between `adapter.list()` and the lookup ships an

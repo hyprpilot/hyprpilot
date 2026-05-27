@@ -2,16 +2,18 @@ import { QueryClient } from '@tanstack/vue-query'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetTranscriptPatcherForTests, startTranscriptPatcher } from './transcript-patcher'
+import { __resetTranscriptPatcherForTests, recordLastSeenSeq, replayAvailableForInstance, startTranscriptPatcher } from './transcript-patcher'
 import { pushPermissionRequest, resetPermissions, usePermissions } from './use-permissions'
 import { TauriEvent, TranscriptItemKind, type ChatSnapshot, type MetaSnapshot, type SeqTranscriptItem } from '@ipc'
 
-const { listeners } = vi.hoisted(() => ({
+const { invoke, listeners } = vi.hoisted(() => ({
+  invoke: vi.fn(),
   listeners: new Map<string, (payload: { payload: unknown }) => void>()
 }))
 
 vi.mock('@ipc', async() => ({
   ...(await vi.importActual<object>('@ipc')),
+  invoke: (command: string, args?: Record<string, unknown>) => invoke(command, args),
   listen: (event: string, cb: (payload: { payload: unknown }) => void) => {
     listeners.set(event, cb)
 
@@ -41,6 +43,7 @@ function buildClient(): QueryClient {
 }
 
 beforeEach(async() => {
+  invoke.mockReset()
   listeners.clear()
   __resetTranscriptPatcherForTests()
 })
@@ -350,6 +353,44 @@ describe('transcript-patcher singleton', () => {
     await flushPromises()
 
     expect(queryClient.getQueryData(['snapshot-chat', 'i-1'])).toBeUndefined()
+  })
+
+  it('delta replay drains every available page with yielding between pages', async() => {
+    const queryClient = buildClient()
+
+    queryClient.setQueryData(['snapshot-chat', 'i-1'], {
+      pages: [chatPage([{ seq: 1, item: { kind: TranscriptItemKind.AgentText, text: 'seed' } as never }])],
+      pageParams: [undefined]
+    })
+    recordLastSeenSeq('i-1', 1)
+    invoke
+      .mockResolvedValueOnce(
+        chatPage(
+          [
+            { seq: 2, item: { kind: TranscriptItemKind.AgentText, text: 'two' } as never },
+            { seq: 3, item: { kind: TranscriptItemKind.AgentText, text: 'three' } as never }
+          ],
+          true
+        )
+      )
+      .mockResolvedValueOnce(chatPage([{ seq: 4, item: { kind: TranscriptItemKind.AgentText, text: 'four' } as never }], false))
+
+    await expect(replayAvailableForInstance(queryClient, 'i-1')).resolves.toBe('applied')
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'instance_snapshot_chat', {
+      instanceId: 'i-1',
+      after: 1,
+      limit: 25
+    })
+    expect(invoke).toHaveBeenNthCalledWith(2, 'instance_snapshot_chat', {
+      instanceId: 'i-1',
+      after: 3,
+      limit: 25
+    })
+    const page = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0]
+
+    expect(page?.items.map((item) => item.seq)).toEqual([1, 2, 3, 4])
+    expect(page?.latestSeq).toBe(4)
   })
 
   it('patches the meta cache to drop the matching pending entry on permission-resolved', async() => {

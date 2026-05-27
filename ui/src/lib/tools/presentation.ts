@@ -143,7 +143,7 @@ export function presentationFor(
     }
   }
   const type = typeof kind === 'object' && kind !== null ? kind.type : kind
-  const k = type === 'mcp' ? ToolKind.Other : (type as ToolKind | undefined) ?? ToolKind.Other
+  const k = type === 'mcp' ? ToolKind.Other : ((type as ToolKind | undefined) ?? ToolKind.Other)
 
   return kindDefaults[k] ?? kindDefaults[ToolKind.Other]!
 }

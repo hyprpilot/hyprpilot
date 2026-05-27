@@ -14,7 +14,7 @@ import type { WindowState } from './window'
  * remote bridge where each round-trip rides the same WS.
  *
  * Per-instance terminal snapshots stay on their own RPC; the chat
- * first page + queue snapshots ride inline (one head window per live
+ * retained-ring + queue snapshots ride inline (one snapshot per live
  * instance) so the captain navigating into any instance sees full
  * history immediately — no per-focus prefetch race, no "I only see
  * the latest message" hydration gap when the daemon has no
@@ -39,7 +39,7 @@ export interface BootSnapshot {
   /// are included (as `[]`) so the consumer treats absence as "no
   /// instance" rather than "queue unknown".
   queues: Record<string, QueueItem[]>
-  /// Per-instance first chat-page snapshots keyed by instance id.
+  /// Per-instance retained-ring chat snapshots keyed by instance id.
   /// Frontends seed their TanStack cache so the captain navigating
   /// into ANY live instance gets full history immediately. Empty
   /// `{ items: [], hasMore: false }` for instances whose mirror has

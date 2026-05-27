@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 import ToolPillStats from './ToolPillStats.vue'
-import { ToolState, toolStateTone, type ToolCallView } from '@components'
+import { toolStateTone, type ToolCallView } from '@components'
 
 /**
  * Full-bleed tool row — the wider sibling to `ToolPill`. Used for
@@ -18,7 +18,6 @@ const stateTone = computed(() => toolStateTone(props.view.state))
 
 <template>
   <div class="tool-details" :data-state="view.state" :data-kind="view.kind" :style="{ '--tone': stateTone }">
-    <span v-if="view.state === ToolState.Running" class="tool-details-dot" aria-hidden="true" />
     <FaIcon :icon="view.icon" class="tool-details-kind" aria-hidden="true" />
     <span class="tool-details-title">{{ view.title }}</span>
     <ToolPillStats :stats="view.stats" />
@@ -38,11 +37,6 @@ const stateTone = computed(() => toolStateTone(props.view.state))
   border-right: 1px solid var(--theme-border);
   border-bottom: 1px solid var(--theme-border);
   min-width: 0;
-}
-
-.tool-details-dot {
-  @apply inline-block h-[0.3125rem] w-[0.3125rem] shrink-0 animate-pulse rounded-full;
-  background-color: var(--tone);
 }
 
 .tool-details-kind {

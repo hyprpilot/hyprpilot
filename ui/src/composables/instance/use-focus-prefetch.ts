@@ -9,24 +9,24 @@
  *    `['snapshot-meta', id]` for every known instance — primes the
  *    header chrome / pickers / pending-permissions row for instant
  *    focus-switch. The currently-focused instance also gets its
- *    first chat page primed.
+ *    chat snapshot primed.
  *
- * 2. **Per-focus prefetch on `acp:instances-focused` /
+ * 2. **Per-focus hydration on `acp:instances-focused` /
  *    `acp:instances-changed`.** Every time the daemon's focus pointer
  *    moves to a new id (or a new instance enters the registry), the
- *    listener prefetches that id's meta + first chat page so the
- *    transition into the new viewport is instant. `prefetchQuery` is
- *    idempotent — a fresh cache hit short-circuits, so the listener
- *    can fire every time without burning RPCs.
+ *    listener prefetches cache-miss chats and delta-replays cache-hit
+ *    chats. Chat work runs sequentially with event-loop yields between
+ *    instances so a large restore / reconnect does not spike the UI.
  *
- * Snapshot fetches run in parallel; the UI is fine to render before
- * any of them settle (the chat viewport's `useInfiniteQuery` already
- * runs its own first-page fetch off the focused id; this is layered
- * pre-warming, not the data path).
+ * Snapshot fetches do not block first paint; the chat viewport's
+ * `useInfiniteQuery` can still run its own full-ring fetch if the
+ * captain reaches an instance before the pre-warm lands.
  */
 
 import { useQueryClient, type QueryClient } from '@tanstack/vue-query'
 
+import { replayAvailableForInstance, recordLastSeenSeq, type ReplayOutcome } from './transcript-patcher'
+import { FULL_CHAT_LIMIT } from './use-instance-chat-infinite-query'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from './use-session-info'
 import { type InstanceId, useActiveInstance } from '../chrome/use-active-instance'
 import { invoke, listen, TauriCommand, TauriEvent, type ChatSnapshot, type UnlistenFn } from '@ipc'
@@ -45,62 +45,101 @@ export function prefetchInstanceMeta(client: QueryClient, instanceId: InstanceId
 }
 
 /**
- * Prefetch the first page of the chat snapshot for one instance.
+ * Prefetch the chat snapshot for one instance.
  * Mirrors `useInstanceChatInfiniteQuery`'s key + queryFn so the
- * eventual `useInfiniteQuery` mount picks up the cached first page
- * instead of refetching.
+ * eventual `useInfiniteQuery` mount picks up the cached full-ring
+ * snapshot instead of refetching.
  *
  * `prefetchInfiniteQuery` is the right primitive — `prefetchQuery`
  * shapes the cache as a single-page result, which `useInfiniteQuery`
  * would then discard.
  *
- * `limit` defaults to a viewport-derived window size (proxied off
- * `window.innerHeight` since the actual chat scroller isn't mounted
- * yet at boot time). On a phone that's ~8 turns; on a desktop
- * monitor ~30 — far less than the old hard-coded 50, so the captain
- * doesn't wait on bytes they can't see.
+ * `limit` defaults to the full daemon transcript ring so a
+ * prefetched cache entry matches what the mounted chat viewport
+ * expects. A smaller snapshot would stay resident forever because
+ * the snapshot query is intentionally `staleTime: Infinity`.
  */
-export function prefetchInstanceChatFirstPage(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
-  const resolvedLimit = limit ?? bootPageSize()
+async function fetchInstanceChatSnapshot(instanceId: InstanceId, limit: number): Promise<ChatSnapshot> {
+  const snap = (await invoke(TauriCommand.InstanceSnapshotChat, {
+    instanceId,
+    before: undefined,
+    limit
+  })) as ChatSnapshot
+
+  recordLastSeenSeq(instanceId, snap.latestSeq)
+
+  return snap
+}
+
+export function prefetchInstanceChat(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
+  const resolvedLimit = limit ?? FULL_CHAT_LIMIT
 
   return client.prefetchInfiniteQuery({
     queryKey: ['snapshot-chat', instanceId],
     initialPageParam: undefined as number | undefined,
-    queryFn: () =>
-      invoke(TauriCommand.InstanceSnapshotChat, {
-        instanceId,
-        before: undefined,
-        limit: resolvedLimit
-      }),
-    getNextPageParam: (lastPage: ChatSnapshot) => (lastPage?.hasMore ? lastPage.oldestSeq : undefined)
+    queryFn: () => fetchInstanceChatSnapshot(instanceId, resolvedLimit),
+    getNextPageParam: (_lastPage: ChatSnapshot) => undefined,
+    staleTime: Infinity
   }) as unknown as Promise<void>
 }
 
-/**
- * Boot-time page size. Hard 100 — matches the nvim plugin's
- * `snapshot_limit` default and produces an immediately-readable
- * conversation on every form factor.
- *
- * The earlier viewport-derived heuristic (~96px / row, clamped at 20)
- * fetched ≤20 items on a typical 1080p monitor → captains on a long
- * session saw only the last 20 turns and the rest of the history was
- * invisible until they manually scrolled up far enough to trigger
- * `fetchNextPage`. The Vue UIs were the only frontends shipping a
- * truncated view; nvim's full-history paint felt strictly more
- * correct.
- *
- * Trade-off: a fresh boot now pulls more bytes than fit on screen.
- * That's the right call — `fetchNextPage` only loads further back
- * from the OLDEST seq, so paying for 100 up-front is the difference
- * between "captain sees their conversation" and "captain wonders
- * where their conversation went". The chat-viewport's later
- * `measuredPageSize` keeps subsequent backward fetches viewport-sized
- * so we don't multiply the cost.
- */
-const BOOT_PAGE_SIZE = 100
+async function refreshInstanceChat(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
+  const resolvedLimit = limit ?? FULL_CHAT_LIMIT
+  const snap = await fetchInstanceChatSnapshot(instanceId, resolvedLimit)
 
-function bootPageSize(): number {
-  return BOOT_PAGE_SIZE
+  client.setQueryData(['snapshot-chat', instanceId], {
+    pages: [snap],
+    pageParams: [undefined as number | undefined]
+  })
+}
+
+function yieldHydrationTurn(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+const pendingHydrationIds = new Set<InstanceId>()
+let hydrationDrain: Promise<void> | undefined
+
+function scheduleChatHydration(client: QueryClient, instanceIds: InstanceId[]): Promise<void> {
+  for (const id of instanceIds) {
+    pendingHydrationIds.add(id)
+  }
+
+  if (!hydrationDrain) {
+    hydrationDrain = drainChatHydration(client).finally(() => {
+      hydrationDrain = undefined
+    })
+  }
+
+  return hydrationDrain
+}
+
+export function __resetFocusPrefetchForTests(): void {
+  pendingHydrationIds.clear()
+  hydrationDrain = undefined
+}
+
+async function drainChatHydration(client: QueryClient): Promise<void> {
+  while (pendingHydrationIds.size > 0) {
+    const id = pendingHydrationIds.values().next().value
+
+    if (id === undefined) {
+      return
+    }
+    pendingHydrationIds.delete(id)
+
+    if (client.getQueryData(['snapshot-chat', id]) === undefined) {
+      await prefetchInstanceChat(client, id)
+    } else {
+      const outcome: ReplayOutcome = await replayAvailableForInstance(client, id)
+
+      if (outcome !== 'applied') {
+        log.warn('focus-prefetch: chat replay failed; falling back to full snapshot', { instanceId: id, outcome })
+        await refreshInstanceChat(client, id)
+      }
+    }
+    await yieldHydrationTurn()
+  }
 }
 
 /**
@@ -109,18 +148,17 @@ function bootPageSize(): number {
  * — when `useActiveInstance` is empty (a remote that just authenticated
  * mid-session, before any `acp:instances-focused` event has fired),
  * the daemon's focused id seeds the active-instance pointer via
- * `applyFocus('manual')`. The first chat page for that focused id is
- * prefetched so the chat surface paints from the daemon's snapshot
- * without waiting for the next live event.
+ * `applyFocus('manual')`. Chat hydration then walks every listed
+ * instance so switching focus later replays everything available.
  *
  * The caller-supplied `localFocusedId` (the captain's currently-active
  * instance, if any) overrides the daemon-reported focus — desktop
  * captains who clicked into a non-focused instance have their local
  * choice preserved across re-syncs.
  *
- * All fetches fire in parallel; the returned promise resolves once
- * every prefetch settles (success OR error — `prefetchQuery` swallows
- * rejections by design so a partial sync doesn't take the brim down).
+ * Meta fetches fire in parallel; chat hydration is sequential and
+ * yields between instances to avoid a large restore/reconnect
+ * overwhelming the browser thread.
  */
 export async function brimSync(client: QueryClient, localFocusedId?: InstanceId): Promise<void> {
   log.trace('snapshot.brim-sync.start', { localFocusedId })
@@ -186,19 +224,11 @@ export async function brimSync(client: QueryClient, localFocusedId?: InstanceId)
     effectiveFocus
   })
 
-  const tasks: Promise<void>[] = []
-
-  for (const id of instanceIds) {
-    tasks.push(prefetchInstanceMeta(client, id))
-  }
-
-  if (effectiveFocus) {
-    tasks.push(prefetchInstanceChatFirstPage(client, effectiveFocus))
-  }
-  await Promise.all(tasks)
+  await Promise.all(instanceIds.map((id) => prefetchInstanceMeta(client, id)))
+  await scheduleChatHydration(client, instanceIds)
   log.trace('snapshot.brim-sync.done', {
     instanceCount: instanceIds.length,
-    chatPrimed: effectiveFocus !== undefined
+    chatPrimed: instanceIds.length > 0
   })
 }
 
@@ -240,7 +270,8 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
         void prefetchInstanceMeta(queryClient, next).catch((err: unknown) => {
           log.warn('focus-prefetch: meta failed', { instanceId: next, err: String(err) })
         })
-        void prefetchInstanceChatFirstPage(queryClient, next).catch((err: unknown) => {
+
+        void scheduleChatHydration(queryClient, [next]).catch((err: unknown) => {
           log.warn('focus-prefetch: chat failed', { instanceId: next, err: String(err) })
         })
       }),
@@ -250,17 +281,15 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
         // both fetched so the captain navigating to a freshly-spawned
         // instance (nvim spawn, ctl spawn, session_load mint, or a
         // peer client's spawn) sees full history on first frame.
-        // Without the chat prefetch here, the daemon's replay events
-        // for the new id arrive before any cache exists, the
-        // transcript-patcher's "no cache → drop" guard throws them
-        // away, and the captain's later navigation hits a fresh
-        // viewport-sized fetch missing the replay context.
+        // Without the chat prefetch here, replay events for a new id
+        // can arrive before any cache exists, hit the patcher's
+        // "no cache → drop" guard, and force a later full-ring fetch
+        // to reconstruct what the live path missed.
         //
-        // Chat prefetch is gated on "cache miss" — already-hydrated
-        // instances (boot snapshot, prior focus event, prior
-        // instances-changed) skip the round-trip via TanStack's
-        // queryKey dedup. Net cost on a quiet event: one cache
-        // lookup per id.
+        // Chat hydration is gradual: cache misses fetch the full
+        // retained ring; warm caches delta-replay anything newer than
+        // their last seen seq. The module-level drain coalesces rapid
+        // focus/change events and processes ids sequentially.
         log.trace('snapshot.focus-prefetch.changed', {
           instanceIds: e.payload.instanceIds,
           focusedId: e.payload.focusedId
@@ -270,13 +299,11 @@ export function useFocusPrefetch(client?: QueryClient): UseFocusPrefetchApi {
           void prefetchInstanceMeta(queryClient, id).catch((err: unknown) => {
             log.warn('focus-prefetch: meta failed (instances-changed)', { instanceId: id, err: String(err) })
           })
-
-          if (queryClient.getQueryData(['snapshot-chat', id]) === undefined) {
-            void prefetchInstanceChatFirstPage(queryClient, id).catch((err: unknown) => {
-              log.warn('focus-prefetch: chat failed (instances-changed)', { instanceId: id, err: String(err) })
-            })
-          }
         }
+
+        void scheduleChatHydration(queryClient, e.payload.instanceIds).catch((err: unknown) => {
+          log.warn('focus-prefetch: chat failed (instances-changed)', { err: String(err) })
+        })
       })
     )
 

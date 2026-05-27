@@ -70,7 +70,9 @@ describe('useSessionHistory.load', () => {
 
     let api: ReturnType<typeof useSessionHistory> | undefined
 
-    mountWithClient(client, (a) => { api = a })
+    mountWithClient(client, (a) => {
+      api = a
+    })
 
     expect(api).toBeDefined()
     // Cache is empty before load fires.
@@ -89,9 +91,7 @@ describe('useSessionHistory.load', () => {
     let seedAtInvoke: unknown
 
     invokeMock.mockImplementation((_command: string, _args: unknown) => {
-      seedAtInvoke = (
-        new QueryClient() // placeholder — captured below
-      )
+      seedAtInvoke = new QueryClient() // placeholder — captured below
 
       return Promise.resolve(undefined)
     })
@@ -105,7 +105,9 @@ describe('useSessionHistory.load', () => {
 
     let api: ReturnType<typeof useSessionHistory> | undefined
 
-    mountWithClient(client, (a) => { api = a })
+    mountWithClient(client, (a) => {
+      api = a
+    })
 
     await api!.load('session-xyz')
 

@@ -114,7 +114,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 250
+      configurable: true,
+      writable: true,
+      value: 250
     })
     root.dispatchEvent(new Event('scroll'))
 
@@ -138,7 +140,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 250
+      configurable: true,
+      writable: true,
+      value: 250
     })
     root.dispatchEvent(new Event('scroll'))
     await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
@@ -170,7 +174,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 100
+      configurable: true,
+      writable: true,
+      value: 100
     })
     root.dispatchEvent(new Event('scroll'))
     await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
@@ -189,7 +195,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 50
+      configurable: true,
+      writable: true,
+      value: 50
     })
     root.dispatchEvent(new Event('scroll'))
     await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
@@ -220,7 +228,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 50
+      configurable: true,
+      writable: true,
+      value: 50
     })
     root.dispatchEvent(new Event('scroll'))
     await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
@@ -245,7 +255,9 @@ describe('useScrollAnchor', () => {
 
     api.markProgrammaticScroll()
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 50
+      configurable: true,
+      writable: true,
+      value: 50
     })
     root.dispatchEvent(new Event('scroll'))
     await Promise.resolve()
@@ -274,7 +286,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 0
+      configurable: true,
+      writable: true,
+      value: 0
     })
 
     const found = api.scrollToSeq(11, 25)
@@ -304,7 +318,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(host.root, 'scrollTop', {
-      configurable: true, writable: true, value: 250
+      configurable: true,
+      writable: true,
+      value: 250
     })
 
     // stuck=true → anchor stays undefined regardless of scrollTop.
@@ -329,7 +345,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 50
+      configurable: true,
+      writable: true,
+      value: 50
     })
     root.dispatchEvent(new Event('scroll'))
     await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
@@ -361,7 +379,9 @@ describe('useScrollAnchor', () => {
     })
 
     Object.defineProperty(root, 'scrollTop', {
-      configurable: true, writable: true, value: 50
+      configurable: true,
+      writable: true,
+      value: 50
     })
     // Queue an rAF by dispatching scroll, but call release BEFORE
     // the rAF fires — the cancelled rAF must not capture an anchor.
