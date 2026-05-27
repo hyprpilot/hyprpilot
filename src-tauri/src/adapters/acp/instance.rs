@@ -83,8 +83,8 @@ struct TurnState {
     prompt_in_flight: bool,
     /// True when the dispatcher routed at least one agent-output
     /// transcript item (`AgentText` / `AgentThought` / `AgentAttachment`
-    /// / `ToolCall` / `ToolCallUpdate` / `Plan`) for the currently open
-    /// turn. Reset on every `open`. Read by the
+    /// / `ToolCall` / `ToolCallUpdate` / `Plan` / `Compaction`) for the
+    /// currently open turn. Reset on every `open`. Read by the
     /// prompt-future at completion: a vendor that returned a
     /// `stop_reason: null` AND emitted nothing during the turn used to
     /// surface as a bare `TurnEnded { error: None }`, which downstream
@@ -142,7 +142,8 @@ impl Role {
             | TI::AgentAttachment(_)
             | TI::ToolCall(_)
             | TI::ToolCallUpdate(_)
-            | TI::Plan(_) => Some(Self::Agent),
+            | TI::Plan(_)
+            | TI::Compaction(_) => Some(Self::Agent),
             TI::PermissionRequest(_) | TI::Unknown { .. } => None,
         }
     }
@@ -393,11 +394,18 @@ impl TurnGuard {
         let output_observed = slot.output_observed();
         drop(slot);
 
-        if stop_reason.is_none() && error.is_none() && !output_observed {
+        let clean_empty_turn = error.is_none()
+            && !output_observed
+            && stop_reason
+                .as_deref()
+                .map_or(true, |reason| reason.eq_ignore_ascii_case("end_turn"));
+
+        if clean_empty_turn {
             error = Some(
                 "agent ended the turn without emitting any output and without a \
-                 stop reason — vendor returned a null `stop_reason` and no \
-                 session updates landed between TurnStarted and TurnEnded. \
+                 useful ACP error — vendor returned a clean `end_turn` or null \
+                 `stop_reason`, but no session updates landed between TurnStarted \
+                 and TurnEnded. \
                  Re-run with `RUST_LOG=acp::wire=trace` to see the raw \
                  session/prompt response."
                     .to_string(),
@@ -797,6 +805,21 @@ impl MetaEmitter {
         };
         publish(&self.mirror, events_tx, event).await;
     }
+
+    async fn emit_config_options(&self, events_tx: &broadcast::Sender<InstanceEvent>, session_id: String) {
+        let categories = self.config_options.read().await.clone();
+        if categories.is_empty() {
+            return;
+        }
+
+        let event = InstanceEvent::ConfigOptionsUpdate {
+            agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
+            session_id,
+            categories,
+        };
+        publish(&self.mirror, events_tx, event).await;
+    }
 }
 
 fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::formatter::types::FormattedToolCall {
@@ -953,8 +976,8 @@ pub(crate) fn map_session_update_with_mcp_servers(
     mcp_server_names: &[String],
 ) -> MappedSessionUpdate {
     use crate::adapters::{
-        Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
-        ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem,
+        Attachment, ChecklistStats, CompactionRecord, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus,
+        ToolCallContentItem, ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem,
     };
 
     let kind = update
@@ -1527,6 +1550,36 @@ pub(crate) fn map_session_update_with_mcp_servers(
             MappedUpdate::Transcript(TranscriptItem::Plan(PlanRecord {
                 steps,
                 stats: ChecklistStats { done, total },
+            }))
+        }
+        "compaction" | "compaction_update" | "session_compaction" => {
+            let mut text = chunk_text(&update).trim().to_string();
+            if text.is_empty() {
+                text = update
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        update
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                    })
+                    .map(str::to_string)
+                    .unwrap_or_default();
+            }
+            let tail_start_id = update
+                .get("tailStartId")
+                .or_else(|| update.get("tail_start_id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            MappedUpdate::Transcript(TranscriptItem::Compaction(CompactionRecord {
+                text,
+                auto: update.get("auto").and_then(|v| v.as_bool()).unwrap_or(false),
+                overflow: update.get("overflow").and_then(|v| v.as_bool()),
+                tail_start_id,
             }))
         }
         "permission_request" => {
@@ -2329,7 +2382,7 @@ async fn run(params: RunParams) {
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
-                        tracing::info!(target: "agent_stderr", agent = %agent_for_stderr, "{line}");
+                        tracing::warn!(target: "agent_stderr", agent = %agent_for_stderr, "{line}");
                         // Also push to the rolling tail so the
                         // user-facing "actor closed before accepting
                         // prompt" path can surface WHY. Lock briefly,
@@ -2893,6 +2946,9 @@ async fn run(params: RunParams) {
                 mirror_notif.apply(&event).await;
                 let _ = events_tx_notif.send(event);
                 meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
+                meta_emitter
+                    .emit_config_options(&events_tx_notif, sid.0.to_string())
+                    .await;
                 Some(sid)
             }
             Bootstrap::Resume(sid) => {
@@ -3187,6 +3243,9 @@ async fn run(params: RunParams) {
                 mirror_notif.apply(&event).await;
                 let _ = events_tx_notif.send(event);
                 meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
+                meta_emitter
+                    .emit_config_options(&events_tx_notif, sid.0.to_string())
+                    .await;
                 Some(sid)
             }
             Bootstrap::ListOnly => {
@@ -3549,10 +3608,19 @@ async fn run(params: RunParams) {
                                     } else if config_id == "model" {
                                         *current_model_done.write().await = Some(value.clone());
                                     }
-                                    let mut categories = config_options_done.write().await;
-                                    super::agents::augment_config_options(&adapter_id, &mut categories, Some(value.as_str()));
-                                    apply_config_option_selection(&mut categories, &config_id, &value);
+                                    {
+                                        let mut categories = config_options_done.write().await;
+                                        super::agents::augment_config_options(
+                                            &adapter_id,
+                                            &mut categories,
+                                            Some(value.as_str()),
+                                        );
+                                        apply_config_option_selection(&mut categories, &config_id, &value);
+                                    }
                                     meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
+                                    meta_emitter
+                                        .emit_config_options(&events_tx_done, session_log.0.to_string())
+                                        .await;
                                 }
                                 let _ = reply.send(res);
                             });
@@ -3970,6 +4038,7 @@ async fn run(params: RunParams) {
                                             | crate::adapters::TranscriptItem::ToolCall(_)
                                             | crate::adapters::TranscriptItem::ToolCallUpdate(_)
                                             | crate::adapters::TranscriptItem::Plan(_)
+                                            | crate::adapters::TranscriptItem::Compaction(_)
                                     ) {
                                         turn_state.write().await.note_agent_output();
                                     }
@@ -4474,6 +4543,55 @@ mod tests {
         assert_eq!(plan.steps[1].content, "implement feature");
         assert_eq!(plan.stats.done, 2, "two completed");
         assert_eq!(plan.stats.total, 4, "four total");
+    }
+
+    #[test]
+    fn map_session_update_maps_compaction_record() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "compaction",
+            "auto": true,
+            "overflow": true,
+            "tailStartId": "msg-1",
+            "content": { "type": "text", "text": "Summary text" }
+        });
+        let mapped = map_session_update(update, &mut cache, "acp-opencode");
+        let MappedUpdate::Transcript(item) = mapped.mapped else {
+            panic!("expected Transcript update");
+        };
+        let crate::adapters::TranscriptItem::Compaction(compaction) = item else {
+            panic!("expected Compaction transcript item");
+        };
+
+        assert_eq!(compaction.text, "Summary text");
+        assert!(compaction.auto);
+        assert_eq!(compaction.overflow, Some(true));
+        assert_eq!(compaction.tail_start_id.as_deref(), Some("msg-1"));
+    }
+
+    #[test]
+    fn map_session_update_maps_compaction_summary_fallback() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "compaction",
+            "summary": "Fallback summary"
+        });
+        let mapped = map_session_update(update, &mut cache, "acp-opencode");
+        let MappedUpdate::Transcript(item) = mapped.mapped else {
+            panic!("expected Transcript update");
+        };
+        let crate::adapters::TranscriptItem::Compaction(compaction) = item else {
+            panic!("expected Compaction transcript item");
+        };
+
+        assert_eq!(compaction.text, "Fallback summary");
+        assert!(!compaction.auto);
+        assert_eq!(compaction.overflow, None);
+        assert_eq!(compaction.tail_start_id, None);
     }
 
     #[test]
@@ -5329,6 +5447,67 @@ mod tests {
                     msg.contains("without emitting any output"),
                     "error message should describe the empty-turn case; got: {msg}"
                 );
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_guard_complete_synthesizes_error_on_empty_turn_with_end_turn() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "opencode".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state,
+        )
+        .await;
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+
+        guard.complete(Some("end_turn".into()), None).await;
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { stop_reason, error, .. } => {
+                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+                let msg = error.expect("error synthesized on empty end_turn");
+                assert!(
+                    msg.contains("clean `end_turn`"),
+                    "error message should describe the suspicious ACP success; got: {msg}"
+                );
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_guard_complete_preserves_clean_end_turn_when_output_observed() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "opencode".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state.clone(),
+        )
+        .await;
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+        turn_state.write().await.note_agent_output();
+
+        guard.complete(Some("end_turn".into()), None).await;
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { stop_reason, error, .. } => {
+                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+                assert!(error.is_none(), "successful output must not be tagged as empty");
             }
             other => panic!("expected TurnEnded; got {other:?}"),
         }

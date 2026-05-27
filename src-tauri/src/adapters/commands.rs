@@ -431,6 +431,27 @@ pub async fn config_option_set(
     out
 }
 
+#[tauri::command]
+pub async fn effort_get(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    tracing::info!(instance_id = %instance_id, "cmd::effort_get: entry");
+    adapter.get_session_effort(&instance_id).await.map_err(|e| e.message)
+}
+
+#[tauri::command]
+pub async fn efforts_list(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
+    tracing::info!(instance_id = %instance_id, "cmd::efforts_list: entry");
+    adapter.list_session_efforts(&instance_id).await.map_err(|e| e.message)
+}
+
+#[tauri::command]
+pub async fn effort_set(adapter: AdapterState<'_>, instance_id: String, effort_id: String) -> Result<Value, String> {
+    tracing::info!(instance_id = %instance_id, effort_id = %effort_id, "cmd::effort_set: entry");
+    adapter
+        .set_session_effort(&instance_id, &effort_id)
+        .await
+        .map_err(|e| e.message)
+}
+
 /// Read the daemon's currently-selected default profile id.
 /// `Option<String>` so a fresh boot before any profile is configured
 /// renders as `null` on the wire.

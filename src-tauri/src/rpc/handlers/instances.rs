@@ -141,6 +141,19 @@ struct SetOptionParams {
     value: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EffortParams {
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SetEffortParams {
+    instance_id: String,
+    effort_id: String,
+}
+
 /// `instances/*` namespace. Registry-level operations on the
 /// adapter: list, spawn, focus, restart, shutdown, info, plus
 /// per-session setters (mode / model / config option). Delegates
@@ -291,6 +304,30 @@ impl RpcHandler for InstancesHandler {
                 } = parse_params::<SetOptionParams>(params, method)?;
                 adapter
                     .set_session_config_option(&instance_id, &config_id, &value)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
+            }
+            "instances/getEffort" => {
+                let EffortParams { instance_id } = parse_params::<EffortParams>(params, method)?;
+                adapter
+                    .get_session_effort(&instance_id)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
+            }
+            "instances/listEfforts" => {
+                let EffortParams { instance_id } = parse_params::<EffortParams>(params, method)?;
+                adapter
+                    .list_session_efforts(&instance_id)
+                    .await
+                    .map(HandlerOutcome::Reply)
+                    .map_err(map_adapter_err)
+            }
+            "instances/setEffort" => {
+                let SetEffortParams { instance_id, effort_id } = parse_params::<SetEffortParams>(params, method)?;
+                adapter
+                    .set_session_effort(&instance_id, &effort_id)
                     .await
                     .map(HandlerOutcome::Reply)
                     .map_err(map_adapter_err)
@@ -915,6 +952,39 @@ agent = "dead"
                 "value": "high",
                 "stray": true,
             }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn get_effort_missing_instance_id_is_invalid_params() {
+        let v = dispatch("instances/getEffort", json!({})).await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn list_efforts_missing_instance_id_is_invalid_params() {
+        let v = dispatch("instances/listEfforts", json!({})).await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_effort_missing_effort_id_is_invalid_params() {
+        let v = dispatch(
+            "instances/setEffort",
+            json!({ "instanceId": "550e8400-e29b-41d4-a716-446655440000" }),
+        )
+        .await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn set_effort_unknown_instance_is_invalid_params() {
+        let ghost = "550e8400-e29b-41d4-a716-446655440000";
+        let v = dispatch(
+            "instances/setEffort",
+            json!({ "instanceId": ghost, "effortId": "high" }),
         )
         .await;
         assert_eq!(v["code"], -32602, "{v}");

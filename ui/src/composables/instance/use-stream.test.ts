@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { pushPlan, pushThoughtChunk, resetStream, StreamItemKind, useStream } from '@composables'
+import { pushCompaction, pushPlan, pushThoughtChunk, resetStream, StreamItemKind, useStream } from '@composables'
 
 beforeEach(() => {
   resetStream('A')
@@ -50,5 +50,23 @@ describe('useStream', () => {
 
     expect(items).toHaveLength(1)
     expect(items[0]?.kind === StreamItemKind.Plan ? items[0].entries.length : null).toBe(2)
+  })
+
+  it('pushes compaction stream items', () => {
+    pushCompaction('A', 's-a', {
+      text: 'summary', auto: true, overflow: true, tailStartId: 'm-1'
+    })
+
+    const items = useStream('A').items.value
+
+    expect(items).toHaveLength(1)
+    expect(items[0]?.kind).toBe(StreamItemKind.Compaction)
+
+    if (items[0]?.kind === StreamItemKind.Compaction) {
+      expect(items[0].text).toBe('summary')
+      expect(items[0].auto).toBe(true)
+      expect(items[0].overflow).toBe(true)
+      expect(items[0].tailStartId).toBe('m-1')
+    }
   })
 })

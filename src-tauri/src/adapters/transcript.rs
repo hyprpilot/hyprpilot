@@ -68,6 +68,13 @@ pub enum TranscriptItem {
     ToolCallUpdate(ToolCallUpdateRecord),
     /// Agent's execution plan.
     Plan(PlanRecord),
+    /// Agent/session compaction marker. OpenCode models compaction
+    /// as a hidden user message with a `compaction` part
+    /// (`auto`, `overflow`, optional retained-tail marker); ACP
+    /// adapters may surface the same shape as a transcript update so
+    /// frontends can render a collapsible "compaction" block instead
+    /// of silently dropping the event.
+    Compaction(CompactionRecord),
     /// Permission prompt for an agent action — surfaced inline so
     /// the UI can render it in-context. Same payload as
     /// `InstanceEvent::PermissionRequest`; the latter remains the
@@ -210,6 +217,19 @@ pub enum ToolCallContentItem {
 pub struct PlanRecord {
     pub steps: Vec<PlanStep>,
     pub stats: ChecklistStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionRecord {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_start_id: Option<String>,
 }
 
 /// Generic running stat for any **checklist-shaped** record (plans,

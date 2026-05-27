@@ -25,6 +25,7 @@ import {
   closeThought,
   closeTurn,
   deleteStreamByTurnId,
+  pushCompaction,
   pushConfigOptionChange,
   pushModeChange,
   pushModelChange,
@@ -179,6 +180,18 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         entries: item.steps,
         stats: item.stats
       } as Parameters<typeof pushPlan>[2])
+
+      return
+
+    case TranscriptItemKind.Compaction:
+      markThinkingEnd(instanceId, sessionId)
+      closeThought(instanceId, sessionId)
+      pushCompaction(instanceId, sessionId, {
+        text: item.text,
+        auto: item.auto,
+        overflow: item.overflow,
+        tailStartId: item.tailStartId
+      })
 
       return
 

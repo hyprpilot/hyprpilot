@@ -184,6 +184,23 @@ function projectEntry(it: SeqTranscriptItem, ctx: ProjectionContext): TimelineEn
         }
       } as TimelineStream
 
+    case TranscriptItemKind.Compaction:
+      return {
+        kind: 'stream',
+        createdAt: seq,
+        item: {
+          id: `compaction-${seq}`,
+          kind: StreamItemKind.Compaction,
+          sessionId: ctx.sessionId,
+          createdAt: seq,
+          updatedAt: seq,
+          text: item.text,
+          auto: item.auto,
+          overflow: item.overflow,
+          tailStartId: item.tailStartId
+        }
+      } as TimelineStream
+
     case TranscriptItemKind.ToolCall:
     case TranscriptItemKind.ToolCallUpdate:
       return {

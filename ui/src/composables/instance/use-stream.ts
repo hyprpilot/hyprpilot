@@ -7,6 +7,7 @@ import { useActiveInstance, type InstanceId } from '../chrome/use-active-instanc
 export enum StreamItemKind {
   Thought = 'thought',
   Plan = 'plan',
+  Compaction = 'compaction',
   ModeChange = 'mode_change',
   ModelChange = 'model_change',
   ConfigOptionChange = 'config_option_change',
@@ -54,6 +55,14 @@ export interface PlanStreamItem extends BaseStream {
   /// place. `undefined` only when the daemon ships a plan without
   /// stats (defensive — daemon always computes them).
   stats?: ChecklistStats
+}
+
+export interface CompactionStreamItem extends BaseStream {
+  kind: StreamItemKind.Compaction
+  text?: string
+  auto: boolean
+  overflow?: boolean
+  tailStartId?: string
 }
 
 /// Banner chip rendered between turns whenever the agent emits a
@@ -108,7 +117,14 @@ export interface SystemPromptInjectedStreamItem extends BaseStream {
   files: string[]
 }
 
-export type StreamItem = ThoughtStreamItem | PlanStreamItem | ModeChangeStreamItem | ModelChangeStreamItem | ConfigOptionChangeStreamItem | SystemPromptInjectedStreamItem
+export type StreamItem =
+  | ThoughtStreamItem
+  | PlanStreamItem
+  | CompactionStreamItem
+  | ModeChangeStreamItem
+  | ModelChangeStreamItem
+  | ConfigOptionChangeStreamItem
+  | SystemPromptInjectedStreamItem
 
 export interface StreamState {
   items: StreamItem[]
@@ -168,6 +184,13 @@ interface PlanUpdate {
   sessionUpdate: string
   entries?: PlanEntry[]
   stats?: ChecklistStats
+}
+
+interface CompactionUpdate {
+  text?: string
+  auto: boolean
+  overflow?: boolean
+  tailStartId?: string
 }
 
 // ── Internal store-mutation surface ───────────────────────────────
@@ -239,6 +262,25 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
     stats
   })
   slot.openPlanBySession.set(sessionId, itemId)
+}
+
+export function pushCompaction(id: InstanceId, sessionId: string, raw: CompactionUpdate): void {
+  const slot = slotFor(id)
+  const seq = nextSeq(id)
+  const itemId = `compaction-${sessionId}-${slot.items.length}`
+
+  slot.items.push({
+    kind: StreamItemKind.Compaction,
+    id: itemId,
+    sessionId,
+    turnId: openTurnIdFor(id, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    text: raw.text,
+    auto: raw.auto,
+    overflow: raw.overflow,
+    tailStartId: raw.tailStartId
+  })
 }
 
 export interface ModeChangePush {

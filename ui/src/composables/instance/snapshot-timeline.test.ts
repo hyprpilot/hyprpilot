@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { timelineBlocksFromSnapshot } from './snapshot-timeline'
+import { StreamItemKind } from './use-stream'
 import { Role } from '@components'
 import { TranscriptItemKind } from '@constants/wire/transcript'
 import { PlanPriority, PlanStepStatus, type PlanStep } from '@interfaces/wire/transcript'
@@ -286,6 +287,35 @@ describe('timelineBlocksFromSnapshot', () => {
       // Latest plan wins — both steps completed.
       expect(planEntry.item.entries).toHaveLength(2)
       expect(planEntry.item.entries[1].status).toBe(PlanStepStatus.Completed)
+    }
+  })
+
+  it('projects compaction transcript items into stream blocks', () => {
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'go'),
+      {
+        seq: 2,
+        turnId: 't-1',
+        item: {
+          kind: TranscriptItemKind.Compaction,
+          text: 'summary',
+          auto: true,
+          overflow: true,
+          tailStartId: 'm-1'
+        }
+      }
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistantBlock = blocks.find((b) => b.role === Role.Assistant)
+    const compaction = assistantBlock?.streamEntries[0]?.item
+
+    expect(compaction?.kind).toBe(StreamItemKind.Compaction)
+
+    if (compaction?.kind === StreamItemKind.Compaction) {
+      expect(compaction.text).toBe('summary')
+      expect(compaction.auto).toBe(true)
+      expect(compaction.overflow).toBe(true)
+      expect(compaction.tailStartId).toBe('m-1')
     }
   })
 })

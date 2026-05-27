@@ -109,6 +109,13 @@ export interface PlanRecord {
   stats: ChecklistStats
 }
 
+export interface CompactionRecord {
+  text?: string
+  auto: boolean
+  overflow?: boolean
+  tailStartId?: string
+}
+
 /// Mirror of Rust `adapters::transcript::ChecklistStats`. Generic
 /// `done / total` running stat — used by `PlanRecord` today, slotted
 /// for any future checklist-shaped record.
@@ -154,5 +161,6 @@ export type TranscriptItem =
   | ({ kind: TranscriptItemKind.ToolCall } & ToolCallRecord)
   | ({ kind: TranscriptItemKind.ToolCallUpdate } & ToolCallUpdateRecord)
   | ({ kind: TranscriptItemKind.Plan } & PlanRecord)
+  | ({ kind: TranscriptItemKind.Compaction } & CompactionRecord)
   | ({ kind: TranscriptItemKind.PermissionRequest } & PermissionRequestRecord)
   | { kind: TranscriptItemKind.Unknown; wireKind: string; payload: Record<string, unknown> }

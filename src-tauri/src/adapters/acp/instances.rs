@@ -1539,6 +1539,32 @@ impl AcpAdapter {
         Ok(serde_json::json!({ "configId": config_id, "value": value }))
     }
 
+    pub async fn get_session_effort(&self, instance_id: &str) -> Result<Value, RpcError> {
+        let handle = self.require_instance(instance_id).await?;
+        let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+        let effort = snap.config_options.iter().find(|category| category.id == "effort");
+
+        Ok(serde_json::json!({
+            "effortId": effort.and_then(|category| category.current_value.clone()),
+        }))
+    }
+
+    pub async fn list_session_efforts(&self, instance_id: &str) -> Result<Value, RpcError> {
+        let handle = self.require_instance(instance_id).await?;
+        let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+        let effort = snap.config_options.iter().find(|category| category.id == "effort");
+
+        Ok(serde_json::json!({
+            "effortId": effort.and_then(|category| category.current_value.clone()),
+            "efforts": effort.map(|category| category.options.clone()).unwrap_or_default(),
+        }))
+    }
+
+    pub async fn set_session_effort(&self, instance_id: &str, effort_id: &str) -> Result<Value, RpcError> {
+        self.set_session_config_option(instance_id, "effort", effort_id).await?;
+        Ok(serde_json::json!({ "effortId": effort_id }))
+    }
+
     /// Read the addressed instance's per-instance metadata cache.
     /// The palette pickers (modes, models) call this on every open
     /// so the listed options come straight from the daemon's
@@ -1791,6 +1817,24 @@ impl Adapter for AcpAdapter {
         value: &str,
     ) -> AdapterResult<serde_json::Value> {
         AcpAdapter::set_session_config_option(self, instance_id, config_id, value)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn get_session_effort(&self, instance_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::get_session_effort(self, instance_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn list_session_efforts(&self, instance_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::list_session_efforts(self, instance_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn set_session_effort(&self, instance_id: &str, effort_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_session_effort(self, instance_id, effort_id)
             .await
             .map_err(rpc_to_adapter)
     }
