@@ -9,7 +9,10 @@ pub mod formatters;
 
 use tokio::process::Command;
 
+use agent_client_protocol::schema::ToolCallUpdate;
+
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
+use crate::adapters::ToolCallState;
 use crate::tools::ToolKind;
 
 pub struct AcpAgentOpenCode;
@@ -23,6 +26,40 @@ impl AcpAgent for AcpAgentOpenCode {
     /// returned string to the first `session/prompt` text block.
     fn inject_system_prompt(&self, _cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
         SystemPromptInjection::FirstMessage(prompt.to_string())
+    }
+
+    fn permission_mcp_tool_with_servers(
+        &self,
+        update: &ToolCallUpdate,
+        mcp_server_names: &[String],
+    ) -> Option<ToolKind> {
+        update
+            .fields
+            .title
+            .as_deref()
+            .and_then(|title| mcp_tool_from_single_underscore_name(title, mcp_server_names))
+    }
+
+    fn mcp_tool_with_servers(
+        &self,
+        title: &str,
+        raw_input: Option<&serde_json::Value>,
+        mcp_server_names: &[String],
+    ) -> Option<ToolKind> {
+        self.mcp_tool(title, raw_input)
+            .or_else(|| mcp_tool_from_single_underscore_name(title, mcp_server_names))
+    }
+
+    fn suppress_initial_tool_call(
+        &self,
+        _title: &str,
+        raw_input: Option<&serde_json::Value>,
+        state: ToolCallState,
+    ) -> bool {
+        matches!(state, ToolCallState::Pending)
+            && raw_input
+                .and_then(|value| value.as_object())
+                .map_or(true, serde_json::Map::is_empty)
     }
 }
 

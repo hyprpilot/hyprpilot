@@ -215,7 +215,7 @@ const headerCounts = computed<BreadcrumbCount[]>(() => [
   }
 ])
 
-function onPillClick(target: 'profile' | 'mode' | 'provider'): void {
+function onPillClick(target: 'profile' | 'mode' | 'effort' | 'provider'): void {
   switch (target) {
     case 'profile':
       openRootLeaf(PaletteLeafId.Profiles)
@@ -224,6 +224,11 @@ function onPillClick(target: 'profile' | 'mode' | 'provider'): void {
 
     case 'mode':
       openRootLeaf(PaletteLeafId.Modes)
+
+      return
+
+    case 'effort':
+      openRootLeaf(PaletteLeafId.Effort)
 
       return
 

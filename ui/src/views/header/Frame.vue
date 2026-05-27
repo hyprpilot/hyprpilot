@@ -59,7 +59,7 @@ const emit = defineEmits<{
   toggleCwd: []
   /// Emitted when the user clicks a row-1 pill (`profile` / `mode` /
   /// `provider`); the parent dispatches the matching palette leaf.
-  pillClick: [target: 'profile' | 'mode' | 'provider']
+  pillClick: [target: 'profile' | 'mode' | 'effort' | 'provider']
   /// Emitted when the user clicks a breadcrumb pill in row 2; the
   /// parent dispatches the matching palette leaf. Pill id falls back
   /// to `label` when `BreadcrumbCount.id` is unset.
@@ -141,7 +141,7 @@ const rowOneBg = computed(() => {
           <button v-if="model" type="button" class="frame-model-pill" aria-label="model" @click="emit('pillClick', 'provider')">
             {{ model }}
           </button>
-          <button v-if="effortTag" type="button" class="frame-effort-pill" aria-label="effort" @click="emit('pillClick', 'mode')">
+          <button v-if="effortTag" type="button" class="frame-effort-pill" aria-label="effort" @click="emit('pillClick', 'effort')">
             {{ effortTag }}
           </button>
           <button v-if="modeTag" type="button" class="frame-mode-pill" aria-label="mode" @click="emit('pillClick', 'mode')">

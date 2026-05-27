@@ -36,7 +36,7 @@ use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
 use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
-use crate::config::{AgentConfig, AgentProvider};
+use crate::config::AgentConfig;
 use crate::tools::ToolKind;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
@@ -821,12 +821,7 @@ fn mcp_tool(
     mcp_server_names: &[String],
 ) -> Option<ToolKind> {
     ToolKind::from_mcp_name(title)
-        .or_else(|| super::agents::mcp_tool(adapter_id, title, raw_input))
-        .or_else(|| {
-            (adapter_id == "acp-opencode")
-                .then(|| super::agents::opencode::mcp_tool_from_single_underscore_name(title, mcp_server_names))
-                .flatten()
-        })
+        .or_else(|| super::agents::mcp_tool_with_servers(adapter_id, title, raw_input, mcp_server_names))
 }
 
 fn apply_config_option_selection(
@@ -1349,6 +1344,13 @@ pub(crate) fn map_session_update_with_mcp_servers(
             // re-format against merged state. `started_at` captures
             // wall-clock at this first observation; `completed_at`
             // stays None until a state transition lands below.
+            if super::agents::suppress_initial_tool_call(adapter_id, &title, raw_input.as_ref(), state) {
+                return MappedSessionUpdate {
+                    message_id,
+                    meta,
+                    mapped: MappedUpdate::Noop,
+                };
+            }
             let running = RunningToolCall {
                 wire_name: title.clone(),
                 tool_kind: ToolKind::from_wire(
@@ -2420,21 +2422,12 @@ async fn run(params: RunParams) {
     ) {
         Ok(c) => {
             let agent = match_provider_agent(cfg.provider);
-            let provider = cfg.provider;
-            let mcps = mcps.clone();
+            let mcp_server_names = mcps
+                .as_ref()
+                .map(|registry| registry.list().into_iter().map(|def| def.name).collect::<Vec<_>>())
+                .unwrap_or_default();
             c.with_permission_mcp_tool(Arc::new(move |update| {
-                agent.permission_mcp_tool(update).or_else(|| {
-                    if provider != AgentProvider::AcpOpenCode {
-                        return None;
-                    }
-
-                    let title = update.fields.title.as_deref().unwrap_or_default();
-                    let server_names = mcps
-                        .as_ref()
-                        .map(|registry| registry.list().into_iter().map(|def| def.name).collect::<Vec<_>>())
-                        .unwrap_or_default();
-                    super::agents::opencode::mcp_tool_from_single_underscore_name(title, &server_names)
-                })
+                agent.permission_mcp_tool_with_servers(update, &mcp_server_names)
             }))
         }
         Err(err) => {
@@ -2818,6 +2811,79 @@ async fn run(params: RunParams) {
                     }
                     *config_options_meta.write().await = categories;
                 }
+                if let Some(want) = cfg.effort.as_deref() {
+                    let advertised = config_options_meta
+                        .read()
+                        .await
+                        .iter()
+                        .find(|category| category.id == "effort")
+                        .is_some_and(|category| {
+                            category.current_value.as_deref() != Some(want)
+                                && category.options.iter().any(|option| option.value == want)
+                        });
+                    if advertised {
+                        let agent = match_provider_agent(cfg.provider);
+                        let current_model = current_model_meta.read().await.clone().or_else(|| cfg.model.clone());
+                        let route = agent.config_option_route("effort", want, current_model.as_deref());
+                        tracing::info!(
+                            agent = %agent_id_notif,
+                            instance = %instance_id_notif,
+                            session = %sid,
+                            value = %want,
+                            route = ?route,
+                            "acp::instance: applying configured effort via session config"
+                        );
+                        let res: Result<(), String> = match &route {
+                            ConfigOptionRoute::SetConfigOption { config_id } => {
+                                use agent_client_protocol::schema::{
+                                    SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest,
+                                };
+                                let req = SetSessionConfigOptionRequest::new(
+                                    sid.clone(),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(want)),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(resp) => {
+                                        let mut categories = project_session_config_options(
+                                            cfg.provider.wire_id(),
+                                            &resp.config_options,
+                                            Some(want),
+                                        );
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        *config_options_meta.write().await = categories;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                            ConfigOptionRoute::SetModel { model_id } => {
+                                let req = SetSessionModelRequest::new(
+                                    sid.clone(),
+                                    ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(_) => {
+                                        *current_model_meta.write().await = Some(model_id.clone());
+                                        let mut categories = config_options_meta.write().await;
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                        };
+                        if let Err(err) = res {
+                            tracing::warn!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                target_effort = %want,
+                                %err,
+                                "acp::instance: configured effort apply failed — keeping agent default"
+                            );
+                        }
+                    }
+                }
                 let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
@@ -2962,6 +3028,79 @@ async fn run(params: RunParams) {
                         }
                     }
                     *config_options_meta.write().await = categories;
+                }
+                if let Some(want) = cfg.effort.as_deref() {
+                    let advertised = config_options_meta
+                        .read()
+                        .await
+                        .iter()
+                        .find(|category| category.id == "effort")
+                        .is_some_and(|category| {
+                            category.current_value.as_deref() != Some(want)
+                                && category.options.iter().any(|option| option.value == want)
+                        });
+                    if advertised {
+                        let agent = match_provider_agent(cfg.provider);
+                        let current_model = current_model_meta.read().await.clone().or_else(|| cfg.model.clone());
+                        let route = agent.config_option_route("effort", want, current_model.as_deref());
+                        tracing::info!(
+                            agent = %agent_id_notif,
+                            instance = %instance_id_notif,
+                            session = %sid,
+                            value = %want,
+                            route = ?route,
+                            "acp::instance: applying configured effort via session config"
+                        );
+                        let res: Result<(), String> = match &route {
+                            ConfigOptionRoute::SetConfigOption { config_id } => {
+                                use agent_client_protocol::schema::{
+                                    SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest,
+                                };
+                                let req = SetSessionConfigOptionRequest::new(
+                                    sid.clone(),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(want)),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(resp) => {
+                                        let mut categories = project_session_config_options(
+                                            cfg.provider.wire_id(),
+                                            &resp.config_options,
+                                            Some(want),
+                                        );
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        *config_options_meta.write().await = categories;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                            ConfigOptionRoute::SetModel { model_id } => {
+                                let req = SetSessionModelRequest::new(
+                                    sid.clone(),
+                                    ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(_) => {
+                                        *current_model_meta.write().await = Some(model_id.clone());
+                                        let mut categories = config_options_meta.write().await;
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                        };
+                        if let Err(err) = res {
+                            tracing::warn!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                target_effort = %want,
+                                %err,
+                                "acp::instance: configured effort apply failed — keeping agent default"
+                            );
+                        }
+                    }
                 }
                 // Suspended sessions can resume with a half-finished
                 // turn — pending tool call awaiting permission, agent
@@ -4396,6 +4535,47 @@ mod tests {
             }
         );
         assert_eq!(record.formatted.title, "linear-kilic-dev · list_issues");
+    }
+
+    #[test]
+    fn map_session_update_suppresses_opencode_empty_pending_tool_call() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-1",
+            "title": "bash",
+            "kind": "execute",
+            "status": "pending",
+            "rawInput": {}
+        });
+        let mapped = map_session_update_with_mcp_servers(update, &mut cache, "acp-opencode", &[]).mapped;
+
+        assert!(matches!(mapped, MappedUpdate::Noop));
+        assert!(!cache.contains_key("tc-1"));
+    }
+
+    #[test]
+    fn map_session_update_keeps_opencode_first_populated_tool_update() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-1",
+            "title": "bash",
+            "kind": "execute",
+            "status": "in_progress",
+            "rawInput": { "command": "echo hi" }
+        });
+        let mapped = map_session_update_with_mcp_servers(update, &mut cache, "acp-opencode", &[]).mapped;
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCallUpdate(record)) = mapped else {
+            panic!("expected tool call update");
+        };
+
+        assert_eq!(record.raw_input, Some(json!({ "command": "echo hi" })));
+        assert_eq!(record.formatted.title, "bash · echo");
     }
 
     #[test]
