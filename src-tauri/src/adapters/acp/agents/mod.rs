@@ -8,9 +8,9 @@ use tokio::process::Command;
 
 use agent_client_protocol::schema::ToolCallUpdate;
 
-use crate::adapters::ToolIdentity;
 use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::formatter::registry::FormatterRegistry;
+use crate::tools::ToolKind;
 
 pub use self::claude_code::AcpAgentClaudeCode;
 pub use self::codex::AcpAgentCodex;
@@ -47,6 +47,12 @@ pub enum ModelInjection {
     Config(&'static str),
 }
 
+#[derive(Debug, Clone)]
+pub enum ConfigOptionRoute {
+    SetConfigOption { config_id: String },
+    SetModel { model_id: String },
+}
+
 /// Expand `~` and `$VAR` / `${VAR}` references against the daemon's
 /// own environment. Used for every captain-supplied path or value
 /// that reaches the spawn surface (binary path, cwd, env values) so
@@ -56,14 +62,24 @@ pub enum ModelInjection {
 /// error here would refuse to spawn the agent over a typo, worse
 /// than letting the agent inherit a literal `$FOO` and fail visibly
 /// downstream.
-fn expand_value(raw: &str, ctx: &str) -> String {
-    match shellexpand::full(raw) {
+fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let tilde = shellexpand::tilde(raw);
+    match shellexpand::env_with_context(tilde.as_ref(), |name| {
+        Ok::<Option<String>, std::convert::Infallible>(lookup(name))
+    }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {
             tracing::warn!(value = raw, ctx, %err, "agent spawn: env expansion failed; using raw value");
             raw.to_string()
         }
     }
+}
+
+fn expand_value(raw: &str, ctx: &str) -> String {
+    expand_value_with(raw, ctx, &mut |name| std::env::var(name).ok())
 }
 
 fn has_config_override(args: &[String], key: &str) -> bool {
@@ -161,11 +177,24 @@ pub trait AcpAgent: Send + Sync + 'static {
         id.to_string()
     }
 
-    fn permission_tool_identity(&self, _update: &ToolCallUpdate) -> Option<ToolIdentity> {
+    fn config_option_route(&self, id: &str, _value: &str, _current_model: Option<&str>) -> ConfigOptionRoute {
+        ConfigOptionRoute::SetConfigOption {
+            config_id: self.wire_config_option_id(id),
+        }
+    }
+
+    fn augment_config_options(
+        &self,
+        _categories: &mut Vec<crate::adapters::SessionConfigOptionCategory>,
+        _configured_effort: Option<&str>,
+    ) {
+    }
+
+    fn permission_mcp_tool(&self, _update: &ToolCallUpdate) -> Option<ToolKind> {
         None
     }
 
-    fn tool_identity(&self, _title: &str, _raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
+    fn mcp_tool(&self, _title: &str, _raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
         None
     }
 
@@ -215,13 +244,26 @@ pub fn display_config_option_id(adapter_id: &str, id: &str) -> String {
     }
 }
 
-#[must_use]
-pub fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
+pub fn augment_config_options(
+    adapter_id: &str,
+    categories: &mut Vec<crate::adapters::SessionConfigOptionCategory>,
+    configured_effort: Option<&str>,
+) {
     match adapter_id {
-        "acp-claude-code" => AcpAgentClaudeCode.tool_identity(title, raw_input),
-        "acp-codex" => AcpAgentCodex.tool_identity(title, raw_input),
-        "acp-opencode" => AcpAgentOpenCode.tool_identity(title, raw_input),
-        _ => AcpAgentCustom.tool_identity(title, raw_input),
+        "acp-claude-code" => AcpAgentClaudeCode.augment_config_options(categories, configured_effort),
+        "acp-codex" => AcpAgentCodex.augment_config_options(categories, configured_effort),
+        "acp-opencode" => AcpAgentOpenCode.augment_config_options(categories, configured_effort),
+        _ => AcpAgentCustom.augment_config_options(categories, configured_effort),
+    }
+}
+
+#[must_use]
+pub fn mcp_tool(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
+    match adapter_id {
+        "acp-claude-code" => AcpAgentClaudeCode.mcp_tool(title, raw_input),
+        "acp-codex" => AcpAgentCodex.mcp_tool(title, raw_input),
+        "acp-opencode" => AcpAgentOpenCode.mcp_tool(title, raw_input),
+        _ => AcpAgentCustom.mcp_tool(title, raw_input),
     }
 }
 
@@ -307,29 +349,18 @@ mod tests {
     }
 
     #[test]
-    fn spawn_expands_env_values_against_process_env() {
-        // SAFETY: tests in this module run in the same process; no
-        // other test reads HYPRPILOT_TEST_ENV_EXPAND so this is safe.
-        unsafe {
-            std::env::set_var("HYPRPILOT_TEST_ENV_EXPAND", "expanded-value");
-        }
-        let mut entry = stub_entry("env-expand");
+    fn expand_value_uses_supplied_environment_lookup() {
+        let expanded =
+            expand_value_with(
+                "prefix-${HYPRPILOT_TEST_ENV_EXPAND}-suffix",
+                "agent.env",
+                &mut |name| match name {
+                    "HYPRPILOT_TEST_ENV_EXPAND" => Some("expanded-value".into()),
+                    _ => None,
+                },
+            );
 
-        entry
-            .env
-            .insert("FOO".into(), "prefix-${HYPRPILOT_TEST_ENV_EXPAND}-suffix".into());
-        let cmd = match_provider_agent(AgentProvider::AcpClaudeCode).spawn(&entry);
-        let envs: Vec<_> = cmd
-            .as_std()
-            .get_envs()
-            .filter_map(|(k, v)| v.map(|vv| (k.to_owned(), vv.to_owned())))
-            .collect();
-        let foo = envs.iter().find(|(k, _)| k == "FOO").expect("FOO is set");
-        assert_eq!(foo.1.to_str().unwrap(), "prefix-expanded-value-suffix");
-
-        unsafe {
-            std::env::remove_var("HYPRPILOT_TEST_ENV_EXPAND");
-        }
+        assert_eq!(expanded, "prefix-expanded-value-suffix");
     }
 
     #[test]

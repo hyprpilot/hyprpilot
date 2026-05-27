@@ -1,5 +1,5 @@
 //! claude-code's MCP tool family. The formatter registry routes the
-//! structured MCP identity to the single `(adapter, "mcp")` key we
+//! structured MCP attribution to the single `(adapter, "mcp")` key we
 //! register here.
 
 use crate::tools::formatter::registry::{FormatterContext, FormatterRegistry, ToolFormatter};
@@ -10,9 +10,9 @@ pub struct McpFormatter;
 
 impl ToolFormatter for McpFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let title = match ctx.identity {
-            crate::adapters::ToolIdentity::Mcp { server, leaf } => format!("{server} · {leaf}"),
-            crate::adapters::ToolIdentity::Native => format!("mcp · {}", ctx.wire_name),
+        let title = match ctx.tool_kind {
+            crate::tools::ToolKind::Mcp { server, tool } => format!("{server} · {tool}"),
+            _ => format!("mcp · {}", ctx.wire_name),
         };
 
         let description = pick::<String>(ctx.raw_input, "description").filter(|s| !s.is_empty());

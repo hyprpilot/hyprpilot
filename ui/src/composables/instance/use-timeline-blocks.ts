@@ -144,7 +144,7 @@ export function useTimelineBlocks(instanceId?: InstanceId): {
       if (entry.kind === 'stream') {
         block.streamEntries.push(entry)
       } else if (entry.kind === 'tool') {
-        if (entry.call.kind?.toLowerCase() === 'think') {
+        if (entry.call.kind?.type === 'think') {
           block.thoughts.push(entry)
         } else {
           block.toolCalls.push(entry)

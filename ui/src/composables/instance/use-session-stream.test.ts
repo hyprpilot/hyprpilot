@@ -107,7 +107,7 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       requestId: 'req-1',
       tool: 'bash',
-      kind: 'bash',
+      toolKind: { type: 'execute' },
       args: 'echo hi',
       options: [
         {
@@ -135,7 +135,7 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       requestId: 'req-1',
       tool: 'bash',
-      kind: 'execute',
+      toolKind: { type: 'execute' },
       args: 'ls',
       options: [
         {
@@ -152,7 +152,7 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       requestId: 'req-2',
       tool: 'bash',
-      kind: 'execute',
+      toolKind: { type: 'execute' },
       args: 'pwd',
       options: [
         {
@@ -217,7 +217,7 @@ describe('useSessionStream', () => {
         kind: 'tool_call',
         id: 'tc-1',
         title: 'bash',
-        toolKind: 'bash',
+        toolKind: { type: 'execute' },
         state: 'running',
         rawInput: { command: 'echo hi' },
         content: [{ kind: 'text', text: 'hi\n' }]
@@ -232,6 +232,31 @@ describe('useSessionStream', () => {
 
     expect(tools).toHaveLength(1)
     expect(tools[0]?.toolCallId).toBe('tc-1')
+  })
+
+  it('uses transcript messageId to split distinct thought blocks', async() => {
+    await startSessionStream()
+
+    emit(TauriEvent.AcpTranscript, {
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      messageId: 'thought-a',
+      item: { kind: 'agent_thought', text: 'first' }
+    })
+    emit(TauriEvent.AcpTranscript, {
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      messageId: 'thought-b',
+      item: { kind: 'agent_thought', text: 'second' }
+    })
+
+    const thoughts = useStream('A').items.value.filter((item) => item.kind === 'thought')
+
+    expect(thoughts).toHaveLength(2)
+    expect(thoughts.map((item) => item.id)).toEqual(['thought-a', 'thought-b'])
+    expect(thoughts.map((item) => item.kind === 'thought' ? item.text : '')).toEqual(['first', 'second'])
   })
 
   it('routes acp:terminal output and exit chunks to useTerminals', async() => {

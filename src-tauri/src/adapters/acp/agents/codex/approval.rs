@@ -1,8 +1,8 @@
 use serde_json::Value;
 
-use crate::adapters::ToolIdentity;
 use crate::tools::formatter::shared::text_blocks;
 use crate::tools::formatter::types::ToolField;
+use crate::tools::ToolKind;
 
 pub struct McpApproval {
     pub server: String,
@@ -16,10 +16,10 @@ impl McpApproval {
         format!("Approve {}/{}", self.server, self.tool)
     }
 
-    pub fn identity(&self) -> ToolIdentity {
-        ToolIdentity::Mcp {
+    pub fn mcp_tool(&self) -> ToolKind {
+        ToolKind::Mcp {
             server: self.server.clone(),
-            leaf: self.tool.clone(),
+            tool: self.tool.clone(),
         }
     }
 }
@@ -39,18 +39,29 @@ pub fn parse_mcp(raw: Option<&Value>, content: &[Value]) -> Option<McpApproval> 
         .or_else(|| request.get("tool_title"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let (title_server, title_tool) = tool_title.split_once('/').unwrap_or(("", tool_title));
+    let (title_server, title_tool) = tool_title.split_once('/').unwrap_or(("", ""));
     let server = raw
         .get("server_name")
         .or_else(|| raw.get("serverName"))
+        .or_else(|| request.get("server_name"))
+        .or_else(|| request.get("serverName"))
         .and_then(Value::as_str)
         .filter(|server| !server.trim().is_empty())
         .or_else(|| (!title_server.trim().is_empty()).then_some(title_server))
         .or_else(|| (!message_server.trim().is_empty()).then_some(message_server.as_str()))?
         .to_string();
-    let tool = (!title_tool.trim().is_empty())
-        .then_some(title_tool)
-        .or_else(|| (!message_tool.trim().is_empty()).then_some(message_tool.as_str()))?
+    let raw_tool = raw
+        .get("tool_name")
+        .or_else(|| raw.get("toolName"))
+        .or_else(|| raw.get("tool"))
+        .or_else(|| request.get("tool_name"))
+        .or_else(|| request.get("toolName"))
+        .or_else(|| request.get("tool"))
+        .and_then(Value::as_str)
+        .filter(|tool| !tool.trim().is_empty());
+    let tool = raw_tool
+        .or_else(|| (!message_tool.trim().is_empty()).then_some(message_tool.as_str()))
+        .or_else(|| (!title_tool.trim().is_empty()).then_some(title_tool))?
         .to_string();
     let content_text = text_blocks(content);
     let description = if content_text.trim().is_empty() {

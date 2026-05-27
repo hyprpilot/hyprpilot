@@ -4,7 +4,6 @@ import { nextSeq } from './sequence'
 import { openTurnIdFor } from './use-turns'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import type { Attachment } from '@ipc'
-import { paragraphSeparator } from '@lib/markdown'
 
 export enum TurnRole {
   User = 'user',
@@ -47,14 +46,6 @@ export interface AgentTurn extends Turn {
   /// the same `Attachments` chat component renders both. Empty
   /// array when the agent didn't attach anything.
   attachments: Attachment[]
-  /// Most-recent vendor-emitted `messageId` on this turn's stream.
-  /// Tracked so the chunk-fold logic can detect content-block
-  /// boundaries and inject a markdown paragraph break (`\n\n`) when
-  /// the next chunk's id changes — without it, vendors that switch
-  /// ids mid-turn (Claude / Codex emit fresh ids per content block)
-  /// concat blocks with no separator and markdown renders one
-  /// run-on paragraph instead of two.
-  lastChunkMessageId?: string
 }
 
 export type ChatTurnItem = UserTurn | AgentTurn
@@ -130,10 +121,9 @@ function roleFor(sessionUpdate: string): TurnRole | undefined {
 
 /// Append a chunk onto an open agent turn (or open a fresh one).
 /// Extracted from `pushTranscriptChunk` to keep its cyclomatic
-/// complexity under the project lint ceiling. The boundary heuristic
-/// lives here too: a new vendor messageId on the open turn is the
-/// signal that a content block ended, and markdown needs `\n\n`
-/// between blocks or the captain reads two paragraphs as one.
+/// complexity under the project lint ceiling. Backend transcript
+/// events already carry any content-boundary prefix; the UI folds
+/// chunks verbatim.
 function foldAgentChunk(
   instanceId: InstanceId,
   slot: TranscriptState,
@@ -147,17 +137,8 @@ function foldAgentChunk(
   const target = openId !== undefined ? slot.turns.find((t): t is AgentTurn => t.role === TurnRole.Agent && t.sessionId === sessionId && t.id === openId) : undefined
 
   if (target) {
-    const newBlock = messageId !== undefined && target.lastChunkMessageId !== undefined && target.lastChunkMessageId !== messageId
-
-    if (newBlock) {
-      target.text += paragraphSeparator(target.text, text)
-    }
     target.text += text
     target.updatedAt = seq
-
-    if (messageId !== undefined) {
-      target.lastChunkMessageId = messageId
-    }
 
     if (attachments.length > 0) {
       target.attachments = [...target.attachments, ...attachments]
@@ -175,8 +156,7 @@ function foldAgentChunk(
     createdAt: seq,
     updatedAt: seq,
     text,
-    attachments,
-    lastChunkMessageId: messageId
+    attachments
   })
   slot.openAgentBySession.set(sessionId, agentId)
 }

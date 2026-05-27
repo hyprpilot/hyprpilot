@@ -20,7 +20,6 @@ pub mod permission;
 pub mod profile;
 pub mod queue;
 pub mod registry;
-pub mod tool_identity;
 pub mod transcript;
 
 use async_trait::async_trait;
@@ -40,7 +39,6 @@ pub use mirror::{
 };
 #[allow(unused_imports)]
 pub use permission::PermissionRequestSnapshot;
-pub use tool_identity::ToolIdentity;
 pub use transcript::{
     Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
     ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem, UserTurnInput,

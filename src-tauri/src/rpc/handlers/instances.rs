@@ -501,6 +501,7 @@ mod snapshot_tests {
             item: TranscriptItem::AgentText { text: text.into() },
             // Placeholder; mirror.apply mints the real value.
             seq: 0,
+            message_id: None,
             meta: None,
         }
     }

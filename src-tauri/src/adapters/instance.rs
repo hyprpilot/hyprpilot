@@ -16,7 +16,8 @@ use uuid::Uuid;
 
 use super::permission::PermissionOptionView;
 use super::transcript::TranscriptItem;
-use super::{AdapterError, ToolIdentity};
+use super::AdapterError;
+use crate::tools::ToolKind;
 
 /// Registry key. A UUID per live instance — collisions across twin
 /// profiles are impossible by construction. Wire shape is the v4
@@ -115,6 +116,12 @@ pub enum InstanceEvent {
         /// daemon's truth.
         #[serde(default)]
         seq: u64,
+        /// Vendor-emitted content-block id from ACP's `unstable_message_id`
+        /// chunks. UI stream stores use it to keep separate thought blocks
+        /// distinct when an adapter emits multiple reasoning blocks in one
+        /// turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
         /// `_meta` envelope pass-through from the originating
         /// `session/update` notification — vendor-specific extension
         /// data that lives outside the typed protocol shapes.
@@ -150,9 +157,7 @@ pub enum InstanceEvent {
         turn_id: Option<String>,
         request_id: String,
         tool: String,
-        #[serde(default)]
-        identity: ToolIdentity,
-        kind: String,
+        tool_kind: ToolKind,
         args: String,
         /// Raw `tool_call.rawInput` JSON (pass-through). Populated when
         /// the agent supplied one — bash gets `{ command }`, file ops

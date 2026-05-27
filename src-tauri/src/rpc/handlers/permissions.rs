@@ -175,7 +175,7 @@ mod tests {
         DefaultPermissionController, PermissionController, PermissionOptionView, PermissionOutcome, PermissionRequest,
         ToolCallRef,
     };
-    use crate::adapters::{AcpAdapter, Adapter, ToolIdentity};
+    use crate::adapters::{AcpAdapter, Adapter};
     use crate::config::Config;
     use crate::rpc::handler::HandlerCtx;
 
@@ -202,11 +202,10 @@ mod tests {
             request_id: request_id.into(),
             tool_call: ToolCallRef {
                 name: tool.into(),
-                identity: ToolIdentity::Native,
+                tool_kind: crate::tools::ToolKind::Other,
                 title: Some(tool.into()),
                 raw_args: Some(format!("{tool} args")),
                 raw_input: None,
-                kind_wire: None,
                 content: Vec::new(),
             },
             options: options(),

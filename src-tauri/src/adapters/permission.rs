@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, Mutex};
 
 use crate::adapters::instance::InstanceEvent;
-use crate::adapters::ToolIdentity;
 use crate::mcp::MCPsRegistry;
 
 /// Sentinel `option_id` used on the `PermissionResolved` event when
@@ -183,11 +182,9 @@ pub fn reorder_options(options: Vec<PermissionOptionView>) -> Vec<PermissionOpti
     out
 }
 
-/// Identity projection of the tool behind a permission request.
-/// `identity` drives the MCP glob chain; `name` / `title` /
-/// `raw_args` / `kind_wire` are carried for the UI and (future)
-/// argument-scoped / kind-scoped rules — they are opaque to the
-/// allowlist decision today.
+/// Tool reference behind a permission request. `name` / `title` /
+/// `raw_args` drive display; `tool_kind` is the single typed
+/// classification used for styling and MCP allowlist matching.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRef {
@@ -195,11 +192,7 @@ pub struct ToolCallRef {
     /// identifier their wire exposes (for ACP: the tool's title,
     /// falling back to the ToolKind wire name).
     pub name: String,
-    /// Structured tool identity for non-native surfaces. MCP tool
-    /// matching is based on this field, not on a stringly
-    /// `mcp__server__tool` display name.
-    #[serde(default)]
-    pub identity: ToolIdentity,
+    pub tool_kind: crate::tools::ToolKind,
     pub title: Option<String>,
     /// Short human-readable summary of args the UI displays below
     /// the tool name (e.g. the `command` for a Bash call). Opaque to
@@ -213,13 +206,6 @@ pub struct ToolCallRef {
     /// `raw_args`. Opaque to the allowlist matcher.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<serde_json::Value>,
-    /// Closed-set tool kind wire string when `name` was resolved from
-    /// a typed enum (ACP `ToolKind`); `None` when name fell back to
-    /// the human-readable title. The UI uses this to colour the
-    /// permission prompt off the closed-set theme map; the matcher
-    /// ignores it today (future kind-scoped rules will read it).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind_wire: Option<String>,
     /// Raw `tool_call.content[]` array — pass-through of the ACP wire
     /// shape (`{ type: 'content' | 'diff' | 'terminal', ... }`).
     /// Populated for permissions whose markdown body lives on the
@@ -228,20 +214,6 @@ pub struct ToolCallRef {
     /// the array directly — no server-side joining.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<serde_json::Value>,
-}
-
-impl ToolCallRef {
-    /// Wire `kind` string for the permission-prompt UI. Reads
-    /// `kind_wire` (lowercased) when set; falls back to the neutral
-    /// `"acp"` sentinel so free-form English (title fallbacks) never
-    /// bleeds into the UI's closed-set theme map.
-    #[must_use]
-    pub fn permission_kind_wire(&self) -> String {
-        self.kind_wire
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_else(|| "acp".to_string())
-    }
 }
 
 /// Everything the controller needs to make a decision and route a
@@ -316,12 +288,11 @@ pub struct PermissionRequestSnapshot {
 /// provides the per-server hyprpilot-extension globs; when `None`
 /// every decision falls through to `AskUser`.
 ///
-/// Tool→server attribution is structured on [`ToolIdentity`].
+/// Tool→server attribution is structured on `ToolCallRef::tool_kind`.
 /// Adapters that receive legacy `mcp__<server>__<tool>` strings may
 /// parse those at the adapter boundary, but the controller never
 /// matches against the string form. Vendor-side native tools (Bash,
-/// Read, …) carry `ToolIdentity::Native` and skip the lookup
-/// entirely.
+/// Read, …) carry `None` and skip the lookup entirely.
 pub struct DecisionContext<'a> {
     pub mcps: Option<&'a MCPsRegistry>,
 }
@@ -474,7 +445,7 @@ impl PermissionController for DefaultPermissionController {
         // Reject beats accept. Vendor-native tools skip this lane
         // entirely.
         if let Some(registry) = ctx.mcps {
-            if let ToolIdentity::Mcp { server, leaf } = &req.tool_call.identity {
+            if let crate::tools::ToolKind::Mcp { server, tool: leaf } = &req.tool_call.tool_kind {
                 // Cached globs — built once at MCPsRegistry construction.
                 // Reject hits short-circuit before the accept set is even
                 // examined; both are precompiled so neither path allocates.
@@ -752,11 +723,10 @@ mod tests {
             request_id: id.into(),
             tool_call: ToolCallRef {
                 name: tool.into(),
-                identity: ToolIdentity::from_mcp_name(tool).unwrap_or_default(),
+                tool_kind: crate::tools::ToolKind::from_mcp_name(tool).unwrap_or_default(),
                 title: Some(tool.into()),
                 raw_args: None,
                 raw_input: None,
-                kind_wire: None,
                 content: Vec::new(),
             },
             options: vec![

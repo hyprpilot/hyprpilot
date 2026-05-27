@@ -69,8 +69,7 @@ mod tests {
         })];
         let ctx = FormatterContext {
             wire_name: "Permissions Request",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "other",
+            tool_kind: &crate::tools::ToolKind::Other,
             raw_input: Some(&raw),
             adapter: "acp-codex",
             content: &content,

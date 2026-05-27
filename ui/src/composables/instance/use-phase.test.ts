@@ -148,7 +148,7 @@ describe('usePhase', () => {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-1',
       title: 'bash',
-      kind: 'bash',
+      kind: { type: 'execute' },
       status: 'running',
       formatted: fmt,
       startedAtMs: 0
@@ -179,7 +179,7 @@ describe('usePhase', () => {
       agentId: 'agent-A',
       requestId: 'req-1',
       tool: 'bash',
-      kind: 'bash',
+      toolKind: { type: 'execute' },
       args: 'echo hi',
       options: [
         {
@@ -253,7 +253,7 @@ describe('usePhase', () => {
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-replayed',
       title: 'bash',
-      kind: 'bash',
+      kind: { type: 'execute' },
       status: 'in_progress',
       formatted: fmt,
       startedAtMs: 0

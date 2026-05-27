@@ -11,7 +11,7 @@ import { AdapterId, ToolKind, toolStateFromWire } from '@constants/ui'
 import type { ToolCallState } from '@constants/wire/transcript'
 import type { ToolCallView, WireToolCall } from '@interfaces/ui'
 import type { FormattedToolCall } from '@interfaces/wire/formatted-tool-call'
-import type { ToolIdentity } from '@interfaces/wire/transcript'
+import type { WireToolKind } from '@interfaces/wire/transcript'
 
 export { presentationFor }
 export type { Presentation } from './presentation'
@@ -20,8 +20,7 @@ export function format(call: WireToolCall, adapter?: AdapterId): ToolCallView {
   return projectFormatted(call.formatted, {
     id: call.id,
     wireName: call.title ?? '',
-    identity: call.identity,
-    kind: (call.kind as ToolKind | undefined) ?? ToolKind.Other,
+    kind: call.kind ?? { type: 'other' },
     state: call.status as ToolCallState | undefined,
     adapter,
     rawInput: call.rawInput
@@ -31,8 +30,7 @@ export function format(call: WireToolCall, adapter?: AdapterId): ToolCallView {
 export interface ProjectionMeta {
   id: string
   wireName: string
-  identity?: ToolIdentity
-  kind: ToolKind
+  kind: WireToolKind | ToolKind
   state: ToolCallState | undefined
   adapter: AdapterId | undefined
   rawInput?: Record<string, unknown>
@@ -45,11 +43,12 @@ export interface ProjectionMeta {
  * `ToolState` from the wire `ToolCallState` via `toolStateFromWire`.
  */
 export function projectFormatted(formatted: FormattedToolCall, meta: ProjectionMeta): ToolCallView {
-  const presentation = presentationFor(meta.kind, meta.adapter, meta.wireName, meta.rawInput, meta.identity)
+  const kind = normalizeToolKind(meta.kind)
+  const presentation = presentationFor(meta.kind, meta.adapter, meta.wireName, meta.rawInput)
 
   return {
     id: meta.id,
-    kind: meta.kind,
+    kind,
     name: meta.wireName,
     state: toolStateFromWire(meta.state),
     icon: presentation.icon,
@@ -61,4 +60,14 @@ export function projectFormatted(formatted: FormattedToolCall, meta: ProjectionM
     fields: formatted.fields,
     rawInput: meta.rawInput
   }
+}
+
+export function normalizeToolKind(kind: WireToolKind | ToolKind | string | undefined): ToolKind {
+  const value = typeof kind === 'object' && kind !== null ? kind.type : kind
+
+  if (value === 'mcp') {
+    return ToolKind.Other
+  }
+
+  return (value as ToolKind | undefined) ?? ToolKind.Other
 }

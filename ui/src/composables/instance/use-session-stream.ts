@@ -53,8 +53,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
     agentId: payload.agentId,
     requestId: payload.requestId,
     tool: payload.tool,
-    identity: payload.identity,
-    kind: payload.kind,
+    toolKind: payload.toolKind,
     args: payload.args,
     rawInput: payload.rawInput,
     content: payload.content,
@@ -155,7 +154,8 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       markThinkingStart(instanceId, sessionId)
       pushThoughtChunk(instanceId, sessionId, {
         sessionUpdate: 'agent_thought_chunk',
-        content: { type: 'text', text: item.text }
+        content: { type: 'text', text: item.text },
+        messageId: payload.messageId
       } as Parameters<typeof pushThoughtChunk>[2])
 
       return
@@ -176,7 +176,6 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call',
         toolCallId: item.id,
-        identity: item.identity,
         kind: item.toolKind,
         title: item.title,
         status: item.state,
@@ -193,7 +192,6 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call_update',
         toolCallId: item.id,
-        identity: item.identity,
         kind: item.toolKind,
         title: item.title,
         status: item.state,

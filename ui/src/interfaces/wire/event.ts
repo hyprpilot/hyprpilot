@@ -3,7 +3,7 @@
  * Each payload mirrors the Rust `adapters::InstanceEvent` variant
  * that emits onto the matching event name.
  */
-import type { PermissionOptionView, TranscriptItem } from './transcript'
+import type { PermissionOptionView, TranscriptItem, WireToolKind } from './transcript'
 import type { InstanceState } from '@constants/wire/instance'
 import type { TerminalChunkKind, TerminalStream } from '@constants/wire/transcript'
 
@@ -25,6 +25,8 @@ export interface TranscriptEventPayload {
   /// the field undefined; the patcher then falls back to local
   /// ordinal tracking.
   seq?: number
+  /// Vendor-emitted content-block id from ACP's `unstable_message_id` chunks.
+  messageId?: string
   /// `_meta` envelope pass-through from the originating
   /// `session/update` notification. Vendor-specific extension
   /// payloads live here; observability surface today (no rendering
@@ -47,8 +49,7 @@ export interface PermissionRequestEventPayload {
   turnId?: string
   requestId: string
   tool: string
-  identity: import('./transcript').ToolIdentity
-  kind: string
+  toolKind: WireToolKind
   args: string
   /// Raw `tool_call.rawInput` JSON (pass-through). UI consumers
   /// extract structured fields here — `plan` for ExitPlanMode,

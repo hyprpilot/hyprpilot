@@ -109,8 +109,7 @@ mod tests {
         });
         let ctx = FormatterContext {
             wire_name: "Searching the Web",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "fetch",
+            tool_kind: &crate::tools::ToolKind::Fetch,
             raw_input: Some(&raw),
             adapter: "acp-codex",
             content: &[],

@@ -6,7 +6,7 @@
  *
  * ```text
  * (adapter, wire_name_snake) exact
- *   → (adapter, "mcp") if identity is MCP
+ *   → (adapter, "mcp") if toolKind is MCP
  *   → kind default
  *   → "other"
  * ```
@@ -25,7 +25,7 @@ import { claudeCodeOverrides } from '@adapters/acp/claude-code/presentation'
 import { codexOverrides } from '@adapters/acp/codex/presentation'
 import { opencodeOverrides } from '@adapters/acp/opencode/presentation'
 import { AdapterId, PermissionUi, ToolKind } from '@constants/ui'
-import type { ToolIdentity } from '@interfaces/wire/transcript'
+import type { WireToolKind } from '@interfaces/wire/transcript'
 
 export interface Presentation {
   icon: IconDefinition
@@ -44,6 +44,8 @@ const kindDefaults: Record<ToolKind, Presentation> = {
   [ToolKind.Execute]: { icon: faTerminal, permissionUi: PermissionUi.Row },
   [ToolKind.Think]: { icon: faBrain, permissionUi: PermissionUi.Row },
   [ToolKind.Fetch]: { icon: faGlobe, permissionUi: PermissionUi.Row },
+  [ToolKind.Terminal]: { icon: faTerminal, permissionUi: PermissionUi.Row },
+  [ToolKind.Acp]: { icon: faPlug, permissionUi: PermissionUi.Row },
   [ToolKind.Other]: { icon: faPlug, permissionUi: PermissionUi.Row }
 }
 
@@ -94,11 +96,10 @@ function toSnake(name: string): string {
 }
 
 export function presentationFor(
-  kind: ToolKind | string | undefined,
+  kind: ToolKind | WireToolKind | string | undefined,
   adapter: AdapterId | undefined,
   wireName: string | undefined,
-  rawInput?: Record<string, unknown>,
-  identity?: ToolIdentity
+  rawInput?: Record<string, unknown>
 ): Presentation {
   if (adapter !== undefined && wireName !== undefined && wireName.length > 0) {
     const overrides = adapterOverrides[adapter]
@@ -111,7 +112,7 @@ export function presentationFor(
         return hit
       }
 
-      if (identity?.kind === 'mcp') {
+      if (typeof kind === 'object' && kind?.type === 'mcp') {
         const mcp = overrides.mcp
 
         if (mcp) {
@@ -141,7 +142,8 @@ export function presentationFor(
       return planExit
     }
   }
-  const k = (kind as ToolKind) ?? ToolKind.Other
+  const type = typeof kind === 'object' && kind !== null ? kind.type : kind
+  const k = type === 'mcp' ? ToolKind.Other : (type as ToolKind | undefined) ?? ToolKind.Other
 
   return kindDefaults[k] ?? kindDefaults[ToolKind.Other]!
 }

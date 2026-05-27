@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useActiveInstance, evictPermission, pushPermissionRequest, resetPermissions, usePermissions } from '@composables'
+import type { WireToolKind } from '@interfaces/wire/transcript'
 import { TauriCommand } from '@ipc'
 
 function fmt() {
@@ -26,12 +27,12 @@ beforeEach(() => {
   useActiveInstance().id.value = undefined
 })
 
-function raw(requestId: string, overrides: Partial<{ tool: string; args: string; kind: string }> = {}) {
+function raw(requestId: string, overrides: Partial<{ tool: string; args: string; toolKind: WireToolKind }> = {}) {
   return {
     agentId: 'agent-A',
     requestId,
     tool: overrides.tool ?? 'bash',
-    kind: overrides.kind ?? 'execute',
+    toolKind: overrides.toolKind ?? { type: 'execute' },
     args: overrides.args ?? 'echo hi',
     options: [
       {
@@ -115,7 +116,7 @@ describe('usePermissions', () => {
       agentId: 'agent-A',
       requestId: 'plan-1',
       tool: 'EditFile',
-      kind: 'edit',
+      toolKind: { type: 'edit' },
       args: '',
       rawInput: { plan: '# Plan\n\n- step 1\n- step 2' },
       options: raw('plan-1').options,
@@ -235,7 +236,7 @@ describe('usePermissions', () => {
       agentId: 'agent-A',
       requestId: 'plan-1',
       tool: 'EditFile',
-      kind: 'edit',
+      toolKind: { type: 'edit' },
       args: '',
       rawInput: { plan: '# Plan\n\n- step 1' },
       options: raw('plan-1').options,
@@ -245,7 +246,7 @@ describe('usePermissions', () => {
       agentId: 'agent-A',
       requestId: 'plan-2',
       tool: 'EditFile',
-      kind: 'edit',
+      toolKind: { type: 'edit' },
       args: '',
       rawInput: { plan: '# Plan\n\n- other' },
       options: raw('plan-2').options,

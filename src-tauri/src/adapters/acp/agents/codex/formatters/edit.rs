@@ -198,8 +198,7 @@ mod tests {
         })];
         let ctx = FormatterContext {
             wire_name: "Edit src/main.rs",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "edit",
+            tool_kind: &crate::tools::ToolKind::Edit,
             raw_input: None,
             adapter: "acp-codex",
             content: &content,
@@ -229,8 +228,7 @@ mod tests {
         });
         let ctx = FormatterContext {
             wire_name: "Edit src/main.rs",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "edit",
+            tool_kind: &crate::tools::ToolKind::Edit,
             raw_input: Some(&raw),
             adapter: "acp-codex",
             content: &[],

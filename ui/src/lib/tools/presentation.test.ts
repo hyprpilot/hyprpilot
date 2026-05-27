@@ -16,12 +16,12 @@ describe('presentationFor', () => {
     expect(p.permissionUi).toBe(PermissionUi.Row)
   })
 
-  it('routes MCP tools through structured identity instead of wire-name prefixes', () => {
-    const p = presentationFor(ToolKind.Other, AdapterId.ClaudeCode, 'Read skill', undefined, {
-      kind: 'mcp',
+  it('routes MCP tools through structured toolKind instead of wire-name prefixes', () => {
+    const p = presentationFor({
+      type: 'mcp',
       server: 'hyprpilot',
-      leaf: 'read_skill'
-    })
+      tool: 'read_skill'
+    }, AdapterId.ClaudeCode, 'Read skill', undefined)
 
     expect(p.permissionUi).toBe(PermissionUi.Row)
   })

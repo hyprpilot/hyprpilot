@@ -24,8 +24,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::permission::PermissionOptionView;
-use super::ToolIdentity;
 use crate::tools::formatter::types::FormattedToolCall;
+use crate::tools::ToolKind;
 
 /// One entry in an instance's transcript. Covers user-side
 /// (`UserPrompt`, `UserText`) and assistant-side
@@ -99,10 +99,7 @@ pub enum TranscriptItem {
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRecord {
     pub id: String,
-    #[serde(default)]
-    pub identity: ToolIdentity,
-    /// Closed-set kind wire string (ACP `ToolKind`). Lower-cased.
-    pub tool_kind: String,
+    pub tool_kind: ToolKind,
     /// Human-readable title the agent supplied ("Read package.json").
     pub title: String,
     /// Initial state — almost always `pending` or `running`.
@@ -148,9 +145,7 @@ pub struct ToolCallRecord {
 pub struct ToolCallUpdateRecord {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<ToolIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_kind: Option<String>,
+    pub tool_kind: Option<ToolKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,9 +278,7 @@ pub enum PlanStepStatus {
 pub struct PermissionRequestRecord {
     pub request_id: String,
     pub tool: String,
-    #[serde(default)]
-    pub identity: ToolIdentity,
-    pub tool_kind: String,
+    pub tool_kind: ToolKind,
     pub args: String,
     /// Agent's raw `tool_call.rawInput` JSON object, passed through
     /// verbatim. Mirrors `ToolCallRecord::raw_input` so the
@@ -446,8 +439,7 @@ mod tests {
     fn tool_call_record_round_trips() {
         let record = ToolCallRecord {
             id: "tc-1".into(),
-            identity: ToolIdentity::Native,
-            tool_kind: "read".into(),
+            tool_kind: ToolKind::Read,
             title: "Read package.json".into(),
             state: ToolCallState::Running,
             raw_input: Some(serde_json::json!({ "file_path": "package.json" })),
@@ -467,7 +459,7 @@ mod tests {
         let v = serde_json::to_value(&item).unwrap();
         assert_eq!(v["kind"], "tool_call");
         assert_eq!(v["id"], "tc-1");
-        assert_eq!(v["toolKind"], "read");
+        assert_eq!(v["toolKind"], serde_json::json!({ "type": "read" }));
         assert_eq!(v["state"], "running");
         assert_eq!(v["rawInput"]["file_path"], "package.json");
     }

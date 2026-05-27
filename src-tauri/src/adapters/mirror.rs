@@ -94,13 +94,17 @@ pub enum TurnEventMarker {
 /// per-turn blocks the live router builds in
 /// `useTimelineBlocks`. Items emitted outside a turn (synthetic /
 /// pre-turn agent activity) carry `None`; those flow into role-run
-/// grouping in the UI.
+/// grouping in the UI. `message_id` preserves ACP chunk identity for
+/// thought-stream replay so distinct thought blocks do not collapse
+/// during snapshot hydration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeqTranscriptItem {
     pub seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub item: TranscriptItem,
 }
 
@@ -299,12 +303,18 @@ impl InstanceMirror {
         let mut minted_seq: Option<u64> = None;
         match event {
             // ── transcript firehose ──────────────────────────────
-            InstanceEvent::Transcript { item, turn_id, .. } => {
+            InstanceEvent::Transcript {
+                item,
+                turn_id,
+                message_id,
+                ..
+            } => {
                 let seq = g.next_seq;
                 g.next_seq = seq.saturating_add(1);
                 g.transcript.push_back(SeqTranscriptItem {
                     seq,
                     turn_id: turn_id.clone(),
+                    message_id: message_id.clone(),
                     item: item.clone(),
                 });
                 while g.transcript.len() > self.cap {
@@ -852,6 +862,7 @@ mod tests {
             // insertion time. Test helpers never assert on the
             // event's `seq` field directly — they read mirror state.
             seq: 0,
+            message_id: None,
             meta: None,
         }
     }
@@ -1120,8 +1131,7 @@ mod tests {
             turn_id: Some("t-1".into()),
             request_id: "req-1".into(),
             tool: "Bash".into(),
-            identity: crate::adapters::ToolIdentity::Native,
-            kind: "execute".into(),
+            tool_kind: crate::tools::ToolKind::Execute,
             args: "ls".into(),
             raw_input: Some(json!({ "command": "ls" })),
             content: Vec::new(),
@@ -1378,8 +1388,7 @@ mod tests {
             turn_id: Some("t-1".into()),
             request_id: req_id.into(),
             tool: "Bash".into(),
-            identity: crate::adapters::ToolIdentity::Native,
-            kind: "execute".into(),
+            tool_kind: crate::tools::ToolKind::Execute,
             args: "ls".into(),
             raw_input: None,
             content: Vec::new(),
@@ -1484,8 +1493,7 @@ mod tests {
                 turn_id: Some("t-1".into()),
                 request_id: "req-write-through".into(),
                 tool: "Bash".into(),
-                identity: crate::adapters::ToolIdentity::Native,
-                kind: "execute".into(),
+                tool_kind: crate::tools::ToolKind::Execute,
                 args: "ls".into(),
                 raw_input: Some(json!({ "command": "ls" })),
                 content: Vec::new(),

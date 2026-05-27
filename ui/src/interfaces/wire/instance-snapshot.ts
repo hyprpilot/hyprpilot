@@ -97,10 +97,12 @@ export interface PermissionRequestSnapshot {
  * `InstanceEvent::Transcript`. Snapshot consumers group consecutive
  * items by `turnId` to lay out the same per-turn blocks the live
  * router builds; items emitted outside a turn carry `undefined`.
+ * `messageId` preserves ACP chunk identity for thought-stream replay.
  */
 export interface SeqTranscriptItem {
   seq: number
   turnId?: string
+  messageId?: string
   item: TranscriptItem
 }
 
