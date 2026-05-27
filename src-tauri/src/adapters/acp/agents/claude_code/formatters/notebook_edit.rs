@@ -84,8 +84,7 @@ mod tests {
     fn ctx<'a>(raw: &'a serde_json::Value, content: &'a [serde_json::Value]) -> FormatterContext<'a> {
         FormatterContext {
             wire_name: "NotebookEdit",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "edit",
+            tool_kind: &crate::tools::ToolKind::Edit,
             raw_input: Some(raw),
             adapter: "acp-claude-code",
             content,

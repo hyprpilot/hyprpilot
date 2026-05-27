@@ -5,7 +5,7 @@ import { openTurnIdFor } from './use-turns'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation } from '@interfaces/ui'
 import type { FormattedToolCall } from '@interfaces/wire/formatted-tool-call'
-import type { ToolIdentity } from '@interfaces/wire/transcript'
+import type { WireToolKind } from '@interfaces/wire/transcript'
 
 export type { WireToolCall, WireToolCallContentBlock, WireToolCallLocation }
 
@@ -80,10 +80,9 @@ function slotFor(id: InstanceId): ToolsState {
 interface ToolCallUpdate {
   sessionUpdate: string
   toolCallId?: string
-  identity?: ToolIdentity
   title?: string
   status?: string
-  kind?: string
+  kind?: WireToolKind
   content?: WireToolCallContentBlock[]
   rawInput?: Record<string, unknown>
   locations?: WireToolCallLocation[]
@@ -135,10 +134,6 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
       existing.kind = heavy.kind
     }
 
-    if (heavy.identity !== undefined) {
-      existing.identity = heavy.identity
-    }
-
     if (Array.isArray(heavy.content)) {
       existing.content = heavy.content
     }
@@ -165,7 +160,6 @@ export function pushToolCall(id: InstanceId, agentId: string, sessionId: string,
     sessionId,
     turnId: openTurnIdFor(id, sessionId),
     toolCallId,
-    identity: heavy.identity,
     title: heavy.title,
     status: heavy.status,
     kind: heavy.kind,

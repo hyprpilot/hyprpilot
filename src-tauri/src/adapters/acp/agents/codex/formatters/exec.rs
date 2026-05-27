@@ -16,7 +16,10 @@ pub fn matches(ctx: &FormatterContext) -> bool {
         return false;
     };
 
-    raw.get("command_string").is_some() || raw.get("command").is_some() || raw.get("parsed_cmd").is_some()
+    raw.get("command_string").is_some()
+        || raw.get("command").is_some()
+        || raw.get("cmd").is_some()
+        || raw.get("parsed_cmd").is_some()
 }
 
 impl ToolFormatter for ExecFormatter {
@@ -26,7 +29,12 @@ impl ToolFormatter for ExecFormatter {
         let cwd = pick::<String>(raw, "cwd").filter(|s| !s.is_empty());
         let pid = pick::<i64>(raw, "process_id");
 
-        let title = if ctx.wire_name.trim().is_empty() {
+        let title = if let Some(body) = ctx.wire_name.strip_prefix("Tool: ") {
+            command
+                .as_deref()
+                .map(|cmd| format!("{body} · {cmd}"))
+                .unwrap_or_else(|| body.to_string())
+        } else if ctx.wire_name.trim().is_empty() {
             "exec".to_string()
         } else {
             ctx.wire_name.trim().to_string()
@@ -77,6 +85,7 @@ fn command_string(raw: Option<&serde_json::Value>) -> Option<String> {
     pick::<String>(raw, "command_string")
         .filter(|s| !s.is_empty())
         .or_else(|| pick::<String>(raw, "command").filter(|s| !s.is_empty()))
+        .or_else(|| pick::<String>(raw, "cmd").filter(|s| !s.is_empty()))
         .or_else(|| {
             let args = raw?.get("command")?.as_array()?;
             let parts: Vec<&str> = args.iter().filter_map(serde_json::Value::as_str).collect();

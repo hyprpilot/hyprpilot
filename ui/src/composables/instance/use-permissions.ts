@@ -4,11 +4,10 @@ import { nextSeq } from './sequence'
 import { useActiveInstance, type InstanceId } from '../chrome/use-active-instance'
 import { useAgentRegistry } from '../chrome/use-agent-registry'
 import { PermissionUi } from '@components'
-import { ToolKind } from '@constants/ui'
 import type { ToolCallState } from '@constants/wire/transcript'
 import type { PermissionView } from '@interfaces/ui'
 import type { FormattedToolCall } from '@interfaces/wire/formatted-tool-call'
-import type { ToolIdentity } from '@interfaces/wire/transcript'
+import type { WireToolKind } from '@interfaces/wire/transcript'
 import { invoke, TauriCommand, type PermissionOptionView } from '@ipc'
 import { log, projectFormatted } from '@lib'
 
@@ -25,8 +24,7 @@ export interface PendingPermission {
   requestId: string
   sessionId: string
   tool: string
-  identity: ToolIdentity
-  kind: string
+  toolKind: WireToolKind
   args: string
   rawInput?: Record<string, unknown>
   content: Record<string, unknown>[]
@@ -46,8 +44,7 @@ export interface PermissionRequestRaw {
   agentId: string
   requestId: string
   tool: string
-  identity?: ToolIdentity
-  kind?: string
+  toolKind?: WireToolKind
   args?: string
   rawInput?: Record<string, unknown>
   content?: Record<string, unknown>[]
@@ -77,8 +74,7 @@ export function pushPermissionRequest(id: InstanceId, sessionId: string, raw: Pe
     requestId: raw.requestId,
     sessionId,
     tool: raw.tool,
-    identity: raw.identity ?? { kind: 'native' },
-    kind: raw.kind ?? 'other',
+    toolKind: raw.toolKind ?? { type: 'other' },
     args: raw.args ?? '',
     rawInput: raw.rawInput,
     content: raw.content ?? [],
@@ -130,8 +126,7 @@ function buildView(p: PendingPermission, queued: boolean): PermissionView {
   const call = projectFormatted(p.formatted, {
     id: p.requestId,
     wireName: p.tool,
-    identity: p.identity,
-    kind: (p.kind as ToolKind | undefined) ?? ToolKind.Other,
+    kind: p.toolKind,
     state: 'pending' as ToolCallState,
     adapter: adapterFor(p.agentId),
     rawInput: p.rawInput

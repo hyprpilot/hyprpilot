@@ -26,15 +26,26 @@ export interface PermissionOptionView {
 
 export type ToolCallContentItem = { kind: 'text'; text: string } | { kind: 'file'; path: string; snippet?: string } | { kind: 'json'; value: unknown }
 
-export type ToolIdentity = { kind: 'native' } | { kind: 'mcp'; server: string; leaf: string }
+export type WireToolKind =
+  | { type: 'read' }
+  | { type: 'edit' }
+  | { type: 'delete' }
+  | { type: 'move' }
+  | { type: 'search' }
+  | { type: 'execute' }
+  | { type: 'think' }
+  | { type: 'fetch' }
+  | { type: 'terminal' }
+  | { type: 'acp' }
+  | { type: 'other' }
+  | { type: 'mcp'; server: string; tool: string }
 
 export interface ToolCallRecord {
   id: string
-  identity?: ToolIdentity
   /// Closed-set tool kind wire string (ACP `ToolKind`). Named
   /// `toolKind` (not `kind`) because the parent `TranscriptItem`
   /// uses `kind` as its discriminator tag.
-  toolKind: string
+  toolKind: WireToolKind
   title: string
   state: ToolCallState
   /// Agent's raw `tool_call.rawInput` JSON object passed through
@@ -55,8 +66,7 @@ export interface ToolCallRecord {
 
 export interface ToolCallUpdateRecord {
   id: string
-  identity?: ToolIdentity
-  toolKind?: string
+  toolKind?: WireToolKind
   title?: string
   state?: ToolCallState
   rawInput?: Record<string, unknown>
@@ -110,8 +120,7 @@ export interface ChecklistStats {
 export interface PermissionRequestRecord {
   requestId: string
   tool: string
-  identity?: ToolIdentity
-  toolKind: string
+  toolKind: WireToolKind
   args: string
   rawInput?: Record<string, unknown>
   /// Options pre-sorted by the daemon into canonical order

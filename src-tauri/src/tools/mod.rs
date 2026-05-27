@@ -10,7 +10,9 @@ pub mod fs;
 pub mod path;
 pub mod sandbox;
 pub mod terminal;
+pub mod tool_kind;
 
 pub use fs::{FsError, FsTools};
 pub use sandbox::{Sandbox, SandboxError};
 pub use terminal::{TerminalError, TerminalToolEvent, TerminalToolEventKind, TerminalToolStream, Terminals};
+pub use tool_kind::ToolKind;

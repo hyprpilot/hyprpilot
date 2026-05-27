@@ -6,7 +6,7 @@
 //!    registration of `"Edit"` matches both `"Edit"` (claude-agent-acp
 //!    ≤0.31) and `"Edit /tmp/foo"` (≥0.32 prose-title shape) and
 //!    codex's `"Edit a.rs, b.rs"` — same `edit` key for all three.
-//!    MCP identity routes to the literal key `"mcp"` regardless of
+//!    MCP attribution routes to the literal key `"mcp"` regardless of
 //!    title shape.
 //! 2. **Per-(adapter, matcher)** — predicate-driven dispatch for
 //!    tools whose title gives no stable signal (claude-agent-acp's
@@ -22,7 +22,7 @@
 //!
 //! ```text
 //! (adapter, leading_token_snake) exact
-//!   → (adapter, "mcp") if identity is MCP
+//!   → (adapter, "mcp") if MCP attribution is present
 //!   → (adapter, matcher) — first match wins
 //!   → kind default
 //!   → "other"
@@ -32,8 +32,8 @@ use std::collections::HashMap;
 
 use convert_case::{Case, Casing};
 
-use crate::adapters::ToolIdentity;
 use crate::tools::formatter::types::FormattedToolCall;
+use crate::tools::ToolKind;
 
 /// Per-formatter input. Carries everything a formatter needs to
 /// produce a `FormattedToolCall` from a single tool-call observation.
@@ -43,13 +43,9 @@ pub struct FormatterContext<'a> {
     /// updates). Used both for adapter override dispatch and as the
     /// default formatter's title fallback.
     pub wire_name: &'a str,
-    /// Structured identity projected at the adapter boundary. Used
-    /// for cross-cutting dynamic families like MCP tools without
-    /// string-prefix checks in the registry.
-    pub identity: &'a ToolIdentity,
-    /// ACP `tool_call.kind` — the closed-set classification. Drives
-    /// the default tier when adapter override misses.
-    pub kind: &'a str,
+    /// Typed tool classification. MCP carries server/tool attribution;
+    /// native tools carry the closed ACP kind.
+    pub tool_kind: &'a ToolKind,
     /// Agent's structured arg dict (`tool_call.rawInput`).
     pub raw_input: Option<&'a serde_json::Value>,
     /// Agent provider id (`acp-claude-code` / `acp-codex` /
@@ -152,8 +148,8 @@ impl FormatterRegistry {
             return f.format(ctx);
         }
 
-        // (2) MCP identity → (adapter, "mcp") family override
-        if ctx.identity.is_mcp() {
+        // (2) MCP attribution → (adapter, "mcp") family override
+        if ctx.tool_kind.is_mcp() {
             if let Some(f) = self.overrides.get(&(ctx.adapter.to_string(), "mcp".to_string())) {
                 return f.format(ctx);
             }
@@ -168,7 +164,7 @@ impl FormatterRegistry {
         }
 
         // (4) kind default
-        if let Some(f) = self.defaults.get(ctx.kind) {
+        if let Some(f) = self.defaults.get(ctx.tool_kind.wire_key()) {
             return f.format(ctx);
         }
 

@@ -150,7 +150,7 @@ describe('timelineBlocksFromSnapshot', () => {
         id,
         title: 'edit',
         state: 'completed',
-        toolKind: 'edit',
+        toolKind: { type: 'edit' },
         content: [],
         rawInput: {},
         formatted: {

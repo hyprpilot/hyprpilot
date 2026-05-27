@@ -13,5 +13,7 @@ export enum ToolKind {
   Execute = 'execute',
   Think = 'think',
   Fetch = 'fetch',
+  Terminal = 'terminal',
+  Acp = 'acp',
   Other = 'other'
 }

@@ -12,8 +12,9 @@ use tokio::process::Command;
 
 use agent_client_protocol::schema::ToolCallUpdate;
 
-use super::{AcpAgent, ModelInjection, SystemPromptInjection};
-use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue, ToolIdentity};
+use super::{AcpAgent, ConfigOptionRoute, ModelInjection, SystemPromptInjection};
+use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue};
+use crate::tools::ToolKind;
 
 pub struct AcpAgentCodex;
 
@@ -40,6 +41,21 @@ impl AcpAgent for AcpAgentCodex {
         }
     }
 
+    fn config_option_route(&self, id: &str, value: &str, current_model: Option<&str>) -> ConfigOptionRoute {
+        if id == "effort" {
+            let model = current_model.unwrap_or("gpt-5.5");
+            let base_model = model.split_once('/').map_or(model, |(base, _)| base);
+
+            return ConfigOptionRoute::SetModel {
+                model_id: format!("{base_model}/{value}"),
+            };
+        }
+
+        ConfigOptionRoute::SetConfigOption {
+            config_id: self.wire_config_option_id(id),
+        }
+    }
+
     fn augment_config_options(
         &self,
         categories: &mut Vec<SessionConfigOptionCategory>,
@@ -48,33 +64,14 @@ impl AcpAgent for AcpAgentCodex {
         add_missing_effort_option(categories, configured_effort);
     }
 
-    fn config_option_model_id(&self, id: &str, value: &str, current_model: Option<&str>) -> Option<String> {
-        if id != "effort" {
-            return None;
-        }
-
-        let model = current_model
-            .map(|model| model.split_once('/').map_or(model, |(model, _)| model))
-            .filter(|model| !model.trim().is_empty())?;
-
-        Some(format!("{model}/{value}"))
-    }
-
-    fn permission_tool_identity(&self, update: &ToolCallUpdate) -> Option<ToolIdentity> {
+    fn permission_mcp_tool(&self, update: &ToolCallUpdate) -> Option<ToolKind> {
         approval::parse_mcp(update.fields.raw_input.as_ref(), &[])
-            .map(|approval| approval.identity())
-            .or_else(|| update.fields.title.as_deref().and_then(identity_from_mcp_title))
+            .map(|approval| approval.mcp_tool())
+            .or_else(|| update.fields.title.as_deref().and_then(mcp_from_strict_dot_title))
     }
 
-    fn tool_identity(&self, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
-        identity_from_mcp_title(title)
-            .or_else(|| {
-                title
-                    .strip_prefix("Tool: ")
-                    .and_then(|body| body.split_once('/'))
-                    .and_then(|(server, leaf)| identity_from_parts(server, leaf))
-            })
-            .or_else(|| raw_mcp_parts(raw_input).and_then(|(server, leaf)| identity_from_parts(server, leaf)))
+    fn mcp_tool(&self, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
+        mcp_from_raw_input(raw_input).or_else(|| mcp_from_tool_title(title))
     }
 
     /// codex-acp only exposes `-c key=value` overrides; the TOML
@@ -89,6 +86,20 @@ impl AcpAgent for AcpAgentCodex {
         ));
         SystemPromptInjection::Handled
     }
+}
+
+fn mcp_from_raw_input(raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
+    let raw = raw_input?;
+    let server = raw
+        .get("server")
+        .or_else(|| raw.get("server_name"))
+        .and_then(|v| v.as_str())?;
+    let tool = raw
+        .get("tool")
+        .or_else(|| raw.get("tool_name"))
+        .and_then(|v| v.as_str())?;
+
+    mcp_from_parts(server, tool)
 }
 
 fn add_missing_effort_option(categories: &mut Vec<SessionConfigOptionCategory>, configured_effort: Option<&str>) {
@@ -112,42 +123,42 @@ fn add_missing_effort_option(categories: &mut Vec<SessionConfigOptionCategory>, 
     });
 }
 
-fn raw_mcp_parts(raw_input: Option<&serde_json::Value>) -> Option<(&str, &str)> {
-    let raw = raw_input?;
-    let server = raw
-        .get("server")
-        .or_else(|| raw.get("server_name"))
-        .or_else(|| raw.get("serverName"))
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())?;
-    let leaf = raw
-        .get("tool")
-        .or_else(|| raw.get("tool_name"))
-        .or_else(|| raw.get("toolName"))
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())?;
-
-    Some((server, leaf))
+fn mcp_from_tool_title(title: &str) -> Option<ToolKind> {
+    title
+        .strip_prefix("Tool: ")
+        .and_then(|body| body.split_once('/'))
+        .and_then(|(server, leaf)| mcp_from_parts(server, leaf))
 }
 
-fn identity_from_mcp_title(title: &str) -> Option<ToolIdentity> {
+fn mcp_from_strict_dot_title(title: &str) -> Option<ToolKind> {
     let title = title.split_once(" (").map_or(title, |(head, _)| head).trim();
     let (server, leaf) = title.split_once('.')?;
 
-    identity_from_parts(server, leaf)
-}
-
-fn identity_from_parts(server: &str, leaf: &str) -> Option<ToolIdentity> {
-    let server = server.trim();
-    let leaf = leaf.trim();
-
-    if server.is_empty() || leaf.is_empty() || leaf.contains('.') {
+    if leaf.contains('.') {
         return None;
     }
 
-    Some(ToolIdentity::Mcp {
+    mcp_from_parts(server, leaf)
+}
+
+fn mcp_from_parts(server: &str, tool: &str) -> Option<ToolKind> {
+    fn is_ident(value: &str) -> bool {
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    }
+
+    let server = server.trim();
+    let tool = tool.trim();
+
+    if !is_ident(server) || !is_ident(tool) {
+        return None;
+    }
+
+    Some(ToolKind::Mcp {
         server: server.to_string(),
-        leaf: leaf.to_string(),
+        tool: tool.to_string(),
     })
 }
 
@@ -162,7 +173,8 @@ mod tests {
 
     use super::AcpAgentCodex;
     use crate::adapters::acp::agents::AcpAgent;
-    use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue, ToolIdentity};
+    use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue};
+    use crate::tools::ToolKind;
 
     fn entry_with_model(model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -294,6 +306,17 @@ mod tests {
     }
 
     #[test]
+    fn effort_config_option_routes_through_model_change() {
+        let route = AcpAgentCodex.config_option_route("effort", "xhigh", Some("gpt-5.5/medium"));
+
+        assert!(matches!(
+            route,
+            crate::adapters::acp::agents::ConfigOptionRoute::SetModel { ref model_id }
+                if model_id == "gpt-5.5/xhigh"
+        ));
+    }
+
+    #[test]
     fn effort_config_option_is_added_when_codex_omits_it() {
         let mut categories = vec![SessionConfigOptionCategory {
             id: "model".into(),
@@ -354,23 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_config_option_routes_through_model_id_for_live_change() {
-        assert_eq!(
-            AcpAgentCodex.config_option_model_id("effort", "high", Some("gpt-5.5")),
-            Some("gpt-5.5/high".into())
-        );
-        assert_eq!(
-            AcpAgentCodex.config_option_model_id("effort", "low", Some("gpt-5.5/high")),
-            Some("gpt-5.5/low".into())
-        );
-        assert_eq!(
-            AcpAgentCodex.config_option_model_id("model", "gpt-5.5", Some("gpt-5.5")),
-            None
-        );
-    }
-
-    #[test]
-    fn mcp_approval_permission_tool_identity_uses_metadata() {
+    fn mcp_approval_permission_mcp_tool_uses_metadata() {
         let raw = json!({
             "server_name": "hyprpilot",
             "request": {
@@ -389,16 +396,16 @@ mod tests {
         );
 
         assert_eq!(
-            AcpAgentCodex.permission_tool_identity(&update),
-            Some(ToolIdentity::Mcp {
+            AcpAgentCodex.permission_mcp_tool(&update),
+            Some(ToolKind::Mcp {
                 server: "hyprpilot".to_string(),
-                leaf: "read_skill".to_string()
+                tool: "read_skill".to_string()
             })
         );
     }
 
     #[test]
-    fn mcp_approval_permission_tool_identity_accepts_legacy_meta_shape() {
+    fn mcp_approval_permission_mcp_tool_accepts_legacy_meta_shape() {
         let raw = json!({
             "request": {
                 "_meta": { "codex_approval_kind": "mcp_tool_call" },
@@ -413,12 +420,108 @@ mod tests {
         );
 
         assert_eq!(
-            AcpAgentCodex.permission_tool_identity(&update),
-            Some(ToolIdentity::Mcp {
+            AcpAgentCodex.permission_mcp_tool(&update),
+            Some(ToolKind::Mcp {
                 server: "hyprpilot".to_string(),
-                leaf: "read_skill".to_string()
+                tool: "read_skill".to_string()
             })
         );
+    }
+
+    #[test]
+    fn mcp_approval_permission_mcp_tool_accepts_raw_server_and_tool_fields() {
+        let raw = json!({
+            "server_name": "memory",
+            "tool_name": "read_graph",
+            "request": {
+                "_meta": { "codex_approval_kind": "mcp_tool_call" },
+                "message": "Allow the memory MCP server to run tool \"read_graph\"?"
+            }
+        });
+        let update = ToolCallUpdate::new(
+            ToolCallId::new("tc-1"),
+            ToolCallUpdateFields::new()
+                .title("Approve MCP tool call")
+                .raw_input(raw),
+        );
+
+        assert_eq!(
+            AcpAgentCodex.permission_mcp_tool(&update),
+            Some(ToolKind::Mcp {
+                server: "memory".to_string(),
+                tool: "read_graph".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_approval_permission_mcp_tool_ignores_display_tool_title() {
+        let raw = json!({
+            "server_name": "memory",
+            "request": {
+                "_meta": {
+                    "codex_approval_kind": "mcp_tool_call",
+                    "tool_title": "Read Graph"
+                },
+                "message": "Allow the memory MCP server to run tool \"read_graph\"?"
+            }
+        });
+        let update = ToolCallUpdate::new(
+            ToolCallId::new("tc-1"),
+            ToolCallUpdateFields::new().title("Approve Read Graph").raw_input(raw),
+        );
+
+        assert_eq!(
+            AcpAgentCodex.permission_mcp_tool(&update),
+            Some(ToolKind::Mcp {
+                server: "memory".to_string(),
+                tool: "read_graph".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_tool_uses_raw_server_and_tool() {
+        let raw = json!({
+            "server": "memory",
+            "tool": "read_graph",
+            "arguments": {}
+        });
+
+        assert_eq!(
+            AcpAgentCodex.mcp_tool("Read package.json", Some(&raw)),
+            Some(ToolKind::Mcp {
+                server: "memory".to_string(),
+                tool: "read_graph".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_tool_uses_tool_title_slash_shape() {
+        assert_eq!(
+            AcpAgentCodex.mcp_tool("Tool: hyprpilot/read_skill", None),
+            Some(ToolKind::Mcp {
+                server: "hyprpilot".to_string(),
+                tool: "read_skill".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_tool_rejects_non_mcp_display_titles() {
+        for title in ["Edit src/main.rs", "Read package.json", "Opening: https://example.com"] {
+            assert_eq!(AcpAgentCodex.mcp_tool(title, None), None, "{title}");
+        }
+    }
+
+    #[test]
+    fn permission_mcp_tool_rejects_non_identifier_dot_titles() {
+        for title in ["Read package.json", "Opening: https://example.com", "foo.bar.baz"] {
+            let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), ToolCallUpdateFields::new().title(title));
+
+            assert_eq!(AcpAgentCodex.permission_mcp_tool(&update), None, "{title}");
+        }
     }
 
     #[test]

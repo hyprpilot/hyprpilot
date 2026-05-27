@@ -29,14 +29,15 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, trace, warn};
 
-use super::agents::{match_provider_agent, SystemPromptInjection};
+use super::agents::{match_provider_agent, ConfigOptionRoute, SystemPromptInjection};
 use super::client::{AcpClient, ClientEvent, SessionUpdateNotification};
 use crate::adapters::instance::{InstanceActor, InstanceInfo, InstanceKey};
 use crate::adapters::permission::PermissionController;
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
-use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk, ToolIdentity};
+use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
 use crate::config::AgentConfig;
+use crate::tools::ToolKind;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 
 /// How long the registry waits for the actor to ack a `Shutdown`
@@ -672,6 +673,7 @@ pub struct MetaSnapshot {
 /// the cost of the wire-shape simplicity.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum MappedUpdate {
+    Noop,
     Transcript(crate::adapters::TranscriptItem),
     SessionInfo {
         title: Option<String>,
@@ -742,8 +744,7 @@ pub(crate) struct MappedSessionUpdate {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RunningToolCall {
     pub wire_name: String,
-    pub identity: ToolIdentity,
-    pub tool_kind: String,
+    pub tool_kind: ToolKind,
     pub raw_input: Option<serde_json::Value>,
     pub content: Vec<serde_json::Value>,
     pub started_at: u64,
@@ -803,8 +804,7 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
     let registry = crate::adapters::acp::formatter_registry();
     let ctx = FormatterContext {
         wire_name: running.wire_name.as_str(),
-        identity: &running.identity,
-        kind: running.tool_kind.as_str(),
+        tool_kind: &running.tool_kind,
         raw_input: running.raw_input.as_ref(),
         adapter: adapter_id,
         content: &running.content,
@@ -814,16 +814,8 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
     registry.dispatch(&ctx)
 }
 
-fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> ToolIdentity {
-    if let Some(identity) = ToolIdentity::from_mcp_name(title) {
-        return identity;
-    }
-
-    if let Some(identity) = super::agents::tool_identity(adapter_id, title, raw_input) {
-        return identity;
-    }
-
-    ToolIdentity::Native
+fn mcp_tool(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
+    ToolKind::from_mcp_name(title).or_else(|| super::agents::mcp_tool(adapter_id, title, raw_input))
 }
 
 fn apply_config_option_selection(
@@ -1157,21 +1149,22 @@ pub(crate) fn map_session_update(
         "agent_thought_chunk" => {
             let text = chunk_text(&update);
             if text.is_empty() {
-                tracing::warn!(
+                tracing::debug!(
                     target: "acp::thought",
                     raw = %update,
-                    "agent_thought_chunk: extracted empty text — content shape \
-                     not in {{text, thinking, [{{text|thinking}}]}}; UI thinking \
-                     card will show no body"
+                    "agent_thought_chunk: empty text; dropping empty thought chunk"
                 );
+
+                MappedUpdate::Noop
             } else {
                 tracing::debug!(
                     target: "acp::thought",
                     text_len = text.len(),
                     "agent_thought_chunk extracted"
                 );
+
+                MappedUpdate::Transcript(TranscriptItem::AgentThought { text })
             }
-            MappedUpdate::Transcript(TranscriptItem::AgentThought { text })
         }
         "session_info_update" => MappedUpdate::SessionInfo {
             title: update.get("title").and_then(|v| v.as_str()).map(str::to_string),
@@ -1293,8 +1286,10 @@ pub(crate) fn map_session_update(
             );
             if let Some(running) = tool_calls.get_mut(&id) {
                 running.wire_name = title.clone();
-                running.identity = tool_identity(adapter_id, &title, raw_input.as_ref());
-                running.tool_kind = tool_kind.clone();
+                running.tool_kind = ToolKind::from_wire(
+                    Some(tool_kind.as_str()),
+                    mcp_tool(adapter_id, &title, raw_input.as_ref()),
+                );
                 running.raw_input = raw_input.clone();
                 running.content = update
                     .get("content")
@@ -1305,7 +1300,7 @@ pub(crate) fn map_session_update(
                     running.completed_at = Some(now_epoch_ms());
                 }
                 let formatted = format_running(adapter_id, running);
-                let identity = running.identity.clone();
+                let tool_kind = running.tool_kind.clone();
                 let started_at_ms = running.started_at;
                 let completed_at_ms = running.completed_at;
                 let is_terminal = matches!(state, ToolCallState::Completed | ToolCallState::Failed);
@@ -1318,7 +1313,6 @@ pub(crate) fn map_session_update(
                     meta,
                     mapped: MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                         id,
-                        identity: Some(identity),
                         tool_kind: Some(tool_kind),
                         title: Some(title),
                         state: Some(state),
@@ -1336,8 +1330,10 @@ pub(crate) fn map_session_update(
             // stays None until a state transition lands below.
             let running = RunningToolCall {
                 wire_name: title.clone(),
-                identity: tool_identity(adapter_id, &title, raw_input.as_ref()),
-                tool_kind: tool_kind.clone(),
+                tool_kind: ToolKind::from_wire(
+                    Some(tool_kind.as_str()),
+                    mcp_tool(adapter_id, &title, raw_input.as_ref()),
+                ),
                 raw_input: raw_input.clone(),
                 content: update
                     .get("content")
@@ -1348,7 +1344,7 @@ pub(crate) fn map_session_update(
                 completed_at: None,
             };
             let formatted = format_running(adapter_id, &running);
-            let identity = running.identity.clone();
+            let tool_kind = running.tool_kind.clone();
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
             // Some agents emit the initial `tool_call` already in a
@@ -1362,7 +1358,6 @@ pub(crate) fn map_session_update(
             }
             MappedUpdate::Transcript(TranscriptItem::ToolCall(ToolCallRecord {
                 id,
-                identity,
                 tool_kind,
                 title,
                 state,
@@ -1413,16 +1408,25 @@ pub(crate) fn map_session_update(
             if running.wire_name.is_empty() {
                 if let Some(t) = title.as_deref() {
                     running.wire_name = t.to_string();
-                    running.identity = tool_identity(adapter_id, t, raw_input.as_ref());
+                    running.tool_kind =
+                        ToolKind::from_wire(tool_kind.as_deref(), mcp_tool(adapter_id, t, raw_input.as_ref()));
                 }
             }
             if let Some(k) = tool_kind.as_deref() {
-                running.tool_kind = k.to_string();
+                if !running.tool_kind.is_mcp() {
+                    running.tool_kind = ToolKind::from_wire(
+                        Some(k),
+                        mcp_tool(adapter_id, running.wire_name.as_str(), raw_input.as_ref()),
+                    );
+                }
             }
             if let Some(rv) = raw_input.as_ref() {
                 running.raw_input = Some(rv.clone());
-                if matches!(running.identity, ToolIdentity::Native) {
-                    running.identity = tool_identity(adapter_id, running.wire_name.as_str(), Some(rv));
+                if !running.tool_kind.is_mcp() {
+                    running.tool_kind = ToolKind::from_wire(
+                        tool_kind.as_deref(),
+                        mcp_tool(adapter_id, running.wire_name.as_str(), Some(rv)),
+                    );
                 }
             }
             if let Some(arr) = update.get("content").and_then(|v| v.as_array()) {
@@ -1439,7 +1443,7 @@ pub(crate) fn map_session_update(
                 running.completed_at = Some(now_epoch_ms());
             }
             let formatted = format_running(adapter_id, running);
-            let identity = running.identity.clone();
+            let tool_kind = running.tool_kind.clone();
             let started_at_ms = running.started_at;
             let completed_at_ms = running.completed_at;
             // Drop the cache entry once the tool has reached a terminal
@@ -1454,8 +1458,7 @@ pub(crate) fn map_session_update(
             }
             MappedUpdate::Transcript(TranscriptItem::ToolCallUpdate(ToolCallUpdateRecord {
                 id,
-                identity: Some(identity),
-                tool_kind,
+                tool_kind: Some(tool_kind),
                 title,
                 state,
                 raw_input,
@@ -1519,7 +1522,10 @@ pub(crate) fn map_session_update(
                 .get("options")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
-            let identity = tool_identity(adapter_id, &tool, raw_input.as_ref());
+            let tool_kind = ToolKind::from_wire(
+                Some(tool_kind.as_str()),
+                mcp_tool(adapter_id, &tool, raw_input.as_ref()),
+            );
             // Same formatter dispatch the live `InstanceEvent::PermissionRequest`
             // emit uses (instance.rs ~2949). `started_at: 0` /
             // `completed_at: None` so formatters that key on
@@ -1530,8 +1536,7 @@ pub(crate) fn map_session_update(
                 let registry = crate::adapters::acp::formatter_registry();
                 let ctx = FormatterContext {
                     wire_name: tool.as_str(),
-                    identity: &identity,
-                    kind: tool_kind.as_str(),
+                    tool_kind: &tool_kind,
                     raw_input: raw_input.as_ref(),
                     adapter: adapter_id,
                     content: &raw_content,
@@ -1543,7 +1548,6 @@ pub(crate) fn map_session_update(
             MappedUpdate::Transcript(TranscriptItem::PermissionRequest(PermissionRequestRecord {
                 request_id,
                 tool,
-                identity,
                 tool_kind,
                 args,
                 raw_input,
@@ -2388,7 +2392,7 @@ async fn run(params: RunParams) {
     ) {
         Ok(c) => {
             let agent = match_provider_agent(cfg.provider);
-            c.with_permission_tool_identity(Arc::new(move |update| agent.permission_tool_identity(update)))
+            c.with_permission_mcp_tool(Arc::new(move |update| agent.permission_mcp_tool(update)))
         }
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
@@ -3299,25 +3303,19 @@ async fn run(params: RunParams) {
                                 continue;
                             };
                             let agent = match_provider_agent(cfg.provider);
-                            let current_model_for_option = current_model_meta
+                            let current_model = current_model_meta
                                 .read()
                                 .await
                                 .clone()
                                 .or_else(|| cfg.model.clone());
-                            let model_id = agent.config_option_model_id(
-                                &config_id,
-                                &value,
-                                current_model_for_option.as_deref(),
-                            );
-                            let wire_config_id = agent.wire_config_option_id(&config_id);
+                            let route = agent.config_option_route(&config_id, &value, current_model.as_deref());
                             info!(
                                 agent = %agent_id_notif,
                                 session = %sid,
-                                config_id = %wire_config_id,
+                                route = ?route,
                                 display_config_id = %config_id,
                                 value,
-                                model_id = ?model_id,
-                                "acp::instance: session/set_config_option requested"
+                                "acp::instance: session config update requested"
                             );
                             let conn = connection.clone();
                             let events_tx_done = events_tx_notif.clone();
@@ -3327,39 +3325,45 @@ async fn run(params: RunParams) {
                             let adapter_id = cfg.provider.wire_id().to_string();
                             let session_log = sid.clone();
                             tokio::spawn(async move {
-                                let res: Result<(), String> = if let Some(model_id) = model_id {
-                                    use agent_client_protocol::schema::{ModelId, SetSessionModelRequest};
-                                    let req = SetSessionModelRequest::new(
-                                        sid.clone(),
-                                        ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
-                                    );
-                                    conn.send_request(req).block_task().await.map(|_| ()).map_err(|e| e.to_string())
-                                } else {
-                                    use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
-                                    let req = SetSessionConfigOptionRequest::new(
-                                        sid.clone(),
-                                        SessionConfigId::from(std::sync::Arc::<str>::from(wire_config_id.as_str())),
-                                        SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
-                                    );
-                                    match conn.send_request(req).block_task().await {
-                                        Ok(resp) => {
-                                            *config_options_done.write().await =
-                                                project_session_config_options(&adapter_id, &resp.config_options, None);
-                                            Ok(())
+                                let res: Result<(), String> = {
+                                    match &route {
+                                        ConfigOptionRoute::SetConfigOption { config_id: wire_config_id } => {
+                                            use agent_client_protocol::schema::{SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest};
+                                            let req = SetSessionConfigOptionRequest::new(
+                                                sid.clone(),
+                                                SessionConfigId::from(std::sync::Arc::<str>::from(wire_config_id.as_str())),
+                                                SessionConfigValueId::from(std::sync::Arc::<str>::from(value.as_str())),
+                                            );
+                                            match conn.send_request(req).block_task().await {
+                                                Ok(resp) => {
+                                                    *config_options_done.write().await =
+                                                        project_session_config_options(&adapter_id, &resp.config_options, Some(value.as_str()));
+                                                    Ok(())
+                                                }
+                                                Err(err) => Err(err.to_string()),
+                                            }
                                         }
-                                        Err(err) => Err(err.to_string()),
+                                        ConfigOptionRoute::SetModel { model_id } => {
+                                            let req = SetSessionModelRequest::new(
+                                                sid.clone(),
+                                                ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                            );
+                                            conn.send_request(req)
+                                                .block_task()
+                                                .await
+                                                .map(|_| ())
+                                                .map_err(|err| err.to_string())
+                                        }
                                     }
                                 };
                                 if res.is_ok() {
-                                    if let Some(model) = current_model_for_option {
-                                        *current_model_done.write().await = Some(
-                                            model.split_once('/')
-                                                .map_or(model.as_str(), |(model, _)| model)
-                                                .to_string(),
-                                        );
+                                    if let ConfigOptionRoute::SetModel { model_id } = &route {
+                                        *current_model_done.write().await = Some(model_id.clone());
+                                    } else if config_id == "model" {
+                                        *current_model_done.write().await = Some(value.clone());
                                     }
                                     let mut categories = config_options_done.write().await;
-                                    super::agents::augment_config_options(&adapter_id, &mut categories, None);
+                                    super::agents::augment_config_options(&adapter_id, &mut categories, Some(value.as_str()));
                                     apply_config_option_selection(&mut categories, &config_id, &value);
                                     meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
                                 }
@@ -3914,6 +3918,7 @@ async fn run(params: RunParams) {
                                         categories,
                                     })
                                 }
+                                MappedUpdate::Noop => None,
                             };
                             if let Some(evt) = evt {
                                 // Split target by event topic so transcript
@@ -3956,8 +3961,7 @@ async fn run(params: RunParams) {
                             session_id: sid,
                             request_id,
                             tool,
-                            identity,
-                            kind,
+                            tool_kind,
                             args,
                             raw_input,
                             content,
@@ -3980,8 +3984,7 @@ async fn run(params: RunParams) {
                                 // skip emitting Stat::Duration here.
                                 let ctx = FormatterContext {
                                     wire_name: tool.as_str(),
-                                    identity: &identity,
-                                    kind: kind.as_str(),
+                                    tool_kind: &tool_kind,
                                     raw_input: raw_input.as_ref(),
                                     adapter: provider_id_for_fmt.as_str(),
                                     content: &content,
@@ -4002,6 +4005,27 @@ async fn run(params: RunParams) {
                                 crate::adapters::permission::pick_allow_once_id(&options);
                             let reject_option_id =
                                 crate::adapters::permission::pick_reject_option_id(&options);
+                            let transcript_event = InstanceEvent::Transcript {
+                                agent_id: agent_id_notif.clone(),
+                                instance_id: instance_id_notif.clone(),
+                                session_id: sid.clone(),
+                                turn_id: turn_id.clone(),
+                                item: crate::adapters::TranscriptItem::PermissionRequest(
+                                    crate::adapters::PermissionRequestRecord {
+                                        request_id: request_id.clone(),
+                                        tool: tool.clone(),
+                                        tool_kind: tool_kind.clone(),
+                                        args: args.clone(),
+                                        raw_input: raw_input.clone(),
+                                        options: options.clone(),
+                                        formatted: formatted.clone(),
+                                    },
+                                ),
+                                seq: 0,
+                                message_id: None,
+                                meta: None,
+                            };
+                            publish(&mirror_notif, &events_tx_notif, transcript_event).await;
                             let event = InstanceEvent::PermissionRequest {
                                 agent_id: agent_id_notif.clone(),
                                 instance_id: instance_id_notif.clone(),
@@ -4009,8 +4033,7 @@ async fn run(params: RunParams) {
                                 turn_id,
                                 request_id,
                                 tool,
-                                identity,
-                                kind,
+                                tool_kind,
                                 args,
                                 raw_input,
                                 content,
@@ -4262,7 +4285,7 @@ mod tests {
     }
 
     #[test]
-    fn map_session_update_sets_codex_mcp_tool_identity() {
+    fn map_session_update_sets_codex_mcp_tool() {
         use serde_json::json;
 
         let mut cache = ToolCallCache::default();
@@ -4284,10 +4307,10 @@ mod tests {
         };
 
         assert_eq!(
-            record.identity,
-            ToolIdentity::Mcp {
+            record.tool_kind,
+            ToolKind::Mcp {
                 server: "hyprpilot".into(),
-                leaf: "read_skill".into()
+                tool: "read_skill".into()
             }
         );
     }
@@ -4342,10 +4365,10 @@ mod tests {
         assert_eq!(record.title.as_deref(), Some("hyprpilot.read_skill"));
         assert!(record.started_at_ms > 0);
         assert_eq!(
-            record.identity,
-            Some(ToolIdentity::Mcp {
+            record.tool_kind,
+            Some(ToolKind::Mcp {
                 server: "hyprpilot".into(),
-                leaf: "read_skill".into()
+                tool: "read_skill".into()
             })
         );
     }
@@ -4429,9 +4452,19 @@ mod tests {
         assert!(message_id.is_none(), "missing messageId should yield None");
     }
 
-    /// Empty / unknown content shapes should still flow through (UI
-    /// renders the thinking card with no body) — no panic, no
-    /// silent drop.
+    /// Empty / unknown thought chunks are heartbeat/section noise for
+    /// some adapters. Drop them so the UI does not render empty
+    /// thinking cards.
+    #[test]
+    fn map_session_update_thought_with_unknown_shape_is_noop() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "weird", "blob": "..."}});
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+
+        assert!(matches!(mapped, MappedUpdate::Noop));
+    }
+
     /// PermissionRequest carries a `formatted` field so the transcript-
     /// path replay (snapshot hydration, cross-device mirror) renders the
     /// same description / fields / output the live `acp:permission-request`
@@ -4580,20 +4613,6 @@ mod tests {
                 assert_eq!(categories[0].current_value.as_deref(), Some("high"));
             }
             _ => panic!("expected ConfigOptions variant"),
-        }
-    }
-
-    #[test]
-    fn map_session_update_thought_with_unknown_shape_yields_empty_text() {
-        use serde_json::json;
-        let mut cache = ToolCallCache::default();
-        let update = json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "weird", "blob": "..."}});
-        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
-        match mapped {
-            MappedUpdate::Transcript(crate::adapters::TranscriptItem::AgentThought { text }) => {
-                assert!(text.is_empty())
-            }
-            _ => panic!("expected AgentThought with empty text"),
         }
     }
 

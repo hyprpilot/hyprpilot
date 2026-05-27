@@ -565,7 +565,7 @@ export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId
     if (entry.kind === 'stream') {
       block.streamEntries.push(entry)
     } else if (entry.kind === 'tool') {
-      if (entry.call.kind?.toLowerCase() === 'think') {
+      if (entry.call.kind?.type === 'think') {
         block.thoughts.push(entry as TimelineTool)
       } else {
         block.toolCalls.push(entry as TimelineTool)

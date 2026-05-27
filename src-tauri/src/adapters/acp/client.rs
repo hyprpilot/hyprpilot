@@ -28,13 +28,13 @@ use crate::adapters::permission::{
     pick_allow_option_id, pick_reject_option_id, Decision, DecisionContext, PermissionController, PermissionOptionView,
     PermissionOutcome, PermissionRequest, ToolCallRef, WAITER_TIMEOUT,
 };
-use crate::adapters::ToolIdentity;
 use crate::mcp::MCPsRegistry;
+use crate::tools::ToolKind;
 use crate::tools::{FsTools, Sandbox, SandboxError, TerminalToolEvent, Terminals};
 
 use self::error::{fs_error, terminal_error};
 
-type PermissionToolIdentityFn = dyn Fn(&ToolCallUpdate) -> Option<ToolIdentity> + Send + Sync;
+type PermissionMcpToolFn = dyn Fn(&ToolCallUpdate) -> Option<ToolKind> + Send + Sync;
 
 /// Notification shape for `session/update`. Carries `update` as raw
 /// JSON so the boundary doesn't depend on the upstream typed
@@ -66,8 +66,7 @@ pub enum ClientEvent {
         session_id: String,
         request_id: String,
         tool: String,
-        identity: ToolIdentity,
-        kind: String,
+        tool_kind: ToolKind,
         args: String,
         /// Raw `tool_call.rawInput` JSON object — passed through verbatim
         /// so UI consumers (the plan-file modal, the spec sheet) can
@@ -111,9 +110,8 @@ pub(crate) fn option_view_from(v: &agent_client_protocol::schema::PermissionOpti
 ///   name to render.
 /// - For every other kind we keep the wire string as `name` (Bash,
 ///   Read, …) so registered formatters key off the canonical kind.
-/// - `kind_wire` stays separate (carries the original "other" /
-///   "execute" / etc.) so the UI tone-mapper still drives the
-///   correct theme color regardless of the name we picked.
+/// - `tool_kind` keeps the typed classification, including structured
+///   MCP attribution when the adapter can prove it.
 ///
 /// `raw_args` pulls `command` from `raw_input` for Bash-family tools,
 /// `path` for fs tools, else single-line JSON of `raw_input`.
@@ -123,10 +121,7 @@ impl From<&agent_client_protocol::schema::ToolCallUpdate> for ToolCallRef {
     }
 }
 
-fn tool_call_ref(
-    update: &agent_client_protocol::schema::ToolCallUpdate,
-    identity: Option<ToolIdentity>,
-) -> ToolCallRef {
+fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, mcp: Option<ToolKind>) -> ToolCallRef {
     let title = update.fields.title.clone();
     // ACP's `ToolKind` is `#[serde(rename_all = "snake_case")]`
     // upstream — let serde produce the wire string instead of
@@ -147,14 +142,14 @@ fn tool_call_ref(
         .clone()
         .or_else(|| kind_wire.clone())
         .unwrap_or_else(|| "tool".to_string());
-    let identity = identity
-        .or_else(|| ToolIdentity::from_mcp_name(&name))
-        .unwrap_or_default();
+    let tool_kind = ToolKind::from_wire(kind_wire.as_deref(), mcp.or_else(|| ToolKind::from_mcp_name(&name)));
     let raw_input = update.fields.raw_input.clone();
     let raw_args = raw_input.as_ref().and_then(|raw| {
         if let Some(cmd) = raw.get("command_string").and_then(|v| v.as_str()) {
             Some(cmd.to_string())
         } else if let Some(cmd) = raw.get("command").and_then(|v| v.as_str()) {
+            Some(cmd.to_string())
+        } else if let Some(cmd) = raw.get("cmd").and_then(|v| v.as_str()) {
             Some(cmd.to_string())
         } else if let Some(args) = raw.get("command").and_then(|v| v.as_array()) {
             let parts: Vec<&str> = args.iter().filter_map(serde_json::Value::as_str).collect();
@@ -177,11 +172,10 @@ fn tool_call_ref(
         .unwrap_or_default();
     ToolCallRef {
         name,
-        identity,
+        tool_kind,
         title,
         raw_args,
         raw_input,
-        kind_wire,
         content,
     }
 }
@@ -226,7 +220,7 @@ pub struct AcpClient {
     /// `hyprpilot.autoAcceptTools` / `autoRejectTools` lists used by
     /// `PermissionController::decide` lane 2.
     mcps: Option<Arc<MCPsRegistry>>,
-    permission_tool_identity: Arc<PermissionToolIdentityFn>,
+    permission_mcp_tool: Arc<PermissionMcpToolFn>,
 }
 
 impl std::fmt::Debug for AcpClient {
@@ -255,12 +249,12 @@ impl AcpClient {
             permissions,
             instance_id,
             mcps,
-            permission_tool_identity: Arc::new(|_| None),
+            permission_mcp_tool: Arc::new(|_| None),
         })
     }
 
-    pub fn with_permission_tool_identity(mut self, permission_tool_identity: Arc<PermissionToolIdentityFn>) -> Self {
-        self.permission_tool_identity = permission_tool_identity;
+    pub fn with_permission_mcp_tool(mut self, permission_mcp_tool: Arc<PermissionMcpToolFn>) -> Self {
+        self.permission_mcp_tool = permission_mcp_tool;
 
         self
     }
@@ -289,7 +283,7 @@ impl AcpClient {
         req: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, agent_client_protocol::Error> {
         let options = req.options.iter().map(option_view_from).collect::<Vec<_>>();
-        let tool_call = tool_call_ref(&req.tool_call, (self.permission_tool_identity)(&req.tool_call));
+        let tool_call = tool_call_ref(&req.tool_call, (self.permission_mcp_tool)(&req.tool_call));
         let request_id = uuid::Uuid::new_v4().to_string();
 
         let decision_req = PermissionRequest {
@@ -357,8 +351,7 @@ impl AcpClient {
             }
             Decision::AskUser => {
                 let tool = tool_call.name.clone();
-                let identity = tool_call.identity.clone();
-                let kind = tool_call.permission_kind_wire();
+                let tool_kind = tool_call.tool_kind.clone();
                 let args = tool_call.raw_args.clone().unwrap_or_else(|| tool.clone());
                 let raw_input = tool_call.raw_input.clone();
                 let content = tool_call.content.clone();
@@ -369,8 +362,7 @@ impl AcpClient {
                     session_id: req.session_id.0.to_string(),
                     request_id: request_id.clone(),
                     tool,
-                    identity,
-                    kind,
+                    tool_kind,
                     args,
                     raw_input,
                     content,
@@ -650,21 +642,21 @@ mod tests {
             .await
             .expect("event emitted")
             .expect("channel open");
-        let (request_id, tool, kind, args) = match evt {
+        let (request_id, tool, tool_kind, args) = match evt {
             ClientEvent::PermissionRequested {
                 request_id,
                 tool,
-                kind,
+                tool_kind,
                 args,
                 ..
-            } => (request_id, tool, kind, args),
+            } => (request_id, tool, tool_kind, args),
             other => panic!("expected PermissionRequested, got {other:?}"),
         };
         assert!(!request_id.is_empty());
         // `tool` is the agent's title (e.g. "Bash"); kind is the
         // ACP-spec classification (`execute`).
         assert_eq!(tool, "Bash");
-        assert_eq!(kind, "execute");
+        assert_eq!(tool_kind, crate::tools::ToolKind::Execute);
         // `args` falls back to the tool name when raw_args is unset.
         assert_eq!(args, "Bash");
 
@@ -747,7 +739,7 @@ mod tests {
             Some("instance-test".into()),
         )
         .expect("sandbox constructs")
-        .with_permission_tool_identity(Arc::new(|update| AcpAgentCodex.permission_tool_identity(update)));
+        .with_permission_mcp_tool(Arc::new(|update| AcpAgentCodex.permission_mcp_tool(update)));
 
         let raw = json!({
             "server_name": "memory",
@@ -795,7 +787,13 @@ mod tests {
         let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
         let tool_ref = ToolCallRef::from(&update);
         assert_eq!(tool_ref.name, "mcp__filesystem__read_file");
-        assert_eq!(tool_ref.kind_wire.as_deref(), Some("other"));
+        assert_eq!(
+            tool_ref.tool_kind,
+            crate::tools::ToolKind::Mcp {
+                server: "filesystem".to_string(),
+                tool: "read_file".to_string(),
+            }
+        );
         assert_eq!(tool_ref.title.as_deref(), Some("mcp__filesystem__read_file"));
     }
 
@@ -809,7 +807,7 @@ mod tests {
         let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);
         let tool_ref = ToolCallRef::from(&update);
         assert_eq!(tool_ref.name, "Bash");
-        assert_eq!(tool_ref.kind_wire.as_deref(), Some("execute"));
+        assert_eq!(tool_ref.tool_kind, crate::tools::ToolKind::Execute);
         assert_eq!(tool_ref.title.as_deref(), Some("Bash"));
     }
 

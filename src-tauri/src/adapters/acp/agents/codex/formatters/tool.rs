@@ -2,11 +2,10 @@
 //! `Tool: <tool>` and MCP tools as `Tool: <server>/<leaf>` with
 //! `rawInput` set to the serialized MCP invocation (`server`, `tool`,
 //! `arguments`). Keep formatting adapter-local: higher layers only pass
-//! the parsed identity when they have one.
+//! MCP attribution when they have it.
 
 use serde_json::Value;
 
-use crate::adapters::ToolIdentity;
 use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
 use crate::tools::formatter::shared::{args_to_fields, duration_stats};
 use crate::tools::formatter::types::FormattedToolCall;
@@ -15,16 +14,20 @@ pub struct ToolFormatterCodex;
 
 struct McpParts<'a> {
     server: &'a str,
-    leaf: &'a str,
+    tool: &'a str,
     arguments: Option<&'a Value>,
 }
 
 impl ToolFormatter for ToolFormatterCodex {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
         let body = ctx.wire_name.strip_prefix("Tool: ").unwrap_or(ctx.wire_name);
-        let mcp = mcp_parts(ctx.identity, ctx.raw_input);
+        let mcp = mcp_parts(ctx);
+        if mcp.is_none() && super::exec::matches(ctx) {
+            return super::exec::ExecFormatter.format(ctx);
+        }
+
         let title = match &mcp {
-            Some(parts) => format!("mcp · {}/{}", parts.server, parts.leaf),
+            Some(parts) => format!("mcp · {}/{}", parts.server, parts.tool),
             None => format!("tool · {}", body),
         };
 
@@ -54,38 +57,16 @@ impl ToolFormatter for ToolFormatterCodex {
     }
 }
 
-fn mcp_parts<'a>(identity: &'a ToolIdentity, raw_input: Option<&'a Value>) -> Option<McpParts<'a>> {
-    let raw = raw_input;
-    match identity {
-        ToolIdentity::Mcp { server, leaf } => Some(McpParts {
+fn mcp_parts<'a>(ctx: &'a FormatterContext<'a>) -> Option<McpParts<'a>> {
+    let raw = ctx.raw_input;
+    match ctx.tool_kind {
+        crate::tools::ToolKind::Mcp { server, tool } => Some(McpParts {
             server,
-            leaf,
+            tool,
             arguments: raw.and_then(|value| value.get("arguments")),
         }),
-        ToolIdentity::Native => raw_mcp_parts(raw),
+        _ => None,
     }
-}
-
-fn raw_mcp_parts(raw_input: Option<&Value>) -> Option<McpParts<'_>> {
-    let raw = raw_input?;
-    let server = raw
-        .get("server")
-        .or_else(|| raw.get("server_name"))
-        .or_else(|| raw.get("serverName"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())?;
-    let leaf = raw
-        .get("tool")
-        .or_else(|| raw.get("tool_name"))
-        .or_else(|| raw.get("toolName"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())?;
-
-    Some(McpParts {
-        server,
-        leaf,
-        arguments: raw.get("arguments"),
-    })
 }
 
 #[cfg(test)]
@@ -94,6 +75,7 @@ mod tests {
 
     use super::ToolFormatterCodex;
     use crate::tools::formatter::registry::{FormatterContext, ToolFormatter};
+    use crate::tools::ToolKind;
 
     #[test]
     fn mcp_tool_formats_from_raw_invocation_without_duplicate_wrapper_fields() {
@@ -102,10 +84,13 @@ mod tests {
             "tool": "read_skill",
             "arguments": { "slug": "git-branch" }
         });
+        let mcp = ToolKind::Mcp {
+            server: "hyprpilot".into(),
+            tool: "read_skill".into(),
+        };
         let ctx = FormatterContext {
             wire_name: "Tool: hyprpilot/read_skill",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "other",
+            tool_kind: &mcp,
             raw_input: Some(&raw),
             adapter: "acp-codex",
             content: &[],
@@ -128,10 +113,13 @@ mod tests {
             "tool_name": "read_graph",
             "arguments": {}
         });
+        let mcp = ToolKind::Mcp {
+            server: "memory".into(),
+            tool: "read_graph".into(),
+        };
         let ctx = FormatterContext {
             wire_name: "Tool: memory/read_graph",
-            identity: &crate::adapters::ToolIdentity::Native,
-            kind: "other",
+            tool_kind: &mcp,
             raw_input: Some(&raw),
             adapter: "acp-codex",
             content: &[],
@@ -142,5 +130,27 @@ mod tests {
 
         assert_eq!(formatted.title, "mcp · memory/read_graph");
         assert!(formatted.fields.is_empty());
+    }
+
+    #[test]
+    fn tool_wrapped_exec_command_uses_exec_formatter() {
+        let raw = json!({
+            "cmd": "git status --short",
+            "workdir": "/repo"
+        });
+        let ctx = FormatterContext {
+            wire_name: "Tool: exec_command",
+            tool_kind: &crate::tools::ToolKind::Other,
+            raw_input: Some(&raw),
+            adapter: "acp-codex",
+            content: &[],
+            started_at: 0,
+            completed_at: None,
+        };
+        let formatted = ToolFormatterCodex.format(&ctx);
+
+        assert_eq!(formatted.title, "exec_command · git status --short");
+        assert!(formatted.fields.iter().any(|field| field.label == "command"));
+        assert!(formatted.fields.iter().any(|field| field.value == "git status --short"));
     }
 }

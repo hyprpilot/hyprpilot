@@ -86,7 +86,7 @@ describe('transcript-patcher singleton', () => {
       item: {
         kind: TranscriptItemKind.ToolCall,
         id: 'tc-1',
-        toolKind: 'bash',
+        toolKind: { type: 'execute' },
         title: 'echo',
         state: 'running',
         content: [],
@@ -143,7 +143,7 @@ describe('transcript-patcher singleton', () => {
       item: {
         kind: TranscriptItemKind.ToolCall,
         id: 'tc-1',
-        toolKind: 'bash',
+        toolKind: { type: 'execute' },
         title: 'echo',
         state: 'running',
         content: [{ kind: 'text', text: 'first' }],
@@ -213,7 +213,7 @@ describe('transcript-patcher singleton', () => {
       item: {
         kind: TranscriptItemKind.ToolCall,
         id: 'tc-1',
-        toolKind: 'bash',
+        toolKind: { type: 'execute' },
         title: 'echo',
         state: 'running',
         content: [],
@@ -401,7 +401,7 @@ describe('transcript-patcher singleton', () => {
       agentId: 'agent',
       requestId: 'req-1',
       tool: 'bash',
-      kind: 'execute',
+      toolKind: { type: 'execute' },
       args: 'echo hi',
       options: [],
       formatted: {
@@ -414,7 +414,7 @@ describe('transcript-patcher singleton', () => {
       agentId: 'agent',
       requestId: 'req-cross',
       tool: 'bash',
-      kind: 'execute',
+      toolKind: { type: 'execute' },
       args: 'echo on other instance',
       options: [],
       formatted: {

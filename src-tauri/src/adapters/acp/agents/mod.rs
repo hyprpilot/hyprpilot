@@ -8,9 +8,9 @@ use tokio::process::Command;
 
 use agent_client_protocol::schema::ToolCallUpdate;
 
-use crate::adapters::ToolIdentity;
 use crate::config::{AgentConfig, AgentProvider};
 use crate::tools::formatter::registry::FormatterRegistry;
+use crate::tools::ToolKind;
 
 pub use self::claude_code::AcpAgentClaudeCode;
 pub use self::codex::AcpAgentCodex;
@@ -45,6 +45,12 @@ pub enum ModelInjection {
     #[allow(dead_code)]
     Argv(&'static str),
     Config(&'static str),
+}
+
+#[derive(Debug, Clone)]
+pub enum ConfigOptionRoute {
+    SetConfigOption { config_id: String },
+    SetModel { model_id: String },
 }
 
 /// Expand `~` and `$VAR` / `${VAR}` references against the daemon's
@@ -171,6 +177,12 @@ pub trait AcpAgent: Send + Sync + 'static {
         id.to_string()
     }
 
+    fn config_option_route(&self, id: &str, _value: &str, _current_model: Option<&str>) -> ConfigOptionRoute {
+        ConfigOptionRoute::SetConfigOption {
+            config_id: self.wire_config_option_id(id),
+        }
+    }
+
     fn augment_config_options(
         &self,
         _categories: &mut Vec<crate::adapters::SessionConfigOptionCategory>,
@@ -178,15 +190,11 @@ pub trait AcpAgent: Send + Sync + 'static {
     ) {
     }
 
-    fn config_option_model_id(&self, _id: &str, _value: &str, _current_model: Option<&str>) -> Option<String> {
+    fn permission_mcp_tool(&self, _update: &ToolCallUpdate) -> Option<ToolKind> {
         None
     }
 
-    fn permission_tool_identity(&self, _update: &ToolCallUpdate) -> Option<ToolIdentity> {
-        None
-    }
-
-    fn tool_identity(&self, _title: &str, _raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
+    fn mcp_tool(&self, _title: &str, _raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
         None
     }
 
@@ -250,12 +258,12 @@ pub fn augment_config_options(
 }
 
 #[must_use]
-pub fn tool_identity(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolIdentity> {
+pub fn mcp_tool(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
     match adapter_id {
-        "acp-claude-code" => AcpAgentClaudeCode.tool_identity(title, raw_input),
-        "acp-codex" => AcpAgentCodex.tool_identity(title, raw_input),
-        "acp-opencode" => AcpAgentOpenCode.tool_identity(title, raw_input),
-        _ => AcpAgentCustom.tool_identity(title, raw_input),
+        "acp-claude-code" => AcpAgentClaudeCode.mcp_tool(title, raw_input),
+        "acp-codex" => AcpAgentCodex.mcp_tool(title, raw_input),
+        "acp-opencode" => AcpAgentOpenCode.mcp_tool(title, raw_input),
+        _ => AcpAgentCustom.mcp_tool(title, raw_input),
     }
 }
 

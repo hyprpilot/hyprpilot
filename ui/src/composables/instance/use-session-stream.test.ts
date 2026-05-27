@@ -107,7 +107,7 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       requestId: 'req-1',
       tool: 'bash',
-      kind: 'bash',
+      toolKind: { type: 'execute' },
       args: 'echo hi',
       options: [
         {
@@ -135,7 +135,7 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       requestId: 'req-1',
       tool: 'bash',
-      kind: 'execute',
+      toolKind: { type: 'execute' },
       args: 'ls',
       options: [
         {
@@ -152,7 +152,7 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       requestId: 'req-2',
       tool: 'bash',
-      kind: 'execute',
+      toolKind: { type: 'execute' },
       args: 'pwd',
       options: [
         {
@@ -217,7 +217,7 @@ describe('useSessionStream', () => {
         kind: 'tool_call',
         id: 'tc-1',
         title: 'bash',
-        toolKind: 'bash',
+        toolKind: { type: 'execute' },
         state: 'running',
         rawInput: { command: 'echo hi' },
         content: [{ kind: 'text', text: 'hi\n' }]

@@ -16,7 +16,8 @@ use uuid::Uuid;
 
 use super::permission::PermissionOptionView;
 use super::transcript::TranscriptItem;
-use super::{AdapterError, ToolIdentity};
+use super::AdapterError;
+use crate::tools::ToolKind;
 
 /// Registry key. A UUID per live instance — collisions across twin
 /// profiles are impossible by construction. Wire shape is the v4
@@ -156,9 +157,7 @@ pub enum InstanceEvent {
         turn_id: Option<String>,
         request_id: String,
         tool: String,
-        #[serde(default)]
-        identity: ToolIdentity,
-        kind: String,
+        tool_kind: ToolKind,
         args: String,
         /// Raw `tool_call.rawInput` JSON (pass-through). Populated when
         /// the agent supplied one — bash gets `{ command }`, file ops

@@ -53,8 +53,7 @@ function routePermission(payload: PermissionRequestEventPayload): void {
     agentId: payload.agentId,
     requestId: payload.requestId,
     tool: payload.tool,
-    identity: payload.identity,
-    kind: payload.kind,
+    toolKind: payload.toolKind,
     args: payload.args,
     rawInput: payload.rawInput,
     content: payload.content,
@@ -177,7 +176,6 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call',
         toolCallId: item.id,
-        identity: item.identity,
         kind: item.toolKind,
         title: item.title,
         status: item.state,
@@ -194,7 +192,6 @@ function routeTranscript(payload: TranscriptEventPayload): void {
       pushToolCall(instanceId, agentId, sessionId, {
         sessionUpdate: 'tool_call_update',
         toolCallId: item.id,
-        identity: item.identity,
         kind: item.toolKind,
         title: item.title,
         status: item.state,

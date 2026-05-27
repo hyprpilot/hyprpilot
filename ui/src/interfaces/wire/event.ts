@@ -3,7 +3,7 @@
  * Each payload mirrors the Rust `adapters::InstanceEvent` variant
  * that emits onto the matching event name.
  */
-import type { PermissionOptionView, TranscriptItem } from './transcript'
+import type { PermissionOptionView, TranscriptItem, WireToolKind } from './transcript'
 import type { InstanceState } from '@constants/wire/instance'
 import type { TerminalChunkKind, TerminalStream } from '@constants/wire/transcript'
 
@@ -49,8 +49,7 @@ export interface PermissionRequestEventPayload {
   turnId?: string
   requestId: string
   tool: string
-  identity: import('./transcript').ToolIdentity
-  kind: string
+  toolKind: WireToolKind
   args: string
   /// Raw `tool_call.rawInput` JSON (pass-through). UI consumers
   /// extract structured fields here — `plan` for ExitPlanMode,
