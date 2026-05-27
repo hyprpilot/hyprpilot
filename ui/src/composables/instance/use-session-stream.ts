@@ -15,11 +15,22 @@ import {
   setInstanceProfile,
   setSessionRestoring,
   setSessionTitleFromPrompt,
+  lookupCurrentModel,
   lookupCurrentMode,
   lookupModeName,
+  lookupModelName,
   useSessionInfo
 } from './use-session-info'
-import { closeTurn, deleteStreamByTurnId, pushConfigOptionChange, pushModeChange, pushPlan, pushSystemPromptInjected, pushThoughtChunk } from './use-stream'
+import {
+  closeTurn,
+  deleteStreamByTurnId,
+  pushConfigOptionChange,
+  pushModeChange,
+  pushModelChange,
+  pushPlan,
+  pushSystemPromptInjected,
+  pushThoughtChunk
+} from './use-stream'
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { closeTranscriptTurn, deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
@@ -35,6 +46,7 @@ import {
   TerminalChunkKind,
   TranscriptItemKind,
   type PermissionRequestEventPayload,
+  type SessionConfigOptionCategory,
   type TerminalEventPayload,
   type TranscriptEventPayload,
   type UnlistenFn
@@ -234,6 +246,98 @@ function routeTerminal(payload: TerminalEventPayload): void {
     exitCode: chunk.exitCode,
     signal: chunk.signal
   })
+}
+
+function modeNameFromMeta(instanceId: InstanceId, modeId: string, availableModes?: { id: string; name: string }[]): string | undefined {
+  return availableModes?.find((mode) => mode.id === modeId)?.name ?? lookupModeName(instanceId, modeId)
+}
+
+function modelNameFromMeta(instanceId: InstanceId, modelId: string, availableModels?: { id: string; name: string }[]): string | undefined {
+  return availableModels?.find((model) => model.id === modelId)?.name ?? lookupModelName(instanceId, modelId)
+}
+
+function pushMetaModeChange(
+  instanceId: InstanceId,
+  sessionId: string | undefined,
+  currentModeId: string | undefined,
+  availableModes: { id: string; name: string }[] | undefined
+): void {
+  if (!sessionId || !currentModeId) {
+    return
+  }
+  const prevModeId = lookupCurrentMode(instanceId)
+
+  if (!prevModeId || prevModeId === currentModeId) {
+    return
+  }
+  pushModeChange(instanceId, sessionId, {
+    modeId: currentModeId,
+    name: modeNameFromMeta(instanceId, currentModeId, availableModes),
+    prevModeId,
+    prevName: lookupModeName(instanceId, prevModeId)
+  })
+}
+
+function pushMetaModelChange(
+  instanceId: InstanceId,
+  sessionId: string | undefined,
+  currentModelId: string | undefined,
+  availableModels: { id: string; name: string }[] | undefined
+): void {
+  if (!sessionId || !currentModelId) {
+    return
+  }
+  const prevModelId = lookupCurrentModel(instanceId)
+
+  if (!prevModelId || prevModelId === currentModelId) {
+    return
+  }
+  pushModelChange(instanceId, sessionId, {
+    modelId: currentModelId,
+    name: modelNameFromMeta(instanceId, currentModelId, availableModels),
+    prevModelId,
+    prevName: lookupModelName(instanceId, prevModelId)
+  })
+}
+
+function optionName(category: SessionConfigOptionCategory | undefined, value: string | undefined): string | undefined {
+  if (!category || value === undefined) {
+    return undefined
+  }
+
+  return category.options.find((opt) => opt.value === value)?.name
+}
+
+function changedConfigOptions(prior: SessionConfigOptionCategory[], categories: SessionConfigOptionCategory[]): SessionConfigOptionCategory[] {
+  return categories.filter((next) => {
+    if (next.currentValue === undefined) {
+      return false
+    }
+    const prev = prior.find((c) => c.id === next.id)
+
+    return prev?.currentValue !== undefined && prev.currentValue !== next.currentValue
+  })
+}
+
+function pushConfigOptionChangeBanners(instanceId: InstanceId, sessionId: string | undefined, prior: SessionConfigOptionCategory[], changed: SessionConfigOptionCategory[]): void {
+  if (!sessionId) {
+    return
+  }
+
+  for (const next of changed) {
+    const prev = prior.find((c) => c.id === next.id)
+
+    if (!prev?.currentValue || next.currentValue === undefined) {
+      continue
+    }
+    pushConfigOptionChange(instanceId, sessionId, {
+      categoryId: next.id,
+      value: next.currentValue,
+      name: optionName(next, next.currentValue),
+      prevValue: prev.currentValue,
+      prevName: optionName(prev, prev.currentValue)
+    })
+  }
 }
 
 /**
@@ -442,26 +546,7 @@ export async function startSessionStream(): Promise<() => void> {
       // collapse to a single banner.
       const prior = useSessionInfo(instanceId).info.value.configOptions
 
-      for (const next of categories) {
-        if (next.currentValue === undefined) {
-          continue
-        }
-        const prev = prior.find((c) => c.id === next.id)
-
-        if (prev?.currentValue === next.currentValue) {
-          continue
-        }
-        const nextOption = next.options.find((opt) => opt.value === next.currentValue)
-        const prevOption = prev?.currentValue ? prev.options.find((opt) => opt.value === prev.currentValue) : undefined
-
-        pushConfigOptionChange(instanceId, sessionId, {
-          categoryId: next.id,
-          value: next.currentValue,
-          name: nextOption?.name,
-          prevValue: prev?.currentValue,
-          prevName: prevOption?.name
-        })
-      }
+      pushConfigOptionChangeBanners(instanceId, sessionId, prior, changedConfigOptions(prior, categories))
       pushConfigOptionsUpdate(instanceId, categories)
     }),
     await listen(TauriEvent.AcpQueueChanged, (e) => {
@@ -470,14 +555,16 @@ export async function startSessionStream(): Promise<() => void> {
       applyQueueChanged(instanceId, items)
     }),
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
-      const { agentId, instanceId, profileId, cwd, currentModeId, currentModelId, availableModes, availableModels, mcpsCount } = e.payload
+      const payload = e.payload
+      const instanceId = payload.instanceId
+      const priorConfigOptions = useSessionInfo(instanceId).info.value.configOptions
 
-      setInstanceAgent(instanceId, agentId)
-      setInstanceProfile(instanceId, profileId)
-      setInstanceCwd(instanceId, cwd)
+      setInstanceAgent(instanceId, payload.agentId)
+      setInstanceProfile(instanceId, payload.profileId)
+      setInstanceCwd(instanceId, payload.cwd)
 
-      if (typeof mcpsCount === 'number') {
-        setInstanceMcpsCount(instanceId, mcpsCount)
+      if (typeof payload.mcpsCount === 'number') {
+        setInstanceMcpsCount(instanceId, payload.mcpsCount)
       }
       // InstanceMeta fires once per resume completion (right after
       // session/load accepts) — that's our reliable boundary to
@@ -489,10 +576,14 @@ export async function startSessionStream(): Promise<() => void> {
       // to cancel), and the loader would stick forever.
       setSessionRestoring(instanceId, false)
 
-      if (availableModes && availableModes.length > 0) {
-        pushInstanceModeState(instanceId, { currentModeId, availableModes })
-      } else if (currentModeId) {
-        pushCurrentModeUpdate(instanceId, { currentModeId })
+      const configOptionChanges = payload.configOptions ? changedConfigOptions(priorConfigOptions, payload.configOptions) : []
+
+      pushMetaModeChange(instanceId, payload.sessionId, payload.currentModeId, payload.availableModes)
+
+      if (payload.availableModes && payload.availableModes.length > 0) {
+        pushInstanceModeState(instanceId, { currentModeId: payload.currentModeId, availableModes: payload.availableModes })
+      } else if (payload.currentModeId) {
+        pushCurrentModeUpdate(instanceId, { currentModeId: payload.currentModeId })
       }
 
       // Mirror the modes branch — the model list comes from
@@ -502,10 +593,19 @@ export async function startSessionStream(): Promise<() => void> {
       // wire still carries `currentModelId` (e.g. seeded from
       // `[[agents]] model` config) so we keep the picker's selection
       // in sync without the list.
-      if (availableModels && availableModels.length > 0) {
-        pushInstanceModelState(instanceId, { currentModelId, availableModels })
-      } else if (currentModelId) {
-        pushInstanceModelState(instanceId, { currentModelId })
+      if (configOptionChanges.length === 0) {
+        pushMetaModelChange(instanceId, payload.sessionId, payload.currentModelId, payload.availableModels)
+      }
+
+      if (payload.availableModels && payload.availableModels.length > 0) {
+        pushInstanceModelState(instanceId, { currentModelId: payload.currentModelId, availableModels: payload.availableModels })
+      } else if (payload.currentModelId) {
+        pushInstanceModelState(instanceId, { currentModelId: payload.currentModelId })
+      }
+
+      if (payload.configOptions) {
+        pushConfigOptionChangeBanners(instanceId, payload.sessionId, priorConfigOptions, configOptionChanges)
+        pushConfigOptionsUpdate(instanceId, payload.configOptions)
       }
     }),
     await listen(TauriEvent.AcpInstanceRenamed, (e) => {

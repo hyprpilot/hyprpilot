@@ -5,6 +5,8 @@
  * Rust `adapters::*` and `rpc::*` shapes.
  */
 
+import type { SessionConfigOptionCategory } from './event'
+
 export interface SubmitArgs {
   text: string
   attachments?: Attachment[]
@@ -314,4 +316,6 @@ export interface InstanceMetaSnapshot {
   currentModelId?: string
   availableModes: { id: string; name: string; description?: string }[]
   availableModels: { id: string; name: string; description?: string }[]
+  configOptions?: SessionConfigOptionCategory[]
+  mcpsCount: number
 }

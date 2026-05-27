@@ -343,6 +343,28 @@ export function lookupCurrentMode(id: InstanceId): string | undefined {
   return states.get(id)?.mode
 }
 
+/// Resolve the human label for a model id from the per-instance
+/// `availableModels` list. Returns `undefined` when the list hasn't
+/// been seeded yet or when the id isn't in it; callers display the
+/// raw id in that case.
+export function lookupModelName(id: InstanceId, modelId: string): string | undefined {
+  const slot = states.get(id)
+
+  if (!slot) {
+    return undefined
+  }
+
+  return slot.availableModels.find((m) => m.id === modelId)?.name
+}
+
+/// Snapshot of the per-instance current model id BEFORE the next
+/// `pushInstanceModelState` overwrites it. Captured by the session-
+/// stream demuxer so model-change banners can include the previous
+/// value.
+export function lookupCurrentModel(id: InstanceId): string | undefined {
+  return states.get(id)?.model
+}
+
 /**
  * Reactive read-only view over the per-instance session info.
  * `mcpsCount` derives from the active profile — wired as zero today
