@@ -194,8 +194,34 @@ pub trait AcpAgent: Send + Sync + 'static {
         None
     }
 
+    fn permission_mcp_tool_with_servers(
+        &self,
+        update: &ToolCallUpdate,
+        _mcp_server_names: &[String],
+    ) -> Option<ToolKind> {
+        self.permission_mcp_tool(update)
+    }
+
     fn mcp_tool(&self, _title: &str, _raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
         None
+    }
+
+    fn mcp_tool_with_servers(
+        &self,
+        title: &str,
+        raw_input: Option<&serde_json::Value>,
+        _mcp_server_names: &[String],
+    ) -> Option<ToolKind> {
+        self.mcp_tool(title, raw_input)
+    }
+
+    fn suppress_initial_tool_call(
+        &self,
+        _title: &str,
+        _raw_input: Option<&serde_json::Value>,
+        _state: crate::adapters::ToolCallState,
+    ) -> bool {
+        false
     }
 
     /// Default drops the prompt — vendors without a hook degrade silently
@@ -258,12 +284,32 @@ pub fn augment_config_options(
 }
 
 #[must_use]
-pub fn mcp_tool(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
+pub fn mcp_tool_with_servers(
+    adapter_id: &str,
+    title: &str,
+    raw_input: Option<&serde_json::Value>,
+    mcp_server_names: &[String],
+) -> Option<ToolKind> {
     match adapter_id {
-        "acp-claude-code" => AcpAgentClaudeCode.mcp_tool(title, raw_input),
-        "acp-codex" => AcpAgentCodex.mcp_tool(title, raw_input),
-        "acp-opencode" => AcpAgentOpenCode.mcp_tool(title, raw_input),
-        _ => AcpAgentCustom.mcp_tool(title, raw_input),
+        "acp-claude-code" => AcpAgentClaudeCode.mcp_tool_with_servers(title, raw_input, mcp_server_names),
+        "acp-codex" => AcpAgentCodex.mcp_tool_with_servers(title, raw_input, mcp_server_names),
+        "acp-opencode" => AcpAgentOpenCode.mcp_tool_with_servers(title, raw_input, mcp_server_names),
+        _ => AcpAgentCustom.mcp_tool_with_servers(title, raw_input, mcp_server_names),
+    }
+}
+
+#[must_use]
+pub fn suppress_initial_tool_call(
+    adapter_id: &str,
+    title: &str,
+    raw_input: Option<&serde_json::Value>,
+    state: crate::adapters::ToolCallState,
+) -> bool {
+    match adapter_id {
+        "acp-claude-code" => AcpAgentClaudeCode.suppress_initial_tool_call(title, raw_input, state),
+        "acp-codex" => AcpAgentCodex.suppress_initial_tool_call(title, raw_input, state),
+        "acp-opencode" => AcpAgentOpenCode.suppress_initial_tool_call(title, raw_input, state),
+        _ => AcpAgentCustom.suppress_initial_tool_call(title, raw_input, state),
     }
 }
 

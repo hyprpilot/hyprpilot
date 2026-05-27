@@ -248,6 +248,28 @@ export interface ConfigOptionSetArgs {
   value: string
 }
 
+export interface EffortGetArgs {
+  instanceId: string
+}
+
+export interface EffortSetArgs {
+  instanceId: string
+  effortId: string
+}
+
+export interface EffortsListArgs {
+  instanceId: string
+}
+
+export interface EffortGetResult {
+  effortId?: string | null
+}
+
+export interface EffortsListResult {
+  effortId?: string | null
+  efforts: SessionConfigOptionCategory['options']
+}
+
 export interface InstanceMetaArgs {
   /// Optional when `ensure=true` — the daemon spawns a fresh instance
   /// from `(agentId, profileId)` if no live actor matches the id

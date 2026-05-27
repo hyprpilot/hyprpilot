@@ -62,6 +62,8 @@ function metaSnapshotFixture(overrides: Partial<MetaSnapshot> = {}): MetaSnapsho
   return {
     profileId: 'personal/claude/opus',
     sessionId: 's-1',
+    title: 'snapshot title',
+    updatedAt: '2026-05-27T10:00:00Z',
     cwd: '/home/cenk/notes',
     currentModeId: 'plan',
     currentModelId: 'claude-opus-4',
@@ -143,6 +145,8 @@ describe('useSnapshotHydration — session-info hydration', () => {
     const info = useSessionInfo('i-1').info.value
 
     expect(info.cwd).toBe('/home/cenk/notes')
+    expect(info.title).toBe('snapshot title')
+    expect(info.updatedAt).toBe('2026-05-27T10:00:00Z')
     expect(info.mode).toBe('plan')
     expect(info.model).toBe('claude-opus-4')
     expect(info.profileId).toBe('personal/claude/opus')

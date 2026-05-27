@@ -554,6 +554,16 @@ function mapPlanItems(entries: PlanEntry[]): PlanItem[] {
   return entries.map((e) => ({ status: mapPlanStatus(e.status), text: e.content ?? '' }))
 }
 
+function compactionSummary(item: { auto: boolean; overflow?: boolean }): string {
+  const parts = [item.auto ? 'auto' : 'manual']
+
+  if (item.overflow === true) {
+    parts.push('overflow')
+  }
+
+  return parts.join(' · ')
+}
+
 function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string | undefined {
   const raw = call.rawInput
 
@@ -624,6 +634,14 @@ defineExpose({ scrollEl })
               label="plan"
               :items="mapPlanItems(entry.item.entries)"
               :stats="entry.item.stats"
+            />
+            <StreamCard
+              v-else-if="entry.item.kind === StreamItemKind.Compaction"
+              :kind="StreamKind.Compaction"
+              :active="blockIdx === liveBlockIdx"
+              label="compaction"
+              :summary="compactionSummary(entry.item)"
+              :text="entry.item.text"
             />
             <ChangeBanner
               v-else-if="entry.item.kind === StreamItemKind.ModeChange"

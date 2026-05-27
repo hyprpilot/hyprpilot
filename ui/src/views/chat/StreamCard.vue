@@ -55,8 +55,18 @@ const statsLabel = computed<string | undefined>(() => {
 
 const slots = useSlots()
 
-// planning → agent (purple); thinking → think (muted slate).
-const tone = computed(() => (props.kind === StreamKind.Planning ? 'var(--theme-kind-agent)' : 'var(--theme-kind-think)'))
+// planning → agent (purple); compaction → subtle accent; thinking → think.
+const tone = computed(() => {
+  if (props.kind === StreamKind.Planning) {
+    return 'var(--theme-kind-agent)'
+  }
+
+  if (props.kind === StreamKind.Compaction) {
+    return 'var(--theme-fg-subtle)'
+  }
+
+  return 'var(--theme-kind-think)'
+})
 
 const hasItems = computed(() => (props.items?.length ?? 0) > 0)
 const hasSlot = computed(() => Boolean(slots.default))
@@ -67,7 +77,7 @@ const hasSlot = computed(() => Boolean(slots.default))
 // (label / elapsed / stats pills) still renders, so the captain
 // still sees "thought · 12s" even when the body is empty.
 const hasNonWhitespaceText = computed(() => typeof props.text === 'string' && props.text.trim() !== '')
-const useMarkdown = computed(() => props.kind === StreamKind.Thinking && hasNonWhitespaceText.value)
+const useMarkdown = computed(() => (props.kind === StreamKind.Thinking || props.kind === StreamKind.Compaction) && hasNonWhitespaceText.value)
 /// No expandable content → header is the whole card (used by the
 /// thinking-time-only fallback path: agent reasoned silently for N
 /// seconds, no prose to render). Hides the chevron + drops the

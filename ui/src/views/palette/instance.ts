@@ -28,6 +28,7 @@ import {
   type PaletteEntry,
   PaletteMode,
   type PaletteSpec,
+  applyMetaSnapshotToStores,
   pushInstanceModelState,
   pushToast,
   setInstanceAgent,
@@ -191,9 +192,16 @@ function buildInstanceLeafSpec(args: BuildInstanceLeafSpecArgs): PaletteSpec {
 /// Open the profiles sub-palette under the `new` action — picking a
 /// profile here both stages a new instance UUID AND persists the
 /// profile selection. Empty registries surface a toast.
-function openNewInstanceProfilePicker(): void {
+async function openNewInstanceProfilePicker(): Promise<void> {
   const { open } = usePalette()
-  const { profiles, selected, loading } = useProfiles()
+  const { profiles, selected, loading, refresh } = useProfiles()
+
+  try {
+    await refresh()
+  } catch(err) {
+    log.warn('palette-instance: profiles refresh failed before new picker', { err: String(err) })
+    pushToast(ToastTone.Err, `profiles refresh failed: ${String(err)}`)
+  }
   const { id: activeInstanceId } = useActiveInstance()
 
   if (profiles.value.length === 0) {
@@ -229,9 +237,16 @@ function openNewInstanceProfilePicker(): void {
 /// Two-step picker mirrors `new` (which picks a profile) but instead of
 /// staging an empty instance, the second picker lists existing
 /// sessions for the chosen `(agent, profile)` pair and resumes one.
-function openRestoreInstanceProfilePicker(): void {
+async function openRestoreInstanceProfilePicker(): Promise<void> {
   const { open } = usePalette()
-  const { profiles, selected, loading } = useProfiles()
+  const { profiles, selected, loading, refresh } = useProfiles()
+
+  try {
+    await refresh()
+  } catch(err) {
+    log.warn('palette-instance: profiles refresh failed before restore picker', { err: String(err) })
+    pushToast(ToastTone.Err, `profiles refresh failed: ${String(err)}`)
+  }
   const { id: activeInstanceId } = useActiveInstance()
 
   if (profiles.value.length === 0) {
@@ -376,6 +391,10 @@ export async function openInstanceLeaf(): Promise<void> {
       const meta = await invoke(TauriCommand.InstanceMeta, { instanceId: focused })
 
       currentName = (meta as { name?: string }).name
+
+      const snapshotMeta = await invoke(TauriCommand.InstanceSnapshotMeta, { instanceId: focused })
+
+      applyMetaSnapshotToStores(focused, snapshotMeta)
     } catch(err) {
       log.debug('palette-instance: instance_meta read failed', { err: String(err) })
     }
@@ -384,8 +403,8 @@ export async function openInstanceLeaf(): Promise<void> {
   const spec = buildInstanceLeafSpec({
     focused,
     currentName,
-    onPickNew: openNewInstanceProfilePicker,
-    onPickRestore: openRestoreInstanceProfilePicker,
+    onPickNew: () => void openNewInstanceProfilePicker(),
+    onPickRestore: () => void openRestoreInstanceProfilePicker(),
     onPickRename() {
       if (!focused) {
         return

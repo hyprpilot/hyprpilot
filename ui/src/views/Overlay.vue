@@ -215,7 +215,7 @@ const headerCounts = computed<BreadcrumbCount[]>(() => [
   }
 ])
 
-function onPillClick(target: 'profile' | 'mode' | 'provider'): void {
+function onPillClick(target: 'profile' | 'mode' | 'effort' | 'provider'): void {
   switch (target) {
     case 'profile':
       openRootLeaf(PaletteLeafId.Profiles)
@@ -224,6 +224,11 @@ function onPillClick(target: 'profile' | 'mode' | 'provider'): void {
 
     case 'mode':
       openRootLeaf(PaletteLeafId.Modes)
+
+      return
+
+    case 'effort':
+      openRootLeaf(PaletteLeafId.Effort)
 
       return
 
@@ -956,6 +961,7 @@ function onQueueSend(itemId: string): void {
     :profile="sessionInfo.profileId ?? selectedProfile ?? sessionInfo.agent ?? 'none'"
     :name="sessionInfo.name"
     :phase="phase"
+    :effort-tag="sessionInfo.effort"
     :mode-tag="sessionInfo.mode"
     :provider="sessionInfo.agent"
     :model="sessionInfo.model"

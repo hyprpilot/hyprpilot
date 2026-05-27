@@ -9,7 +9,11 @@ pub mod formatters;
 
 use tokio::process::Command;
 
+use agent_client_protocol::schema::ToolCallUpdate;
+
 use super::{AcpAgent, ModelInjection, SystemPromptInjection};
+use crate::adapters::ToolCallState;
+use crate::tools::ToolKind;
 
 pub struct AcpAgentOpenCode;
 
@@ -23,6 +27,91 @@ impl AcpAgent for AcpAgentOpenCode {
     fn inject_system_prompt(&self, _cmd: &mut Command, prompt: &str) -> SystemPromptInjection {
         SystemPromptInjection::FirstMessage(prompt.to_string())
     }
+
+    fn permission_mcp_tool_with_servers(
+        &self,
+        update: &ToolCallUpdate,
+        mcp_server_names: &[String],
+    ) -> Option<ToolKind> {
+        update
+            .fields
+            .title
+            .as_deref()
+            .and_then(|title| mcp_tool_from_single_underscore_name(title, mcp_server_names))
+    }
+
+    fn mcp_tool_with_servers(
+        &self,
+        title: &str,
+        raw_input: Option<&serde_json::Value>,
+        mcp_server_names: &[String],
+    ) -> Option<ToolKind> {
+        self.mcp_tool(title, raw_input)
+            .or_else(|| mcp_tool_from_single_underscore_name(title, mcp_server_names))
+    }
+
+    fn suppress_initial_tool_call(
+        &self,
+        _title: &str,
+        raw_input: Option<&serde_json::Value>,
+        state: ToolCallState,
+    ) -> bool {
+        matches!(state, ToolCallState::Pending)
+            && raw_input
+                .and_then(|value| value.as_object())
+                .map_or(true, serde_json::Map::is_empty)
+    }
+}
+
+/// opencode flattens MCP tools as
+/// `sanitize(server) + "_" + sanitize(tool)` (single underscore).
+/// Match against the resolved per-instance server names so servers
+/// containing underscores / dashes still attribute correctly.
+#[must_use]
+pub fn mcp_tool_from_single_underscore_name(title: &str, server_names: &[String]) -> Option<ToolKind> {
+    let title = title.trim();
+    let mut matches: Vec<_> = server_names
+        .iter()
+        .map(|name| (name, sanitize_mcp_component(name)))
+        .filter(|(_, sanitized)| {
+            title
+                .strip_prefix(sanitized)
+                .is_some_and(|rest| rest.starts_with('_') && rest.len() > 1)
+        })
+        .collect();
+    matches.sort_by_key(|(_, sanitized)| std::cmp::Reverse(sanitized.len()));
+    let (server, sanitized_server) = matches.first()?;
+    let max_len = sanitized_server.len();
+    if matches
+        .iter()
+        .filter(|(_, sanitized)| sanitized.len() == max_len)
+        .count()
+        > 1
+    {
+        return None;
+    }
+
+    let leaf = title.strip_prefix(sanitized_server.as_str())?.strip_prefix('_')?;
+    if leaf.is_empty() {
+        return None;
+    }
+
+    Some(ToolKind::Mcp {
+        server: server.to_string(),
+        tool: leaf.to_string(),
+    })
+}
+
+fn sanitize_mcp_component(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -31,8 +120,10 @@ mod tests {
 
     use crate::config::{AgentConfig, AgentProvider};
 
+    use super::mcp_tool_from_single_underscore_name;
     use super::AcpAgentOpenCode;
     use crate::adapters::acp::agents::AcpAgent;
+    use crate::tools::ToolKind;
 
     fn entry_with_model(model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -104,5 +195,46 @@ mod tests {
             crate::adapters::acp::agents::SystemPromptInjection::FirstMessage(s) => assert_eq!(s, "be terse"),
             other => panic!("expected FirstMessage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn mcp_tool_from_single_underscore_name_matches_longest_sanitized_server() {
+        let servers = vec!["linear-kilic-dev".to_string(), "linear".to_string()];
+
+        assert_eq!(
+            mcp_tool_from_single_underscore_name("linear-kilic-dev_list_issues", &servers),
+            Some(ToolKind::Mcp {
+                server: "linear-kilic-dev".into(),
+                tool: "list_issues".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_tool_from_single_underscore_name_uses_original_server_name() {
+        let servers = vec!["my.server".to_string()];
+
+        assert_eq!(
+            mcp_tool_from_single_underscore_name("my_server_fetch", &servers),
+            Some(ToolKind::Mcp {
+                server: "my.server".into(),
+                tool: "fetch".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_tool_from_single_underscore_name_rejects_unknown_prefixes() {
+        let servers = vec!["memory".to_string()];
+
+        assert_eq!(mcp_tool_from_single_underscore_name("read", &servers), None);
+        assert_eq!(mcp_tool_from_single_underscore_name("memory", &servers), None);
+    }
+
+    #[test]
+    fn mcp_tool_from_single_underscore_name_rejects_sanitized_server_collisions() {
+        let servers = vec!["a.b".to_string(), "a_b".to_string()];
+
+        assert_eq!(mcp_tool_from_single_underscore_name("a_b_fetch", &servers), None);
     }
 }

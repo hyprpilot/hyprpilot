@@ -65,6 +65,7 @@ export interface SessionInfo {
   /// for bare-agent spawns or before the first InstanceMeta lands.
   profileId?: string
   mode?: string
+  effort?: string
   model?: string
   availableModes: SessionModeOption[]
   availableModels: SessionModelOption[]
@@ -195,7 +196,8 @@ export function pushCurrentModeUpdate(id: InstanceId, raw: CurrentModeUpdateRaw)
  * If `session_info_update` later lands with a real wire title,
  * `pushSessionInfoUpdate` still wins via call-order — we treat the
  * derived title as a default the wire is welcome to override at
- * any moment.
+ * any moment. Keep the full text here; the header owns truncation
+ * with flex/CSS so it can use all available row width.
  */
 export function setSessionTitleFromPrompt(id: InstanceId, derived: string): void {
   const slot = slotFor(id)
@@ -204,7 +206,7 @@ export function setSessionTitleFromPrompt(id: InstanceId, derived: string): void
   if (!trimmed) {
     return
   }
-  slot.title = trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed
+  slot.title = trimmed
 }
 
 /**
@@ -394,6 +396,7 @@ function projectSessionInfo(slot: SessionInfoState | undefined, slotProfile: Pro
     name: slot?.name,
     profileId: slot?.profileId,
     mode: slot?.mode,
+    effort: slot?.configOptions.find((category) => category.id === 'effort')?.currentValue,
     model: slot?.model ?? slotProfile?.model,
     availableModes: slot?.availableModes ?? [],
     availableModels: slot?.availableModels ?? [],

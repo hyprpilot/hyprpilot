@@ -11,18 +11,26 @@ pub struct EditFormatter;
 
 impl ToolFormatter for EditFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let path = pick::<String>(ctx.raw_input, "filePath").filter(|s| !s.is_empty());
+        let path = pick::<String>(ctx.raw_input, "filePath")
+            .or_else(|| pick::<String>(ctx.raw_input, "filepath"))
+            .filter(|s| !s.is_empty());
         let replace_all = pick::<bool>(ctx.raw_input, "replaceAll").unwrap_or(false);
         let old_text = pick::<String>(ctx.raw_input, "oldString").unwrap_or_default();
         let new_text = pick::<String>(ctx.raw_input, "newString").unwrap_or_default();
+        let metadata_diff = pick::<String>(ctx.raw_input, "diff").filter(|s| !s.is_empty());
 
         let title = match path.as_deref() {
             Some(p) => format!("edit · {}", p),
             None => "edit".to_string(),
         };
 
-        let description = format_diff_hunk(path.as_deref(), &old_text, &new_text);
-        let diff = format_git_diff(path.as_deref(), &old_text, &new_text);
+        let description = metadata_diff
+            .as_ref()
+            .map(|diff| format!("```diff\n{diff}\n```"))
+            .or_else(|| format_diff_hunk(path.as_deref(), &old_text, &new_text));
+        let diff = metadata_diff
+            .clone()
+            .or_else(|| format_git_diff(path.as_deref(), &old_text, &new_text));
 
         let mut fields: Vec<ToolField> = Vec::new();
         if let Some(p) = path {

@@ -83,8 +83,8 @@ struct TurnState {
     prompt_in_flight: bool,
     /// True when the dispatcher routed at least one agent-output
     /// transcript item (`AgentText` / `AgentThought` / `AgentAttachment`
-    /// / `ToolCall` / `ToolCallUpdate` / `Plan`) for the currently open
-    /// turn. Reset on every `open`. Read by the
+    /// / `ToolCall` / `ToolCallUpdate` / `Plan` / `Compaction`) for the
+    /// currently open turn. Reset on every `open`. Read by the
     /// prompt-future at completion: a vendor that returned a
     /// `stop_reason: null` AND emitted nothing during the turn used to
     /// surface as a bare `TurnEnded { error: None }`, which downstream
@@ -142,7 +142,8 @@ impl Role {
             | TI::AgentAttachment(_)
             | TI::ToolCall(_)
             | TI::ToolCallUpdate(_)
-            | TI::Plan(_) => Some(Self::Agent),
+            | TI::Plan(_)
+            | TI::Compaction(_) => Some(Self::Agent),
             TI::PermissionRequest(_) | TI::Unknown { .. } => None,
         }
     }
@@ -393,11 +394,18 @@ impl TurnGuard {
         let output_observed = slot.output_observed();
         drop(slot);
 
-        if stop_reason.is_none() && error.is_none() && !output_observed {
+        let clean_empty_turn = error.is_none()
+            && !output_observed
+            && stop_reason
+                .as_deref()
+                .map_or(true, |reason| reason.eq_ignore_ascii_case("end_turn"));
+
+        if clean_empty_turn {
             error = Some(
                 "agent ended the turn without emitting any output and without a \
-                 stop reason — vendor returned a null `stop_reason` and no \
-                 session updates landed between TurnStarted and TurnEnded. \
+                 useful ACP error — vendor returned a clean `end_turn` or null \
+                 `stop_reason`, but no session updates landed between TurnStarted \
+                 and TurnEnded. \
                  Re-run with `RUST_LOG=acp::wire=trace` to see the raw \
                  session/prompt response."
                     .to_string(),
@@ -797,6 +805,21 @@ impl MetaEmitter {
         };
         publish(&self.mirror, events_tx, event).await;
     }
+
+    async fn emit_config_options(&self, events_tx: &broadcast::Sender<InstanceEvent>, session_id: String) {
+        let categories = self.config_options.read().await.clone();
+        if categories.is_empty() {
+            return;
+        }
+
+        let event = InstanceEvent::ConfigOptionsUpdate {
+            agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
+            session_id,
+            categories,
+        };
+        publish(&self.mirror, events_tx, event).await;
+    }
 }
 
 fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::formatter::types::FormattedToolCall {
@@ -814,8 +837,14 @@ fn format_running(adapter_id: &str, running: &RunningToolCall) -> crate::tools::
     registry.dispatch(&ctx)
 }
 
-fn mcp_tool(adapter_id: &str, title: &str, raw_input: Option<&serde_json::Value>) -> Option<ToolKind> {
-    ToolKind::from_mcp_name(title).or_else(|| super::agents::mcp_tool(adapter_id, title, raw_input))
+fn mcp_tool(
+    adapter_id: &str,
+    title: &str,
+    raw_input: Option<&serde_json::Value>,
+    mcp_server_names: &[String],
+) -> Option<ToolKind> {
+    ToolKind::from_mcp_name(title)
+        .or_else(|| super::agents::mcp_tool_with_servers(adapter_id, title, raw_input, mcp_server_names))
 }
 
 fn apply_config_option_selection(
@@ -931,14 +960,24 @@ fn strip_plan_step_header(content: &str) -> String {
     rest.trim_end().to_string()
 }
 
+#[cfg(test)]
 pub(crate) fn map_session_update(
     update: serde_json::Value,
     tool_calls: &mut ToolCallCache,
     adapter_id: &str,
 ) -> MappedSessionUpdate {
+    map_session_update_with_mcp_servers(update, tool_calls, adapter_id, &[])
+}
+
+pub(crate) fn map_session_update_with_mcp_servers(
+    update: serde_json::Value,
+    tool_calls: &mut ToolCallCache,
+    adapter_id: &str,
+    mcp_server_names: &[String],
+) -> MappedSessionUpdate {
     use crate::adapters::{
-        Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
-        ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem,
+        Attachment, ChecklistStats, CompactionRecord, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus,
+        ToolCallContentItem, ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem,
     };
 
     let kind = update
@@ -1288,7 +1327,7 @@ pub(crate) fn map_session_update(
                 running.wire_name = title.clone();
                 running.tool_kind = ToolKind::from_wire(
                     Some(tool_kind.as_str()),
-                    mcp_tool(adapter_id, &title, raw_input.as_ref()),
+                    mcp_tool(adapter_id, &title, raw_input.as_ref(), mcp_server_names),
                 );
                 running.raw_input = raw_input.clone();
                 running.content = update
@@ -1328,11 +1367,18 @@ pub(crate) fn map_session_update(
             // re-format against merged state. `started_at` captures
             // wall-clock at this first observation; `completed_at`
             // stays None until a state transition lands below.
+            if super::agents::suppress_initial_tool_call(adapter_id, &title, raw_input.as_ref(), state) {
+                return MappedSessionUpdate {
+                    message_id,
+                    meta,
+                    mapped: MappedUpdate::Noop,
+                };
+            }
             let running = RunningToolCall {
                 wire_name: title.clone(),
                 tool_kind: ToolKind::from_wire(
                     Some(tool_kind.as_str()),
-                    mcp_tool(adapter_id, &title, raw_input.as_ref()),
+                    mcp_tool(adapter_id, &title, raw_input.as_ref(), mcp_server_names),
                 ),
                 raw_input: raw_input.clone(),
                 content: update
@@ -1408,15 +1454,22 @@ pub(crate) fn map_session_update(
             if running.wire_name.is_empty() {
                 if let Some(t) = title.as_deref() {
                     running.wire_name = t.to_string();
-                    running.tool_kind =
-                        ToolKind::from_wire(tool_kind.as_deref(), mcp_tool(adapter_id, t, raw_input.as_ref()));
+                    running.tool_kind = ToolKind::from_wire(
+                        tool_kind.as_deref(),
+                        mcp_tool(adapter_id, t, raw_input.as_ref(), mcp_server_names),
+                    );
                 }
             }
             if let Some(k) = tool_kind.as_deref() {
                 if !running.tool_kind.is_mcp() {
                     running.tool_kind = ToolKind::from_wire(
                         Some(k),
-                        mcp_tool(adapter_id, running.wire_name.as_str(), raw_input.as_ref()),
+                        mcp_tool(
+                            adapter_id,
+                            running.wire_name.as_str(),
+                            raw_input.as_ref(),
+                            mcp_server_names,
+                        ),
                     );
                 }
             }
@@ -1425,7 +1478,7 @@ pub(crate) fn map_session_update(
                 if !running.tool_kind.is_mcp() {
                     running.tool_kind = ToolKind::from_wire(
                         tool_kind.as_deref(),
-                        mcp_tool(adapter_id, running.wire_name.as_str(), Some(rv)),
+                        mcp_tool(adapter_id, running.wire_name.as_str(), Some(rv), mcp_server_names),
                     );
                 }
             }
@@ -1499,6 +1552,36 @@ pub(crate) fn map_session_update(
                 stats: ChecklistStats { done, total },
             }))
         }
+        "compaction" | "compaction_update" | "session_compaction" => {
+            let mut text = chunk_text(&update).trim().to_string();
+            if text.is_empty() {
+                text = update
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        update
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                    })
+                    .map(str::to_string)
+                    .unwrap_or_default();
+            }
+            let tail_start_id = update
+                .get("tailStartId")
+                .or_else(|| update.get("tail_start_id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            MappedUpdate::Transcript(TranscriptItem::Compaction(CompactionRecord {
+                text,
+                auto: update.get("auto").and_then(|v| v.as_bool()).unwrap_or(false),
+                overflow: update.get("overflow").and_then(|v| v.as_bool()),
+                tail_start_id,
+            }))
+        }
         "permission_request" => {
             let request_id = update
                 .get("requestId")
@@ -1524,7 +1607,7 @@ pub(crate) fn map_session_update(
                 .unwrap_or_default();
             let tool_kind = ToolKind::from_wire(
                 Some(tool_kind.as_str()),
-                mcp_tool(adapter_id, &tool, raw_input.as_ref()),
+                mcp_tool(adapter_id, &tool, raw_input.as_ref(), mcp_server_names),
             );
             // Same formatter dispatch the live `InstanceEvent::PermissionRequest`
             // emit uses (instance.rs ~2949). `started_at: 0` /
@@ -2299,7 +2382,7 @@ async fn run(params: RunParams) {
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
-                        tracing::info!(target: "agent_stderr", agent = %agent_for_stderr, "{line}");
+                        tracing::warn!(target: "agent_stderr", agent = %agent_for_stderr, "{line}");
                         // Also push to the rolling tail so the
                         // user-facing "actor closed before accepting
                         // prompt" path can surface WHY. Lock briefly,
@@ -2392,7 +2475,13 @@ async fn run(params: RunParams) {
     ) {
         Ok(c) => {
             let agent = match_provider_agent(cfg.provider);
-            c.with_permission_mcp_tool(Arc::new(move |update| agent.permission_mcp_tool(update)))
+            let mcp_server_names = mcps
+                .as_ref()
+                .map(|registry| registry.list().into_iter().map(|def| def.name).collect::<Vec<_>>())
+                .unwrap_or_default();
+            c.with_permission_mcp_tool(Arc::new(move |update| {
+                agent.permission_mcp_tool_with_servers(update, &mcp_server_names)
+            }))
         }
         Err(err) => {
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
@@ -2596,6 +2685,11 @@ async fn run(params: RunParams) {
         // `InstanceMeta` emit. Reads via `list().len()` because the
         // registry's `count()` accessor is `cfg(test)` only.
         let mcps_count = mcps.as_ref().map(|reg| reg.list().len()).unwrap_or(0);
+        let mcp_server_names: Arc<Vec<String>> = Arc::new(
+            mcps.as_ref()
+                .map(|reg| reg.list().into_iter().map(|def| def.name).collect())
+                .unwrap_or_default(),
+        );
 
         // Single emitter for every `InstanceMeta` refresh in this
         // actor. Cloned into spawned tasks; reads the four `RwLock`
@@ -2770,6 +2864,79 @@ async fn run(params: RunParams) {
                     }
                     *config_options_meta.write().await = categories;
                 }
+                if let Some(want) = cfg.effort.as_deref() {
+                    let advertised = config_options_meta
+                        .read()
+                        .await
+                        .iter()
+                        .find(|category| category.id == "effort")
+                        .is_some_and(|category| {
+                            category.current_value.as_deref() != Some(want)
+                                && category.options.iter().any(|option| option.value == want)
+                        });
+                    if advertised {
+                        let agent = match_provider_agent(cfg.provider);
+                        let current_model = current_model_meta.read().await.clone().or_else(|| cfg.model.clone());
+                        let route = agent.config_option_route("effort", want, current_model.as_deref());
+                        tracing::info!(
+                            agent = %agent_id_notif,
+                            instance = %instance_id_notif,
+                            session = %sid,
+                            value = %want,
+                            route = ?route,
+                            "acp::instance: applying configured effort via session config"
+                        );
+                        let res: Result<(), String> = match &route {
+                            ConfigOptionRoute::SetConfigOption { config_id } => {
+                                use agent_client_protocol::schema::{
+                                    SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest,
+                                };
+                                let req = SetSessionConfigOptionRequest::new(
+                                    sid.clone(),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(want)),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(resp) => {
+                                        let mut categories = project_session_config_options(
+                                            cfg.provider.wire_id(),
+                                            &resp.config_options,
+                                            Some(want),
+                                        );
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        *config_options_meta.write().await = categories;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                            ConfigOptionRoute::SetModel { model_id } => {
+                                let req = SetSessionModelRequest::new(
+                                    sid.clone(),
+                                    ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(_) => {
+                                        *current_model_meta.write().await = Some(model_id.clone());
+                                        let mut categories = config_options_meta.write().await;
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                        };
+                        if let Err(err) = res {
+                            tracing::warn!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                target_effort = %want,
+                                %err,
+                                "acp::instance: configured effort apply failed — keeping agent default"
+                            );
+                        }
+                    }
+                }
                 let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
                     instance_id: instance_id_notif.clone(),
@@ -2779,6 +2946,9 @@ async fn run(params: RunParams) {
                 mirror_notif.apply(&event).await;
                 let _ = events_tx_notif.send(event);
                 meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
+                meta_emitter
+                    .emit_config_options(&events_tx_notif, sid.0.to_string())
+                    .await;
                 Some(sid)
             }
             Bootstrap::Resume(sid) => {
@@ -2915,6 +3085,79 @@ async fn run(params: RunParams) {
                     }
                     *config_options_meta.write().await = categories;
                 }
+                if let Some(want) = cfg.effort.as_deref() {
+                    let advertised = config_options_meta
+                        .read()
+                        .await
+                        .iter()
+                        .find(|category| category.id == "effort")
+                        .is_some_and(|category| {
+                            category.current_value.as_deref() != Some(want)
+                                && category.options.iter().any(|option| option.value == want)
+                        });
+                    if advertised {
+                        let agent = match_provider_agent(cfg.provider);
+                        let current_model = current_model_meta.read().await.clone().or_else(|| cfg.model.clone());
+                        let route = agent.config_option_route("effort", want, current_model.as_deref());
+                        tracing::info!(
+                            agent = %agent_id_notif,
+                            instance = %instance_id_notif,
+                            session = %sid,
+                            value = %want,
+                            route = ?route,
+                            "acp::instance: applying configured effort via session config"
+                        );
+                        let res: Result<(), String> = match &route {
+                            ConfigOptionRoute::SetConfigOption { config_id } => {
+                                use agent_client_protocol::schema::{
+                                    SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest,
+                                };
+                                let req = SetSessionConfigOptionRequest::new(
+                                    sid.clone(),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(want)),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(resp) => {
+                                        let mut categories = project_session_config_options(
+                                            cfg.provider.wire_id(),
+                                            &resp.config_options,
+                                            Some(want),
+                                        );
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        *config_options_meta.write().await = categories;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                            ConfigOptionRoute::SetModel { model_id } => {
+                                let req = SetSessionModelRequest::new(
+                                    sid.clone(),
+                                    ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(_) => {
+                                        *current_model_meta.write().await = Some(model_id.clone());
+                                        let mut categories = config_options_meta.write().await;
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                        };
+                        if let Err(err) = res {
+                            tracing::warn!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                target_effort = %want,
+                                %err,
+                                "acp::instance: configured effort apply failed — keeping agent default"
+                            );
+                        }
+                    }
+                }
                 // Suspended sessions can resume with a half-finished
                 // turn — pending tool call awaiting permission, agent
                 // mid-stream, etc. The replay surfaces those states
@@ -3000,6 +3243,9 @@ async fn run(params: RunParams) {
                 mirror_notif.apply(&event).await;
                 let _ = events_tx_notif.send(event);
                 meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
+                meta_emitter
+                    .emit_config_options(&events_tx_notif, sid.0.to_string())
+                    .await;
                 Some(sid)
             }
             Bootstrap::ListOnly => {
@@ -3362,10 +3608,19 @@ async fn run(params: RunParams) {
                                     } else if config_id == "model" {
                                         *current_model_done.write().await = Some(value.clone());
                                     }
-                                    let mut categories = config_options_done.write().await;
-                                    super::agents::augment_config_options(&adapter_id, &mut categories, Some(value.as_str()));
-                                    apply_config_option_selection(&mut categories, &config_id, &value);
+                                    {
+                                        let mut categories = config_options_done.write().await;
+                                        super::agents::augment_config_options(
+                                            &adapter_id,
+                                            &mut categories,
+                                            Some(value.as_str()),
+                                        );
+                                        apply_config_option_selection(&mut categories, &config_id, &value);
+                                    }
                                     meta_emitter.emit(&events_tx_done, Some(session_log.0.to_string())).await;
+                                    meta_emitter
+                                        .emit_config_options(&events_tx_done, session_log.0.to_string())
+                                        .await;
                                 }
                                 let _ = reply.send(res);
                             });
@@ -3675,7 +3930,12 @@ async fn run(params: RunParams) {
                                 message_id,
                             } = {
                                 let mut guard = tool_call_cache.write().await;
-                                map_session_update(update, &mut guard, provider_id_for_fmt.as_str())
+                                map_session_update_with_mcp_servers(
+                                    update,
+                                    &mut guard,
+                                    provider_id_for_fmt.as_str(),
+                                    mcp_server_names.as_ref(),
+                                )
                             };
                             // Out-of-prompt detection: if a transcript-shape
                             // update arrives without an open turn, mint an
@@ -3778,6 +4038,7 @@ async fn run(params: RunParams) {
                                             | crate::adapters::TranscriptItem::ToolCall(_)
                                             | crate::adapters::TranscriptItem::ToolCallUpdate(_)
                                             | crate::adapters::TranscriptItem::Plan(_)
+                                            | crate::adapters::TranscriptItem::Compaction(_)
                                     ) {
                                         turn_state.write().await.note_agent_output();
                                     }
@@ -4285,6 +4546,55 @@ mod tests {
     }
 
     #[test]
+    fn map_session_update_maps_compaction_record() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "compaction",
+            "auto": true,
+            "overflow": true,
+            "tailStartId": "msg-1",
+            "content": { "type": "text", "text": "Summary text" }
+        });
+        let mapped = map_session_update(update, &mut cache, "acp-opencode");
+        let MappedUpdate::Transcript(item) = mapped.mapped else {
+            panic!("expected Transcript update");
+        };
+        let crate::adapters::TranscriptItem::Compaction(compaction) = item else {
+            panic!("expected Compaction transcript item");
+        };
+
+        assert_eq!(compaction.text, "Summary text");
+        assert!(compaction.auto);
+        assert_eq!(compaction.overflow, Some(true));
+        assert_eq!(compaction.tail_start_id.as_deref(), Some("msg-1"));
+    }
+
+    #[test]
+    fn map_session_update_maps_compaction_summary_fallback() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "compaction",
+            "summary": "Fallback summary"
+        });
+        let mapped = map_session_update(update, &mut cache, "acp-opencode");
+        let MappedUpdate::Transcript(item) = mapped.mapped else {
+            panic!("expected Transcript update");
+        };
+        let crate::adapters::TranscriptItem::Compaction(compaction) = item else {
+            panic!("expected Compaction transcript item");
+        };
+
+        assert_eq!(compaction.text, "Fallback summary");
+        assert!(!compaction.auto);
+        assert_eq!(compaction.overflow, None);
+        assert_eq!(compaction.tail_start_id, None);
+    }
+
+    #[test]
     fn map_session_update_sets_codex_mcp_tool() {
         use serde_json::json;
 
@@ -4313,6 +4623,77 @@ mod tests {
                 tool: "read_skill".into()
             }
         );
+    }
+
+    #[test]
+    fn map_session_update_sets_opencode_mcp_tool_from_single_underscore_name() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-1",
+            "title": "linear-kilic-dev_list_issues",
+            "kind": "other",
+            "status": "running",
+            "rawInput": { "query": "open" }
+        });
+        let mapped =
+            map_session_update_with_mcp_servers(update, &mut cache, "acp-opencode", &["linear-kilic-dev".to_string()])
+                .mapped;
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCall(record)) = mapped else {
+            panic!("expected tool call");
+        };
+
+        assert_eq!(
+            record.tool_kind,
+            ToolKind::Mcp {
+                server: "linear-kilic-dev".into(),
+                tool: "list_issues".into()
+            }
+        );
+        assert_eq!(record.formatted.title, "linear-kilic-dev · list_issues");
+    }
+
+    #[test]
+    fn map_session_update_suppresses_opencode_empty_pending_tool_call() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-1",
+            "title": "bash",
+            "kind": "execute",
+            "status": "pending",
+            "rawInput": {}
+        });
+        let mapped = map_session_update_with_mcp_servers(update, &mut cache, "acp-opencode", &[]).mapped;
+
+        assert!(matches!(mapped, MappedUpdate::Noop));
+        assert!(!cache.contains_key("tc-1"));
+    }
+
+    #[test]
+    fn map_session_update_keeps_opencode_first_populated_tool_update() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-1",
+            "title": "bash",
+            "kind": "execute",
+            "status": "in_progress",
+            "rawInput": { "command": "echo hi" }
+        });
+        let mapped = map_session_update_with_mcp_servers(update, &mut cache, "acp-opencode", &[]).mapped;
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCallUpdate(record)) = mapped else {
+            panic!("expected tool call update");
+        };
+
+        assert_eq!(record.raw_input, Some(json!({ "command": "echo hi" })));
+        assert_eq!(record.formatted.title, "bash · echo");
     }
 
     #[test]
@@ -5066,6 +5447,67 @@ mod tests {
                     msg.contains("without emitting any output"),
                     "error message should describe the empty-turn case; got: {msg}"
                 );
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_guard_complete_synthesizes_error_on_empty_turn_with_end_turn() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "opencode".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state,
+        )
+        .await;
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+
+        guard.complete(Some("end_turn".into()), None).await;
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { stop_reason, error, .. } => {
+                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+                let msg = error.expect("error synthesized on empty end_turn");
+                assert!(
+                    msg.contains("clean `end_turn`"),
+                    "error message should describe the suspicious ACP success; got: {msg}"
+                );
+            }
+            other => panic!("expected TurnEnded; got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_guard_complete_preserves_clean_end_turn_when_output_observed() {
+        let mirror = std::sync::Arc::new(crate::adapters::InstanceMirror::new());
+        let (events_tx, mut events_rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let turn_state: SharedTurnState = std::sync::Arc::new(tokio::sync::RwLock::new(TurnState::default()));
+        let guard = TurnGuard::new(
+            "t-1".into(),
+            "opencode".into(),
+            "i-1".into(),
+            "s-1".into(),
+            events_tx,
+            mirror,
+            turn_state.clone(),
+        )
+        .await;
+        let _ = events_rx.recv().await.expect("TurnStarted emitted");
+        turn_state.write().await.note_agent_output();
+
+        guard.complete(Some("end_turn".into()), None).await;
+        let evt = events_rx.recv().await.expect("TurnEnded emitted");
+        match evt {
+            InstanceEvent::TurnEnded { stop_reason, error, .. } => {
+                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+                assert!(error.is_none(), "successful output must not be tagged as empty");
             }
             other => panic!("expected TurnEnded; got {other:?}"),
         }

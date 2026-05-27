@@ -141,6 +141,20 @@ describe('ToolBody.vue', () => {
     expect((order[2] as HTMLElement).className).toContain('tool-body-output')
   })
 
+  it('hides output when it duplicates the description payload', () => {
+    const wrapper = mount(ToolBody, {
+      props: {
+        view: makeView({
+          description: '```diff\n-old\n+new\n```',
+          output: '-old\n+new'
+        })
+      }
+    })
+
+    expect(wrapper.find('.tool-body-description').exists()).toBe(true)
+    expect(wrapper.find('.tool-body-output').exists()).toBe(false)
+  })
+
   it('renders fields with each label and value', () => {
     const wrapper = mount(ToolBody, {
       props: {

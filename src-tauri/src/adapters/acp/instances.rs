@@ -1539,6 +1539,32 @@ impl AcpAdapter {
         Ok(serde_json::json!({ "configId": config_id, "value": value }))
     }
 
+    pub async fn get_session_effort(&self, instance_id: &str) -> Result<Value, RpcError> {
+        let handle = self.require_instance(instance_id).await?;
+        let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+        let effort = snap.config_options.iter().find(|category| category.id == "effort");
+
+        Ok(serde_json::json!({
+            "effortId": effort.and_then(|category| category.current_value.clone()),
+        }))
+    }
+
+    pub async fn list_session_efforts(&self, instance_id: &str) -> Result<Value, RpcError> {
+        let handle = self.require_instance(instance_id).await?;
+        let snap = handle.meta_snapshot().await.map_err(RpcError::internal_error)?;
+        let effort = snap.config_options.iter().find(|category| category.id == "effort");
+
+        Ok(serde_json::json!({
+            "effortId": effort.and_then(|category| category.current_value.clone()),
+            "efforts": effort.map(|category| category.options.clone()).unwrap_or_default(),
+        }))
+    }
+
+    pub async fn set_session_effort(&self, instance_id: &str, effort_id: &str) -> Result<Value, RpcError> {
+        self.set_session_config_option(instance_id, "effort", effort_id).await?;
+        Ok(serde_json::json!({ "effortId": effort_id }))
+    }
+
     /// Read the addressed instance's per-instance metadata cache.
     /// The palette pickers (modes, models) call this on every open
     /// so the listed options come straight from the daemon's
@@ -1795,6 +1821,24 @@ impl Adapter for AcpAdapter {
             .map_err(rpc_to_adapter)
     }
 
+    async fn get_session_effort(&self, instance_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::get_session_effort(self, instance_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn list_session_efforts(&self, instance_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::list_session_efforts(self, instance_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn set_session_effort(&self, instance_id: &str, effort_id: &str) -> AdapterResult<serde_json::Value> {
+        AcpAdapter::set_session_effort(self, instance_id, effort_id)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
     fn selected_profile_id(&self) -> Option<String> {
         AcpAdapter::selected_profile_id(self)
     }
@@ -2018,7 +2062,12 @@ pub(crate) fn resolve_effective_profile(
     let merged = if external_patches.is_empty() {
         with_root
     } else {
-        crate::config::patch::merge_patches(with_root, external_patches.to_vec())
+        // Per-invocation `withConfig` patches use the same
+        // profile-shaped patch vocabulary as root `[[patches]]`,
+        // including top-level `$match`. Strip/filter that directive
+        // here before deserialising back into `ProfileConfig`; if it
+        // leaks through serde reports `unknown field "$match"`.
+        crate::config::patch::apply_profile_patches(with_root, external_patches, &base.id)
     };
 
     let patched: ProfileConfig = serde_json::from_value(merged)
@@ -2669,6 +2718,60 @@ agent = "base"
             .await
             .expect("info_for");
         assert_eq!(info.agent_id, "extra");
+    }
+
+    /// `withConfig` accepts the same top-level `$match` directive as
+    /// root `[[patches]]`. The directive is stripped before the
+    /// patch is deserialized back into `ProfileConfig`; otherwise
+    /// serde rejects it as an unknown field.
+    #[tokio::test]
+    async fn spawn_with_config_match_directive_filters_and_does_not_leak_into_profile() {
+        let cfg: Config = toml::from_str(
+            r#"
+[[agents]]
+id = "base"
+provider = "acp-claude-code"
+command = "/bin/false"
+
+[[agents]]
+id = "extra"
+provider = "acp-claude-code"
+command = "/bin/false"
+
+[profile]
+default = "base"
+
+[[profiles]]
+id = "base"
+agent = "base"
+"#,
+        )
+        .expect("parses");
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+
+        let skipped = serde_json::json!({
+            "$match": { "profile": "other-*" },
+            "agent": "extra"
+        });
+        let applied = serde_json::json!({
+            "$match": { "profile": "base" },
+            "mode": "plan"
+        });
+
+        let spec = SpawnSpec {
+            config_patches: vec![skipped, applied],
+            ..Default::default()
+        };
+        let key = adapter
+            .spawn_instance(spec)
+            .await
+            .expect("$match directives should be filtered before profile deserialisation");
+        let info = <AcpAdapter as Adapter>::info_for(&adapter, key)
+            .await
+            .expect("info_for");
+
+        assert_eq!(info.agent_id, "base");
+        assert_eq!(info.mode.as_deref(), Some("plan"));
     }
 
     /// `--with-config` validation path — a patch that produces an

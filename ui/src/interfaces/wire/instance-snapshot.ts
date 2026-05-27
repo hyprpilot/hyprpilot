@@ -127,6 +127,8 @@ export interface TerminalSnapshot {
 export interface MetaSnapshot {
   profileId?: string
   sessionId?: string
+  title?: string
+  updatedAt?: string
   cwd?: string
   currentModeId?: string
   currentModelId?: string

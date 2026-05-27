@@ -154,10 +154,9 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
       const prev = active
 
       try {
-        await invoke(TauriCommand.ConfigOptionSet, {
+        await invoke(TauriCommand.EffortSet, {
           instanceId: targetInstance,
-          configId: category.id,
-          value: pick.id
+          effortId: pick.id
         })
         pushToast(ToastTone.Ok, `${category.id} → ${pick.name}`)
 

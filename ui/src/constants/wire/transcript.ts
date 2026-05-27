@@ -17,6 +17,7 @@ export enum TranscriptItemKind {
   ToolCall = 'tool_call',
   ToolCallUpdate = 'tool_call_update',
   Plan = 'plan',
+  Compaction = 'compaction',
   PermissionRequest = 'permission_request',
   Unknown = 'unknown'
 }

@@ -6,7 +6,8 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 
 export enum StreamKind {
   Thinking = 'thinking',
-  Planning = 'planning'
+  Planning = 'planning',
+  Compaction = 'compaction'
 }
 
 export enum PlanStatus {

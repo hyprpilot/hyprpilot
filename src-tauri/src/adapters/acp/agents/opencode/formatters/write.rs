@@ -8,7 +8,9 @@ pub struct WriteFormatter;
 
 impl ToolFormatter for WriteFormatter {
     fn format(&self, ctx: &FormatterContext) -> FormattedToolCall {
-        let path = pick::<String>(ctx.raw_input, "filePath").filter(|s| !s.is_empty());
+        let path = pick::<String>(ctx.raw_input, "filePath")
+            .or_else(|| pick::<String>(ctx.raw_input, "filepath"))
+            .filter(|s| !s.is_empty());
         let body = pick::<String>(ctx.raw_input, "content");
 
         let title = match path.as_deref() {

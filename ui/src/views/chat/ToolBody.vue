@@ -61,8 +61,39 @@ function toggleOutput(): void {
   outputExpanded.value = !outputExpanded.value
 }
 
+function normalizeToolBodySection(raw: string | undefined): string {
+  if (!raw) {
+    return ''
+  }
+
+  return raw
+    .trim()
+    .replace(/^```[^\n]*\n([\s\S]*?)\n?```$/u, '$1')
+    .trim()
+}
+
+const visibleOutput = computed(() => {
+  const output = props.view.output
+
+  if (!output) {
+    return undefined
+  }
+
+  const normalized = normalizeToolBodySection(output)
+
+  if (!normalized) {
+    return undefined
+  }
+
+  if (normalized === normalizeToolBodySection(props.view.description)) {
+    return undefined
+  }
+
+  return output
+})
+
 const hasFields = computed(() => Array.isArray(props.view.fields) && props.view.fields.length > 0)
-const hasContent = computed(() => Boolean(props.view.description) || hasFields.value || Boolean(props.view.output))
+const hasContent = computed(() => Boolean(props.view.description) || hasFields.value || Boolean(visibleOutput.value))
 </script>
 
 <template>
@@ -80,7 +111,7 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
       </div>
     </div>
 
-    <section v-if="view.output" class="tool-body-output" :data-expanded="outputExpanded">
+    <section v-if="visibleOutput" class="tool-body-output" :data-expanded="outputExpanded">
       <header
         class="tool-body-output-header"
         role="button"
@@ -102,7 +133,7 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
            ` ```console ` markup. Real streaming terminal output goes
            through `<TerminalCard>` (terminal_id-bound calls) where
            xterm.js renders ANSI properly — that path is unaffected. -->
-      <MarkdownBody v-if="outputExpanded" :source="view.output" class="tool-body-output-body" />
+      <MarkdownBody v-if="outputExpanded" :source="visibleOutput" class="tool-body-output-body" />
     </section>
   </div>
 </template>

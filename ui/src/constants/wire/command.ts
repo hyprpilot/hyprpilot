@@ -84,6 +84,11 @@ import type {
   ModelsSetArgs,
   ModesSetArgs,
   ConfigOptionSetArgs,
+  EffortGetArgs,
+  EffortGetResult,
+  EffortSetArgs,
+  EffortsListArgs,
+  EffortsListResult,
   PermissionReplyArgs,
   ProfileSummary,
   SessionInfoResult,
@@ -121,6 +126,9 @@ export enum TauriCommand {
   ModelsSet = 'models_set',
   ModesSet = 'modes_set',
   ConfigOptionSet = 'config_option_set',
+  EffortGet = 'effort_get',
+  EffortSet = 'effort_set',
+  EffortsList = 'efforts_list',
   InstanceMeta = 'instance_meta',
   InstanceSnapshotMeta = 'instance_snapshot_meta',
   InstanceSnapshotChat = 'instance_snapshot_chat',
@@ -205,6 +213,9 @@ export interface TauriCommandArgs {
   [TauriCommand.ModelsSet]: ModelsSetArgs
   [TauriCommand.ModesSet]: ModesSetArgs
   [TauriCommand.ConfigOptionSet]: ConfigOptionSetArgs
+  [TauriCommand.EffortGet]: EffortGetArgs
+  [TauriCommand.EffortSet]: EffortSetArgs
+  [TauriCommand.EffortsList]: EffortsListArgs
   [TauriCommand.InstanceMeta]: InstanceMetaArgs
   [TauriCommand.InstanceSnapshotMeta]: InstanceSnapshotMetaArgs
   [TauriCommand.InstanceSnapshotChat]: InstanceSnapshotChatArgs
@@ -266,6 +277,9 @@ export interface TauriCommandResult {
   [TauriCommand.ModelsSet]: unknown
   [TauriCommand.ModesSet]: unknown
   [TauriCommand.ConfigOptionSet]: unknown
+  [TauriCommand.EffortGet]: EffortGetResult
+  [TauriCommand.EffortSet]: EffortGetResult
+  [TauriCommand.EffortsList]: EffortsListResult
   [TauriCommand.InstanceMeta]: InstanceMetaSnapshot
   [TauriCommand.InstanceSnapshotMeta]: MetaSnapshot
   [TauriCommand.InstanceSnapshotChat]: ChatSnapshot

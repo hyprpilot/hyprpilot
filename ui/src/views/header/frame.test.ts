@@ -89,6 +89,14 @@ describe('Frame.vue', () => {
     expect(wrapper.emitted('pillClick')).toEqual([['mode']])
   })
 
+  it('emits pillClick with target=effort when the effort pill is clicked', async() => {
+    const wrapper = mount(Frame, { props: { profile: 'captain', effortTag: 'high' } })
+
+    await wrapper.find('button[aria-label="effort"]').trigger('click')
+
+    expect(wrapper.emitted('pillClick')).toEqual([['effort']])
+  })
+
   it('emits pillClick with target=provider when the adapter pill is clicked', async() => {
     const wrapper = mount(Frame, {
       props: {

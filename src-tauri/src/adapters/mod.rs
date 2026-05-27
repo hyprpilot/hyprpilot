@@ -40,8 +40,8 @@ pub use mirror::{
 #[allow(unused_imports)]
 pub use permission::PermissionRequestSnapshot;
 pub use transcript::{
-    Attachment, ChecklistStats, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus, ToolCallContentItem,
-    ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
+    Attachment, ChecklistStats, CompactionRecord, PermissionRequestRecord, PlanRecord, PlanStep, PlanStepStatus,
+    ToolCallContentItem, ToolCallRecord, ToolCallState, ToolCallUpdateRecord, TranscriptItem, UserTurnInput,
 };
 
 /// Closed set of known transport kinds. The string wire-name is stable
@@ -431,6 +431,24 @@ pub trait Adapter: Send + Sync + 'static {
     ) -> AdapterResult<serde_json::Value> {
         Err(AdapterError::Unsupported(
             "session/set_config_option not supported by this adapter".into(),
+        ))
+    }
+
+    async fn get_session_effort(&self, _instance_id: &str) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "effort/get not supported by this adapter".into(),
+        ))
+    }
+
+    async fn list_session_efforts(&self, _instance_id: &str) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "effort/list not supported by this adapter".into(),
+        ))
+    }
+
+    async fn set_session_effort(&self, _instance_id: &str, _effort_id: &str) -> AdapterResult<serde_json::Value> {
+        Err(AdapterError::Unsupported(
+            "effort/set not supported by this adapter".into(),
         ))
     }
 
