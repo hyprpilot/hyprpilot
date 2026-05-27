@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.8](https://github.com/hyprpilot/hyprpilot/compare/v2.3.7...v2.3.8) (2026-05-27)
+
+
+### Bug Fixes
+
+* **rpc:** accept background focus hints ([#129](https://github.com/hyprpilot/hyprpilot/issues/129)) ([6548fd3](https://github.com/hyprpilot/hyprpilot/commit/6548fd328961883992fa99381df2a1fbf1b07813))
+
 ## [2.3.7](https://github.com/hyprpilot/hyprpilot/compare/v2.3.6...v2.3.7) (2026-05-27)
 
 
