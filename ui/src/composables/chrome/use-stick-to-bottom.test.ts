@@ -217,7 +217,7 @@ describe('useStickToBottom', () => {
 
   /**
    * Captain-reported regression: a small wheel-up during streaming
-   * (less than the 64px `nearBottom` threshold) didn't flip
+   * (less than the 128px `nearBottom` threshold) didn't flip
    * `stuck=false`, so the next `scheduleStick` pass from a
    * MutationObserver chunk snapped the captain back to the foot.
    * Equivalent surface: dragging the OS scrollbar a few pixels up —
@@ -227,7 +227,7 @@ describe('useStickToBottom', () => {
    * Direction-based detection (any decreasing `scrollTop` in a
    * non-suppressed scroll event) catches both.
    */
-  it('flips stuck=false on a tiny upward scroll well below the 64px threshold', () => {
+  it('flips stuck=false on a tiny upward scroll well below the 128px threshold', () => {
     const { api, harness, unmount } = mountHarness()
 
     // Establish the at-bottom baseline. Default layout already has
@@ -238,7 +238,7 @@ describe('useStickToBottom', () => {
     harness.dispatchScroll()
     expect(api.stuck.value).toBe(true)
 
-    // Captain nudges the wheel up by 20px — well within the 64px
+    // Captain nudges the wheel up by 20px — well within the 128px
     // threshold. `nearBottom` would still return true, but the
     // movement is upward, so stuck flips false immediately.
     harness.setLayout({
@@ -414,5 +414,65 @@ describe('useStickToBottom', () => {
     harness.dispatchScroll()
     expect(api.stuck.value).toBe(true)
     unmount()
+  })
+
+  it('keeps following for a few frames while stuck content keeps growing after the first mutation', async() => {
+    const rafCallbacks = new Map<number, FrameRequestCallback>()
+    let rafIdSeq = 0
+
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((cb: FrameRequestCallback) => {
+        const id = ++rafIdSeq
+
+        rafCallbacks.set(id, cb)
+
+        return id
+      })
+    )
+    vi.stubGlobal(
+      'cancelAnimationFrame',
+      vi.fn((id: number) => {
+        rafCallbacks.delete(id)
+      })
+    )
+
+    try {
+      const { api, harness, unmount } = mountHarness()
+
+      harness.dispatchScroll()
+      expect(api.stuck.value).toBe(true)
+
+      harness.el.appendChild(document.createElement('div'))
+      await Promise.resolve()
+      expect(rafCallbacks.size).toBe(1)
+
+      const first = rafCallbacks.entries().next().value as [number, FrameRequestCallback]
+
+      rafCallbacks.delete(first[0])
+      harness.setLayout({
+        scrollHeight: 1500,
+        clientHeight: 500,
+        scrollTop: 500
+      })
+      first[1](0)
+      expect(harness.el.scrollTop).toBe(1000)
+      expect(rafCallbacks.size).toBe(1)
+
+      const second = rafCallbacks.entries().next().value as [number, FrameRequestCallback]
+
+      rafCallbacks.delete(second[0])
+      harness.setLayout({
+        scrollHeight: 2000,
+        clientHeight: 500,
+        scrollTop: 1000
+      })
+      second[1](16)
+
+      expect(harness.el.scrollTop).toBe(1500)
+      unmount()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

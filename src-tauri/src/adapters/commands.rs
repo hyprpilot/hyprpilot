@@ -706,13 +706,6 @@ pub async fn instance_snapshot_terminals(
     Ok(snap)
 }
 
-/// Read-only snapshot of the resolved MCP set for an instance. When
-/// `instance_id` resolves to a live actor we resolve the catalog
-/// through its profile (profile's `mcps` wholesale-replaces the
-/// global default — same path as the ACP injection at session/new);
-/// otherwise we fall back to the global set. Without the per-instance
-/// resolution captains who scope their MCPs under `[[profiles]]
-/// mcps = […]` see an empty palette while the live agent has the
 /// Snapshot read of the per-instance queue from the daemon mirror.
 /// Same shape as `instance_snapshot_meta` / `instance_snapshot_chat`
 /// / `instance_snapshot_terminals` — no actor round-trip, just a
@@ -723,11 +716,10 @@ pub async fn instance_snapshot_terminals(
 pub async fn instance_snapshot_queue(adapter: AdapterState<'_>, instance_id: String) -> Result<Value, String> {
     use crate::adapters::Adapter;
     let key = InstanceKey::parse(&instance_id).map_err(|e| e.to_string())?;
-    let mirror = adapter
-        .instance_mirror(key)
-        .await
-        .ok_or_else(|| format!("instance '{instance_id}' not found in registry"))?;
-    let items = mirror.queue_snapshot().await;
+    let items = match adapter.instance_mirror(key).await {
+        Some(mirror) => mirror.queue_snapshot().await,
+        None => Vec::new(),
+    };
 
     Ok(serde_json::json!({ "items": items }))
 }

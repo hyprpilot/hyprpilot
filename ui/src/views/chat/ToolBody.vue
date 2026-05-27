@@ -61,7 +61,7 @@ function toggleOutput(): void {
   outputExpanded.value = !outputExpanded.value
 }
 
-function normalizeToolBodySection(raw: string | undefined): string {
+function canonicalToolBodySection(raw: string | undefined): string {
   if (!raw) {
     return ''
   }
@@ -79,13 +79,13 @@ const visibleOutput = computed(() => {
     return undefined
   }
 
-  const normalized = normalizeToolBodySection(output)
+  const normalized = canonicalToolBodySection(output)
 
   if (!normalized) {
     return undefined
   }
 
-  if (normalized === normalizeToolBodySection(props.view.description)) {
+  if (normalized === canonicalToolBodySection(props.view.description)) {
     return undefined
   }
 
@@ -124,16 +124,7 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
         <FaIcon :icon="outputExpanded ? faChevronDown : faChevronRight" class="tool-body-output-caret" aria-hidden="true" />
         <span class="tool-body-output-label">output</span>
       </header>
-      <!-- Output renders as markdown so fenced code blocks (```bash,
-           ```console, ```json, ```diff) get Shiki syntax highlighting
-           via the same component the description uses. The agent's
-           tool responses are typically narrative + fenced result
-           blocks, not raw shell streams; rendering as markdown means
-           the captain sees a clean code box instead of literal
-           ` ```console ` markup. Real streaming terminal output goes
-           through `<TerminalCard>` (terminal_id-bound calls) where
-           xterm.js renders ANSI properly — that path is unaffected. -->
-      <MarkdownBody v-if="outputExpanded" :source="visibleOutput" class="tool-body-output-body" />
+      <pre v-if="outputExpanded" class="tool-body-output-body"><code>{{ visibleOutput }}</code></pre>
     </section>
   </div>
 </template>
@@ -237,28 +228,23 @@ const hasContent = computed(() => Boolean(props.view.description) || hasFields.v
   letter-spacing: 0.0375rem;
 }
 
-/* MarkdownBody slot — wraps prose paragraphs and fenced code
- * blocks. Same chrome the description path produces, kept narrow
- * enough that long agent narratives stay readable; the inner
- * code blocks Shiki-highlight have their own scrollers. */
+/* Raw adapter output: keep leading whitespace, fences, and blank
+ * lines intact while bounding long command/file payloads inside the
+ * same collapsible chrome as the human-readable description. */
 .tool-body-output-body {
   padding: 0.375rem 0.5rem;
   max-height: 24rem;
-  overflow-y: auto;
-}
-
-.tool-body-output-body :deep(p) {
-  @apply my-1 text-[0.7rem] leading-relaxed;
+  overflow: auto;
+  margin: 0;
   color: var(--theme-fg-subtle);
-  font-family: var(--theme-font-sans);
-  overflow-wrap: anywhere;
+  font-family: var(--theme-font-mono);
+  font-size: 0.68rem;
+  line-height: 1.55;
+  white-space: pre;
 }
 
-.tool-body-output-body :deep(p:first-child) {
-  @apply mt-0;
-}
-
-.tool-body-output-body :deep(p:last-child) {
-  @apply mb-0;
+.tool-body-output-body code {
+  font: inherit;
+  white-space: inherit;
 }
 </style>

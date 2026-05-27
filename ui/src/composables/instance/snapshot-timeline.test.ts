@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { timelineBlocksFromSnapshot } from './snapshot-timeline'
-import { StreamItemKind } from './use-stream'
+import { StreamItemKind, type StreamItem } from './use-stream'
 import { Role } from '@components'
 import { TranscriptItemKind } from '@constants/wire/transcript'
 import { PlanPriority, PlanStepStatus, type PlanStep } from '@interfaces/wire/transcript'
@@ -317,5 +317,79 @@ describe('timelineBlocksFromSnapshot', () => {
       expect(compaction.overflow).toBe(true)
       expect(compaction.tailStartId).toBe('m-1')
     }
+  })
+
+  it('overlays live change banners onto snapshot-rendered turn blocks', () => {
+    const items: SeqTranscriptItem[] = [userPrompt(1, 't-1', 'switch'), agentText(2, 't-1', 'done')]
+    const overlays: StreamItem[] = [
+      {
+        kind: StreamItemKind.ModeChange,
+        id: 'mode-s-a-0',
+        sessionId: 's-a',
+        turnId: 't-1',
+        createdAt: 1,
+        updatedAt: 1,
+        modeId: 'default',
+        name: 'Default',
+        prevModeId: 'plan',
+        prevName: 'Plan'
+      },
+      {
+        kind: StreamItemKind.ModelChange,
+        id: 'model-s-a-1',
+        sessionId: 's-a',
+        turnId: 't-1',
+        createdAt: 2,
+        updatedAt: 2,
+        modelId: 'gpt-5.5',
+        name: 'GPT-5.5',
+        prevModelId: 'gpt-5',
+        prevName: 'GPT-5'
+      },
+      {
+        kind: StreamItemKind.ConfigOptionChange,
+        id: 'cfg-effort-s-a-2',
+        sessionId: 's-a',
+        turnId: 't-1',
+        createdAt: 3,
+        updatedAt: 3,
+        categoryId: 'effort',
+        value: 'high',
+        name: 'High',
+        prevValue: 'medium',
+        prevName: 'Medium'
+      }
+    ]
+
+    const blocks = timelineBlocksFromSnapshot(items, 'snapshot', overlays)
+    const assistantBlock = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistantBlock?.streamEntries.map((entry) => entry.item.kind)).toEqual([StreamItemKind.ModeChange, StreamItemKind.ModelChange, StreamItemKind.ConfigOptionChange])
+    expect(assistantBlock?.streamEntries[0]?.item).toMatchObject({
+      kind: StreamItemKind.ModeChange,
+      modeId: 'default',
+      prevModeId: 'plan'
+    })
+  })
+
+  it('places system prompt overlay banners before the first snapshot turn', () => {
+    const overlays: StreamItem[] = [
+      {
+        kind: StreamItemKind.SystemPromptInjected,
+        id: 'system-prompt-A-0',
+        sessionId: '',
+        createdAt: 1,
+        updatedAt: 1,
+        files: ['/tmp/base.md']
+      }
+    ]
+
+    const blocks = timelineBlocksFromSnapshot([userPrompt(10, undefined, 'hello')], 'snapshot', overlays)
+
+    expect(blocks[0].streamEntries[0]?.item).toMatchObject({
+      kind: StreamItemKind.SystemPromptInjected,
+      files: ['/tmp/base.md']
+    })
+    expect(blocks[1].role).toBe(Role.User)
   })
 })

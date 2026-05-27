@@ -267,7 +267,7 @@ describe('ChatComposer.vue', () => {
     wrapper.unmount()
   })
 
-  it('swallows closed Tab without opening completion', async() => {
+  it('lets closed Tab fall through without opening completion', async() => {
     const wrapper = mount(ChatComposer, { attachTo: document.body })
     const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
 
@@ -278,14 +278,16 @@ describe('ChatComposer.vue', () => {
     invokeMock.mockClear()
 
     const tab = new KeyboardEvent('keydown', {
-      key: 'Tab', bubbles: true, cancelable: true
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true
     })
 
     textarea.element.dispatchEvent(tab)
     await new Promise((resolve) => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    expect(tab.defaultPrevented).toBe(true)
+    expect(tab.defaultPrevented).toBe(false)
     expect(invokeMock).not.toHaveBeenCalledWith(TauriCommand.CompletionQuery, expect.anything())
     expect(document.body.querySelector('.completion-popover-wrap')).toBeNull()
 
@@ -300,7 +302,7 @@ describe('ChatComposer.vue', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    expect(shiftTab.defaultPrevented).toBe(true)
+    expect(shiftTab.defaultPrevented).toBe(false)
     expect(invokeMock).not.toHaveBeenCalledWith(TauriCommand.CompletionQuery, expect.anything())
     expect(document.body.querySelector('.completion-popover-wrap')).toBeNull()
 

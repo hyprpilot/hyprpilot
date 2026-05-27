@@ -20,7 +20,7 @@
  * No reactive state; the caller wraps it in a `computed`.
  */
 
-import { StreamItemKind } from './use-stream'
+import { StreamItemKind, type StreamItem } from './use-stream'
 import { type TimelineBlock, type TimelineEntry, type TimelineStream, type TimelineTool, type TimelineTurn } from './use-timeline-blocks'
 import { TurnRole, type ChatTurnItem } from './use-transcript'
 import { Role } from '@components'
@@ -254,6 +254,91 @@ interface ProjectedItem {
   seq: number
   turnId?: string
   entry: TimelineEntry
+}
+
+type SnapshotOverlayStreamItem = Extract<
+  StreamItem,
+  {
+    kind: StreamItemKind.ModeChange | StreamItemKind.ModelChange | StreamItemKind.ConfigOptionChange | StreamItemKind.SystemPromptInjected
+  }
+>
+
+export function isSnapshotOverlayStreamItem(item: StreamItem): item is SnapshotOverlayStreamItem {
+  return (
+    item.kind === StreamItemKind.ModeChange ||
+    item.kind === StreamItemKind.ModelChange ||
+    item.kind === StreamItemKind.ConfigOptionChange ||
+    item.kind === StreamItemKind.SystemPromptInjected
+  )
+}
+
+function overlaySeq(item: SnapshotOverlayStreamItem, snapshotItems: readonly SeqTranscriptItem[], ordinal: number): number {
+  const offset = (ordinal + 1) / 1000
+
+  if (item.kind === StreamItemKind.SystemPromptInjected) {
+    return (snapshotItems[0]?.seq ?? 0) - 1 + offset
+  }
+
+  if (item.turnId !== undefined) {
+    const lastTurnSeq = snapshotItems.reduce<number | undefined>((latest, snapshotItem) => {
+      if (snapshotItem.turnId !== item.turnId) {
+        return latest
+      }
+
+      return latest === undefined ? snapshotItem.seq : Math.max(latest, snapshotItem.seq)
+    }, undefined)
+
+    if (lastTurnSeq !== undefined) {
+      return lastTurnSeq + offset
+    }
+  }
+
+  return (snapshotItems[snapshotItems.length - 1]?.seq ?? 0) + 1 + ordinal
+}
+
+function projectOverlayStream(item: SnapshotOverlayStreamItem, seq: number): ProjectedItem {
+  return {
+    seq,
+    turnId: item.turnId,
+    entry: {
+      kind: 'stream',
+      createdAt: seq,
+      item: {
+        ...item,
+        createdAt: seq,
+        updatedAt: Math.max(item.updatedAt, seq)
+      }
+    } as TimelineStream
+  }
+}
+
+function projectSnapshotItems(items: SeqTranscriptItem[], ctx: ProjectionContext): ProjectedItem[] {
+  const projected: ProjectedItem[] = []
+
+  for (const it of items) {
+    const entry = projectEntry(it, ctx)
+
+    if (!entry) {
+      continue
+    }
+
+    if (tryMergeIntoExisting(projected, entry, it)) {
+      continue
+    }
+    projected.push({
+      seq: it.seq,
+      turnId: it.turnId,
+      entry
+    })
+  }
+
+  return projected
+}
+
+function appendOverlayStreamItems(projected: ProjectedItem[], items: SeqTranscriptItem[], overlays: readonly StreamItem[]): void {
+  for (const [idx, item] of overlays.filter(isSnapshotOverlayStreamItem).entries()) {
+    projected.push(projectOverlayStream(item, overlaySeq(item, items, idx)))
+  }
 }
 
 /**
@@ -533,27 +618,11 @@ function mergeToolCall(target: WireToolCall, incoming: WireToolCall, seq: number
  *   consecutive run of assistant entries lands in one block, every
  *   user entry in its own.
  */
-export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId = 'snapshot'): TimelineBlock[] {
+export function timelineBlocksFromSnapshot(items: SeqTranscriptItem[], sessionId = 'snapshot', overlays: readonly StreamItem[] = []): TimelineBlock[] {
   const ctx: ProjectionContext = { sessionId }
-  const projected: ProjectedItem[] = []
+  const projected = projectSnapshotItems(items, ctx)
 
-  for (const it of items) {
-    const entry = projectEntry(it, ctx)
-
-    if (!entry) {
-      continue
-    }
-
-    if (tryMergeIntoExisting(projected, entry, it)) {
-      continue
-    }
-    projected.push({
-      seq: it.seq,
-      turnId: it.turnId,
-      entry
-    })
-  }
-
+  appendOverlayStreamItems(projected, items, overlays)
   projected.sort((a, b) => a.seq - b.seq || KIND_ORDER[a.entry.kind] - KIND_ORDER[b.entry.kind])
 
   const out: TimelineBlock[] = []

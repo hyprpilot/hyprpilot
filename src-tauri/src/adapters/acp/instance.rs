@@ -12,6 +12,7 @@
 //! lifecycle reads top-to-bottom in one place.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -2512,6 +2513,7 @@ async fn run(params: RunParams) {
     let prompt_for_spawn = resolved.system_prompt_for(&bootstrap);
     let resolved_mode = resolved.mode.clone();
     let resolved_profile_id = resolved.profile_id.clone();
+    let intentional_shutdown = Arc::new(AtomicBool::new(false));
 
     // Emit the captain-facing "system prompt attached" banner event
     // when at least one entry actually injected. `files` is the
@@ -2788,6 +2790,7 @@ async fn run(params: RunParams) {
         });
     }
 
+    let intentional_shutdown_dispatch = intentional_shutdown.clone();
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
         debug!(agent = %agent_id_notif, "acp::instance: sending initialize request");
         let init = connection
@@ -4010,6 +4013,7 @@ async fn run(params: RunParams) {
                             }));
                         }
                         InstanceCommand::Shutdown { reply } => {
+                            intentional_shutdown_dispatch.store(true, Ordering::Relaxed);
                             info!(
                                 agent = %agent_id_notif,
                                 instance = %instance_id_notif,
@@ -4500,6 +4504,10 @@ async fn run(params: RunParams) {
                 info!(agent = %agent_id, ?status, "acp::instance: child exited cleanly before disconnect");
                 Ok(())
             }
+            Ok(status) if intentional_shutdown.load(Ordering::Relaxed) => {
+                info!(agent = %agent_id, ?status, "acp::instance: child exited during requested shutdown");
+                Ok(())
+            }
             Ok(status) => {
                 warn!(agent = %agent_id, ?status, "acp::instance: child exited with non-zero status before connection closed");
                 Err(anyhow::anyhow!("agent process exited before disconnect: {status}"))
@@ -4514,6 +4522,10 @@ async fn run(params: RunParams) {
     let final_state = match &run_outcome {
         Ok(_) => {
             info!(agent = %agent_id, "acp::instance: instance ended cleanly");
+            InstanceState::Ended
+        }
+        Err(err) if intentional_shutdown.load(Ordering::Relaxed) => {
+            info!(agent = %agent_id, %err, "acp::instance: connection ended during requested shutdown");
             InstanceState::Ended
         }
         Err(err) => {
