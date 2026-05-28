@@ -25,7 +25,7 @@ import { type TimelineBlock, type TimelineEntry, type TimelineStream, type Timel
 import { TurnRole, type ChatTurnItem } from './use-transcript'
 import { Role } from '@components'
 import type { WireToolCall } from '@interfaces/ui'
-import { type SeqTranscriptItem, TranscriptItemKind, type TranscriptItem } from '@ipc'
+import { ChangeAdvertisementType, type SeqTranscriptItem, TranscriptItemKind, type TranscriptItem } from '@ipc'
 
 const TIMELINE_ENTRY_SORT_ORDER = ['turn', 'stream', 'tool'] as const
 const EMPTY_SNAPSHOT_ANCHOR_SEQ = 0
@@ -143,6 +143,72 @@ function projectToolCall(
   }
 }
 
+function projectChangeAdvertisement(item: Extract<TranscriptItem, { kind: TranscriptItemKind.ChangeAdvertisement }>, seq: number, ctx: ProjectionContext): TimelineStream | null {
+  if (item.type === ChangeAdvertisementType.Mode) {
+    return {
+      kind: 'stream',
+      createdAt: seq,
+      item: {
+        id: `mode-${seq}`,
+        kind: StreamItemKind.ModeChange,
+        sessionId: ctx.sessionId,
+        createdAt: seq,
+        updatedAt: seq,
+        modeId: item.value,
+        name: item.name,
+        prevModeId: item.prevValue,
+        prevName: item.prevName
+      }
+    } as TimelineStream
+  }
+
+  if (item.type === ChangeAdvertisementType.Model) {
+    return {
+      kind: 'stream',
+      createdAt: seq,
+      item: {
+        id: `model-${seq}`,
+        kind: StreamItemKind.ModelChange,
+        sessionId: ctx.sessionId,
+        createdAt: seq,
+        updatedAt: seq,
+        modelId: item.value,
+        name: item.name,
+        prevModelId: item.prevValue,
+        prevName: item.prevName
+      }
+    } as TimelineStream
+  }
+
+  if (item.type === ChangeAdvertisementType.ConfigOption) {
+    if (!item.categoryId) {
+      // eslint-disable-next-line no-console
+      console.warn('snapshot-timeline: config option change advertisement missing categoryId', { seq })
+
+      return null
+    }
+
+    return {
+      kind: 'stream',
+      createdAt: seq,
+      item: {
+        id: `cfg-${item.categoryId}-${seq}`,
+        kind: StreamItemKind.ConfigOptionChange,
+        sessionId: ctx.sessionId,
+        createdAt: seq,
+        updatedAt: seq,
+        categoryId: item.categoryId,
+        value: item.value,
+        name: item.name,
+        prevValue: item.prevValue,
+        prevName: item.prevName
+      }
+    } as TimelineStream
+  }
+
+  return null
+}
+
 /**
  * Project one snapshot item onto a TimelineEntry. `null` for shapes
  * the body doesn't render (PermissionRequest, Unknown, Plan handled
@@ -211,6 +277,9 @@ function projectEntry(it: SeqTranscriptItem, ctx: ProjectionContext): TimelineEn
           tailStartId: item.tailStartId
         }
       } as TimelineStream
+
+    case TranscriptItemKind.ChangeAdvertisement:
+      return projectChangeAdvertisement(item, seq, ctx)
 
     case TranscriptItemKind.ToolCall:
     case TranscriptItemKind.ToolCallUpdate:

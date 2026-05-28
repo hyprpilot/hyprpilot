@@ -14,25 +14,9 @@ import {
   setInstanceName,
   setInstanceProfile,
   setSessionRestoring,
-  setSessionTitleFromPrompt,
-  lookupCurrentModel,
-  lookupCurrentMode,
-  lookupModeName,
-  lookupModelName,
-  useSessionInfo
+  setSessionTitleFromPrompt
 } from './use-session-info'
-import {
-  closeThought,
-  closeTurn,
-  deleteStreamByTurnId,
-  pushCompaction,
-  pushConfigOptionChange,
-  pushModeChange,
-  pushModelChange,
-  pushPlan,
-  pushSystemPromptInjected,
-  pushThoughtChunk
-} from './use-stream'
+import { closeThought, closeTurn, deleteStreamByTurnId, pushCompaction, pushPlan, pushSystemPromptInjected, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { closeTranscriptTurn, deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
@@ -48,7 +32,6 @@ import {
   TerminalChunkKind,
   TranscriptItemKind,
   type PermissionRequestEventPayload,
-  type SessionConfigOptionCategory,
   type TerminalEventPayload,
   type TranscriptEventPayload,
   type UnlistenFn
@@ -232,6 +215,13 @@ function routeTranscript(payload: TranscriptEventPayload): void {
 
       return
 
+    case TranscriptItemKind.ChangeAdvertisement:
+      // Durable change banners are rendered from the snapshot chat
+      // cache after `transcript-patcher` inserts this item. Do not
+      // also push a live overlay here or the combined snapshot +
+      // overlay projector would render the same transition twice.
+      return
+
     case TranscriptItemKind.PermissionRequest:
       // Permission rendering rides the dedicated `acp:permission-request`
       // event channel (sticky stack today). The transcript variant
@@ -262,98 +252,6 @@ function routeTerminal(payload: TerminalEventPayload): void {
     exitCode: chunk.exitCode,
     signal: chunk.signal
   })
-}
-
-function modeNameFromMeta(instanceId: InstanceId, modeId: string, availableModes?: { id: string; name: string }[]): string | undefined {
-  return availableModes?.find((mode) => mode.id === modeId)?.name ?? lookupModeName(instanceId, modeId)
-}
-
-function modelNameFromMeta(instanceId: InstanceId, modelId: string, availableModels?: { id: string; name: string }[]): string | undefined {
-  return availableModels?.find((model) => model.id === modelId)?.name ?? lookupModelName(instanceId, modelId)
-}
-
-function pushMetaModeChange(
-  instanceId: InstanceId,
-  sessionId: string | undefined,
-  currentModeId: string | undefined,
-  availableModes: { id: string; name: string }[] | undefined
-): void {
-  if (!sessionId || !currentModeId) {
-    return
-  }
-  const prevModeId = lookupCurrentMode(instanceId)
-
-  if (!prevModeId || prevModeId === currentModeId) {
-    return
-  }
-  pushModeChange(instanceId, sessionId, {
-    modeId: currentModeId,
-    name: modeNameFromMeta(instanceId, currentModeId, availableModes),
-    prevModeId,
-    prevName: lookupModeName(instanceId, prevModeId)
-  })
-}
-
-function pushMetaModelChange(
-  instanceId: InstanceId,
-  sessionId: string | undefined,
-  currentModelId: string | undefined,
-  availableModels: { id: string; name: string }[] | undefined
-): void {
-  if (!sessionId || !currentModelId) {
-    return
-  }
-  const prevModelId = lookupCurrentModel(instanceId)
-
-  if (!prevModelId || prevModelId === currentModelId) {
-    return
-  }
-  pushModelChange(instanceId, sessionId, {
-    modelId: currentModelId,
-    name: modelNameFromMeta(instanceId, currentModelId, availableModels),
-    prevModelId,
-    prevName: lookupModelName(instanceId, prevModelId)
-  })
-}
-
-function optionName(category: SessionConfigOptionCategory | undefined, value: string | undefined): string | undefined {
-  if (!category || value === undefined) {
-    return undefined
-  }
-
-  return category.options.find((opt) => opt.value === value)?.name
-}
-
-function changedConfigOptions(prior: SessionConfigOptionCategory[], categories: SessionConfigOptionCategory[]): SessionConfigOptionCategory[] {
-  return categories.filter((next) => {
-    if (next.currentValue === undefined) {
-      return false
-    }
-    const prev = prior.find((c) => c.id === next.id)
-
-    return prev?.currentValue !== undefined && prev.currentValue !== next.currentValue
-  })
-}
-
-function pushConfigOptionChangeBanners(instanceId: InstanceId, sessionId: string | undefined, prior: SessionConfigOptionCategory[], changed: SessionConfigOptionCategory[]): void {
-  if (!sessionId) {
-    return
-  }
-
-  for (const next of changed) {
-    const prev = prior.find((c) => c.id === next.id)
-
-    if (!prev?.currentValue || next.currentValue === undefined) {
-      continue
-    }
-    pushConfigOptionChange(instanceId, sessionId, {
-      categoryId: next.id,
-      value: next.currentValue,
-      name: optionName(next, next.currentValue),
-      prevValue: prev.currentValue,
-      prevName: optionName(prev, prev.currentValue)
-    })
-  }
 }
 
 /**
@@ -517,23 +415,9 @@ export async function startSessionStream(): Promise<() => void> {
       pushSessionInfoUpdate(e.payload.instanceId, { title: e.payload.title, updatedAt: e.payload.updatedAt })
     }),
     await listen(TauriEvent.AcpCurrentModeUpdate, (e) => {
-      const { instanceId, sessionId, currentModeId } = e.payload
-      // Capture the OLD mode before pushCurrentModeUpdate overwrites
-      // it, so the chat banner can render `mode · plan → default`
-      // instead of just `mode → default`.
-      const prevModeId = lookupCurrentMode(instanceId)
+      const { instanceId, currentModeId } = e.payload
 
       pushCurrentModeUpdate(instanceId, { currentModeId })
-      // Mid-turn mode flips (claude-code's plan → default after the
-      // user accepts ExitPlanMode, or codex's mode shifts) deserve a
-      // visible mark in the chat — without it, the header pill flips
-      // silently and the only trace is in retroactive scroll-up.
-      pushModeChange(instanceId, sessionId, {
-        modeId: currentModeId,
-        name: lookupModeName(instanceId, currentModeId),
-        prevModeId,
-        prevName: prevModeId ? lookupModeName(instanceId, prevModeId) : undefined
-      })
     }),
     await listen(TauriEvent.AcpUsageUpdate, (e) => {
       const { instanceId, sessionId, turnId, used, size, cost } = e.payload
@@ -553,16 +437,8 @@ export async function startSessionStream(): Promise<() => void> {
       })
     }),
     await listen(TauriEvent.AcpConfigOptionsUpdate, (e) => {
-      const { instanceId, sessionId, categories } = e.payload
-      // Diff against the prior snapshot BEFORE overwriting it so the
-      // chat banner reads `effort · medium → high` for agent-pushed
-      // flips too — mirrors the captain-commit path in
-      // views/palette/effort.ts. pushConfigOptionChange dedupes on
-      // (categoryId, value), so the captain commit + agent echo
-      // collapse to a single banner.
-      const prior = useSessionInfo(instanceId).info.value.configOptions
+      const { instanceId, categories } = e.payload
 
-      pushConfigOptionChangeBanners(instanceId, sessionId, prior, changedConfigOptions(prior, categories))
       pushConfigOptionsUpdate(instanceId, categories)
     }),
     await listen(TauriEvent.AcpQueueChanged, (e) => {
@@ -573,7 +449,6 @@ export async function startSessionStream(): Promise<() => void> {
     await listen(TauriEvent.AcpInstanceMeta, (e) => {
       const payload = e.payload
       const instanceId = payload.instanceId
-      const priorConfigOptions = useSessionInfo(instanceId).info.value.configOptions
 
       setInstanceAgent(instanceId, payload.agentId)
       setInstanceProfile(instanceId, payload.profileId)
@@ -592,10 +467,6 @@ export async function startSessionStream(): Promise<() => void> {
       // to cancel), and the loader would stick forever.
       setSessionRestoring(instanceId, false)
 
-      const configOptionChanges = payload.configOptions ? changedConfigOptions(priorConfigOptions, payload.configOptions) : []
-
-      pushMetaModeChange(instanceId, payload.sessionId, payload.currentModeId, payload.availableModes)
-
       if (payload.availableModes && payload.availableModes.length > 0) {
         pushInstanceModeState(instanceId, { currentModeId: payload.currentModeId, availableModes: payload.availableModes })
       } else if (payload.currentModeId) {
@@ -609,10 +480,6 @@ export async function startSessionStream(): Promise<() => void> {
       // wire still carries `currentModelId` (e.g. seeded from
       // `[[agents]] model` config) so we keep the picker's selection
       // in sync without the list.
-      if (configOptionChanges.length === 0) {
-        pushMetaModelChange(instanceId, payload.sessionId, payload.currentModelId, payload.availableModels)
-      }
-
       if (payload.availableModels && payload.availableModels.length > 0) {
         pushInstanceModelState(instanceId, { currentModelId: payload.currentModelId, availableModels: payload.availableModels })
       } else if (payload.currentModelId) {
@@ -620,7 +487,6 @@ export async function startSessionStream(): Promise<() => void> {
       }
 
       if (payload.configOptions) {
-        pushConfigOptionChangeBanners(instanceId, payload.sessionId, priorConfigOptions, configOptionChanges)
         pushConfigOptionsUpdate(instanceId, payload.configOptions)
       }
     }),

@@ -15,7 +15,7 @@
  */
 
 import { ToastTone } from '@components'
-import { pushModeChange, useActiveInstance, useProfiles, pushToast } from '@composables'
+import { useActiveInstance, useProfiles, pushToast } from '@composables'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
@@ -131,26 +131,10 @@ export async function openModesLeaf(): Promise<void> {
       if (!pick) {
         return
       }
-      const prev = options.find((m) => m.id === snapshot.currentModeId)
 
       try {
         await invoke(TauriCommand.ModesSet, { instanceId: targetInstance, modeId: pick.id })
         pushToast(ToastTone.Ok, `mode → ${pick.name}`)
-
-        // Captain-initiated change → leave a chapter-break banner in
-        // the transcript matching the agent-emitted current_mode_update
-        // path. pushModeChange dedupes against the most-recent banner,
-        // so an agent echo (some adapters re-emit after set_mode) won't
-        // stack a second card. Session id needed for the dedupe key
-        // grouping; reach for the live one (snapshot has it).
-        if (snapshot.sessionId) {
-          pushModeChange(targetInstance, snapshot.sessionId, {
-            modeId: pick.id,
-            name: pick.name,
-            prevModeId: prev?.id,
-            prevName: prev?.name
-          })
-        }
       } catch(err) {
         const message = String(err)
 

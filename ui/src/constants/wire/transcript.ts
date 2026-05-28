@@ -18,8 +18,15 @@ export enum TranscriptItemKind {
   ToolCallUpdate = 'tool_call_update',
   Plan = 'plan',
   Compaction = 'compaction',
+  ChangeAdvertisement = 'change_advertisement',
   PermissionRequest = 'permission_request',
   Unknown = 'unknown'
+}
+
+export enum ChangeAdvertisementType {
+  Mode = 'mode',
+  Model = 'model',
+  ConfigOption = 'config_option'
 }
 
 export enum ToolCallState {

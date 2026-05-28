@@ -14,7 +14,7 @@
  */
 
 import { ToastTone } from '@components'
-import { pushModelChange, useActiveInstance, useProfiles, pushToast } from '@composables'
+import { useActiveInstance, useProfiles, pushToast } from '@composables'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
@@ -125,24 +125,10 @@ export async function openModelsLeaf(): Promise<void> {
       if (!pick) {
         return
       }
-      const prev = options.find((m) => m.id === snapshot.currentModelId)
 
       try {
         await invoke(TauriCommand.ModelsSet, { instanceId: targetInstance, modelId: pick.id })
         pushToast(ToastTone.Ok, `model → ${pick.name}`)
-
-        // Same chapter-break treatment as the modes leaf. Agents
-        // don't currently emit `current_model_update` echoes for
-        // session/set_model, so this is the only banner source for
-        // user-initiated model switches today.
-        if (snapshot.sessionId) {
-          pushModelChange(targetInstance, snapshot.sessionId, {
-            modelId: pick.id,
-            name: pick.name,
-            prevModelId: prev?.id,
-            prevName: prev?.name
-          })
-        }
       } catch(err) {
         const message = String(err)
 

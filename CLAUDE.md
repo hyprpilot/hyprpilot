@@ -1877,7 +1877,10 @@ fans out to (a) Tauri webview via `app.emit`, (b) WS peers via the
   session. Carries `{ agentId, instanceId, sessionId, turnId?, item }`
   where `item` is a typed `TranscriptItem` (`UserPrompt` / `UserText` /
   `AgentText` / `AgentThought` / `AgentAttachment` / `Plan` / `ToolCall`
-  / `ToolCallUpdate` / `PermissionRequest` / `Unknown`).
+  / `ToolCallUpdate` / `ChangeAdvertisement` / `PermissionRequest` /
+  `Unknown`). `ChangeAdvertisement` is daemon-authored history for
+  mode/model/config-option chapter breaks so snapshot-only frontends
+  replay the same banners as live clients.
 - `acp:permission-request` — every `session/request_permission` the
   agent fires. Carries `defaultOptionId?`, `allowOptionId?`, and
   `rejectOptionId?` (exact once-kind option picks).

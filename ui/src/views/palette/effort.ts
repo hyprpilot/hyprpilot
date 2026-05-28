@@ -13,7 +13,7 @@
  */
 
 import { ToastTone } from '@components'
-import { pushConfigOptionChange, pushConfigOptionsUpdate, useActiveInstance, useProfiles, useSessionInfo, pushToast } from '@composables'
+import { pushConfigOptionsUpdate, useActiveInstance, useProfiles, useSessionInfo, pushToast } from '@composables'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, usePalette } from '@composables'
 import { invoke, TauriCommand } from '@ipc'
 import { log } from '@lib'
@@ -151,7 +151,6 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
       if (!pick) {
         return
       }
-      const prev = active
 
       try {
         await invoke(TauriCommand.EffortSet, {
@@ -159,20 +158,6 @@ async function openConfigOptionLeaf(categoryId: string, paletteTitle: string): P
           effortId: pick.id
         })
         pushToast(ToastTone.Ok, `${category.id} → ${pick.name}`)
-
-        // Captain-initiated change → leave a chapter-break banner in
-        // the transcript matching mode / model commits. pushConfigOptionChange
-        // dedupes against the most-recent banner, so an agent echo via
-        // `config_option_update` won't stack a second card.
-        if (snapshot.sessionId) {
-          pushConfigOptionChange(targetInstance, snapshot.sessionId, {
-            categoryId: category.id,
-            value: pick.id,
-            name: pick.name,
-            prevValue: prev?.value,
-            prevName: prev?.name
-          })
-        }
       } catch(err) {
         const message = String(err)
 

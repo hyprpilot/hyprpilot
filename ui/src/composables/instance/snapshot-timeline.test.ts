@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { timelineBlocksFromSnapshot } from './snapshot-timeline'
 import { StreamItemKind, type StreamItem } from './use-stream'
 import { Role } from '@components'
-import { TranscriptItemKind } from '@constants/wire/transcript'
+import { ChangeAdvertisementType, TranscriptItemKind } from '@constants/wire/transcript'
 import { PlanPriority, PlanStepStatus, type PlanStep } from '@interfaces/wire/transcript'
 import type { SeqTranscriptItem } from '@ipc'
 
@@ -317,6 +317,70 @@ describe('timelineBlocksFromSnapshot', () => {
       expect(compaction.overflow).toBe(true)
       expect(compaction.tailStartId).toBe('m-1')
     }
+  })
+
+  it('projects durable change advertisement transcript items into stream blocks', () => {
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'switch'),
+      {
+        seq: 2,
+        turnId: 't-1',
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.Mode,
+          value: 'build',
+          name: 'Build',
+          prevValue: 'plan',
+          prevName: 'Plan'
+        }
+      },
+      {
+        seq: 3,
+        turnId: 't-1',
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.Model,
+          value: 'gpt-5.5',
+          name: 'GPT-5.5',
+          prevValue: 'gpt-5',
+          prevName: 'GPT-5'
+        }
+      },
+      {
+        seq: 4,
+        turnId: 't-1',
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.ConfigOption,
+          categoryId: 'effort',
+          value: 'high',
+          name: 'High',
+          prevValue: 'medium',
+          prevName: 'Medium'
+        }
+      }
+    ]
+
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistantBlock = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistantBlock?.streamEntries.map((entry) => entry.item.kind)).toEqual([StreamItemKind.ModeChange, StreamItemKind.ModelChange, StreamItemKind.ConfigOptionChange])
+    expect(assistantBlock?.streamEntries[0]?.item).toMatchObject({
+      kind: StreamItemKind.ModeChange,
+      modeId: 'build',
+      prevModeId: 'plan'
+    })
+    expect(assistantBlock?.streamEntries[1]?.item).toMatchObject({
+      kind: StreamItemKind.ModelChange,
+      modelId: 'gpt-5.5',
+      prevModelId: 'gpt-5'
+    })
+    expect(assistantBlock?.streamEntries[2]?.item).toMatchObject({
+      kind: StreamItemKind.ConfigOptionChange,
+      categoryId: 'effort',
+      value: 'high',
+      prevValue: 'medium'
+    })
   })
 
   it('overlays live change banners onto snapshot-rendered turn blocks', () => {

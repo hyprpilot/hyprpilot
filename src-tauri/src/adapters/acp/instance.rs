@@ -132,8 +132,9 @@ enum Role {
 
 impl Role {
     /// Classify a `TranscriptItem`. Returns `None` for kinds that
-    /// don't participate in role grouping (`PermissionRequest`,
-    /// `Unknown`) — those don't trigger a turn split either way.
+    /// don't participate in role grouping (`ChangeAdvertisement`,
+    /// `PermissionRequest`, `Unknown`) — those don't trigger a turn
+    /// split either way.
     fn of(item: &crate::adapters::TranscriptItem) -> Option<Self> {
         use crate::adapters::TranscriptItem as TI;
         match item {
@@ -145,7 +146,7 @@ impl Role {
             | TI::ToolCallUpdate(_)
             | TI::Plan(_)
             | TI::Compaction(_) => Some(Self::Agent),
-            TI::PermissionRequest(_) | TI::Unknown { .. } => None,
+            TI::ChangeAdvertisement(_) | TI::PermissionRequest(_) | TI::Unknown { .. } => None,
         }
     }
 }
