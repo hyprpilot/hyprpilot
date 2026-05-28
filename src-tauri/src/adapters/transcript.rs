@@ -310,6 +310,16 @@ pub struct PermissionRequestRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<serde_json::Value>,
     pub options: Vec<PermissionOptionView>,
+    /// Pre-selected option id — same backend-computed target carried
+    /// by the live `InstanceEvent::PermissionRequest`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_option_id: Option<String>,
+    /// Option id for the accept keybind. Strictly `allow_once`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_option_id: Option<String>,
+    /// Option id for the reject keybind. Strictly `reject_once`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reject_option_id: Option<String>,
     pub formatted: FormattedToolCall,
 }
 

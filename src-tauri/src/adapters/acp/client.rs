@@ -143,7 +143,8 @@ fn tool_call_ref(update: &agent_client_protocol::schema::ToolCallUpdate, mcp: Op
     // (`Bash`, `Read`, `mcp__server__leaf`). Kind is a *classification*
     // (`execute`, `read`); using it as the dispatch key collapses every
     // execute-kind tool to "execute · cmd" in the formatter and breaks
-    // glob-by-name in the trust store ("Bash*" never matches "execute").
+    // formatter / MCP attribution by name ("Bash*" never matches
+    // "execute").
     let name = title
         .clone()
         .or_else(|| kind_wire.clone())
@@ -204,9 +205,8 @@ pub(crate) fn raw_args_from_input(raw: &serde_json::Value) -> Option<String> {
 /// serde `rename_all = "snake_case"` shape. Closed match against the
 /// known variants; the catch-all guards against future additive
 /// variants on the `#[non_exhaustive]` upstream enum by emitting
-/// `"unknown"` (which the controller's prefix-match classification
-/// treats as neither allow nor reject — falls through to the
-/// name/id substring fallback in `pick_*_option_id`).
+/// `"unknown"` (which the controller treats as neither accept-once
+/// nor reject-once).
 fn permission_option_kind_wire(k: &PermissionOptionKind) -> &'static str {
     match k {
         PermissionOptionKind::AllowOnce => "allow_once",
@@ -228,9 +228,7 @@ pub struct AcpClient {
     permissions: Arc<dyn PermissionController>,
     /// Owning instance UUID. Stamped onto every `PermissionRequest`
     /// the controller registers so `permissions/pending` can address
-    /// the originating instance without a session-id hop. Also keys
-    /// the `PermissionController`'s runtime trust store at decide
-    /// time.
+    /// the originating instance without a session-id hop.
     instance_id: Option<String>,
     /// Per-instance MCP catalog — built at spawn time from
     /// `effective_mcp_files_for(profile)`. `None` when no MCP files
@@ -343,7 +341,7 @@ impl AcpClient {
                     session = %req.session_id,
                     tool = %tool_call.name,
                     instance_id = ?self.instance_id,
-                    "acp::client: permission auto-rejected by trust store / per-server glob"
+                    "acp::client: permission auto-rejected by per-server glob"
                 );
                 match pick_reject_option_id(&decision_req.options) {
                     Some(opt_id) => {
@@ -825,7 +823,7 @@ mod tests {
     fn tool_call_ref_prefers_title_over_kind_wire() {
         // The agent's `title` is the tool's actual identity (`Bash`,
         // `Read`, `mcp__server__leaf`); kind is just a classification
-        // (`execute`, `read`). Formatter dispatch + trust-store globs
+        // (`execute`, `read`). Formatter dispatch + MCP attribution
         // both key on `name`, so we want the identity, not the verb.
         let fields = ToolCallUpdateFields::new().kind(ToolKind::Execute).title("Bash");
         let update = ToolCallUpdate::new(ToolCallId::new("tc-1"), fields);

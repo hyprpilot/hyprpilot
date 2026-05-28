@@ -44,6 +44,10 @@ pub const PERMISSION_EXPIRED_OPTION_ID: &str = "__expired__";
 /// accumulate one future per resolved prompt.
 pub const WAITER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+const ALLOW_ONCE_KIND: &str = "allow_once";
+const ALLOW_ALWAYS_KIND: &str = "allow_always";
+const REJECT_ONCE_KIND: &str = "reject_once";
+
 /// UI-facing projection of a permission option. Wire-normalised so
 /// the webview doesn't need to speak any specific vendor's shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,11 +57,11 @@ pub struct PermissionOptionView {
     pub name: String,
     /// Wire-normalised snake-case string from the agent (`"allow_once"`,
     /// `"allow_always"`, `"reject_once"`, `"reject_always"` today;
-    /// vendors are free to introduce new variants the controller
-    /// doesn't classify). The pickers match canonical kinds first,
-    /// then fall back to a curated vendor-label set (see
-    /// [`ALLOW_ONCE_LABELS`] / [`ALLOW_ALWAYS_LABELS`] /
-    /// [`REJECT_LABELS`]) when the kind doesn't classify.
+    /// vendors are free to introduce new variants). Do not infer
+    /// semantics from `name` / `option_id`: all supported ACP adapters
+    /// mark the one-shot accept / reject actions with canonical
+    /// `allow_once` / `reject_once` kinds, and unknown kinds must stay
+    /// unbound rather than guessing.
     pub kind: String,
 }
 
@@ -66,64 +70,11 @@ pub struct PermissionOptionView {
 /// `reject_session` classify as reject). Used by external
 /// classification consumers — `permissions/respond` decides whether
 /// the captain's pick triggers the reject-feedback follow-up; the
-/// pickers in this module match on canonical kinds + the curated
-/// vendor-label set instead.
+/// picker functions below are stricter and match once-kind keybind
+/// targets exactly.
 #[must_use]
 pub fn is_reject_kind(kind: &str) -> bool {
     kind.starts_with("reject")
-}
-
-/// Vendor-shipped option labels for "allow this once". Exact match
-/// against the normalized option name / id. Sourced from the THREE
-/// adapters hyprpilot speaks — claude-agent-acp, codex CLI, opencode
-/// — nothing speculative.
-const ALLOW_ONCE_LABELS: &[&str] = &[
-    "allow",        // claude-agent-acp ships kind=allow_once with this name.
-    "approve once", // codex CLI.
-    "once",         // opencode (bare qualifier, no allow prefix).
-];
-
-/// Vendor labels for the deny / reject action. All three adapters
-/// converge on the same word.
-///
-/// **No allow-always label set exists by design.** Captains rejected
-/// any allow-always fallback in either the strict default-highlight
-/// or the trust-store auto-allow path — better to bail than to
-/// silently commit the agent to a forever rule. The strict and
-/// lenient pickers both return `None` when no allow-once option is
-/// offered; the auto-allow path then errors back to the caller and
-/// the captain sees the prompt explicitly.
-const REJECT_LABELS: &[&str] = &["reject"];
-
-/// Normalize a vendor-supplied option string for label comparison:
-/// replace `-` / `_` / `/` / `.` with spaces, lowercase, collapse
-/// runs of whitespace. So `"Approve-Once"`, `"approve_once"`, and
-/// `"Approve Once"` all reduce to `"approve once"` — one exact
-/// equality check covers every common spelling.
-fn normalize_label(raw: &str) -> String {
-    let replaced: String = raw
-        .chars()
-        .map(|c| {
-            if c == '-' || c == '_' || c == '/' || c == '.' {
-                ' '
-            } else {
-                c.to_ascii_lowercase()
-            }
-        })
-        .collect();
-
-    replaced.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// `true` when the option's name OR option_id (each normalized via
-/// [`normalize_label`]) exactly equals one of `labels`. Whole-string
-/// equality — not substring — so `"Disallow"` never matches
-/// `"allow"` and `"Approve All"` never matches `"approve once"`.
-fn matches_label(option: &PermissionOptionView, labels: &[&str]) -> bool {
-    let name = normalize_label(&option.name);
-    let id = normalize_label(&option.option_id);
-
-    labels.iter().any(|l| name == *l || id == *l)
 }
 
 /// Canonical wire ordering for permission options: `allow_always`
@@ -135,11 +86,9 @@ fn matches_label(option: &PermissionOptionView, labels: &[&str]) -> bool {
 /// frontend (Vue overlay, nvim plugin, ws remote) renders the same
 /// button arrangement without each re-implementing the sort.
 ///
-/// Classification mirrors the picker priority: canonical kind first
-/// (`eq_ignore_ascii_case`), then label fallback for the unknown-
-/// kind path. An option that classifies into more than one bucket
-/// is impossible because the kind comparisons + label sets are
-/// disjoint by construction.
+/// Classification is kind-only. Do not fall back to labels or ids:
+/// a vendor option with an unknown kind is not safe to bind to the
+/// default / keybind paths, even when its display label looks close.
 #[must_use]
 pub fn reorder_options(options: Vec<PermissionOptionView>) -> Vec<PermissionOptionView> {
     let mut allow_always: Option<PermissionOptionView> = None;
@@ -148,12 +97,11 @@ pub fn reorder_options(options: Vec<PermissionOptionView>) -> Vec<PermissionOpti
     let mut rest: Vec<PermissionOptionView> = Vec::with_capacity(options.len());
 
     for o in options {
-        let kind = o.kind.to_ascii_lowercase();
-        if allow_once.is_none() && (kind == "allow_once" || matches_label(&o, ALLOW_ONCE_LABELS)) {
+        if allow_once.is_none() && o.kind == ALLOW_ONCE_KIND {
             allow_once = Some(o);
-        } else if allow_always.is_none() && kind == "allow_always" {
+        } else if allow_always.is_none() && o.kind == ALLOW_ALWAYS_KIND {
             allow_always = Some(o);
-        } else if reject_once.is_none() && (kind == "reject_once" || matches_label(&o, REJECT_LABELS)) {
+        } else if reject_once.is_none() && o.kind == REJECT_ONCE_KIND {
             reject_once = Some(o);
         } else {
             rest.push(o);
@@ -227,6 +175,13 @@ pub struct PermissionRequest {
     pub request_id: String,
     pub tool_call: ToolCallRef,
     pub options: Vec<PermissionOptionView>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionOptionTargets {
+    pub default_option_id: Option<String>,
+    pub allow_option_id: Option<String>,
+    pub reject_option_id: Option<String>,
 }
 
 /// Decision chain outcome. `Allow` / `Deny` map directly to ACP at
@@ -485,16 +440,15 @@ impl PermissionController for DefaultPermissionController {
     async fn register_pending(&self, req: PermissionRequest) -> oneshot::Receiver<PermissionOutcome> {
         let (tx, rx) = oneshot::channel();
         let reordered = reorder_options(req.options.clone());
-        let allow_option_id = pick_allow_once_id(&reordered);
-        let reject_option_id = pick_reject_option_id(&reordered);
+        let targets = permission_option_targets(&reordered);
         let snapshot = PermissionRequestSnapshot {
             request_id: req.request_id.clone(),
             instance_id: req.instance_id.clone(),
             tool: req.tool_call.name.clone(),
             args: req.tool_call.raw_args.clone().or_else(|| req.tool_call.title.clone()),
-            default_option_id: allow_option_id.clone(),
-            allow_option_id,
-            reject_option_id,
+            default_option_id: targets.default_option_id,
+            allow_option_id: targets.allow_option_id,
+            reject_option_id: targets.reject_option_id,
             options: reordered,
         };
         let mut waiters = self.waiters.lock().await;
@@ -601,32 +555,19 @@ impl PermissionController for DefaultPermissionController {
 }
 
 /// Strict `allow_once` picker — returns `Some(option_id)` only when
-/// the agent offered an option whose normalized `kind` is exactly
-/// `allow_once`. Returns `None` for everything else (including
-/// `allow_always`, vendor-specific allow flavours, and substring
-/// matches on id / name).
+/// the agent offered an option whose `kind` is exactly `allow_once`.
+/// Returns `None` for everything else (including `allow_always`,
+/// vendor-specific allow flavours, and plausible-looking labels).
 ///
 /// Used by the default-highlight path so the captain pressing
 /// `Enter` on a permission prompt commits ONLY to "allow this once",
 /// never to "allow forever". Agents that don't offer a single-shot
 /// allow ship no default; the captain picks explicitly. Distinct
-/// from [`pick_allow_option_id`] which keeps the loose fallback
-/// chain for the trust-store auto-allow translator (that path has
-/// to send the agent SOME response when an auto-decision fires).
+/// from [`pick_allow_option_id`] so call sites document whether they
+/// are selecting a UI target or an auto-accept response.
 #[must_use]
 pub fn pick_allow_once_id(options: &[PermissionOptionView]) -> Option<String> {
-    // 1. Canonical kind match. `eq_ignore_ascii_case` so a vendor
-    //    shipping a mixed-case wire kind (ACP schema's
-    //    `#[non_exhaustive]` keeps that possibility open) still
-    //    matches.
-    // 2. Label match against the known allow-once vendor strings.
-    //    NEVER falls through to allow-always labels — captain's rule:
-    //    Enter must never commit to a forever rule, and better to
-    //    have no default than the wrong one.
-    let picked = options
-        .iter()
-        .find(|o| o.kind.eq_ignore_ascii_case("allow_once"))
-        .or_else(|| options.iter().find(|o| matches_label(o, ALLOW_ONCE_LABELS)));
+    let picked = pick_option_by_kind(options, ALLOW_ONCE_KIND);
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
@@ -644,32 +585,15 @@ pub fn pick_allow_once_id(options: &[PermissionOptionView]) -> Option<String> {
 }
 
 /// Pick an `allow`-shaped option id. Used on `Decision::Allow` when
-/// the controller has to translate the captain's trust-store
-/// decision back into an ACP `Selected(option_id)` response — the
-/// agent MUST get some option back, so this lane stays lenient.
+/// the controller has to translate an auto-accept decision back into
+/// an ACP `Selected(option_id)` response.
 ///
-/// Strategy: exact `kind` match on `allow_once` / `allow_always`,
-/// then anything that classifies as allow-shaped, then a substring
-/// match on `option_id` / `name`, then the first option overall.
-/// The default-highlight path (the captain's `Enter`-commit target)
-/// is intentionally NOT this — it uses
-/// [`pick_allow_once_id`] which returns `None` outside an exact
-/// `allow_once` match.
+/// Strategy: exact `kind` match on `allow_once` only. No label/id/first
+/// option fallback is allowed: auto-accept is a one-shot decision and
+/// must not accidentally select a persistent allow option.
 #[must_use]
 pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> {
-    // Trust-store auto-allow translator. Same rule as the strict
-    // default-highlight picker: NEVER falls through to allow-always
-    // (no `allow_always` kind, no allow-always label, no
-    // first-option escape hatch that could land on allow-always
-    // anyway). The captain's per-tool auto-allow decision is
-    // per-call — it must not silently lock the agent into a forever
-    // rule. When this returns `None`, the caller errors out with
-    // "no allow-once option available" and the captain sees the
-    // prompt explicitly.
-    let picked = options
-        .iter()
-        .find(|o| o.kind.eq_ignore_ascii_case("allow_once"))
-        .or_else(|| options.iter().find(|o| matches_label(o, ALLOW_ONCE_LABELS)));
+    let picked = pick_option_by_kind(options, ALLOW_ONCE_KIND);
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
@@ -682,21 +606,11 @@ pub fn pick_allow_option_id(options: &[PermissionOptionView]) -> Option<String> 
 }
 
 /// Pick a `reject`-shaped option id. Same strategy as allow but for
-/// the reject half. Returns `None` when no reject-coloured option
-/// exists — the caller falls back to `Cancelled`.
+/// the reject half. Returns `None` when no `reject_once` option exists
+/// — the caller falls back to `Cancelled`.
 #[must_use]
 pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String> {
-    // Symmetric with `pick_allow_once_id`: NEVER falls through to
-    // `reject_always`. The trust-store auto-deny path is per-call —
-    // it should not lock the agent into a forever-deny just because
-    // the only reject option offered is `reject_always`. When this
-    // picker returns `None`, the caller falls through to `Cancelled`
-    // (see `acp::client::request_permission`'s `Decision::Deny`
-    // branch). Reject-once labels only.
-    let picked = options
-        .iter()
-        .find(|o| o.kind.eq_ignore_ascii_case("reject_once"))
-        .or_else(|| options.iter().find(|o| matches_label(o, REJECT_LABELS)));
+    let picked = pick_option_by_kind(options, REJECT_ONCE_KIND);
     if let Some(opt) = picked {
         tracing::debug!(
             option_id = %opt.option_id,
@@ -706,6 +620,21 @@ pub fn pick_reject_option_id(options: &[PermissionOptionView]) -> Option<String>
         );
     }
     picked.map(|o| o.option_id.clone())
+}
+
+#[must_use]
+pub fn permission_option_targets(options: &[PermissionOptionView]) -> PermissionOptionTargets {
+    let allow_option_id = pick_allow_once_id(options);
+
+    PermissionOptionTargets {
+        default_option_id: allow_option_id.clone(),
+        allow_option_id,
+        reject_option_id: pick_reject_option_id(options),
+    }
+}
+
+fn pick_option_by_kind<'a>(options: &'a [PermissionOptionView], kind: &str) -> Option<&'a PermissionOptionView> {
+    options.iter().find(|o| o.kind == kind)
 }
 
 #[cfg(test)]
@@ -1035,12 +964,6 @@ mod tests {
         assert_eq!(pick_allow_option_id(&opts).as_deref(), Some("o2"));
     }
 
-    /// Captain's rule (symmetric with `pick_allow_once_id` and
-    /// `pick_reject_option_id`): the lenient auto-allow path NEVER
-    /// falls through to `allow_always` either. When only an
-    /// allow-always option is offered, the trust-store auto-allow
-    /// fails and the captain sees the prompt explicitly. Better no
-    /// auto-decision than the wrong one.
     #[test]
     fn pick_allow_option_never_picks_allow_always_kind() {
         let opts = vec![PermissionOptionView {
@@ -1051,38 +974,14 @@ mod tests {
         assert_eq!(pick_allow_option_id(&opts), None);
     }
 
-    /// Same rule applies to the label-fallback path: opencode's bare
-    /// `"Always"` doesn't auto-allow.
     #[test]
-    fn pick_allow_option_never_picks_allow_always_label() {
+    fn pick_allow_option_ignores_unknown_kind_even_when_label_looks_allow_once() {
         let opts = vec![PermissionOptionView {
-            option_id: "always".into(),
-            name: "Always".into(),
+            option_id: "once".into(),
+            name: "Allow once".into(),
             kind: "unknown".into(),
         }];
         assert_eq!(pick_allow_option_id(&opts), None);
-    }
-
-    /// Loose path: when the kind doesn't classify, fall back to
-    /// matching against the curated vendor label set. opencode ships
-    /// bare `"Once"` for its allow-once option — no allow prefix in
-    /// the name, but `"once"` is in `ALLOW_ONCE_LABELS`.
-    #[test]
-    fn pick_allow_option_falls_back_to_vendor_label() {
-        // Pure opencode shape: "Once" with no allow prefix.
-        let opencode = vec![
-            PermissionOptionView {
-                option_id: "once".into(),
-                name: "Once".into(),
-                kind: "unknown".into(),
-            },
-            PermissionOptionView {
-                option_id: "always".into(),
-                name: "Always".into(),
-                kind: "unknown".into(),
-            },
-        ];
-        assert_eq!(pick_allow_option_id(&opencode).as_deref(), Some("once"));
     }
 
     #[test]
@@ -1116,94 +1015,28 @@ mod tests {
         assert_eq!(pick_allow_once_id(&opts), None);
     }
 
-    /// `"Approve Once"` (codex CLI) matches the canonical
-    /// `"approve once"` label when the wire kind doesn't classify.
     #[test]
-    fn pick_allow_once_matches_codex_approve_once() {
+    fn pick_allow_once_ignores_adapter_labels_when_kind_is_unknown() {
         let opts = vec![
             PermissionOptionView {
-                option_id: "approve-once".into(),
-                name: "Approve Once".into(),
+                option_id: "allow".into(),
+                name: "Allow".into(),
                 kind: "unknown".into(),
             },
             PermissionOptionView {
-                option_id: "approve-session".into(),
-                name: "Approve This Session".into(),
+                option_id: "approved".into(),
+                name: "Yes, proceed".into(),
                 kind: "unknown".into(),
             },
-            PermissionOptionView {
-                option_id: "reject".into(),
-                name: "Reject".into(),
-                kind: "unknown".into(),
-            },
-        ];
-        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("approve-once"));
-    }
-
-    /// Opencode's bare `"Once"` (no allow prefix) is the canonical
-    /// allow-once label. Catch this branch explicitly.
-    #[test]
-    fn pick_allow_once_matches_opencode_once() {
-        let opts = vec![
             PermissionOptionView {
                 option_id: "once".into(),
-                name: "Once".into(),
-                kind: "unknown".into(),
-            },
-            PermissionOptionView {
-                option_id: "always".into(),
-                name: "Always".into(),
-                kind: "unknown".into(),
-            },
-            PermissionOptionView {
-                option_id: "reject".into(),
-                name: "Reject".into(),
-                kind: "unknown".into(),
-            },
-        ];
-        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("once"));
-    }
-
-    /// `"Disallow"` is NOT in the allow-once label set even though it
-    /// contains the substring "allow" — single-string equality (after
-    /// normalization) means no false match.
-    #[test]
-    fn pick_allow_once_rejects_disallow_substring() {
-        let opts = vec![PermissionOptionView {
-            option_id: "no".into(),
-            name: "Disallow".into(),
-            kind: "unknown".into(),
-        }];
-        assert_eq!(pick_allow_once_id(&opts), None);
-    }
-
-    /// Captain's rule: default-highlight NEVER falls through to
-    /// allow-always labels. `"Always"` (opencode) / `"Allow Always"`
-    /// / `"Approve This Session"` (codex) all stay unhighlighted.
-    /// Better no default than the wrong one.
-    #[test]
-    fn pick_allow_once_never_picks_allow_always_label() {
-        let opts = vec![
-            PermissionOptionView {
-                option_id: "always".into(),
-                name: "Always".into(),
-                kind: "unknown".into(),
-            },
-            PermissionOptionView {
-                option_id: "allow-always".into(),
-                name: "Allow Always".into(),
-                kind: "unknown".into(),
-            },
-            PermissionOptionView {
-                option_id: "approve-session".into(),
-                name: "Approve This Session".into(),
+                name: "Allow once".into(),
                 kind: "unknown".into(),
             },
         ];
         assert_eq!(pick_allow_once_id(&opts), None);
     }
 
-    /// And explicit: kind=allow_always alone never highlights.
     #[test]
     fn pick_allow_once_never_picks_allow_always_kind() {
         let opts = vec![PermissionOptionView {
@@ -1237,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn pick_reject_option_returns_none_when_no_reject_shape() {
+    fn pick_reject_option_returns_none_when_no_reject_once() {
         let opts = vec![PermissionOptionView {
             option_id: "allow-once".into(),
             name: "Allow".into(),
@@ -1246,43 +1079,16 @@ mod tests {
         assert!(pick_reject_option_id(&opts).is_none());
     }
 
-    /// `"Reject"` (codex + opencode both ship this exact label)
-    /// matches the canonical reject label when the wire kind doesn't
-    /// classify.
     #[test]
-    fn pick_reject_option_matches_vendor_reject_label() {
-        let opts = vec![
-            PermissionOptionView {
-                option_id: "reject".into(),
-                name: "Reject".into(),
-                kind: "unknown".into(),
-            },
-            PermissionOptionView {
-                option_id: "approve-once".into(),
-                name: "Approve Once".into(),
-                kind: "unknown".into(),
-            },
-        ];
-        assert_eq!(pick_reject_option_id(&opts).as_deref(), Some("reject"));
-    }
-
-    /// `"Rejected"` (past tense) is NOT the reject label — single-
-    /// string equality after normalization means no false match.
-    #[test]
-    fn pick_reject_option_rejects_substring_rejected() {
+    fn pick_reject_option_ignores_unknown_kind_even_when_label_looks_reject() {
         let opts = vec![PermissionOptionView {
-            option_id: "stale".into(),
-            name: "Rejected".into(),
+            option_id: "reject".into(),
+            name: "Reject".into(),
             kind: "unknown".into(),
         }];
-        assert!(pick_reject_option_id(&opts).is_none());
+        assert_eq!(pick_reject_option_id(&opts), None);
     }
 
-    /// Captain's rule (symmetric with allow): reject picker NEVER
-    /// falls through to `reject_always` — the trust-store auto-deny
-    /// is per-call and shouldn't lock the agent into a forever-deny.
-    /// `None` here means the caller (acp::client) falls through to
-    /// `Cancelled`.
     #[test]
     fn pick_reject_option_never_picks_reject_always_kind() {
         let opts = vec![PermissionOptionView {
@@ -1293,45 +1099,194 @@ mod tests {
         assert_eq!(pick_reject_option_id(&opts), None);
     }
 
-    /// Real-world adapter coverage: claude-agent-acp `"Allow"` /
-    /// codex `"Approve Once"` / opencode `"Once"` all land on the
-    /// lenient allow-picker correctly even when the wire kind is
-    /// unknown.
     #[test]
-    fn pick_allow_option_matches_real_world_adapter_labels() {
-        let claude = vec![PermissionOptionView {
-            option_id: "claude-allow".into(),
-            name: "Allow".into(),
-            kind: "unknown".into(),
-        }];
-        assert_eq!(pick_allow_option_id(&claude).as_deref(), Some("claude-allow"));
+    fn permission_targets_cover_supported_adapter_shapes_by_kind() {
+        let cases = [
+            (
+                "claude-code-tool",
+                vec![
+                    PermissionOptionView {
+                        option_id: "allow_always".into(),
+                        name: "Always Allow all Bash".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "allow".into(),
+                        name: "Allow".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "reject".into(),
+                        name: "Reject".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "allow",
+                "reject",
+            ),
+            (
+                "claude-code-plan-exit",
+                vec![
+                    PermissionOptionView {
+                        option_id: "auto".into(),
+                        name: r#"Yes, and use "auto" mode"#.into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "acceptEdits".into(),
+                        name: "Yes, and auto-accept edits".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "default".into(),
+                        name: "Yes, and manually approve edits".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "plan".into(),
+                        name: "No, keep planning".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "default",
+                "plan",
+            ),
+            (
+                "codex-exec",
+                vec![
+                    PermissionOptionView {
+                        option_id: "approved".into(),
+                        name: "Yes, proceed".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "approved-for-session".into(),
+                        name: "Yes, and don't ask again for this command in this session".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "denied".into(),
+                        name: "No, continue without running it".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "approved",
+                "denied",
+            ),
+            (
+                "codex-mcp-approval",
+                vec![
+                    PermissionOptionView {
+                        option_id: "approved".into(),
+                        name: "Allow".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "approved-for-session".into(),
+                        name: "Allow for this session".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "approved-always".into(),
+                        name: "Allow and don't ask again".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "cancel".into(),
+                        name: "Cancel".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "approved",
+                "cancel",
+            ),
+            (
+                "codex-patch-approval",
+                vec![
+                    PermissionOptionView {
+                        option_id: "approved".into(),
+                        name: "Yes".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "abort".into(),
+                        name: "No, provide feedback".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "approved",
+                "abort",
+            ),
+            (
+                "opencode",
+                vec![
+                    PermissionOptionView {
+                        option_id: "once".into(),
+                        name: "Allow once".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "always".into(),
+                        name: "Always allow".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "reject".into(),
+                        name: "Reject".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "once",
+                "reject",
+            ),
+        ];
 
-        let codex = vec![PermissionOptionView {
-            option_id: "approve-once".into(),
-            name: "Approve Once".into(),
-            kind: "unknown".into(),
-        }];
-        assert_eq!(pick_allow_option_id(&codex).as_deref(), Some("approve-once"));
+        for (adapter, options, allow, reject) in cases {
+            let targets = permission_option_targets(&options);
 
-        let opencode = vec![PermissionOptionView {
-            option_id: "once".into(),
-            name: "Once".into(),
-            kind: "unknown".into(),
-        }];
-        assert_eq!(pick_allow_option_id(&opencode).as_deref(), Some("once"));
+            assert_eq!(targets.default_option_id.as_deref(), Some(allow), "{adapter}");
+            assert_eq!(targets.allow_option_id.as_deref(), Some(allow), "{adapter}");
+            assert_eq!(targets.reject_option_id.as_deref(), Some(reject), "{adapter}");
+        }
     }
 
-    /// Defensive: a future vendor shipping mixed-case wire kinds
-    /// (`"Allow_Once"` instead of `"allow_once"`) still routes
-    /// correctly. The kind comparisons use `eq_ignore_ascii_case`.
     #[test]
-    fn pick_allow_once_lowercases_kind_compare() {
+    fn permission_targets_do_not_guess_when_once_kinds_are_absent() {
+        let opts = vec![
+            PermissionOptionView {
+                option_id: "allow_always".into(),
+                name: "Allow always".into(),
+                kind: "allow_always".into(),
+            },
+            PermissionOptionView {
+                option_id: "reject_always".into(),
+                name: "Reject always".into(),
+                kind: "reject_always".into(),
+            },
+            PermissionOptionView {
+                option_id: "maybe".into(),
+                name: "Allow".into(),
+                kind: "unknown".into(),
+            },
+        ];
+        let targets = permission_option_targets(&opts);
+
+        assert_eq!(targets.default_option_id, None);
+        assert_eq!(targets.allow_option_id, None);
+        assert_eq!(targets.reject_option_id, None);
+    }
+
+    /// Strict: wire kinds are protocol strings, so a mixed-case value
+    /// is treated as unknown instead of being guessed into a keybind
+    /// target.
+    #[test]
+    fn pick_allow_once_does_not_case_fold_kind() {
         let opts = vec![PermissionOptionView {
             option_id: "ok".into(),
             name: "Allow Once".into(),
             kind: "Allow_Once".into(),
         }];
-        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("ok"));
+        assert_eq!(pick_allow_once_id(&opts), None);
     }
 
     /// Daemon enforces a canonical wire order: `allow_always` first,
@@ -1413,19 +1368,5 @@ mod tests {
         let ids: Vec<String> = out.iter().map(|o| o.option_id.clone()).collect();
 
         assert_eq!(ids, vec!["once", "mystery-1", "mystery-2"]);
-    }
-
-    /// Normalization handles hyphen / underscore separators on the
-    /// option_id field. `"approve-once"` (id) and `"Approve Once"`
-    /// (name) both normalize to `"approve once"`.
-    #[test]
-    fn pick_allow_once_normalizes_separators() {
-        let opts = vec![PermissionOptionView {
-            option_id: "approve-once".into(),
-            // Name omitted on purpose — make the picker rely on the id alone.
-            name: String::new(),
-            kind: "unknown".into(),
-        }];
-        assert_eq!(pick_allow_once_id(&opts).as_deref(), Some("approve-once"));
     }
 }

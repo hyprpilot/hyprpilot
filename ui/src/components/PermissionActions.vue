@@ -11,19 +11,15 @@ import type { PermissionOptionView } from '@interfaces/wire/transcript'
  * modal looks oversized).
  *
  * Tone: `allow_*` → ok, `reject_*` → err, anything else → neutral.
- * Variant: `allow_once` is solid (the agent's default + most common
- * pick), every other kind renders ghost so the primary action is
- * visually unambiguous.
+ * Variant: daemon-picked `defaultOptionId` is solid, every other kind
+ * renders ghost so the primary action is visually unambiguous.
  *
  * Emits `reply` with the real `optionId` from the offered set.
  */
 const props = defineProps<{
   options: PermissionOptionView[]
-  /// Daemon-picked default option id (allow-shaped, via the same
-  /// matcher that powers the trust store). When set, that button
-  /// renders solid (the visual primary) and any other allow-kind
-  /// button drops to ghost. When unset, falls back to the legacy
-  /// rule (`allow_once` is solid).
+  /// Daemon-picked default option id. When set, that button renders
+  /// solid (the visual primary). When unset, no button is highlighted.
   defaultOptionId?: string
 }>()
 

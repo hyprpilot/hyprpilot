@@ -320,8 +320,8 @@ function onRowClick(entry: PaletteEntry): void {
 
   // MultiSelect: a row click toggles its tick (mirrors the Tab
   // keybind). Closing on click would force the captain to commit
-  // every individual change to the trust store one round-trip at a
-  // time — the whole point of multi-select is batching.
+  // every individual change one round-trip at a time — the whole
+  // point of multi-select is batching.
   if (spec.mode === PaletteMode.MultiSelect) {
     toggleTick(entry.id)
 

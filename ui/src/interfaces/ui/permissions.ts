@@ -1,8 +1,8 @@
 /**
  * Permission-flow types. `PermissionView` wraps a formatted
  * `ToolCallView` with the wire metadata `ToolCallView` doesn't carry
- * — request id, options, instance/session ids for trust-store
- * keying. `usePermissions` produces these and splits row vs modal
+ * — request id, options, instance/session ids for response routing.
+ * `usePermissions` produces these and splits row vs modal
  * queues by `view.call.permissionUi`.
  */
 
@@ -15,7 +15,7 @@ export interface PermissionRequest {
   /// Trust-store keying.
   instanceId: string
   sessionId: string
-  /// Raw wire tool name — trust-store key + glob-match key.
+  /// Raw wire tool name — display key + MCP glob-match key.
   toolName: string
 }
 

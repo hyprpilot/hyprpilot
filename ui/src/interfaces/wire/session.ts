@@ -296,10 +296,10 @@ export interface PermissionReplyArgs {
    * Real ACP option id from the agent-offered set on the originating
    * `session/request_permission` call. The captain's "remember this"
    * intent is carried by the option's typed `kind` field
-   * (`allow_always` / `reject_always` write the trust store
-   * automatically; `_once` variants don't); the daemon controller
-   * reads the kind off the offered set when resolving. No separate
-   * `remember` / `tool` / `instanceId` fields on the wire.
+   * (`allow_always` / `reject_always` when the agent offers them);
+   * hyprpilot forwards the chosen id verbatim and the agent owns any
+   * persistence. No separate `remember` / `tool` / `instanceId`
+   * fields on the wire.
    */
   optionId: string
   /**

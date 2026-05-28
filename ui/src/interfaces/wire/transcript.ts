@@ -15,11 +15,9 @@ export interface PermissionOptionView {
   /**
    * Wire-normalised snake-case string from the agent (`'allow_once'`,
    * `'allow_always'`, `'reject_once'`, `'reject_always'` today;
-   * vendors are free to introduce new variants). The daemon only
-   * classifies allow vs reject via prefix-match; other dispatch
-   * keeps the string opaque so unknown vendor kinds pass through.
-   * UI consumers that care about allow/reject branching should
-   * prefix-match (`kind.startsWith('allow')`) for the same reason.
+   * vendors are free to introduce new variants). The daemon picks
+   * permission default / keybind targets by exact once-kind matches
+   * only; UI consumers may still prefix-match for display-only tone.
    */
   kind: string
 }
