@@ -1103,7 +1103,7 @@ mod tests {
     fn permission_targets_cover_supported_adapter_shapes_by_kind() {
         let cases = [
             (
-                "claude-code",
+                "claude-code-tool",
                 vec![
                     PermissionOptionView {
                         option_id: "allow_always".into(),
@@ -1125,7 +1125,34 @@ mod tests {
                 "reject",
             ),
             (
-                "codex",
+                "claude-code-plan-exit",
+                vec![
+                    PermissionOptionView {
+                        option_id: "auto".into(),
+                        name: r#"Yes, and use "auto" mode"#.into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "acceptEdits".into(),
+                        name: "Yes, and auto-accept edits".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "default".into(),
+                        name: "Yes, and manually approve edits".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "plan".into(),
+                        name: "No, keep planning".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "default",
+                "plan",
+            ),
+            (
+                "codex-exec",
                 vec![
                     PermissionOptionView {
                         option_id: "approved".into(),
@@ -1145,6 +1172,50 @@ mod tests {
                 ],
                 "approved",
                 "denied",
+            ),
+            (
+                "codex-mcp-approval",
+                vec![
+                    PermissionOptionView {
+                        option_id: "approved".into(),
+                        name: "Allow".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "approved-for-session".into(),
+                        name: "Allow for this session".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "approved-always".into(),
+                        name: "Allow and don't ask again".into(),
+                        kind: "allow_always".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "cancel".into(),
+                        name: "Cancel".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "approved",
+                "cancel",
+            ),
+            (
+                "codex-patch-approval",
+                vec![
+                    PermissionOptionView {
+                        option_id: "approved".into(),
+                        name: "Yes".into(),
+                        kind: "allow_once".into(),
+                    },
+                    PermissionOptionView {
+                        option_id: "abort".into(),
+                        name: "No, provide feedback".into(),
+                        kind: "reject_once".into(),
+                    },
+                ],
+                "approved",
+                "abort",
             ),
             (
                 "opencode",
