@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.14](https://github.com/hyprpilot/hyprpilot/compare/v2.3.13...v2.3.14) (2026-05-28)
+
+
+### Bug Fixes
+
+* **core:** persist change advertisements in transcript ([#141](https://github.com/hyprpilot/hyprpilot/issues/141)) ([8f57c21](https://github.com/hyprpilot/hyprpilot/commit/8f57c21cc947b0192740fa3497c1a4f998dc9ed2))
+
 ## [2.3.13](https://github.com/hyprpilot/hyprpilot/compare/v2.3.12...v2.3.13) (2026-05-28)
 
 
