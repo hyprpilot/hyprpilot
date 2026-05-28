@@ -251,6 +251,18 @@ export function pushConfigOptionsUpdate(id: InstanceId, categories: SessionConfi
   const slot = slotFor(id)
 
   slot.configOptions = categories
+
+  for (const category of categories) {
+    if (typeof category.currentValue !== 'string') {
+      continue
+    }
+
+    if (category.id === 'mode') {
+      slot.mode = category.currentValue
+    } else if (category.id === 'model') {
+      slot.model = category.currentValue
+    }
+  }
 }
 
 /**

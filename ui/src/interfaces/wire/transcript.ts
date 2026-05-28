@@ -7,7 +7,7 @@
  */
 import type { FormattedToolCall } from './formatted-tool-call'
 import type { Attachment } from './session'
-import type { ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
+import type { ChangeAdvertisementType, ToolCallState, TranscriptItemKind } from '@constants/wire/transcript'
 
 export interface PermissionOptionView {
   optionId: string
@@ -114,6 +114,18 @@ export interface CompactionRecord {
   tailStartId?: string
 }
 
+export interface ChangeAdvertisementRecord {
+  /** Semantic banner family: top-level mode/model or generic config option. */
+  type: ChangeAdvertisementType
+  /** New selected id/value. */
+  value: string
+  name?: string
+  /** Present only for `config_option` changes. */
+  categoryId?: string
+  prevValue?: string
+  prevName?: string
+}
+
 /// Mirror of Rust `adapters::transcript::ChecklistStats`. Generic
 /// `done / total` running stat — used by `PlanRecord` today, slotted
 /// for any future checklist-shaped record.
@@ -160,5 +172,6 @@ export type TranscriptItem =
   | ({ kind: TranscriptItemKind.ToolCallUpdate } & ToolCallUpdateRecord)
   | ({ kind: TranscriptItemKind.Plan } & PlanRecord)
   | ({ kind: TranscriptItemKind.Compaction } & CompactionRecord)
+  | ({ kind: TranscriptItemKind.ChangeAdvertisement } & ChangeAdvertisementRecord)
   | ({ kind: TranscriptItemKind.PermissionRequest } & PermissionRequestRecord)
   | { kind: TranscriptItemKind.Unknown; wireKind: string; payload: Record<string, unknown> }

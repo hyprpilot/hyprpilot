@@ -14,9 +14,7 @@ import {
   clearToasts,
   useToasts,
   __resetAllSessionInfoForTests,
-  pushConfigOptionsUpdate,
-  pushInstanceModeState,
-  pushInstanceModelState,
+  useSessionInfo,
   resetTools,
   useTools,
   resetTranscript,
@@ -321,13 +319,34 @@ describe('useSessionStream', () => {
     expect(entry?.exitCode).toBe(0)
   })
 
-  it('pushes mode change banners from instance meta updates', async() => {
+  it('keeps metadata/config side events banner-free while updating header state', async() => {
     await startSessionStream()
-    pushInstanceModeState('A', {
-      currentModeId: 'default',
+
+    emit(TauriEvent.AcpInstanceMeta, {
+      agentId: 'codex',
+      instanceId: 'A',
+      sessionId: 's-a',
+      cwd: '/tmp',
+      currentModeId: 'build',
+      currentModelId: 'gpt-5',
       availableModes: [
-        { id: 'default', name: 'Default' },
+        { id: 'build', name: 'Build' },
         { id: 'plan', name: 'Plan' }
+      ],
+      availableModels: [
+        { id: 'gpt-5', name: 'GPT-5' },
+        { id: 'gpt-5.5', name: 'GPT-5.5' }
+      ],
+      configOptions: [
+        {
+          id: 'effort',
+          name: 'effort',
+          currentValue: 'medium',
+          options: [
+            { value: 'medium', name: 'Medium' },
+            { value: 'high', name: 'High' }
+          ]
+        }
       ]
     })
 
@@ -337,130 +356,14 @@ describe('useSessionStream', () => {
       sessionId: 's-a',
       cwd: '/tmp',
       currentModeId: 'plan',
-      availableModes: [
-        { id: 'default', name: 'Default' },
-        { id: 'plan', name: 'Plan' }
-      ]
-    })
-
-    const item = useStream('A').items.value.find((entry) => entry.kind === 'mode_change')
-
-    expect(item).toMatchObject({
-      kind: 'mode_change',
-      modeId: 'plan',
-      name: 'Plan',
-      prevModeId: 'default',
-      prevName: 'Default'
-    })
-  })
-
-  it('pushes model change banners from instance meta updates', async() => {
-    await startSessionStream()
-    pushInstanceModelState('A', {
-      currentModelId: 'gpt-5',
-      availableModels: [
-        { id: 'gpt-5', name: 'GPT-5' },
-        { id: 'gpt-5.5', name: 'GPT-5.5' }
-      ]
-    })
-
-    emit(TauriEvent.AcpInstanceMeta, {
-      agentId: 'codex',
-      instanceId: 'A',
-      sessionId: 's-a',
-      cwd: '/tmp',
       currentModelId: 'gpt-5.5',
+      availableModes: [
+        { id: 'build', name: 'Build' },
+        { id: 'plan', name: 'Plan' }
+      ],
       availableModels: [
         { id: 'gpt-5', name: 'GPT-5' },
         { id: 'gpt-5.5', name: 'GPT-5.5' }
-      ]
-    })
-
-    const item = useStream('A').items.value.find((entry) => entry.kind === 'model_change')
-
-    expect(item).toMatchObject({
-      kind: 'model_change',
-      modelId: 'gpt-5.5',
-      name: 'GPT-5.5',
-      prevModelId: 'gpt-5',
-      prevName: 'GPT-5'
-    })
-  })
-
-  it('pushes config option change banners from instance meta updates', async() => {
-    await startSessionStream()
-    pushConfigOptionsUpdate('A', [
-      {
-        id: 'effort',
-        name: 'effort',
-        currentValue: 'medium',
-        options: [
-          { value: 'medium', name: 'Medium' },
-          { value: 'high', name: 'High' }
-        ]
-      }
-    ])
-
-    emit(TauriEvent.AcpInstanceMeta, {
-      agentId: 'codex',
-      instanceId: 'A',
-      sessionId: 's-a',
-      cwd: '/tmp',
-      configOptions: [
-        {
-          id: 'effort',
-          name: 'effort',
-          currentValue: 'high',
-          options: [
-            { value: 'medium', name: 'Medium' },
-            { value: 'high', name: 'High' }
-          ]
-        }
-      ]
-    })
-
-    const item = useStream('A').items.value.find((entry) => entry.kind === 'config_option_change')
-
-    expect(item).toMatchObject({
-      kind: 'config_option_change',
-      categoryId: 'effort',
-      value: 'high',
-      name: 'High',
-      prevValue: 'medium',
-      prevName: 'Medium'
-    })
-  })
-
-  it('treats codex effort-backed model ids as config option changes', async() => {
-    await startSessionStream()
-    pushInstanceModelState('A', {
-      currentModelId: 'gpt-5.5/medium',
-      availableModels: [
-        { id: 'gpt-5.5/medium', name: 'GPT-5.5 medium' },
-        { id: 'gpt-5.5/high', name: 'GPT-5.5 high' }
-      ]
-    })
-    pushConfigOptionsUpdate('A', [
-      {
-        id: 'effort',
-        name: 'effort',
-        currentValue: 'medium',
-        options: [
-          { value: 'medium', name: 'Medium' },
-          { value: 'high', name: 'High' }
-        ]
-      }
-    ])
-
-    emit(TauriEvent.AcpInstanceMeta, {
-      agentId: 'codex',
-      instanceId: 'A',
-      sessionId: 's-a',
-      cwd: '/tmp',
-      currentModelId: 'gpt-5.5/high',
-      availableModels: [
-        { id: 'gpt-5.5/medium', name: 'GPT-5.5 medium' },
-        { id: 'gpt-5.5/high', name: 'GPT-5.5 high' }
       ],
       configOptions: [
         {
@@ -475,13 +378,20 @@ describe('useSessionStream', () => {
       ]
     })
 
-    const stream = useStream('A').items.value
+    emit(TauriEvent.AcpCurrentModeUpdate, {
+      agentId: 'codex',
+      instanceId: 'A',
+      sessionId: 's-a',
+      currentModeId: 'build'
+    })
 
-    expect(stream.filter((entry) => entry.kind === 'model_change')).toHaveLength(0)
-    expect(stream.filter((entry) => entry.kind === 'config_option_change')).toHaveLength(1)
+    expect(useStream('A').items.value).toHaveLength(0)
+    expect(useSessionInfo('A').info.value.mode).toBe('build')
+    expect(useSessionInfo('A').info.value.model).toBe('gpt-5.5')
+    expect(useSessionInfo('A').info.value.effort).toBe('high')
   })
 
-  it('does not push change banners from initial instance meta state', async() => {
+  it('mirrors config-backed mode and model categories into header state without timeline overlays', async() => {
     await startSessionStream()
 
     emit(TauriEvent.AcpInstanceMeta, {
@@ -489,19 +399,49 @@ describe('useSessionStream', () => {
       instanceId: 'A',
       sessionId: 's-a',
       cwd: '/tmp',
-      currentModeId: 'plan',
-      currentModelId: 'gpt-5.5',
-      configOptions: [
+      currentModeId: 'build',
+      currentModelId: 'gpt-5',
+      availableModes: [
+        { id: 'build', name: 'Build' },
+        { id: 'plan', name: 'Plan' }
+      ],
+      availableModels: [
+        { id: 'gpt-5', name: 'GPT-5' },
+        { id: 'gpt-5.5', name: 'GPT-5.5' }
+      ]
+    })
+
+    emit(TauriEvent.AcpConfigOptionsUpdate, {
+      agentId: 'codex',
+      instanceId: 'A',
+      sessionId: 's-a',
+      categories: [
         {
-          id: 'effort',
-          name: 'effort',
-          currentValue: 'high',
-          options: [{ value: 'high', name: 'High' }]
+          id: 'mode',
+          name: 'mode',
+          currentValue: 'plan',
+          options: [
+            { value: 'build', name: 'Build' },
+            { value: 'plan', name: 'Plan' }
+          ]
+        },
+        {
+          id: 'model',
+          name: 'model',
+          currentValue: 'gpt-5.5',
+          options: [
+            { value: 'gpt-5', name: 'GPT-5' },
+            { value: 'gpt-5.5', name: 'GPT-5.5' }
+          ]
         }
       ]
     })
 
+    const info = useSessionInfo('A').info.value
+
     expect(useStream('A').items.value).toHaveLength(0)
+    expect(info.mode).toBe('plan')
+    expect(info.model).toBe('gpt-5.5')
   })
 
   it('promotes the first running instance to active via useActiveInstance', async() => {

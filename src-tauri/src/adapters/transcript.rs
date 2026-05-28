@@ -32,9 +32,11 @@ use crate::tools::ToolKind;
 /// (`AgentText`, `AgentThought`, `ToolCall`, `ToolCallUpdate`,
 /// `Plan`, `PermissionRequest`) items the UI renders inline.
 ///
-/// Session-metadata updates (mode/model/title/usage) are *not*
-/// transcript items — they ride on dedicated `InstanceEvent`
-/// variants instead.
+/// Session-metadata updates (mode/model/title/usage) still ride on
+/// dedicated `InstanceEvent` variants. The daemon may additionally
+/// persist a `ChangeAdvertisement` transcript item for the historical
+/// chapter break so snapshot-only frontends replay the same visible
+/// banners as live frontends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 #[non_exhaustive]
@@ -75,6 +77,11 @@ pub enum TranscriptItem {
     /// frontends can render a collapsible "compaction" block instead
     /// of silently dropping the event.
     Compaction(CompactionRecord),
+    /// Daemon-authored change banner. Storing a unified record in the
+    /// transcript ring makes both live and late-connecting snapshot
+    /// clients render the same chapter break without teaching every
+    /// frontend three separate durable variants.
+    ChangeAdvertisement(ChangeAdvertisementRecord),
     /// Permission prompt for an agent action — surfaced inline so
     /// the UI can render it in-context. Same payload as
     /// `InstanceEvent::PermissionRequest`; the latter remains the
@@ -92,6 +99,37 @@ pub enum TranscriptItem {
         wire_kind: String,
         payload: serde_json::Value,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeAdvertisementType {
+    Mode,
+    Model,
+    ConfigOption,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeAdvertisementRecord {
+    /// Semantic banner family. Serialized as `type` so other
+    /// frontends can dispatch without key-shape heuristics.
+    #[serde(rename = "type")]
+    pub change_type: ChangeAdvertisementType,
+    /// New selected id/value. For `mode` and `model`, this is the
+    /// mode/model id. For `config_option`, this is the option value.
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Category id for `config_option` changes (`effort`, `mode`,
+    /// `model`, or a future vendor knob). Absent for top-level
+    /// `mode` / `model` advertisements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_name: Option<String>,
 }
 
 /// One tool-call as the agent first announced it. `id` ties together

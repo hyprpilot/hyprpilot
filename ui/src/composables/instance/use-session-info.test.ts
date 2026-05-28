@@ -155,6 +155,34 @@ describe('pushConfigOptionsUpdate (adapter config options)', () => {
 
     expect(useSessionInfo('A').info.value.effort).toBe('high')
   })
+
+  it('mirrors config-backed mode and model categories into header state', () => {
+    pushConfigOptionsUpdate('A', [
+      {
+        id: 'mode',
+        name: 'Mode',
+        currentValue: 'plan',
+        options: [
+          { value: 'build', name: 'Build' },
+          { value: 'plan', name: 'Plan' }
+        ]
+      },
+      {
+        id: 'model',
+        name: 'Model',
+        currentValue: 'gpt-5.5',
+        options: [
+          { value: 'gpt-5', name: 'GPT-5' },
+          { value: 'gpt-5.5', name: 'GPT-5.5' }
+        ]
+      }
+    ])
+
+    const info = useSessionInfo('A').info.value
+
+    expect(info.mode).toBe('plan')
+    expect(info.model).toBe('gpt-5.5')
+  })
 })
 
 describe('setInstanceCwd (daemon-side metadata)', () => {

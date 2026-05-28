@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetTranscriptPatcherForTests, recordLastSeenSeq, replayAvailableForInstance, startTranscriptPatcher } from './transcript-patcher'
 import { pushPermissionRequest, resetPermissions, usePermissions } from './use-permissions'
-import { TauriEvent, TranscriptItemKind, type ChatSnapshot, type MetaSnapshot, type SeqTranscriptItem } from '@ipc'
+import { ChangeAdvertisementType, TauriEvent, TranscriptItemKind, type ChatSnapshot, type MetaSnapshot, type SeqTranscriptItem } from '@ipc'
 
 const { invoke, listeners } = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -390,6 +390,51 @@ describe('transcript-patcher singleton', () => {
         }
       }
     ])
+  })
+
+  it('seeds a cold chat cache for durable change advertisements', async() => {
+    const queryClient = buildClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await startTranscriptPatcher(queryClient)
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 'turn-1',
+        seq: 42,
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.Mode,
+          value: 'build',
+          name: 'Build',
+          prevValue: 'plan',
+          prevName: 'Plan'
+        }
+      } as never
+    })
+    await flushPromises()
+
+    const data = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])
+
+    expect(data?.pages[0].items).toEqual([
+      {
+        seq: 42,
+        turnId: 'turn-1',
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.Mode,
+          value: 'build',
+          name: 'Build',
+          prevValue: 'plan',
+          prevName: 'Plan'
+        }
+      }
+    ])
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['snapshot-chat', 'i-1'] })
   })
 
   it('keeps the whole first batch when cold-cache seeding starts with a user prompt', async() => {

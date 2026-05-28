@@ -44,7 +44,7 @@
 //! that queries the mirror after an emit returned is guaranteed to
 //! see a state that includes the emitted event.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ use super::instance::{
     InstanceEvent, SessionConfigOptionCategory, SessionModeInfo, SessionModelInfo, TerminalChunk, TerminalStream,
 };
 use super::permission::PermissionRequestSnapshot;
-use super::transcript::TranscriptItem;
+use super::transcript::{ChangeAdvertisementRecord, ChangeAdvertisementType, TranscriptItem};
 
 /// Bounded ring-buffer ceiling for the transcript. Older entries
 /// silently fall off the front when the cap is exceeded. The plan
@@ -69,6 +69,56 @@ pub const DEFAULT_TRANSCRIPT_CAP: usize = 5_000;
 /// The default matches the daemon transcript ring so clients that do
 /// not specify a limit still receive the retained conversation.
 const DEFAULT_CHAT_LIMIT: usize = DEFAULT_TRANSCRIPT_CAP;
+
+const CONFIG_CATEGORY_MODE_ID: &str = "mode";
+const CONFIG_CATEGORY_MODEL_ID: &str = "model";
+const CONFIG_CATEGORY_EFFORT_ID: &str = "effort";
+
+#[derive(Debug, Clone)]
+struct ConfigChange {
+    category_id: String,
+    value: String,
+    name: Option<String>,
+    prev_value: String,
+    prev_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingConfigChangeEcho {
+    session_id: String,
+    values: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct SyntheticTranscriptEvent {
+    agent_id: String,
+    instance_id: String,
+    session_id: String,
+    turn_id: Option<String>,
+    seq: u64,
+    item: TranscriptItem,
+}
+
+impl SyntheticTranscriptEvent {
+    fn into_instance_event(self) -> InstanceEvent {
+        InstanceEvent::Transcript {
+            agent_id: self.agent_id,
+            instance_id: self.instance_id,
+            session_id: self.session_id,
+            turn_id: self.turn_id,
+            item: self.item,
+            seq: self.seq,
+            message_id: None,
+            meta: None,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ApplyResult {
+    transcript_seq: Option<u64>,
+    synthetic: Vec<SyntheticTranscriptEvent>,
+}
 
 /// Marker for the most-recent turn boundary the mirror has seen.
 /// UI's phase derivation reads it without re-walking the transcript.
@@ -192,6 +242,20 @@ pub struct MirrorInner {
     pub last_turn_event: Option<TurnEventMarker>,
     /// Latest usage tally.
     pub usage: UsageSnapshot,
+    /// Active turn id for daemon-authored synthetic transcript rows
+    /// produced by non-transcript events (mode/model/config change
+    /// advertisements). Normal agent transcript items carry their
+    /// turn id directly on the `InstanceEvent::Transcript` payload.
+    pub active_turn_id: Option<String>,
+    /// Session key that has already delivered an authoritative
+    /// `InstanceMeta`. First meta per session is a baseline, not a
+    /// user-visible change advertisement.
+    pub observed_meta_session: Option<String>,
+    /// Config changes seen on `ConfigOptionsUpdate` whose follow-up
+    /// `InstanceMeta` may restate the same semantic transition via
+    /// current mode/model fields. Matching values suppress the meta
+    /// echo so the snapshot transcript mirrors the live UI.
+    pending_config_change_echo: Option<PendingConfigChangeEcho>,
     /// Per-turn records. Oldest-first; bounded by the same eviction
     /// the transcript ring buffer applies — when the buffer drops a
     /// transcript item carrying a `turn_id` and that turn is no
@@ -229,6 +293,280 @@ pub struct MirrorMetaCache {
     /// Adapter-advertised category list. Latest [`ConfigOptionsUpdate`]
     /// wins — palette reads it via [`MetaSnapshot::config_options`].
     pub config_options: Vec<SessionConfigOptionCategory>,
+}
+
+fn session_key(session_id: &Option<String>) -> String {
+    session_id.clone().unwrap_or_default()
+}
+
+fn option_name(category: &SessionConfigOptionCategory, value: &str) -> Option<String> {
+    category
+        .options
+        .iter()
+        .find(|option| option.value == value)
+        .map(|option| option.name.clone())
+}
+
+fn changed_config_options(
+    prior: &[SessionConfigOptionCategory],
+    categories: &[SessionConfigOptionCategory],
+) -> Vec<ConfigChange> {
+    categories
+        .iter()
+        .filter_map(|next| {
+            let value = next.current_value.as_ref()?;
+            let prev = prior.iter().find(|category| category.id == next.id)?;
+            let prev_value = prev.current_value.as_ref()?;
+
+            if prev_value == value {
+                return None;
+            }
+
+            Some(ConfigChange {
+                category_id: next.id.clone(),
+                value: value.clone(),
+                name: option_name(next, value),
+                prev_value: prev_value.clone(),
+                prev_name: option_name(prev, prev_value),
+            })
+        })
+        .collect()
+}
+
+fn changed_config_category_ids(changed: &[ConfigChange]) -> HashSet<String> {
+    changed.iter().map(|change| change.category_id.clone()).collect()
+}
+
+fn category_change_affects_model(category_id: &str) -> bool {
+    matches!(category_id, CONFIG_CATEGORY_MODEL_ID | CONFIG_CATEGORY_EFFORT_ID)
+}
+
+fn config_change_affects_model(category_ids: &HashSet<String>) -> bool {
+    category_ids
+        .iter()
+        .any(|category_id| category_change_affects_model(category_id))
+}
+
+fn mode_name(modes: &[SessionModeInfo], mode_id: &str) -> Option<String> {
+    modes
+        .iter()
+        .find(|mode| mode.id == mode_id)
+        .map(|mode| mode.name.clone())
+}
+
+fn model_name(models: &[SessionModelInfo], model_id: &str) -> Option<String> {
+    models
+        .iter()
+        .find(|model| model.id == model_id)
+        .map(|model| model.name.clone())
+}
+
+fn mirror_config_backed_state(meta: &mut MirrorMetaCache, categories: &[SessionConfigOptionCategory]) {
+    for category in categories {
+        match category.id.as_str() {
+            CONFIG_CATEGORY_MODE_ID => {
+                if let Some(value) = category.current_value.as_ref() {
+                    meta.current_mode_id = Some(value.clone());
+                }
+            }
+            CONFIG_CATEGORY_MODEL_ID => {
+                if let Some(value) = category.current_value.as_ref() {
+                    meta.current_model_id = Some(value.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn remember_config_change_echo(g: &mut MirrorInner, session_id: &str, changed: &[ConfigChange]) {
+    let values: HashMap<String, String> = changed
+        .iter()
+        .map(|change| (change.category_id.clone(), change.value.clone()))
+        .collect();
+
+    g.pending_config_change_echo = if values.is_empty() {
+        None
+    } else {
+        Some(PendingConfigChangeEcho {
+            session_id: session_id.to_string(),
+            values,
+        })
+    };
+}
+
+fn consume_config_change_echo(
+    g: &mut MirrorInner,
+    session_id: &str,
+    categories: &[SessionConfigOptionCategory],
+) -> HashSet<String> {
+    let Some(pending) = g.pending_config_change_echo.as_ref() else {
+        return HashSet::new();
+    };
+
+    if pending.session_id != session_id {
+        return HashSet::new();
+    }
+
+    let matched: HashSet<String> = pending
+        .values
+        .iter()
+        .filter_map(|(id, value)| {
+            let category = categories.iter().find(|candidate| candidate.id == *id)?;
+
+            (category.current_value.as_deref() == Some(value.as_str())).then(|| id.clone())
+        })
+        .collect();
+
+    if !matched.is_empty() {
+        g.pending_config_change_echo = None;
+    }
+
+    matched
+}
+
+fn push_transcript_item(
+    g: &mut MirrorInner,
+    cap: usize,
+    turn_id: Option<String>,
+    message_id: Option<String>,
+    item: TranscriptItem,
+) -> SeqTranscriptItem {
+    let seq = g.next_seq;
+    g.next_seq = seq.saturating_add(1);
+    let entry = SeqTranscriptItem {
+        seq,
+        turn_id,
+        message_id,
+        item,
+    };
+
+    g.transcript.push_back(entry.clone());
+    while g.transcript.len() > cap {
+        g.transcript.pop_front();
+    }
+
+    entry
+}
+
+fn push_change_advertisement(
+    g: &mut MirrorInner,
+    cap: usize,
+    agent_id: &str,
+    instance_id: &str,
+    session_id: Option<&str>,
+    record: ChangeAdvertisementRecord,
+) -> Option<SyntheticTranscriptEvent> {
+    let session_id = session_id?.to_string();
+    let item = TranscriptItem::ChangeAdvertisement(record);
+    let entry = push_transcript_item(g, cap, g.active_turn_id.clone(), None, item.clone());
+
+    Some(SyntheticTranscriptEvent {
+        agent_id: agent_id.to_string(),
+        instance_id: instance_id.to_string(),
+        session_id,
+        turn_id: entry.turn_id,
+        seq: entry.seq,
+        item,
+    })
+}
+
+fn push_config_option_change_advertisements(
+    g: &mut MirrorInner,
+    cap: usize,
+    agent_id: &str,
+    instance_id: &str,
+    session_id: Option<&str>,
+    changed: &[ConfigChange],
+) -> Vec<SyntheticTranscriptEvent> {
+    changed
+        .iter()
+        .filter_map(|change| {
+            push_change_advertisement(
+                g,
+                cap,
+                agent_id,
+                instance_id,
+                session_id,
+                ChangeAdvertisementRecord {
+                    change_type: ChangeAdvertisementType::ConfigOption,
+                    value: change.value.clone(),
+                    name: change.name.clone(),
+                    category_id: Some(change.category_id.clone()),
+                    prev_value: Some(change.prev_value.clone()),
+                    prev_name: change.prev_name.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn push_mode_change_advertisement(
+    g: &mut MirrorInner,
+    cap: usize,
+    agent_id: &str,
+    instance_id: &str,
+    session_id: Option<&str>,
+    current_mode_id: &Option<String>,
+    available_modes: &[SessionModeInfo],
+) -> Option<SyntheticTranscriptEvent> {
+    let mode_id = current_mode_id.as_ref()?;
+    let prev_mode_id = g.meta.current_mode_id.clone()?;
+
+    if prev_mode_id == *mode_id {
+        return None;
+    }
+    let prev_name = mode_name(&g.meta.available_modes, &prev_mode_id);
+
+    push_change_advertisement(
+        g,
+        cap,
+        agent_id,
+        instance_id,
+        session_id,
+        ChangeAdvertisementRecord {
+            change_type: ChangeAdvertisementType::Mode,
+            value: mode_id.clone(),
+            name: mode_name(available_modes, mode_id),
+            category_id: None,
+            prev_value: Some(prev_mode_id),
+            prev_name,
+        },
+    )
+}
+
+fn push_model_change_advertisement(
+    g: &mut MirrorInner,
+    cap: usize,
+    agent_id: &str,
+    instance_id: &str,
+    session_id: Option<&str>,
+    current_model_id: &Option<String>,
+    available_models: &[SessionModelInfo],
+) -> Option<SyntheticTranscriptEvent> {
+    let model_id = current_model_id.as_ref()?;
+    let prev_model_id = g.meta.current_model_id.clone()?;
+
+    if prev_model_id == *model_id {
+        return None;
+    }
+    let prev_name = model_name(&g.meta.available_models, &prev_model_id);
+
+    push_change_advertisement(
+        g,
+        cap,
+        agent_id,
+        instance_id,
+        session_id,
+        ChangeAdvertisementRecord {
+            change_type: ChangeAdvertisementType::Model,
+            value: model_id.clone(),
+            name: model_name(available_models, model_id),
+            category_id: None,
+            prev_value: Some(prev_model_id),
+            prev_name,
+        },
+    )
 }
 
 /// Write-through state cache for one [`super::acp::instance::AcpInstance`].
@@ -280,7 +618,7 @@ impl InstanceMirror {
     /// [`publish`] can stamp it onto the broadcast event before
     /// sending). `None` for every other variant — non-transcript
     /// events don't carry seq today.
-    pub async fn apply(&self, event: &InstanceEvent) -> Option<u64> {
+    pub async fn apply(&self, event: &InstanceEvent) -> ApplyResult {
         // Same split as `acp::emit` — chunk events (transcript /
         // terminal) get their own sub-target so a captain debugging
         // lifecycle / usage doesn't drown in chunk spam at trace
@@ -299,7 +637,7 @@ impl InstanceMirror {
             );
         }
         let mut g = self.inner.write().await;
-        let mut minted_seq: Option<u64> = None;
+        let mut result = ApplyResult::default();
         match event {
             // ── transcript firehose ──────────────────────────────
             InstanceEvent::Transcript {
@@ -308,18 +646,14 @@ impl InstanceMirror {
                 message_id,
                 ..
             } => {
-                let seq = g.next_seq;
-                g.next_seq = seq.saturating_add(1);
-                g.transcript.push_back(SeqTranscriptItem {
-                    seq,
-                    turn_id: turn_id.clone(),
-                    message_id: message_id.clone(),
-                    item: item.clone(),
-                });
-                while g.transcript.len() > self.cap {
-                    g.transcript.pop_front();
-                }
-                minted_seq = Some(seq);
+                let entry = push_transcript_item(
+                    &mut g,
+                    self.cap,
+                    turn_id.clone(),
+                    message_id.clone(),
+                    item.clone(),
+                );
+                result.transcript_seq = Some(entry.seq);
             }
 
             // ── per-turn lifecycle markers ───────────────────────
@@ -329,6 +663,7 @@ impl InstanceMirror {
                 started_at,
                 ..
             } => {
+                g.active_turn_id = Some(turn_id.clone());
                 g.last_turn_event = Some(TurnEventMarker::Started {
                     started_at: *started_at,
                 });
@@ -361,6 +696,9 @@ impl InstanceMirror {
                 error,
                 ..
             } => {
+                if g.active_turn_id.as_deref() == Some(turn_id.as_str()) {
+                    g.active_turn_id = None;
+                }
                 g.last_turn_event = Some(TurnEventMarker::Ended { ended_at: *ended_at });
                 if let Some(rec) = g.turns.iter_mut().find(|t| t.id == *turn_id) {
                     rec.ended_at_ms = Some(*ended_at);
@@ -399,6 +737,8 @@ impl InstanceMirror {
 
             // ── meta refresh ─────────────────────────────────────
             InstanceEvent::InstanceMeta {
+                agent_id,
+                instance_id,
                 profile_id,
                 session_id,
                 cwd,
@@ -410,7 +750,59 @@ impl InstanceMirror {
                 mcps_count,
                 ..
             } => {
+                let incoming_session_key = session_key(session_id);
                 let session_changed = g.meta.session_id != *session_id;
+                let meta_previously_observed = g.observed_meta_session.as_deref() == Some(incoming_session_key.as_str());
+
+                if session_changed {
+                    g.pending_config_change_echo = None;
+                }
+                let echoed_config_changes = consume_config_change_echo(&mut g, &incoming_session_key, config_options);
+                let config_option_changes = changed_config_options(&g.meta.config_options, config_options);
+                let config_option_change_ids = changed_config_category_ids(&config_option_changes);
+                let config_backed_mode_change =
+                    config_option_change_ids.contains(CONFIG_CATEGORY_MODE_ID)
+                        || echoed_config_changes.contains(CONFIG_CATEGORY_MODE_ID);
+                let config_backed_model_change =
+                    config_change_affects_model(&config_option_change_ids)
+                        || config_change_affects_model(&echoed_config_changes);
+
+                if meta_previously_observed {
+                    if !config_backed_mode_change {
+                        if let Some(event) = push_mode_change_advertisement(
+                            &mut g,
+                            self.cap,
+                            agent_id,
+                            instance_id,
+                            session_id.as_deref(),
+                            current_mode_id,
+                            available_modes,
+                        ) {
+                            result.synthetic.push(event);
+                        }
+                    }
+                    if !config_backed_model_change {
+                        if let Some(event) = push_model_change_advertisement(
+                            &mut g,
+                            self.cap,
+                            agent_id,
+                            instance_id,
+                            session_id.as_deref(),
+                            current_model_id,
+                            available_models,
+                        ) {
+                            result.synthetic.push(event);
+                        }
+                    }
+                    result.synthetic.extend(push_config_option_change_advertisements(
+                        &mut g,
+                        self.cap,
+                        agent_id,
+                        instance_id,
+                        session_id.as_deref(),
+                        &config_option_changes,
+                    ));
+                }
 
                 g.meta.profile_id.clone_from(profile_id);
                 g.meta.session_id.clone_from(session_id);
@@ -424,13 +816,53 @@ impl InstanceMirror {
                 g.meta.available_modes.clone_from(available_modes);
                 g.meta.available_models.clone_from(available_models);
                 g.meta.config_options.clone_from(config_options);
+                mirror_config_backed_state(&mut g.meta, config_options);
                 g.meta.mcps_count = *mcps_count;
+                g.observed_meta_session = Some(incoming_session_key);
             }
-            InstanceEvent::CurrentModeUpdate { current_mode_id, .. } => {
-                g.meta.current_mode_id = Some(current_mode_id.clone());
+            InstanceEvent::CurrentModeUpdate {
+                agent_id,
+                instance_id,
+                session_id,
+                current_mode_id,
+            } => {
+                let current_mode = Some(current_mode_id.clone());
+                let available_modes = g.meta.available_modes.clone();
+
+                if let Some(event) = push_mode_change_advertisement(
+                    &mut g,
+                    self.cap,
+                    agent_id,
+                    instance_id,
+                    Some(session_id.as_str()),
+                    &current_mode,
+                    &available_modes,
+                ) {
+                    result.synthetic.push(event);
+                }
+                g.meta.current_mode_id = current_mode;
             }
-            InstanceEvent::ConfigOptionsUpdate { categories, .. } => {
+            InstanceEvent::ConfigOptionsUpdate {
+                agent_id,
+                instance_id,
+                session_id,
+                categories,
+            } => {
+                let changed = changed_config_options(&g.meta.config_options, categories);
+
+                result.synthetic.extend(push_config_option_change_advertisements(
+                    &mut g,
+                    self.cap,
+                    agent_id,
+                    instance_id,
+                    Some(session_id.as_str()),
+                    &changed,
+                ));
+                if !changed.is_empty() {
+                    remember_config_change_echo(&mut g, session_id, &changed);
+                }
                 g.meta.config_options.clone_from(categories);
+                mirror_config_backed_state(&mut g.meta, categories);
             }
             InstanceEvent::SessionInfoUpdate {
                 title, updated_at, ..
@@ -547,7 +979,7 @@ impl InstanceMirror {
             // snapshot fields.
             | InstanceEvent::NotificationsChanged { .. } => {}
         }
-        minted_seq
+        result
     }
 
     /// Read a [`MetaSnapshot`] off the cache.
@@ -701,7 +1133,9 @@ pub async fn publish(
     // race the counter — every actor emit funnels through here on the
     // same async task). External WS / Tauri subscribers use the seq
     // as their delta-replay cursor on reconnect.
-    if let Some(seq) = mirror.apply(&event).await {
+    let result = mirror.apply(&event).await;
+
+    if let Some(seq) = result.transcript_seq {
         if let InstanceEvent::Transcript {
             seq: ref mut event_seq, ..
         } = &mut event
@@ -710,6 +1144,10 @@ pub async fn publish(
         }
     }
     let _ = events_tx.send(event);
+
+    for synthetic in result.synthetic {
+        let _ = events_tx.send(synthetic.into_instance_event());
+    }
 }
 
 // ─── snapshot wire shapes ─────────────────────────────────────────
@@ -811,7 +1249,8 @@ pub struct TerminalsSnapshot {
 mod tests {
     use super::*;
     use crate::adapters::permission::PermissionOptionView;
-    use crate::adapters::transcript::TranscriptItem;
+    use crate::adapters::transcript::{ChangeAdvertisementType, TranscriptItem};
+    use crate::adapters::SessionConfigOptionValue;
     use serde_json::json;
 
     /// `publish` must apply to the mirror BEFORE broadcasting — any
@@ -893,6 +1332,39 @@ mod tests {
             available_models: Vec::new(),
             config_options: Vec::new(),
             mcps_count: 3,
+        }
+    }
+
+    fn mode_info(id: &str, name: &str) -> SessionModeInfo {
+        SessionModeInfo {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+        }
+    }
+
+    fn model_info(id: &str, name: &str) -> SessionModelInfo {
+        SessionModelInfo {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+        }
+    }
+
+    fn config_category(id: &str, current_value: &str, options: &[(&str, &str)]) -> SessionConfigOptionCategory {
+        SessionConfigOptionCategory {
+            id: id.into(),
+            name: id.into(),
+            description: None,
+            current_value: Some(current_value.into()),
+            options: options
+                .iter()
+                .map(|(value, name)| SessionConfigOptionValue {
+                    value: (*value).into(),
+                    name: (*name).into(),
+                    description: None,
+                })
+                .collect(),
         }
     }
 
@@ -1171,6 +1643,234 @@ mod tests {
         let snap3 = mirror.meta_snapshot().await;
         assert_eq!(snap3.current_mode_id.as_deref(), Some("ask"));
         assert_eq!(snap3.cwd.as_deref(), Some("/tmp/other"), "cwd unchanged");
+    }
+
+    #[tokio::test]
+    async fn initial_instance_meta_does_not_create_change_advertisement() {
+        let mirror = InstanceMirror::new();
+        let mut event = meta_event("/tmp/proj", Some("build"), Some("gpt-5"));
+
+        if let InstanceEvent::InstanceMeta {
+            available_modes,
+            available_models,
+            config_options,
+            ..
+        } = &mut event
+        {
+            *available_modes = vec![mode_info("build", "Build"), mode_info("plan", "Plan")];
+            *available_models = vec![model_info("gpt-5", "GPT-5"), model_info("gpt-5.5", "GPT-5.5")];
+            *config_options = vec![config_category(
+                "effort",
+                "medium",
+                &[("medium", "Medium"), ("high", "High")],
+            )];
+        }
+
+        mirror.apply(&event).await;
+
+        let snap = mirror.chat_snapshot(None, None, 100).await;
+        assert!(snap.items.is_empty(), "first meta is baseline, not history");
+    }
+
+    #[tokio::test]
+    async fn instance_meta_changes_persist_mode_and_model_change_advertisements() {
+        let mirror = InstanceMirror::new();
+        let mut baseline = meta_event("/tmp/proj", Some("build"), Some("gpt-5"));
+        let mut changed = meta_event("/tmp/proj", Some("plan"), Some("gpt-5.5"));
+
+        for event in [&mut baseline, &mut changed] {
+            if let InstanceEvent::InstanceMeta {
+                available_modes,
+                available_models,
+                ..
+            } = event
+            {
+                *available_modes = vec![mode_info("build", "Build"), mode_info("plan", "Plan")];
+                *available_models = vec![model_info("gpt-5", "GPT-5"), model_info("gpt-5.5", "GPT-5.5")];
+            }
+        }
+
+        mirror.apply(&baseline).await;
+        mirror.apply(&changed).await;
+
+        let snap = mirror.chat_snapshot(None, None, 100).await;
+        assert_eq!(snap.items.len(), 2);
+        match &snap.items[0].item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::Mode);
+                assert_eq!(record.value, "plan");
+                assert_eq!(record.name.as_deref(), Some("Plan"));
+                assert_eq!(record.prev_value.as_deref(), Some("build"));
+                assert_eq!(record.prev_name.as_deref(), Some("Build"));
+            }
+            other => panic!("expected mode change advertisement, got {other:?}"),
+        }
+        match &snap.items[1].item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::Model);
+                assert_eq!(record.value, "gpt-5.5");
+                assert_eq!(record.name.as_deref(), Some("GPT-5.5"));
+                assert_eq!(record.prev_value.as_deref(), Some("gpt-5"));
+                assert_eq!(record.prev_name.as_deref(), Some("GPT-5"));
+            }
+            other => panic!("expected model change advertisement, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_config_change_does_not_hide_model_change_advertisement() {
+        let mirror = InstanceMirror::new();
+        let mut baseline = meta_event("/tmp/proj", None, Some("gpt-5"));
+        let mut changed = meta_event("/tmp/proj", None, Some("gpt-5.5"));
+
+        for event in [&mut baseline, &mut changed] {
+            if let InstanceEvent::InstanceMeta { available_models, .. } = event {
+                *available_models = vec![model_info("gpt-5", "GPT-5"), model_info("gpt-5.5", "GPT-5.5")];
+            }
+        }
+
+        if let InstanceEvent::InstanceMeta { config_options, .. } = &mut baseline {
+            *config_options = vec![config_category("verbosity", "low", &[("low", "Low"), ("high", "High")])];
+        }
+        if let InstanceEvent::InstanceMeta { config_options, .. } = &mut changed {
+            *config_options = vec![config_category(
+                "verbosity",
+                "high",
+                &[("low", "Low"), ("high", "High")],
+            )];
+        }
+
+        mirror.apply(&baseline).await;
+        mirror.apply(&changed).await;
+
+        let snap = mirror.chat_snapshot(None, None, 100).await;
+        assert_eq!(snap.items.len(), 2);
+        match &snap.items[0].item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::Model);
+                assert_eq!(record.value, "gpt-5.5");
+                assert_eq!(record.prev_value.as_deref(), Some("gpt-5"));
+            }
+            other => panic!("expected model change advertisement, got {other:?}"),
+        }
+        match &snap.items[1].item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::ConfigOption);
+                assert_eq!(record.category_id.as_deref(), Some("verbosity"));
+                assert_eq!(record.value, "high");
+                assert_eq!(record.prev_value.as_deref(), Some("low"));
+            }
+            other => panic!("expected config change advertisement, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn config_update_before_meta_persists_one_config_advertisement_without_model_echo() {
+        let mirror = InstanceMirror::new();
+        let mut baseline = meta_event("/tmp/proj", None, Some("gpt-5.5/medium"));
+
+        if let InstanceEvent::InstanceMeta {
+            available_models,
+            config_options,
+            ..
+        } = &mut baseline
+        {
+            *available_models = vec![
+                model_info("gpt-5.5/medium", "GPT-5.5 medium"),
+                model_info("gpt-5.5/high", "GPT-5.5 high"),
+            ];
+            *config_options = vec![config_category(
+                "effort",
+                "medium",
+                &[("medium", "Medium"), ("high", "High")],
+            )];
+        }
+        mirror.apply(&baseline).await;
+
+        let high_effort = vec![config_category(
+            "effort",
+            "high",
+            &[("medium", "Medium"), ("high", "High")],
+        )];
+        mirror
+            .apply(&InstanceEvent::ConfigOptionsUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                categories: high_effort.clone(),
+            })
+            .await;
+
+        let mut meta_echo = meta_event("/tmp/proj", None, Some("gpt-5.5/high"));
+        if let InstanceEvent::InstanceMeta {
+            available_models,
+            config_options,
+            ..
+        } = &mut meta_echo
+        {
+            *available_models = vec![
+                model_info("gpt-5.5/medium", "GPT-5.5 medium"),
+                model_info("gpt-5.5/high", "GPT-5.5 high"),
+            ];
+            *config_options = high_effort;
+        }
+        mirror.apply(&meta_echo).await;
+
+        let snap = mirror.chat_snapshot(None, None, 100).await;
+        assert_eq!(snap.items.len(), 1);
+        match &snap.items[0].item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::ConfigOption);
+                assert_eq!(record.category_id.as_deref(), Some("effort"));
+                assert_eq!(record.value, "high");
+                assert_eq!(record.prev_value.as_deref(), Some("medium"));
+            }
+            other => panic!("expected config change advertisement, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_broadcasts_synthetic_change_advertisement_with_snapshot_seq() {
+        let mirror = InstanceMirror::new();
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);
+        let mut baseline = meta_event("/tmp/proj", Some("build"), None);
+
+        if let InstanceEvent::InstanceMeta { available_modes, .. } = &mut baseline {
+            *available_modes = vec![mode_info("build", "Build"), mode_info("plan", "Plan")];
+        }
+        publish(&mirror, &tx, baseline).await;
+        let _ = rx.recv().await.expect("baseline meta broadcast");
+
+        publish(
+            &mirror,
+            &tx,
+            InstanceEvent::CurrentModeUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                current_mode_id: "plan".into(),
+            },
+        )
+        .await;
+
+        let original = rx.recv().await.expect("mode update broadcast");
+        assert!(matches!(original, InstanceEvent::CurrentModeUpdate { .. }));
+        let synthetic = rx.recv().await.expect("synthetic transcript broadcast");
+        let InstanceEvent::Transcript { seq, item, .. } = synthetic else {
+            panic!("expected synthetic transcript broadcast");
+        };
+        match item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::Mode);
+                assert_eq!(record.value, "plan");
+                assert_eq!(record.prev_value.as_deref(), Some("build"));
+            }
+            other => panic!("expected change advertisement, got {other:?}"),
+        }
+
+        let snap = mirror.chat_snapshot(None, None, 100).await;
+        assert_eq!(snap.latest_seq, Some(seq));
+        assert_eq!(snap.items.len(), 1);
     }
 
     /// Permission rows accumulate; turn markers track the latest
@@ -1504,10 +2204,13 @@ mod tests {
         let actor_mirror = InstanceMirror::new();
         let (events_tx, mut events_rx) = broadcast::channel::<InstanceEvent>(64);
 
-        // Stream covers every variant the mirror's apply mutates on
-        // (transcript, turn lifecycle, permission, instance meta,
-        // current-mode update, usage, terminal, plus a no-op state
-        // event to confirm noops don't desync).
+        // Stream covers the non-synthetic variants the mirror's apply
+        // mutates on (transcript, turn lifecycle, permission,
+        // instance meta, usage, terminal, plus a no-op state event to
+        // confirm noops don't desync). Synthetic change advertisements
+        // are covered separately through `publish`, because they are
+        // actor-authored transcript events rather than broadcast
+        // subscriber replay inputs.
         let stream: Vec<InstanceEvent> = vec![
             // Pre-turn meta refresh.
             meta_event("/tmp/proj", Some("plan"), Some("sonnet")),
@@ -1567,13 +2270,6 @@ mod tests {
                     output: None,
                     fields: vec![],
                 },
-            },
-            // Mode-switch overlay.
-            InstanceEvent::CurrentModeUpdate {
-                agent_id: "claude-code".into(),
-                instance_id: "i-1".into(),
-                session_id: "s-1".into(),
-                current_mode_id: "edit".into(),
             },
             // Terminal output + exit pair.
             InstanceEvent::Terminal {
@@ -1658,7 +2354,7 @@ mod tests {
         // strong, but pin the load-bearing fields so a refactor
         // can't silently turn both halves into matching no-ops.
         assert_eq!(actor_meta.cwd.as_deref(), Some("/tmp/proj"));
-        assert_eq!(actor_meta.current_mode_id.as_deref(), Some("edit"));
+        assert_eq!(actor_meta.current_mode_id.as_deref(), Some("plan"));
         assert_eq!(actor_meta.current_model_id.as_deref(), Some("sonnet"));
         assert_eq!(actor_meta.usage.used, 5_000);
         assert_eq!(actor_meta.pending_permissions.len(), 1);
