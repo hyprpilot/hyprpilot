@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.13](https://github.com/hyprpilot/hyprpilot/compare/v2.3.12...v2.3.13) (2026-05-28)
+
+
+### Bug Fixes
+
+* **permission:** preserve exact once-option targets ([#139](https://github.com/hyprpilot/hyprpilot/issues/139)) ([69354ee](https://github.com/hyprpilot/hyprpilot/commit/69354eeb6194828bc03788d689d2754999522d22))
+
 ## [2.3.12](https://github.com/hyprpilot/hyprpilot/compare/v2.3.11...v2.3.12) (2026-05-27)
 
 
