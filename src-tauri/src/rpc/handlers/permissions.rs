@@ -283,6 +283,9 @@ mod tests {
         assert_eq!(pending[0]["tool"], "Bash");
         assert!(pending[0]["args"].as_str().unwrap().contains("args"));
         assert_eq!(pending[0]["options"].as_array().unwrap().len(), 2);
+        assert_eq!(pending[0]["defaultOptionId"], "allow-once");
+        assert_eq!(pending[0]["allowOptionId"], "allow-once");
+        assert_eq!(pending[0]["rejectOptionId"], "reject-once");
     }
 
     #[tokio::test]

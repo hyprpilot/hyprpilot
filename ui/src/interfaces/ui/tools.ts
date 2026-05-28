@@ -32,8 +32,8 @@ export interface ToolCallView {
   description?: string
   output?: string
   fields: WireToolField[]
-  /// Raw `tool_call.rawInput` pass-through. Permission flow uses it
-  /// for trust-store keying alongside `name`.
+  /// Raw `tool_call.rawInput` pass-through. Permission formatting
+  /// uses it alongside `name`.
   rawInput?: Record<string, unknown>
 }
 

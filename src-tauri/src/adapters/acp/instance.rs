@@ -992,8 +992,7 @@ async fn publish_permission_request(
         registry.dispatch(&ctx)
     };
     let options = crate::adapters::permission::reorder_options(request.options);
-    let allow_option_id = crate::adapters::permission::pick_allow_once_id(&options);
-    let reject_option_id = crate::adapters::permission::pick_reject_option_id(&options);
+    let targets = crate::adapters::permission::permission_option_targets(&options);
     let transcript_event = InstanceEvent::Transcript {
         agent_id: request.agent_id.clone(),
         instance_id: request.instance_id.clone(),
@@ -1006,6 +1005,9 @@ async fn publish_permission_request(
             args: request.args.clone(),
             raw_input: request.raw_input.clone(),
             options: options.clone(),
+            default_option_id: targets.default_option_id.clone(),
+            allow_option_id: targets.allow_option_id.clone(),
+            reject_option_id: targets.reject_option_id.clone(),
             formatted: formatted.clone(),
         }),
         seq: 0,
@@ -1025,9 +1027,9 @@ async fn publish_permission_request(
         raw_input: request.raw_input,
         content: request.content,
         options,
-        default_option_id: allow_option_id.clone(),
-        allow_option_id,
-        reject_option_id,
+        default_option_id: targets.default_option_id,
+        allow_option_id: targets.allow_option_id,
+        reject_option_id: targets.reject_option_id,
         formatted,
     };
     publish(mirror, events_tx, event).await;
@@ -1791,6 +1793,8 @@ pub(crate) fn map_session_update_with_mcp_servers(
                 .get("options")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            let options = crate::adapters::permission::reorder_options(options);
+            let targets = crate::adapters::permission::permission_option_targets(&options);
             let tool_kind = ToolKind::from_wire(
                 Some(tool_kind.as_str()),
                 mcp_tool(adapter_id, &tool, raw_input.as_ref(), mcp_server_names),
@@ -1821,6 +1825,9 @@ pub(crate) fn map_session_update_with_mcp_servers(
                 args,
                 raw_input,
                 options,
+                default_option_id: targets.default_option_id,
+                allow_option_id: targets.allow_option_id,
+                reject_option_id: targets.reject_option_id,
                 formatted,
             }))
         }
@@ -4990,6 +4997,9 @@ mod tests {
                 assert_eq!(record.tool_kind, ToolKind::Execute);
                 assert_eq!(record.args, "echo hi");
                 assert_eq!(record.raw_input, Some(json!({ "command": "echo hi" })));
+                assert_eq!(record.default_option_id.as_deref(), Some("allow-once"));
+                assert_eq!(record.allow_option_id.as_deref(), Some("allow-once"));
+                assert_eq!(record.reject_option_id.as_deref(), Some("reject-once"));
             }
             other => panic!("expected transcript permission request, got {other:?}"),
         }
@@ -5000,6 +5010,9 @@ mod tests {
                 args,
                 raw_input,
                 content,
+                default_option_id,
+                allow_option_id,
+                reject_option_id,
                 ..
             } => {
                 assert_eq!(tool, "bash");
@@ -5007,6 +5020,9 @@ mod tests {
                 assert_eq!(args, "echo hi");
                 assert_eq!(raw_input, Some(json!({ "command": "echo hi" })));
                 assert_eq!(content, vec![json!({ "type": "text", "text": "pending" })]);
+                assert_eq!(default_option_id.as_deref(), Some("allow-once"));
+                assert_eq!(allow_option_id.as_deref(), Some("allow-once"));
+                assert_eq!(reject_option_id.as_deref(), Some("reject-once"));
             }
             other => panic!("expected permission request, got {other:?}"),
         }
@@ -5181,13 +5197,20 @@ mod tests {
             "kind": "execute",
             "args": "ls /tmp",
             "rawInput": { "command": "ls /tmp" },
-            "options": [],
+            "options": [
+                { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
+                { "optionId": "always", "name": "Always allow", "kind": "allow_always" },
+                { "optionId": "reject", "name": "Reject", "kind": "reject_once" }
+            ],
         });
         let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
         match mapped {
             MappedUpdate::Transcript(crate::adapters::TranscriptItem::PermissionRequest(rec)) => {
                 assert_eq!(rec.request_id, "r-1");
                 assert_eq!(rec.tool, "Bash");
+                assert_eq!(rec.default_option_id.as_deref(), Some("allow"));
+                assert_eq!(rec.allow_option_id.as_deref(), Some("allow"));
+                assert_eq!(rec.reject_option_id.as_deref(), Some("reject"));
                 // formatted must be populated — the formatter dispatched.
                 // bash formatter emits a non-empty title; even a fall-through
                 // formatter writes the wire name as title. Assert non-empty

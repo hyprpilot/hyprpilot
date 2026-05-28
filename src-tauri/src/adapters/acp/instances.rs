@@ -737,7 +737,7 @@ impl AcpAdapter {
         // resulting registry at `PermissionController::decide` lane
         // 2. `None` from the builder means no MCP files wired — the
         // per-server lane short-circuits and every call falls
-        // through to AskUser (or trust store).
+        // through to AskUser.
         let skills = build_skills_registry_with(&profile);
         let mcps = build_mcp_registry_with(&profile, Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {

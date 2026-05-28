@@ -86,6 +86,9 @@ export interface PermissionRequestSnapshot {
   tool: string
   args?: string
   options: PermissionOptionView[]
+  defaultOptionId?: string
+  allowOptionId?: string
+  rejectOptionId?: string
 }
 
 /**

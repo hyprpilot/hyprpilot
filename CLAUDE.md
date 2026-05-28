@@ -1295,11 +1295,13 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   through `permission_reply` Tauri command. After `respond`, an
   `acp:permission-resolved` event fires on the broadcast so any
   second subscriber clears their row. Every pending row +
-  `acp:permission-request` event carries `defaultOptionId?: string`
-  — the daemon's allow-shaped pick (via `pick_allow_option_id`)
-  so frontends can render the default highlight + `Enter`-commit
-  target without re-implementing the matcher. `undefined` when the
-  agent offered no allow-shaped option. `respond` (and the Tauri
+  `acp:permission-request` event carries `defaultOptionId?: string`,
+  `allowOptionId?: string`, and `rejectOptionId?: string` — daemon
+  computed exact once-kind targets so frontends can render the default
+  highlight + keybind actions without re-implementing the matcher.
+  `defaultOptionId` mirrors `allowOptionId` today; both are populated
+  only for an exact `allow_once` option. `rejectOptionId` is populated
+  only for an exact `reject_once` option. `respond` (and the Tauri
   `permission_reply` command) accept an optional
   `feedback: string` — when the picked option is reject-shaped
   AND the string is non-empty, the daemon dispatches a synthetic
@@ -1822,30 +1824,27 @@ permission request straight to the webview as `acp:permission-request`;
 the user picks via dialog and replies with `permission_reply`.
 
 Client-side auto-accept / auto-reject lives on the
-`PermissionController` as a two-lane pipeline:
+`PermissionController` as a single static lane:
 
-1. **Runtime trust store** — `(instance_id, tool_name) → Allow|Deny`,
-   populated when the captain picks an option whose ACP `kind` is
-   `allow_always` / `reject_always`. No separate `remember` / `tool`
-   / `instanceId` fields on the wire — `permission_reply` (and the
-   JSON-RPC `permissions/respond` peer) accepts
-   `{ sessionId, requestId, optionId, feedback? }`; the daemon reads
-   the picked option's kind off the originating
-   `session/request_permission` set and writes the trust store when
-   the kind is `_always`-shaped. Cleared on instance shutdown /
-   restart. In-memory only.
-2. **Per-server hyprpilot extension globs** — each MCP JSON entry's
+1. **Per-server hyprpilot extension globs** — each MCP JSON entry's
    optional `hyprpilot.autoAcceptTools` / `autoRejectTools`. Tool→server
    attribution by `mcp__<server>__<tool>` prefix.
 
-Reject beats accept inside each lane. Vendor-native tools (Bash, Read,
-…) skip lane 2 entirely. Misses on both lanes fall through to AskUser.
+Reject beats accept inside the lane. Vendor-native tools (Bash, Read,
+…) skip the lane entirely. Misses fall through to AskUser. Hyprpilot
+does not persist a separate trust store; the captain's explicit
+`allow_always` / `reject_always` picks ride to the agent as ordinary
+ACP option ids and the agent owns any persistence it provides.
 
-**`defaultOptionId` on every pending row + `acp:permission-request`
-event**: the daemon picks the allow-shaped option (via
-`pick_allow_option_id`) so frontends render the default highlight +
-`Enter`-commit target without re-implementing the matcher. `undefined`
-when the agent offered no allow-shaped option.
+**Permission option targets**: every pending row, transcript-side
+`PermissionRequest`, and `acp:permission-request` event may carry
+`defaultOptionId`, `allowOptionId`, and `rejectOptionId`. The daemon
+computes these by exact `kind` matches only: `allow_once` for
+`defaultOptionId` + `allowOptionId`, and `reject_once` for
+`rejectOptionId`. Unknown kinds, labels, option ids, `allow_always`,
+`reject_always`, mixed-case strings, and first-option fallbacks are
+not targets. `undefined` means the matching once-kind was not offered
+and frontends must no-op the keybind / show no default highlight.
 
 **Reject feedback follow-up**: when the picked option is reject-shaped
 AND `feedback` is non-empty, the daemon dispatches a synthetic
@@ -1880,7 +1879,8 @@ fans out to (a) Tauri webview via `app.emit`, (b) WS peers via the
   `AgentText` / `AgentThought` / `AgentAttachment` / `Plan` / `ToolCall`
   / `ToolCallUpdate` / `PermissionRequest` / `Unknown`).
 - `acp:permission-request` — every `session/request_permission` the
-  agent fires. Carries `defaultOptionId?` (allow-shaped option pick).
+  agent fires. Carries `defaultOptionId?`, `allowOptionId?`, and
+  `rejectOptionId?` (exact once-kind option picks).
 - `acp:permission-resolved` — fires when ANY transport answers a
   permission, so cross-frontend resolution clears the pending row
   everywhere (desktop / remote / nvim / `ctl`).
@@ -1959,8 +1959,7 @@ first, then user instructions. Body snapshots at palette-pick time.
 
 ## What is not in the scaffold
 
-- Persistent disk-backed trust store (today's runtime store is
-  in-memory).
+- Persistent daemon-side trust store for permission decisions.
 - Real branding icon — `src-tauri/icons/icon.png` is a placeholder.
 - Release bundling (`bundle.active = false` in `tauri.conf.json`).
 
