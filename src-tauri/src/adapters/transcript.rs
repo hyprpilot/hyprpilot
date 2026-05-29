@@ -202,7 +202,9 @@ pub struct ToolCallUpdateRecord {
     pub state: Option<ToolCallState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<serde_json::Value>,
-    /// Content delta — appended to whatever the running view holds.
+    /// Content collection snapshot when the update includes content.
+    /// ACP collection fields replace, not append; UI reducers should
+    /// replace any stored content with this collection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ToolCallContentItem>,
     /// Updated presentation view computed from merged running state.

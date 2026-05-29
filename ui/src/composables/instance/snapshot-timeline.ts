@@ -356,44 +356,19 @@ interface ProjectedItem {
 type SnapshotOverlayStreamItem = Extract<
   StreamItem,
   {
-    kind: StreamItemKind.ModeChange | StreamItemKind.ModelChange | StreamItemKind.ConfigOptionChange | StreamItemKind.SystemPromptInjected
+    kind: StreamItemKind.SystemPromptInjected
   }
 >
 
 export function isSnapshotOverlayStreamItem(item: StreamItem): item is SnapshotOverlayStreamItem {
-  return (
-    item.kind === StreamItemKind.ModeChange ||
-    item.kind === StreamItemKind.ModelChange ||
-    item.kind === StreamItemKind.ConfigOptionChange ||
-    item.kind === StreamItemKind.SystemPromptInjected
-  )
+  return item.kind === StreamItemKind.SystemPromptInjected
 }
 
-function lastSeqForTurn(snapshotItems: readonly SeqTranscriptItem[], turnId: string): number | undefined {
-  return snapshotItems.reduce<number | undefined>((latest, snapshotItem) => {
-    if (snapshotItem.turnId !== turnId) {
-      return latest
-    }
-
-    return latest === undefined ? snapshotItem.seq : Math.max(latest, snapshotItem.seq)
-  }, undefined)
-}
-
-function overlayProjectionAnchor(item: SnapshotOverlayStreamItem, snapshotItems: readonly SeqTranscriptItem[]): Pick<ProjectedItem, 'seq' | 'placement'> {
-  // Meta advertisements can arrive before TurnStarted, so they have
-  // no turnId. In the snapshot view, keep those bootstrap-time banners
-  // at the top instead of appending them to the latest turn.
-  if (item.kind === StreamItemKind.SystemPromptInjected || item.turnId === undefined) {
-    return { seq: snapshotItems[0]?.seq ?? EMPTY_SNAPSHOT_ANCHOR_SEQ, placement: 'before-anchor' }
-  }
-
-  const lastTurnSeq = lastSeqForTurn(snapshotItems, item.turnId)
-
-  if (lastTurnSeq !== undefined) {
-    return { seq: lastTurnSeq, placement: 'after-anchor' }
-  }
-
-  return { seq: snapshotItems[snapshotItems.length - 1]?.seq ?? EMPTY_SNAPSHOT_ANCHOR_SEQ, placement: 'after-anchor' }
+function overlayProjectionAnchor(snapshotItems: readonly SeqTranscriptItem[]): Pick<ProjectedItem, 'seq' | 'placement'> {
+  // System-prompt injection fires before TurnStarted, so it has no
+  // turnId. In the snapshot view, keep bootstrap-time banners at the
+  // top instead of appending them to the latest turn.
+  return { seq: snapshotItems[0]?.seq ?? EMPTY_SNAPSHOT_ANCHOR_SEQ, placement: 'before-anchor' }
 }
 
 function projectOverlayStream(item: SnapshotOverlayStreamItem, anchor: Pick<ProjectedItem, 'seq' | 'placement'>, ordinal: number): ProjectedItem {
@@ -439,7 +414,7 @@ function projectSnapshotItems(items: SeqTranscriptItem[], ctx: ProjectionContext
 
 function appendOverlayStreamItems(projected: ProjectedItem[], items: SeqTranscriptItem[], overlays: readonly StreamItem[]): void {
   for (const [idx, item] of overlays.filter(isSnapshotOverlayStreamItem).entries()) {
-    projected.push(projectOverlayStream(item, overlayProjectionAnchor(item, items), idx))
+    projected.push(projectOverlayStream(item, overlayProjectionAnchor(items), idx))
   }
 }
 
@@ -630,6 +605,53 @@ function tryMergeGoal(projected: ProjectedItem[], entry: TimelineStream, it: Seq
   return false
 }
 
+function changeBannerIdentity(item: StreamItem): { family: string; key: string } | undefined {
+  if (item.kind === StreamItemKind.ModeChange) {
+    return {
+      family: 'mode',
+      key: `mode:${item.prevModeId ?? ''}->${item.modeId}`
+    }
+  }
+
+  if (item.kind === StreamItemKind.ModelChange) {
+    return {
+      family: 'model',
+      key: `model:${item.prevModelId ?? ''}->${item.modelId}`
+    }
+  }
+
+  if (item.kind === StreamItemKind.ConfigOptionChange) {
+    return {
+      family: `config:${item.categoryId}`,
+      key: `config:${item.categoryId}:${item.prevValue ?? ''}->${item.value}`
+    }
+  }
+
+  return undefined
+}
+
+function tryMergeChangeBanner(projected: ProjectedItem[], entry: TimelineStream, it: SeqTranscriptItem): boolean {
+  const incoming = changeBannerIdentity(entry.item)
+
+  if (!incoming) {
+    return false
+  }
+
+  const previous = projected[projected.length - 1]
+
+  if (!previous || previous.turnId !== it.turnId || previous.entry.kind !== 'stream') {
+    return false
+  }
+  const existing = changeBannerIdentity(previous.entry.item)
+
+  if (!existing || existing.family !== incoming.family || existing.key !== incoming.key) {
+    return false
+  }
+  previous.entry.item.updatedAt = it.seq
+
+  return true
+}
+
 /**
  * Try to merge a tool-call entry by `toolCallId`.
  */
@@ -667,6 +689,10 @@ function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, 
 
   if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Goal) {
     return tryMergeGoal(projected, entry, it)
+  }
+
+  if (entry.kind === 'stream' && changeBannerIdentity(entry.item)) {
+    return tryMergeChangeBanner(projected, entry, it)
   }
 
   if (entry.kind === 'tool') {
@@ -708,7 +734,7 @@ function mergeToolCall(target: WireToolCall, incoming: WireToolCall, seq: number
   }
 
   if (incoming.content && incoming.content.length > 0) {
-    target.content = [...(target.content ?? []), ...incoming.content]
+    target.content = incoming.content
   }
 
   if (incoming.rawInput !== undefined) {

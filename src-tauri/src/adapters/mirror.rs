@@ -1830,6 +1830,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn meta_before_config_update_persists_one_config_advertisement_without_model_echo() {
+        let mirror = InstanceMirror::new();
+        let mut baseline = meta_event("/tmp/proj", None, Some("gpt-5.5/medium"));
+
+        if let InstanceEvent::InstanceMeta {
+            available_models,
+            config_options,
+            ..
+        } = &mut baseline
+        {
+            *available_models = vec![
+                model_info("gpt-5.5/medium", "GPT-5.5 medium"),
+                model_info("gpt-5.5/high", "GPT-5.5 high"),
+            ];
+            *config_options = vec![config_category(
+                "effort",
+                "medium",
+                &[("medium", "Medium"), ("high", "High")],
+            )];
+        }
+        mirror.apply(&baseline).await;
+
+        let high_effort = vec![config_category(
+            "effort",
+            "high",
+            &[("medium", "Medium"), ("high", "High")],
+        )];
+        let mut meta_echo = meta_event("/tmp/proj", None, Some("gpt-5.5/high"));
+        if let InstanceEvent::InstanceMeta {
+            available_models,
+            config_options,
+            ..
+        } = &mut meta_echo
+        {
+            *available_models = vec![
+                model_info("gpt-5.5/medium", "GPT-5.5 medium"),
+                model_info("gpt-5.5/high", "GPT-5.5 high"),
+            ];
+            *config_options = high_effort.clone();
+        }
+        mirror.apply(&meta_echo).await;
+        mirror
+            .apply(&InstanceEvent::ConfigOptionsUpdate {
+                agent_id: "claude-code".into(),
+                instance_id: "i-1".into(),
+                session_id: "s-1".into(),
+                categories: high_effort,
+            })
+            .await;
+
+        let snap = mirror.chat_snapshot(None, None, 100).await;
+        assert_eq!(snap.items.len(), 1);
+        match &snap.items[0].item {
+            TranscriptItem::ChangeAdvertisement(record) => {
+                assert_eq!(record.change_type, ChangeAdvertisementType::ConfigOption);
+                assert_eq!(record.category_id.as_deref(), Some("effort"));
+                assert_eq!(record.value, "high");
+                assert_eq!(record.prev_value.as_deref(), Some("medium"));
+            }
+            other => panic!("expected config change advertisement, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn publish_broadcasts_synthetic_change_advertisement_with_snapshot_seq() {
         let mirror = InstanceMirror::new();
         let (tx, mut rx) = tokio::sync::broadcast::channel::<InstanceEvent>(16);

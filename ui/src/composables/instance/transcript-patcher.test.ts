@@ -139,7 +139,7 @@ describe('transcript-patcher singleton', () => {
     expect((items![0].item as { completedAtMs: number }).completedAtMs).toBe(1100)
   })
 
-  it('concatenates tool_call_update content (does NOT replace)', async() => {
+  it('replaces tool_call_update content instead of concatenating stale blocks', async() => {
     const queryClient = buildClient()
     const initial: SeqTranscriptItem = {
       seq: 10,
@@ -205,7 +205,7 @@ describe('transcript-patcher singleton', () => {
     const items = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])?.pages[0].items
     const merged = items![0].item as { content: { text: string }[] }
 
-    expect(merged.content.map((c) => c.text)).toEqual(['first', 'second', 'third'])
+    expect(merged.content.map((c) => c.text)).toEqual(['third'])
   })
 
   it('preserves turnId on tool_call_update merge', async() => {

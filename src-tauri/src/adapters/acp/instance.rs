@@ -1686,8 +1686,9 @@ pub(crate) fn map_session_update_with_mcp_servers(
                 "acp::instance: tool_call_update payload (formatter input)"
             );
             // Merge delta into the running cache — every Some-value
-            // patches; raw `content` from the wire appends. `wire_name`
-            // is captured once on the initial `tool_call` and stays
+            // patches; collection fields from the wire replace per
+            // ACP's ToolCallUpdateFields semantics. `wire_name` is
+            // captured once on the initial `tool_call` and stays
             // frozen: the first observation is the tool's identity
             // ("Bash", "Read", "mcp__server__leaf"), later updates
             // re-purpose `title` as a verbose human display string
@@ -1733,7 +1734,7 @@ pub(crate) fn map_session_update_with_mcp_servers(
                 }
             }
             if let Some(arr) = update.get("content").and_then(|v| v.as_array()) {
-                running.content.extend(arr.iter().cloned());
+                running.content = arr.clone();
             }
 
             // Stamp completed_at on the first transition to a terminal
@@ -4968,6 +4969,65 @@ mod tests {
 
         assert_eq!(record.raw_input, Some(json!({ "command": "echo hi" })));
         assert_eq!(record.formatted.title, "bash · echo");
+    }
+
+    #[test]
+    fn map_session_update_replaces_tool_call_update_content_collection() {
+        use serde_json::json;
+
+        let mut cache = ToolCallCache::default();
+        cache.insert(
+            "tc-1".to_string(),
+            RunningToolCall {
+                wire_name: "Edit src/old.rs".to_string(),
+                tool_kind: ToolKind::Edit,
+                raw_input: None,
+                content: vec![json!({
+                    "type": "diff",
+                    "path": "src/old.rs",
+                    "oldText": "old\n",
+                    "newText": "stale\n"
+                })],
+                started_at: 1,
+                completed_at: None,
+            },
+        );
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-1",
+            "title": "Edit src/new.rs",
+            "content": [{
+                "type": "diff",
+                "path": "src/new.rs",
+                "oldText": "before\n",
+                "newText": "after\n"
+            }]
+        });
+        let mapped = map_session_update(update, &mut cache, "acp-codex").mapped;
+        let MappedUpdate::Transcript(crate::adapters::TranscriptItem::ToolCallUpdate(record)) = mapped else {
+            panic!("expected tool call update");
+        };
+
+        assert_eq!(record.content.len(), 1);
+        assert!(matches!(
+            &record.content[0],
+            crate::adapters::ToolCallContentItem::File {
+                path,
+                snippet: Some(snippet)
+            } if path == "src/new.rs" && snippet == "after\n"
+        ));
+
+        let diff = record.formatted.diff.as_deref().expect("diff surface");
+        assert!(diff.contains("src/new.rs"));
+        assert!(diff.contains("+after"));
+        assert!(!diff.contains("src/old.rs"));
+        assert!(!diff.contains("stale"));
+        let cached = cache.get("tc-1").expect("running cache");
+        assert_eq!(cached.content.len(), 1);
+        assert_eq!(
+            cached.content[0].get("path").and_then(|v| v.as_str()),
+            Some("src/new.rs")
+        );
     }
 
     #[tokio::test]
