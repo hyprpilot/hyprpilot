@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.18](https://github.com/hyprpilot/hyprpilot/compare/v2.3.17...v2.3.18) (2026-05-29)
+
+
+### Bug Fixes
+
+* **acp:** dedupe streamed update surfaces ([#150](https://github.com/hyprpilot/hyprpilot/issues/150)) ([b279b4a](https://github.com/hyprpilot/hyprpilot/commit/b279b4a34c4c01590a1487dff85574d23b79f5ad))
+
 ## [2.3.17](https://github.com/hyprpilot/hyprpilot/compare/v2.3.16...v2.3.17) (2026-05-29)
 
 
