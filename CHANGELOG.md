@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.16](https://github.com/hyprpilot/hyprpilot/compare/v2.3.15...v2.3.16) (2026-05-29)
+
+
+### Bug Fixes
+
+* **chat:** show first submitted prompt after spawn ([#146](https://github.com/hyprpilot/hyprpilot/issues/146)) ([bcc1375](https://github.com/hyprpilot/hyprpilot/commit/bcc137556b9b2ff2f834614923adc0a9691ef952))
+
+
+### Performance
+
+* **ui:** enable content visibility for completed turns ([#145](https://github.com/hyprpilot/hyprpilot/issues/145)) ([1c0e2b5](https://github.com/hyprpilot/hyprpilot/commit/1c0e2b5331771dde2e688955e81400fdd9197da4))
+
 ## [2.3.15](https://github.com/hyprpilot/hyprpilot/compare/v2.3.14...v2.3.15) (2026-05-29)
 
 
