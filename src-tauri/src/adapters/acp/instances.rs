@@ -779,6 +779,14 @@ impl AcpAdapter {
     ) -> Result<Value, RpcError> {
         let (resolved, effective_profile) = self.resolve(agent_id, profile_id)?;
 
+        // Fresh overlay submits do not know the daemon-issued instance
+        // id until this RPC returns. Wait for the actor to publish the
+        // daemon-authored user prompt before returning that id, so the
+        // first chat snapshot/hydration cannot race ahead of the first
+        // visible row. Existing-instance submits keep the previous fast
+        // acknowledgement contract; their chat cache already has an id
+        // to patch/refetch against.
+        let wait_for_prompt_mirror = instance_id.is_none();
         let key = match instance_id {
             Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
             None => InstanceKey::new_v4(),
@@ -827,6 +835,7 @@ impl AcpAdapter {
             .ok_or_else(|| RpcError::internal_error("instance actor vanished before accepting prompt"))?;
         let cmd_tx = handle.cmd_tx.clone();
 
+        let (accepted_tx, accepted_rx) = oneshot::channel();
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
             .send(InstanceCommand::Prompt {
@@ -837,9 +846,18 @@ impl AcpAdapter {
                 // prompt lands in the visible queue, not as a parallel
                 // dispatch.
                 force_dispatch: false,
+                accepted: accepted_tx,
                 reply: reply_tx,
             })
             .map_err(|_| RpcError::internal_error(prompt_actor_closed_message(&handle)))?;
+
+        if wait_for_prompt_mirror {
+            match accepted_rx.await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::warn!(%err, "acp::submit: prompt acceptance failed"),
+                Err(_) => tracing::warn!("acp::submit: prompt acceptance dropped before resolving"),
+            }
+        }
 
         let session_id = match self.registry.get(key).await {
             Some(h) => h.current_session_id().await,

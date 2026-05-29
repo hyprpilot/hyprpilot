@@ -566,6 +566,15 @@ pub enum InstanceCommand {
         /// straight through). External `prompts/send` always supplies
         /// `false` so the captain's submit-while-busy auto-queues.
         force_dispatch: bool,
+        /// Fires once the actor has accepted the submit and any
+        /// daemon-authored user prompt / queue update has landed in the
+        /// mirror. Fresh frontend submits wait for this one before the
+        /// daemon-issued id is returned, so first hydration can see the
+        /// first prompt immediately.
+        accepted: oneshot::Sender<Result<(), String>>,
+        /// Fires when the prompt future resolves. External submitters
+        /// only log this asynchronously; turn completion is surfaced to
+        /// the UI through regular transcript / turn events.
         reply: oneshot::Sender<Result<(), String>>,
     },
     Cancel {
@@ -1077,6 +1086,7 @@ fn project_session_config_options(
     configured_effort: Option<&str>,
 ) -> Vec<crate::adapters::SessionConfigOptionCategory> {
     use crate::adapters::{SessionConfigOptionCategory, SessionConfigOptionValue};
+
     use agent_client_protocol::schema::{SessionConfigKind, SessionConfigSelectOptions};
 
     let mut categories: Vec<_> = config_options
@@ -3523,9 +3533,11 @@ async fn run(params: RunParams) {
                         // blocks for up to 10min waiting on a UI reply — but the UI
                         // never sees the prompt because the event is stuck in that same
                         // mpsc. Spawn the request so the loop keeps draining.
-                        InstanceCommand::Prompt { text, attachments, force_dispatch, reply } => {
+                        InstanceCommand::Prompt { text, attachments, force_dispatch, accepted, reply } => {
                             let Some(sid) = session_id.clone() else {
-                                let _ = reply.send(Err("no live session in list-only actor".into()));
+                                let err = "no live session in list-only actor".to_string();
+                                let _ = accepted.send(Err(err.clone()));
+                                let _ = reply.send(Err(err));
                                 continue;
                             };
                             // Auto-route: if the captain's prior prompt
@@ -3562,6 +3574,7 @@ async fn run(params: RunParams) {
                                 };
                                 queue.push_back(item);
                                 publish_queue_changed(&mirror_notif, &events_tx_notif, &agent_id_notif, &instance_id_notif, &queue).await;
+                                let _ = accepted.send(Ok(()));
                                 let _ = reply.send(Ok(()));
                                 continue;
                             }
@@ -3642,6 +3655,7 @@ async fn run(params: RunParams) {
                                 meta: None,
                             };
                             publish(&mirror_notif, &events_tx_notif, event).await;
+                            let _ = accepted.send(Ok(()));
                             // Wire blocks: [system_prompt?, ...user_attachments, user_text].
                             // Per-attachment ordering preserved through the chained iterator;
                             // `build_prompt_blocks` already lays attachments before text.
@@ -4052,6 +4066,7 @@ async fn run(params: RunParams) {
                             // accept so the UI spinner resolves in ms;
                             // turn completion arrives via the regular
                             // `acp:turn-ended` event.
+                            let (inner_accepted, _inner_accepted_rx) = oneshot::channel::<Result<(), String>>();
                             let (inner_reply, _inner_rx) = oneshot::channel::<Result<(), String>>();
                             let session_id_str = session_id.as_ref().map(|s| s.0.to_string());
                             let accepted = cmd_tx_self
@@ -4062,6 +4077,7 @@ async fn run(params: RunParams) {
                                     // queue auto-route so the popped item
                                     // goes on-wire immediately.
                                     force_dispatch: true,
+                                    accepted: inner_accepted,
                                     reply: inner_reply,
                                 })
                                 .is_ok();

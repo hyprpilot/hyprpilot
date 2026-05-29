@@ -392,6 +392,41 @@ describe('transcript-patcher singleton', () => {
     ])
   })
 
+  it('seeds a cold chat cache for the first user text echo', async() => {
+    const queryClient = buildClient()
+
+    await startTranscriptPatcher(queryClient)
+    const cb = listeners.get(TauriEvent.AcpTranscript)
+
+    cb!({
+      payload: {
+        agentId: 'a',
+        instanceId: 'i-1',
+        sessionId: 's',
+        turnId: 'turn-1',
+        seq: 1,
+        item: {
+          kind: TranscriptItemKind.UserText,
+          text: 'first text echo'
+        }
+      } as never
+    })
+    await flushPromises()
+
+    const data = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])
+
+    expect(data?.pages[0].items).toEqual([
+      {
+        seq: 1,
+        turnId: 'turn-1',
+        item: {
+          kind: TranscriptItemKind.UserText,
+          text: 'first text echo'
+        }
+      }
+    ])
+  })
+
   it('seeds a cold chat cache for durable change advertisements', async() => {
     const queryClient = buildClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
