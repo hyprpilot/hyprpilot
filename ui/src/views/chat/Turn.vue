@@ -94,22 +94,29 @@ const costLabel = computed(() => {
 
 /* turn lane: 2px stripe, 4px padding-left.
  *
- * `content-visibility: auto` was previously set here as a paint-cost
- * optimization, but it makes `offsetTop` of off-screen rows reflect
- * the `contain-intrinsic-size` placeholder, not the rendered height.
- * `useScrollAnchor` reads `offsetTop` to keep the captain's reading
- * line glued to the same row across content growth above — the
- * placeholder values broke that math for any anchor row in the skip
- * zone. The daemon transcript ring bounds live DOM; modern Vue
- * handles that without paint cost being a
- * bottleneck. Production chat apps with anchor-based scroll (Element,
- * Telegram) likewise don't use `content-visibility` for their
- * message lists for exactly this reason. */
+ * Completed turns use `content-visibility: auto` as a browser-level
+ * display lock. This keeps the retained transcript in DOM (so focus,
+ * selection, find-in-page, and snapshot merging still work) while
+ * letting the engine skip offscreen style/layout/paint. Keep this on
+ * completed rows only: the live row's height changes every streamed
+ * chunk and must stay fully observable by `useStickToBottom`.
+ *
+ * The previous attempt used a fixed intrinsic placeholder and fought
+ * `useScrollAnchor`, which reads `offsetTop` to keep the captain's
+ * reading line glued to the same row. The `auto` form below lets the
+ * browser remember a row's real measured height after it has been
+ * rendered once; `6rem` is only the first-visit fallback for rows the
+ * captain has never scrolled through in this page lifetime. */
 .turn {
   @apply flex flex-col py-1;
   padding-left: 0.25rem;
   border-left: 0.125rem solid var(--theme-accent-user);
   position: relative;
+}
+
+.turn[data-live='false'] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 6rem;
 }
 
 .turn[data-role='assistant'] {

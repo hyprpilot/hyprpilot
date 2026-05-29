@@ -19,9 +19,11 @@
  * updates exceeded in component <Viewport>". The non-virtualized
  * `v-for` is stable and the daemon-side transcript ring is the only
  * history bound. Inactive instance viewports stay mounted and are
- * hidden with viewport-level CSS rather than row-level
- * `content-visibility`, because row-level visibility breaks the
- * scroll-anchor offset math documented in `Turn.vue`.
+ * hidden with viewport-level CSS. Completed rows use
+ * `content-visibility: auto` with remembered intrinsic sizes; the
+ * live row stays fully rendered so streaming height changes remain
+ * visible to the sticky-bottom observers. See `Turn.vue` for the
+ * scroll-anchor contract.
  *
  * **Stick-to-bottom**: `useStickToBottom` already runs a
  * MutationObserver + ResizeObserver pair on the scroll container and
@@ -297,7 +299,9 @@ function goToBottom(): void {
 //
 // **No virtualization and no lazy viewport window.** The initial
 // snapshot asks for the daemon's retained transcript ring. The plain
-// `v-for` keeps history in DOM for the active viewport; inactive
+// `v-for` keeps history in DOM for the active viewport; completed
+// rows rely on browser display locking (`content-visibility: auto`)
+// to skip offscreen render cost without deleting DOM state. Inactive
 // viewports are hidden at the root with CSS so focus switches do not
 // delete viewport-local scroll/anchor state.
 
