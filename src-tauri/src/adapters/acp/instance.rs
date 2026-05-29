@@ -103,6 +103,13 @@ struct TurnState {
     /// stream — independent because the two render on different
     /// surfaces.
     last_agent_thought_message_id: Option<String>,
+    /// A structured non-text agent item landed since the last
+    /// `AgentText` chunk. The next text chunk gets a paragraph break
+    /// even if the vendor kept the same `messageId` across
+    /// text→tool/plan/attachment→text.
+    non_text_event_since_last_text: bool,
+    /// Same interruption marker for the thought stream.
+    non_text_event_since_last_thought: bool,
     /// Role of the last emitted transcript item under
     /// [`Self::current`]. Drives the role-transition turn split on
     /// `session/load` replay: ACP streams the prior session's
@@ -145,6 +152,7 @@ impl Role {
             | TI::ToolCall(_)
             | TI::ToolCallUpdate(_)
             | TI::Plan(_)
+            | TI::Goal(_)
             | TI::Compaction(_) => Some(Self::Agent),
             TI::ChangeAdvertisement(_) | TI::PermissionRequest(_) | TI::Unknown { .. } => None,
         }
@@ -186,6 +194,8 @@ impl TurnState {
         self.output_observed = false;
         self.last_agent_text_message_id = None;
         self.last_agent_thought_message_id = None;
+        self.non_text_event_since_last_text = false;
+        self.non_text_event_since_last_thought = false;
         self.last_role = None;
     }
 
@@ -194,7 +204,9 @@ impl TurnState {
     /// different non-empty content ids; missing ids are assumed to
     /// already carry the vendor's intended whitespace.
     fn note_agent_text(&mut self, _incoming: &str, message_id: Option<&str>) -> &'static str {
-        let prefix = if is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id) {
+        let prefix = if self.non_text_event_since_last_text
+            || is_new_content_block(self.last_agent_text_message_id.as_deref(), message_id)
+        {
             "\n\n"
         } else {
             ""
@@ -203,13 +215,16 @@ impl TurnState {
         if let Some(id) = message_id {
             self.last_agent_text_message_id = Some(id.to_string());
         }
+        self.non_text_event_since_last_text = false;
 
         prefix
     }
 
     /// `note_agent_text` for the `AgentThought` stream.
     fn note_agent_thought(&mut self, _incoming: &str, message_id: Option<&str>) -> &'static str {
-        let prefix = if is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id) {
+        let prefix = if self.non_text_event_since_last_thought
+            || is_new_content_block(self.last_agent_thought_message_id.as_deref(), message_id)
+        {
             "\n\n"
         } else {
             ""
@@ -218,8 +233,18 @@ impl TurnState {
         if let Some(id) = message_id {
             self.last_agent_thought_message_id = Some(id.to_string());
         }
+        self.non_text_event_since_last_thought = false;
 
         prefix
+    }
+
+    /// Mark that a structured non-text agent item (tool, plan, goal,
+    /// compaction, attachment) landed in the open turn. The next text
+    /// and thought chunks each consume their own flag so the two
+    /// surfaces remain independent.
+    fn note_non_text_event(&mut self) {
+        self.non_text_event_since_last_text = true;
+        self.non_text_event_since_last_thought = true;
     }
 
     /// Mark the current turn as having emitted at least one agent-
@@ -1149,6 +1174,22 @@ fn strip_plan_step_header(content: &str) -> String {
     rest.trim_end().to_string()
 }
 
+fn parse_codex_goal_update(text: &str) -> Option<crate::adapters::GoalRecord> {
+    let rest = text.strip_prefix("Goal updated (")?;
+    let (status, rest) = rest.split_once("):")?;
+    let status = status.trim();
+    let objective = rest.trim();
+
+    if status.is_empty() || objective.is_empty() {
+        return None;
+    }
+
+    Some(crate::adapters::GoalRecord {
+        status: status.to_string(),
+        objective: objective.to_string(),
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn map_session_update(
     update: serde_json::Value,
@@ -1372,7 +1413,17 @@ pub(crate) fn map_session_update_with_mcp_servers(
             // resource_link in the multimodal case. Project onto the
             // text or attachment variants. UI demuxer routes either.
             let content = update.get("content").cloned().unwrap_or(serde_json::Value::Null);
-            MappedUpdate::Transcript(project_agent_chunk_content(&content))
+            let item = project_agent_chunk_content(&content);
+            let codex_goal = match (&item, adapter_id) {
+                (TranscriptItem::AgentText { text }, "acp-codex") => parse_codex_goal_update(text),
+                _ => None,
+            };
+
+            if let Some(goal) = codex_goal {
+                MappedUpdate::Transcript(TranscriptItem::Goal(goal))
+            } else {
+                MappedUpdate::Transcript(item)
+            }
         }
         "agent_thought_chunk" => {
             let text = chunk_text(&update);
@@ -4235,6 +4286,7 @@ async fn run(params: RunParams) {
                                             | crate::adapters::TranscriptItem::ToolCall(_)
                                             | crate::adapters::TranscriptItem::ToolCallUpdate(_)
                                             | crate::adapters::TranscriptItem::Plan(_)
+                                            | crate::adapters::TranscriptItem::Goal(_)
                                             | crate::adapters::TranscriptItem::Compaction(_)
                                     ) {
                                         turn_state.write().await.note_agent_output();
@@ -4274,6 +4326,14 @@ async fn run(params: RunParams) {
                                                 lifted.push_str(text);
                                                 *text = lifted;
                                             }
+                                        }
+                                        crate::adapters::TranscriptItem::AgentAttachment(_)
+                                        | crate::adapters::TranscriptItem::ToolCall(_)
+                                        | crate::adapters::TranscriptItem::ToolCallUpdate(_)
+                                        | crate::adapters::TranscriptItem::Plan(_)
+                                        | crate::adapters::TranscriptItem::Goal(_)
+                                        | crate::adapters::TranscriptItem::Compaction(_) => {
+                                            turn_state.write().await.note_non_text_event();
                                         }
                                         _ => {}
                                     }
@@ -4609,6 +4669,29 @@ mod tests {
     }
 
     #[test]
+    fn turn_state_prefixes_text_after_non_text_event() {
+        let mut state = TurnState::default();
+
+        assert_eq!(state.note_agent_text("Before tool.", Some("msg-1")), "");
+        state.note_non_text_event();
+
+        assert_eq!(state.note_agent_text("After tool.", Some("msg-1")), "\n\n");
+        assert_eq!(state.note_agent_text(" continued", Some("msg-1")), "");
+    }
+
+    #[test]
+    fn turn_state_text_and_thought_non_text_flags_are_independent() {
+        let mut state = TurnState::default();
+
+        state.note_agent_text("Text before.", Some("text-1"));
+        state.note_agent_thought("Thought before.", Some("thought-1"));
+        state.note_non_text_event();
+
+        assert_eq!(state.note_agent_text("Text after.", Some("text-1")), "\n\n");
+        assert_eq!(state.note_agent_thought("Thought after.", Some("thought-1")), "\n\n");
+    }
+
+    #[test]
     fn turn_state_prefixes_text_message_id_switch_with_double_newline() {
         let mut state = TurnState::default();
 
@@ -4642,6 +4725,16 @@ mod tests {
         let mut state = TurnState::default();
         state.note_agent_text("Para 1.", Some("msg-1"));
 
+        state.open("turn-2".into());
+
+        assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
+    }
+
+    #[test]
+    fn turn_state_non_text_event_resets_on_open() {
+        let mut state = TurnState::default();
+
+        state.note_non_text_event();
         state.open("turn-2".into());
 
         assert_eq!(state.note_agent_text("Fresh start.", Some("msg-1")), "");
@@ -5164,6 +5257,62 @@ mod tests {
         });
         let MappedSessionUpdate { message_id, .. } = map_session_update(none_case, &mut cache, "claude-code");
         assert!(message_id.is_none(), "missing messageId should yield None");
+    }
+
+    #[test]
+    fn map_session_update_parses_codex_goal_text() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Goal updated (active): Ship the goal update" },
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "acp-codex");
+
+        match mapped {
+            MappedUpdate::Transcript(crate::adapters::TranscriptItem::Goal(goal)) => {
+                assert_eq!(goal.status, "active");
+                assert_eq!(goal.objective, "Ship the goal update");
+            }
+            _ => panic!("expected Goal variant"),
+        }
+    }
+
+    #[test]
+    fn map_session_update_parses_multiline_codex_goal_text() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Goal updated (blocked):\nNeed captain input\nbefore continuing" },
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "acp-codex");
+
+        match mapped {
+            MappedUpdate::Transcript(crate::adapters::TranscriptItem::Goal(goal)) => {
+                assert_eq!(goal.status, "blocked");
+                assert_eq!(goal.objective, "Need captain input\nbefore continuing");
+            }
+            _ => panic!("expected Goal variant"),
+        }
+    }
+
+    #[test]
+    fn map_session_update_goal_text_is_codex_specific() {
+        use serde_json::json;
+        let mut cache = ToolCallCache::default();
+        let update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Goal updated (active): ordinary prose" },
+        });
+        let MappedSessionUpdate { mapped, .. } = map_session_update(update, &mut cache, "claude-code");
+
+        match mapped {
+            MappedUpdate::Transcript(crate::adapters::TranscriptItem::AgentText { text }) => {
+                assert_eq!(text, "Goal updated (active): ordinary prose");
+            }
+            _ => panic!("expected AgentText variant"),
+        }
     }
 
     /// Empty / unknown thought chunks are heartbeat/section noise for

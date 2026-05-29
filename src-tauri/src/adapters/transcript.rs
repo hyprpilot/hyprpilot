@@ -30,7 +30,7 @@ use crate::tools::ToolKind;
 /// One entry in an instance's transcript. Covers user-side
 /// (`UserPrompt`, `UserText`) and assistant-side
 /// (`AgentText`, `AgentThought`, `ToolCall`, `ToolCallUpdate`,
-/// `Plan`, `PermissionRequest`) items the UI renders inline.
+/// `Plan`, `Goal`, `PermissionRequest`) items the UI renders inline.
 ///
 /// Session-metadata updates (mode/model/title/usage) still ride on
 /// dedicated `InstanceEvent` variants. The daemon may additionally
@@ -70,6 +70,11 @@ pub enum TranscriptItem {
     ToolCallUpdate(ToolCallUpdateRecord),
     /// Agent's execution plan.
     Plan(PlanRecord),
+    /// Agent/session goal status. Codex ACP currently emits this as
+    /// normal agent prose (`Goal updated (<status>): ...`); the ACP
+    /// adapter mapper lifts that known shape into a structured record
+    /// so frontends can render it as a stream block.
+    Goal(GoalRecord),
     /// Agent/session compaction marker. OpenCode models compaction
     /// as a hidden user message with a `compaction` part
     /// (`auto`, `overflow`, optional retained-tail marker); ACP
@@ -255,6 +260,13 @@ pub enum ToolCallContentItem {
 pub struct PlanRecord {
     pub steps: Vec<PlanStep>,
     pub stats: ChecklistStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalRecord {
+    pub status: String,
+    pub objective: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

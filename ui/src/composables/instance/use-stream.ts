@@ -7,6 +7,7 @@ import { useActiveInstance, type InstanceId } from '../chrome/use-active-instanc
 export enum StreamItemKind {
   Thought = 'thought',
   Plan = 'plan',
+  Goal = 'goal',
   Compaction = 'compaction',
   ModeChange = 'mode_change',
   ModelChange = 'model_change',
@@ -55,6 +56,12 @@ export interface PlanStreamItem extends BaseStream {
   /// place. `undefined` only when the daemon ships a plan without
   /// stats (defensive — daemon always computes them).
   stats?: ChecklistStats
+}
+
+export interface GoalStreamItem extends BaseStream {
+  kind: StreamItemKind.Goal
+  status: string
+  objective: string
 }
 
 export interface CompactionStreamItem extends BaseStream {
@@ -120,6 +127,7 @@ export interface SystemPromptInjectedStreamItem extends BaseStream {
 export type StreamItem =
   | ThoughtStreamItem
   | PlanStreamItem
+  | GoalStreamItem
   | CompactionStreamItem
   | ModeChangeStreamItem
   | ModelChangeStreamItem
@@ -137,6 +145,10 @@ export interface StreamState {
   /// in place rather than appending — but stay anchored to the same
   /// item id (same `createdAt`) until the turn closes.
   openPlanBySession: Map<string, string>
+  /// Per-session id of the open goal item for the current turn.
+  /// Codex goal updates are current-state snapshots, same as plans,
+  /// so later updates replace the block in place.
+  openGoalBySession: Map<string, string>
 }
 
 const states = reactive(new Map<InstanceId, StreamState>())
@@ -148,7 +160,8 @@ function slotFor(id: InstanceId): StreamState {
     slot = {
       items: [],
       openThoughtBySession: new Map(),
-      openPlanBySession: new Map()
+      openPlanBySession: new Map(),
+      openGoalBySession: new Map()
     }
     states.set(id, slot)
   }
@@ -168,6 +181,7 @@ export function closeTurn(id: InstanceId, sessionId: string): void {
   }
   slot.openThoughtBySession.delete(sessionId)
   slot.openPlanBySession.delete(sessionId)
+  slot.openGoalBySession.delete(sessionId)
 }
 
 export function closeThought(id: InstanceId, sessionId: string): void {
@@ -184,6 +198,11 @@ interface PlanUpdate {
   sessionUpdate: string
   entries?: PlanEntry[]
   stats?: ChecklistStats
+}
+
+interface GoalUpdate {
+  status: string
+  objective: string
 }
 
 interface CompactionUpdate {
@@ -262,6 +281,37 @@ export function pushPlan(id: InstanceId, sessionId: string, raw: PlanUpdate): vo
     stats
   })
   slot.openPlanBySession.set(sessionId, itemId)
+}
+
+export function pushGoal(id: InstanceId, sessionId: string, raw: GoalUpdate): void {
+  const slot = slotFor(id)
+  const seq = nextSeq(id)
+  const openId = slot.openGoalBySession.get(sessionId)
+
+  if (openId) {
+    const target = slot.items.find((it): it is GoalStreamItem => it.kind === StreamItemKind.Goal && it.sessionId === sessionId && it.id === openId)
+
+    if (target) {
+      target.status = raw.status
+      target.objective = raw.objective
+      target.updatedAt = seq
+
+      return
+    }
+  }
+  const itemId = `goal-${sessionId}-${slot.items.length}`
+
+  slot.items.push({
+    kind: StreamItemKind.Goal,
+    id: itemId,
+    sessionId,
+    turnId: openTurnIdFor(id, sessionId),
+    createdAt: seq,
+    updatedAt: seq,
+    status: raw.status,
+    objective: raw.objective
+  })
+  slot.openGoalBySession.set(sessionId, itemId)
 }
 
 export function pushCompaction(id: InstanceId, sessionId: string, raw: CompactionUpdate): void {

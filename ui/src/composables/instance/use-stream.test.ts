@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { pushCompaction, pushPlan, pushThoughtChunk, resetStream, StreamItemKind, useStream } from '@composables'
+import { pushCompaction, pushGoal, pushPlan, pushThoughtChunk, resetStream, StreamItemKind, useStream } from '@composables'
 
 beforeEach(() => {
   resetStream('A')
@@ -50,6 +50,21 @@ describe('useStream', () => {
 
     expect(items).toHaveLength(1)
     expect(items[0]?.kind === StreamItemKind.Plan ? items[0].entries.length : null).toBe(2)
+  })
+
+  it('replaces goal state on the open goal item across the same turn', () => {
+    pushGoal('A', 's-a', { status: 'active', objective: 'ship it' })
+    pushGoal('A', 's-a', { status: 'blocked', objective: 'needs input' })
+
+    const items = useStream('A').items.value
+
+    expect(items).toHaveLength(1)
+    expect(items[0]?.kind).toBe(StreamItemKind.Goal)
+
+    if (items[0]?.kind === StreamItemKind.Goal) {
+      expect(items[0].status).toBe('blocked')
+      expect(items[0].objective).toBe('needs input')
+    }
   })
 
   it('pushes compaction stream items', () => {

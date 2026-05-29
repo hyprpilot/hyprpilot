@@ -567,6 +567,27 @@ function compactionSummary(item: { auto: boolean; overflow?: boolean }): string 
   return parts.join(' · ')
 }
 
+function goalSummary(item: { status: string; objective: string }): string {
+  const objective = item.objective.trim()
+
+  if (!objective) {
+    return item.status
+  }
+
+  return `${item.status} · ${objective}`
+}
+
+function goalBody(item: { status: string; objective: string }): string {
+  const status = item.status.trim()
+  const objective = item.objective.trim()
+
+  if (!status) {
+    return objective
+  }
+
+  return `**Status:** ${status}\n\n${objective}`
+}
+
 function terminalIdForCall(call: { rawInput?: Record<string, unknown> }): string | undefined {
   const raw = call.rawInput
 
@@ -637,6 +658,14 @@ defineExpose({ scrollEl })
               label="plan"
               :items="mapPlanItems(entry.item.entries)"
               :stats="entry.item.stats"
+            />
+            <StreamCard
+              v-else-if="entry.item.kind === StreamItemKind.Goal"
+              :kind="StreamKind.Goal"
+              :active="blockIdx === liveBlockIdx"
+              label="goal"
+              :summary="goalSummary(entry.item)"
+              :text="goalBody(entry.item)"
             />
             <StreamCard
               v-else-if="entry.item.kind === StreamItemKind.Compaction"

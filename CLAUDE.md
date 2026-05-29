@@ -1528,28 +1528,25 @@ to the outgoing chunk:
    (`"...behind."` + `"Now bg is solid"` → `"...behind.\n\nNow bg
    is solid"`). The id is daemon-internal: it never lands on the
    wire shape, so frontends don't need to know about it.
-2. **Soft-lift trailing newline
-   (`acp::paragraph::soft_lift_prefix`)** — accumulated tail ends
-   with a single `\n` AND the next chunk doesn't start with one:
-   prepend `\n` so the boundary reaches `\n\n`. Also catches
-   chunks that lead with a single `\n` themselves WHEN
-   `prior_trailing == 0` — when prior already contributes a
-   newline, the chunk's own leading `\n` already brings the run
-   to `\n\n` and lifting would emit a wasted `\n` that markdown
-   collapses anyway. Never injects on a clean non-newline
-   boundary, so streaming token bursts (`"Hello, "` + `"world"`)
-   emit verbatim. Same path runs for thoughts via the independent
-   `agent_thought_trailing` counter.
+2. **Structured non-text interruption** — when a structured agent
+   item (`ToolCall`, `ToolCallUpdate`, `Plan`, `Goal`,
+   `Compaction`, or `AgentAttachment`) lands between text chunks,
+   `TurnState::note_non_text_event` marks both text surfaces. The
+   next `AgentText` / `AgentThought` chunk consumes its own flag
+   and gets a `\n\n` prefix even if the vendor reused the same
+   `messageId` across `text→tool/plan/attachment→text`. Plain
+   same-id token streaming (`"Hello, "` + `"world"`) remains
+   untouched because no structured interruption flag is set.
 
 **Safety invariants — pinned by exhaustive property tests**:
 
-- Every prefix returned by either lift function contains ONLY
+- Every prefix returned by the lift functions contains ONLY
   `\n` characters — no spaces, no other content. So a prefix can
   only ever extend a contiguous newline run; it cannot sneak
   content between two runs that would turn one paragraph break
   into two.
 - Every prefix has length ≤ 2 (max is `\n\n` from
-  `paragraph_break_prefix` on a clean boundary).
+  an id switch or structured interruption on a clean boundary).
 
 Combined: the rendered markdown will have **at most ONE paragraph
 break injected at any boundary**, ever, regardless of how the
@@ -1558,15 +1555,13 @@ between non-empty content into one paragraph break, and our
 prefix never inserts non-newline content that would split a run.
 "Double-spacing" (two blank lines between content) is therefore
 impossible from our injection. See
-`acp::paragraph::tests::{lift_prefix_only_ever_contains_newlines,
-lift_prefix_never_exceeds_two_characters,
-soft_lift_never_creates_a_break_when_no_newline_signal_is_present}`.
+`acp::instance::tests::turn_state_*` for the boundary contracts.
 
 Per-turn state lives on `TurnState`
-(`agent_text_trailing`, `agent_thought_trailing`,
-`last_agent_text_message_id`, `last_agent_thought_message_id`).
-Text and thought streams are independent. Everything resets on
-every `open_real` / `open_synthetic`.
+(`last_agent_text_message_id`, `last_agent_thought_message_id`,
+`non_text_event_since_last_text`,
+`non_text_event_since_last_thought`). Text and thought streams are
+independent. Everything resets on every turn `open`.
 
 **Why this shape (not segment lists, not per-block "bubbles")**:
 

@@ -261,6 +261,21 @@ function projectEntry(it: SeqTranscriptItem, ctx: ProjectionContext): TimelineEn
         }
       } as TimelineStream
 
+    case TranscriptItemKind.Goal:
+      return {
+        kind: 'stream',
+        createdAt: seq,
+        item: {
+          id: `goal-${seq}`,
+          kind: StreamItemKind.Goal,
+          sessionId: ctx.sessionId,
+          createdAt: seq,
+          updatedAt: seq,
+          status: item.status,
+          objective: item.objective
+        }
+      } as TimelineStream
+
     case TranscriptItemKind.Compaction:
       return {
         kind: 'stream',
@@ -601,6 +616,20 @@ function tryMergePlan(projected: ProjectedItem[], entry: TimelineStream, it: Seq
   return false
 }
 
+function tryMergeGoal(projected: ProjectedItem[], entry: TimelineStream, it: SeqTranscriptItem): boolean {
+  const existing = projected.find((p) => p.entry.kind === 'stream' && p.entry.item.kind === StreamItemKind.Goal && p.turnId === it.turnId)
+
+  if (existing && existing.entry.kind === 'stream' && existing.entry.item.kind === StreamItemKind.Goal && entry.item.kind === StreamItemKind.Goal) {
+    existing.entry.item.status = entry.item.status
+    existing.entry.item.objective = entry.item.objective
+    existing.entry.item.updatedAt = it.seq
+
+    return true
+  }
+
+  return false
+}
+
 /**
  * Try to merge a tool-call entry by `toolCallId`.
  */
@@ -634,6 +663,10 @@ function tryMergeIntoExisting(projected: ProjectedItem[], entry: TimelineEntry, 
 
   if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Plan) {
     return tryMergePlan(projected, entry, it)
+  }
+
+  if (entry.kind === 'stream' && entry.item.kind === StreamItemKind.Goal) {
+    return tryMergeGoal(projected, entry, it)
   }
 
   if (entry.kind === 'tool') {
