@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.17](https://github.com/hyprpilot/hyprpilot/compare/v2.3.16...v2.3.17) (2026-05-29)
+
+
+### Bug Fixes
+
+* **composer:** preserve prompt whitespace ([#148](https://github.com/hyprpilot/hyprpilot/issues/148)) ([6f23eec](https://github.com/hyprpilot/hyprpilot/commit/6f23eecfa44529d346a89674be34851eef24211b))
+
 ## [2.3.16](https://github.com/hyprpilot/hyprpilot/compare/v2.3.15...v2.3.16) (2026-05-29)
 
 
