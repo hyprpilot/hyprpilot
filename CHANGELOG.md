@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.15](https://github.com/hyprpilot/hyprpilot/compare/v2.3.14...v2.3.15) (2026-05-29)
+
+
+### Bug Fixes
+
+* **acp:** repair stream boundaries and goals ([#143](https://github.com/hyprpilot/hyprpilot/issues/143)) ([50fb2dd](https://github.com/hyprpilot/hyprpilot/commit/50fb2ddccdac284073cb4b2d7fd9c9a4e1e6566b))
+
 ## [2.3.14](https://github.com/hyprpilot/hyprpilot/compare/v2.3.13...v2.3.14) (2026-05-28)
 
 
