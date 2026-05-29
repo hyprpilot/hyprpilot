@@ -206,6 +206,54 @@ describe('timelineBlocksFromSnapshot', () => {
     }
   })
 
+  it('replaces tool content snapshots during snapshot replay', () => {
+    const toolCall = (seq: number, content: { kind: 'text'; text: string }[]): SeqTranscriptItem => ({
+      seq,
+      turnId: 't-1',
+      item: {
+        kind: TranscriptItemKind.ToolCall,
+        id: 'tc-1',
+        title: 'edit',
+        state: 'running',
+        toolKind: { type: 'edit' },
+        content,
+        formatted: {
+          title: 'edit',
+          stats: [],
+          fields: []
+        },
+        startedAtMs: 1000
+      } as unknown as SeqTranscriptItem['item']
+    })
+    const toolUpdate = (seq: number, content: { kind: 'text'; text: string }[]): SeqTranscriptItem => ({
+      seq,
+      turnId: 't-1',
+      item: {
+        kind: TranscriptItemKind.ToolCallUpdate,
+        id: 'tc-1',
+        state: 'running',
+        content,
+        formatted: {
+          title: 'edit',
+          stats: [],
+          fields: []
+        },
+        startedAtMs: 1000
+      } as unknown as SeqTranscriptItem['item']
+    })
+    const items: SeqTranscriptItem[] = [
+      userPrompt(1, 't-1', 'go'),
+      toolCall(2, [{ kind: 'text', text: 'first' }]),
+      toolUpdate(3, [{ kind: 'text', text: 'second' }]),
+      toolUpdate(4, [{ kind: 'text', text: 'third' }])
+    ]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistant = blocks.find((b) => b.role === Role.Assistant)
+    const tool = assistant?.toolCalls[0]?.call
+
+    expect(tool?.content.map((c) => String(c.text))).toEqual(['third'])
+  })
+
   it('does not collapse two distinct turnIds even when adjacent', () => {
     const items: SeqTranscriptItem[] = [agentText(1, 't-1', 'a'), agentText(2, 't-2', 'b')]
     const blocks = timelineBlocksFromSnapshot(items)
@@ -408,7 +456,7 @@ describe('timelineBlocksFromSnapshot', () => {
     })
   })
 
-  it('overlays live change banners onto snapshot-rendered turn blocks', () => {
+  it('ignores stale change-banner overlays because durable transcript items own banners', () => {
     const items: SeqTranscriptItem[] = [userPrompt(1, 't-1', 'switch'), agentText(2, 't-1', 'done')]
     const overlays: StreamItem[] = [
       {
@@ -453,57 +501,53 @@ describe('timelineBlocksFromSnapshot', () => {
     const blocks = timelineBlocksFromSnapshot(items, 'snapshot', overlays)
     const assistantBlock = blocks.find((b) => b.role === Role.Assistant)
 
-    expect(assistantBlock?.streamEntries.map((entry) => entry.item.kind)).toEqual([StreamItemKind.ModeChange, StreamItemKind.ModelChange, StreamItemKind.ConfigOptionChange])
-    expect(assistantBlock?.streamEntries[0]?.item).toMatchObject({
-      kind: StreamItemKind.ModeChange,
-      modeId: 'default',
-      prevModeId: 'plan'
-    })
+    expect(assistantBlock?.streamEntries).toEqual([])
   })
 
-  it('places pre-turn change banners before the first snapshot turn', () => {
-    const items: SeqTranscriptItem[] = [userPrompt(10, undefined, 'what mode are you in?'), agentText(11, 't-1', 'I am in build mode.')]
-    const overlays: StreamItem[] = [
+  it('places no-active-turn durable change banners before the following snapshot turn', () => {
+    const items: SeqTranscriptItem[] = [
       {
-        kind: StreamItemKind.ModelChange,
-        id: 'model-s-a-0',
-        sessionId: 's-a',
+        seq: 7,
         turnId: undefined,
-        createdAt: 1,
-        updatedAt: 1,
-        modelId: 'gpt-5',
-        name: 'GPT-5',
-        prevModelId: 'gpt-5.3-codex-spark',
-        prevName: 'GPT-5.3 Codex Spark'
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.Model,
+          value: 'gpt-5',
+          name: 'GPT-5',
+          prevValue: 'gpt-5.3-codex-spark',
+          prevName: 'GPT-5.3 Codex Spark'
+        }
       },
       {
-        kind: StreamItemKind.ModeChange,
-        id: 'mode-s-a-1',
-        sessionId: 's-a',
+        seq: 8,
         turnId: undefined,
-        createdAt: 2,
-        updatedAt: 2,
-        modeId: 'build',
-        name: 'Build',
-        prevModeId: 'plan',
-        prevName: 'Plan'
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.Mode,
+          value: 'build',
+          name: 'Build',
+          prevValue: 'plan',
+          prevName: 'Plan'
+        }
       },
       {
-        kind: StreamItemKind.ConfigOptionChange,
-        id: 'cfg-effort-s-a-2',
-        sessionId: 's-a',
+        seq: 9,
         turnId: undefined,
-        createdAt: 3,
-        updatedAt: 3,
-        categoryId: 'effort',
-        value: 'xhigh',
-        name: 'XHigh',
-        prevValue: 'none',
-        prevName: 'None'
-      }
+        item: {
+          kind: TranscriptItemKind.ChangeAdvertisement,
+          type: ChangeAdvertisementType.ConfigOption,
+          categoryId: 'effort',
+          value: 'xhigh',
+          name: 'XHigh',
+          prevValue: 'none',
+          prevName: 'None'
+        }
+      },
+      userPrompt(10, undefined, 'what mode are you in?'),
+      agentText(11, 't-1', 'I am in build mode.')
     ]
 
-    const blocks = timelineBlocksFromSnapshot(items, 'snapshot', overlays)
+    const blocks = timelineBlocksFromSnapshot(items)
 
     expect(blocks[0].role).toBe(Role.Assistant)
     expect(blocks[0].turnId).toBeUndefined()
@@ -512,6 +556,33 @@ describe('timelineBlocksFromSnapshot', () => {
     expect(blocks[1].turnEntries[0]?.turn.text).toBe('what mode are you in?')
     expect(blocks[2].role).toBe(Role.Assistant)
     expect(blocks[2].turnEntries[0]?.turn.text).toBe('I am in build mode.')
+  })
+
+  it('dedupes adjacent duplicate durable change banners with no active turn', () => {
+    const duplicateMode = (seq: number): SeqTranscriptItem => ({
+      seq,
+      turnId: undefined,
+      item: {
+        kind: TranscriptItemKind.ChangeAdvertisement,
+        type: ChangeAdvertisementType.Mode,
+        value: 'build',
+        name: 'Build',
+        prevValue: 'plan',
+        prevName: 'Plan'
+      }
+    })
+    const items: SeqTranscriptItem[] = [duplicateMode(7), duplicateMode(8), userPrompt(10, undefined, 'what mode are you in?')]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const bannerBlock = blocks[0]
+
+    expect(bannerBlock.role).toBe(Role.Assistant)
+    expect(bannerBlock.streamEntries).toHaveLength(1)
+    expect(bannerBlock.streamEntries[0]?.item).toMatchObject({
+      kind: StreamItemKind.ModeChange,
+      modeId: 'build',
+      prevModeId: 'plan',
+      updatedAt: 8
+    })
   })
 
   it('places system prompt overlay banners before the first snapshot turn', () => {

@@ -172,7 +172,7 @@ function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscript
       }
 
       if (next.content && next.content.length > 0) {
-        merged.content = [...(ex.content ?? []), ...next.content]
+        merged.content = next.content
       }
       merged.formatted = next.formatted
       merged.startedAtMs = next.startedAtMs

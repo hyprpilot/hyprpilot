@@ -68,6 +68,8 @@ export interface ToolCallUpdateRecord {
   title?: string
   state?: ToolCallState
   rawInput?: Record<string, unknown>
+  /// Content collection snapshot when present. ACP collection fields
+  /// replace, not append, so reducers must replace stored content.
   content: ToolCallContentItem[]
   /// Updated presentation view computed from merged running state.
   formatted: FormattedToolCall
