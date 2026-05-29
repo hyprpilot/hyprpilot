@@ -160,7 +160,8 @@ describe('ChatComposer.vue', () => {
     // Whitespace counts as text. Captains who deliberately type
     // spaces (e.g. as a leading-newline workaround on a coarse
     // keyboard) can send; we gate on raw `text.length === 0`, not
-    // a trim. `resolvedSubmit` still trims for the wire payload.
+    // a trim. `resolvedSubmit` preserves that text for the wire
+    // payload.
     const wrapper = mount(ChatComposer)
 
     const pill: ComposerPill = {
@@ -192,7 +193,7 @@ describe('ChatComposer.vue', () => {
 
     // Whitespace IS valid text — the button enables once anything
     // is typed. The wire payload is whatever `resolvedSubmit`
-    // produces (trimmed for the wire), but the gate is raw length.
+    // produces, and that preserves the raw text.
     const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
 
     await textarea.setValue('   ')
@@ -200,11 +201,11 @@ describe('ChatComposer.vue', () => {
     expect(submit.attributes('data-empty')).toBe('false')
   })
 
-  it('emits submit with trimmed text payload', async() => {
+  it('emits submit with verbatim text payload', async() => {
     const wrapper = mount(ChatComposer)
     const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="composer-textarea"]')
 
-    await textarea.setValue('  hello  ')
+    await textarea.setValue('\t  hello  \n\t')
     await wrapper.trigger('submit')
 
     for (let i = 0; i < 4; i++) {
@@ -216,7 +217,7 @@ describe('ChatComposer.vue', () => {
 
     expect(emitted).toBeDefined()
     expect((emitted as [{ text: string; attachments: unknown[] }])[0]).toMatchObject({
-      text: 'hello',
+      text: '\t  hello  \n\t',
       attachments: []
     })
   })
