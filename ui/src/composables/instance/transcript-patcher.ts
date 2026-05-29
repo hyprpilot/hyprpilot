@@ -132,6 +132,10 @@ function liveItemFor(payload: TranscriptEventPayload, fallbackSeq: number): SeqT
   }
 }
 
+function isUserAuthoredItem(payload: TranscriptEventPayload): boolean {
+  return payload.item.kind === TranscriptItemKind.UserPrompt || payload.item.kind === TranscriptItemKind.UserText
+}
+
 function mergeToolCallUpdate(items: SeqTranscriptItem[], incoming: SeqTranscriptItem): boolean {
   const next = incoming.item
 
@@ -202,10 +206,10 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     if (!old || old.pages.length === 0) {
       const seedItems: SeqTranscriptItem[] = []
       let latestSeq = 0
-      const containsUserPrompt = batch.some((payload) => payload.instanceId === instanceId && payload.item.kind === TranscriptItemKind.UserPrompt)
+      const containsUserAuthoredItem = batch.some((payload) => payload.instanceId === instanceId && isUserAuthoredItem(payload))
       const containsChangeAdvertisement = batch.some((payload) => payload.instanceId === instanceId && payload.item.kind === TranscriptItemKind.ChangeAdvertisement)
 
-      if (containsUserPrompt || containsChangeAdvertisement) {
+      if (containsUserAuthoredItem || containsChangeAdvertisement) {
         for (const payload of batch) {
           if (payload.instanceId !== instanceId) {
             continue
@@ -222,13 +226,13 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
 
       if (seedItems.length > 0) {
         pendingByInstance.delete(instanceId)
-        // A user prompt can legitimately be the first history row in a
-        // brand-new session. A standalone change advertisement is more
-        // likely to belong to an already-running session whose full
+        // A user-authored row can legitimately be the first history row
+        // in a brand-new session. A standalone change advertisement is
+        // more likely to belong to an already-running session whose full
         // snapshot simply has not been hydrated yet; seed it so the live
         // banner is not dropped, but mark the query stale so the eventual
         // snapshot replaces/merges in surrounding history by daemon seq.
-        refetchSeededColdCache = !containsUserPrompt && containsChangeAdvertisement
+        refetchSeededColdCache = !containsUserAuthoredItem && containsChangeAdvertisement
 
         return {
           pages: [
