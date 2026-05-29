@@ -221,6 +221,16 @@ describe('useSessionStream', () => {
       sessionId: 's-a',
       instanceId: 'A',
       item: {
+        kind: 'goal',
+        status: 'active',
+        objective: 'ship goal parsing'
+      }
+    })
+    emit(TauriEvent.AcpTranscript, {
+      agentId: 'a',
+      sessionId: 's-a',
+      instanceId: 'A',
+      item: {
         kind: 'compaction',
         text: 'compact summary',
         auto: true,
@@ -245,8 +255,9 @@ describe('useSessionStream', () => {
 
     const stream = useStream('A').items.value
 
-    expect(stream).toHaveLength(3)
-    expect(stream[2]?.kind).toBe('compaction')
+    expect(stream).toHaveLength(4)
+    expect(stream[2]?.kind).toBe('goal')
+    expect(stream[3]?.kind).toBe('compaction')
 
     const tools = useTools('A').calls.value
 

@@ -290,6 +290,31 @@ describe('timelineBlocksFromSnapshot', () => {
     }
   })
 
+  it('overwrites goal stream items within a turn instead of stacking them', () => {
+    const goalItem = (seq: number, turnId: string, status: string, objective: string): SeqTranscriptItem => ({
+      seq,
+      turnId,
+      item: {
+        kind: TranscriptItemKind.Goal,
+        status,
+        objective
+      }
+    })
+    const items: SeqTranscriptItem[] = [userPrompt(1, 't-1', 'go'), goalItem(2, 't-1', 'active', 'ship goal parsing'), goalItem(3, 't-1', 'blocked', 'needs input')]
+    const blocks = timelineBlocksFromSnapshot(items)
+    const assistantBlock = blocks.find((b) => b.role === Role.Assistant)
+
+    expect(assistantBlock?.streamEntries).toHaveLength(1)
+    const goalEntry = assistantBlock?.streamEntries[0]
+
+    expect(goalEntry?.item.kind).toBe(StreamItemKind.Goal)
+
+    if (goalEntry?.item.kind === StreamItemKind.Goal) {
+      expect(goalEntry.item.status).toBe('blocked')
+      expect(goalEntry.item.objective).toBe('needs input')
+    }
+  })
+
   it('projects compaction transcript items into stream blocks', () => {
     const items: SeqTranscriptItem[] = [
       userPrompt(1, 't-1', 'go'),

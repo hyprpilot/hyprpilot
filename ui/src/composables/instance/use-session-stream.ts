@@ -16,7 +16,7 @@ import {
   setSessionRestoring,
   setSessionTitleFromPrompt
 } from './use-session-info'
-import { closeThought, closeTurn, deleteStreamByTurnId, pushCompaction, pushPlan, pushSystemPromptInjected, pushThoughtChunk } from './use-stream'
+import { closeThought, closeTurn, deleteStreamByTurnId, pushCompaction, pushGoal, pushPlan, pushSystemPromptInjected, pushThoughtChunk } from './use-stream'
 import { pushTerminalChunk, pushTerminalExit } from './use-terminals'
 import { deleteToolsByTurnId, pushToolCall } from './use-tools'
 import { closeTranscriptTurn, deleteTurnByTurnId, pushTranscriptChunk } from './use-transcript'
@@ -163,6 +163,14 @@ function routeTranscript(payload: TranscriptEventPayload): void {
         entries: item.steps,
         stats: item.stats
       } as Parameters<typeof pushPlan>[2])
+
+      return
+
+    case TranscriptItemKind.Goal:
+      pushGoal(instanceId, sessionId, {
+        status: item.status,
+        objective: item.objective
+      })
 
       return
 

@@ -107,6 +107,11 @@ export interface PlanRecord {
   stats: ChecklistStats
 }
 
+export interface GoalRecord {
+  status: string
+  objective: string
+}
+
 export interface CompactionRecord {
   text?: string
   auto: boolean
@@ -171,6 +176,7 @@ export type TranscriptItem =
   | ({ kind: TranscriptItemKind.ToolCall } & ToolCallRecord)
   | ({ kind: TranscriptItemKind.ToolCallUpdate } & ToolCallUpdateRecord)
   | ({ kind: TranscriptItemKind.Plan } & PlanRecord)
+  | ({ kind: TranscriptItemKind.Goal } & GoalRecord)
   | ({ kind: TranscriptItemKind.Compaction } & CompactionRecord)
   | ({ kind: TranscriptItemKind.ChangeAdvertisement } & ChangeAdvertisementRecord)
   | ({ kind: TranscriptItemKind.PermissionRequest } & PermissionRequestRecord)
