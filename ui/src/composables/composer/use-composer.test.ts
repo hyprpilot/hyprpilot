@@ -76,10 +76,10 @@ describe('useComposer', () => {
     expect(c.pills.value).toHaveLength(0)
   })
 
-  it('resolvedSubmit returns trimmed text + image-attachment pills', () => {
+  it('resolvedSubmit preserves text verbatim with image-attachment pills', () => {
     const c = useComposer()
 
-    c.text.value = '  hello world  '
+    c.text.value = '\t  hello world  \n\t'
     c.addPill({
       kind: ComposerPillKind.Attachment,
       id: 'img-1',
@@ -90,7 +90,7 @@ describe('useComposer', () => {
 
     const { text, attachments } = c.resolvedSubmit()
 
-    expect(text).toBe('hello world')
+    expect(text).toBe('\t  hello world  \n\t')
     expect(attachments).toHaveLength(1)
     expect(attachments[0]?.mimeType).toBe('image/png')
   })

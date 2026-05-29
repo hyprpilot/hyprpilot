@@ -491,12 +491,9 @@ function trySubmit(): void {
   }
 
   // Require non-empty BUFFER on every submit. Whitespace counts as
-  // text — `resolvedSubmit` trims for the wire (so a "  hi  " buffer
-  // ships as "hi"), but here we gate off the raw textarea value so
-  // a captain who deliberately typed spaces (e.g. as a leading-newline
-  // workaround on a coarse keyboard) can still send. The wire-side
-  // payload is whatever `resolvedSubmit` produced — we only care here
-  // that SOMETHING was typed. Attachments + pills alone are not enough:
+  // text and is sent byte-for-byte; indentation, tabs, and trailing
+  // newlines can be part of a prompt/code block. Attachments + pills
+  // alone are not enough:
   // an attachments-only turn lands on the daemon as
   // `ContentBlock::Resource[]` with no user text, agents dispatch it
   // as if the captain said nothing, and the next prompt's reply

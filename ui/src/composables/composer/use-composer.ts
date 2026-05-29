@@ -100,7 +100,7 @@ function appendDraft(snippet: string): void {
 }
 
 function resolvedSubmit(): ResolvedSubmit {
-  return { text: text.value.trim(), attachments: pills.value }
+  return { text: text.value, attachments: pills.value }
 }
 
 function registerTextarea(el: HTMLTextAreaElement | undefined): void {
