@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/hyprpilot/hyprpilot/compare/v2.3.18...v2.4.0) (2026-05-31)
+
+
+### Features
+
+* **acp:** implement session fork ([#152](https://github.com/hyprpilot/hyprpilot/issues/152)) ([f07099f](https://github.com/hyprpilot/hyprpilot/commit/f07099fee96738b4572e499ca2c33e2d4b0a5e3c))
+
 ## [2.3.18](https://github.com/hyprpilot/hyprpilot/compare/v2.3.17...v2.3.18) (2026-05-29)
 
 
