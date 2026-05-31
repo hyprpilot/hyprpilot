@@ -13,13 +13,13 @@
 //!
 //! Per-entry `inject` toggles let the captain mix layers — a base
 //! persona that only loads on fresh sessions, a strict mode prompt
-//! that loads on both fresh + resume.
+//! that loads on fresh + restored/forked sessions.
 //!
-//! Defaults: `on_create = true`, `on_update = false`. Resuming an
-//! agent session already has the previous session's context loaded;
-//! re-injecting the system prompt on top is usually noise. Captains
-//! opt IN explicitly when they want the prompt to ride on every
-//! resume too.
+//! Defaults: `on_create = true`, `on_update = false`. Restoring or
+//! forking an agent session already carries the previous session's
+//! context; re-injecting the system prompt on top is usually noise.
+//! Captains opt IN explicitly when they want the prompt to ride on
+//! every update bootstrap too.
 
 use std::path::PathBuf;
 
@@ -44,13 +44,13 @@ pub struct SystemPromptEntry {
 
 /// Per-bootstrap-path inject toggles. `on_create` gates injection
 /// when the daemon spawns a fresh session (`Bootstrap::Fresh`);
-/// `on_update` gates injection when resuming a persisted session
-/// (`Bootstrap::Resume`).
+/// `on_update` gates injection when resuming or forking a persisted
+/// session (`Bootstrap::Resume` / `Bootstrap::Fork`).
 ///
-/// Defaults: `on_create = true`, `on_update = false`. Resume
-/// already carries the session's transcript context; re-injecting
-/// the system prompt on top is usually redundant noise. Opt in
-/// explicitly when you want the prompt to ride on every spawn.
+/// Defaults: `on_create = true`, `on_update = false`. Update
+/// bootstraps already carry the session's transcript context;
+/// re-injecting the system prompt on top is usually redundant noise.
+/// Opt in explicitly when you want the prompt to ride on every spawn.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SystemPromptInject {

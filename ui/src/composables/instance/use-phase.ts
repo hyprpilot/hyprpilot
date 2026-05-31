@@ -56,7 +56,8 @@ export function runtimeStateFor(id: InstanceId): InstanceState | undefined {
  *
  * `openTurnId` is the sole "we're busy" gate. Replays don't fire
  * `acp:turn-started` (only a live `Prompt` does), so on `session/load`
- * `openTurnId` stays undefined and phase correctly resolves to Idle.
+ * / `session/fork` `openTurnId` stays undefined and phase correctly
+ * resolves to Idle.
  *
  * **No runtimeState AND-gate here** — an earlier shape gated on
  * `runtimeState === Running` AND `openTurnId`, but the gate was

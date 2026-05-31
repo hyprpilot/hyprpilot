@@ -84,10 +84,11 @@ Each entry takes an optional `inject` object that gates which bootstrap paths th
 
 ```toml
 system_prompt = [
-  # Default: rides only on fresh sessions, not on resume.
+  # Default: rides only on fresh sessions, not on resume/fork.
   { file = "~/.config/hyprpilot/prompts/base.md" },
 
-  # Explicit: rides on both fresh AND resume.
+  # Explicit: rides on fresh sessions and update bootstraps
+  # (resume or fork).
   { file = "~/.config/hyprpilot/prompts/strict.md",
     inject = { on_create = true, on_update = true } },
 ]
@@ -96,7 +97,7 @@ system_prompt = [
 | Field | Default | What it gates |
 | --- | --- | --- |
 | `inject.on_create` | `true` | Whether the file rides when the daemon spawns a fresh session. |
-| `inject.on_update` | `false` | Whether the file rides when resuming a persisted session. Default off because the resumed session already carries its own transcript context — re-injecting the prompt on top is usually redundant noise. |
+| `inject.on_update` | `false` | Whether the file rides when resuming or forking a persisted session. Default off because the source session already carries its own transcript context — re-injecting the prompt on top is usually redundant noise. |
 
 When at least one entry actually injects, the chat shows a `system prompt · <files>` chapter-break banner so you can see what rode along.
 

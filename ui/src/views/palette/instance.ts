@@ -8,6 +8,8 @@
  *    instance spawns lazily on the next `session/submit` (matches
  *    the Overlay shell's `mintInstanceId()` flow); the palette
  *    only moves the active pointer + persists the profile pick.
+ *  - `fork` — forks the focused instance's current session into a
+ *    fresh instance UUID.
  *  - `rename` — opens the rename modal for the focused instance.
  *  - `shutdown` — tears down the focused instance via
  *    `instances/shutdown`. Mirrors the `Ctrl+D` shortcut on the
@@ -31,10 +33,11 @@ import {
   applyMetaSnapshotToStores,
   pushInstanceModelState,
   pushToast,
+  peekSessionInfo,
   setInstanceAgent,
   setInstanceCwd,
   setInstanceProfile,
-  setSessionRestoring,
+  startSessionLifecycle,
   useActiveInstance,
   type InstanceId,
   usePalette,
@@ -47,6 +50,7 @@ import { log } from '@lib'
 
 const ACTION_NEW = 'new'
 const ACTION_RESTORE = 'restore'
+const ACTION_FORK = 'fork'
 const ACTION_RENAME = 'rename'
 const ACTION_SHUTDOWN = 'shutdown'
 
@@ -119,6 +123,7 @@ interface BuildInstanceLeafSpecArgs {
   currentName?: string
   onPickNew: () => void
   onPickRestore: () => void
+  onPickFork: () => void
   onPickRename: () => void
   onPickShutdown: () => void
 }
@@ -138,6 +143,11 @@ function buildInstanceLeafSpec(args: BuildInstanceLeafSpecArgs): PaletteSpec {
   ]
 
   if (args.focused) {
+    entries.push({
+      id: ACTION_FORK,
+      name: 'fork',
+      description: args.currentName ? `branch ${args.currentName} into a new session` : 'branch the focused session'
+    })
     entries.push({
       id: ACTION_RENAME,
       name: 'rename',
@@ -172,6 +182,12 @@ function buildInstanceLeafSpec(args: BuildInstanceLeafSpecArgs): PaletteSpec {
 
       if (pick.id === ACTION_RESTORE) {
         args.onPickRestore()
+
+        return
+      }
+
+      if (pick.id === ACTION_FORK) {
+        args.onPickFork()
 
         return
       }
@@ -352,25 +368,18 @@ async function openRestoreSessionPicker(profile: ProfileSummary): Promise<void> 
       if (!pick) {
         return
       }
-      const cwd = cwdById.get(pick.id)
-      const target: InstanceId = crypto.randomUUID()
 
-      // Flip the `restoring` lifecycle flag on the fresh handle so the
-      // chat-transcript <Loading> overlay paints the moment the
-      // captain commits. Cleared by use-session-stream on the first
-      // TurnEnded for `target` (matching `useSessionHistory.load` +
-      // the sessions palette leaf).
-      setSessionRestoring(target, true)
-      void invoke(TauriCommand.SessionLoad, {
+      const cwd = cwdById.get(pick.id)
+
+      void startSessionLifecycle({
+        command: TauriCommand.SessionLoad,
         sessionId: pick.id,
-        instanceId: target,
         cwd,
         agentId: profile.agent,
-        profileId: profile.id
-      }).catch((err) => {
-        log.warn('palette-instance: restore load failed', { err })
-        pushToast(ToastTone.Err, `session load failed: ${String(err)}`)
-        setSessionRestoring(target, false)
+        profileId: profile.id,
+        okToast: 'restoring session…',
+        errToastPrefix: 'session load failed',
+        logLabel: 'palette-instance: restore load failed'
       })
     }
   })
@@ -385,15 +394,23 @@ export async function openInstanceLeaf(): Promise<void> {
   // the round-trip when there's no focused instance — `new` is the
   // only action available in that branch and doesn't need it.
   let currentName: string | undefined
+  let currentSessionId: string | undefined
+  let currentCwd: string | undefined
+  let currentProfileId: string | undefined
 
   if (focused) {
     try {
       const meta = await invoke(TauriCommand.InstanceMeta, { instanceId: focused })
 
       currentName = (meta as { name?: string }).name
+      currentSessionId = meta.sessionId ?? currentSessionId
+      currentCwd = meta.cwd ?? currentCwd
 
       const snapshotMeta = await invoke(TauriCommand.InstanceSnapshotMeta, { instanceId: focused })
 
+      currentSessionId = snapshotMeta.sessionId ?? currentSessionId
+      currentCwd = snapshotMeta.cwd ?? currentCwd
+      currentProfileId = snapshotMeta.profileId ?? currentProfileId
       applyMetaSnapshotToStores(focused, snapshotMeta)
     } catch(err) {
       log.debug('palette-instance: instance_meta read failed', { err: String(err) })
@@ -405,6 +422,33 @@ export async function openInstanceLeaf(): Promise<void> {
     currentName,
     onPickNew: () => void openNewInstanceProfilePicker(),
     onPickRestore: () => void openRestoreInstanceProfilePicker(),
+    onPickFork() {
+      if (!focused) {
+        return
+      }
+      const info = peekSessionInfo(focused)
+      const sessionId = currentSessionId
+
+      if (!sessionId) {
+        pushToast(ToastTone.Warn, 'no live session to fork yet')
+
+        return
+      }
+      const profileId = currentProfileId ?? info?.profileId
+      const { profiles } = useProfiles()
+      const profile = profileId ? profiles.value.find((p) => p.id === profileId) : undefined
+
+      void startSessionLifecycle({
+        command: TauriCommand.SessionFork,
+        sessionId,
+        cwd: currentCwd ?? info?.cwd,
+        agentId: info?.agent ?? profile?.agent,
+        profileId,
+        okToast: 'forking session…',
+        errToastPrefix: 'session fork failed',
+        logLabel: 'palette-instance: fork failed'
+      })
+    },
     onPickRename() {
       if (!focused) {
         return

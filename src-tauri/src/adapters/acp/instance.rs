@@ -18,9 +18,10 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::{
     AudioContent, BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
-    EmbeddedResourceResource, FileSystemCapabilities, ImageContent, InitializeRequest, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, ModelId, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
-    SessionModeId, SetSessionModeRequest, SetSessionModelRequest, TextContent, TextResourceContents,
+    EmbeddedResourceResource, FileSystemCapabilities, ForkSessionRequest, ImageContent, InitializeRequest,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, ModelId, NewSessionRequest, PromptRequest,
+    ProtocolVersion, SessionId, SessionModeId, SetSessionModeRequest, SetSessionModelRequest, TextContent,
+    TextResourceContents,
 };
 use agent_client_protocol::{ByteStreams, Client};
 use anyhow::{bail, Context, Result};
@@ -36,7 +37,7 @@ use crate::adapters::instance::{InstanceActor, InstanceInfo, InstanceKey};
 use crate::adapters::permission::{PermissionController, PermissionOptionView};
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::transcript::Attachment;
-use crate::adapters::{publish, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
+use crate::adapters::{publish, AdapterError, Bootstrap, InstanceEvent, InstanceState, TerminalChunk};
 use crate::config::AgentConfig;
 use crate::tools::ToolKind;
 use crate::tools::{TerminalToolEventKind, TerminalToolStream};
@@ -44,6 +45,18 @@ use crate::tools::{TerminalToolEventKind, TerminalToolStream};
 /// How long the registry waits for the actor to ack a `Shutdown`
 /// command before dropping the handle.
 const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+type BootstrapAck = Arc<std::sync::Mutex<Option<oneshot::Sender<Result<(), AdapterError>>>>>;
+
+fn settle_bootstrap_ack(ack: &Option<BootstrapAck>, result: Result<(), AdapterError>) {
+    if let Some(ack) = ack {
+        if let Ok(mut slot) = ack.lock() {
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(result);
+            }
+        }
+    }
+}
 
 /// Single-lock turn-id state. Replaces two `Arc<RwLock<Option<String>>>`
 /// — `current_turn_id` (any active turn, real or synthetic) and
@@ -65,7 +78,7 @@ struct TurnState {
     /// Currently open turn id, or `None`. A turn is a turn —
     /// regardless of whether the captain submitted a prompt or the
     /// daemon synthesized one to catch out-of-prompt agent activity
-    /// (session/load replay, post-cancel residue, stray
+    /// (session replay, post-cancel residue, stray
     /// notifications). The [`Self::prompt_in_flight`] flag tracks
     /// the captain-submitted case; nothing else cares about the
     /// distinction. The earlier two-slot model (`current` +
@@ -112,7 +125,7 @@ struct TurnState {
     non_text_event_since_last_thought: bool,
     /// Role of the last emitted transcript item under
     /// [`Self::current`]. Drives the role-transition turn split on
-    /// `session/load` replay: ACP streams the prior session's
+    /// session replay: ACP streams the prior session's
     /// history through `session/update` notifications and emits NO
     /// turn boundaries, so the daemon's only signal that a new
     /// logical turn started is `user_message_chunk` arriving while
@@ -127,7 +140,7 @@ struct TurnState {
 }
 
 /// Role of the last emitted item under the current turn. Used for
-/// the role-transition turn split on `session/load` replay — see
+/// the role-transition turn split on session replay — see
 /// [`TurnState::last_role`]. Tool calls and thoughts count as
 /// `Agent` because they're part of the agent's work on the same
 /// exchange.
@@ -303,7 +316,7 @@ impl TurnState {
 
     /// Record the role of the last item routed under the current
     /// turn. Read by [`Self::should_split_on`] for the role-
-    /// transition split on `session/load` replay.
+    /// transition split on session replay.
     fn note_role(&mut self, role: Role) {
         self.last_role = Some(role);
     }
@@ -804,7 +817,7 @@ pub(crate) type ToolCallCache = std::collections::HashMap<String, RunningToolCal
 /// `emit()` reads the current values atomically.
 ///
 /// Replaces 6 inline 10-field struct-literal builds across the actor
-/// — every site (Fresh / Resume bootstraps, prompt end, cancel end,
+/// — every site (Fresh / Resume / Fork bootstraps, prompt end, cancel end,
 /// SetMode success, SetModel success) had its own copy. A single
 /// `meta_ctx.emit(&events_tx, session_id).await` per site collapses
 /// the noise + fixes the silent stale on the `SetConfigOption` arm
@@ -2303,7 +2316,7 @@ impl AcpInstance {
     /// to bring an instance up and `shutdown` to tear it down.
     ///
     /// `bootstrap` picks between `session/new` (`Fresh`),
-    /// `session/load` (`Resume`), or neither (`ListOnly`). The actor
+    /// `session/load` (`Resume`), `session/fork` (`Fork`), or neither (`ListOnly`). The actor
     /// publishes lifecycle + transcript + permission events onto
     /// `events_tx`.
     ///
@@ -2323,11 +2336,13 @@ impl AcpInstance {
             skills,
             commands_cache,
             config_patches,
+            bootstrap_ack,
         } = params;
+        let bootstrap_ack = bootstrap_ack.map(|tx| Arc::new(std::sync::Mutex::new(Some(tx))));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<InstanceCommand>();
         let initial = match &bootstrap {
             Bootstrap::Resume(id) => Some(SessionId::new(id.clone())),
-            Bootstrap::Fresh | Bootstrap::ListOnly => None,
+            Bootstrap::Fresh | Bootstrap::Fork(_) | Bootstrap::ListOnly => None,
         };
         let session_id = Arc::new(tokio::sync::RwLock::new(initial));
         let tool_calls = Arc::new(tokio::sync::RwLock::new(ToolCallCache::default()));
@@ -2403,6 +2418,7 @@ impl AcpInstance {
             permissions,
             mcps,
             commands_cache,
+            bootstrap_ack,
         }));
 
         instance
@@ -2478,6 +2494,12 @@ pub struct StartParams {
     /// `--with-config` patch documents to store on the instance for
     /// restart replay. Default to empty when not overlaying.
     pub config_patches: Vec<serde_json::Value>,
+    /// Optional one-shot used by session lifecycle callers (`load` /
+    /// `fork`) that need the public RPC to settle only after the
+    /// bootstrap request has accepted or failed. Fresh prompt-driven
+    /// spawns keep the historical fire-and-forget behavior by passing
+    /// `None`.
+    pub bootstrap_ack: Option<oneshot::Sender<Result<(), AdapterError>>>,
 }
 
 /// Internal `run` actor params — superset of `StartParams` with the
@@ -2515,6 +2537,7 @@ struct RunParams {
     /// paths) can read the last few lines when the agent dies before
     /// the actor accepts a command.
     stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    bootstrap_ack: Option<BootstrapAck>,
 }
 
 /// Cap on stderr lines kept in the rolling tail. 20 lines is plenty
@@ -2559,6 +2582,7 @@ async fn run(params: RunParams) {
         mcps,
         commands_cache,
         stderr_tail,
+        bootstrap_ack,
     } = params;
     let agent_id = resolved.agent.id.clone();
     let starting_event = InstanceEvent::State {
@@ -2612,6 +2636,10 @@ async fn run(params: RunParams) {
             spawned.first_message_prefix,
         ),
         Err(err) => {
+            settle_bootstrap_ack(
+                &bootstrap_ack,
+                Err(AdapterError::Backend(format!("spawn failed: {err}"))),
+            );
             error!(agent = %agent_id, %err, "acp::instance: spawn failed");
             let event = InstanceEvent::State {
                 agent_id,
@@ -2741,6 +2769,10 @@ async fn run(params: RunParams) {
             }))
         }
         Err(err) => {
+            settle_bootstrap_ack(
+                &bootstrap_ack,
+                Err(AdapterError::Backend(format!("sandbox init failed: {err}"))),
+            );
             error!(agent = %agent_id, %err, "acp::instance: sandbox init failed");
             let event = InstanceEvent::State {
                 agent_id,
@@ -2861,9 +2893,10 @@ async fn run(params: RunParams) {
     }
 
     let intentional_shutdown_dispatch = intentional_shutdown.clone();
+    let bootstrap_ack_for_dispatch = bootstrap_ack.clone();
     let dispatch = async move |connection: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
         debug!(agent = %agent_id_notif, "acp::instance: sending initialize request");
-        let init = connection
+        let init = match connection
             .send_request(
                 InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
                     ClientCapabilities::new()
@@ -2872,7 +2905,17 @@ async fn run(params: RunParams) {
                 ),
             )
             .block_task()
-            .await?;
+            .await
+        {
+            Ok(init) => init,
+            Err(err) => {
+                settle_bootstrap_ack(
+                    &bootstrap_ack_for_dispatch,
+                    Err(AdapterError::Backend(format!("initialize failed: {err}"))),
+                );
+                return Err(err);
+            }
+        };
         // Capability probes — `agent_capabilities.session_capabilities`
         // gates the unstable `session/resume` and `session/close`
         // surfaces (both behind `unstable_session_*` features in the
@@ -2883,12 +2926,14 @@ async fn run(params: RunParams) {
         // (LoadSession / CancelNotification).
         let resume_supported = init.agent_capabilities.session_capabilities.resume.is_some();
         let close_supported = init.agent_capabilities.session_capabilities.close.is_some();
+        let fork_supported = init.agent_capabilities.session_capabilities.fork.is_some();
         info!(
             agent = %agent_id_notif,
             protocol = ?init.protocol_version,
             load_session = init.agent_capabilities.load_session,
             resume_session = resume_supported,
             close_session = close_supported,
+            fork_session = fork_supported,
             "acp::instance: initialized"
         );
 
@@ -2930,8 +2975,8 @@ async fn run(params: RunParams) {
             Arc::new(tokio::sync::RwLock::new(Vec::new()));
 
         // Project the per-instance MCP catalog onto ACP's typed
-        // `McpServer` Vec for injection at `session/new` /
-        // `session/load`. Empty when no files are configured (or all
+        // `McpServer` Vec for injection at ACP bootstrap requests.
+        // Empty when no files are configured (or all
         // entries failed projection); the agent gets an empty list and
         // runs with whatever it discovers natively.
         let mcp_servers: Vec<agent_client_protocol::schema::McpServer> = match &mcps {
@@ -3223,6 +3268,7 @@ async fn run(params: RunParams) {
                         agent = %agent_id_notif,
                         "acp::instance: neither session/resume nor session/load advertised by agent"
                     );
+                    let reason = format!("{}: neither session/resume nor session/load supported", agent_id_notif);
                     let event = InstanceEvent::State {
                         agent_id: agent_id_notif.clone(),
                         instance_id: instance_id_notif.clone(),
@@ -3231,9 +3277,13 @@ async fn run(params: RunParams) {
                     };
                     mirror_notif.apply(&event).await;
                     let _ = events_tx_notif.send(event);
+                    settle_bootstrap_ack(
+                        &bootstrap_ack_for_dispatch,
+                        Err(AdapterError::Unsupported(reason.clone())),
+                    );
                     return Err(
                         agent_client_protocol::Error::method_not_found().data(serde_json::json!({
-                            "reason": format!("{}: neither session/resume nor session/load supported", agent_id_notif),
+                            "reason": reason,
                         })),
                     );
                 }
@@ -3261,6 +3311,10 @@ async fn run(params: RunParams) {
                             };
                             mirror_notif.apply(&event).await;
                             let _ = events_tx_notif.send(event);
+                            settle_bootstrap_ack(
+                                &bootstrap_ack_for_dispatch,
+                                Err(AdapterError::Backend(err.to_string())),
+                            );
                             return Err(err);
                         }
                     };
@@ -3288,6 +3342,10 @@ async fn run(params: RunParams) {
                             };
                             mirror_notif.apply(&event).await;
                             let _ = events_tx_notif.send(event);
+                            settle_bootstrap_ack(
+                                &bootstrap_ack_for_dispatch,
+                                Err(AdapterError::Backend(err.to_string())),
+                            );
                             return Err(err);
                         }
                     };
@@ -3506,6 +3564,229 @@ async fn run(params: RunParams) {
                     .await;
                 Some(sid)
             }
+            Bootstrap::Fork(source_sid) => {
+                let source_sid = SessionId::new(source_sid);
+                if !fork_supported {
+                    warn!(
+                        agent = %agent_id_notif,
+                        "acp::instance: session/fork not advertised by agent"
+                    );
+                    let reason = format!("{}: session/fork not supported", agent_id_notif);
+                    let event = InstanceEvent::State {
+                        agent_id: agent_id_notif.clone(),
+                        instance_id: instance_id_notif.clone(),
+                        session_id: None,
+                        state: InstanceState::Error,
+                    };
+                    mirror_notif.apply(&event).await;
+                    let _ = events_tx_notif.send(event);
+                    settle_bootstrap_ack(
+                        &bootstrap_ack_for_dispatch,
+                        Err(AdapterError::Unsupported(reason.clone())),
+                    );
+                    return Err(
+                        agent_client_protocol::Error::method_not_found().data(serde_json::json!({
+                            "reason": reason,
+                        })),
+                    );
+                }
+
+                debug!(agent = %agent_id_notif, source_session = %source_sid, "acp::instance: sending session/fork");
+                let mut req = ForkSessionRequest::new(source_sid.clone(), cwd.clone());
+                req.mcp_servers = mcp_servers.clone();
+                let fork_resp = match connection.send_request(req).block_task().await {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        warn!(agent = %agent_id_notif, source_session = %source_sid, %err, "acp::instance: session/fork failed");
+                        let event = InstanceEvent::State {
+                            agent_id: agent_id_notif.clone(),
+                            instance_id: instance_id_notif.clone(),
+                            session_id: None,
+                            state: InstanceState::Error,
+                        };
+                        mirror_notif.apply(&event).await;
+                        let _ = events_tx_notif.send(event);
+                        settle_bootstrap_ack(&bootstrap_ack_for_dispatch, Err(AdapterError::Backend(err.to_string())));
+                        return Err(err);
+                    }
+                };
+                let sid = fork_resp.session_id.clone();
+                info!(
+                    agent = %agent_id_notif,
+                    instance = %instance_id_notif,
+                    source_session = %source_sid,
+                    session = %sid,
+                    "acp::instance: session/fork accepted"
+                );
+                {
+                    let mut slot = session_id_forward.write().await;
+                    *slot = Some(sid.clone());
+                }
+
+                if let Some(modes) = &fork_resp.modes {
+                    let advertised: Vec<crate::adapters::SessionModeInfo> = modes
+                        .available_modes
+                        .iter()
+                        .map(|m| crate::adapters::SessionModeInfo {
+                            id: m.id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    *available_modes_meta.write().await = advertised;
+                    *current_mode_meta.write().await = Some(modes.current_mode_id.0.to_string());
+                }
+                if let Some(models) = &fork_resp.models {
+                    let advertised: Vec<crate::adapters::SessionModelInfo> = models
+                        .available_models
+                        .iter()
+                        .map(|m| crate::adapters::SessionModelInfo {
+                            id: m.model_id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    *available_models_meta.write().await = advertised;
+                    *current_model_meta.write().await = Some(models.current_model_id.0.to_string());
+                }
+                if let Some(options) = &fork_resp.config_options {
+                    let categories =
+                        project_session_config_options(cfg.provider.wire_id(), options, cfg.effort.as_deref());
+                    for category in &categories {
+                        if let Some(value) = category.current_value.as_ref() {
+                            match category.id.as_str() {
+                                "mode" => *current_mode_meta.write().await = Some(value.clone()),
+                                "model" => *current_model_meta.write().await = Some(value.clone()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    *config_options_meta.write().await = categories;
+                }
+                if let Some(want) = cfg.effort.as_deref() {
+                    let advertised = config_options_meta
+                        .read()
+                        .await
+                        .iter()
+                        .find(|category| category.id == "effort")
+                        .is_some_and(|category| {
+                            category.current_value.as_deref() != Some(want)
+                                && category.options.iter().any(|option| option.value == want)
+                        });
+                    if advertised {
+                        let agent = match_provider_agent(cfg.provider);
+                        let current_model = current_model_meta.read().await.clone().or_else(|| cfg.model.clone());
+                        let route = agent.config_option_route("effort", want, current_model.as_deref());
+                        tracing::info!(
+                            agent = %agent_id_notif,
+                            instance = %instance_id_notif,
+                            session = %sid,
+                            value = %want,
+                            route = ?route,
+                            "acp::instance: applying configured effort via session config"
+                        );
+                        let res: Result<(), String> = match &route {
+                            ConfigOptionRoute::SetConfigOption { config_id } => {
+                                use agent_client_protocol::schema::{
+                                    SessionConfigId, SessionConfigValueId, SetSessionConfigOptionRequest,
+                                };
+                                let req = SetSessionConfigOptionRequest::new(
+                                    sid.clone(),
+                                    SessionConfigId::from(std::sync::Arc::<str>::from(config_id.as_str())),
+                                    SessionConfigValueId::from(std::sync::Arc::<str>::from(want)),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(resp) => {
+                                        let mut categories = project_session_config_options(
+                                            cfg.provider.wire_id(),
+                                            &resp.config_options,
+                                            Some(want),
+                                        );
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        *config_options_meta.write().await = categories;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                            ConfigOptionRoute::SetModel { model_id } => {
+                                let req = SetSessionModelRequest::new(
+                                    sid.clone(),
+                                    ModelId::from(std::sync::Arc::<str>::from(model_id.as_str())),
+                                );
+                                match connection.send_request(req).block_task().await {
+                                    Ok(_) => {
+                                        *current_model_meta.write().await = Some(model_id.clone());
+                                        let mut categories = config_options_meta.write().await;
+                                        apply_config_option_selection(&mut categories, "effort", want);
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(err.to_string()),
+                                }
+                            }
+                        };
+                        if let Err(err) = res {
+                            tracing::warn!(
+                                agent = %agent_id_notif,
+                                session = %sid,
+                                target_effort = %want,
+                                %err,
+                                "acp::instance: configured effort apply failed — keeping agent default"
+                            );
+                        }
+                    }
+                }
+                if let Err(err) = connection.send_notification(CancelNotification::new(sid.clone())) {
+                    debug!(
+                        agent = %agent_id_notif,
+                        session = %sid,
+                        %err,
+                        "acp::instance: post-fork cancel notification failed (non-fatal)"
+                    );
+                }
+                {
+                    let turn_state = turn_state.clone();
+                    let events_tx = events_tx_notif.clone();
+                    let mirror = mirror_notif.clone();
+                    let agent_id = agent_id_notif.clone();
+                    let instance_id = instance_id_notif.clone();
+                    let session_id = sid.0.to_string();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        close_auto_turn_if_open(
+                            &turn_state,
+                            &events_tx,
+                            &mirror,
+                            &agent_id,
+                            &instance_id,
+                            &session_id,
+                            "fork_replay_complete",
+                        )
+                        .await;
+                    });
+                }
+                if first_message_prefix.is_some() {
+                    debug!(
+                        agent = %agent_id_notif,
+                        session = %sid,
+                        "acp::instance: dropping pending system-prompt injection (session fork)"
+                    );
+                    first_message_prefix = None;
+                }
+                let event = InstanceEvent::State {
+                    agent_id: agent_id_notif.clone(),
+                    instance_id: instance_id_notif.clone(),
+                    session_id: Some(sid.0.to_string()),
+                    state: InstanceState::Running,
+                };
+                mirror_notif.apply(&event).await;
+                let _ = events_tx_notif.send(event);
+                meta_emitter.emit(&events_tx_notif, Some(sid.0.to_string())).await;
+                meta_emitter
+                    .emit_config_options(&events_tx_notif, sid.0.to_string())
+                    .await;
+                Some(sid)
+            }
             Bootstrap::ListOnly => {
                 let event = InstanceEvent::State {
                     agent_id: agent_id_notif.clone(),
@@ -3518,6 +3799,8 @@ async fn run(params: RunParams) {
                 None
             }
         };
+
+        settle_bootstrap_ack(&bootstrap_ack_for_dispatch, Ok(()));
 
         loop {
             tokio::select! {
@@ -3945,7 +4228,7 @@ async fn run(params: RunParams) {
                             // metadata. Fast — no agent roundtrip — but
                             // returns the freshest state the daemon has
                             // (updated on session/new, session/load,
-                            // set_mode, set_model, every TurnEnded).
+                            // session/fork, set_mode, set_model, every TurnEnded).
                             let snap = MetaSnapshot {
                                 session_id: session_id.as_ref().map(|s| s.0.to_string()),
                                 cwd: cwd_str.clone(),
@@ -4211,7 +4494,7 @@ async fn run(params: RunParams) {
                             // auto-turn — they're per-session metadata.
                             //
                             // **Role-transition split**: ACP has no turn-
-                            // boundary primitive for `session/load` replay;
+                            // boundary primitive for session replay;
                             // the daemon's only signal that a new logical
                             // turn started is `user_message_chunk` arriving
                             // while the prior emitted role was `Agent`. When
@@ -4603,6 +4886,14 @@ async fn run(params: RunParams) {
             }
         }
     };
+
+    match &run_outcome {
+        Ok(_) => settle_bootstrap_ack(&bootstrap_ack, Ok(())),
+        Err(err) => settle_bootstrap_ack(
+            &bootstrap_ack,
+            Err(AdapterError::Backend(format!("acp connection ended: {err}"))),
+        ),
+    }
 
     let final_state = match &run_outcome {
         Ok(_) => {
@@ -5767,6 +6058,7 @@ mod tests {
             skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
             commands_cache: None,
             config_patches: Vec::new(),
+            bootstrap_ack: None,
         }
     }
 

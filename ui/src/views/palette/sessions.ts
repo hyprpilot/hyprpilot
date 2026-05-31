@@ -18,7 +18,7 @@
 import SessionsPreview from './SessionsPreview.vue'
 import { ToastTone } from '@components'
 import { type PaletteEntry, PaletteMode, type PaletteSpec, useDaemonCwd, usePalette, useProfiles, useSessionInfo } from '@composables'
-import { setSessionRestoring, pushToast } from '@composables'
+import { pushToast, startSessionLifecycle } from '@composables'
 import { invoke, TauriCommand, type SessionSummary } from '@ipc'
 import { log } from '@lib'
 
@@ -186,26 +186,15 @@ function buildSpec(title: string, entries: SessionsLeafEntry[], loading = false)
       const profileId = info.value.profileId ?? selected.value
       const profile = profiles.value.find((p) => p.id === profileId)
 
-      // Mint the target instance up-front so the restored flag keys
-      // off the resumed handle, not whatever happens to be active when
-      // the await resolves. Mirrors `useSessionHistory.load`.
-      const target = crypto.randomUUID()
-
-      // Same `restoring` lifecycle as `useSessionHistory.load`:
-      // flip on now so the chat-transcript scoped <Loading> paints
-      // immediately; cleared by use-session-stream on the first
-      // TurnEnded for `target`.
-      setSessionRestoring(target, true)
-      void invoke(TauriCommand.SessionLoad, {
+      void startSessionLifecycle({
+        command: TauriCommand.SessionLoad,
         sessionId: pick.sessionId,
-        instanceId: target,
         cwd: pick.cwd,
         agentId: profile?.agent,
-        profileId: profile?.id
-      }).catch((err) => {
-        log.warn('palette-sessions: load failed', { err })
-        pushToast(ToastTone.Err, `session load failed: ${String(err)}`)
-        setSessionRestoring(target, false)
+        profileId: profile?.id,
+        okToast: 'restoring session…',
+        errToastPrefix: 'session load failed',
+        logLabel: 'palette-sessions: load failed'
       })
     },
     onDelete() {

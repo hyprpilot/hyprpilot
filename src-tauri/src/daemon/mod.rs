@@ -445,6 +445,7 @@ pub fn run(cfg: Config, args: DaemonArgs) -> Result<()> {
             adapter_commands::profiles_list,
             adapter_commands::session_list,
             adapter_commands::session_load,
+            adapter_commands::session_fork,
             adapter_commands::sessions_info,
             adapter_commands::permission_reply,
             adapter_commands::instances_list,

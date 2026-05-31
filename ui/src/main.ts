@@ -16,7 +16,7 @@ import {
   startTranscriptPatcher
 } from '@composables'
 import { ensureRemoteConnection, isRemoteHost, setRemoteResyncHandler, subscribePair } from '@ipc/remote-bridge'
-import { log } from '@lib'
+import { log, setAppQueryClient } from '@lib'
 import '@assets/styles.css'
 
 /**
@@ -123,6 +123,8 @@ async function boot(): Promise<void> {
       }
     }
   })
+
+  setAppQueryClient(queryClient)
 
   app.use(VueQueryPlugin, { queryClient })
   app.component('FaIcon', FontAwesomeIcon)

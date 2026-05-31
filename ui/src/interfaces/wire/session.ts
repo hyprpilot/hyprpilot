@@ -128,6 +128,25 @@ export interface LoadSessionArgs {
   withConfig?: Record<string, unknown>[]
 }
 
+export interface ForkSessionArgs {
+  instanceId?: string
+  agentId?: string
+  profileId?: string
+  /// Source session to fork. The daemon creates a new agent-side
+  /// session and binds that fork to `instanceId` (or a daemon-minted
+  /// key when omitted).
+  sessionId: string
+  /// Override the resolved profile's cwd. ACP agents scope persisted
+  /// sessions by cwd, so the fork request must target the source
+  /// session's original root.
+  cwd?: string
+  withConfig?: Record<string, unknown>[]
+}
+
+export interface ForkSessionResult {
+  instanceId: string
+}
+
 /**
  * A user-turn attachment delivered alongside compose text. Carries
  * binary payload (`data` base64 — for image / audio / blob types) or

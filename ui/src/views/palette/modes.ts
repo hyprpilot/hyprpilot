@@ -4,7 +4,7 @@
  * codex's approval modes, etc.). Re-fetches from the daemon's
  * `instance_meta` command on every open instead of reading a
  * UI-side cache. The daemon's per-instance Arc<RwLock> holds the
- * authoritative state (refreshed on session/new, session/load,
+ * authoritative state (refreshed on session/new, session/load/fork,
  * set_mode, set_model, every turn-end), so this guarantees the
  * picker shows whatever the agent advertised most recently.
  *

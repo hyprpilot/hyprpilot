@@ -515,6 +515,7 @@ const REMOTE_NAMESPACE_MAP: Record<string, string> = {
   effort_get: 'instances/getEffort',
   effort_set: 'instances/setEffort',
   efforts_list: 'instances/listEfforts',
+  session_fork: 'sessions/fork',
   profile_get: 'profile/get',
   profile_set: 'profile/set',
   // queue/* + instance/snapshot/queue have first-class JSON-RPC

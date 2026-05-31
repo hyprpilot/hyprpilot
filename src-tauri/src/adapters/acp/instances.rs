@@ -37,6 +37,8 @@ use crate::config::{Config, ProfileConfig};
 use crate::rpc::protocol::RpcError;
 use crate::rpc::StatusBroadcast;
 
+const SESSION_BOOTSTRAP_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct AcpAdapter {
     /// Shared config handle. Read-only at runtime — config is static
     /// after daemon start, restart-to-change is the model. Wrapped in
@@ -688,11 +690,11 @@ impl AcpAdapter {
     /// Spawn-or-reuse for a given `InstanceKey`. Caller supplies the
     /// key (client-generated UUID for new instances; the existing key
     /// for follow-ups). `Bootstrap::Fresh` reuses a live instance at
-    /// this key; `Resume(id)` tears any existing live instance down
-    /// and replaces it with a session-load actor; `ListOnly` spawns
-    /// an init-only actor and registers it (callers wanting truly
-    /// ephemeral ListOnly actors construct them inline in `list` with
-    /// a manual Shutdown).
+    /// this key; `Resume(id)` and `Fork(id)` tear any existing live
+    /// instance down and replace it with a session lifecycle actor;
+    /// `ListOnly` spawns an init-only actor and registers it (callers
+    /// wanting truly ephemeral ListOnly actors construct them inline in
+    /// `list` with a manual Shutdown).
     async fn ensure(
         &self,
         key: InstanceKey,
@@ -716,7 +718,7 @@ impl AcpAdapter {
         effective_profile: ProfileConfig,
         config_patches: Vec<Value>,
     ) -> Result<InstanceKey, RpcError> {
-        let replace_existing = matches!(bootstrap, Bootstrap::Resume(_));
+        let replace_existing = matches!(bootstrap, Bootstrap::Resume(_) | Bootstrap::Fork(_));
         if !replace_existing && self.registry.get(key).await.is_some() {
             return Ok(key);
         }
@@ -738,6 +740,14 @@ impl AcpAdapter {
         // 2. `None` from the builder means no MCP files wired — the
         // per-server lane short-circuits and every call falls
         // through to AskUser.
+        let wait_for_bootstrap = matches!(&bootstrap, Bootstrap::Resume(_) | Bootstrap::Fork(_));
+        let (bootstrap_ack, bootstrap_ack_rx) = if wait_for_bootstrap {
+            let (tx, rx) = oneshot::channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
         let skills = build_skills_registry_with(&profile);
         let mcps = build_mcp_registry_with(&profile, Some(&skills));
         let instance = AcpInstance::start(crate::adapters::acp::instance::StartParams {
@@ -751,12 +761,32 @@ impl AcpAdapter {
             skills,
             commands_cache: self.commands_cache(),
             config_patches,
+            bootstrap_ack,
         });
 
         self.registry
             .insert(key, Arc::new(instance), None)
             .await
             .map_err(map_adapter_error_to_rpc)?;
+
+        if let Some(rx) = bootstrap_ack_rx {
+            match tokio::time::timeout(SESSION_BOOTSTRAP_ACK_TIMEOUT, rx).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(err))) => {
+                    let _ = self.registry.shutdown_one(key).await;
+                    return Err(map_adapter_error_to_rpc(err));
+                }
+                Ok(Err(_)) => {
+                    let _ = self.registry.shutdown_one(key).await;
+                    return Err(RpcError::internal_error("session bootstrap actor dropped ack"));
+                }
+                Err(_) => {
+                    let _ = self.registry.shutdown_one(key).await;
+                    return Err(RpcError::internal_error("session bootstrap timed out"));
+                }
+            }
+        }
+
         Ok(key)
     }
 
@@ -1137,6 +1167,7 @@ impl AcpAdapter {
                 skills: Arc::new(crate::skills::SkillsRegistry::new(Vec::new())),
                 commands_cache: None,
                 config_patches: Vec::new(),
+                bootstrap_ack: None,
             });
             let tx = instance.cmd_tx.clone();
             (tx, Some(instance))
@@ -1238,6 +1269,39 @@ impl AcpAdapter {
             key,
             resolved,
             Bootstrap::Resume(session_id),
+            effective_profile,
+            config_patches,
+        )
+        .await?;
+        self.registry.focus(key).await.map_err(map_adapter_error_to_rpc)?;
+        Ok(key)
+    }
+
+    /// Fork a persisted session into a new live actor. Mirrors
+    /// [`Self::load_session`] but uses `Bootstrap::Fork` so the ACP
+    /// `session/update` replay lands on the newly-created instance
+    /// mirror instead of the source actor.
+    pub async fn fork_session(
+        &self,
+        instance_id: Option<&str>,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+        session_id: String,
+        cwd: Option<PathBuf>,
+        config_patches: Vec<Value>,
+    ) -> Result<InstanceKey, RpcError> {
+        let key = match instance_id {
+            Some(s) => InstanceKey::parse(s).map_err(map_adapter_error_to_rpc)?,
+            None => InstanceKey::new_v4(),
+        };
+        let (mut resolved, effective_profile) = self.resolve_with_patches(agent_id, profile_id, &config_patches)?;
+        if let Some(c) = cwd {
+            resolved.agent.cwd = Some(c);
+        }
+        self.ensure_with_config(
+            key,
+            resolved,
+            Bootstrap::Fork(session_id),
             effective_profile,
             config_patches,
         )
@@ -1388,6 +1452,7 @@ impl AcpAdapter {
             skills,
             commands_cache: self.commands_cache(),
             config_patches,
+            bootstrap_ack: None,
         });
         self.registry
             .insert(key, Arc::new(instance), Some(slot))
@@ -1889,6 +1954,20 @@ impl Adapter for AcpAdapter {
         config_patches: Vec<Value>,
     ) -> AdapterResult<InstanceKey> {
         AcpAdapter::load_session(self, instance_id, agent_id, profile_id, session_id, cwd, config_patches)
+            .await
+            .map_err(rpc_to_adapter)
+    }
+
+    async fn fork_session(
+        &self,
+        instance_id: Option<&str>,
+        agent_id: Option<&str>,
+        profile_id: Option<&str>,
+        session_id: String,
+        cwd: Option<PathBuf>,
+        config_patches: Vec<Value>,
+    ) -> AdapterResult<InstanceKey> {
+        AcpAdapter::fork_session(self, instance_id, agent_id, profile_id, session_id, cwd, config_patches)
             .await
             .map_err(rpc_to_adapter)
     }
