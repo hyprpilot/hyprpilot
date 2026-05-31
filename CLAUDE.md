@@ -63,7 +63,16 @@ ONLY through `task lint`, and CI's lint job rejects on stylistic-rule
 violations (`object-curly-newline`,
 `padding-line-between-statements`, etc.) that the build step is blind
 to. The bar is `task build && task lint && task test` exits 0; CI runs
-the three as separate jobs and any one red rejects.
+the three as separate jobs and any one red rejects. For agent-driven
+local verification, prefer the sequential equivalent
+`task build && task lint && task test:ui && task test:rust` so Rust
+tests are not competing with the UI suite.
+
+**Cargo-test resource guard.** While `cargo test`, `cargo nextest`, or
+`task test` is running Rust tests, do not fork/spawn agent work, launch
+concurrent heavyweight validation, or parallelize unrelated work. Let
+the Rust test run own the machine until it finishes; concurrent forks
+have caused crashes.
 
 **Autopilot CI watch.** When operating in autopilot, after `git push`
 + `gh pr create` the agent stays attached until the latest workflow
@@ -359,9 +368,9 @@ Equivalent JSON for a `--with-config` patch:
   `mcps = []` on a profile is the explicit "no MCPs" off-switch
   (resists patch overlay via `$patch: replace` if the captain wants
   to wipe a patch-provided list).
-- **ACP injection**: each `session/new` and `session/load` carries the
-  resolved set as `mcp_servers`. Stdio / HTTP / SSE project onto the
-  typed ACP `McpServer` enum.
+- **ACP injection**: each `session/new`, `session/load`, and
+  `session/fork` carries the resolved set as `mcp_servers`. Stdio /
+  HTTP / SSE project onto the typed ACP `McpServer` enum.
 - **Reserved name**: the in-tree auto-injected server owns the
   `hyprpilot` MCP name. When `[mcp].enabled = true` and skills are
   non-empty, any configured MCP server with the same name is replaced
@@ -1250,12 +1259,19 @@ Live methods, grouped by namespace. Result shapes are abbreviated; see
   usage); `chat` paginates the transcript backwards via `before` cursor
   + `limit`; `terminals` returns the full per-`terminal_id` map.
   Powers second-frontend hydration on connect.
+- **`sessions/*`** — `list`, `load`, `fork`. Persisted-session
+  lifecycle surface. `load` resumes an existing session into a live
+  instance; `fork` creates a new agent-side session from an existing
+  session and binds the fork to a fresh instance. Both accept
+  `withConfig: Array<object>` and an optional `cwd` override for
+  agents that scope persisted sessions by working directory.
 - **`instances/*`** — `list`, `focus`, `spawn`, `restart`, `shutdown`,
   `info`, `rename`. Live process management. `focus` accepts
   `{ ensure: true }` to auto-spawn-if-missing; `spawn` accepts
   `{ restore: true }` to resume an existing session id. Spawn-shaped
   verbs (`spawn`, `restart`, `focus { ensure: true }`, `prompts/send`
-  when it auto-spawns, plus `sessions/load` for resume) accept
+  when it auto-spawns, plus `sessions/load`/`sessions/fork` for
+  persisted-session bootstraps) accept
   `withConfig: Array<object>` — kustomize-style overlay patches the
   daemon folds onto the **resolved profile** (not the root `Config`)
   before spawning. Patches apply in declaration order and are stored
@@ -1486,7 +1502,8 @@ separate write socket, no auth handshake:
   `tauri/permission_reply`. `focus` follows the same default-false
   background-safe convention as `prompts/send`.
 - Switch mode / model: `tauri/modes_set` / `tauri/models_set`.
-- Resume a stored session: `tauri/session_load`.
+- Resume or fork a stored session: `tauri/session_load`,
+  `tauri/session_fork`.
 - Spawn / focus / restart / rename / shutdown an instance:
   `instances/*`.
 - Read everything else (profiles, agents, skills, mcps, paths)

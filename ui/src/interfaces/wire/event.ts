@@ -241,7 +241,7 @@ export interface ConfigOptionsUpdateEventPayload {
 
 /**
  * Daemon-side per-instance metadata refresh — `acp:instance-meta`.
- * Pushed after `session/new`, after `session/load`, and after every
+ * Pushed after `session/new`, after `session/load`, after `session/fork`, and after every
  * turn ends so the header chrome resyncs even when claude-agent-acp
  * doesn't proactively emit `SessionInfoUpdate` / `CurrentModeUpdate`
  * notifications.

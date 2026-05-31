@@ -30,7 +30,7 @@ use crate::rpc::protocol::RpcError;
 /// Extending the RPC surface means implementing `RpcHandler` and pushing
 /// a new instance onto the vector in `with_defaults`.
 ///
-/// Wire surface today (9 namespaces):
+/// Wire surface today:
 /// - `daemon/{kill, status, version, shutdown}` — operator surface.
 /// - `diag/snapshot` — read-only structural snapshot.
 /// - `events/subscribe` — live `acp:*` event stream as JSON-RPC notifications.
@@ -38,6 +38,7 @@ use crate::rpc::protocol::RpcError;
 ///   `instance_id` filter; daemon-global events always pass through.
 /// - `instance/snapshot/{meta, chat, terminals}` — per-instance state mirror reads.
 /// - `instances/*` — live process management for scripting.
+/// - `sessions/{list, load, fork}` — persisted-session lifecycle.
 /// - `overlay/{present, hide, toggle}` — hyprland-bind surface.
 /// - `permissions/{pending, respond}` — script-driven permission resolution.
 /// - `prompts/{send, cancel}` — per-instance scripting.

@@ -92,17 +92,21 @@ pub enum AdapterError {
 pub type AdapterResult<T> = Result<T, AdapterError>;
 
 /// Bootstrap discriminator for `start_instance`. `Fresh` spawns a new
-/// session; `Resume` rebinds an existing one; `ListOnly` spawns an
-/// ephemeral actor that serves `list_sessions` + `shutdown` without
-/// ever binding to a session. Shared across adapter impls — today
-/// only ACP consumes it, but the semantics (`new` vs `load` vs
-/// `init-only`) translate to any transport that owns session state.
+/// session; `Resume` rebinds an existing one; `Fork` creates a new
+/// session copied from an existing one; `ListOnly` spawns an ephemeral
+/// actor that serves `list_sessions` + `shutdown` without ever binding
+/// to a session. Shared across adapter impls — today only ACP consumes
+/// it, but the semantics (`new` vs `load` vs `fork` vs `init-only`)
+/// translate to any transport that owns session state.
 #[derive(Debug, Clone)]
 pub enum Bootstrap {
     Fresh,
     /// Session id is opaque to the generic layer — impls parse it into
     /// their own wire type on receipt.
     Resume(String),
+    /// Source session id to fork. The forked session gets a new id from
+    /// the agent response.
+    Fork(String),
     ListOnly,
 }
 
@@ -323,6 +327,27 @@ pub trait Adapter: Send + Sync + 'static {
     ) -> AdapterResult<InstanceKey> {
         Err(AdapterError::Unsupported(
             "session/load not supported by this adapter".into(),
+        ))
+    }
+
+    /// `session/fork` — create a new persisted session from an
+    /// existing session's conversation history. Returns the key of the
+    /// freshly-spawned instance carrying the forked session.
+    ///
+    /// `cwd` overrides the resolved profile's cwd for the same reason
+    /// as `load_session`: ACP agents commonly scope persisted sessions
+    /// by working directory.
+    async fn fork_session(
+        &self,
+        _instance_id: Option<&str>,
+        _agent_id: Option<&str>,
+        _profile_id: Option<&str>,
+        _session_id: String,
+        _cwd: Option<std::path::PathBuf>,
+        _config_patches: Vec<serde_json::Value>,
+    ) -> AdapterResult<InstanceKey> {
+        Err(AdapterError::Unsupported(
+            "session/fork not supported by this adapter".into(),
         ))
     }
 

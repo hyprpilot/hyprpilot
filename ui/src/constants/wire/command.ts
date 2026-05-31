@@ -89,6 +89,8 @@ import type {
   EffortSetArgs,
   EffortsListArgs,
   EffortsListResult,
+  ForkSessionArgs,
+  ForkSessionResult,
   PermissionReplyArgs,
   ProfileSummary,
   SessionInfoResult,
@@ -116,6 +118,7 @@ export enum TauriCommand {
   ProfileSet = 'profile_set',
   SessionList = 'session_list',
   SessionLoad = 'session_load',
+  SessionFork = 'session_fork',
   SessionsInfo = 'sessions_info',
   PermissionReply = 'permission_reply',
   InstancesList = 'instances_list',
@@ -203,6 +206,7 @@ export interface TauriCommandArgs {
   [TauriCommand.ProfileSet]: { profileId: string }
   [TauriCommand.SessionList]: ListSessionsArgs
   [TauriCommand.SessionLoad]: LoadSessionArgs
+  [TauriCommand.SessionFork]: ForkSessionArgs
   [TauriCommand.SessionsInfo]: SessionsInfoArgs
   [TauriCommand.PermissionReply]: PermissionReplyArgs
   [TauriCommand.InstancesList]: void
@@ -267,6 +271,7 @@ export interface TauriCommandResult {
   [TauriCommand.ProfileSet]: { profileId: string }
   [TauriCommand.SessionList]: { sessions: SessionSummary[] }
   [TauriCommand.SessionLoad]: void
+  [TauriCommand.SessionFork]: ForkSessionResult
   [TauriCommand.SessionsInfo]: SessionInfoResult
   [TauriCommand.PermissionReply]: void
   [TauriCommand.InstancesList]: { instances: InstanceListEntry[]; focusedId?: string }

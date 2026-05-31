@@ -1,7 +1,7 @@
 //! Tauri `#[command]`s live at the generic adapter layer (not under
 //! `acp/`). Commands that need `dyn Adapter` call through the trait;
 //! commands that need config-adjacent surfaces (`agents_list`,
-//! `profiles_list`, `session_load`) pull the concrete `AcpAdapter`
+//! `profiles_list`, `session_load`, `session_fork`) pull the concrete `AcpAdapter`
 //! from managed state. Adding an HTTP sibling later splits those
 //! config-adjacent commands per-adapter or hoists the concept to
 //! trait level.
@@ -252,6 +252,9 @@ pub async fn session_load(
     cwd: Option<PathBuf>,
     with_config: Option<Vec<Value>>,
 ) -> Result<(), String> {
+    if session_id.trim().is_empty() {
+        return Err("sessionId must not be empty".into());
+    }
     let with_config = with_config.unwrap_or_default();
     tracing::info!(
         instance_id = ?instance_id,
@@ -278,6 +281,47 @@ pub async fn session_load(
         Err(err) => tracing::warn!(%err, "cmd::session_load: failed"),
     }
     out.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn session_fork(
+    adapter: AdapterState<'_>,
+    instance_id: Option<String>,
+    agent_id: Option<String>,
+    profile_id: Option<String>,
+    session_id: String,
+    cwd: Option<PathBuf>,
+    with_config: Option<Vec<Value>>,
+) -> Result<Value, String> {
+    if session_id.trim().is_empty() {
+        return Err("sessionId must not be empty".into());
+    }
+    let with_config = with_config.unwrap_or_default();
+    tracing::info!(
+        instance_id = ?instance_id,
+        agent_id = ?agent_id,
+        profile_id = ?profile_id,
+        session_id = %session_id,
+        cwd = ?cwd,
+        with_config_count = with_config.len(),
+        "cmd::session_fork: entry"
+    );
+    let out = adapter
+        .fork_session(
+            instance_id.as_deref(),
+            agent_id.as_deref(),
+            profile_id.as_deref(),
+            session_id,
+            cwd,
+            with_config,
+        )
+        .await
+        .map_err(|e| e.message);
+    match &out {
+        Ok(_) => tracing::info!("cmd::session_fork: accepted"),
+        Err(err) => tracing::warn!(%err, "cmd::session_fork: failed"),
+    }
+    out.map(|key| json!({ "instanceId": key.as_string() }))
 }
 
 /// List every live instance the adapter knows about. Mirrors the
@@ -478,7 +522,7 @@ pub async fn profile_set(adapter: AdapterState<'_>, profile_id: String) -> Resul
 /// call this on every open instead of reading the UI-side
 /// `useSessionInfo` cache — the daemon's per-instance Arc<RwLock>
 /// is the authoritative source, refreshed on every session/new,
-/// session/load, set_mode, set_model, and turn-end. UI events
+/// session/load, session/fork, set_mode, set_model, and turn-end. UI events
 /// (`acp:instance-meta`) keep the cache mirror in sync; this
 /// command exists for the "always re-ask the daemon" idiom the
 /// pickers want regardless.

@@ -76,12 +76,12 @@ export interface SessionInfo {
   /// `currentValue` and closed-set `options` list.
   configOptions: SessionConfigOptionCategory[]
   mcpsCount: number
-  /// Transient: `true` while the daemon's `Bootstrap::Resume` is
-  /// streaming replay events. Flips false on the first TurnEnded
-  /// for the instance (the auto-cancel after load_session triggers
-  /// a TurnEnded, so this clears within a turn-end of the resume
-  /// completing). Drives the chat-transcript scoped <Loading>
-  /// overlay during restore.
+  /// Transient: `true` while the daemon's `Bootstrap::Resume` /
+  /// `Bootstrap::Fork` is streaming replay events. Flips false on
+  /// the first TurnEnded for the instance (the post-bootstrap
+  /// auto-cancel triggers a TurnEnded, so this clears within a
+  /// turn-end of replay completing). Drives the chat-transcript
+  /// scoped <Loading> overlay during restore/fork.
   restoring: boolean
 }
 
@@ -322,7 +322,7 @@ export function setInstanceProfile(id: InstanceId, profileId: string | undefined
  * UI calls `loadSession` so the chat-transcript scoped <Loading>
  * shows a "replaying transcript…" overlay; flips back to `false`
  * on the first TurnEnded for the instance (the daemon's auto-cancel
- * after `session/load` triggers one within a beat of resume) or
+ * after `session/load` / `session/fork` triggers one within a beat) or
  * when an explicit consumer calls this with `false`.
  */
 export function setSessionRestoring(id: InstanceId, restoring: boolean): void {

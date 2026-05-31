@@ -3,8 +3,8 @@
 //! When an instance's effective `[mcp]` config has `enabled = true`
 //! AND its `[[mcp.skills]]` catalog resolves to a non-empty
 //! `SkillsRegistry`, the daemon prepends a single stdio MCP entry to
-//! the `mcp_servers` array it passes to `session/new` /
-//! `session/load`. That entry spawns `hyprpilot mcp serve` as a
+//! the `mcp_servers` array it passes to `session/new`, `session/load`,
+//! and `session/fork`. That entry spawns `hyprpilot mcp serve` as a
 //! sidecar; the sidecar reads the skills straight from disk via paths
 //! the daemon passes as repeated `--skill <slug>=<path>` args.
 //!
@@ -35,7 +35,7 @@ use crate::skills::SkillsRegistry;
 pub const SKILLS_SERVER_NAME: &str = "hyprpilot";
 
 /// Build the manifest entry the daemon prepends to `mcp_servers` for
-/// `session/new` / `session/load`.
+/// `session/new` / `session/load` / `session/fork`.
 ///
 /// Returns `None` when the registry is empty — auto-inject is gated
 /// on having something to serve. The caller is responsible for the

@@ -1,5 +1,5 @@
 //! `[mcp]` config block — controls MCP defaults, the in-tree
-//! `hyprpilot` MCP server the daemon auto-injects into `session/new`'s
+//! `hyprpilot` MCP server the daemon auto-injects into ACP bootstrap
 //! `mcp_servers`, and owns the **skills catalog** the server exposes.
 //!
 //! Singleton block mirroring the `[agent]` / `[[agents]]` pattern:
@@ -28,9 +28,9 @@ use super::merge_strategies::overwrite_some;
 use super::SkillEntry;
 
 /// `[mcp]` block. Controls auto-injection of the in-tree
-/// `hyprpilot mcp serve` MCP server entry into `session/new` /
-/// `session/load`'s `mcp_servers` array, owns the **skills catalog**
-/// that server exposes, and provides default tool glob policy for
+/// `hyprpilot mcp serve` MCP server entry into ACP bootstrap
+/// `mcp_servers` arrays, owns the **skills catalog** that server
+/// exposes, and provides default tool glob policy for
 /// MCP servers that do not declare their own `hyprpilot` extension.
 ///
 /// `auto_accept_tools` / `auto_reject_tools` ride through to the

@@ -340,7 +340,7 @@ export interface SystemPromptInjectedPush {
 /// Banner item for the daemon's `acp:system-prompt-injected` event.
 /// Sessions don't always carry a sessionId yet at injection time
 /// (the event fires before `session/new` resolves on Bootstrap::Fresh
-/// and during the LoadSession dance on Bootstrap::Resume), so we
+/// and during update bootstraps), so we
 /// stamp `sessionId: ''` and let the demuxer place it before the
 /// first turn.
 export function pushSystemPromptInjected(id: InstanceId, push: SystemPromptInjectedPush): void {

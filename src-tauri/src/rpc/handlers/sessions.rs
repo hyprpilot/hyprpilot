@@ -1,10 +1,12 @@
-//! `sessions/*` namespace — persisted-session catalog reads + resume.
+//! `sessions/*` namespace — persisted-session catalog reads, resume,
+//! and fork.
 //!
-//! Wraps `Adapter::list_sessions` and `Adapter::load_session` so
-//! non-SPA clients (nvim plugin, ctl, future remotes) can drive the
-//! sessions palette without speaking `tauri/<cmd>`. The desktop
-//! SPA keeps its `tauri/session_list` / `tauri/session_load`
-//! entries; both surfaces call the same adapter methods.
+//! Wraps `Adapter::list_sessions`, `Adapter::load_session`, and
+//! `Adapter::fork_session` so non-SPA clients (nvim plugin, ctl,
+//! future remotes) can drive the sessions palette without speaking
+//! `tauri/<cmd>`. The desktop SPA keeps its `tauri/session_list`,
+//! `tauri/session_load`, and `tauri/session_fork` entries; both
+//! surfaces call the same adapter methods.
 
 use std::path::PathBuf;
 
@@ -33,13 +35,17 @@ struct ListParams {
 /// `cwd` overrides the resolved profile's cwd — agents that scope
 /// persisted sessions by cwd (claude-agent-acp) reject loads under
 /// a different cwd than the session was created with.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LoadParams {
     session_id: String,
+    #[serde(default)]
     instance_id: Option<String>,
+    #[serde(default)]
     agent_id: Option<String>,
+    #[serde(default)]
     profile_id: Option<String>,
+    #[serde(default)]
     cwd: Option<PathBuf>,
     /// Profile-shaped overlay patches the daemon folds onto the
     /// resolved profile (synthetic when no profile is addressed)
@@ -48,6 +54,26 @@ struct LoadParams {
     /// `[[profiles]]` TOML shape, applied in declaration order, then
     /// stored on the resumed instance so `instances/restart` replays
     /// them against whatever config the daemon currently has.
+    #[serde(default)]
+    with_config: Vec<Value>,
+}
+
+/// `sessions/fork` — `sessionId` is the source session to fork.
+/// The daemon adopts `instanceId` as the new forked instance handle
+/// when supplied, otherwise it mints one.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ForkParams {
+    session_id: String,
+    #[serde(default)]
+    instance_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    profile_id: Option<String>,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+    #[serde(default)]
     with_config: Vec<Value>,
 }
 
@@ -84,8 +110,36 @@ impl RpcHandler for SessionsHandler {
                     cwd,
                     with_config,
                 } = parse_params::<LoadParams>(params, method)?;
+                if session_id.trim().is_empty() {
+                    return Err(RpcError::invalid_params("sessions/load: sessionId must not be empty"));
+                }
                 let key = adapter
                     .load_session(
+                        instance_id.as_deref(),
+                        agent_id.as_deref(),
+                        profile_id.as_deref(),
+                        session_id,
+                        cwd,
+                        with_config,
+                    )
+                    .await
+                    .map_err(map_adapter_err)?;
+                Ok(HandlerOutcome::Reply(json!({ "instanceId": key.as_string() })))
+            }
+            "sessions/fork" => {
+                let ForkParams {
+                    session_id,
+                    instance_id,
+                    agent_id,
+                    profile_id,
+                    cwd,
+                    with_config,
+                } = parse_params::<ForkParams>(params, method)?;
+                if session_id.trim().is_empty() {
+                    return Err(RpcError::invalid_params("sessions/fork: sessionId must not be empty"));
+                }
+                let key = adapter
+                    .fork_session(
                         instance_id.as_deref(),
                         agent_id.as_deref(),
                         profile_id.as_deref(),
@@ -170,6 +224,49 @@ mod tests {
     async fn load_unknown_field_is_invalid_params() {
         let v = dispatch("sessions/load", json!({ "sessionId": "abc", "stray": true })).await;
         assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn load_empty_session_id_is_invalid_params() {
+        let v = dispatch("sessions/load", json!({ "sessionId": " " })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+        assert!(v["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("sessionId must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn fork_missing_session_id_is_invalid_params() {
+        let v = dispatch("sessions/fork", json!({})).await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn fork_unknown_field_is_invalid_params() {
+        let v = dispatch("sessions/fork", json!({ "sessionId": "abc", "stray": true })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+    }
+
+    #[tokio::test]
+    async fn fork_empty_session_id_is_invalid_params() {
+        let v = dispatch("sessions/fork", json!({ "sessionId": " " })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+        assert!(v["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("sessionId must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn fork_empty_with_config_falls_through_to_adapter() {
+        let v = dispatch("sessions/fork", json!({ "sessionId": "abc", "withConfig": [] })).await;
+        assert_eq!(v["code"], -32602, "{v}");
+        let msg = v["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("requires a `[[profiles]]` entry") || msg.contains("no profile addressed"),
+            "{v}"
+        );
     }
 
     /// `withConfig` rides through the same plumbing as

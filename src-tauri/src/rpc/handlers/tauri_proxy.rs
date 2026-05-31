@@ -14,7 +14,7 @@
 //!
 //! Coverage is the boot path + core interactions: theme / keymaps /
 //! window state / daemon cwd + home, agents / profiles / instances,
-//! session_submit / session_cancel / session_load, permission_reply,
+//! session_submit / session_cancel / session_load / session_fork, permission_reply,
 //! skills + completion + mcps. Commands the captain will hit before
 //! the SPA paints. Less-common commands fall through to
 //! `method_not_found` and the UI surfaces them as toast errors —
@@ -250,6 +250,11 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                 with_config: Vec<Value>,
             }
             let args: Args = parse_params(params, "tauri/session_load")?;
+            if args.session_id.trim().is_empty() {
+                return Err(RpcError::invalid_params(
+                    "tauri/session_load: sessionId must not be empty",
+                ));
+            }
             let adapter = adapter_arc(app)?;
             adapter
                 .load_session(
@@ -260,9 +265,43 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
                     args.cwd,
                     args.with_config,
                 )
-                .await
-                .map_err(|e| RpcError::internal_error(e.message))?;
+                .await?;
             Ok(Value::Null)
+        }
+        "session_fork" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields, rename_all = "camelCase")]
+            struct Args {
+                #[serde(default)]
+                instance_id: Option<String>,
+                #[serde(default)]
+                agent_id: Option<String>,
+                #[serde(default)]
+                profile_id: Option<String>,
+                session_id: String,
+                #[serde(default)]
+                cwd: Option<PathBuf>,
+                #[serde(default)]
+                with_config: Vec<Value>,
+            }
+            let args: Args = parse_params(params, "tauri/session_fork")?;
+            if args.session_id.trim().is_empty() {
+                return Err(RpcError::invalid_params(
+                    "tauri/session_fork: sessionId must not be empty",
+                ));
+            }
+            let adapter = adapter_arc(app)?;
+            let key = adapter
+                .fork_session(
+                    args.instance_id.as_deref(),
+                    args.agent_id.as_deref(),
+                    args.profile_id.as_deref(),
+                    args.session_id,
+                    args.cwd,
+                    args.with_config,
+                )
+                .await?;
+            Ok(json!({ "instanceId": key.as_string() }))
         }
         "instances_focus" => {
             #[derive(Deserialize)]

@@ -1,5 +1,6 @@
 export * from './cleanup'
 export * from './sequence'
+export * from './session-lifecycle'
 export * from './snapshot-timeline'
 export * from './transcript-patcher'
 export * from './use-chat-viewport'

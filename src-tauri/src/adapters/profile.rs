@@ -32,8 +32,8 @@ pub struct ResolvedInstance {
     pub effort: Option<String>,
     /// Resolved per-entry system-prompt list. Each entry carries its
     /// own pre-read body + inject toggles; the actor filters the
-    /// list against the bootstrap variant (Fresh vs Resume) at spawn
-    /// time and concatenates the surviving entries. `Some(vec![])` /
+    /// list against the bootstrap variant (Fresh vs Resume/Fork) at
+    /// spawn time and concatenates the surviving entries. `Some(vec![])` /
     /// `None` both mean "no prompt".
     pub system_prompt: Vec<ResolvedSystemPromptEntry>,
     /// Per-instance mode override. Populated from `SpawnSpec::mode`
@@ -47,7 +47,7 @@ pub struct ResolvedInstance {
 /// One pre-read system-prompt entry — body content + the per-entry
 /// inject toggles the daemon honours per bootstrap path. The actor
 /// filters its `Vec<Self>` against the live bootstrap variant
-/// (Fresh / Resume) and concatenates the surviving bodies.
+/// (Fresh / Resume / Fork) and concatenates the surviving bodies.
 #[derive(Debug, Clone)]
 pub struct ResolvedSystemPromptEntry {
     pub body: String,
@@ -69,7 +69,7 @@ impl ResolvedInstance {
             .iter()
             .filter(|e| match bootstrap {
                 Bootstrap::Fresh => e.inject.on_create,
-                Bootstrap::Resume(_) => e.inject.on_update,
+                Bootstrap::Resume(_) | Bootstrap::Fork(_) => e.inject.on_update,
                 Bootstrap::ListOnly => false,
             })
             .map(|e| e.body.as_str())
@@ -90,7 +90,7 @@ impl ResolvedInstance {
             .iter()
             .filter(|e| match bootstrap {
                 Bootstrap::Fresh => e.inject.on_create,
-                Bootstrap::Resume(_) => e.inject.on_update,
+                Bootstrap::Resume(_) | Bootstrap::Fork(_) => e.inject.on_update,
                 Bootstrap::ListOnly => false,
             })
             .map(|e| e.file.clone())
@@ -394,6 +394,36 @@ mod tests {
         };
         let r = ResolvedInstance::from_config(&cfg, Some("silent")).unwrap();
         assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
+    }
+
+    #[test]
+    fn profile_system_prompt_fork_uses_update_injection() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt_path = write_prompt(&dir, "fork.md", "Fork update prompt.");
+        let mut p = profile("forkable", "cc", None, None);
+        p.system_prompt = Some(vec![crate::config::SystemPromptEntry {
+            file: prompt_path,
+            inject: crate::config::SystemPromptInject {
+                on_create: false,
+                on_update: true,
+            },
+        }]);
+
+        let cfg = Config {
+            agents: AgentsConfig {
+                agents: vec![agent("cc", None)],
+            },
+            profiles: vec![p],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("forkable")).unwrap();
+
+        assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
+        assert_eq!(
+            r.system_prompt_for(&crate::adapters::Bootstrap::Fork("source".into()))
+                .as_deref(),
+            Some("Fork update prompt.")
+        );
     }
 
     #[test]

@@ -385,7 +385,7 @@ pub enum InstanceEvent {
     /// Fired once per instance start when the configured system
     /// prompt is actually being attached to the spawn. Skipped
     /// when `system_prompt.inject.on_create=false` (Bootstrap::Fresh)
-    /// or `inject.on_restore=false` (Bootstrap::Resume). Drives the
+    /// or `inject.on_update=false` (Bootstrap::Resume / Fork). Drives the
     /// chat-side "system prompt attached" banner. `files` is the
     /// resolved path list so the UI can show the captain WHAT
     /// landed.

@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/vue-query'
 import { ref, watch, type Ref } from 'vue'
 
-import { setSessionRestoring } from './use-session-info'
+import { startSessionLifecycle } from './session-lifecycle'
 import { useActiveInstance } from '../chrome/use-active-instance'
 import { pushToast } from '../ui-state/use-toasts'
 import { ToastTone } from '@components'
@@ -103,64 +103,25 @@ export function useSessionHistory(agentId: Ref<string | undefined>, profileId: R
 
       return
     }
-    // Mint the target instance id up-front so the restored flag keys
-    // off the resumed handle, not whatever happens to be active when
-    // the await resolves. `session_load` adopts the supplied UUID
-    // verbatim — no race window between the daemon minting one and
-    // the renderer learning it.
-    const target = crypto.randomUUID()
-
     log.info('session-history: loading session', {
       sessionId,
-      target,
       agent,
       profile: profileId.value
     })
-    // Flip the transient `restoring` flag BEFORE the round-trip so
-    // the chat-transcript <Loading> overlay paints the moment the
-    // user clicks. Cleared by use-session-stream on the first
-    // TurnEnded for `target` (the daemon's auto-cancel after
-    // session/load triggers one). Stays set on failure so the user
-    // sees the spinner and the err toast simultaneously — clearing
-    // is the success path.
-    setSessionRestoring(target, true)
-
-    // Seed the chat cache for `target` BEFORE the SessionLoad
-    // round-trip. The daemon's session/load replay fires `acp:transcript`
-    // events for every replayed item; `transcript-patcher`'s
-    // "no cache → drop" guard would silently throw those events
-    // away because TanStack hasn't seen the `target` key yet
-    // (ChatViewport mounts later, after the focus event lands).
-    // A single empty head page is enough for the patcher to find
-    // the cache key + append the live items to `head.items`.
-    queryClient.setQueryData(['snapshot-chat', target], {
-      pages: [
-        {
-          items: [],
-          oldestSeq: undefined,
-          latestSeq: undefined,
-          hasMore: false
-        }
-      ],
-      pageParams: [undefined as number | undefined]
+    const result = await startSessionLifecycle({
+      command: TauriCommand.SessionLoad,
+      sessionId,
+      cwd,
+      agentId: agent,
+      profileId: profileId.value,
+      queryClient,
+      okToast: 'restoring session…',
+      errToastPrefix: 'restore failed',
+      logLabel: 'session-history: loadSession failed'
     })
 
-    try {
-      await invoke(TauriCommand.SessionLoad, {
-        agentId: agent,
-        profileId: profileId.value,
-        sessionId,
-        instanceId: target,
-        cwd
-      })
-      pushToast(ToastTone.Ok, 'restoring session…')
-    } catch(err) {
-      const message = String(err)
-
-      lastErr.value = message
-      log.warn('session-history: loadSession failed', { sessionId, err: message })
-      pushToast(ToastTone.Err, `restore failed: ${message}`)
-      setSessionRestoring(target, false)
+    if (!result.ok) {
+      lastErr.value = result.err
     }
   }
 
