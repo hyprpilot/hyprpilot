@@ -68,7 +68,7 @@ where
 {
     let tilde = shellexpand::tilde(raw);
     match shellexpand::env_with_context(tilde.as_ref(), |name| {
-        Ok::<Option<String>, std::convert::Infallible>(lookup(name))
+        Ok::<Option<String>, std::convert::Infallible>(lookup_env(name, lookup))
     }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {
@@ -76,6 +76,16 @@ where
             raw.to_string()
         }
     }
+}
+
+fn lookup_env<F>(name: &str, lookup: &mut F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    if let Some(value) = lookup(name) {
+        return Some(value);
+    }
+    name.strip_prefix("env:").and_then(lookup)
 }
 
 fn expand_value(raw: &str, ctx: &str) -> String {

@@ -78,7 +78,7 @@ where
 {
     let tilde = shellexpand::tilde(raw);
     match shellexpand::env_with_context(tilde.as_ref(), |name| {
-        Ok::<Option<String>, std::convert::Infallible>(lookup(name))
+        Ok::<Option<String>, std::convert::Infallible>(lookup_env(name, lookup))
     }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {
@@ -86,6 +86,16 @@ where
             raw.to_string()
         }
     }
+}
+
+fn lookup_env<F>(name: &str, lookup: &mut F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    if let Some(value) = lookup(name) {
+        return Some(value);
+    }
+    name.strip_prefix("env:").and_then(lookup)
 }
 
 fn expand_raw_strings_with<F>(def: &MCPDefinition, raw: &Value, lookup: &mut F) -> Value
@@ -437,6 +447,33 @@ mod tests {
             panic!("expected http server");
         };
         assert_eq!(http.headers[0].value, "Bearer secret-token");
+    }
+
+    #[test]
+    fn project_to_acp_expands_env_prefixed_placeholders() {
+        let def = MCPDefinition {
+            name: "github".into(),
+            raw: serde_json::json!({
+                "command": "${env:HYPRPILOT_TEST_MCP_BIN}",
+                "args": ["--token", "${env:HYPRPILOT_TEST_MCP_TOKEN}"],
+                "env": { "TOKEN": "${env:HYPRPILOT_TEST_MCP_TOKEN}" }
+            }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: PathBuf::from("test.json"),
+        };
+
+        let projected = project_to_acp_with_lookup(&def, &mut |name| match name {
+            "HYPRPILOT_TEST_MCP_BIN" => Some("/tmp/mcp-bin".into()),
+            "HYPRPILOT_TEST_MCP_TOKEN" => Some("secret-token".into()),
+            _ => None,
+        })
+        .expect("stdio projects");
+        let agent_client_protocol::schema::McpServer::Stdio(stdio) = projected else {
+            panic!("expected stdio server");
+        };
+        assert_eq!(stdio.command.to_string_lossy(), "/tmp/mcp-bin");
+        assert_eq!(stdio.args, vec!["--token", "secret-token"]);
+        assert_eq!(stdio.env[0].value, "secret-token");
     }
 
     #[test]

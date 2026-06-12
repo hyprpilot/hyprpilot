@@ -260,7 +260,11 @@ fn normalize_path(path: &Path) -> PathBuf {
 fn expand_value(raw: &str, ctx: &str) -> String {
     let tilde = shellexpand::tilde(raw);
     match shellexpand::env_with_context(tilde.as_ref(), |name| {
-        Ok::<Option<String>, std::convert::Infallible>(std::env::var(name).ok())
+        Ok::<Option<String>, std::convert::Infallible>(
+            std::env::var(name)
+                .ok()
+                .or_else(|| name.strip_prefix("env:").and_then(|name| std::env::var(name).ok())),
+        )
     }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {

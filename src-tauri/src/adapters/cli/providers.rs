@@ -274,7 +274,7 @@ fn expand_args(spawn: &AgentSpawnConfig) -> Vec<String> {
 fn expand_value(raw: &str, ctx: &str) -> String {
     let tilde = shellexpand::tilde(raw);
     match shellexpand::env_with_context(tilde.as_ref(), |name| {
-        Ok::<Option<String>, std::convert::Infallible>(std::env::var(name).ok())
+        Ok::<Option<String>, std::convert::Infallible>(lookup_process_env(name))
     }) {
         Ok(expanded) => expanded.into_owned(),
         Err(err) => {
@@ -282,6 +282,12 @@ fn expand_value(raw: &str, ctx: &str) -> String {
             raw.to_string()
         }
     }
+}
+
+fn lookup_process_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .or_else(|| name.strip_prefix("env:").and_then(|name| std::env::var(name).ok()))
 }
 
 fn combined_args(base: &[String], provider: &[String]) -> Vec<String> {
@@ -387,9 +393,25 @@ fn has_codex_mode_override(args: &[String]) -> bool {
 fn claude_mcp_config(defs: &[MCPDefinition]) -> Result<String> {
     let mut servers = serde_json::Map::new();
     for def in defs {
-        servers.insert(def.name.clone(), expanded_raw(def));
+        servers.insert(def.name.clone(), claude_mcp_server_config(def));
     }
     serde_json::to_string(&serde_json::json!({ "mcpServers": servers })).context("serialize claude MCP config")
+}
+
+fn claude_mcp_server_config(def: &MCPDefinition) -> serde_json::Value {
+    let mut raw = expanded_raw(def);
+    let Some(obj) = raw.as_object_mut() else {
+        return raw;
+    };
+    if obj.contains_key("url") && !obj.contains_key("type") {
+        let transport = obj
+            .get("transport")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("http");
+        obj.insert("type".into(), serde_json::Value::String(transport.into()));
+    }
+
+    raw
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -459,20 +481,14 @@ fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
                 let prefix = toml_key_path(&["mcp_servers", &http.name]);
                 entries.push((format!("{prefix}.url"), toml_string(&http.url)));
                 for header in http.headers {
-                    entries.push((
-                        toml_key_path(&["mcp_servers", &http.name, "headers", &header.name]),
-                        toml_string(&header.value),
-                    ));
+                    push_codex_http_header(&mut entries, def, &http.name, &header.name, &header.value);
                 }
             }
             McpServer::Sse(sse) => {
                 let prefix = toml_key_path(&["mcp_servers", &sse.name]);
                 entries.push((format!("{prefix}.url"), toml_string(&sse.url)));
                 for header in sse.headers {
-                    entries.push((
-                        toml_key_path(&["mcp_servers", &sse.name, "headers", &header.name]),
-                        toml_string(&header.value),
-                    ));
+                    push_codex_http_header(&mut entries, def, &sse.name, &header.name, &header.value);
                 }
             }
             _ => {}
@@ -480,6 +496,72 @@ fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
     }
 
     entries
+}
+
+fn push_codex_http_header(
+    entries: &mut Vec<(String, String)>,
+    def: &MCPDefinition,
+    server: &str,
+    header: &str,
+    expanded_value: &str,
+) {
+    if let Some(var) = raw_header_value(def, header).and_then(bearer_env_reference) {
+        if header.eq_ignore_ascii_case("authorization") {
+            entries.push((
+                toml_key_path(&["mcp_servers", server, "bearer_token_env_var"]),
+                toml_string(&var),
+            ));
+            return;
+        }
+    }
+
+    if let Some(var) = raw_header_value(def, header).and_then(env_reference) {
+        entries.push((
+            toml_key_path(&["mcp_servers", server, "env_http_headers", header]),
+            toml_string(&var),
+        ));
+        return;
+    }
+
+    entries.push((
+        toml_key_path(&["mcp_servers", server, "http_headers", header]),
+        toml_string(expanded_value),
+    ));
+}
+
+fn raw_header_value<'a>(def: &'a MCPDefinition, header: &str) -> Option<&'a str> {
+    let headers = def.raw.get("headers")?.as_object()?;
+    headers.get(header).and_then(serde_json::Value::as_str).or_else(|| {
+        headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(header))
+            .and_then(|(_, value)| value.as_str())
+    })
+}
+
+fn bearer_env_reference(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let (scheme, value) = trimmed.split_once(char::is_whitespace)?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+
+    env_reference(value.trim())
+}
+
+fn env_reference(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let candidate = if let Some(inner) = trimmed.strip_prefix("${").and_then(|value| value.strip_suffix('}')) {
+        inner.strip_prefix("env:").unwrap_or(inner)
+    } else {
+        trimmed.strip_prefix('$')?
+    };
+
+    is_env_name(candidate).then(|| candidate.to_string())
+}
+
+fn is_env_name(candidate: &str) -> bool {
+    !candidate.is_empty() && candidate.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn opencode_config_content(
@@ -710,6 +792,22 @@ mod tests {
         }
     }
 
+    fn remote_mcp_def_with_headers() -> MCPDefinition {
+        MCPDefinition {
+            name: "github".into(),
+            raw: json!({
+                "url": "https://example.test/mcp",
+                "headers": {
+                    "Authorization": "Bearer ${NVIM_GITHUB}",
+                    "X-MCP-Insiders": "true",
+                    "x-api-key": "${env:EXA_API_KEY}",
+                },
+            }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: "<test>".into(),
+        }
+    }
+
     #[test]
     fn claude_provider_args_suppress_generated_model() {
         let command = build_command(
@@ -748,6 +846,15 @@ mod tests {
             parsed["mcpServers"]["shell-env"]["env"]["TOKEN_FILE"],
             format!("{home}/token")
         );
+    }
+
+    #[test]
+    fn claude_mcp_config_adds_http_type_for_url_servers() {
+        let config = claude_mcp_config(&[remote_mcp_def_with_headers()]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+
+        assert_eq!(parsed["mcpServers"]["github"]["type"], "http");
+        assert_eq!(parsed["mcpServers"]["github"]["url"], "https://example.test/mcp");
     }
 
     #[test]
@@ -825,6 +932,23 @@ mod tests {
         assert!(joined.contains("mcp_servers.hyprpilot-nvim.command=\"uvx\""));
         assert!(joined.contains("mcp_servers.hyprpilot-nvim.args=[\"hyprpilot-nvim-mcp\"]"));
         assert!(joined.contains("mcp_servers.hyprpilot-nvim.env.NVIM=\"/tmp/nvim.sock\""));
+    }
+
+    #[test]
+    fn codex_projects_remote_mcp_headers_into_supported_config() {
+        let entries = codex_mcp_config_entries(&[remote_mcp_def_with_headers()]);
+        let rendered = entries
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("mcp_servers.github.url=\"https://example.test/mcp\""));
+        assert!(rendered.contains("mcp_servers.github.bearer_token_env_var=\"NVIM_GITHUB\""));
+        assert!(rendered.contains("mcp_servers.github.http_headers.X-MCP-Insiders=\"true\""));
+        assert!(rendered.contains("mcp_servers.github.env_http_headers.x-api-key=\"EXA_API_KEY\""));
+        assert!(!rendered.contains("mcp_servers.github.headers."));
+        assert!(!rendered.contains("Bearer "));
     }
 
     #[test]
