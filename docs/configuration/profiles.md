@@ -47,7 +47,7 @@ You can have multiple instances of the same profile running side-by-side — eac
 | `agent` | string | Which `[[agents]]` entry to spawn. |
 | `model` | string (optional) | Overrides the agent's default model for this profile. |
 | `cwd` | path (optional) | Where the agent operates. `~`, `${VAR}` expansion supported. |
-| `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. codex: approval modes. |
+| `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. Codex direct spawn maps approval policies (`untrusted`, `on-request`, `never`, deprecated `on-failure`) to `--ask-for-approval`, and sandbox modes (`read-only`, `workspace-write`, `danger-full-access`) to `--sandbox`. |
 | `system_prompt` | `{ file, inject? }[]` (optional) | Per-entry prompt files prepended to your first prompt. Each entry's `inject.on_create` / `inject.on_update` toggles which bootstrap paths it rides on. `[]` = no prompt. |
 | `mcps` | `{ file, ignore? }[]` (optional) | MCP catalog override for this profile. `[]` = no MCPs. |
 

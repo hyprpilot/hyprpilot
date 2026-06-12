@@ -11,6 +11,8 @@ use crate::config::{AgentProvider, AgentSpawnConfig};
 use crate::mcp::{project_to_acp, MCPDefinition};
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
+const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
+const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
 
 #[derive(Debug)]
 pub(super) struct DirectCommand {
@@ -152,10 +154,7 @@ fn build_codex(
         );
     }
     if let Some(mode) = resolved.mode.as_deref() {
-        if !has_flag(&detect_args, "--ask-for-approval", Some("-a")) {
-            command.args.push("--ask-for-approval".into());
-            command.args.push(mode.into());
-        }
+        push_codex_mode_if_absent(&mut command.args, &detect_args, mode)?;
     }
     if let Some(prompt) = system_prompt {
         if !prompt.is_empty() {
@@ -324,6 +323,48 @@ fn push_codex_config_if_absent(args: &mut Vec<String>, detect_args: &[String], k
 
     args.push("-c".into());
     args.push(format!("{key}={value}"));
+}
+
+fn push_codex_mode_if_absent(args: &mut Vec<String>, detect_args: &[String], mode: &str) -> Result<()> {
+    let mode = mode.trim();
+    if CODEX_APPROVAL_POLICIES.contains(&mode) {
+        if !has_flag(detect_args, "--ask-for-approval", Some("-a")) {
+            args.push("--ask-for-approval".into());
+            args.push(mode.into());
+        }
+
+        return Ok(());
+    }
+
+    if CODEX_SANDBOX_MODES.contains(&mode) {
+        if !has_flag(detect_args, "--sandbox", Some("-s")) {
+            args.push("--sandbox".into());
+            args.push(mode.into());
+        }
+
+        return Ok(());
+    }
+
+    if has_codex_mode_override(detect_args) {
+        tracing::warn!(
+            mode,
+            "cli spawn: ignoring unsupported codex profile mode because provider args override codex approval/sandbox policy"
+        );
+
+        return Ok(());
+    }
+
+    bail!(
+        "codex direct spawn mode '{mode}' is not supported by Codex CLI; use an approval policy ({}) or sandbox mode ({})",
+        CODEX_APPROVAL_POLICIES.join(", "),
+        CODEX_SANDBOX_MODES.join(", ")
+    );
+}
+
+fn has_codex_mode_override(args: &[String]) -> bool {
+    has_flag(args, "--ask-for-approval", Some("-a"))
+        || has_flag(args, "--sandbox", Some("-s"))
+        || has_flag(args, "--dangerously-bypass-approvals-and-sandbox", None)
 }
 
 fn claude_mcp_config(defs: &[MCPDefinition]) -> Result<String> {
@@ -565,6 +606,13 @@ mod tests {
         }
     }
 
+    fn resolved_with_mode(provider: AgentProvider, mode: Option<&str>) -> ResolvedInstance {
+        let mut resolved = resolved(provider);
+        resolved.mode = mode.map(str::to_string);
+
+        resolved
+    }
+
     fn mcp_def() -> MCPDefinition {
         MCPDefinition {
             name: "hyprpilot-nvim".into(),
@@ -595,7 +643,7 @@ mod tests {
     #[test]
     fn codex_projects_mcp_into_config_overrides() {
         let command = build_command(
-            &resolved(AgentProvider::AcpCodex),
+            &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
             &Bootstrap::Fresh,
             Some("be terse"),
             &[mcp_def()],
@@ -608,6 +656,72 @@ mod tests {
         assert!(joined.contains("mcp_servers.hyprpilot-nvim.command=\"uvx\""));
         assert!(joined.contains("mcp_servers.hyprpilot-nvim.args=[\"hyprpilot-nvim-mcp\"]"));
         assert!(joined.contains("mcp_servers.hyprpilot-nvim.env.NVIM=\"/tmp/nvim.sock\""));
+    }
+
+    #[test]
+    fn codex_approval_mode_maps_to_ask_for_approval() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
+            &Bootstrap::Fresh,
+            None,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(command
+            .args
+            .windows(2)
+            .any(|w| w == ["--ask-for-approval", "on-request"]));
+    }
+
+    #[test]
+    fn codex_sandbox_mode_maps_to_sandbox() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::AcpCodex, Some("workspace-write")),
+            &Bootstrap::Fresh,
+            None,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--sandbox", "workspace-write"]));
+    }
+
+    #[test]
+    fn codex_rejects_unknown_mode_without_provider_override() {
+        let err = build_command(
+            &resolved_with_mode(AgentProvider::AcpCodex, Some("plan")),
+            &Bootstrap::Fresh,
+            None,
+            &[],
+            Vec::new(),
+        )
+        .expect_err("unknown mode should fail before spawning codex");
+
+        assert!(err.to_string().contains("codex direct spawn mode 'plan'"), "{err}");
+    }
+
+    #[test]
+    fn codex_provider_args_override_unknown_mode() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::AcpCodex, Some("plan")),
+            &Bootstrap::Fresh,
+            None,
+            &[],
+            vec!["--ask-for-approval".into(), "never".into()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            command
+                .args
+                .iter()
+                .filter(|arg| arg.as_str() == "--ask-for-approval")
+                .count(),
+            1
+        );
     }
 
     #[test]

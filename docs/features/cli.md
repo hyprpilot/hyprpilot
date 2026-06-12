@@ -47,6 +47,8 @@ hyprpilot spawn engineer -- --debug
 
 Omitting `<profile>` opens a terminal picker over configured profiles first. Restore mode uses the provider's own sessions: `hyprpilot spawn --restore` picks a profile, then opens the restore picker for that profile. By default the restore picker only shows sessions for the resolved working directory; pass `--all` to see every cwd. `--session <id>` skips the session picker and resumes that provider session directly after profile selection. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
 
+Codex has no generic `mode` flag. For Codex profiles, `mode` must be either an approval policy (`untrusted`, `on-request`, `never`, deprecated `on-failure`) or a sandbox mode (`read-only`, `workspace-write`, `danger-full-access`). Direct spawn maps those to `--ask-for-approval` and `--sandbox` respectively; unsupported values fail before handing the terminal to `codex`.
+
 ## Profiles
 
 Use `hyprpilot profiles` when you need to know which profile ids are available for `hyprpilot spawn <profile>` or `ctl --profile <profile>`:
