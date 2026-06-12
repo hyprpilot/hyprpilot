@@ -6,7 +6,6 @@ use agent_client_protocol::schema::McpServer;
 use anyhow::{bail, Context, Result};
 
 use crate::adapters::profile::ResolvedInstance;
-use crate::adapters::Bootstrap;
 use crate::config::{AgentProvider, AgentSpawnConfig};
 use crate::mcp::{expanded_raw, project_to_acp, MCPDefinition};
 
@@ -24,15 +23,14 @@ pub(super) struct DirectCommand {
 
 pub(super) fn build_command(
     resolved: &ResolvedInstance,
-    bootstrap: &Bootstrap,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
 ) -> Result<DirectCommand> {
     match resolved.agent.provider {
-        AgentProvider::AcpClaudeCode => build_claude(resolved, bootstrap, system_prompt, mcp_defs, provider_args),
-        AgentProvider::AcpCodex => build_codex(resolved, bootstrap, system_prompt, mcp_defs, provider_args),
-        AgentProvider::AcpOpenCode => build_opencode(resolved, bootstrap, system_prompt, mcp_defs, provider_args),
+        AgentProvider::AcpClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args),
+        AgentProvider::AcpCodex => build_codex(resolved, system_prompt, mcp_defs, provider_args),
+        AgentProvider::AcpOpenCode => build_opencode(resolved, system_prompt, mcp_defs, provider_args),
         AgentProvider::Acp => build_generic(resolved, provider_args),
     }
 }
@@ -75,7 +73,6 @@ fn build_generic(resolved: &ResolvedInstance, provider_args: Vec<String>) -> Res
 
 fn build_claude(
     resolved: &ResolvedInstance,
-    bootstrap: &Bootstrap,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
@@ -123,12 +120,6 @@ fn build_claude(
         command.args.push("--disallowedTools".into());
         command.args.push(permission_tools.deny.join(","));
     }
-    if let Bootstrap::Resume(session_id) = bootstrap {
-        if !has_flag(&detect_args, "--resume", None) {
-            command.args.push("--resume".into());
-            command.args.push(session_id.clone());
-        }
-    }
 
     command.args.extend(provider_args);
 
@@ -137,17 +128,19 @@ fn build_claude(
 
 fn build_codex(
     resolved: &ResolvedInstance,
-    bootstrap: &Bootstrap,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
 ) -> Result<DirectCommand> {
     let mut command = base_command(resolved)?;
     let detect_args = combined_args(&command.args, &provider_args);
-    if matches!(bootstrap, Bootstrap::Resume(_)) && !detect_args.iter().any(|arg| arg == "resume") {
-        command.args.push("resume".into());
-    }
 
+    if let Some(cwd) = command.cwd.as_ref() {
+        if !has_flag(&detect_args, "--cd", Some("-C")) {
+            command.args.push("--cd".into());
+            command.args.push(cwd.display().to_string());
+        }
+    }
     if let Some(model) = resolved.model.as_deref() {
         if !has_flag(&detect_args, "--model", Some("-m")) {
             command.args.push("--model".into());
@@ -174,9 +167,6 @@ fn build_codex(
     for (key, value) in codex_mcp_config_entries(mcp_defs) {
         push_codex_config_if_absent(&mut command.args, &detect_args, &key, value);
     }
-    if let Bootstrap::Resume(session_id) = bootstrap {
-        command.args.push(session_id.clone());
-    }
 
     command.args.extend(provider_args);
 
@@ -185,7 +175,6 @@ fn build_codex(
 
 fn build_opencode(
     resolved: &ResolvedInstance,
-    bootstrap: &Bootstrap,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
@@ -205,12 +194,6 @@ fn build_opencode(
     if !has_flag(&detect_args, "--agent", None) {
         command.args.push("--agent".into());
         command.args.push(agent_name.clone());
-    }
-    if let Bootstrap::Resume(session_id) = bootstrap {
-        if !has_flag(&detect_args, "--session", Some("-s")) {
-            command.args.push("--session".into());
-            command.args.push(session_id.clone());
-        }
     }
 
     if !command.env.contains_key("OPENCODE_CONFIG_CONTENT") {
@@ -713,6 +696,7 @@ fn ensure_inline_size(label: &str, value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::Path;
 
     use serde_json::json;
 
@@ -747,6 +731,14 @@ mod tests {
     fn resolved_with_mode(provider: AgentProvider, mode: Option<&str>) -> ResolvedInstance {
         let mut resolved = resolved(provider);
         resolved.mode = mode.map(str::to_string);
+
+        resolved
+    }
+
+    fn resolved_with_cwd(provider: AgentProvider, cwd: &str) -> ResolvedInstance {
+        let mut resolved = resolved(provider);
+        resolved.agent.cwd = Some(PathBuf::from(cwd));
+        resolved.mode = None;
 
         resolved
     }
@@ -812,7 +804,6 @@ mod tests {
     fn claude_provider_args_suppress_generated_model() {
         let command = build_command(
             &resolved(AgentProvider::AcpClaudeCode),
-            &Bootstrap::Fresh,
             None,
             &[],
             vec!["--model".into(), "user-model".into()],
@@ -827,7 +818,6 @@ mod tests {
         let home = std::env::var("HOME").expect("HOME should be present in test env");
         let command = build_command(
             &resolved(AgentProvider::AcpClaudeCode),
-            &Bootstrap::Fresh,
             None,
             &[mcp_def_with_home_env()],
             Vec::new(),
@@ -861,7 +851,6 @@ mod tests {
     fn claude_mcp_permission_globs_map_to_allowed_and_disallowed_tools() {
         let command = build_command(
             &resolved(AgentProvider::AcpClaudeCode),
-            &Bootstrap::Fresh,
             None,
             &[mcp_def_with_permissions()],
             Vec::new(),
@@ -886,7 +875,6 @@ mod tests {
     fn claude_provider_args_suppress_generated_mcp_permissions() {
         let command = build_command(
             &resolved(AgentProvider::AcpClaudeCode),
-            &Bootstrap::Fresh,
             None,
             &[mcp_def_with_permissions()],
             vec![
@@ -920,7 +908,6 @@ mod tests {
     fn codex_projects_mcp_into_config_overrides() {
         let command = build_command(
             &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
-            &Bootstrap::Fresh,
             Some("be terse"),
             &[mcp_def()],
             Vec::new(),
@@ -955,7 +942,6 @@ mod tests {
     fn codex_approval_mode_maps_to_ask_for_approval() {
         let command = build_command(
             &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
-            &Bootstrap::Fresh,
             None,
             &[],
             Vec::new(),
@@ -969,10 +955,37 @@ mod tests {
     }
 
     #[test]
+    fn codex_passes_resolved_cwd_to_native_cd_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::AcpCodex, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--cd", "/tmp/hyprpilot-work"]));
+        assert_eq!(command.cwd.as_deref(), Some(Path::new("/tmp/hyprpilot-work")));
+    }
+
+    #[test]
+    fn codex_provider_args_suppress_generated_cd_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::AcpCodex, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            vec!["-C".into(), "/tmp/other".into()],
+        )
+        .unwrap();
+
+        assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--cd").count(), 0);
+        assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "-C").count(), 1);
+    }
+
+    #[test]
     fn codex_sandbox_mode_maps_to_sandbox() {
         let command = build_command(
             &resolved_with_mode(AgentProvider::AcpCodex, Some("workspace-write")),
-            &Bootstrap::Fresh,
             None,
             &[],
             Vec::new(),
@@ -986,7 +999,6 @@ mod tests {
     fn codex_rejects_unknown_mode_without_provider_override() {
         let err = build_command(
             &resolved_with_mode(AgentProvider::AcpCodex, Some("plan")),
-            &Bootstrap::Fresh,
             None,
             &[],
             Vec::new(),
@@ -1000,7 +1012,6 @@ mod tests {
     fn codex_provider_args_override_unknown_mode() {
         let command = build_command(
             &resolved_with_mode(AgentProvider::AcpCodex, Some("plan")),
-            &Bootstrap::Fresh,
             None,
             &[],
             vec!["--ask-for-approval".into(), "never".into()],
@@ -1021,7 +1032,6 @@ mod tests {
     fn opencode_puts_prompt_mcp_and_variant_in_inline_config() {
         let command = build_command(
             &resolved(AgentProvider::AcpOpenCode),
-            &Bootstrap::Resume("ses_123".into()),
             Some("be terse"),
             &[mcp_def()],
             Vec::new(),
@@ -1033,6 +1043,6 @@ mod tests {
         assert_eq!(config["agent"]["plan"]["prompt"], "be terse");
         assert_eq!(config["agent"]["plan"]["variant"], "high");
         assert_eq!(config["mcp"]["hyprpilot-nvim"]["command"][0], "uvx");
-        assert!(command.args.windows(2).any(|w| w == ["--session", "ses_123"]));
+        assert!(!command.args.iter().any(|arg| arg == "--session"));
     }
 }

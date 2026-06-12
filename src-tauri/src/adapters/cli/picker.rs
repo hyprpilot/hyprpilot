@@ -5,8 +5,6 @@ use nucleo_picker::{render::DisplayRenderer, PickerOptions};
 
 use crate::adapters::ProfileSummary;
 
-use super::sessions::RestoreSession;
-
 #[derive(Clone)]
 struct ProfileChoice(ProfileSummary);
 
@@ -38,19 +36,6 @@ pub(super) fn pick_profile(profiles: Vec<ProfileSummary>) -> Result<ProfileSumma
         "profile picker requires an interactive terminal",
     )
     .map(|choice| choice.0)
-}
-
-pub(super) fn pick_session(sessions: Vec<RestoreSession>) -> Result<RestoreSession> {
-    if sessions.is_empty() {
-        bail!("no restorable provider sessions found for the resolved cwd; pass --all to show every cwd");
-    }
-
-    pick_display(
-        sessions,
-        "no restorable provider sessions found for the resolved cwd; pass --all to show every cwd",
-        "restore cancelled",
-        "restore picker requires an interactive terminal",
-    )
 }
 
 fn pick_display<T: Clone + fmt::Display + Send + Sync + 'static>(

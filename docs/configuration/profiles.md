@@ -64,7 +64,7 @@ Resolution when you submit a prompt:
 2. Otherwise `[profile] default`.
 3. Otherwise spawn fails with a configuration error.
 
-`hyprpilot spawn` is a one-shot terminal launch rather than a daemon-managed default. Omit the profile id to pick one interactively. Direct spawn starts providers in the current shell directory by default; pass `--cwd <dir>` to launch somewhere else and to filter restore sessions to that directory.
+`hyprpilot spawn` is a one-shot terminal launch rather than a daemon-managed default. Omit the profile id to pick one interactively. Direct spawn starts providers in the current shell directory by default; pass `--cwd <dir>` to launch somewhere else.
 
 ## System prompts
 
@@ -102,7 +102,7 @@ system_prompt = [
 
 When at least one entry actually injects, the chat shows a `system prompt · <files>` chapter-break banner so you can see what rode along.
 
-Direct provider launches use the same gates: `hyprpilot spawn <profile>` injects `on_create` entries into a fresh provider session, while `hyprpilot spawn <profile> --restore` and `--session <id>` inject only entries with `on_update = true`.
+Direct provider launches use the fresh-session gate: `hyprpilot spawn <profile>` injects `on_create` entries before handing the terminal to the native TUI. Hyprpilot does not inspect provider-native resume state in direct spawn; use the provider's own `/resume` flow when you want to continue a native session.
 
 ## MCPs
 

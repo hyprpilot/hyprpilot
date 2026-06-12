@@ -43,17 +43,11 @@ hyprpilot spawn engineer
 hyprpilot spawn engineer --cwd ~/code/hyprpilot
 hyprpilot spawn engineer --model claude-opus-4-5
 hyprpilot spawn engineer --mode plan
-hyprpilot spawn --restore
-hyprpilot spawn engineer --restore
-hyprpilot spawn engineer --restore --cwd ~/code/hyprpilot
-hyprpilot spawn engineer --session <provider-session-id>
-hyprpilot spawn engineer --restore --all
 hyprpilot spawn engineer -- --debug
+hyprpilot spawn codex-profile -- resume <provider-session-id>   # provider-native args
 ```
 
-Omitting `<profile>` opens a terminal picker over configured profiles first. `--cwd <dir>` is a generic spawn override: the provider process starts in that directory, and restore mode uses the same directory as its filter. When `--cwd` is omitted, direct spawn uses the current shell directory.
-
-Restore mode uses the provider's own sessions: `hyprpilot spawn --restore` picks a profile, then opens the restore picker for that profile. By default the restore picker only shows sessions for the spawn cwd; pass `--all` to see every cwd. `--session <id>` skips the session picker and resumes that provider session directly after profile selection. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
+Omitting `<profile>` opens a terminal picker over configured profiles first. `--cwd <dir>` is a generic spawn override: the provider process starts in that directory. When `--cwd` is omitted, direct spawn uses the current shell directory. Hyprpilot does not own provider-session restore for direct spawn; use the provider TUI's native `/resume` flow, or pass provider-native CLI args after `--` when the vendor CLI supports them.
 
 Codex has no generic `mode` flag. For Codex profiles, `mode` must be either an approval policy (`untrusted`, `on-request`, `never`, deprecated `on-failure`) or a sandbox mode (`read-only`, `workspace-write`, `danger-full-access`). Direct spawn maps those to `--ask-for-approval` and `--sandbox` respectively; unsupported values fail before handing the terminal to `codex`.
 
@@ -66,7 +60,7 @@ hyprpilot profiles
 hyprpilot profiles --json
 ```
 
-The command only reads local config and applies root `[[patches]]` for the displayed summaries. It does not contact the daemon.
+The command only reads local config and applies root `[[patches]]` for the displayed summaries. It does not contact the daemon. It shows the profile id, agent, model, and default marker; cwd is only shown in the spawn picker where it reflects the current spawn parameters.
 
 ## ctl
 
