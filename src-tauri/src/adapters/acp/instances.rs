@@ -1134,10 +1134,16 @@ impl AcpAdapter {
             None => None,
         };
 
-        let (cmd_tx, ephemeral) = if let Some(tx) = live_tx {
-            (tx, None)
+        let (cmd_tx, ephemeral, list_cwd) = if let Some(tx) = live_tx {
+            (tx, None, cwd)
         } else {
-            let (resolved, _profile) = self.resolve(agent_id, profile_id)?;
+            let (mut resolved, _profile) = self.resolve(agent_id, profile_id)?;
+            // Keep the throwaway ACP process cwd and the ACP list filter in sync:
+            // explicit request cwd wins, otherwise the patched profile cwd applies.
+            let list_cwd = effective_list_sessions_cwd(cwd, &resolved);
+            if let Some(c) = list_cwd.clone() {
+                resolved.agent.cwd = Some(c);
+            }
             let ephemeral_key = key.unwrap_or_else(InstanceKey::new_v4);
             let profile_id_for_instance = resolved.profile_id.clone();
             // Ephemeral list-only actors must NOT publish onto the
@@ -1170,12 +1176,15 @@ impl AcpAdapter {
                 bootstrap_ack: None,
             });
             let tx = instance.cmd_tx.clone();
-            (tx, Some(instance))
+            (tx, Some(instance), list_cwd)
         };
 
         let (reply_tx, reply_rx) = oneshot::channel();
         cmd_tx
-            .send(InstanceCommand::ListSessions { cwd, reply: reply_tx })
+            .send(InstanceCommand::ListSessions {
+                cwd: list_cwd,
+                reply: reply_tx,
+            })
             .map_err(|_| {
                 let summary = ephemeral
                     .as_ref()
@@ -2336,6 +2345,10 @@ fn list_actor_closed_summary(handle: &AcpInstance) -> String {
     }
 }
 
+fn effective_list_sessions_cwd(cwd: Option<PathBuf>, resolved: &ResolvedInstance) -> Option<PathBuf> {
+    cwd.or_else(|| resolved.agent.cwd.clone())
+}
+
 fn map_adapter_error_to_rpc(err: AdapterError) -> RpcError {
     match err {
         AdapterError::InvalidRequest(m) => RpcError::invalid_params(m),
@@ -2508,6 +2521,39 @@ system_prompt = [{{ file = "{}" }}]
         assert_eq!(resolved.profile_id.as_deref(), Some("ask"));
         assert_eq!(resolved.model.as_deref(), Some("claude-sonnet-4-5"));
         assert!(resolved.system_prompt_for(&Bootstrap::Fresh).is_none());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_cwd_prefers_request_then_profile() {
+        let cfg: Config = toml::from_str(
+            r#"
+[profile]
+default = "work"
+
+[[agents]]
+id = "claude-code"
+provider = "acp-claude-code"
+command = "/bin/false"
+cwd = "/agent/cwd"
+
+[[profiles]]
+id = "work"
+agent = "claude-code"
+cwd = "/profile/cwd"
+"#,
+        )
+        .expect("fixture parses");
+        let adapter = AcpAdapter::new(cfg, Arc::new(StatusBroadcast::new(true)));
+        let (resolved, _) = adapter.resolve(None, None).expect("default profile resolves");
+
+        assert_eq!(
+            effective_list_sessions_cwd(None, &resolved),
+            Some(PathBuf::from("/profile/cwd"))
+        );
+        assert_eq!(
+            effective_list_sessions_cwd(Some(PathBuf::from("/request/cwd")), &resolved),
+            Some(PathBuf::from("/request/cwd"))
+        );
     }
 
     fn skills_fixture_config(skills_dir: &std::path::Path) -> Config {
