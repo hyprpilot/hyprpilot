@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/hyprpilot/hyprpilot/compare/v2.5.0...v2.5.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **cli:** remove direct spawn restore flow ([#158](https://github.com/hyprpilot/hyprpilot/issues/158)) ([e3b831c](https://github.com/hyprpilot/hyprpilot/commit/e3b831ce59de091ebec4c540af42243ecf31d9eb))
+
 ## [2.5.0](https://github.com/hyprpilot/hyprpilot/compare/v2.4.1...v2.5.0) (2026-06-12)
 
 
