@@ -1,8 +1,7 @@
 mod picker;
 mod providers;
-mod sessions;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -11,7 +10,6 @@ use serde_json::Value;
 use crate::adapters::acp::instances::{
     build_mcp_registry_with, build_skills_registry_with, resolve_effective_profile, resolve_into_instance_and_profile,
 };
-use crate::adapters::Bootstrap;
 use crate::adapters::ProfileSummary;
 use crate::config::Config;
 
@@ -22,9 +20,6 @@ pub(crate) struct SpawnRequest {
     pub cwd: Option<PathBuf>,
     pub mode: Option<String>,
     pub model: Option<String>,
-    pub restore: bool,
-    pub session_id: Option<String>,
-    pub all: bool,
     pub config_patches: Vec<Value>,
     pub provider_args: Vec<String>,
 }
@@ -36,16 +31,13 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
         cwd,
         mode,
         model,
-        restore,
-        session_id,
-        all,
         config_patches,
         provider_args,
     } = request;
 
     let profile_id = match profile_id {
         Some(id) => id,
-        None => picker::pick_profile(list_profiles(&cfg))?.id,
+        None => picker::pick_profile(list_profiles(&cfg, cwd.as_deref(), &config_patches))?.id,
     };
     let (mut resolved, profile) =
         resolve_into_instance_and_profile(&cfg, agent_id.as_deref(), Some(profile_id.as_str()), &config_patches)
@@ -61,48 +53,90 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
         resolved.mode = mode;
     }
 
-    let session_id = match session_id {
-        Some(id) => Some(id),
-        None if restore => {
-            let sessions = sessions::list_restorable_sessions(&resolved, all)?;
-            Some(picker::pick_session(sessions)?.id)
-        }
-        None => None,
-    };
-    let bootstrap = session_id
-        .as_ref()
-        .map_or(Bootstrap::Fresh, |id| Bootstrap::Resume(id.clone()));
-    let system_prompt = resolved.system_prompt_for(&bootstrap);
+    let system_prompt = resolved.system_prompt_for(&crate::adapters::Bootstrap::Fresh);
 
     let skills = build_skills_registry_with(&profile);
     let mcps = build_mcp_registry_with(&profile, Some(&skills));
     let mcp_defs = mcps.as_ref().map_or_else(Vec::new, |registry| registry.list());
 
-    let command = providers::build_command(
-        &resolved,
-        &bootstrap,
-        system_prompt.as_deref(),
-        &mcp_defs,
-        provider_args,
-    )?;
+    let command = providers::build_command(&resolved, system_prompt.as_deref(), &mcp_defs, provider_args)?;
 
     providers::exec(command)
 }
 
-pub(crate) fn list_profiles(cfg: &Config) -> Vec<ProfileSummary> {
+pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[Value]) -> Vec<ProfileSummary> {
     let default_profile = cfg.profile.default.as_deref();
     cfg.profiles
         .iter()
         .map(|profile| {
-            let resolved =
-                resolve_effective_profile(cfg, Some(profile.id.as_str()), &[]).unwrap_or_else(|_| profile.clone());
+            let resolved = resolve_effective_profile(cfg, Some(profile.id.as_str()), config_patches)
+                .unwrap_or_else(|_| profile.clone());
             ProfileSummary {
                 id: resolved.id.clone(),
                 agent: resolved.agent.clone(),
                 model: resolved.model.clone(),
-                cwd: resolved.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+                cwd: cwd
+                    .map(|cwd| cwd.display().to_string())
+                    .or_else(|| resolved.cwd.as_ref().map(|cwd| cwd.display().to_string())),
                 is_default: default_profile == Some(profile.id.as_str()),
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use super::*;
+    use crate::config::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
+
+    fn cfg_with_profile_cwd() -> Config {
+        Config {
+            agents: AgentsConfig {
+                agents: vec![AgentConfig {
+                    id: "agent".into(),
+                    provider: AgentProvider::AcpClaudeCode,
+                    model: None,
+                    effort: None,
+                    command: "claude".into(),
+                    args: Vec::new(),
+                    spawn: None,
+                    cwd: None,
+                    env: BTreeMap::new(),
+                }],
+            },
+            profile: ProfileDefaults {
+                default: Some("engineer".into()),
+            },
+            profiles: vec![ProfileConfig {
+                id: "engineer".into(),
+                agent: "agent".into(),
+                model: None,
+                effort: None,
+                system_prompt: None,
+                mcps: None,
+                mcp: None,
+                mode: None,
+                cwd: Some(PathBuf::from("/configured")),
+                env: BTreeMap::new(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn profile_listing_prefers_effective_launch_cwd() {
+        let profiles = list_profiles(&cfg_with_profile_cwd(), Some(Path::new("/launch")), &[]);
+
+        assert_eq!(profiles[0].cwd.as_deref(), Some("/launch"));
+    }
+
+    #[test]
+    fn profile_listing_falls_back_to_configured_cwd_without_launch_override() {
+        let profiles = list_profiles(&cfg_with_profile_cwd(), None, &[]);
+
+        assert_eq!(profiles[0].cwd.as_deref(), Some("/configured"));
+    }
 }

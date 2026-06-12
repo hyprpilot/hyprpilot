@@ -16,7 +16,7 @@ pub struct SpawnArgs {
     /// Override the profile's agent entry.
     #[arg(long = "agent")]
     agent_id: Option<String>,
-    /// Working directory for the provider process and restore picker filter. Defaults to the current directory.
+    /// Working directory for the provider process. Defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
     /// Provider-specific mode override mapped to the direct CLI where supported.
@@ -25,15 +25,6 @@ pub struct SpawnArgs {
     /// Model override mapped to the direct CLI where supported.
     #[arg(long)]
     model: Option<String>,
-    /// Pick and resume a provider-owned session instead of starting fresh.
-    #[arg(long, default_value_t = false)]
-    restore: bool,
-    /// Resume this provider-owned session id directly. Implies --restore and skips the picker.
-    #[arg(long = "session", value_name = "ID")]
-    session_id: Option<String>,
-    /// Show sessions from every cwd in the restore picker.
-    #[arg(long, default_value_t = false)]
-    all: bool,
     #[command(flatten)]
     with_config: WithConfigArgs,
     /// Extra arguments forwarded verbatim to the spawned provider CLI.
@@ -53,9 +44,6 @@ pub fn run(cfg: Config, args: SpawnArgs) -> Result<ExitCode> {
             cwd,
             mode: args.mode,
             model: args.model,
-            restore: args.restore,
-            session_id: args.session_id,
-            all: args.all,
             config_patches,
             provider_args: args.provider_args,
         },
