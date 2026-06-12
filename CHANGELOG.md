@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/hyprpilot/hyprpilot/compare/v2.4.1...v2.5.0) (2026-06-12)
+
+
+### Features
+
+* **cli:** add direct provider spawn ([#156](https://github.com/hyprpilot/hyprpilot/issues/156)) ([2bd0c25](https://github.com/hyprpilot/hyprpilot/commit/2bd0c25a3a58717f90cdca767c5894cf4765fdd0))
+
 ## [2.4.1](https://github.com/hyprpilot/hyprpilot/compare/v2.4.0...v2.4.1) (2026-06-12)
 
 
