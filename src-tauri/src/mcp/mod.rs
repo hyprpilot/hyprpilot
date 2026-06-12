@@ -187,6 +187,13 @@ pub fn project_to_acp(def: &MCPDefinition) -> Option<agent_client_protocol::sche
     project_to_acp_with_lookup(def, &mut |name| std::env::var(name).ok())
 }
 
+/// Return the raw server entry after applying the same `~` and
+/// environment-variable expansion used by ACP projection.
+#[must_use]
+pub fn expanded_raw(def: &MCPDefinition) -> Value {
+    expand_raw_strings_with(def, &def.raw, &mut |name| std::env::var(name).ok())
+}
+
 fn project_to_acp_with_lookup<F>(
     def: &MCPDefinition,
     lookup: &mut F,

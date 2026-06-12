@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use crate::adapters::profile::ResolvedInstance;
 use crate::adapters::Bootstrap;
 use crate::config::{AgentProvider, AgentSpawnConfig};
-use crate::mcp::{project_to_acp, MCPDefinition};
+use crate::mcp::{expanded_raw, project_to_acp, MCPDefinition};
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
@@ -370,7 +370,7 @@ fn has_codex_mode_override(args: &[String]) -> bool {
 fn claude_mcp_config(defs: &[MCPDefinition]) -> Result<String> {
     let mut servers = serde_json::Map::new();
     for def in defs {
-        servers.insert(def.name.clone(), def.raw.clone());
+        servers.insert(def.name.clone(), expanded_raw(def));
     }
     serde_json::to_string(&serde_json::json!({ "mcpServers": servers })).context("serialize claude MCP config")
 }
@@ -626,6 +626,19 @@ mod tests {
         }
     }
 
+    fn mcp_def_with_home_env() -> MCPDefinition {
+        MCPDefinition {
+            name: "shell-env".into(),
+            raw: json!({
+                "command": "${HOME}/bin/mcp",
+                "args": ["--state", "${HOME}/state"],
+                "env": { "TOKEN_FILE": "${HOME}/token" },
+            }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: "<test>".into(),
+        }
+    }
+
     #[test]
     fn claude_provider_args_suppress_generated_model() {
         let command = build_command(
@@ -638,6 +651,32 @@ mod tests {
         .unwrap();
 
         assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--model").count(), 1);
+    }
+
+    #[test]
+    fn claude_mcp_config_uses_expanded_mcp_entries() {
+        let home = std::env::var("HOME").expect("HOME should be present in test env");
+        let command = build_command(
+            &resolved(AgentProvider::AcpClaudeCode),
+            &Bootstrap::Fresh,
+            None,
+            &[mcp_def_with_home_env()],
+            Vec::new(),
+        )
+        .unwrap();
+        let config = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--mcp-config").then_some(&w[1]))
+            .expect("claude mcp config injected");
+        let parsed: serde_json::Value = serde_json::from_str(config).unwrap();
+
+        assert_eq!(parsed["mcpServers"]["shell-env"]["command"], format!("{home}/bin/mcp"));
+        assert_eq!(parsed["mcpServers"]["shell-env"]["args"][1], format!("{home}/state"));
+        assert_eq!(
+            parsed["mcpServers"]["shell-env"]["env"]["TOKEN_FILE"],
+            format!("{home}/token")
+        );
     }
 
     #[test]

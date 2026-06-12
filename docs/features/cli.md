@@ -33,6 +33,8 @@ Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running 
 
 `hyprpilot spawn` resolves a configured profile, projects its model / mode / effort / system prompt / MCPs onto the vendor CLI where supported, then hands the terminal over to the provider process. It does not talk to the daemon, create an ACP instance, or persist any Hyprpilot-side session state.
 
+The spawned provider inherits your shell environment; `[agents.env]` overlays only the configured keys. Hyprpilot also resolves the profile's MCP catalog before launch, including root/profile patches and the auto-injected `hyprpilot` MCP server when enabled. Standard MCP `command`, `args`, `env`, and `headers` strings expand `~` and environment variables before being projected into the provider-specific CLI config.
+
 ```sh
 hyprpilot spawn
 hyprpilot spawn engineer
