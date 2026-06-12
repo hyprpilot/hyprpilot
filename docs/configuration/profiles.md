@@ -31,6 +31,7 @@ mcps = [
 Spawn it from the palette: `Ctrl+K → profiles → engineer`. Or explicitly from the CLI:
 
 ```sh
+hyprpilot profiles
 hyprpilot ctl prompts send --profile engineer "show me the failing tests"
 hyprpilot spawn engineer
 ```

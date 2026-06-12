@@ -7,6 +7,7 @@ mod direct_spawn;
 mod logging;
 mod mcp;
 mod paths;
+mod profiles;
 mod remote;
 mod rpc;
 mod skills;
@@ -61,6 +62,9 @@ enum Command {
 
     /// Spawn the resolved profile directly in the provider's native TUI.
     Spawn(direct_spawn::SpawnArgs),
+
+    /// List configured session profiles without contacting the daemon.
+    Profiles(profiles::ProfilesArgs),
 }
 
 fn main() -> Result<ExitCode> {
@@ -88,6 +92,7 @@ fn main() -> Result<ExitCode> {
         Some(Command::Daemon(args)) => daemon::run(cfg, args).map(|()| ExitCode::SUCCESS),
         Some(Command::Ctl(args)) => ctl::run(cfg, args),
         Some(Command::Spawn(args)) => direct_spawn::run(cfg, args),
+        Some(Command::Profiles(args)) => profiles::run(cfg, args),
         Some(Command::Mcp(args)) => {
             // The MCP sidecar owns stdin/stdout for its protocol;
             // synchronous main + tokio runtime is the path daemon

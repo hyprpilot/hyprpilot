@@ -11,6 +11,7 @@ Hyprpilot is one binary doing two jobs. Pick the role with a subcommand:
 | --- | --- |
 | `hyprpilot daemon` | Long-running overlay process. Hosts the webview, manages instances, owns the unix socket. |
 | `hyprpilot spawn …` | Short-lived direct provider launch. Resolves a profile and execs the native Claude / Codex / opencode TUI without the daemon. |
+| `hyprpilot profiles` | Short-lived config reader. Lists configured session profiles without contacting the daemon. |
 | `hyprpilot ctl …` | Short-lived CLI client. Sends commands to a running daemon and prints the result. |
 
 Running `hyprpilot` (no subcommand) is shorthand for `hyprpilot daemon`. A second invocation against a running daemon pops the overlay forward instead of starting a new one.
@@ -43,6 +44,17 @@ hyprpilot spawn engineer -- --debug
 ```
 
 Restore mode uses the provider's own sessions. By default the picker only shows sessions for the resolved working directory; pass `--all` to see every cwd. `--session <id>` skips the picker and resumes that provider session directly. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
+
+## Profiles
+
+Use `hyprpilot profiles` when you need to know which profile ids are available for `hyprpilot spawn <profile>` or `ctl --profile <profile>`:
+
+```sh
+hyprpilot profiles
+hyprpilot profiles --json
+```
+
+The command only reads local config and applies root `[[patches]]` for the displayed summaries. It does not contact the daemon.
 
 ## ctl
 

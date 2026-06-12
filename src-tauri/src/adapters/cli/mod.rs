@@ -9,9 +9,10 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::adapters::acp::instances::{
-    build_mcp_registry_with, build_skills_registry_with, resolve_into_instance_and_profile,
+    build_mcp_registry_with, build_skills_registry_with, resolve_effective_profile, resolve_into_instance_and_profile,
 };
 use crate::adapters::Bootstrap;
+use crate::adapters::ProfileSummary;
 use crate::config::Config;
 
 #[derive(Debug)]
@@ -82,4 +83,22 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     )?;
 
     providers::exec(command)
+}
+
+pub(crate) fn list_profiles(cfg: &Config) -> Vec<ProfileSummary> {
+    let default_profile = cfg.profile.default.as_deref();
+    cfg.profiles
+        .iter()
+        .map(|profile| {
+            let resolved =
+                resolve_effective_profile(cfg, Some(profile.id.as_str()), &[]).unwrap_or_else(|_| profile.clone());
+            ProfileSummary {
+                id: resolved.id.clone(),
+                agent: resolved.agent.clone(),
+                model: resolved.model.clone(),
+                cwd: resolved.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+                is_default: default_profile == Some(profile.id.as_str()),
+            }
+        })
+        .collect()
 }
