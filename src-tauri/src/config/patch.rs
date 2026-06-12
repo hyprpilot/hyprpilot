@@ -217,20 +217,46 @@ fn merge_patches(base: Value, patches: Vec<Value>) -> Value {
     patches.into_iter().fold(base, merge_values)
 }
 
+/// Context available to a patch `$match` directive.
+#[derive(Debug, Clone, Copy)]
+pub struct PatchMatchContext<'a> {
+    pub profile_id: &'a str,
+    /// `true` when resolving a profile for `hyprpilot spawn`.
+    pub spawn: bool,
+}
+
+impl<'a> PatchMatchContext<'a> {
+    pub const fn new(profile_id: &'a str) -> Self {
+        Self {
+            profile_id,
+            spawn: false,
+        }
+    }
+
+    pub const fn for_spawn(profile_id: &'a str) -> Self {
+        Self {
+            profile_id,
+            spawn: true,
+        }
+    }
+}
+
 /// Fold profile-shaped patches into a resolved profile value,
-/// filtered by each patch's optional `$match.profile` glob.
+/// filtered by each patch's optional `$match` fields.
 ///
 /// Each patch is an object whose body is a partial `ProfileConfig`
 /// shape. An optional `$match: { profile: "<glob>" }` sibling at the
 /// top of the patch object filters which profiles the patch applies
-/// to — the directive is stripped before merging so it never lands
-/// on the profile shape itself. Unset `$match` (or missing `profile`
-/// inside it) means "applies to every profile".
+/// to. `$match.spawn = true` filters to direct `hyprpilot spawn`
+/// resolution; `$match.spawn = false` filters to daemon/ACP
+/// resolution. The directive is stripped before merging so it never
+/// lands on the profile shape itself. Unset `$match` fields mean
+/// "applies to every matching context".
 ///
 /// Non-object patch values silently skip — the caller is expected to
 /// have validated the input shape at config-load time (garde +
 /// serde), but defensive skipping keeps the helper total.
-pub fn apply_profile_patches(profile: Value, patches: &[Value], profile_id: &str) -> Value {
+pub fn apply_profile_patches_with_context(profile: Value, patches: &[Value], ctx: PatchMatchContext<'_>) -> Value {
     patches.iter().cloned().fold(profile, |acc, patch_value| {
         let Value::Object(mut patch_obj) = patch_value else {
             return acc;
@@ -238,7 +264,7 @@ pub fn apply_profile_patches(profile: Value, patches: &[Value], profile_id: &str
 
         // Strip the optional `$match` directive before merging.
         if let Some(match_value) = patch_obj.remove("$match") {
-            if !match_matches_profile(&match_value, profile_id) {
+            if !match_matches_context(&match_value, ctx) {
                 return acc;
             }
         }
@@ -247,27 +273,47 @@ pub fn apply_profile_patches(profile: Value, patches: &[Value], profile_id: &str
     })
 }
 
+#[cfg(test)]
+fn apply_profile_patches(profile: Value, patches: &[Value], profile_id: &str) -> Value {
+    apply_profile_patches_with_context(profile, patches, PatchMatchContext::new(profile_id))
+}
+
 /// Backwards-readable alias for root `[[patches]]` call sites.
-pub fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_id: &str) -> Value {
+#[cfg(test)]
+fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_id: &str) -> Value {
     apply_profile_patches(profile, patches, profile_id)
 }
 
-/// `true` when `match_value` is `null` / absent-but-defaulted, OR its
-/// `profile` field is a glob that matches `profile_id`. Anything that
-/// fails to parse falls back to `true` so a malformed directive
-/// doesn't silently swallow patches — validation surfaces shape
-/// errors at config-load via garde.
-fn match_matches_profile(match_value: &Value, profile_id: &str) -> bool {
+pub fn apply_root_patches_to_profile_with_context(
+    profile: Value,
+    patches: &[Value],
+    ctx: PatchMatchContext<'_>,
+) -> Value {
+    apply_profile_patches_with_context(profile, patches, ctx)
+}
+
+/// `true` when every present `$match` field matches `ctx`. Absent
+/// fields match every context; present-but-malformed fields fail
+/// closed so a typo cannot broaden a scoped patch.
+fn match_matches_context(match_value: &Value, ctx: PatchMatchContext<'_>) -> bool {
     let Some(obj) = match_value.as_object() else {
-        return true;
+        return false;
     };
-    let Some(profile_glob) = obj.get("profile").and_then(|v| v.as_str()) else {
-        return true;
+    let profile_matches = match obj.get("profile") {
+        None => true,
+        Some(Value::String(profile_glob)) => globset::Glob::new(profile_glob)
+            .ok()
+            .map(|g| g.compile_matcher())
+            .is_some_and(|m| m.is_match(ctx.profile_id)),
+        Some(_) => false,
     };
-    globset::Glob::new(profile_glob)
-        .ok()
-        .map(|g| g.compile_matcher())
-        .is_some_and(|m| m.is_match(profile_id))
+    let spawn_matches = match obj.get("spawn") {
+        None => true,
+        Some(Value::Bool(expected)) => *expected == ctx.spawn,
+        Some(_) => false,
+    };
+
+    profile_matches && spawn_matches
 }
 
 #[cfg(test)]
@@ -472,6 +518,95 @@ mod tests {
             apply_root_patches_to_profile(profile, &patches, "work/claude/opus"),
             json!({ "id": "work/claude/opus", "agent": "claude-code" }),
             "personal/* glob must not match work/* profile"
+        );
+    }
+
+    #[test]
+    fn root_patch_with_spawn_match_applies_only_to_spawn_context() {
+        let profile = json!({
+            "id": "work/claude/opus",
+            "agent": "claude-code",
+            "env": { "SENSITIVE_TOKEN": "redacted" }
+        });
+        let patches = vec![json!({
+            "$match": { "profile": "work/*", "spawn": true },
+            "env": { "$patch": "replace" }
+        })];
+
+        let daemon = apply_root_patches_to_profile_with_context(
+            profile.clone(),
+            &patches,
+            PatchMatchContext::new("work/claude/opus"),
+        );
+        assert_eq!(daemon, profile);
+
+        let spawn = apply_root_patches_to_profile_with_context(
+            profile,
+            &patches,
+            PatchMatchContext::for_spawn("work/claude/opus"),
+        );
+        assert_eq!(
+            spawn,
+            json!({
+                "id": "work/claude/opus",
+                "agent": "claude-code",
+                "env": {}
+            })
+        );
+    }
+
+    #[test]
+    fn root_patch_with_spawn_false_skips_direct_spawn_context() {
+        let profile = json!({ "id": "work/claude/opus", "agent": "claude-code" });
+        let patches = vec![json!({
+            "$match": { "spawn": false },
+            "mode": "plan"
+        })];
+
+        let spawn = apply_root_patches_to_profile_with_context(
+            profile.clone(),
+            &patches,
+            PatchMatchContext::for_spawn("work/claude/opus"),
+        );
+        assert_eq!(spawn, profile);
+
+        let daemon =
+            apply_root_patches_to_profile_with_context(profile, &patches, PatchMatchContext::new("work/claude/opus"));
+        assert_eq!(
+            daemon,
+            json!({ "id": "work/claude/opus", "agent": "claude-code", "mode": "plan" })
+        );
+    }
+
+    #[test]
+    fn root_patch_with_malformed_match_skips() {
+        let profile = json!({ "id": "work/claude/opus", "agent": "claude-code" });
+        let patches = vec![
+            json!({
+                "$match": "not-an-object",
+                "mode": "wrong"
+            }),
+            json!({
+                "$match": { "profile": "work/[" },
+                "mode": "bad-glob"
+            }),
+            json!({
+                "$match": { "spawn": "true" },
+                "mode": "string-bool"
+            }),
+            json!({
+                "$match": { "spawn": 1 },
+                "mode": "number-bool"
+            }),
+        ];
+
+        assert_eq!(
+            apply_root_patches_to_profile_with_context(
+                profile.clone(),
+                &patches,
+                PatchMatchContext::for_spawn("work/claude/opus"),
+            ),
+            profile
         );
     }
 

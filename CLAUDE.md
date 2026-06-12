@@ -238,10 +238,13 @@ else config.X" cascade was three separate code paths; patches
 replace that with one mechanism shared with `--with-config`.
 
 Each patch is an object whose body is a partial `ProfileConfig`
-shape. An optional `$match: { profile: "<glob>" }` sibling filters
-which profiles the patch applies to — stripped before merging so it
-never lands on the profile shape. Unset `$match` = applies to every
-profile. Patches fold left-to-right via
+shape. An optional `$match` sibling filters where the patch applies
+before being stripped so it never lands on the profile shape:
+`$match.profile = "<glob>"` filters by profile id, `$match.spawn =
+true` applies only to direct `hyprpilot spawn`, and
+`$match.spawn = false` applies only to daemon/ACP resolution. Unset
+`$match` fields apply to every matching context. Patches fold
+left-to-right via
 `config::patch::merge_values` (same strategic-merge engine
 `--with-config` uses — object-field merge, `$patch: replace`,
 keyed-array merge by id, primitive-array append+dedupe).
@@ -269,6 +272,12 @@ ignore = ["*-kilic", "*-laravel", "aws-docs"]
 [[patches.mcps]]
 file = "~/.config/nvim/utils/mcphub/servers.json"
 ignore = ["*-kilic", "gitlab", "playwright"]
+
+# Direct-spawn-only tweak — daemon/ACP keeps the profile env.
+[[patches]]
+"$match" = { profile = "work/claude/*", spawn = true }
+[patches.env]
+"$patch" = "replace"
 ```
 
 Resolution order at submit time (every spawn flows through one
@@ -283,9 +292,11 @@ helper, `adapters::acp::instances::resolve_effective_profile`, so
    `[[profiles]]` list at boot, so a captain's setup mistake
    surfaces at startup rather than per spawn.
 2. Apply each root `[[patches]]` entry in declaration order,
-   filtered by its `$match.profile` glob if present.
-3. Apply each `--with-config` patch in declaration order (no
-   `$match` — those are per-invocation overrides).
+   filtered by its `$match.profile` glob and `$match.spawn` boolean
+   if present. `resolve_effective_profile` uses `spawn = false`;
+   `resolve_effective_profile_for_spawn` uses `spawn = true`.
+3. Apply each `--with-config` patch in declaration order with the
+   same `$match` context as the caller.
 4. Deserialize the resulting `Value` back into `ProfileConfig` +
    re-run garde validation.
 
