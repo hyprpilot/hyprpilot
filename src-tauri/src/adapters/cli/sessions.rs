@@ -28,7 +28,14 @@ impl fmt::Display for RestoreSession {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<unknown cwd>".into());
         let title = sanitize_title(&self.title);
-        write!(f, "{}  {}  {}", short_id(&self.id), title, cwd)
+        write!(
+            f,
+            "{}  {}  {}  {}",
+            format_updated_at(self.updated_at_ms),
+            short_id(&self.id),
+            title,
+            cwd
+        )
     }
 }
 
@@ -54,9 +61,21 @@ pub(super) fn list_restorable_sessions(resolved: &ResolvedInstance, all: bool) -
             });
         }
     }
-    sessions.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms).then_with(|| a.id.cmp(&b.id)));
+    sort_by_updated_at(&mut sessions);
 
     Ok(sessions)
+}
+
+fn sort_by_updated_at(sessions: &mut [RestoreSession]) {
+    sessions.sort_by(|a, b| {
+        sort_timestamp_ms(b)
+            .cmp(&sort_timestamp_ms(a))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+fn sort_timestamp_ms(session: &RestoreSession) -> i64 {
+    session.updated_at_ms.map(normalize_epoch_millis).unwrap_or(i64::MIN)
 }
 
 fn list_claude_sessions() -> Result<Vec<RestoreSession>> {
@@ -265,6 +284,38 @@ fn sanitize_title(title: &str) -> String {
     out
 }
 
+fn format_updated_at(raw: Option<i64>) -> String {
+    let Some(ms) = raw.map(normalize_epoch_millis) else {
+        return "unknown-time".into();
+    };
+    let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(ms.div_euclid(1000)) else {
+        return "unknown-time".into();
+    };
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
+}
+
+fn normalize_epoch_millis(raw: i64) -> i64 {
+    let abs = raw.checked_abs().unwrap_or(i64::MAX);
+    if abs >= 10_000_000_000_000_000 {
+        raw / 1_000_000
+    } else if abs >= 10_000_000_000_000 {
+        raw / 1_000
+    } else if abs < 10_000_000_000 {
+        raw.saturating_mul(1_000)
+    } else {
+        raw
+    }
+}
+
 fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
@@ -316,5 +367,61 @@ mod tests {
     #[test]
     fn cwd_compare_handles_relative_paths() {
         assert!(same_cwd(Path::new("."), &std::env::current_dir().unwrap()));
+    }
+
+    #[test]
+    fn display_starts_with_timestamp_then_id() {
+        let row = RestoreSession {
+            id: "abcdef123456".into(),
+            title: "session".into(),
+            cwd: Some(PathBuf::from("/tmp/work")),
+            updated_at_ms: Some(1_700_000_000),
+        }
+        .to_string();
+
+        assert!(row.starts_with("2023-11-14T22:13:20Z  abcdef12  session"));
+    }
+
+    #[test]
+    fn sort_places_newest_first_and_unknown_last() {
+        let mut sessions = vec![
+            RestoreSession {
+                id: "missing".into(),
+                title: String::new(),
+                cwd: None,
+                updated_at_ms: None,
+            },
+            RestoreSession {
+                id: "old".into(),
+                title: String::new(),
+                cwd: None,
+                updated_at_ms: Some(1_700_000_000_000),
+            },
+            RestoreSession {
+                id: "new".into(),
+                title: String::new(),
+                cwd: None,
+                updated_at_ms: Some(1_800_000_000),
+            },
+        ];
+
+        sort_by_updated_at(&mut sessions);
+
+        assert_eq!(
+            sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
+            ["new", "old", "missing"]
+        );
+    }
+
+    #[test]
+    fn timestamp_formatter_normalizes_epoch_units() {
+        assert_eq!(
+            format_updated_at(Some(1_700_000_000)),
+            format_updated_at(Some(1_700_000_000_000))
+        );
+        assert_eq!(
+            format_updated_at(Some(1_700_000_000_000_000)),
+            format_updated_at(Some(1_700_000_000_000))
+        );
     }
 }
