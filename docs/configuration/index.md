@@ -62,6 +62,19 @@ cwd = "~/code"           # default daemon working directory
 
 The `[[skills]]` and `[[mcps]]` array-of-tables also live at root — see [Profiles](./profiles).
 
+## Profile patches
+
+Root `[[patches]]` entries are partial profile overlays applied when a profile is resolved. Use `$match.profile` to target profile ids and `$match.spawn` to target the caller:
+
+```toml
+[[patches]]
+"$match" = { profile = "work/claude/*", spawn = true }
+[patches.env]
+"$patch" = "replace"
+```
+
+`spawn = true` applies only to `hyprpilot spawn`; `spawn = false` applies only to daemon/ACP sessions. Omitting `spawn` preserves the existing behavior and applies in both contexts.
+
 ## Validation
 
 Every section validates types and rejects unknown fields at boot — typos fail fast with an error naming the offending field. Cross-field references (e.g. `[[profiles]].agent` must reference a real `[[agents]].id`) are checked too.

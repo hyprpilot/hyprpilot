@@ -2144,10 +2144,11 @@ pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::
 ///      when neither `--profile <id>` nor `[profile] default`
 ///      addresses a real `[[profiles]]` entry).
 ///   2. Fold root `[[patches]]` from the captain's on-disk config,
-///      filtered by each patch's optional `$match.profile` glob.
+///      filtered by each patch's optional `$match.profile` glob and
+///      `$match.spawn` boolean.
 ///   3. Fold `external_patches` in declaration order (the
-///      `--with-config` per-invocation overrides). Empty slice
-///      is a no-op.
+///      `--with-config` per-invocation overrides) with the same
+///      match context. Empty slice is a no-op.
 ///   4. Deserialize back to `ProfileConfig` + re-run garde
 ///      validation against the post-merge shape.
 ///
@@ -2161,12 +2162,36 @@ pub(crate) fn resolve_effective_profile(
     profile_id: Option<&str>,
     external_patches: &[Value],
 ) -> Result<ProfileConfig, RpcError> {
+    resolve_effective_profile_with_context(cfg, profile_id, external_patches, false)
+}
+
+pub(crate) fn resolve_effective_profile_for_spawn(
+    cfg: &Config,
+    profile_id: Option<&str>,
+    external_patches: &[Value],
+) -> Result<ProfileConfig, RpcError> {
+    resolve_effective_profile_with_context(cfg, profile_id, external_patches, true)
+}
+
+fn resolve_effective_profile_with_context(
+    cfg: &Config,
+    profile_id: Option<&str>,
+    external_patches: &[Value],
+    spawn: bool,
+) -> Result<ProfileConfig, RpcError> {
     let base = base_profile_for_patches(cfg, profile_id)?;
     let base_value =
         serde_json::to_value(&base).map_err(|e| RpcError::internal_error(format!("profile serialize failed: {e}")))?;
+    let match_context = if spawn {
+        crate::config::patch::PatchMatchContext::for_spawn(&base.id)
+    } else {
+        crate::config::patch::PatchMatchContext::new(&base.id)
+    };
 
     let with_root = match cfg.patches.as_deref() {
-        Some(rp) if !rp.is_empty() => crate::config::patch::apply_root_patches_to_profile(base_value, rp, &base.id),
+        Some(rp) if !rp.is_empty() => {
+            crate::config::patch::apply_root_patches_to_profile_with_context(base_value, rp, match_context)
+        }
         _ => base_value,
     };
 
@@ -2178,7 +2203,7 @@ pub(crate) fn resolve_effective_profile(
         // including top-level `$match`. Strip/filter that directive
         // here before deserialising back into `ProfileConfig`; if it
         // leaks through serde reports `unknown field "$match"`.
-        crate::config::patch::apply_profile_patches(with_root, external_patches, &base.id)
+        crate::config::patch::apply_profile_patches_with_context(with_root, external_patches, match_context)
     };
 
     let patched: ProfileConfig = serde_json::from_value(merged)
@@ -2236,7 +2261,26 @@ pub(crate) fn resolve_into_instance_and_profile(
     profile_id: Option<&str>,
     external_patches: &[Value],
 ) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
-    let patched = resolve_effective_profile(cfg, profile_id, external_patches)?;
+    resolve_into_instance_and_profile_with_context(cfg, agent_id, profile_id, external_patches, false)
+}
+
+pub(crate) fn resolve_into_instance_and_profile_for_spawn(
+    cfg: &Config,
+    agent_id: Option<&str>,
+    profile_id: Option<&str>,
+    external_patches: &[Value],
+) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
+    resolve_into_instance_and_profile_with_context(cfg, agent_id, profile_id, external_patches, true)
+}
+
+fn resolve_into_instance_and_profile_with_context(
+    cfg: &Config,
+    agent_id: Option<&str>,
+    profile_id: Option<&str>,
+    external_patches: &[Value],
+    spawn: bool,
+) -> Result<(ResolvedInstance, ProfileConfig), RpcError> {
+    let patched = resolve_effective_profile_with_context(cfg, profile_id, external_patches, spawn)?;
     let mut resolved = ResolvedInstance::from_profile_explicit(&patched, cfg)
         .map_err(|e| RpcError::invalid_params(format!("{e:#}")))?;
 
@@ -2961,6 +3005,50 @@ agent = "base"
 
         assert_eq!(info.agent_id, "base");
         assert_eq!(info.mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn spawn_match_env_patch_is_direct_spawn_only() {
+        let cfg: Config = toml::from_str(
+            r#"
+[[patches]]
+"$match" = { profile = "work/claude/*", spawn = true }
+[patches.env]
+"$patch" = "replace"
+
+[[agents]]
+id = "claude"
+provider = "acp-claude-code"
+command = "/bin/false"
+
+[profile]
+default = "work/claude/opus"
+
+[[profiles]]
+id = "work/claude/opus"
+agent = "claude"
+[profiles.env]
+SENSITIVE_TOKEN = "redacted"
+"#,
+        )
+        .expect("parses");
+
+        let daemon_profile =
+            resolve_effective_profile(&cfg, Some("work/claude/opus"), &[]).expect("daemon profile resolves");
+        assert_eq!(
+            daemon_profile.env.get("SENSITIVE_TOKEN").map(String::as_str),
+            Some("redacted")
+        );
+
+        let spawn_profile =
+            resolve_effective_profile_for_spawn(&cfg, Some("work/claude/opus"), &[]).expect("spawn profile resolves");
+        assert!(!spawn_profile.env.contains_key("SENSITIVE_TOKEN"));
+
+        let (resolved, effective_profile) =
+            resolve_into_instance_and_profile_for_spawn(&cfg, None, Some("work/claude/opus"), &[])
+                .expect("spawn instance resolves");
+        assert!(!effective_profile.env.contains_key("SENSITIVE_TOKEN"));
+        assert!(!resolved.agent.env.contains_key("SENSITIVE_TOKEN"));
     }
 
     /// `--with-config` validation path — a patch that produces an

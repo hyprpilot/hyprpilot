@@ -105,10 +105,13 @@ pub struct Config {
     /// `$patch: replace` directive, keyed-array merge by id,
     /// primitive-array append+dedupe).
     ///
-    /// An optional `$match: { profile: "<glob>" }` sibling at the
-    /// top of each patch object filters which profiles the patch
-    /// applies to (stripped before merging so it never lands on the
-    /// profile shape). Unset `$match` = applies to every profile.
+    /// An optional `$match` sibling filters where the patch applies
+    /// before being stripped so it never lands on the profile shape.
+    /// `$match.profile = "<glob>"` filters by profile id.
+    /// `$match.spawn = true` applies only to direct `hyprpilot
+    /// spawn`; `$match.spawn = false` applies only to daemon/ACP
+    /// resolution. Unset `$match` fields apply to every matching
+    /// context.
     ///
     /// Replaces the older per-field "root fallback" mechanism
     /// (`Config.system_prompt`, `Config.mcps`, `Config.mcp` —

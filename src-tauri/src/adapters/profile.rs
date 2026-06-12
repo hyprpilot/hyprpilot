@@ -232,7 +232,11 @@ fn apply_root_patches(config: &Config, profile: ProfileConfig) -> Result<Profile
 
     let profile_id = profile.id.clone();
     let base = serde_json::to_value(&profile).context("apply_root_patches: profile serialize failed")?;
-    let merged = crate::config::patch::apply_root_patches_to_profile(base, patches, &profile_id);
+    let merged = crate::config::patch::apply_root_patches_to_profile_with_context(
+        base,
+        patches,
+        crate::config::patch::PatchMatchContext::new(&profile_id),
+    );
     let patched: ProfileConfig = serde_json::from_value(merged)
         .with_context(|| format!("apply_root_patches: profile '{profile_id}' invalid after patch merge"))?;
     garde::Validate::validate(&patched)

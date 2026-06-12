@@ -33,7 +33,7 @@ Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running 
 
 `hyprpilot spawn` resolves a configured profile, projects its model / mode / effort / system prompt / MCPs onto the vendor CLI where supported, then hands the terminal over to the provider process. It does not talk to the daemon, create an ACP instance, or persist any Hyprpilot-side session state.
 
-The spawned provider inherits your shell environment; `[agents.env]` overlays only the configured keys. Hyprpilot also resolves the profile's MCP catalog before launch, including root/profile patches and the auto-injected `hyprpilot` MCP server when enabled. Standard MCP `command`, `args`, `env`, and `headers` strings expand `~`, `$VAR`, `${VAR}`, and `${env:VAR}` before being projected into the provider-specific CLI config. For Codex remote MCP headers, Hyprpilot uses Codex's native `bearer_token_env_var`, `env_http_headers`, and `http_headers` config keys so header-auth servers can read tokens from the inherited environment instead of receiving unsupported `headers.*` entries.
+The spawned provider inherits your shell environment; `[agents.env]` overlays only the configured keys. Hyprpilot also resolves the profile's MCP catalog before launch, including root/profile patches and the auto-injected `hyprpilot` MCP server when enabled. Patches can use `$match.spawn = true` for direct-spawn-only profile overrides, or `$match.spawn = false` for daemon/ACP-only overrides. Standard MCP `command`, `args`, `env`, and `headers` strings expand `~`, `$VAR`, `${VAR}`, and `${env:VAR}` before being projected into the provider-specific CLI config. For Codex remote MCP headers, Hyprpilot uses Codex's native `bearer_token_env_var`, `env_http_headers`, and `http_headers` config keys so header-auth servers can read tokens from the inherited environment instead of receiving unsupported `headers.*` entries.
 
 Claude direct spawn also projects per-server `hyprpilot.autoAcceptTools` / `autoRejectTools` into native `--allowedTools` / `--disallowedTools` entries using Claude's `mcp__server__tool` naming. Codex and OpenCode currently expose only coarse approval-bypass controls in their local CLI help, so Hyprpilot does not map per-tool MCP auto-approval to those providers.
 
@@ -60,7 +60,7 @@ hyprpilot profiles
 hyprpilot profiles --json
 ```
 
-The command only reads local config and applies root `[[patches]]` for the displayed summaries. It does not contact the daemon. It shows the profile id, agent, model, and default marker; cwd is only shown in the spawn picker where it reflects the current spawn parameters.
+The command only reads local config and applies root `[[patches]]` for the displayed summaries using the daemon/ACP match context (`$match.spawn = false`). It does not contact the daemon. It shows the profile id, agent, model, and default marker; cwd is only shown in the spawn picker where it reflects the current spawn parameters.
 
 ## ctl
 
