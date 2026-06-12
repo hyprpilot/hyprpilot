@@ -33,6 +33,7 @@ Spawn it from the palette: `Ctrl+K → profiles → engineer`. Or explicitly fro
 ```sh
 hyprpilot profiles
 hyprpilot ctl prompts send --profile engineer "show me the failing tests"
+hyprpilot spawn              # pick a profile interactively
 hyprpilot spawn engineer
 ```
 

@@ -34,16 +34,18 @@ Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running 
 `hyprpilot spawn` resolves a configured profile, projects its model / mode / effort / system prompt / MCPs onto the vendor CLI where supported, then hands the terminal over to the provider process. It does not talk to the daemon, create an ACP instance, or persist any Hyprpilot-side session state.
 
 ```sh
+hyprpilot spawn
 hyprpilot spawn engineer
 hyprpilot spawn engineer --model claude-opus-4-5
 hyprpilot spawn engineer --mode plan
+hyprpilot spawn --restore
 hyprpilot spawn engineer --restore
 hyprpilot spawn engineer --session <provider-session-id>
 hyprpilot spawn engineer --restore --all
 hyprpilot spawn engineer -- --debug
 ```
 
-Restore mode uses the provider's own sessions. By default the picker only shows sessions for the resolved working directory; pass `--all` to see every cwd. `--session <id>` skips the picker and resumes that provider session directly. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
+Omitting `<profile>` opens a terminal picker over configured profiles first. Restore mode uses the provider's own sessions: `hyprpilot spawn --restore` picks a profile, then opens the restore picker for that profile. By default the restore picker only shows sessions for the resolved working directory; pass `--all` to see every cwd. `--session <id>` skips the session picker and resumes that provider session directly after profile selection. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
 
 ## Profiles
 

@@ -17,7 +17,7 @@ use crate::config::Config;
 
 #[derive(Debug)]
 pub(crate) struct SpawnRequest {
-    pub profile_id: String,
+    pub profile_id: Option<String>,
     pub agent_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub mode: Option<String>,
@@ -43,6 +43,10 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
         provider_args,
     } = request;
 
+    let profile_id = match profile_id {
+        Some(id) => id,
+        None => picker::pick_profile(list_profiles(&cfg))?.id,
+    };
     let (mut resolved, profile) =
         resolve_into_instance_and_profile(&cfg, agent_id.as_deref(), Some(profile_id.as_str()), &config_patches)
             .map_err(|err| anyhow::anyhow!(err.message))?;

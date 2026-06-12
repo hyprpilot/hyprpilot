@@ -10,9 +10,9 @@ use crate::ctl::with_config::WithConfigArgs;
 
 #[derive(Args, Debug)]
 pub struct SpawnArgs {
-    /// Session profile id to resolve and launch directly in the provider TUI.
+    /// Session profile id to resolve and launch directly in the provider TUI. Omit to pick interactively.
     #[arg(value_name = "PROFILE")]
-    profile_id: String,
+    profile_id: Option<String>,
     /// Override the profile's agent entry.
     #[arg(long = "agent")]
     agent_id: Option<String>,
