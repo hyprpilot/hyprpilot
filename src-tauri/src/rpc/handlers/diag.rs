@@ -120,6 +120,7 @@ mod tests {
             effort: None,
             command: "bunx".into(),
             args: Vec::new(),
+            spawn: None,
             env,
             cwd: None,
         });

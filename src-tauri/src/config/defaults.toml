@@ -256,17 +256,29 @@ provider = "acp-claude-code"
 command = "bunx"
 args = ["--bun", "-y", "@agentclientprotocol/claude-agent-acp@latest"]
 
+[agents.spawn]
+command = "claude"
+args = []
+
 [[agents]]
 id = "codex"
 provider = "acp-codex"
 command = "bunx"
 args = ["--bun", "-y", "@zed-industries/codex-acp@latest"]
 
+[agents.spawn]
+command = "codex"
+args = []
+
 [[agents]]
 id = "opencode"
 provider = "acp-opencode"
 command = "opencode"
 args = ["acp"]
+
+[agents.spawn]
+command = "opencode"
+args = []
 
 # `[[profiles]]` — captain-supplied. NOT seeded by defaults so a
 # fresh install presents a single source of truth for "which profiles

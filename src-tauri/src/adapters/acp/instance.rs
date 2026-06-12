@@ -6029,6 +6029,7 @@ mod tests {
                 provider: AgentProvider::AcpClaudeCode,
                 command: "/bin/false".into(),
                 args: Vec::new(),
+                spawn: None,
                 cwd: None,
                 env: Default::default(),
                 model: None,

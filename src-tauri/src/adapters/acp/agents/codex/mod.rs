@@ -184,6 +184,7 @@ mod tests {
             effort: None,
             command: "bunx".into(),
             args: vec!["--bun".into(), "@zed-industries/codex-acp".into()],
+            spawn: None,
             cwd: None,
             env: BTreeMap::new(),
         }

@@ -20,7 +20,7 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
+pub use agents::{AgentConfig, AgentProvider, AgentSpawnConfig, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
 pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
 pub use extensions::{McpFile, SkillEntry};
@@ -52,12 +52,12 @@ pub struct Config {
     pub logging: Logging,
     #[garde(dive)]
     pub ui: Ui,
-    /// `[[agents]]` + `[agent]` at TOML root, flattened here so
+    /// `[[agents]]` at TOML root, flattened here so
     /// `AgentsConfig` stays the single Rust-side unit.
     #[garde(dive)]
     #[serde(flatten)]
     pub agents: AgentsConfig,
-    /// `[profile]` — global profile-scope singleton (mirrors `[agent]`).
+    /// `[profile]` — global profile-scope singleton.
     /// `default` is the profile id used when `submit` doesn't carry
     /// one and the wire / palette doesn't pre-select.
     #[garde(dive)]

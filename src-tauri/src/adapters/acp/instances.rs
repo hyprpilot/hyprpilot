@@ -2051,7 +2051,7 @@ fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::config::Resol
 /// itself. Auto-inject is independent of user-declared `mcps` —
 /// `mcps = []` does not suppress the in-tree server (that's what
 /// `mcp.enabled = false` is for).
-fn build_mcp_registry_with(
+pub(crate) fn build_mcp_registry_with(
     profile: &ProfileConfig,
     skills: Option<&Arc<crate::skills::SkillsRegistry>>,
 ) -> Option<Arc<crate::mcp::MCPsRegistry>> {
@@ -2124,7 +2124,7 @@ fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::Resolved
 }
 
 /// Build the per-instance skills registry from the patched profile.
-fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
+pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
     let entries = effective_skills_with(profile);
     let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
     if let Err(err) = registry.reload() {
@@ -2230,7 +2230,7 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> Result<Pr
 /// Explicit `agent_id` wins over whatever agent the patched profile
 /// names — captain intent for "run THIS profile but on a different
 /// vendor binary".
-fn resolve_into_instance_and_profile(
+pub(crate) fn resolve_into_instance_and_profile(
     cfg: &Config,
     agent_id: Option<&str>,
     profile_id: Option<&str>,

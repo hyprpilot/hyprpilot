@@ -278,6 +278,7 @@ mod tests {
             effort: None,
             command: "/bin/false".into(),
             args: vec![],
+            spawn: None,
             cwd: None,
             env: Default::default(),
         }

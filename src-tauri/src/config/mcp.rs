@@ -2,7 +2,7 @@
 //! `hyprpilot` MCP server the daemon auto-injects into ACP bootstrap
 //! `mcp_servers`, and owns the **skills catalog** the server exposes.
 //!
-//! Singleton block mirroring the `[agent]` / `[[agents]]` pattern:
+//! Singleton block mirroring the config-wide singleton/list pattern:
 //! `[mcp]` is the global config for our in-tree MCP server; `[[mcps]]`
 //! is the captain-declared catalog of *external* MCP servers. Same
 //! TOML neighbourhood, distinct concerns.

@@ -31,7 +31,10 @@ mcps = [
 Spawn it from the palette: `Ctrl+K → profiles → engineer`. Or explicitly from the CLI:
 
 ```sh
+hyprpilot profiles
 hyprpilot ctl prompts send --profile engineer "show me the failing tests"
+hyprpilot spawn              # pick a profile interactively
+hyprpilot spawn engineer
 ```
 
 You can have multiple instances of the same profile running side-by-side — each gets its own UUID and its own session.
@@ -44,16 +47,13 @@ You can have multiple instances of the same profile running side-by-side — eac
 | `agent` | string | Which `[[agents]]` entry to spawn. |
 | `model` | string (optional) | Overrides the agent's default model for this profile. |
 | `cwd` | path (optional) | Where the agent operates. `~`, `${VAR}` expansion supported. |
-| `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. codex: approval modes. |
+| `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. Codex direct spawn maps approval policies (`untrusted`, `on-request`, `never`, deprecated `on-failure`) to `--ask-for-approval`, and sandbox modes (`read-only`, `workspace-write`, `danger-full-access`) to `--sandbox`. |
 | `system_prompt` | `{ file, inject? }[]` (optional) | Per-entry prompt files prepended to your first prompt. Each entry's `inject.on_create` / `inject.on_update` toggles which bootstrap paths it rides on. `[]` = no prompt. |
 | `mcps` | `{ file, ignore? }[]` (optional) | MCP catalog override for this profile. `[]` = no MCPs. |
 
 ## Picking the default
 
 ```toml
-[agent]
-default = "claude-code"      # which [[agents]] entry wins when nothing's specified
-
 [profile]
 default = "engineer"         # which [[profiles]] new instances pick by default
 ```
@@ -62,8 +62,9 @@ Resolution when you submit a prompt:
 
 1. The profile you picked from the palette (or `--profile <id>` from the CLI) wins.
 2. Otherwise `[profile] default`.
-3. Otherwise the first `[[profiles]]` matching `[agent] default`.
-4. Otherwise the first `[[agents]]` entry by itself.
+3. Otherwise spawn fails with a configuration error.
+
+`hyprpilot spawn` is a one-shot terminal launch rather than a daemon-managed default. Omit the profile id to pick one interactively. Direct spawn starts providers in the current shell directory by default; pass `--cwd <dir>` to launch somewhere else and to filter restore sessions to that directory.
 
 ## System prompts
 
@@ -100,6 +101,8 @@ system_prompt = [
 | `inject.on_update` | `false` | Whether the file rides when resuming or forking a persisted session. Default off because the source session already carries its own transcript context — re-injecting the prompt on top is usually redundant noise. |
 
 When at least one entry actually injects, the chat shows a `system prompt · <files>` chapter-break banner so you can see what rode along.
+
+Direct provider launches use the same gates: `hyprpilot spawn <profile>` injects `on_create` entries into a fresh provider session, while `hyprpilot spawn <profile> --restore` and `--session <id>` inject only entries with `on_update = true`.
 
 ## MCPs
 
@@ -162,6 +165,8 @@ Each server entry takes an optional `hyprpilot` block to short-circuit specific 
 ```
 
 Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`. Reject wins over accept when both match.
+
+The overlay daemon applies these globs itself when an ACP permission request arrives. Direct provider spawn has no Hyprpilot permission controller in the loop, so support depends on the native TUI: Claude receives the globs as `--allowedTools` / `--disallowedTools` MCP tool patterns, while Codex and OpenCode keep their normal provider-native approval behavior.
 
 ### Per-profile MCP override
 

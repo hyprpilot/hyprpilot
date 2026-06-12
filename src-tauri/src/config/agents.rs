@@ -1,4 +1,4 @@
-//! `[agent]` + `[[agents]]` + `[profile]` + `[[profiles]]`.
+//! `[[agents]]` + `[profile]` + `[[profiles]]`.
 //! Cross-field reference checks (`profile.agent` → agents,
 //! `[profile].default` → profiles) are wired into the garde walk at
 //! the `Config` level via higher-order `custom(...)` hooks.
@@ -66,12 +66,26 @@ pub struct AgentConfig {
     #[garde(skip)]
     #[serde(default)]
     pub args: Vec<String>,
+    /// Direct provider TUI command. Separate from `command` / `args`,
+    /// which are the ACP bridge command for overlay-managed sessions.
+    #[garde(dive)]
+    pub spawn: Option<AgentSpawnConfig>,
     /// Missing → `std::env::current_dir()` at `new_session` time.
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
     #[garde(skip)]
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSpawnConfig {
+    #[garde(length(min = 1))]
+    pub command: String,
+    #[garde(skip)]
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 /// Closed enum — each named variant maps to an `AcpAgent` impl with
@@ -216,6 +230,8 @@ mod tests {
         for a in &cfg.agents.agents {
             assert!(!a.command.is_empty(), "agents[{}].command", a.id);
             assert!(!a.args.is_empty(), "agents[{}].args", a.id);
+            let spawn = a.spawn.as_ref().unwrap_or_else(|| panic!("agents[{}].spawn", a.id));
+            assert!(!spawn.command.is_empty(), "agents[{}].spawn.command", a.id);
         }
 
         // Provider mapping per id.

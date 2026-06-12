@@ -10,6 +10,8 @@ Hyprpilot is one binary doing two jobs. Pick the role with a subcommand:
 | Command | Role |
 | --- | --- |
 | `hyprpilot daemon` | Long-running overlay process. Hosts the webview, manages instances, owns the unix socket. |
+| `hyprpilot spawn …` | Short-lived direct provider launch. Resolves a profile and execs the native Claude / Codex / opencode TUI without the daemon. |
+| `hyprpilot profiles` | Short-lived config reader. Lists configured session profiles without contacting the daemon. |
 | `hyprpilot ctl …` | Short-lived CLI client. Sends commands to a running daemon and prints the result. |
 
 Running `hyprpilot` (no subcommand) is shorthand for `hyprpilot daemon`. A second invocation against a running daemon pops the overlay forward instead of starting a new one.
@@ -26,6 +28,45 @@ hyprpilot daemon --log-level debug          # override the log filter
 ```
 
 Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running under systemd: `journalctl --user -u hyprpilot.service -f`.
+
+## Direct provider spawn
+
+`hyprpilot spawn` resolves a configured profile, projects its model / mode / effort / system prompt / MCPs onto the vendor CLI where supported, then hands the terminal over to the provider process. It does not talk to the daemon, create an ACP instance, or persist any Hyprpilot-side session state.
+
+The spawned provider inherits your shell environment; `[agents.env]` overlays only the configured keys. Hyprpilot also resolves the profile's MCP catalog before launch, including root/profile patches and the auto-injected `hyprpilot` MCP server when enabled. Standard MCP `command`, `args`, `env`, and `headers` strings expand `~`, `$VAR`, `${VAR}`, and `${env:VAR}` before being projected into the provider-specific CLI config. For Codex remote MCP headers, Hyprpilot uses Codex's native `bearer_token_env_var`, `env_http_headers`, and `http_headers` config keys so header-auth servers can read tokens from the inherited environment instead of receiving unsupported `headers.*` entries.
+
+Claude direct spawn also projects per-server `hyprpilot.autoAcceptTools` / `autoRejectTools` into native `--allowedTools` / `--disallowedTools` entries using Claude's `mcp__server__tool` naming. Codex and OpenCode currently expose only coarse approval-bypass controls in their local CLI help, so Hyprpilot does not map per-tool MCP auto-approval to those providers.
+
+```sh
+hyprpilot spawn
+hyprpilot spawn engineer
+hyprpilot spawn engineer --cwd ~/code/hyprpilot
+hyprpilot spawn engineer --model claude-opus-4-5
+hyprpilot spawn engineer --mode plan
+hyprpilot spawn --restore
+hyprpilot spawn engineer --restore
+hyprpilot spawn engineer --restore --cwd ~/code/hyprpilot
+hyprpilot spawn engineer --session <provider-session-id>
+hyprpilot spawn engineer --restore --all
+hyprpilot spawn engineer -- --debug
+```
+
+Omitting `<profile>` opens a terminal picker over configured profiles first. `--cwd <dir>` is a generic spawn override: the provider process starts in that directory, and restore mode uses the same directory as its filter. When `--cwd` is omitted, direct spawn uses the current shell directory.
+
+Restore mode uses the provider's own sessions: `hyprpilot spawn --restore` picks a profile, then opens the restore picker for that profile. By default the restore picker only shows sessions for the spawn cwd; pass `--all` to see every cwd. `--session <id>` skips the session picker and resumes that provider session directly after profile selection. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
+
+Codex has no generic `mode` flag. For Codex profiles, `mode` must be either an approval policy (`untrusted`, `on-request`, `never`, deprecated `on-failure`) or a sandbox mode (`read-only`, `workspace-write`, `danger-full-access`). Direct spawn maps those to `--ask-for-approval` and `--sandbox` respectively; unsupported values fail before handing the terminal to `codex`.
+
+## Profiles
+
+Use `hyprpilot profiles` when you need to know which profile ids are available for `hyprpilot spawn <profile>` or `ctl --profile <profile>`:
+
+```sh
+hyprpilot profiles
+hyprpilot profiles --json
+```
+
+The command only reads local config and applies root `[[patches]]` for the displayed summaries. It does not contact the daemon.
 
 ## ctl
 
