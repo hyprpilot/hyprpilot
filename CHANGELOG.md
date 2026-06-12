@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/hyprpilot/hyprpilot/compare/v2.4.0...v2.4.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **deps:** restore dependency update builds ([#154](https://github.com/hyprpilot/hyprpilot/issues/154)) ([b430d17](https://github.com/hyprpilot/hyprpilot/commit/b430d17156b111e1133bff3918e9a6741d5dd688))
+
 ## [2.4.0](https://github.com/hyprpilot/hyprpilot/compare/v2.3.18...v2.4.0) (2026-05-31)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "hyprpilot-ui",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Vue 3 + Tailwind frontend for the hyprpilot Tauri overlay.",
   "private": true,
   "type": "module",
