@@ -3,3 +3,7 @@ packages:
   - tests/e2e
   - tests/e2e/support/mock-agent
   - docs
+
+overrides:
+  "@typescript-eslint/parser": 8.61.0
+  "@typescript-eslint/eslint-plugin": 8.61.0

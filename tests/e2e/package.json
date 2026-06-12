@@ -10,7 +10,7 @@
     "lint": "eslint"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
-    "@srsholmes/tauri-playwright": "^0.2.2"
+    "@playwright/test": "^1.60.0",
+    "@srsholmes/tauri-playwright": "^0.4.0"
   }
 }
