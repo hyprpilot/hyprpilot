@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/hyprpilot/hyprpilot/compare/v2.5.1...v2.6.0) (2026-06-12)
+
+
+### Features
+
+* **config:** support spawn-scoped patches ([#160](https://github.com/hyprpilot/hyprpilot/issues/160)) ([3bc6850](https://github.com/hyprpilot/hyprpilot/commit/3bc685089de4e2748ad1c692a818d902dbdf81f6))
+
 ## [2.5.1](https://github.com/hyprpilot/hyprpilot/compare/v2.5.0...v2.5.1) (2026-06-12)
 
 
