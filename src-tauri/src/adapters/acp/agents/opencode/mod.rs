@@ -133,6 +133,7 @@ mod tests {
             effort: None,
             command: "opencode".into(),
             args: vec!["acp".into()],
+            spawn: None,
             cwd: None,
             env: BTreeMap::new(),
         }

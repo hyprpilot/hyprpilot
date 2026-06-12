@@ -32,6 +32,7 @@ Spawn it from the palette: `Ctrl+K → profiles → engineer`. Or explicitly fro
 
 ```sh
 hyprpilot ctl prompts send --profile engineer "show me the failing tests"
+hyprpilot spawn engineer
 ```
 
 You can have multiple instances of the same profile running side-by-side — each gets its own UUID and its own session.
@@ -51,9 +52,6 @@ You can have multiple instances of the same profile running side-by-side — eac
 ## Picking the default
 
 ```toml
-[agent]
-default = "claude-code"      # which [[agents]] entry wins when nothing's specified
-
 [profile]
 default = "engineer"         # which [[profiles]] new instances pick by default
 ```
@@ -62,8 +60,9 @@ Resolution when you submit a prompt:
 
 1. The profile you picked from the palette (or `--profile <id>` from the CLI) wins.
 2. Otherwise `[profile] default`.
-3. Otherwise the first `[[profiles]]` matching `[agent] default`.
-4. Otherwise the first `[[agents]]` entry by itself.
+3. Otherwise spawn fails with a configuration error.
+
+`hyprpilot spawn <profile>` always takes the profile id as a positional argument because it is a one-shot terminal launch rather than a daemon-managed default.
 
 ## System prompts
 
@@ -100,6 +99,8 @@ system_prompt = [
 | `inject.on_update` | `false` | Whether the file rides when resuming or forking a persisted session. Default off because the source session already carries its own transcript context — re-injecting the prompt on top is usually redundant noise. |
 
 When at least one entry actually injects, the chat shows a `system prompt · <files>` chapter-break banner so you can see what rode along.
+
+Direct provider launches use the same gates: `hyprpilot spawn <profile>` injects `on_create` entries into a fresh provider session, while `hyprpilot spawn <profile> --restore` and `--session <id>` inject only entries with `on_update = true`.
 
 ## MCPs
 

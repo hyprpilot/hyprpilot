@@ -10,6 +10,7 @@ Hyprpilot is one binary doing two jobs. Pick the role with a subcommand:
 | Command | Role |
 | --- | --- |
 | `hyprpilot daemon` | Long-running overlay process. Hosts the webview, manages instances, owns the unix socket. |
+| `hyprpilot spawn …` | Short-lived direct provider launch. Resolves a profile and execs the native Claude / Codex / opencode TUI without the daemon. |
 | `hyprpilot ctl …` | Short-lived CLI client. Sends commands to a running daemon and prints the result. |
 
 Running `hyprpilot` (no subcommand) is shorthand for `hyprpilot daemon`. A second invocation against a running daemon pops the overlay forward instead of starting a new one.
@@ -26,6 +27,22 @@ hyprpilot daemon --log-level debug          # override the log filter
 ```
 
 Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running under systemd: `journalctl --user -u hyprpilot.service -f`.
+
+## Direct provider spawn
+
+`hyprpilot spawn` resolves a configured profile, projects its model / mode / effort / system prompt / MCPs onto the vendor CLI where supported, then hands the terminal over to the provider process. It does not talk to the daemon, create an ACP instance, or persist any Hyprpilot-side session state.
+
+```sh
+hyprpilot spawn engineer
+hyprpilot spawn engineer --model claude-opus-4-5
+hyprpilot spawn engineer --mode plan
+hyprpilot spawn engineer --restore
+hyprpilot spawn engineer --session <provider-session-id>
+hyprpilot spawn engineer --restore --all
+hyprpilot spawn engineer -- --debug
+```
+
+Restore mode uses the provider's own sessions. By default the picker only shows sessions for the resolved working directory; pass `--all` to see every cwd. `--session <id>` skips the picker and resumes that provider session directly. Arguments after `--` are forwarded verbatim to the spawned provider CLI.
 
 ## ctl
 

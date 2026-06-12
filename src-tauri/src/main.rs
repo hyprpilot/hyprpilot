@@ -3,6 +3,7 @@ mod completion;
 mod config;
 mod ctl;
 mod daemon;
+mod direct_spawn;
 mod logging;
 mod mcp;
 mod paths;
@@ -57,6 +58,9 @@ enum Command {
     /// spawn via stdio. The daemon auto-injects entries when the resolved
     /// skill registry for an instance is non-empty.
     Mcp(mcp::server::McpArgs),
+
+    /// Spawn the resolved profile directly in the provider's native TUI.
+    Spawn(direct_spawn::SpawnArgs),
 }
 
 fn main() -> Result<ExitCode> {
@@ -83,6 +87,7 @@ fn main() -> Result<ExitCode> {
         None => daemon::run(cfg, daemon::DaemonArgs::default()).map(|()| ExitCode::SUCCESS),
         Some(Command::Daemon(args)) => daemon::run(cfg, args).map(|()| ExitCode::SUCCESS),
         Some(Command::Ctl(args)) => ctl::run(cfg, args),
+        Some(Command::Spawn(args)) => direct_spawn::run(cfg, args),
         Some(Command::Mcp(args)) => {
             // The MCP sidecar owns stdin/stdout for its protocol;
             // synchronous main + tokio runtime is the path daemon

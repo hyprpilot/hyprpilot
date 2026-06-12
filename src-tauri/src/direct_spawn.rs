@@ -1,0 +1,63 @@
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use anyhow::Result;
+use clap::Args;
+
+use crate::adapters::cli::SpawnRequest;
+use crate::config::Config;
+use crate::ctl::with_config::WithConfigArgs;
+
+#[derive(Args, Debug)]
+pub struct SpawnArgs {
+    /// Session profile id to resolve and launch directly in the provider TUI.
+    #[arg(value_name = "PROFILE")]
+    profile_id: String,
+    /// Override the profile's agent entry.
+    #[arg(long = "agent")]
+    agent_id: Option<String>,
+    /// Working directory for the provider process and restore picker filter.
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Provider-specific mode override mapped to the direct CLI where supported.
+    #[arg(long)]
+    mode: Option<String>,
+    /// Model override mapped to the direct CLI where supported.
+    #[arg(long)]
+    model: Option<String>,
+    /// Pick and resume a provider-owned session instead of starting fresh.
+    #[arg(long, default_value_t = false)]
+    restore: bool,
+    /// Resume this provider-owned session id directly. Implies --restore and skips the picker.
+    #[arg(long = "session", value_name = "ID")]
+    session_id: Option<String>,
+    /// Show sessions from every cwd in the restore picker.
+    #[arg(long, default_value_t = false)]
+    all: bool,
+    #[command(flatten)]
+    with_config: WithConfigArgs,
+    /// Extra arguments forwarded verbatim to the spawned provider CLI.
+    #[arg(last = true, allow_hyphen_values = true, value_name = "ARG")]
+    provider_args: Vec<String>,
+}
+
+pub fn run(cfg: Config, args: SpawnArgs) -> Result<ExitCode> {
+    let cwd = args.cwd.or_else(|| std::env::current_dir().ok());
+    let config_patches = args.with_config.into_patches()?;
+
+    crate::adapters::cli::run(
+        cfg,
+        SpawnRequest {
+            profile_id: args.profile_id,
+            agent_id: args.agent_id,
+            cwd,
+            mode: args.mode,
+            model: args.model,
+            restore: args.restore,
+            session_id: args.session_id,
+            all: args.all,
+            config_patches,
+            provider_args: args.provider_args,
+        },
+    )
+}

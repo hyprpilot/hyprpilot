@@ -16,7 +16,7 @@ Hyprpilot speaks the [Agent Client Protocol](https://agentclientprotocol.com/) �
 | **Claude Code** (Anthropic) | First-class. Mode (`plan` / `default`), thinking budget, model picker — all wired. |
 | **Codex** (OpenAI) | First-class. Approval modes propagate. |
 | **opencode** | First-class. Tool filters propagate. |
-| **Custom** | Any binary speaking ACP — supply your own `command` + `args` under `provider = "acp-custom"`. |
+| **Custom** | Any binary speaking ACP — supply your own `command` + `args` under `provider = "acp"`. |
 
 You don't see vendor seams in the overlay — model picking, mode switching, permission flows look the same regardless of which agent you're talking to.
 

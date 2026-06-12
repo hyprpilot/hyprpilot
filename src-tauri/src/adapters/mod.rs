@@ -12,6 +12,7 @@
 //! — that's a layering violation, caught by the lint guard.
 
 pub mod acp;
+pub(crate) mod cli;
 pub mod commands;
 pub mod instance;
 pub mod mirror;

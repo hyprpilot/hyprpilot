@@ -47,6 +47,7 @@ mod tests {
             effort: None,
             command: "bunx".into(),
             args: vec!["--bun".into(), "@agentclientprotocol/claude-agent-acp".into()],
+            spawn: None,
             cwd: None,
             env: BTreeMap::new(),
         }
