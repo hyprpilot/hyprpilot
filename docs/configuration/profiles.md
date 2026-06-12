@@ -166,6 +166,8 @@ Each server entry takes an optional `hyprpilot` block to short-circuit specific 
 
 Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`. Reject wins over accept when both match.
 
+The overlay daemon applies these globs itself when an ACP permission request arrives. Direct provider spawn has no Hyprpilot permission controller in the loop, so support depends on the native TUI: Claude receives the globs as `--allowedTools` / `--disallowedTools` MCP tool patterns, while Codex and OpenCode keep their normal provider-native approval behavior.
+
 ### Per-profile MCP override
 
 ```toml

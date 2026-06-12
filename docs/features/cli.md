@@ -35,6 +35,8 @@ Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running 
 
 The spawned provider inherits your shell environment; `[agents.env]` overlays only the configured keys. Hyprpilot also resolves the profile's MCP catalog before launch, including root/profile patches and the auto-injected `hyprpilot` MCP server when enabled. Standard MCP `command`, `args`, `env`, and `headers` strings expand `~` and environment variables before being projected into the provider-specific CLI config.
 
+Claude direct spawn also projects per-server `hyprpilot.autoAcceptTools` / `autoRejectTools` into native `--allowedTools` / `--disallowedTools` entries using Claude's `mcp__server__tool` naming. Codex and OpenCode currently expose only coarse approval-bypass controls in their local CLI help, so Hyprpilot does not map per-tool MCP auto-approval to those providers.
+
 ```sh
 hyprpilot spawn
 hyprpilot spawn engineer

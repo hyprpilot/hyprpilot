@@ -114,6 +114,15 @@ fn build_claude(
         command.args.push("--mcp-config".into());
         command.args.push(config);
     }
+    let permission_tools = claude_mcp_permission_tools(mcp_defs);
+    if !permission_tools.allow.is_empty() && !has_claude_allowed_tools_flag(&detect_args) {
+        command.args.push("--allowedTools".into());
+        command.args.push(permission_tools.allow.join(","));
+    }
+    if !permission_tools.deny.is_empty() && !has_claude_disallowed_tools_flag(&detect_args) {
+        command.args.push("--disallowedTools".into());
+        command.args.push(permission_tools.deny.join(","));
+    }
     if let Bootstrap::Resume(session_id) = bootstrap {
         if !has_flag(&detect_args, "--resume", None) {
             command.args.push("--resume".into());
@@ -290,6 +299,14 @@ fn has_flag(args: &[String], long: &str, short: Option<&str>) -> bool {
     })
 }
 
+fn has_claude_allowed_tools_flag(args: &[String]) -> bool {
+    has_flag(args, "--allowedTools", None) || has_flag(args, "--allowed-tools", None)
+}
+
+fn has_claude_disallowed_tools_flag(args: &[String]) -> bool {
+    has_flag(args, "--disallowedTools", None) || has_flag(args, "--disallowed-tools", None)
+}
+
 fn flag_value(args: &[String], long: &str, short: Option<&str>) -> Option<String> {
     for (idx, arg) in args.iter().enumerate() {
         if let Some(value) = arg.strip_prefix(long).and_then(|rest| rest.strip_prefix('=')) {
@@ -373,6 +390,45 @@ fn claude_mcp_config(defs: &[MCPDefinition]) -> Result<String> {
         servers.insert(def.name.clone(), expanded_raw(def));
     }
     serde_json::to_string(&serde_json::json!({ "mcpServers": servers })).context("serialize claude MCP config")
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ClaudePermissionTools {
+    allow: Vec<String>,
+    deny: Vec<String>,
+}
+
+fn claude_mcp_permission_tools(defs: &[MCPDefinition]) -> ClaudePermissionTools {
+    let mut tools = ClaudePermissionTools::default();
+    for def in defs {
+        tools.allow.extend(
+            def.hyprpilot
+                .auto_accept_tools
+                .iter()
+                .map(|pattern| claude_mcp_tool_pattern(&def.name, pattern)),
+        );
+        tools.deny.extend(
+            def.hyprpilot
+                .auto_reject_tools
+                .iter()
+                .map(|pattern| claude_mcp_tool_pattern(&def.name, pattern)),
+        );
+    }
+
+    tools.allow.sort();
+    tools.allow.dedup();
+    tools.deny.sort();
+    tools.deny.dedup();
+
+    tools
+}
+
+fn claude_mcp_tool_pattern(server: &str, pattern: &str) -> String {
+    if pattern.starts_with("mcp__") {
+        pattern.to_string()
+    } else {
+        format!("mcp__{server}__{pattern}")
+    }
 }
 
 fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
@@ -639,6 +695,21 @@ mod tests {
         }
     }
 
+    fn mcp_def_with_permissions() -> MCPDefinition {
+        MCPDefinition {
+            name: "filesystem".into(),
+            raw: json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            }),
+            hyprpilot: HyprpilotExtension {
+                auto_accept_tools: vec!["read_*".into(), "list_*".into()],
+                auto_reject_tools: vec!["delete_*".into(), "mcp__filesystem__write_*".into()],
+            },
+            source: "<test>".into(),
+        }
+    }
+
     #[test]
     fn claude_provider_args_suppress_generated_model() {
         let command = build_command(
@@ -676,6 +747,65 @@ mod tests {
         assert_eq!(
             parsed["mcpServers"]["shell-env"]["env"]["TOKEN_FILE"],
             format!("{home}/token")
+        );
+    }
+
+    #[test]
+    fn claude_mcp_permission_globs_map_to_allowed_and_disallowed_tools() {
+        let command = build_command(
+            &resolved(AgentProvider::AcpClaudeCode),
+            &Bootstrap::Fresh,
+            None,
+            &[mcp_def_with_permissions()],
+            Vec::new(),
+        )
+        .unwrap();
+        let allowed = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--allowedTools").then_some(w[1].as_str()))
+            .expect("allowed tools injected");
+        let disallowed = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--disallowedTools").then_some(w[1].as_str()))
+            .expect("disallowed tools injected");
+
+        assert_eq!(allowed, "mcp__filesystem__list_*,mcp__filesystem__read_*");
+        assert_eq!(disallowed, "mcp__filesystem__delete_*,mcp__filesystem__write_*");
+    }
+
+    #[test]
+    fn claude_provider_args_suppress_generated_mcp_permissions() {
+        let command = build_command(
+            &resolved(AgentProvider::AcpClaudeCode),
+            &Bootstrap::Fresh,
+            None,
+            &[mcp_def_with_permissions()],
+            vec![
+                "--allowed-tools".into(),
+                "Read".into(),
+                "--disallowedTools".into(),
+                "Bash".into(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            command
+                .args
+                .iter()
+                .filter(|arg| matches!(arg.as_str(), "--allowedTools" | "--allowed-tools"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            command
+                .args
+                .iter()
+                .filter(|arg| matches!(arg.as_str(), "--disallowedTools" | "--disallowed-tools"))
+                .count(),
+            1
         );
     }
 
