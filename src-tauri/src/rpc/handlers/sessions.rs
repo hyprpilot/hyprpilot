@@ -19,8 +19,9 @@ use crate::rpc::handlers::util::{map_adapter_err, params_or_default, parse_param
 use crate::rpc::protocol::RpcError;
 
 /// `sessions/list` — every field optional. Filter dimensions match
-/// the `Adapter::list_sessions` signature. Empty params returns
-/// "every session the addressed agent (or default) can produce."
+/// the `Adapter::list_sessions` signature. `cwd` wins when supplied;
+/// otherwise the addressed profile's cwd scopes the provider request
+/// when configured.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct ListParams {
