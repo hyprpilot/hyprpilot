@@ -16,8 +16,8 @@ pub struct SpawnArgs {
     /// Override the profile's agent entry.
     #[arg(long = "agent")]
     agent_id: Option<String>,
-    /// Working directory for the provider process and restore picker filter.
-    #[arg(long)]
+    /// Working directory for the provider process and restore picker filter. Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
     /// Provider-specific mode override mapped to the direct CLI where supported.
     #[arg(long)]

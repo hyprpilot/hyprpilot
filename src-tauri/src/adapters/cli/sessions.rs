@@ -51,19 +51,24 @@ pub(super) fn list_restorable_sessions(resolved: &ResolvedInstance, all: bool) -
             )
         }
     };
-    if !all {
-        if let Some(cwd) = resolved.agent.cwd.as_ref() {
-            sessions.retain(|session| {
-                session
-                    .cwd
-                    .as_ref()
-                    .is_some_and(|session_cwd| same_cwd(session_cwd, cwd))
-            });
-        }
-    }
+    filter_by_cwd(&mut sessions, resolved.agent.cwd.as_deref(), all);
     sort_by_updated_at(&mut sessions);
 
     Ok(sessions)
+}
+
+fn filter_by_cwd(sessions: &mut Vec<RestoreSession>, cwd: Option<&Path>, all: bool) {
+    if all {
+        return;
+    }
+    if let Some(cwd) = cwd {
+        sessions.retain(|session| {
+            session
+                .cwd
+                .as_ref()
+                .is_some_and(|session_cwd| same_cwd(session_cwd, cwd))
+        });
+    }
 }
 
 fn sort_by_updated_at(sessions: &mut [RestoreSession]) {
@@ -367,6 +372,47 @@ mod tests {
     #[test]
     fn cwd_compare_handles_relative_paths() {
         assert!(same_cwd(Path::new("."), &std::env::current_dir().unwrap()));
+    }
+
+    #[test]
+    fn cwd_filter_keeps_only_matching_sessions_unless_all_is_set() {
+        let cwd = std::env::current_dir().unwrap();
+        let sessions = vec![
+            RestoreSession {
+                id: "here".into(),
+                title: String::new(),
+                cwd: Some(cwd.clone()),
+                updated_at_ms: None,
+            },
+            RestoreSession {
+                id: "elsewhere".into(),
+                title: String::new(),
+                cwd: Some(cwd.join("child")),
+                updated_at_ms: None,
+            },
+            RestoreSession {
+                id: "unknown".into(),
+                title: String::new(),
+                cwd: None,
+                updated_at_ms: None,
+            },
+        ];
+
+        let mut filtered = sessions.clone();
+        filter_by_cwd(&mut filtered, Some(&cwd), false);
+
+        assert_eq!(
+            filtered.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
+            ["here"]
+        );
+
+        let mut unfiltered = sessions;
+        filter_by_cwd(&mut unfiltered, Some(&cwd), true);
+
+        assert_eq!(
+            unfiltered.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
+            ["here", "elsewhere", "unknown"]
+        );
     }
 
     #[test]

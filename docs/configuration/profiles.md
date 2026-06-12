@@ -64,7 +64,7 @@ Resolution when you submit a prompt:
 2. Otherwise `[profile] default`.
 3. Otherwise spawn fails with a configuration error.
 
-`hyprpilot spawn <profile>` always takes the profile id as a positional argument because it is a one-shot terminal launch rather than a daemon-managed default.
+`hyprpilot spawn` is a one-shot terminal launch rather than a daemon-managed default. Omit the profile id to pick one interactively. Direct spawn starts providers in the current shell directory by default; pass `--cwd <dir>` to launch somewhere else and to filter restore sessions to that directory.
 
 ## System prompts
 
