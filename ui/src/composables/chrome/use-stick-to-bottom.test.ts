@@ -6,6 +6,7 @@ import { useStickToBottom } from './use-stick-to-bottom'
 
 interface ScrollHarness {
   el: HTMLElement
+  content: HTMLElement
   setLayout: (opts: { scrollHeight: number; clientHeight: number; scrollTop: number }) => void
   dispatchScroll: () => void
 }
@@ -17,21 +18,27 @@ interface ScrollHarness {
  * needs a real Node to observe; the assignments here just give it a
  * surface — we assert behavior off the api refs, not the DOM render.
  */
-function mountHarness(): { api: { stuck: Ref<boolean>; scrollToBottom: () => void }; harness: ScrollHarness; unmount: () => void } {
-  let api: { stuck: Ref<boolean>; scrollToBottom: () => void } | undefined
+function mountHarness(opts?: { observeContent?: boolean }): {
+  api: { stuck: Ref<boolean>; scrollToBottom: () => void; release: () => void }
+  harness: ScrollHarness
+  unmount: () => void
+} {
+  let api: { stuck: Ref<boolean>; scrollToBottom: () => void; release: () => void } | undefined
 
   const Comp = defineComponent({
     setup() {
       const elRef = ref<HTMLElement | undefined>(undefined)
+      const contentRef = ref<HTMLElement | undefined>(undefined)
 
-      api = useStickToBottom(elRef)
+      api = useStickToBottom(elRef, opts?.observeContent ? { observeEl: contentRef } : undefined)
 
-      return () => h('div', { ref: elRef }, [])
+      return () => h('div', { ref: elRef }, [h('div', { ref: contentRef, class: 'content' })])
     }
   })
 
   const wrapper = mount(Comp)
   const el = wrapper.element as HTMLElement
+  const content = wrapper.find('.content').element as HTMLElement
 
   // Default layout: tiny container, parked at bottom.
   Object.defineProperty(el, 'scrollHeight', {
@@ -52,6 +59,7 @@ function mountHarness(): { api: { stuck: Ref<boolean>; scrollToBottom: () => voi
 
   const harness: ScrollHarness = {
     el,
+    content,
     setLayout({ scrollHeight, clientHeight, scrollTop }) {
       Object.defineProperty(el, 'scrollHeight', {
         value: scrollHeight,
@@ -78,6 +86,45 @@ function mountHarness(): { api: { stuck: Ref<boolean>; scrollToBottom: () => voi
     api: api!,
     harness,
     unmount: () => wrapper.unmount()
+  }
+}
+
+let resizeCallbacks: ResizeObserverCallback[] = []
+let observedResizeElements: Element[] = []
+
+class StubResizeObserver {
+  public callback: ResizeObserverCallback
+
+  constructor(cb: ResizeObserverCallback) {
+    this.callback = cb
+    resizeCallbacks.push(cb)
+  }
+
+  public observe(target: Element): void {
+    observedResizeElements.push(target)
+  }
+
+  public unobserve(): void {}
+  public disconnect(): void {}
+}
+
+function installResizeObserver(): () => void {
+  resizeCallbacks = []
+  observedResizeElements = []
+  vi.stubGlobal('ResizeObserver', StubResizeObserver)
+
+  return () => {
+    vi.unstubAllGlobals()
+    resizeCallbacks = []
+    observedResizeElements = []
+  }
+}
+
+function fireResize(target: Element): void {
+  const entry = { target } as ResizeObserverEntry
+
+  for (const cb of resizeCallbacks) {
+    cb([entry], {} as ResizeObserver)
   }
 }
 
@@ -473,6 +520,53 @@ describe('useStickToBottom', () => {
       unmount()
     } finally {
       vi.unstubAllGlobals()
+    }
+  })
+
+  it('observes the content wrapper and follows resize-only growth while stuck', async() => {
+    const restoreResizeObserver = installResizeObserver()
+
+    try {
+      const { harness, unmount } = mountHarness({ observeContent: true })
+
+      expect(observedResizeElements).toContain(harness.content)
+
+      harness.dispatchScroll()
+      harness.setLayout({
+        scrollHeight: 1500,
+        clientHeight: 500,
+        scrollTop: 500
+      })
+      fireResize(harness.content)
+      await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
+
+      expect(harness.el.scrollTop).toBe(1000)
+      unmount()
+    } finally {
+      restoreResizeObserver()
+    }
+  })
+
+  it('does not follow content-wrapper resize while released', async() => {
+    const restoreResizeObserver = installResizeObserver()
+
+    try {
+      const { api, harness, unmount } = mountHarness({ observeContent: true })
+
+      api.release()
+      harness.setLayout({
+        scrollHeight: 1500,
+        clientHeight: 500,
+        scrollTop: 500
+      })
+      fireResize(harness.content)
+      await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
+
+      expect(harness.el.scrollTop).toBe(500)
+      expect(api.stuck.value).toBe(false)
+      unmount()
+    } finally {
+      restoreResizeObserver()
     }
   })
 })

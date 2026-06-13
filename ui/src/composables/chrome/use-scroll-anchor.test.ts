@@ -10,6 +10,7 @@ import { useScrollAnchor } from './use-scroll-anchor'
  * shared mock per file; reset between tests.
  */
 let resizeCallbacks: (() => void)[] = []
+let observedResizeElements: Element[] = []
 
 class StubResizeObserver {
   public callback: ResizeObserverCallback
@@ -19,13 +20,16 @@ class StubResizeObserver {
     resizeCallbacks.push(() => cb([], this as unknown as ResizeObserver))
   }
 
-  public observe(): void {}
+  public observe(target: Element): void {
+    observedResizeElements.push(target)
+  }
   public unobserve(): void {}
   public disconnect(): void {}
 }
 
 beforeEach(() => {
   resizeCallbacks = []
+  observedResizeElements = []
   ;(globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver
 })
 
@@ -45,15 +49,16 @@ function fireAllResizes(): void {
  * directly. The DOM shape mirrors what `<Viewport>` renders: a
  * scrollable parent + `<article data-anchor-seq="N">` children.
  */
-function buildHost(opts: { stuck: boolean; rows: { seq: number; height: number }[] }) {
+function buildHost(opts: { stuck: boolean; rows: { seq: number; height: number }[]; observeContent?: boolean }) {
   const stuck = ref(opts.stuck)
   let api: ReturnType<typeof useScrollAnchor> | undefined
 
   const Host = defineComponent({
     setup() {
       const scrollEl = ref<HTMLElement>()
+      const contentEl = ref<HTMLElement>()
 
-      api = useScrollAnchor(scrollEl, { stuck })
+      api = useScrollAnchor(scrollEl, opts.observeContent ? { stuck, observeEl: contentEl } : { stuck })
 
       return () =>
         h(
@@ -63,12 +68,16 @@ function buildHost(opts: { stuck: boolean; rows: { seq: number; height: number }
             class: 'scroll-root',
             style: 'height: 400px; overflow-y: auto;'
           },
-          opts.rows.map((r) =>
-            h('article', {
-              key: r.seq,
-              'data-anchor-seq': String(r.seq),
-              style: `height: ${r.height}px;`
-            })
+          h(
+            'section',
+            { ref: contentEl, class: 'content' },
+            opts.rows.map((r) =>
+              h('article', {
+                key: r.seq,
+                'data-anchor-seq': String(r.seq),
+                style: `height: ${r.height}px;`
+              })
+            )
           )
         )
     }
@@ -76,6 +85,7 @@ function buildHost(opts: { stuck: boolean; rows: { seq: number; height: number }
 
   const wrapper = mount(Host, { attachTo: document.body })
   const root = wrapper.find('.scroll-root').element as HTMLElement
+  const content = wrapper.find('.content').element as HTMLElement
   // jsdom doesn't lay out the DOM — fake the geometry the composable
   // reads. We stub `offsetTop` and `offsetHeight` on each row to
   // match the test's declared shape.
@@ -97,6 +107,7 @@ function buildHost(opts: { stuck: boolean; rows: { seq: number; height: number }
   return {
     wrapper,
     root,
+    content,
     stuck,
     api: api!
   }
@@ -162,6 +173,39 @@ describe('useScrollAnchor', () => {
     await flushPromises()
 
     expect(root.scrollTop).toBe(350)
+  })
+
+  it('observes the provided content wrapper for resize relocks', async() => {
+    const { root, content, api } = buildHost({
+      stuck: false,
+      observeContent: true,
+      rows: [
+        { seq: 10, height: 200 },
+        { seq: 11, height: 200 }
+      ]
+    })
+
+    expect(observedResizeElements).toContain(content)
+    expect(observedResizeElements).not.toContain(root)
+
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 50
+    })
+    root.dispatchEvent(new Event('scroll'))
+    await new Promise((r) => requestAnimationFrame(r as FrameRequestCallback))
+    await flushPromises()
+
+    expect(api.anchor.value?.rowSeq).toBe(10)
+
+    const row0 = root.querySelectorAll('article')[0] as HTMLElement
+
+    Object.defineProperty(row0, 'offsetTop', { configurable: true, value: 100 })
+    fireAllResizes()
+    await flushPromises()
+
+    expect(root.scrollTop).toBe(150)
   })
 
   it('does not capture when stuck=true', async() => {
@@ -333,6 +377,40 @@ describe('useScrollAnchor', () => {
 
     // scrollTop=250 lands inside row[1] (offsetTop=200, height=200).
     expect(host.api.anchor.value).toEqual({ rowSeq: 11, offsetWithinRow: 50 })
+  })
+
+  it('defers stuck=false anchor capture during release suppression and captures the post-gesture position', async() => {
+    vi.useFakeTimers()
+    const host = buildHost({
+      stuck: true,
+      rows: [
+        { seq: 10, height: 200 },
+        { seq: 11, height: 200 },
+        { seq: 12, height: 200 }
+      ]
+    })
+
+    Object.defineProperty(host.root, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 450
+    })
+
+    host.api.releaseAnchor()
+    host.stuck.value = false
+    await flushPromises()
+
+    expect(host.api.anchor.value).toBeUndefined()
+
+    Object.defineProperty(host.root, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 50
+    })
+    vi.advanceTimersByTime(500)
+    await flushPromises()
+
+    expect(host.api.anchor.value).toEqual({ rowSeq: 10, offsetWithinRow: 50 })
   })
 
   it('relock is suppressed while programmaticScroll is set', async() => {

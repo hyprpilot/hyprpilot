@@ -12,7 +12,7 @@ const SETTLE_FRAME_COUNT = 4
  * Two observers do the work:
  *   - `MutationObserver` catches new children + text edits (every
  *     transcript chunk lands as a DOM mutation).
- *   - `ResizeObserver` catches reflows inside existing children
+ *   - `ResizeObserver` catches the content wrapper growing/shrinking
  *     (long-running tool output growing inline, code blocks
  *     expanding, etc.) which `MutationObserver` doesn't.
  *
@@ -21,7 +21,7 @@ const SETTLE_FRAME_COUNT = 4
  */
 export function useStickToBottom(
   scrollEl: Ref<HTMLElement | undefined>,
-  options?: { threshold?: number }
+  options?: { threshold?: number; observeEl?: Ref<HTMLElement | undefined> }
 ): {
   stuck: Ref<boolean>
   scrollToBottom: () => void
@@ -321,14 +321,16 @@ export function useStickToBottom(
     // observers are runtime-only enhancements; without them the
     // initial scroll-to-bottom still runs and the user can scroll
     // manually.
+    const observedEl = options?.observeEl?.value ?? el
+
     if (typeof ResizeObserver !== 'undefined') {
       resizeObs = new ResizeObserver(() => scheduleStick())
-      resizeObs.observe(el)
+      resizeObs.observe(observedEl)
     }
 
     if (typeof MutationObserver !== 'undefined') {
       mutationObs = new MutationObserver(() => scheduleStick())
-      mutationObs.observe(el, {
+      mutationObs.observe(observedEl, {
         childList: true,
         subtree: true,
         characterData: true

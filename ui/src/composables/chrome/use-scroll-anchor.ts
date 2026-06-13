@@ -20,9 +20,9 @@
  *   1. `scroll` handler (rAF-throttled, passive) walks rows and picks
  *      the topmost whose `offsetTop + offsetHeight > scrollTop` as
  *      the anchor. Stores `{ rowSeq, offsetWithinRow }`.
- *   2. `ResizeObserver` on the scroll container (content-box) fires
- *      after every layout-shifting event. On fire, look up the anchor
- *      row's NEW offsetTop, set `scrollTop = newTop + offsetWithinRow`.
+ *   2. `ResizeObserver` on the transcript content wrapper fires after
+ *      layout-shifting events. On fire, look up the anchor row's NEW
+ *      offsetTop, set `scrollTop = newTop + offsetWithinRow`.
  *   3. `programmaticScroll` flag is set right before our own writes
  *      and cleared after 500ms or `scrollend` (when available). The
  *      flag suppresses anchor capture during our motion so we don't
@@ -70,6 +70,13 @@ export interface UseScrollAnchorOptions {
    * `[data-anchor-seq]`.
    */
   rowSelector?: string
+  /**
+   * Element whose size changes should trigger a re-lock. Defaults to
+   * `scrollEl`, but chat viewports pass their inner content wrapper
+   * because descendant growth changes `scrollHeight` without resizing
+   * the overflow scroller's own content box.
+   */
+  observeEl?: Ref<HTMLElement | undefined>
   /**
    * Clear-flag duration for the `programmaticScroll` suppress. 500ms
    * covers smooth-scroll worst case + iOS momentum margin. Falls
@@ -123,6 +130,7 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
   let rafPending = false
   let rafHandle: number | undefined
   let resizeObs: ResizeObserver | undefined
+  let captureAfterProgrammaticScroll = false
   // Cleanup hook for the scrollend listener — only set when the
   // browser supports `scrollend`. Cleared in `clearProgrammaticFlag`
   // so a second markProgrammaticScroll re-registers cleanly.
@@ -137,6 +145,14 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
     }
     scrollendCleanup?.()
     scrollendCleanup = undefined
+
+    if (captureAfterProgrammaticScroll) {
+      captureAfterProgrammaticScroll = false
+
+      if (!opts.stuck.value) {
+        captureAnchorNow()
+      }
+    }
   }
 
   function markProgrammaticScroll(): void {
@@ -198,6 +214,17 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
     }
 
     return undefined
+  }
+
+  function captureAnchorNow(): void {
+    const el = scrollEl.value
+
+    if (!el) {
+      anchor.value = undefined
+
+      return
+    }
+    anchor.value = pickAnchorAt(el, el.scrollTop)
   }
 
   /**
@@ -329,12 +356,11 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
   watch(opts.stuck, (next) => {
     if (next) {
       anchor.value = undefined
+      captureAfterProgrammaticScroll = false
+    } else if (programmaticScroll) {
+      captureAfterProgrammaticScroll = true
     } else if (scrollEl.value) {
-      const picked = pickAnchorAt(scrollEl.value, scrollEl.value.scrollTop)
-
-      if (picked) {
-        anchor.value = picked
-      }
+      captureAnchorNow()
     }
   })
 
@@ -348,13 +374,16 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
 
     // jsdom doesn't ship ResizeObserver — runtime-only enhancement,
     // tests run with anchor.value=undefined which is fine.
+    const observedEl = opts.observeEl?.value ?? el
+
     if (typeof ResizeObserver !== 'undefined') {
       resizeObs = new ResizeObserver(relock)
       // `box: 'content-box'` is the default for `observe()`, but
       // calling it out explicitly so a future reader doesn't wonder
-      // whether scrollbar-width changes are part of the trigger set.
-      // They are NOT — content-box ignores them.
-      resizeObs.observe(el, { box: 'content-box' })
+      // whether scrollbar-width changes on the scroller are part of
+      // the trigger set. They are NOT — the observed content wrapper
+      // changes when transcript rows grow/shrink.
+      resizeObs.observe(observedEl, { box: 'content-box' })
     }
   })
 
@@ -369,6 +398,7 @@ export function useScrollAnchor(scrollEl: Ref<HTMLElement | undefined>, opts: Us
     if (rafHandle !== undefined) {
       cancelAnimationFrame(rafHandle)
     }
+    captureAfterProgrammaticScroll = false
     clearProgrammaticFlag()
   })
 

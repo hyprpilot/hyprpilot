@@ -19,16 +19,14 @@
  * updates exceeded in component <Viewport>". The non-virtualized
  * `v-for` is stable and the daemon-side transcript ring is the only
  * history bound. Inactive instance viewports stay mounted and are
- * hidden with viewport-level CSS. Completed rows use
- * `content-visibility: auto` with remembered intrinsic sizes; the
- * live row stays fully rendered so streaming height changes remain
- * visible to the sticky-bottom observers. See `Turn.vue` for the
- * scroll-anchor contract.
+ * hidden with viewport-level CSS. Rows stay fully measurable; the
+ * scroll-anchor contract depends on real `offsetTop`/`offsetHeight`
+ * for every retained turn.
  *
- * **Stick-to-bottom**: `useStickToBottom` already runs a
- * MutationObserver + ResizeObserver pair on the scroll container and
- * scrolls to the tail on every mutation while `stuck` is true. No
- * extra Vue watcher needed.
+ * **Stick-to-bottom**: `useStickToBottom` runs a MutationObserver +
+ * ResizeObserver pair on the transcript content wrapper and scrolls
+ * the outer scroller to the tail on every mutation while `stuck` is
+ * true.
  */
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { useEventListener, useNow } from '@vueuse/core'
@@ -87,6 +85,7 @@ const emit = defineEmits<{
 
 const instanceId = computed<InstanceId | undefined>(() => props.instanceId)
 const scrollEl = ref<HTMLElement>()
+const contentEl = ref<HTMLElement>()
 /// Flipped on the first captain-initiated input gesture after mount.
 /// Gesture latch used by stick/anchor release paths so synthetic
 /// mount-time scrolls do not look like captain intent.
@@ -191,7 +190,7 @@ const adapterForActive = computed(() => {
   return id ? adapterFor(id) : undefined
 })
 
-const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scrollEl)
+const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scrollEl, { observeEl: contentEl })
 
 // Scroll-anchor primitive — tracks `{ rowSeq, offsetWithinRow }`
 // for the topmost visible row when stuck=false. Re-locks scrollTop
@@ -203,7 +202,7 @@ const { stuck, scrollToBottom, release: releaseStick } = useStickToBottom(scroll
 // Anchor is consumed internally by the composable (ResizeObserver
 // re-lock). We only need the imperative escape hatches at this
 // layer — release on gesture start, mark on our own writes.
-const { releaseAnchor, markProgrammaticScroll } = useScrollAnchor(scrollEl, { stuck })
+const { releaseAnchor, markProgrammaticScroll } = useScrollAnchor(scrollEl, { stuck, observeEl: contentEl })
 
 /// Per-mount "first hydration" latch. `useStickToBottom` runs a
 /// `scrollToBottom` in its own `onMounted`, but that fires BEFORE
@@ -256,8 +255,8 @@ watch(
 /// doc for why this synchronous escape exists.
 function releaseStickAndAnchor(): void {
   markUserScrolled()
-  releaseStick()
   releaseAnchor()
+  releaseStick()
 }
 
 // `stuck` is the auto-scroll signal — 128px-from-bottom threshold
@@ -299,11 +298,10 @@ function goToBottom(): void {
 //
 // **No virtualization and no lazy viewport window.** The initial
 // snapshot asks for the daemon's retained transcript ring. The plain
-// `v-for` keeps history in DOM for the active viewport; completed
-// rows rely on browser display locking (`content-visibility: auto`)
-// to skip offscreen render cost without deleting DOM state. Inactive
-// viewports are hidden at the root with CSS so focus switches do not
-// delete viewport-local scroll/anchor state.
+// `v-for` keeps history in DOM for the active viewport; row-level
+// display locking stays disabled because scroll anchoring needs real
+// row offsets. Inactive viewports are hidden at the root with CSS so
+// focus switches do not delete viewport-local scroll/anchor state.
 
 const liveBlockIdx = computed<number>(() => {
   const open = openTurnId.value
@@ -613,10 +611,11 @@ defineExpose({ scrollEl })
     <div ref="scrollEl" class="chat-transcript" data-testid="chat-transcript" :data-instance-id="instanceId ?? ''">
       <Loading v-if="props.restoring" mode="scoped" status="restoring session — replaying transcript" />
 
-      <slot v-if="isEmpty" name="empty" />
+      <div ref="contentEl" class="chat-transcript-content">
+        <slot v-if="isEmpty" name="empty" />
 
-      <template v-else>
-        <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
+        <template v-else>
+          <!-- Plain v-for over `blocks`, with `v-memo` short-circuiting
            re-renders for history rows. Live row keeps re-rendering
            every chunk because `latestUpdatedAt(block)` advances per
            streaming merge (every chunk bumps the corresponding
@@ -626,111 +625,112 @@ defineExpose({ scrollEl })
            Deps cover: turn identity, role, content-shape counts,
            per-chunk freshness via `latestUpdatedAt`, live flag,
            elapsed/usage labels. -->
-        <Turn
-          v-for="(block, blockIdx) in blocks"
-          :key="block.groupKey"
-          v-memo="[
-            block.groupKey,
-            block.role,
-            block.turnEntries.length,
-            block.toolCalls.length,
-            block.streamEntries.length,
-            latestUpdatedAt(block),
-            blockIdx === liveBlockIdx,
-            elapsedFor(block.turnId),
-            usageFor(block.turnId)
-          ]"
-          :role="block.role"
-          :live="blockIdx === liveBlockIdx"
-          :elapsed="elapsedFor(block.turnId)"
-          :usage="usageFor(block.turnId)"
-          :anchor-seq="block.startedAt"
-        >
-          <StreamCard
-            v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
-            :kind="StreamKind.Thinking"
-            :active="blockIdx === liveBlockIdx"
-            label="thought"
-            :elapsed="thinkingElapsedFor(block)"
-            :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
-          />
-          <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+          <Turn
+            v-for="(block, blockIdx) in blocks"
+            :key="block.groupKey"
+            v-memo="[
+              block.groupKey,
+              block.role,
+              block.turnEntries.length,
+              block.toolCalls.length,
+              block.streamEntries.length,
+              latestUpdatedAt(block),
+              blockIdx === liveBlockIdx,
+              elapsedFor(block.turnId),
+              usageFor(block.turnId)
+            ]"
+            :role="block.role"
+            :live="blockIdx === liveBlockIdx"
+            :elapsed="elapsedFor(block.turnId)"
+            :usage="usageFor(block.turnId)"
+            :anchor-seq="block.startedAt"
+          >
             <StreamCard
-              v-if="entry.item.kind === StreamItemKind.Plan"
-              :kind="StreamKind.Planning"
+              v-if="combinedThoughtText(block).length > 0 || hasThinkingSignal(block)"
+              :kind="StreamKind.Thinking"
               :active="blockIdx === liveBlockIdx"
-              label="plan"
-              :items="mapPlanItems(entry.item.entries)"
-              :stats="entry.item.stats"
+              label="thought"
+              :elapsed="thinkingElapsedFor(block)"
+              :text="combinedThoughtText(block).length > 0 ? combinedThoughtText(block) : undefined"
             />
-            <StreamCard
-              v-else-if="entry.item.kind === StreamItemKind.Goal"
-              :kind="StreamKind.Goal"
-              :active="blockIdx === liveBlockIdx"
-              label="goal"
-              :summary="goalSummary(entry.item)"
-              :text="goalBody(entry.item)"
-            />
-            <StreamCard
-              v-else-if="entry.item.kind === StreamItemKind.Compaction"
-              :kind="StreamKind.Compaction"
-              :active="blockIdx === liveBlockIdx"
-              label="compaction"
-              :summary="compactionSummary(entry.item)"
-              :text="entry.item.text"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ModeChange"
-              kind="mode"
-              :to="entry.item.name ?? entry.item.modeId"
-              :from="entry.item.prevName ?? entry.item.prevModeId"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ModelChange"
-              kind="model"
-              :to="entry.item.name ?? entry.item.modelId"
-              :from="entry.item.prevName ?? entry.item.prevModelId"
-            />
-            <ChangeBanner
-              v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
-              :kind="entry.item.categoryId"
-              :to="entry.item.name ?? entry.item.value"
-              :from="entry.item.prevName ?? entry.item.prevValue"
-            />
-            <ChangeBanner v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected" kind="system prompt" :to="systemPromptLabel(entry.item.files)" />
-          </template>
+            <template v-for="entry in block.streamEntries" :key="`stream-${entry.createdAt}`">
+              <StreamCard
+                v-if="entry.item.kind === StreamItemKind.Plan"
+                :kind="StreamKind.Planning"
+                :active="blockIdx === liveBlockIdx"
+                label="plan"
+                :items="mapPlanItems(entry.item.entries)"
+                :stats="entry.item.stats"
+              />
+              <StreamCard
+                v-else-if="entry.item.kind === StreamItemKind.Goal"
+                :kind="StreamKind.Goal"
+                :active="blockIdx === liveBlockIdx"
+                label="goal"
+                :summary="goalSummary(entry.item)"
+                :text="goalBody(entry.item)"
+              />
+              <StreamCard
+                v-else-if="entry.item.kind === StreamItemKind.Compaction"
+                :kind="StreamKind.Compaction"
+                :active="blockIdx === liveBlockIdx"
+                label="compaction"
+                :summary="compactionSummary(entry.item)"
+                :text="entry.item.text"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.ModeChange"
+                kind="mode"
+                :to="entry.item.name ?? entry.item.modeId"
+                :from="entry.item.prevName ?? entry.item.prevModeId"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.ModelChange"
+                kind="model"
+                :to="entry.item.name ?? entry.item.modelId"
+                :from="entry.item.prevName ?? entry.item.prevModelId"
+              />
+              <ChangeBanner
+                v-else-if="entry.item.kind === StreamItemKind.ConfigOptionChange"
+                :kind="entry.item.categoryId"
+                :to="entry.item.name ?? entry.item.value"
+                :from="entry.item.prevName ?? entry.item.prevValue"
+              />
+              <ChangeBanner v-else-if="entry.item.kind === StreamItemKind.SystemPromptInjected" kind="system prompt" :to="systemPromptLabel(entry.item.files)" />
+            </template>
 
-          <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterForActive))" />
+            <ToolChips v-if="block.toolCalls.length > 0" :views="block.toolCalls.map((t) => format(t.call, adapterForActive))" />
 
-          <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
-            <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
-          </template>
+            <template v-for="entry in block.toolCalls" :key="`term-${entry.call.toolCallId}`">
+              <TerminalCard v-if="terminalIdForCall(entry.call)" :terminal-id="terminalIdForCall(entry.call) ?? ''" :instance-id="instanceId" @cancel="emit('cancel')" />
+            </template>
 
-          <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
-            <template v-if="entry.turn.role === TurnRole.Agent">
-              <Body v-if="entry.turn.text.length > 0" :role="Role.Assistant" :text="entry.turn.text" markdown />
-              <!-- Agent attachments (`AgentAttachment` transcript items)
+            <template v-for="entry in block.turnEntries" :key="`turn-${entry.createdAt}`">
+              <template v-if="entry.turn.role === TurnRole.Agent">
+                <Body v-if="entry.turn.text.length > 0" :role="Role.Assistant" :text="entry.turn.text" markdown />
+                <!-- Agent attachments (`AgentAttachment` transcript items)
                  rendered here. nvim's `render_attachment` handles this
                  explicitly; the Vue UI was silently dropping the
                  attachments array on agent turns because the previous
                  template only rendered `<Attachments>` in the user branch. -->
-              <Attachments
-                v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
-                :attachments="entry.turn.attachments"
-                @open="(att) => emit('attachment-open', att)"
-              />
+                <Attachments
+                  v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+                  :attachments="entry.turn.attachments"
+                  @open="(att) => emit('attachment-open', att)"
+                />
+              </template>
+              <template v-else>
+                <Body :role="Role.User" :text="entry.turn.text" markdown />
+                <Attachments
+                  v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
+                  :attachments="entry.turn.attachments"
+                  @open="(att) => emit('attachment-open', att)"
+                />
+              </template>
             </template>
-            <template v-else>
-              <Body :role="Role.User" :text="entry.turn.text" markdown />
-              <Attachments
-                v-if="entry.turn.attachments && entry.turn.attachments.length > 0"
-                :attachments="entry.turn.attachments"
-                @open="(att) => emit('attachment-open', att)"
-              />
-            </template>
-          </template>
-        </Turn>
-      </template>
+          </Turn>
+        </template>
+      </div>
     </div>
 
     <!-- Floating scroll-to-bottom chevron. Lives inside the viewport
@@ -773,7 +773,7 @@ defineExpose({ scrollEl })
 }
 
 .chat-transcript {
-  @apply flex min-h-0 flex-1 flex-col overflow-y-auto;
+  @apply min-h-0 flex-1 overflow-y-auto;
   position: relative;
   padding: 0 1rem 0 0.25rem;
   /* Disable browser-native scroll anchoring — `useScrollAnchor`
@@ -782,6 +782,10 @@ defineExpose({ scrollEl })
    * `scrollTop = newTop + offsetWithinRow` write and produce
    * a visible double-shift. JS owns the anchoring. */
   overflow-anchor: none;
+}
+
+.chat-transcript-content {
+  @apply flex min-h-full flex-col;
 }
 
 /* Floating chevron — bottom-right of the chat surface. Sits above

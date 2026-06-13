@@ -94,29 +94,15 @@ const costLabel = computed(() => {
 
 /* turn lane: 2px stripe, 4px padding-left.
  *
- * Completed turns use `content-visibility: auto` as a browser-level
- * display lock. This keeps the retained transcript in DOM (so focus,
- * selection, find-in-page, and snapshot merging still work) while
- * letting the engine skip offscreen style/layout/paint. Keep this on
- * completed rows only: the live row's height changes every streamed
- * chunk and must stay fully observable by `useStickToBottom`.
- *
- * The previous attempt used a fixed intrinsic placeholder and fought
- * `useScrollAnchor`, which reads `offsetTop` to keep the captain's
- * reading line glued to the same row. The `auto` form below lets the
- * browser remember a row's real measured height after it has been
- * rendered once; `6rem` is only the first-visit fallback for rows the
- * captain has never scrolled through in this page lifetime. */
+ * Keep every row fully measurable. `useScrollAnchor` depends on real
+ * `offsetTop` / `offsetHeight`; row-level `content-visibility` swaps
+ * offscreen turns to placeholder geometry and makes bottom-follow
+ * jump when the browser realizes rows. */
 .turn {
   @apply flex flex-col py-1;
   padding-left: 0.25rem;
   border-left: 0.125rem solid var(--theme-accent-user);
   position: relative;
-}
-
-.turn[data-live='false'] {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 6rem;
 }
 
 .turn[data-role='assistant'] {
