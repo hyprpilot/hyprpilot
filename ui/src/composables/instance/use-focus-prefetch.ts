@@ -25,6 +25,7 @@
 
 import { useQueryClient, type QueryClient } from '@tanstack/vue-query'
 
+import { fullChatData, getChatCacheData, isChatCachePartial, snapshotChatKey } from './chat-cache'
 import { replayAvailableForInstance, recordLastSeenSeq, type ReplayOutcome } from './transcript-patcher'
 import { FULL_CHAT_LIMIT } from './use-instance-chat-infinite-query'
 import { pushCurrentModeUpdate, setInstanceAgent, setInstanceName, setInstanceProfile } from './use-session-info'
@@ -60,37 +61,34 @@ export function prefetchInstanceMeta(client: QueryClient, instanceId: InstanceId
  * the snapshot query is intentionally `staleTime: Infinity`.
  */
 async function fetchInstanceChatSnapshot(instanceId: InstanceId, limit: number): Promise<ChatSnapshot> {
-  const snap = (await invoke(TauriCommand.InstanceSnapshotChat, {
+  return (await invoke(TauriCommand.InstanceSnapshotChat, {
     instanceId,
     before: undefined,
     limit
   })) as ChatSnapshot
-
-  recordLastSeenSeq(instanceId, snap.latestSeq)
-
-  return snap
 }
 
-export function prefetchInstanceChat(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
+export async function prefetchInstanceChat(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
   const resolvedLimit = limit ?? FULL_CHAT_LIMIT
 
-  return client.prefetchInfiniteQuery({
-    queryKey: ['snapshot-chat', instanceId],
+  await client.prefetchInfiniteQuery({
+    queryKey: snapshotChatKey(instanceId),
     initialPageParam: undefined as number | undefined,
     queryFn: () => fetchInstanceChatSnapshot(instanceId, resolvedLimit),
     getNextPageParam: (_lastPage: ChatSnapshot) => undefined,
     staleTime: Infinity
-  }) as unknown as Promise<void>
+  })
+  const installed = getChatCacheData(client, instanceId)
+
+  recordLastSeenSeq(instanceId, installed?.pages[0]?.latestSeq)
 }
 
 async function refreshInstanceChat(client: QueryClient, instanceId: InstanceId, limit?: number): Promise<void> {
   const resolvedLimit = limit ?? FULL_CHAT_LIMIT
   const snap = await fetchInstanceChatSnapshot(instanceId, resolvedLimit)
 
-  client.setQueryData(['snapshot-chat', instanceId], {
-    pages: [snap],
-    pageParams: [undefined as number | undefined]
-  })
+  client.setQueryData(snapshotChatKey(instanceId), fullChatData(snap))
+  recordLastSeenSeq(instanceId, snap.latestSeq)
 }
 
 function yieldHydrationTurn(): Promise<void> {
@@ -128,8 +126,12 @@ async function drainChatHydration(client: QueryClient): Promise<void> {
     }
     pendingHydrationIds.delete(id)
 
-    if (client.getQueryData(['snapshot-chat', id]) === undefined) {
+    const chatData = getChatCacheData(client, id)
+
+    if (chatData === undefined) {
       await prefetchInstanceChat(client, id)
+    } else if (isChatCachePartial(chatData)) {
+      await refreshInstanceChat(client, id)
     } else {
       const outcome: ReplayOutcome = await replayAvailableForInstance(client, id)
 

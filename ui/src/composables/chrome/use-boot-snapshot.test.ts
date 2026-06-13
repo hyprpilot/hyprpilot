@@ -27,6 +27,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetActiveInstanceForTests, useActiveInstance } from './use-active-instance'
 import { applyBootSnapshot } from './use-boot-snapshot'
+import { emptyPartialChatData, isChatCachePartial } from '../instance/chat-cache'
 import { TauriCommand } from '@ipc'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
@@ -292,6 +293,38 @@ describe('applyBootSnapshot — chat-cache hydration', () => {
     expect(cached.pages[0]?.items.map((item) => item.seq)).toEqual([1, 2])
     expect(cached.pages[0]?.oldestSeq).toBe(1)
     expect(cached.pages[0]?.latestSeq).toBe(2)
+    expect(isChatCachePartial(cached)).toBe(false)
+  })
+
+  it('clears a partial live seed when boot chat lands', async() => {
+    invokeMock.mockResolvedValueOnce(
+      snapshotFixture({
+        instances: {
+          instances: [{ instanceId: 'i-partial', agentId: 'claude-code' }]
+        },
+        chats: {
+          'i-partial': {
+            items: [
+              {
+                seq: 1,
+                turnId: 't',
+                item: { kind: 'user_prompt', text: 'first' }
+              }
+            ],
+            oldestSeq: 1,
+            latestSeq: 1,
+            hasMore: false
+          }
+        }
+      })
+    )
+    const client = new QueryClient()
+
+    client.setQueryData(['snapshot-chat', 'i-partial'], emptyPartialChatData())
+
+    await applyBootSnapshot(client)
+
+    expect(isChatCachePartial(client.getQueryData(['snapshot-chat', 'i-partial']))).toBe(false)
   })
 
   it('no-ops when snap.chats is absent (older daemon)', async() => {

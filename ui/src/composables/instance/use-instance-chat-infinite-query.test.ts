@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref, type Ref } from 'vue'
 
+import { __resetTranscriptPatcherForTests, getLastSeenSeq } from './transcript-patcher'
 import { FULL_CHAT_LIMIT, useInstanceChatInfiniteQuery } from './use-instance-chat-infinite-query'
 import { TauriCommand, type ChatSnapshot, type SeqTranscriptItem } from '@ipc'
 
@@ -64,6 +65,7 @@ function mountWith(idRef: Ref<string | undefined>): { probe: Probe; unmount: () 
 
 beforeEach(() => {
   invoke.mockReset()
+  __resetTranscriptPatcherForTests()
 })
 
 describe('useInstanceChatInfiniteQuery', () => {
@@ -90,6 +92,7 @@ describe('useInstanceChatInfiniteQuery', () => {
     })
     expect(probe.hasNextPage.value).toBe(false)
     expect(probe.hasPreviousPage.value).toBe(false)
+    expect(getLastSeenSeq('i-1')).toBe(151)
     unmount()
   })
 
