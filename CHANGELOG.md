@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.1](https://github.com/hyprpilot/hyprpilot/compare/v2.6.0...v2.6.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **acp:** scope session listings to resolved cwd ([#162](https://github.com/hyprpilot/hyprpilot/issues/162)) ([3c905be](https://github.com/hyprpilot/hyprpilot/commit/3c905bec20133f20dc039393d7589cf4f3a0a405))
+
 ## [2.6.0](https://github.com/hyprpilot/hyprpilot/compare/v2.5.1...v2.6.0) (2026-06-12)
 
 
