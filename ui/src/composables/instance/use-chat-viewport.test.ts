@@ -93,6 +93,7 @@ describe('useChatViewport', () => {
   })
 
   it('keeps every cached page without client-side trimming', async() => {
+    invoke.mockImplementationOnce(() => new Promise(() => {}))
     const id = ref<InstanceId | undefined>('i-1')
     const { api, queryClient, unmount } = mountViewport(id)
 
@@ -112,6 +113,7 @@ describe('useChatViewport', () => {
   })
 
   it('deduplicates overlapping seqs defensively', async() => {
+    invoke.mockImplementationOnce(() => new Promise(() => {}))
     const id = ref<InstanceId | undefined>('i-1')
     const { api, queryClient, unmount } = mountViewport(id)
 

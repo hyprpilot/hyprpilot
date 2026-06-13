@@ -19,7 +19,7 @@
  * — caller decides whether to fall back to the granular loaders.
  */
 
-import { type InfiniteData, type QueryClient } from '@tanstack/vue-query'
+import { type QueryClient } from '@tanstack/vue-query'
 
 import { applyInstancesSnapshot, useActiveInstance } from './use-active-instance'
 import { setDaemonCwd } from './use-daemon-cwd'
@@ -27,6 +27,7 @@ import { applyKeymapsFromObject } from './use-keymaps'
 import { applyThemeFromObject } from './use-theme'
 import { applyWindowStateFromObject } from './use-window'
 import { applyCompletionConfigFromObject } from '../composer/use-completion'
+import { fullChatData, type ChatInfiniteData, snapshotChatKey } from '../instance/chat-cache'
 import { recordLastSeenSeq } from '../instance/transcript-patcher'
 import { prefetchInstanceMeta } from '../instance/use-focus-prefetch'
 import { applyBootNotifications } from '../instance/use-notifications'
@@ -44,11 +45,6 @@ import { log } from '@lib'
  * `prefetchInstanceChat` produces. ChatViewport mounts
  * synchronously off the seeded cache.
  */
-interface ChatInfiniteData extends InfiniteData<ChatSnapshot, number | undefined> {
-  pages: ChatSnapshot[]
-  pageParams: (number | undefined)[]
-}
-
 function mergeChatSnapshot(existing: ChatInfiniteData | undefined, snap: ChatSnapshot): ChatSnapshot {
   if (!existing || existing.pages.length === 0) {
     return snap
@@ -78,15 +74,12 @@ function mergeChatSnapshot(existing: ChatInfiniteData | undefined, snap: ChatSna
 
 function seedChatCacheFromBoot(queryClient: QueryClient, chats: Record<string, ChatSnapshot>): void {
   for (const [instanceId, snap] of Object.entries(chats)) {
-    queryClient.setQueryData<ChatInfiniteData>(['snapshot-chat', instanceId], (existing) => {
+    queryClient.setQueryData<ChatInfiniteData>(snapshotChatKey(instanceId), (existing) => {
       const merged = mergeChatSnapshot(existing, snap)
 
       recordLastSeenSeq(instanceId, merged.latestSeq)
 
-      return {
-        pages: [merged],
-        pageParams: [undefined as number | undefined]
-      }
+      return fullChatData(merged)
     })
   }
 }

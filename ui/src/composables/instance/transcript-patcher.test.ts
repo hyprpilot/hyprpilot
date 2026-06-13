@@ -2,7 +2,8 @@ import { QueryClient } from '@tanstack/vue-query'
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetTranscriptPatcherForTests, recordLastSeenSeq, replayAvailableForInstance, startTranscriptPatcher } from './transcript-patcher'
+import { isChatCachePartial } from './chat-cache'
+import { __resetTranscriptPatcherForTests, getLastSeenSeq, recordLastSeenSeq, replayAvailableForInstance, startTranscriptPatcher } from './transcript-patcher'
 import { pushPermissionRequest, resetPermissions, usePermissions } from './use-permissions'
 import { ChangeAdvertisementType, TauriEvent, TranscriptItemKind, type ChatSnapshot, type MetaSnapshot, type SeqTranscriptItem } from '@ipc'
 
@@ -347,12 +348,14 @@ describe('transcript-patcher singleton', () => {
         agentId: 'a',
         instanceId: 'i-1',
         sessionId: 's',
+        seq: 7,
         item: { kind: TranscriptItemKind.AgentText, text: 'before-snapshot' }
       } as never
     })
     await flushPromises()
 
     expect(queryClient.getQueryData(['snapshot-chat', 'i-1'])).toBeUndefined()
+    expect(getLastSeenSeq('i-1')).toBeUndefined()
   })
 
   it('seeds a cold chat cache for the first daemon-emitted user prompt', async() => {
@@ -379,6 +382,8 @@ describe('transcript-patcher singleton', () => {
 
     const data = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])
 
+    expect(isChatCachePartial(data)).toBe(true)
+    expect(getLastSeenSeq('i-1')).toBe(1)
     expect(data?.pages[0].items).toEqual([
       {
         seq: 1,
@@ -415,6 +420,7 @@ describe('transcript-patcher singleton', () => {
 
     const data = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])
 
+    expect(isChatCachePartial(data)).toBe(true)
     expect(data?.pages[0].items).toEqual([
       {
         seq: 1,
@@ -455,6 +461,7 @@ describe('transcript-patcher singleton', () => {
 
     const data = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])
 
+    expect(isChatCachePartial(data)).toBe(true)
     expect(data?.pages[0].items).toEqual([
       {
         seq: 42,
@@ -506,6 +513,7 @@ describe('transcript-patcher singleton', () => {
 
     const data = queryClient.getQueryData<{ pages: ChatSnapshot[] }>(['snapshot-chat', 'i-1'])
 
+    expect(isChatCachePartial(data)).toBe(true)
     expect(data?.pages[0].items.map((entry) => entry.item.kind)).toEqual([TranscriptItemKind.UserPrompt, TranscriptItemKind.AgentText])
     expect(data?.pages[0].latestSeq).toBe(2)
   })

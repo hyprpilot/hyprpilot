@@ -1,6 +1,7 @@
 import { QueryClient } from '@tanstack/vue-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { emptyPartialChatData, isChatCachePartial } from './chat-cache'
 import { __resetTranscriptPatcherForTests, recordLastSeenSeq } from './transcript-patcher'
 import { __resetFocusPrefetchForTests, brimSync, prefetchInstanceMeta, prefetchInstanceChat, useFocusPrefetch } from './use-focus-prefetch'
 import { FULL_CHAT_LIMIT } from './use-instance-chat-infinite-query'
@@ -212,6 +213,10 @@ describe('brimSync', () => {
         return Promise.resolve({ mcpsCount: 0, usage: { used: 0, size: 0 } })
       }
 
+      if (command === TauriCommand.InstanceSnapshotChat) {
+        return Promise.resolve({ items: [], hasMore: false })
+      }
+
       return Promise.reject(new Error(`unexpected command ${command}`))
     })
     const client = buildClient()
@@ -376,6 +381,65 @@ describe('useFocusPrefetch.start', () => {
 
     expect(chatCalls).toHaveLength(1)
     expect(chatCalls[0]?.[1]).toMatchObject({ instanceId: 'i-cold' })
+
+    stop()
+  })
+
+  it('replaces defined partial chat caches with a full snapshot on instances-changed', async() => {
+    invoke.mockImplementation((command: string) => {
+      if (command === TauriCommand.InstanceSnapshotMeta) {
+        return Promise.resolve({ mcpsCount: 0, usage: { used: 0, size: 0 } })
+      }
+
+      if (command === TauriCommand.InstanceSnapshotChat) {
+        return Promise.resolve({
+          items: [
+            {
+              seq: 1,
+              item: {
+                type: 'agent_message_chunk',
+                text: 'full'
+              }
+            }
+          ],
+          latestSeq: 1,
+          hasMore: false
+        })
+      }
+
+      return Promise.reject(new Error(`unexpected command ${command}`))
+    })
+    const client = buildClient()
+
+    client.setQueryData(['snapshot-chat', 'i-partial'], emptyPartialChatData())
+
+    const api = useFocusPrefetch(client)
+    const stop = await api.start()
+    const cb = listeners.get(TauriEvent.AcpInstancesChanged)
+
+    cb!({
+      payload: {
+        instanceIds: ['i-partial'],
+        focusedId: 'i-partial'
+      }
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const chatCalls = invoke.mock.calls.filter((c) => c[0] === TauriCommand.InstanceSnapshotChat)
+    const cached = client.getQueryData(['snapshot-chat', 'i-partial'])
+
+    expect(chatCalls).toHaveLength(1)
+    expect(chatCalls[0]?.[1]).toMatchObject({
+      instanceId: 'i-partial',
+      before: undefined,
+      limit: FULL_CHAT_LIMIT
+    })
+    expect(isChatCachePartial(cached)).toBe(false)
+    expect(cached).toMatchObject({
+      pages: [{ items: [{ seq: 1 }], latestSeq: 1 }]
+    })
 
     stop()
   })

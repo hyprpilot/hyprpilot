@@ -33,23 +33,24 @@
  * `eventListeners.get('acp:transcript')` is populated before the
  * very first `acp:transcript` push hits the WS dispatcher.
  *
- * **Drop semantics when no cache exists are preserved.** Events
- * emitted before the snapshot RPC is processed end up in the
- * snapshot (the daemon WS bridge uses `tokio::select! { biased; … }`
- * to push RPC responses before broadcast events on the same
- * connection, so on the wire a snapshot response always precedes any
- * event emitted between snapshot-fire and snapshot-response). Events
- * emitted AFTER snapshot-fire but before cache-populate arrive on
- * the client AFTER the snapshot response — by the time
- * `patchLatestPage` runs, the cache exists.
+ * **Cold-cache handling is conservative.** Most events emitted before
+ * the snapshot RPC is processed end up in the snapshot (the daemon WS
+ * bridge uses `tokio::select! { biased; … }` to push RPC responses
+ * before broadcast events on the same connection). We still render the
+ * first user-authored row / change advertisement when it arrives before
+ * any snapshot cache exists so the captain sees immediate feedback,
+ * but mark that cache partial so focus/switch hydration replaces it
+ * with the daemon-retained transcript instead of treating the live tail
+ * as complete forever.
  *
  * **Per-instance cache keying** stays as it was —
  * `['snapshot-chat', instanceId]` and `['snapshot-meta', instanceId]`.
  * The singleton just owns the listener; the dispatch is identical.
  */
 
-import { type InfiniteData, type QueryClient } from '@tanstack/vue-query'
+import { type QueryClient } from '@tanstack/vue-query'
 
+import { partialChatData, snapshotChatKey, type ChatInfiniteData } from './chat-cache'
 import { nextSeq } from './sequence'
 import { usePermissions } from './use-permissions'
 import {
@@ -67,11 +68,6 @@ import {
 } from '@ipc'
 import { log } from '@lib'
 
-interface PatchableInfiniteData extends InfiniteData<ChatSnapshot, number | undefined> {
-  pages: ChatSnapshot[]
-  pageParams: (number | undefined)[]
-}
-
 /// Per-instance pending-patches queue. Events arrive faster than Vue's
 /// reactive flush; collecting them in one microtask + draining as a
 /// single `setQueryData` keeps O(N²) clone churn off the hot path.
@@ -79,13 +75,13 @@ const pendingByInstance = new Map<string, TranscriptEventPayload[]>()
 let flushScheduled = false
 let started = false
 let unlisteners: UnlistenFn[] = []
-/// Per-instance highest `seq` observed on the wire. The remote-bridge
+/// Per-instance highest `seq` applied to the local chat cache. The remote-bridge
 /// reads this on reconnect and asks the daemon for everything strictly
-/// newer via `instance_snapshot_chat { after }`. Seeded from snapshot
-/// pages (the `latestSeq` field on `ChatSnapshot`); updated on every
-/// live `acp:transcript` event whose payload carries `seq`. Older
-/// daemons leave `seq` undefined — the counter stays put and the
-/// reconnect path falls back to a head-anchored fetch.
+/// newer via `instance_snapshot_chat { after }`. Full snapshots seed it
+/// from `latestSeq`; live events update it only after the queued patch
+/// actually lands in the cache. Older daemons leave `seq` undefined —
+/// the counter stays put and the reconnect path falls back to a
+/// head-anchored fetch.
 const lastSeenSeqByInstance = new Map<string, number>()
 
 export function recordLastSeenSeq(instanceId: string, seq: number | undefined): void {
@@ -201,8 +197,9 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
   }
 
   let refetchSeededColdCache = false
+  let appliedLatestSeq: number | undefined
 
-  queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', instanceId], (old) => {
+  queryClient.setQueryData<ChatInfiniteData>(snapshotChatKey(instanceId), (old) => {
     if (!old || old.pages.length === 0) {
       const seedItems: SeqTranscriptItem[] = []
       let latestSeq = 0
@@ -226,25 +223,20 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
 
       if (seedItems.length > 0) {
         pendingByInstance.delete(instanceId)
-        // A user-authored row can legitimately be the first history row
-        // in a brand-new session. A standalone change advertisement is
-        // more likely to belong to an already-running session whose full
-        // snapshot simply has not been hydrated yet; seed it so the live
-        // banner is not dropped, but mark the query stale so the eventual
-        // snapshot replaces/merges in surrounding history by daemon seq.
-        refetchSeededColdCache = !containsUserAuthoredItem && containsChangeAdvertisement
+        // Cold live seeds are only a landing pad so the captain sees
+        // events that arrived before a full snapshot baseline. Mark
+        // them partial so focus/switch hydration replaces them with
+        // the daemon-retained transcript instead of treating a tail
+        // as complete forever.
+        refetchSeededColdCache = true
+        appliedLatestSeq = latestSeq
 
-        return {
-          pages: [
-            {
-              items: seedItems,
-              oldestSeq: seedItems[0]?.seq ?? latestSeq,
-              latestSeq,
-              hasMore: false
-            }
-          ],
-          pageParams: [undefined]
-        }
+        return partialChatData({
+          items: seedItems,
+          oldestSeq: seedItems[0]?.seq ?? latestSeq,
+          latestSeq,
+          hasMore: false
+        })
       }
       // No cached pages yet — the snapshot RPC hasn't landed. Drop the
       // batch: per the wire-ordering invariant (`biased;` select in
@@ -312,6 +304,8 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
       hasMore: head.hasMore
     }
 
+    appliedLatestSeq = lastSeq
+
     return {
       ...old,
       pages: [nextHead, ...old.pages.slice(1)],
@@ -319,8 +313,10 @@ function flushPatchesFor(queryClient: QueryClient, instanceId: string): void {
     }
   })
 
+  recordLastSeenSeq(instanceId, appliedLatestSeq)
+
   if (refetchSeededColdCache) {
-    void queryClient.invalidateQueries({ queryKey: ['snapshot-chat', instanceId] })
+    void queryClient.invalidateQueries({ queryKey: snapshotChatKey(instanceId) })
   }
 }
 
@@ -346,12 +342,6 @@ function patchLatestPage(queryClient: QueryClient, payload: TranscriptEventPaylo
   // payload (the local counter exists for backward compat with older
   // daemons that don't ship `seq`).
   nextSeq(payload.instanceId)
-  // Track the daemon's truth so a reconnect can ask for everything
-  // strictly newer. When the wire carries `seq` (current daemon) the
-  // remote-bridge's `setRemoteResyncHandler` reads this on reconnect
-  // and dispatches `instance_snapshot_chat { after }`. Older daemons
-  // leave the field undefined; reconnect falls back to a head fetch.
-  recordLastSeenSeq(payload.instanceId, payload.seq)
   const list = pendingByInstance.get(payload.instanceId) ?? []
 
   list.push(payload)
@@ -463,7 +453,7 @@ function applyChatDeltaPage(queryClient: QueryClient, instanceId: string, items:
   let coldCache = false
   let applied = 0
 
-  queryClient.setQueryData<PatchableInfiniteData>(['snapshot-chat', instanceId], (old) => {
+  queryClient.setQueryData<ChatInfiniteData>(snapshotChatKey(instanceId), (old) => {
     if (!old || old.pages.length === 0) {
       coldCache = true
 

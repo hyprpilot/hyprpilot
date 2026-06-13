@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/vue-query'
 
+import { emptyPartialChatData, snapshotChatKey } from './chat-cache'
 import { setSessionRestoring } from './use-session-info'
 import type { InstanceId } from '../chrome/use-active-instance'
 import { pushToast } from '../ui-state/use-toasts'
@@ -29,17 +30,7 @@ export interface StartSessionLifecycleResult {
 }
 
 function seedChatCache(queryClient: QueryClient | undefined, target: InstanceId): void {
-  queryClient?.setQueryData(['snapshot-chat', target], {
-    pages: [
-      {
-        items: [],
-        oldestSeq: undefined,
-        latestSeq: undefined,
-        hasMore: false
-      }
-    ],
-    pageParams: [undefined as number | undefined]
-  })
+  queryClient?.setQueryData(snapshotChatKey(target), emptyPartialChatData())
 }
 
 export async function startSessionLifecycle(args: StartSessionLifecycleArgs): Promise<StartSessionLifecycleResult> {
