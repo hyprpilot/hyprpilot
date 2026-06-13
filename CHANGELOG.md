@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.2](https://github.com/hyprpilot/hyprpilot/compare/v2.6.1...v2.6.2) (2026-06-13)
+
+
+### Bug Fixes
+
+* **chat:** recover partial transcript caches ([#165](https://github.com/hyprpilot/hyprpilot/issues/165)) ([578119b](https://github.com/hyprpilot/hyprpilot/commit/578119b8f5922d1562e03c19c402c9995828d0ab))
+
 ## [2.6.1](https://github.com/hyprpilot/hyprpilot/compare/v2.6.0...v2.6.1) (2026-06-12)
 
 
