@@ -35,7 +35,13 @@ Logs land at `~/.local/state/hyprpilot/logs/hyprpilot.log.<date>`. When running 
 
 The spawned provider inherits your shell environment; `[agents.env]` overlays only the configured keys. Hyprpilot also resolves the profile's MCP catalog before launch, including root/profile patches and the auto-injected `hyprpilot` MCP server when enabled. Patches can use `$match.spawn = true` for direct-spawn-only profile overrides, or `$match.spawn = false` for daemon/ACP-only overrides. Standard MCP `command`, `args`, `env`, and `headers` strings expand `~`, `$VAR`, `${VAR}`, and `${env:VAR}` before being projected into the provider-specific CLI config. For Codex remote MCP headers, Hyprpilot uses Codex's native `bearer_token_env_var`, `env_http_headers`, and `http_headers` config keys so header-auth servers can read tokens from the inherited environment instead of receiving unsupported `headers.*` entries.
 
-Claude direct spawn also projects per-server `hyprpilot.autoAcceptTools` / `autoRejectTools` into native `--allowedTools` / `--disallowedTools` entries using Claude's `mcp__server__tool` naming. Codex and OpenCode currently expose only coarse approval-bypass controls in their local CLI help, so Hyprpilot does not map per-tool MCP auto-approval to those providers.
+Direct spawn also projects per-server `hyprpilot` MCP tool policy into each provider's native shape where possible:
+
+- `includeTools` / `excludeTools` control which MCP tools should be available from a server.
+- `autoAcceptTools` / `autoRejectTools` control which MCP tools should bypass or deny approval.
+- Claude receives `--allowedTools` / `--disallowedTools` entries using Claude's `mcp__server__tool` naming.
+- OpenCode receives `OPENCODE_PERMISSION` rules using OpenCode's `server_tool` MCP naming and supports wildcard patterns.
+- Codex receives `mcp_servers.<id>.enabled_tools`, `disabled_tools`, and `tools.<tool>.approval_mode` config overrides. Codex only supports exact tool names for these fields, so Hyprpilot skips wildcard patterns for Codex with a warning.
 
 ```sh
 hyprpilot spawn

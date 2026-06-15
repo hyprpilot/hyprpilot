@@ -6,7 +6,8 @@
 //!
 //! 1. **Per-server hyprpilot extension globs** — looked up via the
 //!    tool→server attribution map populated at `session/new` time.
-//!    Reject beats accept.
+//!    `excludeTools` rejects first, `includeTools` rejects misses,
+//!    then auto-reject beats auto-accept.
 //! 2. **Default**: `AskUser` — bounces to the UI.
 //!
 //! There is no daemon-side runtime trust store. The captain's "always
@@ -265,7 +266,8 @@ pub struct DecisionContext<'a> {
 #[async_trait]
 pub trait PermissionController: Send + Sync + 'static {
     /// Run the per-server MCP glob lookup; `AskUser` for everything
-    /// else. Reject beats accept inside the glob lane.
+    /// else. Exclude beats include; reject beats accept inside the
+    /// glob lane.
     fn decide(&self, req: &PermissionRequest, ctx: &DecisionContext<'_>) -> Decision;
 
     /// Register a pending prompt. Returns the receiver the caller
@@ -395,17 +397,33 @@ impl PermissionController for DefaultPermissionController {
         // Per-server hyprpilot extension globs. The adapter boundary
         // attributes MCP calls to `{ server, leaf }`; the controller
         // matches the SERVER-RELATIVE leaf against that server's
-        // accept / reject globs. Captains write `read_*` / `delete_*`
-        // under the server block; the server namespace is implicit.
-        // Reject beats accept. Vendor-native tools skip this lane
-        // entirely.
+        // include / exclude / accept / reject globs. Captains write
+        // `read_*` / `delete_*` under the server block; the server
+        // namespace is implicit. Vendor-native tools skip this lane.
         if let Some(registry) = ctx.mcps {
             if let crate::tools::ToolKind::Mcp { server, tool: leaf } = &req.tool_call.tool_kind {
-                // Cached globs — built once at MCPsRegistry construction.
-                // Reject hits short-circuit before the accept set is even
-                // examined; both are precompiled so neither path allocates.
-                if let Some((reject_set, accept_set)) = registry.globs_for(server) {
-                    if reject_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
+                if let Some(policy) = registry.globs_for(server) {
+                    if policy.exclude.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
+                        tracing::debug!(
+                            request_id = %req.request_id,
+                            tool,
+                            server = %server,
+                            leaf,
+                            "permission::decide: per-server exclude glob hit"
+                        );
+                        return Decision::Deny;
+                    }
+                    if policy.include_set && !policy.include.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
+                        tracing::debug!(
+                            request_id = %req.request_id,
+                            tool,
+                            server = %server,
+                            leaf,
+                            "permission::decide: per-server include glob miss"
+                        );
+                        return Decision::Deny;
+                    }
+                    if policy.reject.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
@@ -415,7 +433,7 @@ impl PermissionController for DefaultPermissionController {
                         );
                         return Decision::Deny;
                     }
-                    if accept_set.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
+                    if policy.accept.as_ref().is_some_and(|gs| gs.is_match(leaf)) {
                         tracing::debug!(
                             request_id = %req.request_id,
                             tool,
@@ -678,8 +696,24 @@ mod tests {
             name: name.into(),
             raw: json!({ "command": "echo" }),
             hyprpilot: HyprpilotExtension {
+                include_tools: None,
+                exclude_tools: Vec::new(),
                 auto_accept_tools: accept.iter().map(|s| (*s).to_string()).collect(),
                 auto_reject_tools: reject.iter().map(|s| (*s).to_string()).collect(),
+            },
+            source: PathBuf::from("test.json"),
+        }])
+    }
+
+    fn registry_with_visibility(name: &str, include: Option<&[&str]>, exclude: &[&str]) -> MCPsRegistry {
+        MCPsRegistry::new(vec![MCPDefinition {
+            name: name.into(),
+            raw: json!({ "command": "echo" }),
+            hyprpilot: HyprpilotExtension {
+                include_tools: include.map(|patterns| patterns.iter().map(|s| (*s).to_string()).collect()),
+                exclude_tools: exclude.iter().map(|s| (*s).to_string()).collect(),
+                auto_accept_tools: Vec::new(),
+                auto_reject_tools: Vec::new(),
             },
             source: PathBuf::from("test.json"),
         }])
@@ -717,6 +751,28 @@ mod tests {
             &DecisionContext { mcps: Some(&registry) },
         );
         assert_eq!(d, Decision::Allow);
+    }
+
+    #[test]
+    fn decide_per_server_exclude_glob_denies_leaf() {
+        let controller = DefaultPermissionController::new();
+        let registry = registry_with_visibility("filesystem", None, &["delete_*"]);
+        let d = controller.decide(
+            &request("r1", "mcp__filesystem__delete_file"),
+            &DecisionContext { mcps: Some(&registry) },
+        );
+        assert_eq!(d, Decision::Deny);
+    }
+
+    #[test]
+    fn decide_per_server_include_glob_denies_misses() {
+        let controller = DefaultPermissionController::new();
+        let registry = registry_with_visibility("filesystem", Some(&["read_*"]), &[]);
+        let d = controller.decide(
+            &request("r1", "mcp__filesystem__delete_file"),
+            &DecisionContext { mcps: Some(&registry) },
+        );
+        assert_eq!(d, Decision::Deny);
     }
 
     #[test]

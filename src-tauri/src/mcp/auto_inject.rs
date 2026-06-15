@@ -94,6 +94,8 @@ pub fn build_auto_inject_definition(
         name: SKILLS_SERVER_NAME.to_string(),
         raw,
         hyprpilot: HyprpilotExtension {
+            include_tools: None,
+            exclude_tools: Vec::new(),
             auto_accept_tools: cfg.auto_accept_tools().to_vec(),
             auto_reject_tools: cfg.auto_reject_tools().to_vec(),
         },

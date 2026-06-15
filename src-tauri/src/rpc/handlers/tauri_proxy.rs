@@ -817,15 +817,16 @@ async fn dispatch(app: &tauri::AppHandle, cmd: &str, params: Value, ctx: &Handle
             let items: Vec<Value> = catalog
                 .iter()
                 .map(|m| {
-                    json!({
+                    let mut item = json!({
                         "name": m.name,
                         "raw": m.raw,
-                        "hyprpilot": {
-                            "autoAcceptTools": m.hyprpilot.auto_accept_tools,
-                            "autoRejectTools": m.hyprpilot.auto_reject_tools,
-                        },
                         "source": crate::tools::path::display_cwd(&m.source.to_string_lossy()),
-                    })
+                    });
+                    if m.hyprpilot.has_tool_policy() {
+                        item["hyprpilot"] = json!(&m.hyprpilot);
+                    }
+
+                    item
                 })
                 .collect();
             Ok(json!({ "mcps": items }))

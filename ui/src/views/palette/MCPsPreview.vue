@@ -62,8 +62,8 @@ const urlStr = computed<string | undefined>(() => {
   return typeof raw.url === 'string' ? raw.url : undefined
 })
 
-const acceptGlobs = computed<string[]>(() => active.value?.hyprpilot.autoAcceptTools ?? [])
-const rejectGlobs = computed<string[]>(() => active.value?.hyprpilot.autoRejectTools ?? [])
+const acceptGlobs = computed<string[]>(() => active.value?.hyprpilot?.autoAcceptTools ?? [])
+const rejectGlobs = computed<string[]>(() => active.value?.hyprpilot?.autoRejectTools ?? [])
 
 // Captain's env-var values are credentials; the keys alone leak the
 // integration shape. Strip the whole `env` block from the raw JSON

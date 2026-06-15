@@ -332,6 +332,8 @@ entry via an optional `hyprpilot` namespace key:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       "hyprpilot": {
+        "includeTools": ["read_*", "list_*"],
+        "excludeTools": ["delete_*"],
         "autoAcceptTools": ["read_*"],
         "autoRejectTools": ["delete_*"]
       }
@@ -388,10 +390,15 @@ Equivalent JSON for a `--with-config` patch:
   before the catalog is sent to adapters or shown in the UI. Set
   `[mcp].enabled = false` if a profile intentionally wants a custom
   server named `hyprpilot`.
-- **Permission integration**: `hyprpilot.autoAcceptTools` /
-  `autoRejectTools` matched at `PermissionController::decide` lane 2.
+- **Tool policy integration**: `hyprpilot.includeTools` /
+  `excludeTools` define a server-local tool visibility policy, and
+  `autoAcceptTools` / `autoRejectTools` define approval policy.
   Globs are **server-relative** — write `read_*` inside the server
-  block, the `mcp__<server>__` prefix is implicit.
+  block, the `mcp__<server>__` prefix is implicit. `includeTools`
+  unset means no allow-list; `includeTools = []` is an explicit
+  deny-all allow-list. In ACP, include/exclude are enforced at
+  permission time (tools may still be visible to the vendor); direct
+  spawn projects them into provider-native config where available.
 - **No reload**: catalog is static after daemon boot.
   Restart-to-reconfigure.
 
@@ -1850,10 +1857,12 @@ Client-side auto-accept / auto-reject lives on the
 `PermissionController` as a single static lane:
 
 1. **Per-server hyprpilot extension globs** — each MCP JSON entry's
-   optional `hyprpilot.autoAcceptTools` / `autoRejectTools`. Tool→server
-   attribution by `mcp__<server>__<tool>` prefix.
+   optional `hyprpilot.includeTools` / `excludeTools` /
+   `autoAcceptTools` / `autoRejectTools`. Tool→server attribution by
+   `mcp__<server>__<tool>` prefix.
 
-Reject beats accept inside the lane. Vendor-native tools (Bash, Read,
+Exclude beats include, include misses deny, and reject beats accept
+inside the lane. Vendor-native tools (Bash, Read,
 …) skip the lane entirely. Misses fall through to AskUser. Hyprpilot
 does not persist a separate trust store; the captain's explicit
 `allow_always` / `reject_always` picks ride to the agent as ordinary

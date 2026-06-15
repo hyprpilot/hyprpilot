@@ -707,6 +707,8 @@ mod tests {
             name: "filesystem".into(),
             raw: json!({ "command": "echo" }),
             hyprpilot: HyprpilotExtension {
+                include_tools: None,
+                exclude_tools: Vec::new(),
                 auto_accept_tools: vec!["read_*".into()],
                 auto_reject_tools: vec![],
             },
@@ -746,6 +748,8 @@ mod tests {
             name: "memory".into(),
             raw: json!({ "command": "echo" }),
             hyprpilot: HyprpilotExtension {
+                include_tools: None,
+                exclude_tools: Vec::new(),
                 auto_accept_tools: vec!["read_*".into()],
                 auto_reject_tools: vec![],
             },

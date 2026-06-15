@@ -171,16 +171,18 @@ export interface Attachment {
  * One row from the resolved MCP catalog as surfaced by `mcps_list`.
  * `raw` is the opaque `mcpServers` JSON entry minus the hyprpilot
  * extension key — fields like `command` / `args` / `env` / `url` /
- * vendor-specific keys live here. `hyprpilot` carries the typed
- * extension fields. `source` is the absolute path of the JSON file
- * the entry was loaded from.
+ * vendor-specific keys live here. `hyprpilot` carries any typed
+ * extension fields when the entry declared them. `source` is the
+ * absolute path of the JSON file the entry was loaded from.
  */
 export interface MCPItem {
   name: string
   raw: Record<string, unknown>
-  hyprpilot: {
-    autoAcceptTools: string[]
-    autoRejectTools: string[]
+  hyprpilot?: {
+    includeTools?: string[]
+    excludeTools?: string[]
+    autoAcceptTools?: string[]
+    autoRejectTools?: string[]
   }
   source: string
 }

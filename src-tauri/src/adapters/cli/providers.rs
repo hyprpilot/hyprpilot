@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{ExitCode, Stdio};
 
@@ -167,6 +167,9 @@ fn build_codex(
     for (key, value) in codex_mcp_config_entries(mcp_defs) {
         push_codex_config_if_absent(&mut command.args, &detect_args, &key, value);
     }
+    for (key, value) in codex_mcp_tool_policy_entries(mcp_defs) {
+        push_codex_config_if_absent(&mut command.args, &detect_args, &key, value);
+    }
 
     command.args.extend(provider_args);
 
@@ -210,6 +213,16 @@ fn build_opencode(
     } else if system_prompt.is_some() || resolved.effort.is_some() || !mcp_defs.is_empty() {
         tracing::warn!(
             "cli spawn: OPENCODE_CONFIG_CONTENT already set by agent env; skipping generated opencode prompt/MCP/variant config"
+        );
+    }
+    if !command.env.contains_key("OPENCODE_PERMISSION") {
+        if let Some(permissions) = opencode_permission_content(mcp_defs)? {
+            ensure_inline_size("OPENCODE_PERMISSION", &permissions)?;
+            command.env.insert("OPENCODE_PERMISSION".into(), permissions);
+        }
+    } else if mcp_defs.iter().any(|def| def.hyprpilot.has_tool_policy()) {
+        tracing::warn!(
+            "cli spawn: OPENCODE_PERMISSION already set by agent env; skipping generated opencode MCP tool policy config"
         );
     }
 
@@ -406,6 +419,19 @@ struct ClaudePermissionTools {
 fn claude_mcp_permission_tools(defs: &[MCPDefinition]) -> ClaudePermissionTools {
     let mut tools = ClaudePermissionTools::default();
     for def in defs {
+        if let Some(include) = def.hyprpilot.include_tools.as_ref() {
+            tools.allow.extend(
+                include
+                    .iter()
+                    .map(|pattern| claude_mcp_tool_pattern(&def.name, pattern)),
+            );
+        }
+        tools.deny.extend(
+            def.hyprpilot
+                .exclude_tools
+                .iter()
+                .map(|pattern| claude_mcp_tool_pattern(&def.name, pattern)),
+        );
         tools.allow.extend(
             def.hyprpilot
                 .auto_accept_tools
@@ -434,6 +460,145 @@ fn claude_mcp_tool_pattern(server: &str, pattern: &str) -> String {
     } else {
         format!("mcp__{server}__{pattern}")
     }
+}
+
+fn mcp_leaf_pattern<'a>(server: &str, pattern: &'a str) -> Option<&'a str> {
+    if let Some(rest) = pattern.strip_prefix("mcp__") {
+        let (prefix, leaf) = rest.split_once("__")?;
+        return (prefix == server).then_some(leaf);
+    }
+
+    Some(pattern)
+}
+
+fn is_exact_tool_name(pattern: &str) -> bool {
+    !pattern.is_empty() && !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[')
+}
+
+#[derive(Debug, Default)]
+struct CodexToolPolicy {
+    default_approval: bool,
+    approval_tools: BTreeSet<String>,
+    enabled_tools: Option<BTreeSet<String>>,
+    disabled_tools: BTreeSet<String>,
+}
+
+fn codex_mcp_tool_policy_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    for def in defs {
+        let policy = codex_mcp_tool_policy(def);
+        let prefix = toml_key_path(&["mcp_servers", &def.name]);
+
+        if policy.default_approval {
+            entries.push((format!("{prefix}.default_tools_approval_mode"), toml_string("approve")));
+        }
+        for tool in policy.approval_tools {
+            entries.push((
+                toml_key_path(&["mcp_servers", &def.name, "tools", &tool, "approval_mode"]),
+                toml_string("approve"),
+            ));
+        }
+        if let Some(enabled_tools) = policy.enabled_tools {
+            entries.push((
+                format!("{prefix}.enabled_tools"),
+                toml_array(&enabled_tools.into_iter().collect::<Vec<_>>()),
+            ));
+        }
+        if !policy.disabled_tools.is_empty() {
+            entries.push((
+                format!("{prefix}.disabled_tools"),
+                toml_array(&policy.disabled_tools.into_iter().collect::<Vec<_>>()),
+            ));
+        }
+    }
+
+    entries
+}
+
+fn codex_mcp_tool_policy(def: &MCPDefinition) -> CodexToolPolicy {
+    let mut policy = CodexToolPolicy::default();
+
+    if let Some(include) = def.hyprpilot.include_tools.as_ref() {
+        let mut enabled = BTreeSet::new();
+        let mut all_tools = false;
+        for pattern in include {
+            match mcp_leaf_pattern(&def.name, pattern) {
+                Some("*") => {
+                    all_tools = true;
+                }
+                Some(leaf) if is_exact_tool_name(leaf) => {
+                    enabled.insert(leaf.to_string());
+                }
+                Some(leaf) => {
+                    tracing::warn!(
+                        server = %def.name,
+                        pattern = %leaf,
+                        "cli spawn: skipping codex includeTools glob; Codex enabled_tools supports exact tool names only"
+                    );
+                }
+                None => {}
+            }
+        }
+        if !all_tools {
+            policy.enabled_tools = Some(enabled);
+        }
+    }
+
+    for pattern in def
+        .hyprpilot
+        .exclude_tools
+        .iter()
+        .chain(def.hyprpilot.auto_reject_tools.iter())
+    {
+        match mcp_leaf_pattern(&def.name, pattern) {
+            Some("*") => {
+                policy.enabled_tools = Some(BTreeSet::new());
+                policy.disabled_tools.clear();
+            }
+            Some(leaf)
+                if is_exact_tool_name(leaf)
+                    && policy
+                        .enabled_tools
+                        .as_ref()
+                        .map_or(true, |enabled| !enabled.is_empty()) =>
+            {
+                policy.disabled_tools.insert(leaf.to_string());
+            }
+            Some(leaf) => {
+                tracing::warn!(
+                    server = %def.name,
+                    pattern = %leaf,
+                    "cli spawn: skipping codex reject/exclude glob; Codex disabled_tools supports exact tool names only"
+                );
+            }
+            None => {}
+        }
+    }
+
+    if policy.enabled_tools.as_ref().is_some_and(BTreeSet::is_empty) {
+        return policy;
+    }
+
+    for pattern in &def.hyprpilot.auto_accept_tools {
+        match mcp_leaf_pattern(&def.name, pattern) {
+            Some("*") => {
+                policy.default_approval = true;
+            }
+            Some(leaf) if is_exact_tool_name(leaf) => {
+                policy.approval_tools.insert(leaf.to_string());
+            }
+            Some(leaf) => {
+                tracing::warn!(
+                    server = %def.name,
+                    pattern = %leaf,
+                    "cli spawn: skipping codex autoAcceptTools glob; Codex tool approval overrides support exact tool names only"
+                );
+            }
+            None => {}
+        }
+    }
+
+    policy
 }
 
 fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
@@ -630,6 +795,82 @@ fn opencode_mcp_config(defs: &[MCPDefinition]) -> serde_json::Map<String, serde_
     out
 }
 
+fn opencode_permission_content(defs: &[MCPDefinition]) -> Result<Option<String>> {
+    let mut permissions = serde_json::Map::new();
+    for def in defs {
+        let server = opencode_sanitize_tool_name(&def.name);
+
+        if def.hyprpilot.include_tools.is_some() {
+            permissions.insert(format!("{server}_*"), serde_json::Value::String("deny".into()));
+        }
+        if let Some(include) = def.hyprpilot.include_tools.as_ref() {
+            for pattern in include {
+                if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
+                    permissions.insert(pattern, serde_json::Value::String("allow".into()));
+                }
+            }
+        }
+        for pattern in &def.hyprpilot.exclude_tools {
+            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
+                permissions.insert(pattern, serde_json::Value::String("deny".into()));
+            }
+        }
+        for pattern in &def.hyprpilot.auto_accept_tools {
+            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
+                permissions.insert(pattern, serde_json::Value::String("allow".into()));
+            }
+        }
+        for pattern in &def.hyprpilot.auto_reject_tools {
+            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
+                permissions.insert(pattern, serde_json::Value::String("deny".into()));
+            }
+        }
+    }
+
+    if permissions.is_empty() {
+        return Ok(None);
+    }
+
+    serde_json::to_string(&serde_json::Value::Object(permissions))
+        .map(Some)
+        .context("serialize opencode permissions")
+}
+
+fn opencode_mcp_tool_pattern(server: &str, pattern: &str) -> Option<String> {
+    let leaf = mcp_leaf_pattern(server, pattern)?;
+    Some(format!(
+        "{}_{}",
+        opencode_sanitize_tool_name(server),
+        opencode_sanitize_tool_pattern(leaf)
+    ))
+}
+
+fn opencode_sanitize_tool_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn opencode_sanitize_tool_pattern(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '*' | '?') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn opencode_remote_mcp(url: String, headers: Vec<agent_client_protocol::schema::HttpHeader>) -> serde_json::Value {
     let mut entry = serde_json::json!({
         "type": "remote",
@@ -777,6 +1018,8 @@ mod tests {
                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
             }),
             hyprpilot: HyprpilotExtension {
+                include_tools: None,
+                exclude_tools: Vec::new(),
                 auto_accept_tools: vec!["read_*".into(), "list_*".into()],
                 auto_reject_tools: vec!["delete_*".into(), "mcp__filesystem__write_*".into()],
             },
@@ -796,6 +1039,23 @@ mod tests {
                 },
             }),
             hyprpilot: HyprpilotExtension::default(),
+            source: "<test>".into(),
+        }
+    }
+
+    fn mcp_def_with_visibility() -> MCPDefinition {
+        MCPDefinition {
+            name: "filesystem".into(),
+            raw: json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            }),
+            hyprpilot: HyprpilotExtension {
+                include_tools: Some(vec!["read_file".into(), "list_*".into()]),
+                exclude_tools: vec!["delete_file".into()],
+                auto_accept_tools: vec!["read_file".into()],
+                auto_reject_tools: vec!["write_*".into()],
+            },
             source: "<test>".into(),
         }
     }
@@ -872,6 +1132,30 @@ mod tests {
     }
 
     #[test]
+    fn claude_mcp_visibility_globs_map_to_allowed_and_disallowed_tools() {
+        let command = build_command(
+            &resolved(AgentProvider::AcpClaudeCode),
+            None,
+            &[mcp_def_with_visibility()],
+            Vec::new(),
+        )
+        .unwrap();
+        let allowed = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--allowedTools").then_some(w[1].as_str()))
+            .expect("allowed tools injected");
+        let disallowed = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--disallowedTools").then_some(w[1].as_str()))
+            .expect("disallowed tools injected");
+
+        assert_eq!(allowed, "mcp__filesystem__list_*,mcp__filesystem__read_file");
+        assert_eq!(disallowed, "mcp__filesystem__delete_file,mcp__filesystem__write_*");
+    }
+
+    #[test]
     fn claude_provider_args_suppress_generated_mcp_permissions() {
         let command = build_command(
             &resolved(AgentProvider::AcpClaudeCode),
@@ -936,6 +1220,24 @@ mod tests {
         assert!(rendered.contains("mcp_servers.github.env_http_headers.x-api-key=\"EXA_API_KEY\""));
         assert!(!rendered.contains("mcp_servers.github.headers."));
         assert!(!rendered.contains("Bearer "));
+    }
+
+    #[test]
+    fn codex_projects_exact_mcp_tool_policy_into_supported_config() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
+            None,
+            &[mcp_def_with_visibility()],
+            Vec::new(),
+        )
+        .unwrap();
+        let joined = command.args.join("\n");
+
+        assert!(joined.contains("mcp_servers.filesystem.enabled_tools=[\"read_file\"]"));
+        assert!(joined.contains("mcp_servers.filesystem.disabled_tools=[\"delete_file\"]"));
+        assert!(joined.contains("mcp_servers.filesystem.tools.read_file.approval_mode=\"approve\""));
+        assert!(!joined.contains("list_*"));
+        assert!(!joined.contains("write_*"));
     }
 
     #[test]
@@ -1044,5 +1346,24 @@ mod tests {
         assert_eq!(config["agent"]["plan"]["variant"], "high");
         assert_eq!(config["mcp"]["hyprpilot-nvim"]["command"][0], "uvx");
         assert!(!command.args.iter().any(|arg| arg == "--session"));
+    }
+
+    #[test]
+    fn opencode_projects_mcp_tool_policy_into_permission_env() {
+        let command = build_command(
+            &resolved(AgentProvider::AcpOpenCode),
+            None,
+            &[mcp_def_with_visibility()],
+            Vec::new(),
+        )
+        .unwrap();
+        let permissions: serde_json::Value =
+            serde_json::from_str(command.env.get("OPENCODE_PERMISSION").unwrap()).unwrap();
+
+        assert_eq!(permissions["filesystem_*"], "deny");
+        assert_eq!(permissions["filesystem_read_file"], "allow");
+        assert_eq!(permissions["filesystem_list_*"], "allow");
+        assert_eq!(permissions["filesystem_delete_file"], "deny");
+        assert_eq!(permissions["filesystem_write_*"], "deny");
     }
 }
