@@ -941,15 +941,16 @@ pub async fn mcps_list(adapter: AdapterState<'_>, instance_id: Option<String>) -
     let items: Vec<Value> = catalog
         .iter()
         .map(|m| {
-            serde_json::json!({
+            let mut item = serde_json::json!({
                 "name": m.name,
                 "raw": m.raw,
-                "hyprpilot": {
-                    "autoAcceptTools": m.hyprpilot.auto_accept_tools,
-                    "autoRejectTools": m.hyprpilot.auto_reject_tools,
-                },
                 "source": crate::tools::path::display_cwd(&m.source.to_string_lossy()),
-            })
+            });
+            if m.hyprpilot.has_tool_policy() {
+                item["hyprpilot"] = serde_json::json!(&m.hyprpilot);
+            }
+
+            item
         })
         .collect();
     Ok(serde_json::json!({ "mcps": items }))

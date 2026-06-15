@@ -8,8 +8,9 @@
 //! `~/.claude.json` straight in and it Just Works.
 //!
 //! hyprpilot extends the spec via a per-server `hyprpilot` namespace
-//! key carrying our own fields (auto-accept / auto-reject tool globs
-//! today; future fields slot in alongside without spec collision).
+//! key carrying our own fields (tool include / exclude and
+//! auto-accept / auto-reject tool globs today; future fields slot in
+//! alongside without spec collision).
 //! Everything else in the entry stays as opaque `serde_json::Value` —
 //! daemon never inspects `command` / `args` / `env` / `url` / future
 //! spec additions; they ride through to the agent verbatim at
@@ -38,12 +39,33 @@ use serde_json::Value;
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HyprpilotExtension {
+    /// Optional glob allow-list for tools from this server. `None`
+    /// means no visibility filter; `Some([])` is an explicit
+    /// "no tools" filter for providers that can express it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_tools: Option<Vec<String>>,
+    /// Glob deny-list for tools from this server. Exclude beats
+    /// include on overlap.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_tools: Vec<String>,
     /// Glob patterns matching tool names; matches auto-resolve as
     /// "allow once" through the permission controller.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub auto_accept_tools: Vec<String>,
     /// Glob patterns matching tool names; matches auto-resolve as
     /// "deny once". Reject beats accept on overlap.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub auto_reject_tools: Vec<String>,
+}
+
+impl HyprpilotExtension {
+    #[must_use]
+    pub fn has_tool_policy(&self) -> bool {
+        self.include_tools.is_some()
+            || !self.exclude_tools.is_empty()
+            || !self.auto_accept_tools.is_empty()
+            || !self.auto_reject_tools.is_empty()
+    }
 }
 
 /// One server entry. `name` is the `mcpServers` map key (used for
@@ -64,13 +86,18 @@ pub struct MCPDefinition {
     pub source: PathBuf,
 }
 
-/// Compiled per-server glob pair: `(reject, accept)`. Built once at
-/// registry construction so the permission-decide hot path reads from
-/// the cache instead of running `GlobSetBuilder::build()` on every
-/// tool call. Reject beats accept — the per-server lane in
-/// `DefaultPermissionController::decide` checks reject first and
-/// short-circuits.
-pub type CompiledGlobs = (Option<globset::GlobSet>, Option<globset::GlobSet>);
+/// Compiled per-server glob policy. Built once at registry
+/// construction so the permission-decide hot path reads from the
+/// cache instead of running `GlobSetBuilder::build()` on every tool
+/// call.
+#[derive(Debug)]
+pub struct CompiledToolPolicy {
+    pub include: Option<globset::GlobSet>,
+    pub exclude: Option<globset::GlobSet>,
+    pub reject: Option<globset::GlobSet>,
+    pub accept: Option<globset::GlobSet>,
+    pub include_set: bool,
+}
 
 fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
 where
@@ -178,11 +205,11 @@ pub struct MCPsRegistry {
     /// `list()` is stable.
     catalog: RwLock<HashMap<String, MCPDefinition>>,
     order: RwLock<Vec<String>>,
-    /// Per-server compiled `(reject, accept)` `GlobSet` pair. Built
+    /// Per-server compiled tool policy. Built
     /// once at construction so the decide path doesn't allocate. The
     /// patterns are immutable for the lifetime of the registry; no
     /// reload story today (CLAUDE.md: "no reload — restart-to-reconfigure").
-    globs: HashMap<String, CompiledGlobs>,
+    globs: HashMap<String, CompiledToolPolicy>,
 }
 
 /// Project an opaque `MCPDefinition.raw` JSON value onto the ACP wire
@@ -293,10 +320,13 @@ impl MCPsRegistry {
             order.push(d.name.clone());
             globs.insert(
                 d.name.clone(),
-                (
-                    compile_glob_set(&d.hyprpilot.auto_reject_tools),
-                    compile_glob_set(&d.hyprpilot.auto_accept_tools),
-                ),
+                CompiledToolPolicy {
+                    include: d.hyprpilot.include_tools.as_deref().and_then(compile_glob_set),
+                    exclude: compile_glob_set(&d.hyprpilot.exclude_tools),
+                    reject: compile_glob_set(&d.hyprpilot.auto_reject_tools),
+                    accept: compile_glob_set(&d.hyprpilot.auto_accept_tools),
+                    include_set: d.hyprpilot.include_tools.is_some(),
+                },
             );
             catalog.insert(d.name.clone(), d);
         }
@@ -307,12 +337,12 @@ impl MCPsRegistry {
         }
     }
 
-    /// Cached `(reject, accept)` glob pair for `name`, or `None` when
+    /// Cached tool policy for `name`, or `None` when
     /// the server isn't in the registry. Used by
     /// `DefaultPermissionController::decide` to short-circuit without
     /// rebuilding `GlobSet`s on every call.
     #[must_use]
-    pub fn globs_for(&self, name: &str) -> Option<&CompiledGlobs> {
+    pub fn globs_for(&self, name: &str) -> Option<&CompiledToolPolicy> {
         self.globs.get(name)
     }
 
@@ -386,6 +416,26 @@ mod tests {
 
     fn build_registry(defs: Vec<MCPDefinition>) -> Arc<MCPsRegistry> {
         Arc::new(MCPsRegistry::new(defs))
+    }
+
+    #[test]
+    fn hyprpilot_extension_serializes_only_declared_tool_policy_fields() {
+        assert_eq!(serde_json::json!(HyprpilotExtension::default()), serde_json::json!({}));
+
+        let ext = HyprpilotExtension {
+            include_tools: Some(Vec::new()),
+            exclude_tools: Vec::new(),
+            auto_accept_tools: vec!["read_*".into()],
+            auto_reject_tools: Vec::new(),
+        };
+
+        assert_eq!(
+            serde_json::json!(ext),
+            serde_json::json!({
+                "includeTools": [],
+                "autoAcceptTools": ["read_*"],
+            })
+        );
     }
 
     #[test]

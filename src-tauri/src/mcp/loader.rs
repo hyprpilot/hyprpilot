@@ -195,6 +195,8 @@ mod tests {
                         "args": ["-y", "fs"],
                         "env": { "ROOT": "/tmp" },
                         "hyprpilot": {
+                            "includeTools": ["read_*", "list_*"],
+                            "excludeTools": ["delete_*"],
                             "autoAcceptTools": ["read_*"],
                             "autoRejectTools": ["delete_*"]
                         }
@@ -207,6 +209,11 @@ mod tests {
         let d = &defs[0];
         assert_eq!(d.name, "filesystem");
         assert_eq!(d.source, path);
+        assert_eq!(
+            d.hyprpilot.include_tools.as_deref(),
+            Some(&["read_*".to_string(), "list_*".to_string()][..])
+        );
+        assert_eq!(d.hyprpilot.exclude_tools, vec!["delete_*"]);
         assert_eq!(d.hyprpilot.auto_accept_tools, vec!["read_*"]);
         assert_eq!(d.hyprpilot.auto_reject_tools, vec!["delete_*"]);
         // hyprpilot key stripped from raw — agent never sees it.
@@ -271,6 +278,8 @@ mod tests {
             r#"{ "mcpServers": { "alpha": { "command": "echo" } } }"#,
         );
         let defs = load_files(&[entry(path)]);
+        assert!(defs[0].hyprpilot.include_tools.is_none());
+        assert!(defs[0].hyprpilot.exclude_tools.is_empty());
         assert!(defs[0].hyprpilot.auto_accept_tools.is_empty());
         assert!(defs[0].hyprpilot.auto_reject_tools.is_empty());
     }
