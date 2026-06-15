@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/hyprpilot/hyprpilot/compare/v2.7.0...v2.7.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **spawn:** preserve OpenCode MCP policy precedence ([#169](https://github.com/hyprpilot/hyprpilot/issues/169)) ([7ba4eac](https://github.com/hyprpilot/hyprpilot/commit/7ba4eac5bcaf3441e1efe00fd956248dc6645201))
+
 ## [2.7.0](https://github.com/hyprpilot/hyprpilot/compare/v2.6.2...v2.7.0) (2026-06-15)
 
 
