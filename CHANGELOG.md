@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/hyprpilot/hyprpilot/compare/v2.6.2...v2.7.0) (2026-06-15)
+
+
+### Features
+
+* **spawn:** project MCP tool policies to CLIs ([#167](https://github.com/hyprpilot/hyprpilot/issues/167)) ([be485b1](https://github.com/hyprpilot/hyprpilot/commit/be485b12ea49c43a5b1dde3fe08e5af3e8a5c55b))
+
 ## [2.6.2](https://github.com/hyprpilot/hyprpilot/compare/v2.6.1...v2.6.2) (2026-06-13)
 
 
