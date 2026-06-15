@@ -143,11 +143,11 @@ Files iterate in order. Same-named servers in later files override earlier ones.
 
 ### Ignoring servers
 
-`ignore` is an optional glob array per `[[mcps]]` entry. Server names matching any pattern are dropped before they reach the agent. Globs anchor against the full server name — `work-*` matches `work-foo` but not `pre-work-foo`. Same matcher used for the `autoAcceptTools` / `autoRejectTools` per-server fields.
+`ignore` is an optional glob array per `[[mcps]]` entry. Server names matching any pattern are dropped before they reach the agent. Globs anchor against the full server name — `work-*` matches `work-foo` but not `pre-work-foo`. The same glob semantics apply to the per-server `hyprpilot` tool policy fields below.
 
-### Auto-accept / auto-reject
+### MCP tool policy
 
-Each server entry takes an optional `hyprpilot` block to short-circuit specific tool calls without surfacing a permission prompt:
+Each server entry takes an optional `hyprpilot` block for tool visibility and approval policy:
 
 ```json
 {
@@ -156,6 +156,8 @@ Each server entry takes an optional `hyprpilot` block to short-circuit specific 
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       "hyprpilot": {
+        "includeTools": ["read_*", "list_*"],
+        "excludeTools": ["delete_*"],
         "autoAcceptTools": ["read_*"],
         "autoRejectTools": ["delete_*"]
       }
@@ -164,9 +166,11 @@ Each server entry takes an optional `hyprpilot` block to short-circuit specific 
 }
 ```
 
-Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`. Reject wins over accept when both match.
+Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`.
+`includeTools` unset means no allow-list; `includeTools = []` is an explicit deny-all allow-list.
+`excludeTools` wins over includes, and `autoRejectTools` wins over `autoAcceptTools` when both match.
 
-The overlay daemon applies these globs itself when an ACP permission request arrives. Direct provider spawn has no Hyprpilot permission controller in the loop, so support depends on the native TUI: Claude receives the globs as `--allowedTools` / `--disallowedTools` MCP tool patterns, while Codex and OpenCode keep their normal provider-native approval behavior.
+The overlay daemon applies this policy itself when an ACP permission request arrives. Direct provider spawn has no Hyprpilot permission controller in the loop, so Hyprpilot projects the policy into the native TUI where possible: Claude receives `--allowedTools` / `--disallowedTools` MCP tool patterns, OpenCode receives ordered `OPENCODE_PERMISSION` rules, and Codex receives exact-name `enabled_tools`, `disabled_tools`, and per-tool approval overrides. Codex does not support wildcard tool-policy patterns in those fields, so wildcard patterns are skipped for Codex with a warning.
 
 ### Per-profile MCP override
 

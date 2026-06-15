@@ -796,33 +796,33 @@ fn opencode_mcp_config(defs: &[MCPDefinition]) -> serde_json::Map<String, serde_
 }
 
 fn opencode_permission_content(defs: &[MCPDefinition]) -> Result<Option<String>> {
-    let mut permissions = serde_json::Map::new();
+    let mut permissions: Vec<(String, String)> = Vec::new();
     for def in defs {
         let server = opencode_sanitize_tool_name(&def.name);
 
+        for pattern in &def.hyprpilot.auto_accept_tools {
+            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
+                opencode_push_permission(&mut permissions, pattern, "allow");
+            }
+        }
         if def.hyprpilot.include_tools.is_some() {
-            permissions.insert(format!("{server}_*"), serde_json::Value::String("deny".into()));
+            opencode_push_permission(&mut permissions, format!("{server}_*"), "deny");
         }
         if let Some(include) = def.hyprpilot.include_tools.as_ref() {
             for pattern in include {
                 if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
-                    permissions.insert(pattern, serde_json::Value::String("allow".into()));
+                    opencode_push_permission(&mut permissions, pattern, "allow");
                 }
-            }
-        }
-        for pattern in &def.hyprpilot.exclude_tools {
-            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
-                permissions.insert(pattern, serde_json::Value::String("deny".into()));
-            }
-        }
-        for pattern in &def.hyprpilot.auto_accept_tools {
-            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
-                permissions.insert(pattern, serde_json::Value::String("allow".into()));
             }
         }
         for pattern in &def.hyprpilot.auto_reject_tools {
             if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
-                permissions.insert(pattern, serde_json::Value::String("deny".into()));
+                opencode_push_permission(&mut permissions, pattern, "deny");
+            }
+        }
+        for pattern in &def.hyprpilot.exclude_tools {
+            if let Some(pattern) = opencode_mcp_tool_pattern(&def.name, pattern) {
+                opencode_push_permission(&mut permissions, pattern, "deny");
             }
         }
     }
@@ -831,9 +831,31 @@ fn opencode_permission_content(defs: &[MCPDefinition]) -> Result<Option<String>>
         return Ok(None);
     }
 
-    serde_json::to_string(&serde_json::Value::Object(permissions))
+    opencode_permission_json(&permissions)
         .map(Some)
         .context("serialize opencode permissions")
+}
+
+fn opencode_push_permission(permissions: &mut Vec<(String, String)>, pattern: String, action: &str) {
+    if let Some(pos) = permissions.iter().position(|(existing, _)| existing == &pattern) {
+        permissions.remove(pos);
+    }
+    permissions.push((pattern, action.into()));
+}
+
+fn opencode_permission_json(permissions: &[(String, String)]) -> serde_json::Result<String> {
+    let mut out = String::from("{");
+    for (idx, (pattern, action)) in permissions.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&serde_json::to_string(pattern)?);
+        out.push(':');
+        out.push_str(&serde_json::to_string(action)?);
+    }
+    out.push('}');
+
+    Ok(out)
 }
 
 fn opencode_mcp_tool_pattern(server: &str, pattern: &str) -> Option<String> {
@@ -1058,6 +1080,29 @@ mod tests {
             },
             source: "<test>".into(),
         }
+    }
+
+    fn mcp_def_with_visibility_conflicts() -> MCPDefinition {
+        MCPDefinition {
+            name: "filesystem".into(),
+            raw: json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            }),
+            hyprpilot: HyprpilotExtension {
+                include_tools: Some(vec!["read_file".into()]),
+                exclude_tools: vec!["delete_*".into()],
+                auto_accept_tools: vec!["read_file".into(), "write_file".into(), "delete_file".into()],
+                auto_reject_tools: vec!["read_file".into()],
+            },
+            source: "<test>".into(),
+        }
+    }
+
+    fn assert_json_key_before(body: &str, before: &str, after: &str) {
+        let before_pos = body.find(&format!("\"{before}\"")).expect("before key exists");
+        let after_pos = body.find(&format!("\"{after}\"")).expect("after key exists");
+        assert!(before_pos < after_pos, "expected `{before}` before `{after}` in {body}");
     }
 
     #[test]
@@ -1365,5 +1410,28 @@ mod tests {
         assert_eq!(permissions["filesystem_list_*"], "allow");
         assert_eq!(permissions["filesystem_delete_file"], "deny");
         assert_eq!(permissions["filesystem_write_*"], "deny");
+    }
+
+    #[test]
+    fn opencode_permission_order_preserves_hyprpilot_policy_precedence() {
+        let command = build_command(
+            &resolved(AgentProvider::AcpOpenCode),
+            None,
+            &[mcp_def_with_visibility_conflicts()],
+            Vec::new(),
+        )
+        .unwrap();
+        let permissions = command.env.get("OPENCODE_PERMISSION").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(permissions).unwrap();
+
+        assert_eq!(parsed["filesystem_read_file"], "deny");
+        assert_eq!(parsed["filesystem_delete_file"], "allow");
+        assert_eq!(parsed["filesystem_delete_*"], "deny");
+        assert_eq!(parsed["filesystem_write_file"], "allow");
+
+        assert_json_key_before(permissions, "filesystem_delete_file", "filesystem_delete_*");
+        assert_json_key_before(permissions, "filesystem_write_file", "filesystem_*");
+        assert_json_key_before(permissions, "filesystem_*", "filesystem_read_file");
+        assert_json_key_before(permissions, "filesystem_read_file", "filesystem_delete_*");
     }
 }
