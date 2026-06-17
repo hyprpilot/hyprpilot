@@ -13,9 +13,9 @@
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
 //!   - `hyprpilot://skills/<slug>/references` — bundled references
 //! - Tools
-//!   - `list_skills` — `{ skills: [{ slug, title, description, uri }] }`
-//!   - `read_skill { slug }` — `{ uri, body }`
-//!   - `load_skill_references { slug }` — `{ uri, body }`
+//!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata }] }`
+//!   - `read_skill { slug }` — `{ uri, body, metadata }`
+//!   - `load_skill_references { slug }` — `{ uri, body, metadata }`
 //!   - `reload` — rescan dirs, push list-changed notifications
 //!   - `open { path }` — open a URL, file, or directory in the
 //!     OS-default handler (`xdg-open` / `open` / `start`). The MCP
@@ -30,19 +30,20 @@ use anyhow::Context;
 use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, ErrorCode, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource, RawResourceTemplate,
+    ListResourcesResult, ListToolsResult, Meta, PaginatedRequestParams, RawResource, RawResourceTemplate,
     ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
+use serde::Serialize;
 use tokio::sync::RwLock;
 
 use crate::config::ResolvedSkillEntry;
 use crate::mcp::auto_inject::SKILLS_SERVER_NAME;
 use crate::skills::SkillsRegistry;
 
-use super::skills::references::{bundle_references, parse_frontmatter_references, FrontmatterRefs};
+use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
 
 /// Args for `hyprpilot mcp serve`. Skills are discovered by directory
 /// scan — the daemon passes `--skill-dir <path>` once per configured
@@ -117,6 +118,7 @@ struct LoadedSkill {
     path: PathBuf,
     title: String,
     description: String,
+    metadata: SkillMetadata,
     body: String,
     refs: FrontmatterRefs,
 }
@@ -124,6 +126,35 @@ struct LoadedSkill {
 impl LoadedSkill {
     fn bundle_dir(&self) -> Option<&std::path::Path> {
         self.path.parent()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SkillMetadata {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interaction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    argument_hint: Option<String>,
+    disable_model_invocation: bool,
+    references: Vec<String>,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bundle_dir: Option<String>,
+}
+
+impl SkillMetadata {
+    fn from_skill(skill: &crate::skills::Skill, refs: &FrontmatterRefs) -> Self {
+        Self {
+            name: frontmatter_string(&skill.frontmatter, "name").unwrap_or_else(|| skill.slug.to_string()),
+            interaction: frontmatter_string(&skill.frontmatter, "interaction"),
+            argument_hint: frontmatter_string(&skill.frontmatter, "argument-hint"),
+            disable_model_invocation: frontmatter_bool(&skill.frontmatter, "disable-model-invocation").unwrap_or(false),
+            references: refs.references.clone(),
+            path: skill.path.display().to_string(),
+            bundle_dir: skill.path.parent().map(|p| p.display().to_string()),
+        }
     }
 }
 
@@ -211,8 +242,14 @@ fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
     let mut cache = SkillsCache::default();
     for skill in skills {
         let slug = skill.slug.to_string();
-        let refs = parse_frontmatter_references(&skill.body);
-        let (title, description) = extract_title_description(&skill.body, &slug);
+        let refs = frontmatter_references(&skill.frontmatter);
+        let metadata = SkillMetadata::from_skill(&skill, &refs);
+        let title = if skill.title.trim().is_empty() {
+            metadata.name.clone()
+        } else {
+            skill.title.clone()
+        };
+        let description = skill.description.clone();
         cache.order.push(slug.clone());
         cache.skills.insert(
             slug.clone(),
@@ -221,6 +258,7 @@ fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
                 path: skill.path,
                 title,
                 description,
+                metadata,
                 body: skill.body,
                 refs,
             },
@@ -231,30 +269,16 @@ fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-fn extract_title_description(body: &str, slug: &str) -> (String, String) {
-    let Some(yaml) = strip_frontmatter(body) else {
-        return (slug.to_string(), format!("Guidance for {slug}"));
-    };
-    let Ok(value): Result<serde_yaml::Value, _> = serde_yaml::from_str(yaml) else {
-        return (slug.to_string(), format!("Guidance for {slug}"));
-    };
-    let title = value
-        .get("title")
+fn frontmatter_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
         .and_then(serde_yaml::Value::as_str)
+        .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| slug.to_string());
-    let description = value
-        .get("description")
-        .and_then(serde_yaml::Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("Guidance for {slug}"));
-    (title, description)
 }
 
-fn strip_frontmatter(body: &str) -> Option<&str> {
-    let body = body.strip_prefix("---\n").or_else(|| body.strip_prefix("---\r\n"))?;
-    let end = body.find("\n---\n").or_else(|| body.find("\r\n---\r\n"))?;
-    Some(&body[..end])
+fn frontmatter_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(serde_yaml::Value::as_bool)
 }
 
 fn skill_uri(slug: &str) -> String {
@@ -276,11 +300,21 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
                 "title": s.title,
                 "description": s.description,
                 "uri": skill_uri(&s.slug),
+                "metadata": s.metadata,
             })
         })
         .collect();
 
     serde_json::json!({ "skills": entries })
+}
+
+fn skill_meta(skill: &LoadedSkill) -> Meta {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "skill".into(),
+        serde_json::to_value(&skill.metadata).expect("skill metadata serializes"),
+    );
+    Meta(meta)
 }
 
 enum ParsedUri<'a> {
@@ -402,14 +436,14 @@ impl ServerHandler for HyprpilotServer {
         let tools = vec![
             Tool::new_with_raw(
                 "list_skills",
-                Some("List every skill the daemon resolved for this session.".into()),
+                Some("List every skill the daemon resolved for this session, including frontmatter metadata.".into()),
                 empty_object_schema(),
             ),
             Tool::new_with_raw(
                 "read_skill",
                 Some(
-                    "Read a skill's full SKILL.md body. Equivalent to reading the \
-                     `hyprpilot://skills/<slug>` resource."
+                    "Read a skill's full SKILL.md body and frontmatter metadata. \
+                     Equivalent to reading the `hyprpilot://skills/<slug>` resource."
                         .into(),
                 ),
                 slug_object_schema(),
@@ -418,8 +452,9 @@ impl ServerHandler for HyprpilotServer {
                 "load_skill_references",
                 Some(
                     "Bundle every reference declared in a skill's frontmatter, \
-                     resolved relative to the skill's bundle dir. Equivalent to \
-                     reading `hyprpilot://skills/<slug>/references`."
+                     resolved relative to the skill's bundle dir, and include the \
+                     skill metadata. Equivalent to reading \
+                     `hyprpilot://skills/<slug>/references`."
                         .into(),
                 ),
                 slug_object_schema(),
@@ -468,6 +503,7 @@ impl ServerHandler for HyprpilotServer {
                 Ok(CallToolResult::structured(serde_json::json!({
                     "uri": skill_uri(slug),
                     "body": skill.body,
+                    "metadata": skill.metadata,
                 })))
             }
             "load_skill_references" => {
@@ -483,6 +519,7 @@ impl ServerHandler for HyprpilotServer {
                 Ok(CallToolResult::structured(serde_json::json!({
                     "uri": skill_references_uri(slug),
                     "body": body,
+                    "metadata": skill.metadata,
                 })))
             }
             "reload" => {
@@ -522,7 +559,9 @@ impl ServerHandler for HyprpilotServer {
                 RawResource::new(skill_uri(slug), slug.clone())
                     .with_title(skill.title.clone())
                     .with_description(skill.description.clone())
-                    .with_mime_type("text/markdown"),
+                    .with_mime_type("text/markdown")
+                    .with_size(skill.body.len().try_into().unwrap_or(u32::MAX))
+                    .with_meta(skill_meta(skill)),
                 None,
             ));
         }
@@ -570,7 +609,7 @@ impl ServerHandler for HyprpilotServer {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
                     text: skill.body.clone(),
-                    meta: None,
+                    meta: Some(skill_meta(skill)),
                 }]))
             }
             Some(ParsedUri::SkillReferences(slug)) => {
@@ -589,7 +628,7 @@ impl ServerHandler for HyprpilotServer {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
                     text: body,
-                    meta: None,
+                    meta: Some(skill_meta(skill)),
                 }]))
             }
             None => Err(rmcp::ErrorData::invalid_params(
@@ -619,18 +658,63 @@ mod tests {
     }
 
     #[test]
-    fn extract_title_description_with_frontmatter() {
-        let body = "---\ntitle: My Skill\ndescription: Does the thing\n---\nbody";
-        let (t, d) = extract_title_description(body, "x");
-        assert_eq!(t, "My Skill");
-        assert_eq!(d, "Does the thing");
+    fn skill_metadata_reads_frontmatter() {
+        let frontmatter: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+name: plan-hard
+interaction: chat
+argument-hint: "[goal]"
+disable-model-invocation: true
+references:
+  - ../references/plan-mode.md
+"#,
+        )
+        .unwrap();
+        let refs = frontmatter_references(&frontmatter);
+        let skill = crate::skills::Skill {
+            slug: crate::skills::SkillSlug::parse("plan-hard").unwrap(),
+            title: String::new(),
+            description: "Deep planning".to_string(),
+            body: "body".to_string(),
+            path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
+            frontmatter,
+            references: Vec::new(),
+        };
+
+        let metadata = SkillMetadata::from_skill(&skill, &refs);
+
+        assert_eq!(
+            metadata,
+            SkillMetadata {
+                name: "plan-hard".to_string(),
+                interaction: Some("chat".to_string()),
+                argument_hint: Some("[goal]".to_string()),
+                disable_model_invocation: true,
+                references: vec!["../references/plan-mode.md".to_string()],
+                path: "/tmp/plan-hard/SKILL.md".to_string(),
+                bundle_dir: Some("/tmp/plan-hard".to_string()),
+            }
+        );
     }
 
     #[test]
-    fn extract_title_description_fallbacks() {
-        let (t, d) = extract_title_description("no frontmatter", "myslug");
-        assert_eq!(t, "myslug");
-        assert_eq!(d, "Guidance for myslug");
+    fn build_cache_falls_back_to_frontmatter_name_for_title() {
+        let frontmatter: serde_yaml::Value = serde_yaml::from_str("name: myskill\n").unwrap();
+        let skill = crate::skills::Skill {
+            slug: crate::skills::SkillSlug::parse("myskill").unwrap(),
+            title: String::new(),
+            description: "desc".to_string(),
+            body: "body".to_string(),
+            path: PathBuf::from("/tmp/myskill/SKILL.md"),
+            frontmatter,
+            references: Vec::new(),
+        };
+
+        let cache = build_cache(vec![skill]);
+        let loaded = cache.skills.get("myskill").unwrap();
+
+        assert_eq!(loaded.title, "myskill");
+        assert_eq!(loaded.description, "desc");
     }
 
     #[test]
@@ -645,8 +729,19 @@ mod tests {
                 path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
                 title: "Plan hard".to_string(),
                 description: "Deep planning".to_string(),
+                metadata: SkillMetadata {
+                    name: "plan-hard".to_string(),
+                    interaction: Some("chat".to_string()),
+                    argument_hint: Some("[goal]".to_string()),
+                    disable_model_invocation: true,
+                    references: vec!["../references/plan-mode.md".to_string()],
+                    path: "/tmp/plan-hard/SKILL.md".to_string(),
+                    bundle_dir: Some("/tmp/plan-hard".to_string()),
+                },
                 body: String::new(),
-                refs: FrontmatterRefs::default(),
+                refs: FrontmatterRefs {
+                    references: vec!["../references/plan-mode.md".to_string()],
+                },
             },
         );
 
@@ -660,9 +755,48 @@ mod tests {
                     "slug": "plan-hard",
                     "title": "Plan hard",
                     "description": "Deep planning",
-                    "uri": "hyprpilot://skills/plan-hard"
+                    "uri": "hyprpilot://skills/plan-hard",
+                    "metadata": {
+                        "name": "plan-hard",
+                        "interaction": "chat",
+                        "argumentHint": "[goal]",
+                        "disableModelInvocation": true,
+                        "references": ["../references/plan-mode.md"],
+                        "path": "/tmp/plan-hard/SKILL.md",
+                        "bundleDir": "/tmp/plan-hard"
+                    }
                 }]
             })
+        );
+    }
+
+    #[test]
+    fn skill_meta_is_nested_under_skill_key() {
+        let skill = LoadedSkill {
+            slug: "plan-hard".to_string(),
+            path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
+            title: "Plan hard".to_string(),
+            description: "Deep planning".to_string(),
+            metadata: SkillMetadata {
+                name: "plan-hard".to_string(),
+                interaction: Some("chat".to_string()),
+                argument_hint: None,
+                disable_model_invocation: false,
+                references: Vec::new(),
+                path: "/tmp/plan-hard/SKILL.md".to_string(),
+                bundle_dir: Some("/tmp/plan-hard".to_string()),
+            },
+            body: String::new(),
+            refs: FrontmatterRefs::default(),
+        };
+
+        let meta = skill_meta(&skill);
+
+        assert_eq!(
+            meta.get("skill")
+                .and_then(|v| v.get("name"))
+                .and_then(serde_json::Value::as_str),
+            Some("plan-hard")
         );
     }
 }
