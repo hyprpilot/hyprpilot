@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/hyprpilot/hyprpilot/compare/v2.7.1...v2.8.0) (2026-06-17)
+
+
+### Features
+
+* **mcp:** expose skill metadata on resources ([#171](https://github.com/hyprpilot/hyprpilot/issues/171)) ([40cf945](https://github.com/hyprpilot/hyprpilot/commit/40cf9457117862101ba72f5721e2a3b351c692c2))
+
 ## [2.7.1](https://github.com/hyprpilot/hyprpilot/compare/v2.7.0...v2.7.1) (2026-06-15)
 
 
