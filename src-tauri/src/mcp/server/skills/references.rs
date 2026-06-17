@@ -1,5 +1,6 @@
 //! Frontmatter reference resolution — mirrors mcphub's pattern
-//! (`~/.config/nvim/lua/ck/plugins/mcphub-nvim.lua:572-589`).
+//! (`~/.config/nvim/lua/ck/plugins/mcphub-nvim.lua:572-589`) while
+//! reusing the daemon/shared skill loader's parsed frontmatter.
 //!
 //! A skill's YAML frontmatter declares `references: [path1, path2, ...]`;
 //! the loader resolves each path relative to the skill bundle's
@@ -18,18 +19,13 @@ pub struct FrontmatterRefs {
     pub references: Vec<String>,
 }
 
-/// Pull the `references` array out of a SKILL.md's YAML frontmatter.
-/// Returns an empty `FrontmatterRefs` when there is no frontmatter or
-/// `references` is missing/empty.
+/// Pull the `references` array out of already-parsed YAML frontmatter.
+/// This is the sidecar path: the daemon/shared loader has parsed the
+/// same frontmatter once while building the `Skill`, so MCP metadata
+/// and reference bundling should read that source instead of reparsing
+/// the markdown body.
 #[must_use]
-pub fn parse_frontmatter_references(body: &str) -> FrontmatterRefs {
-    let Some(yaml) = strip_frontmatter(body) else {
-        return FrontmatterRefs::default();
-    };
-    let value: serde_yaml::Value = match serde_yaml::from_str(yaml) {
-        Ok(v) => v,
-        Err(_) => return FrontmatterRefs::default(),
-    };
+pub fn frontmatter_references(value: &serde_yaml::Value) -> FrontmatterRefs {
     let mut refs = Vec::new();
     if let Some(seq) = value.get("references").and_then(serde_yaml::Value::as_sequence) {
         for item in seq {
@@ -39,14 +35,6 @@ pub fn parse_frontmatter_references(body: &str) -> FrontmatterRefs {
         }
     }
     FrontmatterRefs { references: refs }
-}
-
-/// Pull the YAML between the leading `---` and the next `---`. Returns
-/// `None` if the file isn't a frontmatter-shaped markdown doc.
-fn strip_frontmatter(body: &str) -> Option<&str> {
-    let body = body.strip_prefix("---\n").or_else(|| body.strip_prefix("---\r\n"))?;
-    let end = body.find("\n---\n").or_else(|| body.find("\r\n---\r\n"))?;
-    Some(&body[..end])
 }
 
 /// Bundle output: every reference path in `refs.references` resolved
@@ -86,21 +74,17 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn parses_references_array() {
-        let body = "---\nreferences:\n  - ../references/a.md\n  - ./b.md\n---\nbody";
-        let refs = parse_frontmatter_references(body);
+    fn parses_references_from_yaml_value() {
+        let value: serde_yaml::Value =
+            serde_yaml::from_str("references:\n  - ../references/a.md\n  - ./b.md\n").unwrap();
+        let refs = frontmatter_references(&value);
         assert_eq!(refs.references, vec!["../references/a.md", "./b.md"]);
     }
 
     #[test]
-    fn missing_frontmatter_is_empty() {
-        let refs = parse_frontmatter_references("plain markdown");
-        assert!(refs.references.is_empty());
-    }
-
-    #[test]
-    fn malformed_yaml_is_empty() {
-        let refs = parse_frontmatter_references("---\nreferences: [unclosed\n---\n");
+    fn missing_references_is_empty() {
+        let value: serde_yaml::Value = serde_yaml::from_str("name: no-refs\n").unwrap();
+        let refs = frontmatter_references(&value);
         assert!(refs.references.is_empty());
     }
 
