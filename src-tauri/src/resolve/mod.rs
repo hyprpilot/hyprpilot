@@ -259,22 +259,13 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::R
 /// `ProfileConfig` is the single source the MCP registry, skills
 /// registry, and per-instance context downstream all read from.
 ///
-/// `external_patches` is empty for plain submit / spawn paths; the
-/// `--with-config` and `withConfig` RPC paths supply non-empty
-/// patches that fold on top of root `[[patches]]`.
+/// `external_patches` is empty for plain spawn paths; the
+/// `--with-config` path supplies non-empty patches that fold on top
+/// of root `[[patches]]`.
 ///
 /// Explicit `agent_id` wins over whatever agent the patched profile
 /// names — captain intent for "run THIS profile but on a different
 /// vendor binary".
-pub(crate) fn resolve_into_instance_and_profile(
-    cfg: &Config,
-    agent_id: Option<&str>,
-    profile_id: Option<&str>,
-    external_patches: &[Value],
-) -> anyhow::Result<(ResolvedInstance, ProfileConfig)> {
-    resolve_into_instance_and_profile_with_context(cfg, agent_id, profile_id, external_patches, false)
-}
-
 pub(crate) fn resolve_into_instance_and_profile_for_spawn(
     cfg: &Config,
     agent_id: Option<&str>,

@@ -27,66 +27,38 @@ use crate::config::Config;
 #[derive(Debug, Clone)]
 pub struct ResolvedInstance {
     pub agent: AgentConfig,
+    /// Resolved profile id — carried for diagnostics / future launcher
+    /// surfacing. Not read on the exec path yet.
+    #[allow(dead_code)]
     pub profile_id: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     /// Resolved per-entry system-prompt list. Each entry carries its
-    /// own pre-read body + inject toggles; the actor filters the
-    /// list against the bootstrap variant (Fresh vs Resume/Fork) at
-    /// spawn time and concatenates the surviving entries. `Some(vec![])` /
-    /// `None` both mean "no prompt".
+    /// own pre-read body + inject toggles; `fresh_system_prompt`
+    /// filters by `inject.on_create` and concatenates the surviving
+    /// entries. `Some(vec![])` / `None` both mean "no prompt".
     pub system_prompt: Vec<ResolvedSystemPromptEntry>,
-    /// Per-instance mode override. Populated from `SpawnSpec::mode`
-    /// at resolve time. Generic layer just carries it; ACP's runtime
-    /// passes it into `AcpInstance` and surfaces it via `InstanceInfo`.
-    /// Vendor-specific interpretation (e.g. claude-code's `plan` /
-    /// `edit`) happens inside the vendor agent impl.
+    /// Per-instance mode override, mapped onto the vendor CLI where
+    /// supported (e.g. claude-code's `plan` / `edit`).
     pub mode: Option<String>,
 }
 
 /// One pre-read system-prompt entry — body content + the per-entry
-/// inject toggles the daemon honours per bootstrap path. The actor
-/// filters its `Vec<Self>` against the live bootstrap variant
-/// (Fresh / Resume / Fork) and concatenates the surviving bodies.
+/// inject toggles. `fresh_system_prompt` filters by `inject.on_create`
+/// and concatenates the surviving bodies.
 #[derive(Debug, Clone)]
 pub struct ResolvedSystemPromptEntry {
     pub body: String,
-    pub file: std::path::PathBuf,
     pub inject: crate::config::SystemPromptInject,
 }
 
 impl ResolvedInstance {
-    /// Filter `system_prompt` entries against the bootstrap variant
-    /// and concatenate the surviving bodies with a blank-line
-    /// separator. Returns `None` when no entry qualifies (no entries
-    /// configured, or every entry's inject toggle is off for this
-    /// path). Production path: the actor calls this at spawn time
-    /// so the per-entry inject toggles actually gate injection.
-    pub fn system_prompt_for(&self, bootstrap: &crate::adapters::Bootstrap) -> Option<String> {
-        use crate::adapters::Bootstrap;
-        let bodies: Vec<&str> = self
-            .system_prompt
-            .iter()
-            .filter(|e| match bootstrap {
-                Bootstrap::Fresh => e.inject.on_create,
-                Bootstrap::Resume(_) | Bootstrap::Fork(_) => e.inject.on_update,
-                Bootstrap::ListOnly => false,
-            })
-            .map(|e| e.body.as_str())
-            .collect();
-        if bodies.is_empty() {
-            None
-        } else {
-            Some(bodies.join("\n\n"))
-        }
-    }
-
-    /// Fresh-spawn variant of `system_prompt_for` for the launcher
-    /// (`adapters::cli`), which only ever bootstraps a brand-new
-    /// session and has no reason to depend on `crate::adapters::
-    /// Bootstrap` (a daemon/ACP-only enum slated for deletion
-    /// alongside the rest of that plane). Inlines the `Bootstrap::
-    /// Fresh` branch: filter by `inject.on_create` and concatenate.
+    /// Filter `system_prompt` entries by `inject.on_create` and
+    /// concatenate the surviving bodies with a blank-line separator.
+    /// The launcher only ever bootstraps a brand-new session, so
+    /// `on_create` is the sole gate. Returns `None` when no entry
+    /// qualifies (no entries configured, or every entry's create
+    /// toggle is off).
     #[must_use]
     pub fn fresh_system_prompt(&self) -> Option<String> {
         let bodies: Vec<&str> = self
@@ -100,22 +72,6 @@ impl ResolvedInstance {
         } else {
             Some(bodies.join("\n\n"))
         }
-    }
-
-    /// Files whose inject toggle qualifies for the given bootstrap
-    /// path — the captain-facing list the "system prompt attached"
-    /// banner reads. Mirrors `system_prompt_for`'s filter.
-    pub fn system_prompt_files_for(&self, bootstrap: &crate::adapters::Bootstrap) -> Vec<std::path::PathBuf> {
-        use crate::adapters::Bootstrap;
-        self.system_prompt
-            .iter()
-            .filter(|e| match bootstrap {
-                Bootstrap::Fresh => e.inject.on_create,
-                Bootstrap::Resume(_) | Bootstrap::Fork(_) => e.inject.on_update,
-                Bootstrap::ListOnly => false,
-            })
-            .map(|e| e.file.clone())
-            .collect()
     }
 }
 
@@ -280,7 +236,6 @@ fn read_prompt_entries(
             .with_context(|| format!("{ctx_label}: failed to read system_prompt {}", expanded.display()))?;
         out.push(ResolvedSystemPromptEntry {
             body,
-            file: expanded,
             inject: entry.inject.clone(),
         });
     }
@@ -382,10 +337,7 @@ mod tests {
         };
 
         let r = ResolvedInstance::from_config(&cfg, Some("plan")).unwrap();
-        assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
-            Some("You are a planner.")
-        );
+        assert_eq!(r.fresh_system_prompt().as_deref(), Some("You are a planner."));
     }
 
     #[test]
@@ -403,7 +355,7 @@ mod tests {
         };
         let r = ResolvedInstance::from_config(&cfg, Some("layered")).unwrap();
         assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            r.fresh_system_prompt().as_deref(),
             Some("You are an agent.\n\nWorking on hyprpilot.")
         );
     }
@@ -419,14 +371,14 @@ mod tests {
             ..Default::default()
         };
         let r = ResolvedInstance::from_config(&cfg, Some("silent")).unwrap();
-        assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
+        assert!(r.fresh_system_prompt().is_none());
     }
 
     #[test]
-    fn profile_system_prompt_fork_uses_update_injection() {
+    fn profile_system_prompt_create_toggle_off_is_absent_on_fresh_spawn() {
         let dir = tempfile::tempdir().unwrap();
-        let prompt_path = write_prompt(&dir, "fork.md", "Fork update prompt.");
-        let mut p = profile("forkable", "cc", None, None);
+        let prompt_path = write_prompt(&dir, "update-only.md", "Update-only prompt.");
+        let mut p = profile("update-only", "cc", None, None);
         p.system_prompt = Some(vec![crate::config::SystemPromptEntry {
             file: prompt_path,
             inject: crate::config::SystemPromptInject {
@@ -442,14 +394,11 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("forkable")).unwrap();
+        let r = ResolvedInstance::from_config(&cfg, Some("update-only")).unwrap();
 
-        assert!(r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).is_none());
-        assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fork("source".into()))
-                .as_deref(),
-            Some("Fork update prompt.")
-        );
+        // The launcher only bootstraps fresh sessions; an entry gated
+        // to `on_update` (create toggle off) never injects.
+        assert!(r.fresh_system_prompt().is_none());
     }
 
     #[test]
@@ -582,7 +531,7 @@ mod tests {
 
         let r = ResolvedInstance::from_config(&cfg, Some("personal/claude/opus")).unwrap();
         assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            r.fresh_system_prompt().as_deref(),
             Some("shared base prompt"),
             "root patch's system_prompt must reach the resolved profile"
         );
@@ -610,17 +559,13 @@ mod tests {
 
         let personal_resolved = ResolvedInstance::from_config(&cfg, Some("personal/claude/opus")).unwrap();
         assert_eq!(
-            personal_resolved
-                .system_prompt_for(&crate::adapters::Bootstrap::Fresh)
-                .as_deref(),
+            personal_resolved.fresh_system_prompt().as_deref(),
             Some("personal-only prompt")
         );
 
         let work_resolved = ResolvedInstance::from_config(&cfg, Some("work/claude/opus")).unwrap();
         assert!(
-            work_resolved
-                .system_prompt_for(&crate::adapters::Bootstrap::Fresh)
-                .is_none(),
+            work_resolved.fresh_system_prompt().is_none(),
             "personal/* glob must not reach work/* profile"
         );
     }
@@ -647,7 +592,7 @@ mod tests {
 
         let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
         assert_eq!(
-            r.system_prompt_for(&crate::adapters::Bootstrap::Fresh).as_deref(),
+            r.fresh_system_prompt().as_deref(),
             Some("first\n\nsecond"),
             "system_prompt is a keyed-by-`file` array → both patches' entries land in order"
         );

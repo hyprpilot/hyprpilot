@@ -1,6 +1,6 @@
 [package]
 name = "hyprpilot"
-description = "Rust Tauri overlay + unix-socket daemon for agent-driven workflows."
+description = "Config-driven launcher that resolves a profile and execs the vendor's native agent CLI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,101 +11,37 @@ repository.workspace = true
 name = "hyprpilot"
 path = "src/main.rs"
 
-[build-dependencies]
-tauri-build = { version = "2.6", features = [] }
-
 [dependencies]
 agent-client-protocol = { version = "0.12", features = ["unstable"] }
 anyhow = "1"
-async-trait = "0.1"
 clap = { version = "4.6", features = ["derive", "env"] }
 directories = "6"
 garde = { version = "0.22", features = ["derive"] }
 globset = "0.4"
-libc = "0.2"
 once_cell = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_plain = "1"
 serde_yaml = "0.9"
 shellexpand = "3"
 thiserror = "2"
 tokio = { version = "1.52", features = ["full"] }
-tokio-util = { version = "0.7", features = ["compat"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "tracing-log"] }
-tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
-tauri-plugin-clipboard-manager = "2"
-tauri-plugin-log = "2"
-tauri-plugin-playwright = { version = "0.2", optional = true }
-tauri-plugin-single-instance = "2.4"
-uuid = { version = "1", features = ["v4"] }
-mime_guess = "2.0.5"
-merge = { version = "0.2.0", features = ["derive"] }
-tauri-plugin-shell = "2.3.5"
-tauri-plugin-autostart = "2.5.1"
-# Native OS dialogs for folder/file selection. Tauri-only; the
-# remote bridge / browser frontends bypass this and use the
-# standard `<input type="file">` for attachments / a daemon-served
-# directory browser for cwd.
-tauri-plugin-dialog = "2"
-grep = "0.4.1"
-ignore = "0.4.25"
 nucleo = "0.5.0"
 nucleo-matcher = "0.3.1"
 nucleo-picker = "0.11.1"
-grep-regex = "0.1.14"
-grep-searcher = "0.1.16"
 path-absolutize = "3.1.1"
-convert_case = "0.11"
-# Remote bridge — TLS axum HTTP+WS server alongside the Tauri overlay
-# + unix socket. axum brings hyper / tokio-rustls for free. rcgen +
-# rustls + rustls-pemfile drive the self-signed cert auto-generation
-# path; bip39 encodes the per-connection pair codes; qrcode renders
-# the same code as a QR for the camera-scan path.
-axum = { version = "0.8", features = ["ws", "http2"] }
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-rustls = "0.23"
-rustls-pemfile = "2"
-rcgen = "0.14"
-bip39 = "2"
-qrcode = "0.14"
-base64 = "0.22"
-sha2 = "0.11"
-hostname = "0.4"
-tower-http = { version = "0.6", features = ["trace"] }
-futures-util = "0.3"
-rand = "0.10"
-time = "=0.3.47"
-# Used by the dev-only Vite proxy in `remote/server.rs`. Plain HTTP
-# only (no TLS, no JSON dance) — `default-features = false` keeps
-# rustls / cookies / gzip out of the binary; localhost-only means
-# none of them are needed. HTTP/1.1 is implicit when `http2` is off.
-reqwest = { version = "0.13", default-features = false }
+merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
-# default `server` + `macros` + `base64`. Used by `hyprpilot mcp skills`.
+# default `server` + `macros` + `base64`. Used by `hyprpilot mcp serve`.
 rmcp = { version = "1", features = ["transport-io"] }
 # Cross-platform OS-level URL / path opener for the `open_url` MCP tool.
-# The MCP server runs as a stdio sidecar (not inside a Tauri webview), so
-# `tauri-plugin-shell`'s `open()` isn't accessible from it — this crate
-# wraps `xdg-open` on Linux, `open` on macOS, `start` on Windows.
+# The MCP server runs as a stdio sidecar — this crate wraps `xdg-open`
+# on Linux, `open` on macOS, `start` on Windows.
 open = "5"
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1.52", features = ["full", "test-util"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-gdk = "0.18"
-gtk = "0.18"
-gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
-
-[features]
-default = []
-# Enabled by `tauri build` to ship the bundled frontend.
-custom-protocol = ["tauri/custom-protocol"]
-# `task build:e2e` flips this to expose the Playwright bridge socket;
-# never enabled in production builds.
-e2e-testing = ["dep:tauri-plugin-playwright"]

@@ -1,18 +1,12 @@
 mod adapters;
-mod completion;
 mod config;
-mod ctl;
-mod daemon;
 mod direct_spawn;
 mod logging;
 mod mcp;
 mod paths;
 mod profiles;
-mod remote;
 mod resolve;
-mod rpc;
 mod skills;
-mod tools;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -24,7 +18,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "hyprpilot",
     version,
-    about = "Hyprpilot: Assistant in overlay disguise.",
+    about = "Hyprpilot: resolve a profile from layered config and launch the vendor's native CLI.",
     long_about = None,
 )]
 struct Cli {
@@ -50,37 +44,19 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run the Tauri overlay + unix-socket server (default when invoked without a subcommand).
-    Daemon(daemon::DaemonArgs),
-
-    /// Dispatch a command to the running daemon via the unix socket.
-    Ctl(ctl::CtlArgs),
-
     /// Run an in-tree MCP server (e.g. `mcp skills`) for an agent vendor to
-    /// spawn via stdio. The daemon auto-injects entries when the resolved
-    /// skill registry for an instance is non-empty.
+    /// spawn via stdio. The launcher auto-injects entries when the resolved
+    /// skill registry for a spawn is non-empty.
     Mcp(mcp::server::McpArgs),
 
     /// Spawn the resolved profile directly in the provider's native TUI.
     Spawn(direct_spawn::SpawnArgs),
 
-    /// List configured session profiles without contacting the daemon.
+    /// List configured session profiles.
     Profiles(profiles::ProfilesArgs),
 }
 
 fn main() -> Result<ExitCode> {
-    // HACK: webkit2gtk's default DMABUF renderer triggers `Gdk-Message: Error 71
-    // (Protocol error) dispatching to Wayland display` on NVIDIA + Hyprland /
-    // Sway sessions. Force the legacy shared-memory path so the daemon boots
-    // cleanly on those machines. Export `WEBKIT_DISABLE_DMABUF_RENDERER=0` to
-    // opt out.
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        // SAFETY: runs before any thread spawns, so no data race on the env block.
-        unsafe {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
-    }
-
     let cli = Cli::parse();
 
     logging::init(cli.log_level)?;
@@ -89,17 +65,15 @@ fn main() -> Result<ExitCode> {
     cfg.validate()?;
 
     match cli.command {
-        None => daemon::run(cfg, daemon::DaemonArgs::default()).map(|()| ExitCode::SUCCESS),
-        Some(Command::Daemon(args)) => daemon::run(cfg, args).map(|()| ExitCode::SUCCESS),
-        Some(Command::Ctl(args)) => ctl::run(cfg, args),
+        // Bare `hyprpilot` opens the interactive profile picker and
+        // launches the pick. The final `bare = launch` CLI shape is
+        // K-728; today it routes straight to the spawn picker.
+        None => direct_spawn::run(cfg, direct_spawn::SpawnArgs::default()),
         Some(Command::Spawn(args)) => direct_spawn::run(cfg, args),
         Some(Command::Profiles(args)) => profiles::run(cfg, args),
         Some(Command::Mcp(args)) => {
             // The MCP sidecar owns stdin/stdout for its protocol;
-            // synchronous main + tokio runtime is the path daemon
-            // already uses elsewhere via `#[tokio::main]` constructs
-            // inside subcommand entrypoints. The dedicated runtime
-            // here keeps the sidecar self-contained.
+            // a dedicated tokio runtime keeps the sidecar self-contained.
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(args.run())?;
             Ok(ExitCode::SUCCESS)

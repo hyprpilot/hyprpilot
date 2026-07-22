@@ -11,7 +11,6 @@
 //! inline-token expansion runs server-side; raw user text passes
 //! through the `session/submit` handler verbatim.
 
-pub mod commands;
 mod loader;
 
 use std::collections::HashMap;
@@ -104,9 +103,8 @@ pub enum SlugError {
     BadChar(char),
 }
 
-/// One loaded skill. Carries the full body + frontmatter so the RPC
-/// `skills/get` handler can render everything; the listing endpoint
-/// emits a [`SkillSummary`] instead to keep wire payloads slim.
+/// One loaded skill. Carries the full body + frontmatter so the MCP
+/// `read_skill` tool can render everything.
 #[derive(Debug, Clone, Serialize)]
 pub struct Skill {
     pub slug: SkillSlug,
@@ -119,26 +117,6 @@ pub struct Skill {
     pub frontmatter: YamlValue,
     /// Relative paths extracted from markdown links in the body.
     pub references: Vec<String>,
-}
-
-/// Slim wire shape for `skills/list`. `body` + `frontmatter` stay
-/// behind `skills/get` so a listing over a thousand skills doesn't
-/// ship megabytes of markdown.
-#[derive(Debug, Clone, Serialize)]
-pub struct SkillSummary {
-    pub slug: SkillSlug,
-    pub title: String,
-    pub description: String,
-}
-
-impl From<&Skill> for SkillSummary {
-    fn from(s: &Skill) -> Self {
-        Self {
-            slug: s.slug.clone(),
-            title: s.title.clone(),
-            description: s.description.clone(),
-        }
-    }
 }
 
 /// Owned skill catalogue. Carries its configured roots `dirs` so
@@ -235,7 +213,9 @@ impl SkillsRegistry {
     }
 
     /// Lookup by slug. Returns an owned clone so the caller doesn't
-    /// hold the read lock across their work.
+    /// hold the read lock across their work. Retained for tests +
+    /// future consumers; the MCP server reads through `list()`.
+    #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, slug: &SkillSlug) -> Option<Skill> {
         let skills = self.skills.read().expect("skills lock poisoned");
@@ -388,26 +368,5 @@ mod tests {
         assert_eq!(reg.count(), 1);
         assert!(reg.get(&SkillSlug::parse("git-commit").unwrap()).is_some());
         assert!(reg.get(&SkillSlug::parse("work-internal").unwrap()).is_none());
-    }
-
-    #[test]
-    fn skill_summary_does_not_leak_body() {
-        let skill = Skill {
-            slug: SkillSlug::parse("x").unwrap(),
-            title: "X".into(),
-            description: "desc".into(),
-            body: "SECRET BODY MATERIAL".into(),
-            path: PathBuf::from("/tmp/x"),
-            frontmatter: YamlValue::Null,
-            references: Vec::new(),
-        };
-        let summary = SkillSummary::from(&skill);
-        let v = serde_json::to_value(&summary).unwrap();
-        assert!(v.get("body").is_none());
-        assert!(v.get("frontmatter").is_none());
-        assert!(v.get("references").is_none());
-        assert_eq!(v["slug"], "x");
-        assert_eq!(v["title"], "X");
-        assert_eq!(v["description"], "desc");
     }
 }

@@ -15,36 +15,8 @@ pub fn base() -> &'static BaseDirs {
     CACHE.get_or_init(|| BaseDirs::new().expect("unable to resolve user base directories"))
 }
 
-/// Resolved home directory. Borrowed so ctl-heavy paths don't pay an
-/// allocation per call — same reasoning as `base()` itself.
-pub fn home_dir() -> &'static Path {
-    base().home_dir()
-}
-
-pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = base().runtime_dir() {
-        return dir.to_path_buf();
-    }
-
-    // XDG_RUNTIME_DIR is unset — happens in minimal containers, cron sessions,
-    // some `sudo -i` contexts. Namespace the `/tmp` fallback by uid so
-    // sockets/state from different users on the same box can't collide.
-    // SAFETY: `getuid` is always safe to call on any Unix.
-    let uid = unsafe { libc::getuid() };
-
-    std::env::temp_dir().join(format!("{APP_NAME}-{uid}"))
-}
-
 pub fn config_dir() -> PathBuf {
     base().config_dir().join(APP_NAME)
-}
-
-pub fn state_dir() -> PathBuf {
-    base()
-        .state_dir()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| base().data_local_dir().to_path_buf())
-        .join(APP_NAME)
 }
 
 /// Extensions the daemon recognises for config-file lookups. Priority
@@ -123,10 +95,6 @@ pub fn find_profile_config_file(name: &str) -> Result<Option<PathBuf>> {
                 .join(", ")
         )),
     }
-}
-
-pub fn socket_path() -> PathBuf {
-    runtime_dir().join(format!("{APP_NAME}.sock"))
 }
 
 /// Captain-supplied path → fully resolved `PathBuf`. Two passes:
