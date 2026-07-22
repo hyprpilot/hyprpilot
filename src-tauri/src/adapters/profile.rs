@@ -81,13 +81,12 @@ impl ResolvedInstance {
     /// `from_profile_explicit`. Errors when neither addresses a
     /// real profile — there is no bare-agent fallback.
     ///
-    /// Production callers go through `adapters::acp::instances::
-    /// resolve_into_instance_and_profile` which returns the patched
-    /// `ProfileConfig` alongside, so downstream MCP / skills
-    /// registries read from the same shape. This entry point is
-    /// the thin test-only surface — production paths must use the
-    /// production helper so the MCP / skills registries get the
-    /// same patched view, not a re-derived one that could drift.
+    /// Production callers go through `resolve::resolve_into_instance_and_profile`
+    /// which returns the patched `ProfileConfig` alongside, so downstream
+    /// MCP / skills registries read from the same shape. This entry point
+    /// is the thin test-only surface — production paths must use the
+    /// `resolve::` helper so the MCP / skills registries get the same
+    /// patched view, not a re-derived one that could drift.
     #[cfg(test)]
     pub fn from_config(config: &Config, profile_id: Option<&str>) -> Result<Self> {
         let picked_id = profile_id
@@ -111,17 +110,17 @@ impl ResolvedInstance {
     }
 
     /// Resolve against an already-materialised `ProfileConfig` —
-    /// the result of `resolve_effective_profile` (which picks the
-    /// addressed profile, folds root `[[patches]]`, folds any
+    /// the result of `resolve::resolve_effective_profile` (which picks
+    /// the addressed profile, folds root `[[patches]]`, folds any
     /// `--with-config` overlays, and re-validates the shape).
     /// The agent referenced by `profile.agent` must still exist in
     /// `config.agents.agents`.
     ///
-    /// Production callers go through `adapters::acp::instances::
-    /// resolve_into_instance_and_profile` (or `resolve_with_patches`
-    /// for the `withConfig` path) — both return the patched
-    /// `ProfileConfig` alongside the `ResolvedInstance` so downstream
-    /// MCP / skills registry builders read from the same shape.
+    /// Production callers go through
+    /// `resolve::resolve_into_instance_and_profile`, which returns the
+    /// patched `ProfileConfig` alongside the `ResolvedInstance` so
+    /// downstream MCP / skills registry builders read from the same
+    /// shape.
     pub fn from_profile_explicit(profile: &ProfileConfig, config: &Config) -> Result<Self> {
         let agent = config
             .agents
@@ -194,10 +193,9 @@ impl ResolvedInstance {
 /// The result deserializes back through `ProfileConfig` so garde
 /// re-validates the post-merge shape.
 ///
-/// Test-only — production paths use `adapters::acp::instances::
-/// resolve_effective_profile` (which composes this same logic +
-/// `--with-config` overlays) so MCP / skills registries read from
-/// the same patched view.
+/// Test-only — production paths use `resolve::resolve_effective_profile`
+/// (which composes this same logic + `--with-config` overlays) so MCP /
+/// skills registries read from the same patched view.
 #[cfg(test)]
 fn apply_root_patches(config: &Config, profile: ProfileConfig) -> Result<ProfileConfig> {
     let Some(patches) = config.patches.as_deref() else {
@@ -253,12 +251,11 @@ mod tests {
     fn agent(id: &str, model: Option<&str>) -> AgentConfig {
         AgentConfig {
             id: id.into(),
-            provider: AgentProvider::AcpClaudeCode,
+            provider: AgentProvider::ClaudeCode,
             model: model.map(|s| s.to_string()),
             effort: None,
             command: "/bin/false".into(),
             args: vec![],
-            spawn: None,
             cwd: None,
             env: Default::default(),
         }

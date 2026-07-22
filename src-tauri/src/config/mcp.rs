@@ -12,13 +12,12 @@
 //! them to the agent; there is no consumer of skills outside the MCP
 //! server.
 //!
-//! Global vs per-profile: top-level `Config.mcp` is seeded by
-//! `defaults.toml`; per-profile `ProfileConfig.mcp: Option<McpConfig>`
-//! wholesale-replaces the global when set — mirroring the `mcps`
-//! profile-override pattern. Field shapes are `Option<T>` so the
-//! `overwrite_some` merge strategy can layer defaults.toml → user
-//! config.toml → per-profile cleanly, same as `Autostart`
-//! (`src-tauri/src/config/autostart.rs`).
+//! Per-profile `ProfileConfig.mcp: Option<McpConfig>` is folded onto
+//! whichever profile is picked (root `[[patches]]` seed the default
+//! `mcp` block; a per-profile `mcp` wholesale-replaces it) — mirroring
+//! the `mcps` profile-override pattern. Field shapes are `Option<T>`
+//! so the `overwrite_some` merge strategy can layer defaults →
+//! patches → per-profile cleanly.
 
 use garde::Validate;
 use merge::Merge;

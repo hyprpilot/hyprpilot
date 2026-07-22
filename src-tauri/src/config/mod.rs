@@ -1,14 +1,9 @@
 pub mod agents;
-mod autostart;
-pub mod daemon;
 pub mod extensions;
-pub mod keymaps;
 pub mod mcp;
 pub(crate) mod merge_strategies;
 pub mod patch;
-pub mod remote;
 pub mod system_prompt;
-pub mod theme;
 mod validations;
 pub(crate) mod with_config;
 
@@ -21,19 +16,13 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-pub use agents::{AgentConfig, AgentProvider, AgentSpawnConfig, AgentsConfig, ProfileConfig, ProfileDefaults};
-pub use autostart::Autostart;
-pub use daemon::Daemon;
+pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use extensions::{McpFile, SkillEntry};
-pub use keymaps::{KeymapsConfig, Modifier};
 pub use mcp::McpConfig;
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
-pub use remote::RemoteConfig;
 pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
-pub use theme::Ui;
 use validations::{
-    validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
-    validate_profiles_non_empty,
+    validate_default_profile_id, validate_profile_agent_references, validate_profiles_ids, validate_profiles_non_empty,
 };
 
 pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
@@ -42,17 +31,7 @@ pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     #[garde(dive)]
-    pub daemon: Daemon,
-    /// `[autostart]` — top-level. Drives the boot-time reconcile
-    /// against `tauri-plugin-autostart`. Top-level (not nested under
-    /// `[daemon]`) because autostart is a property of the binary's
-    /// relationship to the OS, not of the daemon's internal config.
-    #[garde(dive)]
-    pub autostart: Autostart,
-    #[garde(dive)]
     pub logging: Logging,
-    #[garde(dive)]
-    pub ui: Ui,
     /// `[[agents]]` at TOML root, flattened here so
     /// `AgentsConfig` stays the single Rust-side unit.
     #[garde(dive)]
@@ -77,27 +56,6 @@ pub struct Config {
     #[serde(default)]
     #[merge(strategy = merge_profiles_by_id)]
     pub profiles: Vec<ProfileConfig>,
-    /// Overlay-wide keyboard bindings. Structured group-per-UI-surface
-    /// (chat / approvals / composer / palette / transcript); palette
-    /// carries nested subgroups (`models`, `sessions`) as their own
-    /// collision scopes. Every leaf is a binding string parsed by the
-    /// UI's `parseKeys` grammar; collisions inside a scope reject at
-    /// load time, cross-scope collisions are fine.
-    #[garde(dive)]
-    #[garde(custom(validate_keymaps_collisions))]
-    pub keymaps: KeymapsConfig,
-    /// `[completion]` — composer autocomplete tuning. The `ripgrep`
-    /// subgroup controls whether the in-process ripgrep source fires
-    /// on every keystroke (auto, with debounce) or only on manual
-    /// trigger (Tab / Ctrl+Space).
-    #[garde(dive)]
-    pub completion: CompletionConfig,
-    /// `[remote]` — TLS axum HTTP+WS server alongside the Tauri
-    /// overlay. Off by default. When enabled, lets a phone (or any
-    /// browser on the LAN) load the same Vue overlay. Per-connection
-    /// pair confirmation; no persistent tokens.
-    #[garde(dive)]
-    pub remote: RemoteConfig,
     /// `[[patches]]` — root-level profile patches applied AFTER
     /// profile pick, BEFORE `--with-config` overrides. Each entry
     /// is a partial `ProfileConfig` shape; per-field merge follows
@@ -108,11 +66,8 @@ pub struct Config {
     ///
     /// An optional `$match` sibling filters where the patch applies
     /// before being stripped so it never lands on the profile shape.
-    /// `$match.profile = "<glob>"` filters by profile id.
-    /// `$match.spawn = true` applies only to direct `hyprpilot
-    /// spawn`; `$match.spawn = false` applies only to daemon/ACP
-    /// resolution. Unset `$match` fields apply to every matching
-    /// context.
+    /// `$match.profile = "<glob>"` filters by profile id. Unset
+    /// `$match` fields apply to every profile.
     ///
     /// Replaces the older per-field "root fallback" mechanism
     /// (`Config.system_prompt`, `Config.mcps`, `Config.mcp` —
@@ -128,35 +83,6 @@ pub struct Config {
     #[garde(skip)]
     #[merge(strategy = overwrite_some)]
     pub patches: Option<Vec<serde_json::Value>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-pub struct CompletionConfig {
-    #[garde(dive)]
-    pub ripgrep: RipgrepCompletionConfig,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields)]
-#[merge(strategy = overwrite_some)]
-pub struct RipgrepCompletionConfig {
-    /// Auto-trigger ripgrep on plain text input (no manual gate).
-    /// `true` means typing past `min_prefix` characters fires a
-    /// ripgrep query through the standard debounce; `false` keeps
-    /// ripgrep manual-only (Tab / Ctrl+Space).
-    #[garde(skip)]
-    pub auto: Option<bool>,
-    /// Debounce applied UI-side before firing the auto-trigger
-    /// query. Bumped from the global default because ripgrep walks
-    /// the cwd's file tree and is heavier than the path / skills
-    /// sources.
-    #[garde(range(min = 0, max = 5_000))]
-    pub debounce_ms: Option<u32>,
-    /// Minimum token length before ripgrep claims the query at all.
-    /// Single letters return thousands of matches and burn CPU.
-    #[garde(range(min = 1, max = 64))]
-    pub min_prefix: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -348,7 +274,6 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::config::keymaps::{Binding, Key, NamedKey};
 
     fn write_tmp(name: &str, body: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -556,236 +481,6 @@ level = "{lvl}"
                 .unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
             fs::remove_file(&p).ok();
         }
-    }
-
-    fn binding(mods: &[Modifier], key: Key) -> Binding {
-        Binding {
-            modifiers: mods.to_vec(),
-            key,
-        }
-    }
-
-    #[test]
-    fn defaults_populate_every_keymap_leaf() {
-        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
-        let k = &cfg.keymaps;
-
-        assert_eq!(k.chat.submit, Some(binding(&[], Key::Named(NamedKey::Enter))));
-        assert_eq!(
-            k.chat.newline,
-            Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Enter)))
-        );
-        assert_eq!(k.approvals.allow, Some(binding(&[Modifier::Ctrl], Key::Char('g'))));
-        assert_eq!(k.approvals.deny, Some(binding(&[Modifier::Ctrl], Key::Char('r'))));
-        assert_eq!(
-            k.queue.send,
-            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::Enter)))
-        );
-        assert_eq!(
-            k.queue.drop,
-            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::Backspace)))
-        );
-        assert_eq!(k.composer.paste, Some(binding(&[Modifier::Ctrl], Key::Char('p'))));
-        assert_eq!(k.composer.tab_completion, Some(binding(&[], Key::Named(NamedKey::Tab))));
-        assert_eq!(
-            k.composer.shift_tab,
-            Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Tab)))
-        );
-        assert_eq!(
-            k.composer.history_up,
-            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::ArrowUp)))
-        );
-        assert_eq!(
-            k.composer.history_down,
-            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::ArrowDown)))
-        );
-        assert_eq!(k.palette.open, Some(binding(&[Modifier::Ctrl], Key::Char('k'))));
-        assert_eq!(k.palette.close, Some(binding(&[], Key::Named(NamedKey::Escape))));
-        assert_eq!(
-            k.palette.instances.focus,
-            Some(binding(&[Modifier::Ctrl], Key::Char('i')))
-        );
-        assert_eq!(k.chat.cancel_turn, Some(binding(&[Modifier::Ctrl], Key::Char('d'))));
-        assert_eq!(k.chat.focus_input, Some(binding(&[Modifier::Ctrl], Key::Char('f'))));
-
-        with_stub_profile(&cfg).validate().expect("seeded defaults validate");
-    }
-
-    #[test]
-    fn keymaps_validate_rejects_same_scope_collision() {
-        let p = write_tmp(
-            "keymap-collision.toml",
-            r#"
-[keymaps.composer]
-paste = { key = "tab" }
-tab_completion = { key = "tab" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("should reject within-scope collision");
-        let msg = err.to_string();
-        assert!(msg.contains("keymaps.composer"), "{msg}");
-        assert!(msg.contains("tab"), "{msg}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn keymaps_validate_allows_cross_scope_collision() {
-        // chat.submit == palette.open — different scopes, OK.
-        let p = write_tmp(
-            "keymap-cross.toml",
-            r#"
-[keymaps.chat]
-submit = { key = "enter" }
-
-[keymaps.palette]
-open = { key = "enter" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        with_stub_profile(&cfg)
-            .validate()
-            .expect("cross-scope collisions validate");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn keymaps_validate_allows_cross_subgroup_collision() {
-        let p = write_tmp(
-            "keymap-subgroup.toml",
-            r#"
-[keymaps.palette]
-open = { modifiers = ["ctrl"], key = "i" }
-
-[keymaps.palette.instances]
-focus = { modifiers = ["ctrl"], key = "i" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        with_stub_profile(&cfg)
-            .validate()
-            .expect("palette vs palette.instances is cross-scope");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn binding_rejects_unknown_modifier() {
-        let p = write_tmp(
-            "keymap-mod.toml",
-            r#"
-[keymaps.chat]
-submit = { modifiers = ["hyper"], key = "k" }
-"#,
-        );
-        let err = load(Some(&p), None).expect_err("unknown modifier rejects at parse");
-        let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(chain.contains("hyper") || chain.contains("variant"), "{chain}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn binding_rejects_unknown_named_key() {
-        let p = write_tmp(
-            "keymap-bad-key.toml",
-            r#"
-[keymaps.chat]
-submit = { key = "return" }
-"#,
-        );
-        let err = load(Some(&p), None).expect_err("unknown named key rejects at parse");
-        let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(chain.contains("return"), "{chain}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn binding_rejects_duplicate_modifiers() {
-        let p = write_tmp(
-            "keymap-dup-mod.toml",
-            r#"
-[keymaps.chat]
-submit = { modifiers = ["ctrl", "ctrl"], key = "k" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        let err = cfg.validate().expect_err("duplicate modifier rejects");
-        assert!(err.to_string().contains("duplicate modifier"), "{err}");
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn binding_accepts_single_char_key() {
-        let p = write_tmp(
-            "keymap-char.toml",
-            r#"
-[keymaps.palette]
-open = { key = "?" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        with_stub_profile(&cfg).validate().expect("single-char key accepts");
-        assert_eq!(cfg.keymaps.palette.open, Some(binding(&[], Key::Char('?'))));
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn binding_canonicalises_modifier_order() {
-        let p = write_tmp(
-            "keymap-order.toml",
-            r#"
-[keymaps.chat]
-submit = { modifiers = ["shift", "ctrl"], key = "enter" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("parses");
-        with_stub_profile(&cfg)
-            .validate()
-            .expect("mixed-order modifiers validate");
-        // Source order ["shift","ctrl"] canonicalises to sorted ascending.
-        let submit = cfg.keymaps.chat.submit.expect("seeded");
-        assert_eq!(submit.modifiers, vec![Modifier::Ctrl, Modifier::Shift]);
-        fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn keymaps_partial_override_preserves_untouched_leaves() {
-        let p = write_tmp(
-            "keymap-partial.toml",
-            r#"
-[keymaps.chat]
-submit = { modifiers = ["ctrl"], key = "enter" }
-"#,
-        );
-        let cfg = load(Some(&p), None).expect("load");
-        // Overridden leaf.
-        assert_eq!(
-            cfg.keymaps.chat.submit,
-            Some(binding(&[Modifier::Ctrl], Key::Named(NamedKey::Enter)))
-        );
-        // Same-group untouched leaf falls through.
-        assert_eq!(
-            cfg.keymaps.chat.newline,
-            Some(binding(&[Modifier::Shift], Key::Named(NamedKey::Enter)))
-        );
-        // Other groups untouched.
-        assert_eq!(
-            cfg.keymaps.approvals.allow,
-            Some(binding(&[Modifier::Ctrl], Key::Char('g')))
-        );
-        assert_eq!(
-            cfg.keymaps.approvals.deny,
-            Some(binding(&[Modifier::Ctrl], Key::Char('r')))
-        );
-        assert_eq!(
-            cfg.keymaps.palette.open,
-            Some(binding(&[Modifier::Ctrl], Key::Char('k')))
-        );
-        assert_eq!(
-            cfg.keymaps.palette.instances.focus,
-            Some(binding(&[Modifier::Ctrl], Key::Char('i')))
-        );
-        with_stub_profile(&cfg).validate().expect("partial override validates");
-        fs::remove_file(&p).ok();
     }
 
     /// Root-level `[[patches]]` array-of-tables parses + carries the

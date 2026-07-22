@@ -1,7 +1,7 @@
 //! Garde predicates for the `config::*` derive surface. Everything
 //! here is `pub(super)`; the outside API is `Config::validate()`.
 
-use super::{AgentConfig, KeymapsConfig, Modifier, ProfileConfig, ProfileDefaults};
+use super::{AgentConfig, ProfileConfig, ProfileDefaults};
 
 pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::Result {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -83,26 +83,4 @@ pub(super) fn validate_default_profile_id<'a>(
             profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
         )))
     }
-}
-
-/// Per-binding modifier uniqueness check. Unknown modifier tokens
-/// reject at TOML parse time via `Modifier`'s `Deserialize` (closed
-/// enum with `rename_all = "lowercase"`); this predicate just catches
-/// repeats like `modifiers = ["ctrl", "ctrl"]`.
-pub(super) fn validate_unique_modifiers(mods: &Vec<Modifier>, _ctx: &()) -> garde::Result {
-    let mut seen: std::collections::HashSet<Modifier> = std::collections::HashSet::new();
-    for m in mods {
-        if !seen.insert(*m) {
-            return Err(garde::Error::new(format!("duplicate modifier '{m:?}' in binding")));
-        }
-    }
-    Ok(())
-}
-
-/// Within-scope keymaps collision check. Garde-walk adapter — wraps
-/// `keymaps::validate_collisions` (which returns `anyhow::Result`)
-/// into `garde::Result` so the rule lives inside the derive walk
-/// alongside every other cross-field validator.
-pub(super) fn validate_keymaps_collisions(cfg: &KeymapsConfig, _ctx: &()) -> garde::Result {
-    super::keymaps::validate_collisions(cfg).map_err(|e| garde::Error::new(format!("{e}")))
 }

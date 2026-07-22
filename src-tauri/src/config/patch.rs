@@ -221,23 +221,11 @@ fn merge_patches(base: Value, patches: Vec<Value>) -> Value {
 #[derive(Debug, Clone, Copy)]
 pub struct PatchMatchContext<'a> {
     pub profile_id: &'a str,
-    /// `true` when resolving a profile for `hyprpilot spawn`.
-    pub spawn: bool,
 }
 
 impl<'a> PatchMatchContext<'a> {
     pub const fn new(profile_id: &'a str) -> Self {
-        Self {
-            profile_id,
-            spawn: false,
-        }
-    }
-
-    pub const fn for_spawn(profile_id: &'a str) -> Self {
-        Self {
-            profile_id,
-            spawn: true,
-        }
+        Self { profile_id }
     }
 }
 
@@ -247,11 +235,9 @@ impl<'a> PatchMatchContext<'a> {
 /// Each patch is an object whose body is a partial `ProfileConfig`
 /// shape. An optional `$match: { profile: "<glob>" }` sibling at the
 /// top of the patch object filters which profiles the patch applies
-/// to. `$match.spawn = true` filters to direct `hyprpilot spawn`
-/// resolution; `$match.spawn = false` filters to daemon/ACP
-/// resolution. The directive is stripped before merging so it never
-/// lands on the profile shape itself. Unset `$match` fields mean
-/// "applies to every matching context".
+/// to. The directive is stripped before merging so it never lands on
+/// the profile shape itself. An unset `$match` (or unset `profile`
+/// field) means "applies to every profile".
 ///
 /// Non-object patch values silently skip — the caller is expected to
 /// have validated the input shape at config-load time (garde +
@@ -299,21 +285,14 @@ fn match_matches_context(match_value: &Value, ctx: PatchMatchContext<'_>) -> boo
     let Some(obj) = match_value.as_object() else {
         return false;
     };
-    let profile_matches = match obj.get("profile") {
+    match obj.get("profile") {
         None => true,
         Some(Value::String(profile_glob)) => globset::Glob::new(profile_glob)
             .ok()
             .map(|g| g.compile_matcher())
             .is_some_and(|m| m.is_match(ctx.profile_id)),
         Some(_) => false,
-    };
-    let spawn_matches = match obj.get("spawn") {
-        None => true,
-        Some(Value::Bool(expected)) => *expected == ctx.spawn,
-        Some(_) => false,
-    };
-
-    profile_matches && spawn_matches
+    }
 }
 
 #[cfg(test)]
@@ -522,59 +501,26 @@ mod tests {
     }
 
     #[test]
-    fn root_patch_with_spawn_match_applies_only_to_spawn_context() {
+    fn root_patch_env_replace_directive_applies() {
         let profile = json!({
             "id": "work/claude/opus",
             "agent": "claude-code",
             "env": { "SENSITIVE_TOKEN": "redacted" }
         });
         let patches = vec![json!({
-            "$match": { "profile": "work/*", "spawn": true },
+            "$match": { "profile": "work/*" },
             "env": { "$patch": "replace" }
         })];
 
-        let daemon = apply_root_patches_to_profile_with_context(
-            profile.clone(),
-            &patches,
-            PatchMatchContext::new("work/claude/opus"),
-        );
-        assert_eq!(daemon, profile);
-
-        let spawn = apply_root_patches_to_profile_with_context(
-            profile,
-            &patches,
-            PatchMatchContext::for_spawn("work/claude/opus"),
-        );
+        let patched =
+            apply_root_patches_to_profile_with_context(profile, &patches, PatchMatchContext::new("work/claude/opus"));
         assert_eq!(
-            spawn,
+            patched,
             json!({
                 "id": "work/claude/opus",
                 "agent": "claude-code",
                 "env": {}
             })
-        );
-    }
-
-    #[test]
-    fn root_patch_with_spawn_false_skips_direct_spawn_context() {
-        let profile = json!({ "id": "work/claude/opus", "agent": "claude-code" });
-        let patches = vec![json!({
-            "$match": { "spawn": false },
-            "mode": "plan"
-        })];
-
-        let spawn = apply_root_patches_to_profile_with_context(
-            profile.clone(),
-            &patches,
-            PatchMatchContext::for_spawn("work/claude/opus"),
-        );
-        assert_eq!(spawn, profile);
-
-        let daemon =
-            apply_root_patches_to_profile_with_context(profile, &patches, PatchMatchContext::new("work/claude/opus"));
-        assert_eq!(
-            daemon,
-            json!({ "id": "work/claude/opus", "agent": "claude-code", "mode": "plan" })
         );
     }
 
@@ -591,12 +537,8 @@ mod tests {
                 "mode": "bad-glob"
             }),
             json!({
-                "$match": { "spawn": "true" },
-                "mode": "string-bool"
-            }),
-            json!({
-                "$match": { "spawn": 1 },
-                "mode": "number-bool"
+                "$match": { "profile": 1 },
+                "mode": "number-glob"
             }),
         ];
 
@@ -604,7 +546,7 @@ mod tests {
             apply_root_patches_to_profile_with_context(
                 profile.clone(),
                 &patches,
-                PatchMatchContext::for_spawn("work/claude/opus"),
+                PatchMatchContext::new("work/claude/opus"),
             ),
             profile
         );
