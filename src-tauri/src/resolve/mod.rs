@@ -3,19 +3,9 @@
 //! No process spawning, no ACP wire types, no daemon/RPC state — just
 //! `Config` + `ProfileConfig` in, a resolved shape out.
 //!
-//! Lives outside `adapters::acp` so the launcher (`adapters::cli`)
-//! can consume it without pulling in the daemon/ACP/RPC plane —
-//! that plane is scheduled for deletion once the launcher fully
-//! replaces it, and this module must survive that cut untouched.
-//!
-//! **Error type is `anyhow::Error`, not `rpc::RpcError`.** This is
-//! load-bearing: the launcher binary must not depend on `rpc`.
-//! Daemon-side callers (`adapters::acp::instances`) convert back to
-//! `RpcError` at their own boundary via `.map_err(...)`.
-//!
-//! Moved out of `adapters::acp::instances` verbatim (K-725) — pure
-//! move + error-type swap, re-exported from the old site so every
-//! existing daemon/ACP caller keeps compiling unchanged.
+//! Consumed by the launcher (`adapters::cli`); returns
+//! `anyhow::Error` so nothing here depends on a transport-specific
+//! error type.
 
 use std::sync::Arc;
 
@@ -161,48 +151,20 @@ pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::
 ///      when neither `--profile <id>` nor `[profile] default`
 ///      addresses a real `[[profiles]]` entry).
 ///   2. Fold root `[[patches]]` from the captain's on-disk config,
-///      filtered by each patch's optional `$match.profile` glob and
-///      `$match.spawn` boolean.
+///      filtered by each patch's optional `$match.profile` glob.
 ///   3. Fold `external_patches` in declaration order (the
 ///      `--with-config` per-invocation overrides) with the same
 ///      match context. Empty slice is a no-op.
 ///   4. Deserialize back to `ProfileConfig` + re-run garde
 ///      validation against the post-merge shape.
-///
-/// Before the hoist, layers drifted: `ResolvedInstance::from_config`
-/// applied root patches to system_prompt / model / mode, but the
-/// downstream `build_mcp_registry_with` / `build_skills_registry_with`
-/// got the unpatched profile via `profile_by_id_in` — so patches'
-/// `mcps` / `mcp.skills` silently never reached the spawned actor.
 pub(crate) fn resolve_effective_profile(
     cfg: &Config,
     profile_id: Option<&str>,
     external_patches: &[Value],
 ) -> anyhow::Result<ProfileConfig> {
-    resolve_effective_profile_with_context(cfg, profile_id, external_patches, false)
-}
-
-pub(crate) fn resolve_effective_profile_for_spawn(
-    cfg: &Config,
-    profile_id: Option<&str>,
-    external_patches: &[Value],
-) -> anyhow::Result<ProfileConfig> {
-    resolve_effective_profile_with_context(cfg, profile_id, external_patches, true)
-}
-
-fn resolve_effective_profile_with_context(
-    cfg: &Config,
-    profile_id: Option<&str>,
-    external_patches: &[Value],
-    spawn: bool,
-) -> anyhow::Result<ProfileConfig> {
     let base = base_profile_for_patches(cfg, profile_id)?;
     let base_value = serde_json::to_value(&base).context("profile serialize failed")?;
-    let match_context = if spawn {
-        crate::config::patch::PatchMatchContext::for_spawn(&base.id)
-    } else {
-        crate::config::patch::PatchMatchContext::new(&base.id)
-    };
+    let match_context = crate::config::patch::PatchMatchContext::new(&base.id);
 
     let with_root = match cfg.patches.as_deref() {
         Some(rp) if !rp.is_empty() => {
@@ -266,23 +228,13 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::R
 /// Explicit `agent_id` wins over whatever agent the patched profile
 /// names — captain intent for "run THIS profile but on a different
 /// vendor binary".
-pub(crate) fn resolve_into_instance_and_profile_for_spawn(
+pub(crate) fn resolve_into_instance_and_profile(
     cfg: &Config,
     agent_id: Option<&str>,
     profile_id: Option<&str>,
     external_patches: &[Value],
 ) -> anyhow::Result<(ResolvedInstance, ProfileConfig)> {
-    resolve_into_instance_and_profile_with_context(cfg, agent_id, profile_id, external_patches, true)
-}
-
-fn resolve_into_instance_and_profile_with_context(
-    cfg: &Config,
-    agent_id: Option<&str>,
-    profile_id: Option<&str>,
-    external_patches: &[Value],
-    spawn: bool,
-) -> anyhow::Result<(ResolvedInstance, ProfileConfig)> {
-    let patched = resolve_effective_profile_with_context(cfg, profile_id, external_patches, spawn)?;
+    let patched = resolve_effective_profile(cfg, profile_id, external_patches)?;
     let mut resolved = ResolvedInstance::from_profile_explicit(&patched, cfg)?;
 
     if let Some(wanted) = agent_id {

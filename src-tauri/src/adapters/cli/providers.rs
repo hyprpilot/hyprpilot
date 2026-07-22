@@ -6,7 +6,7 @@ use agent_client_protocol::schema::McpServer;
 use anyhow::{bail, Context, Result};
 
 use crate::adapters::profile::ResolvedInstance;
-use crate::config::{AgentProvider, AgentSpawnConfig};
+use crate::config::AgentProvider;
 use crate::mcp::{expanded_raw, project_to_acp, MCPDefinition};
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
@@ -28,10 +28,10 @@ pub(super) fn build_command(
     provider_args: Vec<String>,
 ) -> Result<DirectCommand> {
     match resolved.agent.provider {
-        AgentProvider::AcpClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args),
-        AgentProvider::AcpCodex => build_codex(resolved, system_prompt, mcp_defs, provider_args),
-        AgentProvider::AcpOpenCode => build_opencode(resolved, system_prompt, mcp_defs, provider_args),
-        AgentProvider::Acp => build_generic(resolved, provider_args),
+        AgentProvider::ClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args),
+        AgentProvider::Codex => build_codex(resolved, system_prompt, mcp_defs, provider_args),
+        AgentProvider::OpenCode => build_opencode(resolved, system_prompt, mcp_defs, provider_args),
+        AgentProvider::Custom => build_generic(resolved, provider_args),
     }
 }
 
@@ -232,13 +232,13 @@ fn build_opencode(
 }
 
 fn base_command(resolved: &ResolvedInstance) -> Result<DirectCommand> {
-    let spawn = resolved
+    let program = expand_value(&resolved.agent.command, "agents.command");
+    let args = resolved
         .agent
-        .spawn
-        .as_ref()
-        .with_context(|| format!("agent '{}' does not define [agents.spawn]", resolved.agent.id))?;
-    let program = expand_value(&spawn.command, "agents.spawn.command");
-    let args = expand_args(spawn);
+        .args
+        .iter()
+        .map(|arg| expand_value(arg, "agents.args"))
+        .collect();
     let env = resolved
         .agent
         .env
@@ -257,14 +257,6 @@ fn base_command(resolved: &ResolvedInstance) -> Result<DirectCommand> {
         env,
         cwd,
     })
-}
-
-fn expand_args(spawn: &AgentSpawnConfig) -> Vec<String> {
-    spawn
-        .args
-        .iter()
-        .map(|arg| expand_value(arg, "agents.spawn.args"))
-        .collect()
 }
 
 fn expand_value(raw: &str, ctx: &str) -> String {
@@ -964,7 +956,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::{AgentConfig, AgentSpawnConfig};
+    use crate::config::AgentConfig;
     use crate::mcp::{HyprpilotExtension, MCPDefinition};
 
     fn resolved(provider: AgentProvider) -> ResolvedInstance {
@@ -974,12 +966,8 @@ mod tests {
                 provider,
                 model: None,
                 effort: None,
-                command: "/bin/false".into(),
+                command: "provider".into(),
                 args: Vec::new(),
-                spawn: Some(AgentSpawnConfig {
-                    command: "provider".into(),
-                    args: Vec::new(),
-                }),
                 cwd: None,
                 env: BTreeMap::new(),
             },
@@ -1108,7 +1096,7 @@ mod tests {
     #[test]
     fn claude_provider_args_suppress_generated_model() {
         let command = build_command(
-            &resolved(AgentProvider::AcpClaudeCode),
+            &resolved(AgentProvider::ClaudeCode),
             None,
             &[],
             vec!["--model".into(), "user-model".into()],
@@ -1122,7 +1110,7 @@ mod tests {
     fn claude_mcp_config_uses_expanded_mcp_entries() {
         let home = std::env::var("HOME").expect("HOME should be present in test env");
         let command = build_command(
-            &resolved(AgentProvider::AcpClaudeCode),
+            &resolved(AgentProvider::ClaudeCode),
             None,
             &[mcp_def_with_home_env()],
             Vec::new(),
@@ -1155,7 +1143,7 @@ mod tests {
     #[test]
     fn claude_mcp_permission_globs_map_to_allowed_and_disallowed_tools() {
         let command = build_command(
-            &resolved(AgentProvider::AcpClaudeCode),
+            &resolved(AgentProvider::ClaudeCode),
             None,
             &[mcp_def_with_permissions()],
             Vec::new(),
@@ -1179,7 +1167,7 @@ mod tests {
     #[test]
     fn claude_mcp_visibility_globs_map_to_allowed_and_disallowed_tools() {
         let command = build_command(
-            &resolved(AgentProvider::AcpClaudeCode),
+            &resolved(AgentProvider::ClaudeCode),
             None,
             &[mcp_def_with_visibility()],
             Vec::new(),
@@ -1203,7 +1191,7 @@ mod tests {
     #[test]
     fn claude_provider_args_suppress_generated_mcp_permissions() {
         let command = build_command(
-            &resolved(AgentProvider::AcpClaudeCode),
+            &resolved(AgentProvider::ClaudeCode),
             None,
             &[mcp_def_with_permissions()],
             vec![
@@ -1236,7 +1224,7 @@ mod tests {
     #[test]
     fn codex_projects_mcp_into_config_overrides() {
         let command = build_command(
-            &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
             Some("be terse"),
             &[mcp_def()],
             Vec::new(),
@@ -1270,7 +1258,7 @@ mod tests {
     #[test]
     fn codex_projects_exact_mcp_tool_policy_into_supported_config() {
         let command = build_command(
-            &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
             None,
             &[mcp_def_with_visibility()],
             Vec::new(),
@@ -1288,7 +1276,7 @@ mod tests {
     #[test]
     fn codex_approval_mode_maps_to_ask_for_approval() {
         let command = build_command(
-            &resolved_with_mode(AgentProvider::AcpCodex, Some("on-request")),
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
             None,
             &[],
             Vec::new(),
@@ -1304,7 +1292,7 @@ mod tests {
     #[test]
     fn codex_passes_resolved_cwd_to_native_cd_flag() {
         let command = build_command(
-            &resolved_with_cwd(AgentProvider::AcpCodex, "/tmp/hyprpilot-work"),
+            &resolved_with_cwd(AgentProvider::Codex, "/tmp/hyprpilot-work"),
             None,
             &[],
             Vec::new(),
@@ -1318,7 +1306,7 @@ mod tests {
     #[test]
     fn codex_provider_args_suppress_generated_cd_flag() {
         let command = build_command(
-            &resolved_with_cwd(AgentProvider::AcpCodex, "/tmp/hyprpilot-work"),
+            &resolved_with_cwd(AgentProvider::Codex, "/tmp/hyprpilot-work"),
             None,
             &[],
             vec!["-C".into(), "/tmp/other".into()],
@@ -1332,7 +1320,7 @@ mod tests {
     #[test]
     fn codex_sandbox_mode_maps_to_sandbox() {
         let command = build_command(
-            &resolved_with_mode(AgentProvider::AcpCodex, Some("workspace-write")),
+            &resolved_with_mode(AgentProvider::Codex, Some("workspace-write")),
             None,
             &[],
             Vec::new(),
@@ -1345,7 +1333,7 @@ mod tests {
     #[test]
     fn codex_rejects_unknown_mode_without_provider_override() {
         let err = build_command(
-            &resolved_with_mode(AgentProvider::AcpCodex, Some("plan")),
+            &resolved_with_mode(AgentProvider::Codex, Some("plan")),
             None,
             &[],
             Vec::new(),
@@ -1358,7 +1346,7 @@ mod tests {
     #[test]
     fn codex_provider_args_override_unknown_mode() {
         let command = build_command(
-            &resolved_with_mode(AgentProvider::AcpCodex, Some("plan")),
+            &resolved_with_mode(AgentProvider::Codex, Some("plan")),
             None,
             &[],
             vec!["--ask-for-approval".into(), "never".into()],
@@ -1378,7 +1366,7 @@ mod tests {
     #[test]
     fn opencode_puts_prompt_mcp_and_variant_in_inline_config() {
         let command = build_command(
-            &resolved(AgentProvider::AcpOpenCode),
+            &resolved(AgentProvider::OpenCode),
             Some("be terse"),
             &[mcp_def()],
             Vec::new(),
@@ -1396,7 +1384,7 @@ mod tests {
     #[test]
     fn opencode_projects_mcp_tool_policy_into_permission_env() {
         let command = build_command(
-            &resolved(AgentProvider::AcpOpenCode),
+            &resolved(AgentProvider::OpenCode),
             None,
             &[mcp_def_with_visibility()],
             Vec::new(),
@@ -1415,7 +1403,7 @@ mod tests {
     #[test]
     fn opencode_permission_order_preserves_hyprpilot_policy_precedence() {
         let command = build_command(
-            &resolved(AgentProvider::AcpOpenCode),
+            &resolved(AgentProvider::OpenCode),
             None,
             &[mcp_def_with_visibility_conflicts()],
             Vec::new(),

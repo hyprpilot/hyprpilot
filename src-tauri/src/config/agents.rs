@@ -57,20 +57,16 @@ pub struct AgentConfig {
     /// reasoning-effort/config override surface.
     #[garde(skip)]
     pub effort: Option<String>,
-    /// Spawn binary. Mandatory — no per-provider fallback table at
-    /// the trait layer. defaults.toml supplies one for every named
-    /// provider; user `[[agents]]` entries (named or `acp`)
-    /// must declare it explicitly.
+    /// Native CLI binary the launcher `exec`s into. Mandatory — no
+    /// per-provider fallback table. defaults.toml supplies one for
+    /// every named provider; user `[[agents]]` entries (named or
+    /// `custom`) must declare it explicitly.
     #[garde(length(min = 1))]
     pub command: String,
     #[garde(skip)]
     #[serde(default)]
     pub args: Vec<String>,
-    /// Direct provider TUI command. Separate from `command` / `args`,
-    /// which are the ACP bridge command for overlay-managed sessions.
-    #[garde(dive)]
-    pub spawn: Option<AgentSpawnConfig>,
-    /// Missing → `std::env::current_dir()` at `new_session` time.
+    /// Missing → `std::env::current_dir()` at spawn time.
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
     #[garde(skip)]
@@ -78,57 +74,40 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
-#[serde(deny_unknown_fields)]
-pub struct AgentSpawnConfig {
-    #[garde(length(min = 1))]
-    pub command: String,
-    #[garde(skip)]
-    #[serde(default)]
-    pub args: Vec<String>,
-}
-
-/// Closed enum — each named variant maps to an `AcpAgent` impl with
-/// hardcoded model + system-prompt injection behaviour. `Custom`
-/// opens the door to user-supplied ACP binaries that need no
-/// injection (or, in a follow-up, schema-driven injection from
-/// `[[agents]]` TOML). Wire names are explicit to avoid `acp-open-code`
-/// for `AcpOpenCode`.
-///
-/// `Acp*` prefix on every variant is deliberate — the protocol id is
-/// part of the identity. A future `Http*` family lands as siblings, not
-/// renames. Hence `clippy::enum_variant_names` allow.
-#[allow(clippy::enum_variant_names)]
+/// Closed enum — each named variant maps to a per-vendor native-CLI
+/// command builder (model / effort / mode / system-prompt / MCP
+/// projection). `Custom` opens the door to user-supplied CLIs that
+/// need no vendor-specific projection (just `command` / `args` +
+/// env / cwd). Wire names are explicit so the vendor id stays stable.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AgentProvider {
     #[default]
-    #[serde(rename = "acp-claude-code")]
-    AcpClaudeCode,
-    #[serde(rename = "acp-codex")]
-    AcpCodex,
-    #[serde(rename = "acp-opencode")]
-    AcpOpenCode,
-    /// User-supplied ACP-speaking binary. `command` / `args` are
-    /// mandatory; injection knobs default to no-op (no model env or
-    /// argv flag, no system-prompt injection). For vendors that need
-    /// model env / system-prompt argv injection, copy one of the
-    /// three named providers.
-    #[serde(rename = "acp")]
-    Acp,
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
+    #[serde(rename = "codex")]
+    Codex,
+    #[serde(rename = "opencode")]
+    OpenCode,
+    /// User-supplied CLI. `command` / `args` are mandatory; no
+    /// vendor-specific projection runs (no model/effort/mode flags,
+    /// no system-prompt or MCP injection). For vendors that need
+    /// that projection, copy one of the three named providers.
+    #[serde(rename = "custom")]
+    Custom,
 }
 
 impl AgentProvider {
     /// Wire id — the string serde produces / consumes for this variant.
     /// Single source of truth for the per-vendor identifier. Retained
     /// for callers that need the ascii vendor key without duplicating
-    /// the literal; no live consumer after the formatter registry left.
+    /// the literal.
     #[allow(dead_code)]
     pub const fn wire_id(self) -> &'static str {
         match self {
-            Self::AcpClaudeCode => "acp-claude-code",
-            Self::AcpCodex => "acp-codex",
-            Self::AcpOpenCode => "acp-opencode",
-            Self::Acp => "acp",
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::OpenCode => "opencode",
+            Self::Custom => "custom",
         }
     }
 }
@@ -213,10 +192,9 @@ mod tests {
         path
     }
 
-    /// Mirrors `defaults_populate_every_daemon_window_field` for the
-    /// agents registry. If the seeded entries drift — wrong provider
-    /// name, missing id, policy variant removed — this fires before
-    /// the daemon starts panicking at runtime against a bad schema.
+    /// Pin the seeded `[[agents]]` registry shape. If the seeded
+    /// entries drift — wrong provider name, missing id, non-native
+    /// command — this fires before a spawn `exec`s the wrong binary.
     #[test]
     fn defaults_populate_every_required_agent_field() {
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
@@ -230,17 +208,26 @@ mod tests {
 
         for a in &cfg.agents.agents {
             assert!(!a.command.is_empty(), "agents[{}].command", a.id);
-            assert!(!a.args.is_empty(), "agents[{}].args", a.id);
-            let spawn = a.spawn.as_ref().unwrap_or_else(|| panic!("agents[{}].spawn", a.id));
-            assert!(!spawn.command.is_empty(), "agents[{}].spawn.command", a.id);
         }
 
         // Provider mapping per id.
         let by_id: std::collections::HashMap<&str, AgentProvider> =
             cfg.agents.agents.iter().map(|a| (a.id.as_str(), a.provider)).collect();
-        assert_eq!(by_id["claude-code"], AgentProvider::AcpClaudeCode);
-        assert_eq!(by_id["codex"], AgentProvider::AcpCodex);
-        assert_eq!(by_id["opencode"], AgentProvider::AcpOpenCode);
+        assert_eq!(by_id["claude-code"], AgentProvider::ClaudeCode);
+        assert_eq!(by_id["codex"], AgentProvider::Codex);
+        assert_eq!(by_id["opencode"], AgentProvider::OpenCode);
+
+        // Defaults now `exec` the vendors' NATIVE CLIs directly — not
+        // the old `bunx …-acp` bridge invocations.
+        let by_cmd: std::collections::HashMap<&str, &str> = cfg
+            .agents
+            .agents
+            .iter()
+            .map(|a| (a.id.as_str(), a.command.as_str()))
+            .collect();
+        assert_eq!(by_cmd["claude-code"], "claude");
+        assert_eq!(by_cmd["codex"], "codex");
+        assert_eq!(by_cmd["opencode"], "opencode");
     }
 
     #[test]
@@ -252,13 +239,13 @@ mod tests {
             r#"
 [[agents]]
 id = "claude-code"
-provider = "acp-claude-code"
+provider = "claude-code"
 command = "my-claude"
 args = ["--custom"]
 
 [[agents]]
 id = "my-local"
-provider = "acp-codex"
+provider = "codex"
 command = "local-codex"
 args = []
 "#,
@@ -276,13 +263,13 @@ args = []
         assert_eq!(cc.command, "my-claude");
         assert_eq!(cc.args, vec!["--custom".to_string()]);
 
-        // Untouched defaults keep everything.
+        // Untouched defaults keep the native CLI command.
         let codex = cfg.agents.agents.iter().find(|a| a.id == "codex").unwrap();
-        assert_eq!(codex.command, "bunx");
+        assert_eq!(codex.command, "codex");
 
         // Appended entry survived.
         let ml = cfg.agents.agents.iter().find(|a| a.id == "my-local").unwrap();
-        assert_eq!(ml.provider, AgentProvider::AcpCodex);
+        assert_eq!(ml.provider, AgentProvider::Codex);
 
         fs::remove_file(&p).ok();
     }
@@ -294,12 +281,12 @@ args = []
             r#"
 [[agents]]
 id = "dupe"
-provider = "acp-claude-code"
+provider = "claude-code"
 command = "a"
 
 [[agents]]
 id = "dupe"
-provider = "acp-codex"
+provider = "codex"
 command = "b"
 "#,
         );
@@ -334,9 +321,10 @@ command = "b"
         // defaults.toml — a rename would require updating defaults
         // AND every user config out there.
         for (v, literal) in [
-            (AgentProvider::AcpClaudeCode, "\"acp-claude-code\""),
-            (AgentProvider::AcpCodex, "\"acp-codex\""),
-            (AgentProvider::AcpOpenCode, "\"acp-opencode\""),
+            (AgentProvider::ClaudeCode, "\"claude-code\""),
+            (AgentProvider::Codex, "\"codex\""),
+            (AgentProvider::OpenCode, "\"opencode\""),
+            (AgentProvider::Custom, "\"custom\""),
         ] {
             assert_eq!(serde_json::to_string(&v).unwrap(), literal);
             let back: AgentProvider = serde_json::from_str(literal).unwrap();
@@ -351,7 +339,7 @@ command = "b"
             r##"
 [[agents]]
 id = "bare"
-provider = "acp-claude-code"
+provider = "claude-code"
 command = "my-agent"
 args = ["--flag"]
 

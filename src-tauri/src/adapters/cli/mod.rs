@@ -10,8 +10,7 @@ use serde_json::Value;
 use crate::adapters::ProfileSummary;
 use crate::config::Config;
 use crate::resolve::{
-    build_mcp_registry_with, build_skills_registry_with, resolve_effective_profile,
-    resolve_effective_profile_for_spawn, resolve_into_instance_and_profile_for_spawn,
+    build_mcp_registry_with, build_skills_registry_with, resolve_effective_profile, resolve_into_instance_and_profile,
 };
 
 #[derive(Debug)]
@@ -38,14 +37,10 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
 
     let profile_id = match profile_id {
         Some(id) => id,
-        None => picker::pick_profile(list_profiles_for_spawn(&cfg, cwd.as_deref(), &config_patches))?.id,
+        None => picker::pick_profile(list_profiles(&cfg, cwd.as_deref(), &config_patches))?.id,
     };
-    let (mut resolved, profile) = resolve_into_instance_and_profile_for_spawn(
-        &cfg,
-        agent_id.as_deref(),
-        Some(profile_id.as_str()),
-        &config_patches,
-    )?;
+    let (mut resolved, profile) =
+        resolve_into_instance_and_profile(&cfg, agent_id.as_deref(), Some(profile_id.as_str()), &config_patches)?;
 
     if let Some(cwd) = cwd {
         resolved.agent.cwd = Some(cwd);
@@ -69,33 +64,12 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
 }
 
 pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[Value]) -> Vec<ProfileSummary> {
-    list_profiles_with_context(cfg, cwd, config_patches, false)
-}
-
-pub(crate) fn list_profiles_for_spawn(
-    cfg: &Config,
-    cwd: Option<&Path>,
-    config_patches: &[Value],
-) -> Vec<ProfileSummary> {
-    list_profiles_with_context(cfg, cwd, config_patches, true)
-}
-
-fn list_profiles_with_context(
-    cfg: &Config,
-    cwd: Option<&Path>,
-    config_patches: &[Value],
-    spawn: bool,
-) -> Vec<ProfileSummary> {
     let default_profile = cfg.profile.default.as_deref();
     cfg.profiles
         .iter()
         .map(|profile| {
-            let resolved = if spawn {
-                resolve_effective_profile_for_spawn(cfg, Some(profile.id.as_str()), config_patches)
-            } else {
-                resolve_effective_profile(cfg, Some(profile.id.as_str()), config_patches)
-            }
-            .unwrap_or_else(|_| profile.clone());
+            let resolved = resolve_effective_profile(cfg, Some(profile.id.as_str()), config_patches)
+                .unwrap_or_else(|_| profile.clone());
             ProfileSummary {
                 id: resolved.id.clone(),
                 agent: resolved.agent.clone(),
@@ -122,12 +96,11 @@ mod tests {
             agents: AgentsConfig {
                 agents: vec![AgentConfig {
                     id: "agent".into(),
-                    provider: AgentProvider::AcpClaudeCode,
+                    provider: AgentProvider::ClaudeCode,
                     model: None,
                     effort: None,
                     command: "claude".into(),
                     args: Vec::new(),
-                    spawn: None,
                     cwd: None,
                     env: BTreeMap::new(),
                 }],
@@ -166,17 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn spawn_profile_listing_applies_spawn_scoped_patches() {
+    fn profile_listing_applies_profile_scoped_patches() {
         let mut cfg = cfg_with_profile_cwd();
         cfg.patches = Some(vec![serde_json::json!({
-            "$match": { "profile": "engineer", "spawn": true },
-            "model": "spawn-only"
+            "$match": { "profile": "engineer" },
+            "model": "patched"
         })]);
 
-        let regular = list_profiles(&cfg, None, &[]);
-        assert_eq!(regular[0].model, None);
-
-        let spawn = list_profiles_for_spawn(&cfg, None, &[]);
-        assert_eq!(spawn[0].model.as_deref(), Some("spawn-only"));
+        let profiles = list_profiles(&cfg, None, &[]);
+        assert_eq!(profiles[0].model.as_deref(), Some("patched"));
     }
 }
