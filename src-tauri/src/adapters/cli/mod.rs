@@ -7,12 +7,12 @@ use std::process::ExitCode;
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::adapters::acp::instances::{
+use crate::adapters::ProfileSummary;
+use crate::config::Config;
+use crate::resolve::{
     build_mcp_registry_with, build_skills_registry_with, resolve_effective_profile,
     resolve_effective_profile_for_spawn, resolve_into_instance_and_profile_for_spawn,
 };
-use crate::adapters::ProfileSummary;
-use crate::config::Config;
 
 #[derive(Debug)]
 pub(crate) struct SpawnRequest {
@@ -45,8 +45,7 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
         agent_id.as_deref(),
         Some(profile_id.as_str()),
         &config_patches,
-    )
-    .map_err(|err| anyhow::anyhow!(err.message))?;
+    )?;
 
     if let Some(cwd) = cwd {
         resolved.agent.cwd = Some(cwd);
@@ -58,7 +57,7 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
         resolved.mode = mode;
     }
 
-    let system_prompt = resolved.system_prompt_for(&crate::adapters::Bootstrap::Fresh);
+    let system_prompt = resolved.fresh_system_prompt();
 
     let skills = build_skills_registry_with(&profile);
     let mcps = build_mcp_registry_with(&profile, Some(&skills));

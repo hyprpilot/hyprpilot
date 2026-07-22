@@ -9,6 +9,7 @@ mod mcp;
 mod paths;
 mod profiles;
 mod remote;
+mod resolve;
 mod rpc;
 mod skills;
 mod tools;
