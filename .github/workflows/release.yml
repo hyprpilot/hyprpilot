@@ -52,11 +52,9 @@ jobs:
           # Pin to the resolved tag so workflow_dispatch retries build
           # the right commit (default would be `main`'s HEAD).
           ref: ${{ steps.ver.outputs.tag }}
-          # Icons under src-tauri/icons/ are tracked via Git LFS
-          # (see .gitattributes); without `lfs: true` the runner
-          # checks out 130-byte pointer files and tauri's
-          # `generate_context!()` proc-macro panics with "Invalid
-          # PNG signature".
+          # Icons under icons/ are tracked via Git LFS (see
+          # .gitattributes); without `lfs: true` the runner checks
+          # out 130-byte pointer files instead of real PNGs.
           lfs: true
 
       - name: Install system deps
@@ -97,9 +95,9 @@ jobs:
           install -Dm644 README.md staging/hyprpilot/README.md
           install -Dm644 packaging/hyprpilot.desktop staging/hyprpilot/hyprpilot.desktop
           install -Dm644 packaging/hyprpilot.service staging/hyprpilot/hyprpilot.service
-          install -Dm644 src-tauri/src/config/defaults.toml staging/hyprpilot/config.example.toml
+          install -Dm644 src/config/defaults.toml staging/hyprpilot/config.example.toml
           for size in 16 32 48 64 128 256 512; do
-            install -Dm644 "src-tauri/icons/${size}x${size}.png" \
+            install -Dm644 "icons/${size}x${size}.png" \
               "staging/hyprpilot/icons/${size}x${size}.png"
           done
           tar --zstd -cf "$ARCHIVE" -C staging hyprpilot

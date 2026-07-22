@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           # Icons under docs/public/icon.png are copied from
-          # src-tauri/icons/ which is LFS-tracked. Without `lfs: true`
+          # icons/ which is LFS-tracked. Without `lfs: true`
           # the runner gets pointer files instead of real PNGs.
           lfs: true
 
