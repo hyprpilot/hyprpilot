@@ -689,25 +689,10 @@ pub struct AgentSummary {
     pub is_default: bool,
 }
 
-/// Wire shape for `profiles_list` / `config/profiles` entries.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProfileSummary {
-    pub id: String,
-    pub agent: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Profile-scoped cwd hint — the daemon's resolved cwd for spawns
-    /// under this profile. Optional because not every profile sets
-    /// one; consumers (palette `instance · new`) use it to pre-seed
-    /// the chrome header's cwd pill so the captain sees the spawn
-    /// target before the actor's `session/new` lands. The header
-    /// later updates from `MetaSnapshot.cwd` (authoritative) when
-    /// the spawn completes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-    pub is_default: bool,
-}
+/// Wire shape for `profiles_list` / `config/profiles` entries. Moved
+/// to `crate::resolve` (K-725) — re-exported here so the old
+/// `adapters::instance::ProfileSummary` path keeps resolving.
+pub use crate::resolve::ProfileSummary;
 
 /// Validate a captain-supplied instance name against the slug rule.
 ///

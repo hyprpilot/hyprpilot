@@ -81,6 +81,27 @@ impl ResolvedInstance {
         }
     }
 
+    /// Fresh-spawn variant of `system_prompt_for` for the launcher
+    /// (`adapters::cli`), which only ever bootstraps a brand-new
+    /// session and has no reason to depend on `crate::adapters::
+    /// Bootstrap` (a daemon/ACP-only enum slated for deletion
+    /// alongside the rest of that plane). Inlines the `Bootstrap::
+    /// Fresh` branch: filter by `inject.on_create` and concatenate.
+    #[must_use]
+    pub fn fresh_system_prompt(&self) -> Option<String> {
+        let bodies: Vec<&str> = self
+            .system_prompt
+            .iter()
+            .filter(|e| e.inject.on_create)
+            .map(|e| e.body.as_str())
+            .collect();
+        if bodies.is_empty() {
+            None
+        } else {
+            Some(bodies.join("\n\n"))
+        }
+    }
+
     /// Files whose inject toggle qualifies for the given bootstrap
     /// path — the captain-facing list the "system prompt attached"
     /// banner reads. Mirrors `system_prompt_for`'s filter.
