@@ -24,7 +24,6 @@
 
 pub mod auto_inject;
 pub mod loader;
-pub mod permission_match;
 pub mod server;
 
 use std::collections::HashMap;
@@ -80,16 +79,19 @@ pub struct MCPDefinition {
     pub name: String,
     pub raw: Value,
     pub hyprpilot: HyprpilotExtension,
-    /// Source file the entry came from. UI surfaces this so the
-    /// captain can trace "which file owns this server" without
-    /// leaving the overlay.
+    /// Source file the entry came from. Retained for diagnostics; not
+    /// read on the launcher exec path (the daemon UI that surfaced it
+    /// is gone).
+    #[allow(dead_code)]
     pub source: PathBuf,
 }
 
 /// Compiled per-server glob policy. Built once at registry
-/// construction so the permission-decide hot path reads from the
-/// cache instead of running `GlobSetBuilder::build()` on every tool
-/// call.
+/// construction so a permission-decide path reads from the cache
+/// instead of running `GlobSetBuilder::build()` on every tool call.
+/// Retained pending the tool-policy prune (K-731); the launcher
+/// projects policy into provider-native config directly.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CompiledToolPolicy {
     pub include: Option<globset::GlobSet>,
@@ -205,10 +207,10 @@ pub struct MCPsRegistry {
     /// `list()` is stable.
     catalog: RwLock<HashMap<String, MCPDefinition>>,
     order: RwLock<Vec<String>>,
-    /// Per-server compiled tool policy. Built
-    /// once at construction so the decide path doesn't allocate. The
-    /// patterns are immutable for the lifetime of the registry; no
-    /// reload story today (CLAUDE.md: "no reload — restart-to-reconfigure").
+    /// Per-server compiled tool policy. Built once at construction.
+    /// Retained pending the tool-policy prune (K-731) — no live
+    /// consumer after the permission controller was removed.
+    #[allow(dead_code)]
     globs: HashMap<String, CompiledToolPolicy>,
 }
 
@@ -337,10 +339,9 @@ impl MCPsRegistry {
         }
     }
 
-    /// Cached tool policy for `name`, or `None` when
-    /// the server isn't in the registry. Used by
-    /// `DefaultPermissionController::decide` to short-circuit without
-    /// rebuilding `GlobSet`s on every call.
+    /// Cached tool policy for `name`, or `None` when the server isn't
+    /// in the registry. Retained pending the tool-policy prune (K-731).
+    #[allow(dead_code)]
     #[must_use]
     pub fn globs_for(&self, name: &str) -> Option<&CompiledToolPolicy> {
         self.globs.get(name)
@@ -363,11 +364,13 @@ impl MCPsRegistry {
         catalog.get(name).cloned()
     }
 
-    /// Project every entry onto its ACP `McpServer` typed shape, ready
-    /// for `NewSessionRequest::mcp_servers` / `LoadSessionRequest::mcp_servers`.
+    /// Project every entry onto its ACP `McpServer` typed shape.
     /// Skips entries that don't match a known transport (`command` for
     /// stdio, `url` for http/sse) — a `warn!` with the offending name
-    /// records the drop. Order tracks `list()`.
+    /// records the drop. Order tracks `list()`. Retained pending the
+    /// tool-policy prune (K-731); the launcher builds provider-native
+    /// config via `project_to_acp` per entry instead.
+    #[allow(dead_code)]
     #[must_use]
     pub fn to_acp_servers(&self) -> Vec<agent_client_protocol::schema::McpServer> {
         self.list()

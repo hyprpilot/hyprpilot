@@ -98,6 +98,9 @@ pub struct RemoteTlsConfig {
     pub sans: Option<Vec<String>>,
 }
 
+// Accessors consumed by the now-removed remote WS bridge. The
+// `[remote]` config section itself is pruned in K-729.
+#[allow(dead_code)]
 impl RemoteConfig {
     pub fn enabled(&self) -> bool {
         self.enabled.unwrap_or(false)

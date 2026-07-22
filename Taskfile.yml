@@ -11,7 +11,6 @@ vars:
   # what CI does — node version mismatches silently let TS errors
   # slip locally that CI then catches.
   pnpm: mise exec -- pnpm
-  tauri: mise exec -- ./node_modules/.bin/tauri
 
 env:
   # Default `RUST_LOG` for every `task` invocation (notably `task run`).
@@ -89,24 +88,24 @@ tasks:
       - "{{ .pnpm }} -r --parallel --if-present run lint"
 
   run:
-    desc: Run the Tauri app with live-reload.
+    desc: Build and run the launcher binary.
     cmds:
-      - "{{ .tauri }} dev -- -- {{ .CLI_ARGS }}"
+      - cargo run --manifest-path src-tauri/Cargo.toml -- {{ .CLI_ARGS }}
 
   cli:
-    desc: Invoke the built debug binary against an already-running
+    desc: Invoke the built debug binary.
     cmds:
       - ./target/debug/hyprpilot {{ .CLI_ARGS }}
 
   build:
-    desc: Build a debug Tauri bundle.
+    desc: Build the debug launcher binary.
     cmds:
-      - "{{ .tauri }} build --debug"
+      - cargo build --manifest-path src-tauri/Cargo.toml
 
   release:
-    desc: Build a release Tauri bundle.
+    desc: Build the release launcher binary.
     cmds:
-      - "{{ .tauri }} build"
+      - cargo build --manifest-path src-tauri/Cargo.toml --release
 
   docs:dev:
     desc: VitePress dev server for the documentation site.

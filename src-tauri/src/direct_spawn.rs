@@ -5,10 +5,10 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::adapters::cli::SpawnRequest;
+use crate::config::with_config::WithConfigArgs;
 use crate::config::Config;
-use crate::ctl::with_config::WithConfigArgs;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct SpawnArgs {
     /// Session profile id to resolve and launch directly in the provider TUI. Omit to pick interactively.
     #[arg(value_name = "PROFILE")]

@@ -10,6 +10,7 @@ pub mod remote;
 pub mod system_prompt;
 pub mod theme;
 mod validations;
+pub(crate) mod with_config;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,14 +23,14 @@ use serde::{Deserialize, Serialize};
 use crate::paths;
 pub use agents::{AgentConfig, AgentProvider, AgentSpawnConfig, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use autostart::Autostart;
-pub use daemon::{Daemon, Dimension, Edge, Window, WindowMode};
+pub use daemon::Daemon;
 pub use extensions::{McpFile, SkillEntry};
 pub use keymaps::{KeymapsConfig, Modifier};
 pub use mcp::McpConfig;
 use merge_strategies::{merge_profiles_by_id, overwrite_some};
 pub use remote::RemoteConfig;
 pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
-pub use theme::{Theme, Ui};
+pub use theme::Ui;
 use validations::{
     validate_default_profile_id, validate_keymaps_collisions, validate_profile_agent_references, validate_profiles_ids,
     validate_profiles_non_empty,
