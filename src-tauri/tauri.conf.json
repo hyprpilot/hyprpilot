@@ -4,10 +4,7 @@
   "version": "2.8.0",
   "identifier": "dev.kilic.hyprpilot",
   "build": {
-    "beforeDevCommand": "pnpm --filter hyprpilot-ui dev",
-    "beforeBuildCommand": "pnpm --filter hyprpilot-ui build",
-    "devUrl": "http://localhost:1420",
-    "frontendDist": "../ui/dist"
+    "frontendDist": "http://localhost:1420"
   },
   "app": {
     "windows": [
