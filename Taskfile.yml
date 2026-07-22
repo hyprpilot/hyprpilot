@@ -46,7 +46,7 @@ tasks:
   install:
     desc: Install Rust and frontend dependencies.
     cmds:
-      - cargo fetch --manifest-path src-tauri/Cargo.toml
+      - cargo fetch
       - "{{ .pnpm }} install"
 
   test:
@@ -56,7 +56,7 @@ tasks:
   test:rust:
     desc: Run the Rust nextest suite, surfacing every failure (no fail-fast).
     cmds:
-      - cargo nextest run --manifest-path src-tauri/Cargo.toml --all-targets --no-fail-fast
+      - cargo nextest run --all-targets --no-fail-fast
 
   format:
     desc: Format Rust and every pnpm package.
@@ -65,7 +65,7 @@ tasks:
   format:rust:
     desc: Run `cargo fmt` across the Rust workspace.
     cmds:
-      - cargo fmt --manifest-path src-tauri/Cargo.toml --all
+      - cargo fmt --all
 
   format:node:
     desc: Run the `format` script in every pnpm package that defines one.
@@ -79,8 +79,8 @@ tasks:
   lint:rust:
     desc: "`cargo fmt --check` + `cargo clippy` on the Rust workspace."
     cmds:
-      - cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-      - cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets -- -D warnings
 
   lint:node:
     desc: Run the `lint` script in every pnpm package that defines one.
@@ -90,7 +90,7 @@ tasks:
   run:
     desc: Build and run the launcher binary.
     cmds:
-      - cargo run --manifest-path src-tauri/Cargo.toml -- {{ .CLI_ARGS }}
+      - cargo run -- {{ .CLI_ARGS }}
 
   cli:
     desc: Invoke the built debug binary.
@@ -100,12 +100,12 @@ tasks:
   build:
     desc: Build the debug launcher binary.
     cmds:
-      - cargo build --manifest-path src-tauri/Cargo.toml
+      - cargo build
 
   release:
     desc: Build the release launcher binary.
     cmds:
-      - cargo build --manifest-path src-tauri/Cargo.toml --release
+      - cargo build --release
 
   docs:dev:
     desc: VitePress dev server for the documentation site.

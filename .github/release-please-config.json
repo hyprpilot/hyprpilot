@@ -20,17 +20,7 @@
         {
           "type": "toml",
           "path": "Cargo.toml",
-          "jsonpath": "$.workspace.package.version"
-        },
-        {
-          "type": "json",
-          "path": "ui/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "src-tauri/tauri.conf.json",
-          "jsonpath": "$.version"
+          "jsonpath": "$.package.version"
         },
         {
           "type": "generic",

@@ -69,7 +69,7 @@ pkgver() {
 
 prepare() {
   cd "$srcdir/$pkgname"
-  # Icons under src-tauri/icons/ are LFS-tracked. `git+https` clones
+  # Icons under icons/ are LFS-tracked. `git+https` clones
   # only the pointer files; tauri's generate_context!() rejects them
   # with "Invalid PNG signature" at compile time. makepkg's source
   # cache uses a local bare clone as `origin` — that bare has no LFS
@@ -88,7 +88,7 @@ build() {
   # `--locked` (not `--frozen`): pin to the checked-in Cargo.lock
   # but still allow registry fetches. `--frozen` implies offline,
   # which fails on a fresh clone where ~/.cargo/registry is empty.
-  cargo build --release --locked --manifest-path src-tauri/Cargo.toml
+  cargo build --release --locked
 }
 
 package() {
@@ -98,8 +98,8 @@ package() {
   install -Dm644 packaging/hyprpilot.desktop "$pkgdir/usr/share/applications/hyprpilot.desktop"
   install -Dm644 packaging/hyprpilot.service "$pkgdir/usr/lib/systemd/user/hyprpilot.service"
   for size in 16 32 48 64 128 256 512; do
-    install -Dm644 "src-tauri/icons/${size}x${size}.png" \
+    install -Dm644 "icons/${size}x${size}.png" \
       "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/hyprpilot.png"
   done
-  install -Dm644 src-tauri/src/config/defaults.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
+  install -Dm644 src/config/defaults.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
 }
