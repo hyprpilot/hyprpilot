@@ -9,9 +9,9 @@ use crate::config::with_config::WithConfigArgs;
 use crate::config::Config;
 
 #[derive(Args, Debug, Default)]
-pub struct SpawnArgs {
+pub struct LaunchArgs {
     /// Session profile id to resolve and launch directly in the provider TUI. Omit to pick interactively.
-    #[arg(value_name = "PROFILE")]
+    #[arg(short = 'p', long = "profile", value_name = "PROFILE")]
     profile_id: Option<String>,
     /// Override the profile's agent entry.
     #[arg(long = "agent")]
@@ -32,7 +32,7 @@ pub struct SpawnArgs {
     provider_args: Vec<String>,
 }
 
-pub fn run(cfg: Config, args: SpawnArgs) -> Result<ExitCode> {
+pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
     let cwd = args.cwd.or_else(|| std::env::current_dir().ok());
     let config_patches = args.with_config.into_patches()?;
 
