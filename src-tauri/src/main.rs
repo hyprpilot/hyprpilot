@@ -30,7 +30,7 @@ struct Cli {
     /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml`). Distinct
     /// from the session `[[profiles]]` registry driving agent +
     /// system-prompt overlays — session profiles are addressed per
-    /// call, this one is a config-layering alias.
+    /// call via `--profile`/`-p`.
     #[arg(long = "config-profile", global = true, env = "HYPRPILOT_CONFIG_PROFILE")]
     config_profile: Option<String>,
 
@@ -38,19 +38,19 @@ struct Cli {
     #[arg(long, global = true, value_enum, env = "HYPRPILOT_LOG_LEVEL")]
     log_level: Option<logging::LogLevel>,
 
+    #[command(flatten)]
+    launch: direct_spawn::LaunchArgs,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run an in-tree MCP server (e.g. `mcp skills`) for an agent vendor to
+    /// Run an in-tree MCP server (e.g. `mcp serve`) for an agent vendor to
     /// spawn via stdio. The launcher auto-injects entries when the resolved
     /// skill registry for a spawn is non-empty.
     Mcp(mcp::server::McpArgs),
-
-    /// Spawn the resolved profile directly in the provider's native TUI.
-    Spawn(direct_spawn::SpawnArgs),
 
     /// List configured session profiles.
     Profiles(profiles::ProfilesArgs),
@@ -65,11 +65,10 @@ fn main() -> Result<ExitCode> {
     cfg.validate()?;
 
     match cli.command {
-        // Bare `hyprpilot` opens the interactive profile picker and
-        // launches the pick. The final `bare = launch` CLI shape is
-        // K-728; today it routes straight to the spawn picker.
-        None => direct_spawn::run(cfg, direct_spawn::SpawnArgs::default()),
-        Some(Command::Spawn(args)) => direct_spawn::run(cfg, args),
+        // Bare `hyprpilot [--profile <id>]` IS the launch: pick the
+        // profile interactively when none is given, then exec into
+        // the resolved vendor CLI.
+        None => direct_spawn::run(cfg, cli.launch),
         Some(Command::Profiles(args)) => profiles::run(cfg, args),
         Some(Command::Mcp(args)) => {
             // The MCP sidecar owns stdin/stdout for its protocol;
