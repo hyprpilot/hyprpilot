@@ -75,6 +75,16 @@ pub struct WithConfigArgs {
 }
 
 impl WithConfigArgs {
+    /// Whether a `-` (stdin) input is present — i.e. `into_patches`
+    /// will drain stdin. The launch path checks this BEFORE deciding
+    /// the headless prompt source: a consumed stdin can't also feed a
+    /// piped headless prompt, so the launcher bails with a targeted
+    /// error instead of hitting EOF and blaming an "empty prompt".
+    #[must_use]
+    pub fn consumes_stdin(&self) -> bool {
+        self.with_config.iter().any(|v| v == "-")
+    }
+
     /// Resolve every `--with-config` input into a `serde_json::Value`
     /// document. Returns `Ok(vec![])` when no flags were passed.
     /// Errors with a specific message when `-` is passed more than

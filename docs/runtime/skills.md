@@ -58,7 +58,7 @@ And as tools:
 | `reload`                | Rescan the skill roots (picks up edits / new bundles).    |
 | `open`                  | Open a URL, file, or directory in the OS default handler. |
 
-Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session.
+Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session. Because each skill is exposed as a resource, `reload` also emits a **resource list-changed notification** so a connected client re-fetches the skill list instead of trusting a stale one. (The tool list is static, so no tool-list-changed fires.)
 
 ## Frontmatter passthrough
 

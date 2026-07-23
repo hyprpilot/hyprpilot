@@ -344,6 +344,19 @@ fn push_codex_http_header(
         return;
     }
 
+    // A literal (non-`${VAR}`) header value lands verbatim in
+    // `http_headers`, which codex projects onto argv (`-c
+    // mcp_servers.<server>.http_headers.<header>="value"`) — and argv is
+    // world-readable via `/proc/<pid>/cmdline`. A `${VAR}` env reference
+    // instead rides the `env_http_headers` / `bearer_token_env_var` path
+    // above and keeps the value out of argv. Warn so a captain moves an
+    // inline secret behind an env reference (we do NOT synthesize one —
+    // that would change the projection shape).
+    tracing::warn!(
+        server = %server,
+        header = %header,
+        "cli spawn: codex MCP header value is a literal projected onto argv; put MCP secrets in a `${{VAR}}` env reference, not inline — a literal value is projected onto argv"
+    );
     entries.push((
         toml_key_path(&["mcp_servers", server, "http_headers", header]),
         toml_string(expanded_value),

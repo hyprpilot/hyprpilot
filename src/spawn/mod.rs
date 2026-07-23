@@ -25,6 +25,9 @@ pub(crate) struct SpawnRequest {
     pub mode: Option<String>,
     pub config_patches: Vec<Value>,
     pub provider_args: Vec<String>,
+    /// `--with-config -` already drained stdin building the patches.
+    /// A headless launch then has no stdin left for its prompt.
+    pub stdin_consumed: bool,
 }
 
 pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
@@ -34,6 +37,7 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         mode,
         config_patches,
         provider_args,
+        stdin_consumed,
     } = request;
 
     let stdin_is_tty = std::io::stdin().is_terminal();
@@ -75,6 +79,7 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         resolved.headless,
         stdin_is_tty,
         !provider_args.is_empty(),
+        stdin_consumed,
         read_stdin_prompt,
     )?;
     if let Some(prompt) = prompt.as_deref() {
@@ -171,7 +176,8 @@ fn select_profile_without_positional(
 /// - `Ok(Some(prompt))` — hyprpilot buffers stdin and projects the
 ///   vendor's one-shot invocation with `prompt` as the argument.
 /// - `Err` — headless is active but stdin is a TTY (no piped prompt),
-///   or the piped prompt is empty.
+///   stdin was already drained by `--with-config -`, or the piped
+///   prompt is empty.
 ///
 /// `read_stdin` is injected so the decision logic is unit-testable
 /// without touching the process's real fd0.
@@ -179,6 +185,7 @@ fn headless_prompt(
     profile_headless: bool,
     stdin_is_tty: bool,
     has_provider_args: bool,
+    stdin_consumed: bool,
     read_stdin: impl FnOnce() -> Result<String>,
 ) -> Result<Option<String>> {
     let effective = profile_headless || !stdin_is_tty;
@@ -189,6 +196,16 @@ fn headless_prompt(
         bail!(
             "headless launch requires a piped prompt on stdin \
              (e.g. `echo \"fix the bug\" | hyprpilot <profile>`); stdin is a TTY"
+        );
+    }
+    if stdin_consumed {
+        // `--with-config -` already read stdin to EOF, so there is no
+        // prompt left to buffer. Reading again would hit EOF and blame
+        // an "empty prompt", so surface the real cause instead.
+        bail!(
+            "stdin was consumed by `--with-config -`; provide the prompt another way \
+             (pass the overlay as a file or `@inline` and pipe the prompt on stdin, \
+             or forward the prompt via a trailing `-- <provider args>`)"
         );
     }
     let raw = read_stdin()?;
@@ -389,7 +406,7 @@ mod tests {
     fn interactive_tty_no_pipe_reads_nothing() {
         // Not headless, stdin is a TTY, no provider args → interactive
         // launch. stdin must never be touched.
-        let out = headless_prompt(false, true, false, never_read).unwrap();
+        let out = headless_prompt(false, true, false, false, never_read).unwrap();
         assert_eq!(out, None);
     }
 
@@ -398,13 +415,13 @@ mod tests {
         // The `echo … | hyprpilot <id>` path: stdin is piped, so
         // headless is auto-active and the buffered text becomes the
         // prompt (trailing newline trimmed).
-        let out = headless_prompt(false, false, false, || Ok("fix the bug\n".into())).unwrap();
+        let out = headless_prompt(false, false, false, false, || Ok("fix the bug\n".into())).unwrap();
         assert_eq!(out.as_deref(), Some("fix the bug"));
     }
 
     #[test]
     fn profile_headless_flag_triggers_headless_on_pipe() {
-        let out = headless_prompt(true, false, false, || Ok("do it".into())).unwrap();
+        let out = headless_prompt(true, false, false, false, || Ok("do it".into())).unwrap();
         assert_eq!(out.as_deref(), Some("do it"));
     }
 
@@ -413,14 +430,25 @@ mod tests {
         // `headless = true` but stdin is a TTY → no prompt source. The
         // launch must error rather than open a picker (impossible sans
         // TTY prompt) or hang.
-        let err = headless_prompt(true, true, false, never_read).expect_err("must error");
+        let err = headless_prompt(true, true, false, false, never_read).expect_err("must error");
         assert!(err.to_string().contains("piped prompt on stdin"), "{err}");
     }
 
     #[test]
     fn empty_piped_prompt_errors() {
-        let err = headless_prompt(false, false, false, || Ok("   \n".into())).expect_err("must error");
+        let err = headless_prompt(false, false, false, false, || Ok("   \n".into())).expect_err("must error");
         assert!(err.to_string().contains("non-empty prompt"), "{err}");
+    }
+
+    #[test]
+    fn stdin_consumed_by_with_config_bails_with_targeted_error() {
+        // `cat patch.json | hyprpilot <id> --with-config -`: the pipe
+        // was drained building the overlay, so the auto-triggered
+        // headless launch has no prompt left. Bail with the real cause
+        // (never read stdin again — it would hit EOF and blame an
+        // "empty prompt").
+        let err = headless_prompt(false, false, false, true, never_read).expect_err("must error");
+        assert!(err.to_string().contains("consumed by `--with-config -`"), "{err}");
     }
 
     #[test]
@@ -429,11 +457,11 @@ mod tests {
         // (fd0 stays inherited for the vendor's raw pipe) and must NOT
         // generate a prompt projection, even though the piped stdin
         // makes headless "effective".
-        let out = headless_prompt(false, false, true, never_read).unwrap();
+        let out = headless_prompt(false, false, true, false, never_read).unwrap();
         assert_eq!(out, None, "escape hatch: no buffered prompt");
 
         // Same with the profile `headless` flag set.
-        let out = headless_prompt(true, true, true, never_read).unwrap();
+        let out = headless_prompt(true, true, true, false, never_read).unwrap();
         assert_eq!(out, None);
     }
 

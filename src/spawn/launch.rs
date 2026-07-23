@@ -76,6 +76,10 @@ impl LaunchArgs {
 }
 
 pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
+    // Whether `--with-config -` will drain stdin — captured BEFORE
+    // `into_patches()` consumes it, so `launch_profile` knows stdin is
+    // no longer available as a headless prompt source.
+    let stdin_consumed = args.with_config.consumes_stdin();
     let config_patches = args.with_config.into_patches()?;
 
     super::launch_profile(
@@ -90,6 +94,7 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
             mode: args.mode,
             config_patches,
             provider_args: args.provider_args,
+            stdin_consumed,
         },
     )
 }

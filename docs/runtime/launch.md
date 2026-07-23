@@ -90,6 +90,7 @@ The full model / effort / mode / MCP / tool-policy projection — plus `--cwd`, 
 
 - **Profile selection.** A headless launch never opens the interactive picker (there may be no TTY, and stdin may be a consumed pipe). With no positional profile it resolves [`profile.default`](../config/profiles#picking-the-default) directly, and errors cleanly when no default is configured — pass a positional profile or set a default.
 - **`headless = true` without a pipe.** If a profile forces headless but stdin is an interactive TTY (no prompt to read), the launch **errors** rather than opening a picker it can't drive. An empty piped prompt errors too.
+- **`--with-config -` already drains stdin.** `--with-config -` reads the pipe to build the overlay, so the same pipe can't also be the headless prompt. Piping into a headless launch that also passes `--with-config -` **errors** with a targeted message (rather than misreporting an "empty prompt") — pass the overlay as a file or `@inline` and keep stdin for the prompt, or forward the prompt via a trailing `-- <provider args>`.
 - **Escape hatch — bring your own invocation.** When you pass the vendor's headless flags yourself via `-- …`, hyprpilot does **not** read stdin — fd0 stays inherited so the vendor gets the raw pipe as input data, and the trailing args suppress hyprpilot's generated projection:
 
   ```sh
