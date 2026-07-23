@@ -9,7 +9,7 @@ const APP_NAME: &str = "hyprpilot";
 
 /// Process-lifetime XDG / known-dir base. `BaseDirs::new()` walks env
 /// vars + libc for every call; cache once so the seven helpers below
-/// don't re-pay the cost on every ctl invocation.
+/// don't re-pay the cost on every launch.
 pub fn base() -> &'static BaseDirs {
     static CACHE: OnceLock<BaseDirs> = OnceLock::new();
     CACHE.get_or_init(|| BaseDirs::new().expect("unable to resolve user base directories"))

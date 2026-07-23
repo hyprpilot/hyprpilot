@@ -1,5 +1,6 @@
 //! Strategic merge patch for `Config` overlays — the engine behind
-//! the `--with-config` flag (`ctl`) and the `withConfig` RPC field.
+//! the `--with-config` flag and the ordered root-level `[[patches]]`
+//! list.
 //!
 //! Walks two `serde_json::Value` trees and folds the right into the
 //! left, honouring kustomize-style `$patch` directives. The merger

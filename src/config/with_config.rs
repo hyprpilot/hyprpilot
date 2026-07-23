@@ -1,6 +1,6 @@
-//! `--with-config` flag plumbing shared across spawn-shaped `ctl`
-//! subcommands. The flag is **repeatable** — multiple patches apply
-//! in declaration order. Each value is one of:
+//! `--with-config` flag plumbing shared across the launch path. The
+//! flag is **repeatable** — multiple patches apply in declaration
+//! order. Each value is one of:
 //!
 //! - **File path** (default shape): `--with-config patch.toml`.
 //!   File extension drives format detection (`.toml` / `.json` /
@@ -16,7 +16,7 @@
 //!   once. Pair with file / inline patches for multi-patch flows.
 //!
 //! Wire: each input parses to `serde_json::Value`; the ordered
-//! `Vec<Value>` rides the `withConfig` RPC field.
+//! `Vec<Value>` is the patch list folded onto the resolved profile.
 //!
 //! Format support:
 //! - `.toml` → `toml::from_str`
@@ -68,8 +68,8 @@ pub struct WithConfigArgs {
 
     /// Format for stdin (`-`), inline literals (`@...`), and any
     /// file path without a recognised extension. Defaults to JSON
-    /// — best fit for CLI piping (`cat patch.json | hyprpilot ctl
-    /// ... --with-config -`) and inline one-liners.
+    /// — best fit for CLI piping (`cat patch.json | hyprpilot
+    /// --with-config -`) and inline one-liners.
     #[arg(long = "with-config-format", value_enum, default_value_t = WithConfigFormat::Json)]
     pub with_config_format: WithConfigFormat,
 }

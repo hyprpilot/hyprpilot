@@ -97,7 +97,7 @@ engine:
   [[profiles]]
   id = "clean"
   agent = "claude-code"
-  [profiles.clean.env]
+  [profiles.env]
   "$patch" = "replace"        # ignore any env a patch would overlay
   ```
 

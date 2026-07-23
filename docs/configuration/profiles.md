@@ -87,7 +87,7 @@ id = "engineer-canary"
 agent = "claude-code"
 command = "claude-canary"                 # REPLACES the agent's command
 args = ["--dangerously-skip-permissions"] # REPLACES the agent's args
-[profiles.engineer-canary.env]
+[profiles.env]
 ANTHROPIC_LOG = "debug"                    # OVERLAYS the agent's env per-key
 ```
 
