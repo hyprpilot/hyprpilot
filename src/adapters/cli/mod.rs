@@ -1,3 +1,4 @@
+mod multiplexer;
 mod picker;
 mod providers;
 
@@ -59,6 +60,22 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     let mcp_defs = mcps.as_ref().map_or_else(Vec::new, |registry| registry.list());
 
     let command = providers::build_command(&resolved, system_prompt.as_deref(), &mcp_defs, provider_args)?;
+
+    if cfg
+        .multiplexer
+        .set_title
+        .expect("[multiplexer] set_title seeded by defaults.toml")
+    {
+        if let Some(multiplexer) = multiplexer::Multiplexer::detect() {
+            let launch_cwd = command
+                .cwd()
+                .map(Path::to_path_buf)
+                .or_else(|| std::env::current_dir().ok());
+            if let Some(launch_cwd) = launch_cwd {
+                multiplexer.set_title(&multiplexer::title_for(&launch_cwd));
+            }
+        }
+    }
 
     providers::exec(command)
 }
