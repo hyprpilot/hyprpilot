@@ -79,7 +79,7 @@ this file.
 | `task format` | `format:rust` (`cargo fmt --all`) + `format:node`. |
 | `task lint` | `lint:rust` (`cargo fmt --check` + `cargo clippy --all-targets -D warnings`) + `lint:node`. |
 | `task format:node` / `task lint:node` | `pnpm -r --parallel --if-present run format` / `lint` — currently a no-op (docs declares no such scripts); the recursive `--if-present` runner is what will pick them up if `docs/` grows its own tooling. |
-| `task docs:dev` / `docs:build` / `docs:preview` / `docs:screenshots` | VitePress dev / build / preview, plus Playwright screenshot capture. |
+| `task docs:dev` / `docs:build` / `docs:preview` | VitePress docs site dev / build / preview. |
 
 **Pre-push bar:** `task build && task lint && task test` all exit 0.
 CI runs lint + test + build as separate jobs; any one red rejects.
@@ -185,9 +185,12 @@ system_prompt = [
   `opencode`, all `args = []`). There is no `[agent]` singleton.
 - **`AgentProvider`** — closed enum keyed by wire name:
   `claude-code` / `codex` / `opencode` (per-vendor native-CLI
-  projection) + `custom` (user CLI, **no** vendor projection — just
-  `command` / `args` / `env` / `cwd`). New named vendor = new variant
-  + a `providers.rs` `build_*` arm.
+  projection). There is no generic/`custom` escape hatch — every agent
+  is one of these three, so every profile gets the full native
+  projection; a hand-rolled CLI declares its own `command` / `args`
+  under one of these providers (or per-profile via the flat
+  `command`/`args`/`env` override). New named vendor = new variant +
+  a `providers.rs` `build_*` arm.
 - **`[[profiles]]`** (`ProfileConfig`): `id`, `agent`, `model?`,
   `effort?`, `system_prompt?` (array of `{ file, inject? }`), `mcps?`
   (per-profile MCP catalogue), `mcp?` (per-profile `[mcp]` block),
@@ -324,7 +327,7 @@ Skills reach the agent **only** through the hyprpilot MCP server.
 
 ## Launch / exec (`spawn`)
 
-`spawn::spawn`: resolve the profile → build per-launch skills
+`spawn::launch_profile`: resolve the profile → build per-launch skills
 + MCP registries → `providers::build_command` (per-vendor native-flag
 projection) → optional multiplexer rename → `providers::exec`. On unix
 `exec()` **replaces** the process (no child); non-unix falls back to
@@ -442,5 +445,8 @@ Baseline smokes:
 - Partial config overrides compose: setting one nested field keeps
   every sibling falling through to `defaults.toml`.
 - `hyprpilot -p <id>` resolves the profile and `exec()`s the vendor
-  CLI (verify with a `custom`-provider agent pointing `command` at
-  `echo` / a stub so nothing external is required).
+  CLI. Verify without an external agent by pointing a real-provider
+  agent's `command` at a stub on `$PATH` — e.g. `[[agents]] provider =
+  "claude-code"`, `command = "echo"` — so the launch execs the stub and
+  the projected argv is observable. (`provider` must still be one of
+  `claude-code` / `codex` / `opencode`; there is no `custom` provider.)

@@ -15,9 +15,9 @@ use super::validations::validate_agents_ids;
 
 /// `[[agents]]` registry. Entries override by `id`; new ids append.
 ///
-/// No `[agent] default` singleton anymore — every spawn flows through
-/// a `[[profiles]]` entry (which carries its own `agent` field), so
-/// the daemon never has to pick an agent independent of a profile.
+/// No `[agent] default` singleton — every launch flows through a
+/// `[[profiles]]` entry (which carries its own `agent` field), so an
+/// agent is never picked independent of a profile.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
@@ -28,9 +28,9 @@ pub struct AgentsConfig {
 }
 
 /// `[profile]` — global profile-scope singleton. `default` is the
-/// `[[profiles]]` id used when `submit` doesn't carry an explicit
-/// one. Spawn fails when neither `--profile` nor `[profile] default`
-/// is set — there is no bare-agent fallback. Cross-field validation
+/// `[[profiles]]` id launched when `--profile`/`-p` isn't passed. The
+/// launch fails when neither `--profile` nor `[profile] default`
+/// resolves — there is no bare-agent fallback. Cross-field validation
 /// against `[[profiles]].id` lives at `Config` level.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
@@ -40,9 +40,9 @@ pub struct ProfileDefaults {
     pub default: Option<String>,
 }
 
-/// One `[[agents]]` entry. No `permission_policy` — vendors own
-/// that; client-side auto-accept/reject is a future
-/// `PermissionController` issue (see CLAUDE.md).
+/// One `[[agents]]` entry. No `permission_policy` on the agent —
+/// vendors own approval; per-server MCP tool auto-accept/reject lives
+/// inside each MCP JSON entry's `hyprpilot` extension block.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
@@ -53,14 +53,14 @@ pub struct AgentConfig {
     /// Vendor-translated at spawn time: env var or CLI flag per vendor.
     #[garde(skip)]
     pub model: Option<String>,
-    /// Vendor-translated at spawn time when the adapter exposes a
+    /// Vendor-translated at spawn time when the provider exposes a
     /// reasoning-effort/config override surface.
     #[garde(skip)]
     pub effort: Option<String>,
     /// Native CLI binary the launcher `exec`s into. Mandatory — no
     /// per-provider fallback table. defaults.toml supplies one for
-    /// every named provider; user `[[agents]]` entries (named or
-    /// `custom`) must declare it explicitly.
+    /// every built-in provider; a user-authored `[[agents]]` entry
+    /// must declare it explicitly.
     #[garde(length(min = 1))]
     pub command: String,
     #[garde(skip)]
@@ -111,8 +111,8 @@ impl AgentProvider {
 /// One `[[profiles]]` entry. Binds an agent id to an optional model
 /// override + optional system prompt file. `system_prompt` is a path
 /// only — there's exactly one mechanism. The file is read at resolve
-/// time (not at spawn) so a missing file fails loudly on the next
-/// submit, not silently at boot.
+/// time (not ahead of time) so a missing file fails loudly on the
+/// next launch, not silently.
 ///
 /// Per-server tool auto-accept / auto-reject lives inside each MCP
 /// JSON entry's `hyprpilot` extension block (see `mcp/loader.rs`),
@@ -132,28 +132,27 @@ pub struct ProfileConfig {
     /// maps this common knob to the vendor's config surface.
     #[garde(inner(length(min = 1)))]
     pub effort: Option<String>,
-    /// Profile-level system-prompt list. Same shape as the root
-    /// `system_prompt`: array of `{ file, inject? }` entries.
-    /// Captains compose layered prompts (base persona + project-
-    /// specific addendum) by listing multiple entries; per-entry
-    /// `inject` gates which bootstrap paths each file rides on.
-    /// Profile-level value wholesale-replaces the root
-    /// `system_prompt`; `system_prompt = []` is the explicit "no
-    /// prompt" off-switch.
+    /// Profile-level system-prompt list: array of `{ file, inject? }`
+    /// entries. Captains compose layered prompts (base persona +
+    /// project-specific addendum) by listing multiple entries;
+    /// per-entry `inject` gates which injection paths each file rides
+    /// on. Shared prompts across profiles come from a root
+    /// `[[patches]]` entry, which folds onto this list; `system_prompt
+    /// = []` is the explicit "no prompt" off-switch.
     #[garde(dive)]
     pub system_prompt: Option<Vec<crate::config::SystemPromptEntry>>,
-    /// Profile-level MCP catalog. `None` (unset) → fall back to the
-    /// global `[[mcps]]`. `Some(vec![…])` → wholesale replace the
-    /// global default. `Some(vec![])` → no MCPs at all (explicit
-    /// off-switch, no fallback). Same `McpFile { file, ignore }`
-    /// shape as the root array.
+    /// Profile-level MCP catalog. `None` (unset) → whatever a root
+    /// `[[patches]]` entry folds on (or empty). `Some(vec![…])` →
+    /// wholesale-replace with this catalog. `Some(vec![])` → no MCPs
+    /// at all (explicit off-switch). `McpFile { file, ignore }` or
+    /// inline `mcp_servers` shape.
     #[garde(dive)]
     pub mcps: Option<Vec<crate::config::McpFile>>,
-    /// Profile-level `[mcp]` override. `None` (unset) → inherit the
-    /// global `Config.mcp`. `Some(...)` → wholesale-replace the
-    /// global block (mirrors `mcps` / `skills`); every field on the
-    /// replacement uses its serde / defaults.toml default when
-    /// omitted by the captain.
+    /// Profile-level `[mcp]` override. `None` (unset) → whatever a
+    /// root `[[patches]]` entry folds on (the defaults seed one).
+    /// `Some(...)` → wholesale-replace that block (mirrors `mcps` /
+    /// `skills`); every field on the replacement uses its serde /
+    /// defaults.toml default when omitted by the captain.
     #[garde(dive)]
     pub mcp: Option<crate::config::McpConfig>,
     /// Default mode id — free string today; validation against a mode

@@ -41,8 +41,8 @@ pub struct Config {
     #[serde(flatten)]
     pub agents: AgentsConfig,
     /// `[profile]` — global profile-scope singleton.
-    /// `default` is the profile id used when `submit` doesn't carry
-    /// one and the wire / palette doesn't pre-select.
+    /// `default` is the profile id launched when `--profile`/`-p`
+    /// isn't passed.
     #[garde(dive)]
     #[garde(custom(validate_default_profile_id(&self.profiles)))]
     pub profile: ProfileDefaults,
@@ -340,7 +340,7 @@ mod tests {
         // the profile list isn't polluted with a default-pretender.
         // Validation must reject the empty `[[profiles]]` list so a
         // captain who hasn't configured a profile finds out at
-        // daemon boot rather than per-spawn.
+        // config-load rather than per-launch.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
         let err = cfg
             .validate()

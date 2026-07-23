@@ -83,8 +83,8 @@ fn load_one_file(path: &Path) -> Result<Vec<MCPDefinition>, anyhow::Error> {
 }
 
 /// Project a `mcpServers` map onto a Vec of resolved `MCPDefinition`
-/// records. Strips the `hyprpilot` extension key off each entry so
-/// the pass-through projection at `session/new` time doesn't ship
+/// records. Strips the `hyprpilot` extension key off each entry so the
+/// pass-through projection onto the vendor's MCP config doesn't ship
 /// our extension to the agent. Shared between file + inline paths so
 /// both honour the same hyprpilot extension semantics.
 fn extract_servers(servers: serde_json::Map<String, Value>, source: &Path) -> Vec<MCPDefinition> {

@@ -1,9 +1,8 @@
 /**
- * Hyprpilot docs palette — anchored to the overlay's onedark-derived
- * tokens (see `src-tauri/src/config/defaults.toml [ui.theme.*]`).
+ * Hyprpilot docs palette — a gold-anchored, onedark-derived set.
  *
  * Light mode: gold brand darkened to AA contrast on white.
- * Dark mode: backgrounds clamped to overlay's window/surface tokens.
+ * Dark mode: backgrounds clamped to onedark window/surface tones.
  */
 
 :root {

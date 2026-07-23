@@ -19,7 +19,7 @@ pub fn config_dir() -> PathBuf {
     base().config_dir().join(APP_NAME)
 }
 
-/// Extensions the daemon recognises for config-file lookups. Priority
+/// Extensions recognised for config-file lookups. Priority
 /// order is **declaration order** — `find_config_file` returns the
 /// first existing match when callers don't supply an explicit path,
 /// so `.toml` is preferred when multiple files coexist after a
@@ -34,10 +34,10 @@ pub const CONFIG_EXTENSIONS: &[&str] = &["toml", "json", "yaml", "yml"];
 /// - `Ok(Some(path))` when exactly one exists — the canonical
 ///   format-agnostic resolver.
 /// - `Ok(None)` when none exist — captain hasn't authored a root
-///   config; the daemon falls through to defaults + profile only.
+///   config; the loader falls through to defaults + profile only.
 /// - `Err(anyhow)` when multiple coexist — captain has both
 ///   `config.toml` AND `config.yaml` (or any other ambiguous mix),
-///   the daemon refuses to pick a winner silently.
+///   so the loader refuses to pick a winner silently.
 pub fn find_config_file() -> Result<Option<PathBuf>> {
     let dir = config_dir();
     let matches: Vec<PathBuf> = CONFIG_EXTENSIONS

@@ -6,9 +6,9 @@
 //! features (workspace introspection, codebase tooling, …) alongside
 //! without minting another subcommand.
 //!
-//! Spawned by the agent vendor as a stdio child via the `mcp_servers`
-//! array the daemon passes at `session/new`. Lifetime is owned by the
-//! vendor — sidecar dies when the vendor session ends.
+//! Spawned by the agent vendor as a stdio child via the MCP catalog
+//! entry the launcher auto-injects. Lifetime is owned by the vendor —
+//! the sidecar dies when the vendor session ends.
 
 use clap::{Args, Subcommand};
 
@@ -27,9 +27,9 @@ pub struct McpArgs {
 #[derive(Debug, Subcommand)]
 pub enum McpSubcommand {
     /// Run the hyprpilot in-tree MCP server over stdio. The agent
-    /// vendor spawns this when the daemon auto-injects the `hyprpilot`
-    /// entry into `mcp_servers`. Args (resolved skill manifest, …)
-    /// are passed by the daemon at spawn time.
+    /// vendor spawns this when the launcher auto-injects the
+    /// `hyprpilot` entry into its MCP catalog. Args (resolved skill
+    /// roots, …) are passed by the launcher at spawn time.
     Serve(serve::ServeArgs),
 }
 

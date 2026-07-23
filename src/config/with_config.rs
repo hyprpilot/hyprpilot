@@ -48,12 +48,12 @@ pub enum WithConfigFormat {
     Yaml,
 }
 
-/// Shared clap struct flattened into spawn-shaped subcommands.
+/// Shared clap struct flattened onto the launch path.
 #[derive(Args, Debug, Clone, Default)]
 pub struct WithConfigArgs {
-    /// Overlay patch(es) folded onto the daemon's resolved config
-    /// before the spawn proceeds. Repeatable; patches apply in
-    /// declaration order. Value is one of:
+    /// Overlay patch(es) folded onto the resolved profile before the
+    /// launch proceeds. Repeatable; patches apply in declaration
+    /// order. Value is one of:
     ///
     /// - a file path (extension drives format: `.toml` / `.json` /
     ///   `.yaml` / `.yml`),

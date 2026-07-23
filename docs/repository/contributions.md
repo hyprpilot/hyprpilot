@@ -9,7 +9,7 @@ Issues, ideas, and pull requests are all welcome.
 
 ## Found a bug?
 
-Open a [GitHub Issue](https://github.com/hyprpilot/hyprpilot/issues) and include enough that someone else can reproduce it: what you expected, what actually happened, and a minimal config + agent + prompt that triggers it. A log snippet from `~/.local/state/hyprpilot/logs/` helps a lot too.
+Open a [GitHub Issue](https://github.com/hyprpilot/hyprpilot/issues) and include enough that someone else can reproduce it: what you expected, what actually happened, and a minimal config + profile that triggers it. A stderr snippet from a `--log-level debug` run helps a lot too.
 
 ## Have an idea?
 

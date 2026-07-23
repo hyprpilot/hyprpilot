@@ -1,12 +1,12 @@
 //! `hyprpilot mcp serve` — the rmcp-backed in-tree MCP server.
 //!
-//! Spawned by the agent vendor (via stdio) when the daemon auto-injects
-//! the `hyprpilot` server entry into `session/new`'s `mcp_servers`
-//! array. The sidecar reads skills by SCANNING DIRECTORIES directly —
-//! the same discovery logic the daemon's `SkillsRegistry` uses — so
-//! adding a new skill to a configured directory is immediately visible
-//! after `reload`, and the daemon doesn't have to enumerate individual
-//! files when building the spawn command.
+//! Spawned by the agent vendor (via stdio) when the launcher
+//! auto-injects the `hyprpilot` server entry into the vendor's MCP
+//! catalog. The sidecar reads skills by SCANNING DIRECTORIES directly
+//! — the same discovery logic the launcher's `SkillsRegistry` uses —
+//! so adding a new skill to a configured directory is immediately
+//! visible after `reload`, and the launcher doesn't have to enumerate
+//! individual files when building the spawn command.
 //!
 //! Current surface:
 //! - Resources
@@ -22,10 +22,8 @@
 //!   - `load_skill_references { slug }` — `{ uri, body, metadata, frontmatter }`
 //!   - `reload` — rescan dirs, push list-changed notifications
 //!   - `open { path }` — open a URL, file, or directory in the
-//!     OS-default handler (`xdg-open` / `open` / `start`). The MCP
-//!     server is a stdio sidecar (not inside the Tauri webview), so
-//!     `tauri-plugin-shell`'s `open()` isn't reachable from here —
-//!     the cross-platform `open` crate provides the same semantics.
+//!     OS-default handler (`xdg-open` / `open` / `start`) via the
+//!     cross-platform `open` crate.
 //!
 //! Frontmatter passthrough is generic: `metadata` stays the narrow,
 //! curated view (name / interaction / argument-hint /
@@ -61,12 +59,12 @@ use super::skills::metadata::{frontmatter_json, skill_meta};
 use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
 
 /// Args for `hyprpilot mcp serve`. Skills are discovered by directory
-/// scan — the daemon passes `--skill-dir <path>` once per configured
-/// root and `--skill-ignore <glob>` for slug patterns to suppress.
-/// This mirrors how the daemon's own `SkillsRegistry` works at boot
-/// and preserves each directory's own ignore list — a skill slug
-/// suppressed in one root is still visible when it appears in
-/// another root with no ignore for that pattern.
+/// scan — the launcher passes `--skill-dir <json>` once per configured
+/// root, each carrying that root's ignore globs. This mirrors how the
+/// launcher's own `SkillsRegistry` works and preserves each
+/// directory's own ignore list — a skill slug suppressed in one root
+/// is still visible when it appears in another root with no ignore for
+/// that pattern.
 #[derive(Debug, Args, Clone)]
 pub struct ServeArgs {
     /// JSON-encoded skill root entry. Repeatable — directories are
@@ -75,7 +73,7 @@ pub struct ServeArgs {
     /// Shape: `{ "dir": "<abs-path>", "ignore": ["glob1", "glob2"] }`
     ///
     /// Encoding per-dir ignore globs inside the same arg keeps each
-    /// entry self-contained: the daemon serializes its resolved
+    /// entry self-contained: the launcher serializes its resolved
     /// `ResolvedSkillEntry` set as JSON objects, the sidecar
     /// deserializes and builds a matching `SkillsRegistry` that
     /// applies each root's ignore list independently.
@@ -83,7 +81,7 @@ pub struct ServeArgs {
     pub skill_dirs: Vec<SkillDirEntry>,
 }
 
-/// One decoded `--skill-dir` entry. The daemon serializes
+/// One decoded `--skill-dir` entry. The launcher serializes
 /// `ResolvedSkillEntry` as JSON; the sidecar deserializes back.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct SkillDirEntry {
@@ -190,7 +188,7 @@ impl HyprpilotServer {
     fn new(args: ServeArgs) -> anyhow::Result<Self> {
         // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
         // JSON entry. Each entry carries its OWN ignore list so the
-        // sidecar replicates the daemon's per-dir suppression exactly —
+        // sidecar replicates the launcher's per-dir suppression exactly —
         // a slug ignored in one root is still visible from another
         // root that doesn't suppress it. A bad glob is logged + skipped
         // rather than aborting startup (graceful degradation).

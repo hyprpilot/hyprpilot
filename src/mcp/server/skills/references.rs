@@ -1,6 +1,6 @@
 //! Frontmatter reference resolution — mirrors mcphub's pattern
 //! (`~/.config/nvim/lua/ck/plugins/mcphub-nvim.lua:572-589`) while
-//! reusing the daemon/shared skill loader's parsed frontmatter.
+//! reusing the shared skill loader's parsed frontmatter.
 //!
 //! A skill's YAML frontmatter declares `references: [path1, path2, ...]`;
 //! the loader resolves each path relative to the skill bundle's
@@ -20,10 +20,10 @@ pub struct FrontmatterRefs {
 }
 
 /// Pull the `references` array out of already-parsed YAML frontmatter.
-/// This is the sidecar path: the daemon/shared loader has parsed the
-/// same frontmatter once while building the `Skill`, so MCP metadata
-/// and reference bundling should read that source instead of reparsing
-/// the markdown body.
+/// This is the sidecar path: the shared loader has parsed the same
+/// frontmatter once while building the `Skill`, so MCP metadata and
+/// reference bundling should read that source instead of reparsing the
+/// markdown body.
 #[must_use]
 pub fn frontmatter_references(value: &serde_yaml::Value) -> FrontmatterRefs {
     let mut refs = Vec::new();
