@@ -71,7 +71,7 @@ Any provider-native argument you pass this way suppresses hyprpilot's generated 
 
 ## Headless / stdin pass-through
 
-Pipe a prompt in and hyprpilot launches the vendor **non-interactively** — one shot, then exit, like `claude -p`:
+Pipe a prompt in and hyprpilot launches the vendor **non-interactively** — one shot, then exit, like `claude --print`:
 
 ```sh
 echo "fix the failing test" | hyprpilot engineer
@@ -80,14 +80,15 @@ git diff | hyprpilot review        # the diff becomes the prompt
 
 Headless is **effective** when either the piped stdin is detected (stdin is not a TTY) **or** the profile sets [`headless = true`](../config/profiles#headless). hyprpilot buffers **all** of stdin into a string and projects it as each vendor's prompt argument:
 
-| Vendor     | Projected invocation      |
-| ---------- | ------------------------- |
-| `claude`   | `claude -p "<prompt>"`    |
-| `codex`    | `codex exec "<prompt>"`   |
-| `opencode` | `opencode run "<prompt>"` |
+| Vendor     | Projected invocation        |
+| ---------- | --------------------------- |
+| `claude`   | `claude --print "<prompt>"` |
+| `codex`    | `codex exec "<prompt>"`     |
+| `opencode` | `opencode run "<prompt>"`   |
 
 The full model / effort / mode / MCP / tool-policy projection — plus `--cwd`, `--mode`, and `--with-config` — still applies; headless only changes _how the prompt is delivered_, not _what the profile resolves to_.
 
+- **Profile selection.** A headless launch never opens the interactive picker (there may be no TTY, and stdin may be a consumed pipe). With no positional profile it resolves [`profile.default`](../config/profiles#picking-the-default) directly, and errors cleanly when no default is configured — pass a positional profile or set a default.
 - **`headless = true` without a pipe.** If a profile forces headless but stdin is an interactive TTY (no prompt to read), the launch **errors** rather than opening a picker it can't drive. An empty piped prompt errors too.
 - **Escape hatch — bring your own invocation.** When you pass the vendor's headless flags yourself via `-- …`, hyprpilot does **not** read stdin — fd0 stays inherited so the vendor gets the raw pipe as input data, and the trailing args suppress hyprpilot's generated projection:
 

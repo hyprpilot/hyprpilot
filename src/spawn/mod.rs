@@ -36,9 +36,11 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         provider_args,
     } = request;
 
+    let stdin_is_tty = std::io::stdin().is_terminal();
+
     let profile_id = match profile_id {
         Some(id) => id,
-        None => picker::pick_profile(list_profiles(&cfg, cwd.as_deref(), &config_patches))?.id,
+        None => select_profile_without_positional(&cfg, stdin_is_tty, cwd.as_deref(), &config_patches)?,
     };
     let (mut resolved, profile) = resolve_into_instance_and_profile(&cfg, Some(profile_id.as_str()), &config_patches)?;
 
@@ -71,7 +73,7 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
     // suppresses hyprpilot's projection).
     let prompt = headless_prompt(
         resolved.headless,
-        std::io::stdin().is_terminal(),
+        stdin_is_tty,
         !provider_args.is_empty(),
         read_stdin_prompt,
     )?;
@@ -118,6 +120,44 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
 /// `exec()` at the end of `run`.
 fn resolve_launch_cwd(flag: Option<PathBuf>, configured: Option<PathBuf>) -> Option<PathBuf> {
     flag.or(configured).or_else(|| std::env::current_dir().ok())
+}
+
+/// Pick the profile id when no positional `[PROFILE]` was passed.
+///
+/// A **headless** launch (piped stdin, OR the `[profile] default`
+/// entry itself sets `headless = true`) must NOT open the interactive
+/// picker — there may be no TTY, and stdin may be a consumed pipe. It
+/// resolves `[profile] default` directly, erroring cleanly when no
+/// default is configured. Only a genuinely interactive launch
+/// (TTY + non-headless default) falls through to the picker, which
+/// pre-selects the default under the cursor.
+fn select_profile_without_positional(
+    cfg: &Config,
+    stdin_is_tty: bool,
+    cwd: Option<&Path>,
+    config_patches: &[Value],
+) -> Result<String> {
+    // `[profile] default`'s own `headless` flag: a default profile that
+    // forces headless can't be launched through the picker either, even
+    // on a TTY (it needs a piped prompt, which the picker path can't
+    // supply).
+    let default_is_headless = cfg
+        .profile
+        .default
+        .as_deref()
+        .and_then(|id| cfg.profiles.iter().find(|p| p.id == id))
+        .is_some_and(|p| p.headless.unwrap_or(false));
+
+    if !stdin_is_tty || default_is_headless {
+        return cfg.profile.default.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "headless launch requires a profile: pass one positionally \
+                 (`hyprpilot <id>`) or set `[profile] default`"
+            )
+        });
+    }
+
+    Ok(picker::pick_profile(list_profiles(cfg, cwd, config_patches))?.id)
 }
 
 /// Decide the headless prompt for a launch. Effective headless is
@@ -364,5 +404,36 @@ mod tests {
         // Same with the profile `headless` flag set.
         let out = headless_prompt(true, true, true, never_read).unwrap();
         assert_eq!(out, None);
+    }
+
+    // ── headless profile selection without a positional (K-751) ──
+
+    #[test]
+    fn headless_no_positional_uses_default_not_picker() {
+        // Piped stdin (`stdin_is_tty = false`) + no positional profile
+        // must resolve `[profile] default` directly — never the picker,
+        // which would return a `NotInteractive` error with no TTY.
+        let cfg = cfg_with_profile_cwd(); // default = "engineer"
+        let id = select_profile_without_positional(&cfg, false, None, &[]).unwrap();
+        assert_eq!(id, "engineer");
+    }
+
+    #[test]
+    fn headless_no_positional_no_default_errors_cleanly() {
+        let mut cfg = cfg_with_profile_cwd();
+        cfg.profile.default = None;
+        let err = select_profile_without_positional(&cfg, false, None, &[]).expect_err("must error");
+        assert!(err.to_string().contains("headless launch requires a profile"), "{err}");
+    }
+
+    #[test]
+    fn headless_default_profile_bypasses_picker_even_on_tty() {
+        // A `[profile] default` that itself sets `headless = true` must
+        // resolve directly even at an interactive TTY — the picker path
+        // can't feed it the piped prompt it needs.
+        let mut cfg = cfg_with_profile_cwd();
+        cfg.profiles[0].headless = Some(true);
+        let id = select_profile_without_positional(&cfg, true, None, &[]).unwrap();
+        assert_eq!(id, "engineer");
     }
 }

@@ -132,7 +132,7 @@ system_prompt:
 
 ## Headless
 
-`headless: true` forces the profile to launch **non-interactively** — hyprpilot buffers stdin as the prompt and projects the vendor's one-shot invocation (`claude -p` / `codex exec` / `opencode run`), then the vendor exits:
+`headless: true` forces the profile to launch **non-interactively** — hyprpilot buffers stdin as the prompt and projects the vendor's one-shot invocation (`claude --print` / `codex exec` / `opencode run`), then the vendor exits:
 
 ```yaml
 profiles:

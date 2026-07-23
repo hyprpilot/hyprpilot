@@ -375,7 +375,12 @@ is active AND hyprpilot generates the projection (**no** trailing `--
 <provider args>`), `spawn::headless_prompt` buffers **all** of stdin
 into a `String` and passes it as the vendor's prompt ARGUMENT — else it
 returns `None` (interactive, or the escape-hatch path). Headless + a
-TTY (no pipe) → error; empty piped prompt → error. Per-vendor
+TTY (no pipe) → error; empty piped prompt → error. **Profile
+selection:** a headless launch never opens the picker
+(`select_profile_without_positional`) — piped stdin OR a
+`headless`-flagged `[profile] default` resolves the default directly,
+erroring when no default is set; only an interactive TTY with a
+non-headless default falls through to the picker. Per-vendor
 projection (`providers.rs`, driven by `prompt: Option<&str>` on
 `build_command` / `build_*`): claude `--print` + prompt positional;
 codex `exec` subcommand + prompt positional (approval-policy `mode`
