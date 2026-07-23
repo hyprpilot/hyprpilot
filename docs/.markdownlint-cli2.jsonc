@@ -1,0 +1,24 @@
+{
+  "config": {
+    "default": true,
+    // Prose lines are not hard-wrapped; prettier owns line shape.
+    "MD013": false,
+    // VitePress theme slots + badges rely on inline HTML.
+    "MD033": false,
+    // Pages open with YAML frontmatter and render the H1 from
+    // `{{ $frontmatter.title }}`, which trips the literal-H1 checks.
+    "MD041": false,
+    // The frontmatter `title:` is not a second H1 — the literal
+    // `# {{ $frontmatter.title }}` is the only one.
+    "MD025": {
+      "front_matter_title": ""
+    },
+    // Repeated headings are fine across sibling sections (e.g. a
+    // per-vendor "Projection" heading under each provider).
+    "MD024": {
+      "siblings_only": true
+    }
+  },
+  "globs": ["**/*.md"],
+  "ignores": ["node_modules/**", ".vitepress/**", "plans/**"]
+}

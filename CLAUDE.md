@@ -78,7 +78,7 @@ this file.
 | `task test:rust` | `cargo nextest run --all-targets --no-fail-fast`. |
 | `task format` | `format:rust` (`cargo fmt --all`) + `format:node`. |
 | `task lint` | `lint:rust` (`cargo fmt --check` + `cargo clippy --all-targets -D warnings`) + `lint:node`. |
-| `task format:node` / `task lint:node` | `pnpm -r --parallel --if-present run format` / `lint` — currently a no-op (docs declares no such scripts); the recursive `--if-present` runner is what will pick them up if `docs/` grows its own tooling. |
+| `task format:node` / `task lint:node` | `pnpm -r --parallel --if-present run format` / `lint` — picks up the `docs/` package's `prettier` + `markdownlint-cli2` scripts. |
 | `task docs:dev` / `docs:build` / `docs:preview` | VitePress docs site dev / build / preview. |
 
 **Pre-push bar:** `task build && task lint && task test` all exit 0.

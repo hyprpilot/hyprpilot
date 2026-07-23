@@ -1,11 +1,13 @@
 ---
 title: Contributions
-order: 1
+order: 20
 ---
 
-# Contributions
+# {{ $frontmatter.title }}
 
 Issues, ideas, and pull requests are all welcome.
+
+<!-- more -->
 
 ## Found a bug?
 
@@ -19,8 +21,10 @@ Open a [GitHub Issue](https://github.com/hyprpilot/hyprpilot/issues) and include
 
 Fork, branch, push, open a PR against `main`. That's it. Smaller PRs are easier to review and land — one logical change per PR if you can swing it. Don't worry about getting the commit history perfect; we can tidy it on the way in.
 
+Commit messages follow [conventional commits](https://www.conventionalcommits.org/) — they drive the [release automation](./release), so a `feat:` / `fix:` prefix is what turns your change into a version bump.
+
 If you're not sure your idea will be accepted, open a Discussion or Issue first to sanity-check the direction. Saves everyone time.
 
 ## Building from source
 
-See [Development](./development.md) for the toolchain and `task dev` loop.
+See [Development](./development) for the toolchain and `task` targets. The pre-push bar is `task build && task lint && task test` — all green.

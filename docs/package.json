@@ -5,10 +5,16 @@
   "scripts": {
     "dev": "vitepress dev .",
     "build": "vitepress build .",
-    "preview": "vitepress preview ."
+    "preview": "vitepress preview .",
+    "format": "prettier --log-level warn --write . && markdownlint-cli2 --fix",
+    "lint": "prettier --check . && markdownlint-cli2"
   },
   "devDependencies": {
+    "markdownlint-cli2": "^0.18.1",
+    "prettier": "^3.6.2",
     "vitepress": "^1.6.4",
+    "vitepress-plugin-llms": "^1.13.3",
+    "vitepress-sidebar": "^1.36.1",
     "vue": "^3.5.38"
   }
 }
