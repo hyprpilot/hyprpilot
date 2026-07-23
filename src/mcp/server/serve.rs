@@ -605,16 +605,18 @@ impl ServerHandler for HyprpilotServer {
                 if let Err(err) = context.peer.notify_resource_list_changed().await {
                     tracing::debug!(%err, "mcp::server: reload resource list-changed notification failed");
                 }
-                Ok(CallToolResult::structured(serde_json::json!({
-                    "reloaded": count,
-                })))
+                Ok(structured_with_text(
+                    format!("Reloaded {count} skill(s)."),
+                    serde_json::json!({ "reloaded": count }),
+                ))
             }
             "open" => {
                 let path = require_string(&args, "path")?;
                 match open::that_detached(path) {
-                    Ok(()) => Ok(CallToolResult::structured(serde_json::json!({
-                        "opened": path,
-                    }))),
+                    Ok(()) => Ok(structured_with_text(
+                        format!("Opened {path}"),
+                        serde_json::json!({ "opened": path }),
+                    )),
                     Err(err) => Ok(tool_error(format!("open failed: {err}"))),
                 }
             }
