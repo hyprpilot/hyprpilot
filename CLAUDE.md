@@ -146,7 +146,9 @@ Layers fold via `#[derive(merge::Merge)]` with per-field strategies:
 `overwrite_some` for `Option` scalar leaves (later `Some` wins),
 `merge_agents_by_id` / `merge_profiles_by_id` for the keyed
 `[[agents]]` / `[[profiles]]` lists (override by `id`, append new
-ids — whole-entry replace, no field-level merge inside an entry).
+ids — whole-entry replace, no field-level merge inside an entry), and
+`append_layers` for the root `[[patches]]` list (concatenate later
+layers onto earlier — see "Root-level `[[patches]]`").
 
 ### Validation strategy (garde)
 
@@ -239,9 +241,26 @@ engine `--with-config` uses. This is the
 single mechanism for profile-shared knobs; there is **no** root-level
 `system_prompt` / `mcps` / `mcp` field.
 
-`defaults.toml` seeds one unscoped patch enabling the in-tree
-`hyprpilot` MCP server (`enabled = true`, `autoAcceptTools = ["*"]`)
-with the XDG skills dir.
+**Additive across config layers** (`append_layers` merge strategy, not
+`overwrite_some`): the `patches` list **concatenates** across layers
+(defaults → global config → config-profile) in declaration order —
+earlier-layer patches first, then later. A user config layer's
+`[[patches]]` **extends** the compiled-default seed rather than
+replacing the whole list; the seeded skills-dir patch always survives.
+Because the resolve-time fold applies every patch in order, a later
+patch still overrides or wipes an earlier one's fields — captains
+express replacement/deletion with `$patch: replace` (or
+`$deleteFromPrimitiveList/<field>`) **inside a patch body**, never by
+clobbering the layer list. This closes the footgun where a partial
+`[patches.mcp]` in a user layer silently dropped the seeded skills dir.
+
+`defaults.toml` seeds one unscoped patch pointing the in-tree
+`hyprpilot` MCP server at the XDG skills dir. The seed carries **only**
+`mcp.skills` (the load-bearing value that must survive layer merge);
+`enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
+are the typed `McpConfig::default()` the resolver backfills per-leaf in
+`resolve::effective_mcp_with`, so those values are single-sourced in
+Rust — not duplicated in `defaults.toml`.
 
 ```toml
 [[patches]]

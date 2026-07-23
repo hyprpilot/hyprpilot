@@ -16,17 +16,21 @@ set_title = true
 # flag uses; `$patch: replace` / `$deleteFromPrimitiveList/<field>`
 # directives compose.
 #
-# Default seed: one unscoped patch that enables the in-tree
-# `hyprpilot` MCP server with auto-accept-everything + the XDG
-# skills directory. Captains who want different behavior add more
-# `[[patches]]` entries (later wins on field collision) or override
-# the `mcp` field per-profile.
+# **Additive across config layers**: a user config layer's
+# `[[patches]]` EXTENDS this list rather than replacing it, so the
+# seed below always survives. Captains add more `[[patches]]` entries
+# (later wins on field collision) or override the `mcp` field
+# per-profile; to wipe an earlier patch's field, fold a later patch
+# with `$patch: replace` inside the field body.
+#
+# Default seed: one unscoped patch that points the in-tree `hyprpilot`
+# MCP server at the XDG skills directory. Only the skills dir lives
+# here — `enabled = true`, `autoAcceptTools = ["*"]`, and
+# `autoRejectTools = []` are the typed `McpConfig::default()` the
+# resolver backfills, so those values are single-sourced in Rust and
+# not duplicated in this file.
 [[patches]]
 [patches.mcp]
-enabled = true
-autoAcceptTools = ["*"]
-autoRejectTools = []
-
 [[patches.mcp.skills]]
 dir = "~/.config/hyprpilot/skills"
 

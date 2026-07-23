@@ -124,7 +124,11 @@ fn compile_ignore(patterns: Option<&[String]>) -> Option<GlobSet> {
     builder.build().ok()
 }
 
-fn validate_globs(patterns: &Option<Vec<String>>, _: &()) -> garde::Result {
+/// Reject any pattern that isn't a valid `globset::Glob`. Shared by
+/// the `[[mcps]]` / `[[skills]]` `ignore` arrays and the `[mcp]`
+/// `autoAcceptTools` / `autoRejectTools` tool-name glob arrays so a
+/// malformed glob fails at config-load, not at match time.
+pub(crate) fn validate_globs(patterns: &Option<Vec<String>>, _: &()) -> garde::Result {
     let Some(patterns) = patterns else {
         return Ok(());
     };

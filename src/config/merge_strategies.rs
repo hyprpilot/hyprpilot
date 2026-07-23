@@ -22,6 +22,27 @@ pub(crate) fn overwrite_some<T>(left: &mut Option<T>, right: Option<T>) {
     }
 }
 
+/// Append strategy for a layered `Option<Vec<T>>`: concatenate the
+/// later layer's items onto the earlier layer's, preserving
+/// declaration order (earlier-layer items first, then later). Unlike
+/// `overwrite_some`, a later config layer EXTENDS the list rather than
+/// replacing it wholesale.
+///
+/// The root `[[patches]]` list uses this so the compiled-default seed
+/// patch (the in-tree `hyprpilot` MCP skills-dir patch) always
+/// survives when a user config layer declares its own `[[patches]]`.
+/// Captains express replacement / deletion via `$patch: replace`
+/// **inside a patch body** at resolve time — the strategic-merge
+/// engine folds all patches in order, so a later patch can override or
+/// wipe an earlier one's fields — not by clobbering the layer list.
+pub(crate) fn append_layers<T>(left: &mut Option<Vec<T>>, right: Option<Vec<T>>) {
+    let Some(right) = right else { return };
+    match left {
+        Some(left) => left.extend(right),
+        None => *left = Some(right),
+    }
+}
+
 /// Keyed-Vec merge: for each entry in `left`, if `right` has an entry
 /// with the same key, swap in right's. Append right entries whose
 /// key isn't in left. Consumes `right`.

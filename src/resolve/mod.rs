@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use merge::Merge;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -123,12 +124,24 @@ pub(crate) fn apply_mcp_glob_defaults(defs: &mut [crate::mcp::MCPDefinition], cf
     }
 }
 
-/// Resolved `[mcp]` block for a launch — reads ONLY from the
-/// patched profile. Falls back to the typed `Default::default()`
-/// when the profile has no `mcp` block (enabled=true,
-/// autoAcceptTools=["*"], no skills).
+/// Resolved `[mcp]` block for a launch — reads ONLY from the patched
+/// profile, backfilled onto `McpConfig::default()`.
+///
+/// The patched profile's `mcp` (root `[[patches]]` already folded
+/// upstream) overlays the typed default per-leaf via `Merge`
+/// (`overwrite_some`): a `Some` leaf wins, an unset leaf inherits the
+/// default. This guarantees the value leaves the `.expect()`
+/// accessors read (`enabled` / `autoAcceptTools` / `autoRejectTools`)
+/// are always populated even when a patch replaced `mcp` wholesale
+/// with a partial block or cleared it, while the seeded skills dir —
+/// carried on the patched profile — still wins. No profile `mcp` at
+/// all → the bare default (enabled, `["*"]`, no skills).
 pub(crate) fn effective_mcp_with(profile: &ProfileConfig) -> crate::config::McpConfig {
-    profile.mcp.clone().unwrap_or_default()
+    let mut cfg = crate::config::McpConfig::default();
+    if let Some(profile_mcp) = profile.mcp.clone() {
+        cfg.merge(profile_mcp);
+    }
+    cfg
 }
 
 /// Skills slugs the auto-injected `hyprpilot` MCP server should
