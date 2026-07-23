@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 
 use anyhow::{bail, Context, Result};
@@ -18,6 +18,17 @@ pub(super) struct DirectCommand {
     args: Vec<String>,
     env: BTreeMap<String, String>,
     cwd: Option<PathBuf>,
+}
+
+impl DirectCommand {
+    /// The resolved cwd this command will `exec()` into — same
+    /// `expand_value`-expanded value `base_command` derived from the
+    /// profile's `agent.cwd`. Consumed by the multiplexer title so the
+    /// rename tracks the launch's actual working directory rather than
+    /// the invocation cwd.
+    pub(super) fn cwd(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
 }
 
 pub(super) fn build_command(

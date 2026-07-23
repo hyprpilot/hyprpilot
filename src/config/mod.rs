@@ -32,6 +32,9 @@ pub(crate) const DEFAULTS: &str = include_str!("defaults.toml");
 pub struct Config {
     #[garde(dive)]
     pub logging: Logging,
+    /// `[multiplexer]` — tmux/zellij window-title integration.
+    #[garde(dive)]
+    pub multiplexer: MultiplexerConfig,
     /// `[[agents]]` at TOML root, flattened here so
     /// `AgentsConfig` stays the single Rust-side unit.
     #[garde(dive)]
@@ -92,6 +95,20 @@ pub struct Logging {
     /// Unknown levels reject at TOML parse (serde closed enum).
     #[garde(skip)]
     pub level: Option<crate::logging::LogLevel>,
+}
+
+/// `[multiplexer]` — best-effort tmux/zellij window/tab rename on
+/// launch. `set_title = true` (seeded by defaults.toml) renames the
+/// current tmux window or zellij tab to `hyprpilot@<cwd-basename>`
+/// right before `exec()`-ing into the vendor CLI. `false` is the
+/// explicit opt-out; outside a multiplexer the feature is a no-op
+/// regardless of this flag. See `adapters::cli::multiplexer`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields)]
+#[merge(strategy = overwrite_some)]
+pub struct MultiplexerConfig {
+    #[garde(skip)]
+    pub set_title: Option<bool>,
 }
 
 /// One resolved skill catalog entry. `dir` is fully expanded
@@ -327,6 +344,15 @@ mod tests {
             err.to_string().contains("at least one [[profiles]] entry"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn defaults_seed_multiplexer_set_title() {
+        // Pins the leaf `adapters::cli::mod::run` `.expect()`s at
+        // spawn time — a captain deleting `[multiplexer]` from
+        // defaults.toml must fail here, not panic at launch.
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        assert_eq!(cfg.multiplexer.set_title, Some(true));
     }
 
     #[test]

@@ -1,6 +1,13 @@
 [logging]
 level = "info"
 
+# `[multiplexer]` — best-effort tmux/zellij window/tab rename right
+# before `exec()`-ing into the vendor CLI. Titles as
+# `hyprpilot@<resolved-cwd-basename>` so the captain can tell agent
+# panes apart. No-op outside tmux/zellij regardless of this flag.
+[multiplexer]
+set_title = true
+
 # `[[patches]]` — root-level profile patches. Each patch is a
 # partial `ProfileConfig` shape that gets folded onto whichever
 # profile the captain picked. An optional `$match.profile` glob
