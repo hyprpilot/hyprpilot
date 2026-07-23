@@ -234,7 +234,8 @@ sibling (`$match.profile = "<glob>"`, `globset` — crosses `/`) filters
 where a patch applies and is stripped before merge. Folding uses the
 `config::patch::merge_values` strategic engine (object-field merge,
 `$patch: replace`, keyed-array merge by `id`, primitive-array
-append+dedupe) — the same engine `--with-config` uses. This is the
+append+dedupe, `$deleteFromPrimitiveList/<field>` removal) — the same
+engine `--with-config` uses. This is the
 single mechanism for profile-shared knobs; there is **no** root-level
 `system_prompt` / `mcps` / `mcp` field.
 

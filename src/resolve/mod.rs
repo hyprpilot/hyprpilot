@@ -144,7 +144,7 @@ pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::
     let dir_count = entries.len();
     let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
     if let Err(err) = registry.reload() {
-        tracing::warn!(%err, "resolve: per-instance skills initial reload failed");
+        tracing::warn!(%err, "resolve: skills initial reload failed");
     }
     let skills = registry.list();
     tracing::info!(
