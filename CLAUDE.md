@@ -110,11 +110,15 @@ hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
   resolve before the positional, so a profile named `profiles`/`mcp`
   isn't positionally addressable.
 - **Launch flags** (bare invocation): positional `[PROFILE]`,
+  `-p/--prompt <PROMPT>` (inline headless prompt), `-f/--file <PATH>`
+  (headless prompt read from a file; `conflicts_with` `--prompt`),
   `--cwd <dir>`, `--mode`, `--with-config` / `--with-config-format`,
   and a trailing `-- <provider args>` forwarded verbatim. The profile
   is the single source of truth for its agent + model — there are **no**
   `--agent` / `--model` launch flags; use `--with-config` (e.g.
-  `--with-config '@{"model":"..."}'`) for a one-off override.
+  `--with-config '@{"model":"..."}'`) for a one-off override. `-p` is
+  free (K-747 made the profile a positional, so `-p` no longer means
+  `--profile`).
 - **Global flags** (every subcommand): `--config <path>`
   (`HYPRPILOT_CONFIG`), `--config-profile <name>`
   (`HYPRPILOT_CONFIG_PROFILE`), `--log-level`
@@ -357,6 +361,14 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   Skills are discovered by directory scan — the same
   `SkillsRegistry` discovery the launcher uses — so editing a skill
   and calling `reload` refreshes without restarting the session.
+  **Every tool result carries BOTH a `content` text block AND
+  `structured_content`** (`serve::structured_with_text` overwrites
+  `CallToolResult::structured`'s `.content` with an explicit readable
+  summary — `list_skills` a one-line-per-skill catalogue, `read_skill`
+  the body): clients that render only `content` (opencode) show the
+  text instead of "Unknown"; structured-aware clients (Claude Code)
+  still get the JSON. A structured-only result renders as "Unknown" in
+  opencode — never return one.
 
 ## Launch / exec (`spawn`)
 
@@ -364,39 +376,65 @@ Skills reach the agent **only** through the hyprpilot MCP server.
 + MCP registries → `providers::build_command` (per-vendor native-flag
 projection) → optional multiplexer rename → `providers::exec`. On unix
 `exec()` **replaces** the process (no child); non-unix falls back to
-spawn + propagate exit code. Model precedence is profile > agent >
+spawn + propagate exit code. **Exception:** when `SpawnCommand.
+stdin_prompt` is `Some` (claude/codex headless) `exec` SPAWNS instead,
+writes the prompt to the child's stdin, closes it, and propagates the
+exit code — see Headless below. Model precedence is profile > agent >
 vendor default. `system_prompt` files are read at **resolve** time so
 a missing file fails loudly on the next launch. CLI `--cwd` / `--mode`
 override the resolved profile after profile resolution (there is no
 `--model` / `--agent` flag — use `--with-config`).
 
-### Headless / stdin pass-through
+### Headless / prompt delivery
 
-Effective headless = `profile.headless == true` **OR** stdin is piped
+Effective headless = `--prompt`/`--file` given **OR**
+`profile.headless == true` **OR** stdin is piped
 (`!std::io::stdin().is_terminal()`). `headless: Option<bool>` on
-`ProfileConfig` threads into `ResolvedProfile.headless`. When headless
-is active AND hyprpilot generates the projection (**no** trailing `--
-<provider args>`), `spawn::headless_prompt` buffers **all** of stdin
-into a `String` and passes it as the vendor's prompt ARGUMENT — else it
-returns `None` (interactive, or the escape-hatch path). Headless + a
-TTY (no pipe) → error; empty piped prompt → error. **Profile
-selection:** a headless launch never opens the picker
-(`select_profile_without_positional`) — piped stdin OR a
-`headless`-flagged `[profile] default` resolves the default directly,
-erroring when no default is set; only an interactive TTY with a
-non-headless default falls through to the picker. Per-vendor
-projection (`providers/`, driven by `prompt: Option<&str>` on
-`build_command` / `build_*`): claude `--print` + prompt positional;
-codex `exec` subcommand + prompt positional (approval-policy `mode`
-dropped — `codex exec` has no `--ask-for-approval`; sandbox modes still
-project via `-s`); opencode `run` subcommand + prompt positional. All
-share the interactive model/effort/mode/MCP/tool-policy projection +
-arg-dedup — headless only changes prompt DELIVERY. **exec, not spawn**:
-hyprpilot consumes stdin before `exec()`, so fd0 is at EOF and `codex
-exec` does not block on it (verified live). **Escape hatch:** trailing
-`-- <provider args>` (non-empty `provider_args`) makes hyprpilot skip
-stdin entirely — fd0 stays inherited so the vendor gets the raw pipe as
-input data, and the existing dedup suppresses the generated projection.
+`ProfileConfig` threads into `ResolvedProfile.headless`.
+`spawn::headless_prompt(prompt_override, …)` resolves the prompt:
+escape hatch (trailing `-- <provider args>`) → `None` first; else, when
+effective, an explicit `--prompt`/`--file` value (`prompt_override`,
+resolved in `LaunchArgs::prompt_override` — `--file` read via
+`paths::resolve_user`, read error surfaced cleanly) wins over piped
+stdin; otherwise **all** of stdin is buffered. Headless + a TTY with no
+`--prompt`/`--file`/pipe → error; empty prompt → error. `--prompt` and
+`--file` are `conflicts_with` at the clap layer. **Profile selection:**
+a headless launch never opens the picker
+(`select_profile_without_positional`, which takes `prompt_given`) —
+piped stdin, `--prompt`/`--file`, OR a `headless`-flagged
+`[profile] default` resolves the default directly, erroring when no
+default is set; only an interactive TTY with a non-headless default and
+no prompt flag falls through to the picker.
+
+**Prompt DELIVERY per vendor** (driven by `prompt: Option<&str>` on
+`build_command` / `build_*`, which set `SpawnCommand.stdin_prompt`):
+
+- **claude** — `--print`, prompt on **stdin**. NOT a positional:
+  claude's `--allowedTools`/`--disallowedTools` are variadic
+  (`<tools...>`) and would swallow a trailing operand as a tool entry,
+  so a positional prompt never reaches the model (this was the 3.0.0
+  bug). `stdin_prompt = Some(prompt)`.
+- **codex** — `exec` subcommand, prompt on **stdin** (approval-policy
+  `mode` dropped — `codex exec` has no `--ask-for-approval`; sandbox
+  modes still project via `-s`). `stdin_prompt = Some(prompt)`.
+- **opencode** — `run` subcommand + prompt POSITIONAL (opencode's
+  `run [message…]` is positional-only; no stdin support).
+
+All share the interactive model/effort/mode/MCP/tool-policy projection
++ arg-dedup — headless only changes prompt DELIVERY.
+
+**spawn vs exec** (`providers::exec`): when `stdin_prompt` is `Some`
+(claude/codex headless) the launcher SPAWNS the vendor, writes the
+prompt to the child's stdin, closes it (EOF), and propagates the exit
+code — NOT `exec()`. stdout/stderr stay inherited so the child can
+always drain them (no deadlock against the blocking stdin write). The
+EOF close is what keeps `codex exec` from hanging on an idle pipe
+(openai/codex#20919). Interactive and opencode-headless keep the unix
+`exec()` handoff. **Escape hatch:** trailing `-- <provider args>`
+(non-empty `provider_args`) makes hyprpilot skip stdin entirely — fd0
+stays inherited so the vendor gets the raw pipe as input data, and the
+existing dedup suppresses the generated projection (wins even over
+`--prompt`/`--file`).
 
 ### Multiplexer title
 
@@ -408,14 +446,36 @@ OSC escapes — those are gated by tmux/zellij settings). Best-effort:
 every failure logs at `debug` and never aborts the launch; no-op
 outside a multiplexer regardless of the flag.
 
+**Skip conditions** (`multiplexer::title_rename_skip_reason`, checked
+before `Multiplexer::detect`): the rename runs only when `set_title !=
+false` AND `HYPRPILOT_NO_TITLE` is unset/falsey AND not under an editor
+— any one skips (debug-logged with the reason). `HYPRPILOT_NO_TITLE`
+(truthy = `1`/`true`/any non-empty ≠ `0`/`false`) is the authoritative
+launcher override — used when the caller (e.g. `sidekick.nvim`'s
+per-tool `env` block) owns the pane; it can't route through
+`--with-config` because `[multiplexer]` is a root field, not a profile
+field. Editor auto-detect keys off env markers (`NVIM` /
+`NVIM_LISTEN_ADDRESS` / `INSIDE_EMACS` / `VSCODE_PID` /
+`TERM_PROGRAM=vscode` / `VIM`) so it also "just works" under nvim
+without the env var.
+
 ## Logging
 
-`tracing` bootstrapped via `logging::init`. **Always writes to
-stderr** (debug + release), ANSI on. `LogLevel` is a closed enum
-shared by the `--log-level` clap flag and the `[logging] level` config
-field. Filter precedence: `--log-level` → `RUST_LOG` → `info`. The
-launcher `exec()`s into the vendor, so hyprpilot's own tracing only
-covers the brief resolve phase before hand-off.
+`tracing` bootstrapped via `logging::init(cli_level, config_level)`.
+**Always writes to stderr** (debug + release), ANSI on. `LogLevel` is a
+closed enum shared by the `--log-level` clap flag and the
+`[logging] level` config field. Filter precedence: `--log-level` →
+`RUST_LOG` → `[logging] level` → the **`error`** default (a fresh run
+is quiet — errors only). `main` loads the config QUIETLY (before any
+subscriber exists), then `init` installs the subscriber ONCE with the
+fully-resolved filter, then emits the `config: loaded` line — so it (and
+every info line) honors `[logging] level`/`--log-level error`. No
+early-init/late-reload dance (the old `apply_config_level` + reload
+handle are gone). `defaults.toml` does NOT seed a level — the code
+fallback owns the default (seeding would re-nullify the scoped
+`[logging] level` filter, K-750). The launcher `exec()`s into the
+vendor, so hyprpilot's own tracing only covers the brief resolve phase
+before hand-off.
 
 ## Paths (`paths.rs`)
 

@@ -60,6 +60,8 @@ And as tools:
 
 Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session. Because each skill is exposed as a resource, `reload` also emits a **resource list-changed notification** so a connected client re-fetches the skill list instead of trusting a stale one. (The tool list is static, so no tool-list-changed fires.)
 
+Every tool result carries **both** a human-readable text block and the structured JSON payload. Clients that render only structured content (Claude Code) read the JSON; clients that render only text (opencode) get a legible summary — e.g. `list_skills` returns a one-line-per-skill catalogue as text alongside the full structured list, and `read_skill` returns the skill body as text alongside the structured `{ uri, body, metadata, frontmatter }`. A structured-only result would otherwise render as "Unknown" in text-only clients.
+
 ## Frontmatter passthrough
 
 A `SKILL.md` is markdown with an optional YAML frontmatter block. The loader keeps **every** frontmatter key losslessly, and the server passes the whole map through to the agent on the MCP wire under the resource's `_meta`, so a new frontmatter field reaches the agent with zero server changes:

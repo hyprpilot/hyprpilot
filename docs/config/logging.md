@@ -21,7 +21,9 @@ logging:
 | ------- | ---- | ------- | -------------------------------------------------------------------------------------------------------------------- |
 | `level` | enum | _unset_ | One of `trace` / `debug` / `info` / `warn` / `error`. Applied only when `--log-level` and `RUST_LOG` are both unset. |
 
-`logging.level` is **not seeded** — leaving it unset lets the built-in `warn,hyprpilot=info` filter (below) own the default, which keeps third-party crates (tokio, rmcp, nucleo) quiet at `warn` while surfacing hyprpilot's own `info` narrative. Setting `level: info` instead forces a flat global `info` that drowns the launcher's lines under vendor-SDK chatter — set an explicit level only when you actually want that global floor.
+`logging.level` is **not seeded** — leaving it unset lets the built-in `error` filter (below) own the default, so a fresh run is quiet (errors only) until you ask for more. Seeding a level in the compiled defaults would re-nullify the scoped `logging.level` filter, so the code fallback owns the default; set `logging.level` in your own config to raise verbosity.
+
+The filter is resolved from the loaded config **before** the tracing subscriber is installed, so `logging.level` (and the other sources) take effect on the very first line — including the "config loaded" line. Set `level: error` (or run with `--log-level error`) and hyprpilot emits nothing below `error`.
 
 ## Filter precedence
 
@@ -29,10 +31,10 @@ The active filter is resolved from four sources, highest first:
 
 1. `--log-level <level>` (or `HYPRPILOT_LOG_LEVEL`) — a single level: `trace`, `debug`, `info`, `warn`, or `error`.
 2. `RUST_LOG` — a full [`tracing` env-filter expression](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html), for per-crate targeting.
-3. `logging.level` in config — applied once the config is loaded, only when neither of the above spoke.
-4. The built-in default — `warn,hyprpilot=info`, which keeps third-party crates (tokio, rmcp, nucleo) at `warn` while surfacing hyprpilot's own `info` lifecycle narrative.
+3. `logging.level` in config — folded into the filter once the config is loaded, only when neither of the above spoke.
+4. The built-in default — `error`, which keeps a fresh run quiet: only errors surface unless a level is explicitly requested.
 
-If you want file/line provenance on each log line, run with `--log-level debug` (or `trace`) — the `file:line` tagging rides only on those levels so the `info` narrative stays terse.
+If you want file/line provenance on each log line, run with `--log-level debug` (or `trace`) — the `file:line` tagging rides only on those levels so the narrative stays terse.
 
 ## Why logs stop at exec
 
