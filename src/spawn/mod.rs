@@ -3,10 +3,11 @@ mod multiplexer;
 mod picker;
 mod providers;
 
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 pub use launch::{run, LaunchArgs};
@@ -63,11 +64,32 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
 
     let system_prompt = resolved.fresh_system_prompt();
 
+    // Headless prompt source. Only the auto/generated path buffers
+    // stdin — when the captain supplies the vendor's own invocation via
+    // trailing `-- …`, `provider_args` is non-empty and fd0 stays
+    // inherited so the vendor gets the raw pipe (the existing dedup
+    // suppresses hyprpilot's projection).
+    let prompt = headless_prompt(
+        resolved.headless,
+        std::io::stdin().is_terminal(),
+        !provider_args.is_empty(),
+        read_stdin_prompt,
+    )?;
+    if let Some(prompt) = prompt.as_deref() {
+        tracing::info!(bytes = prompt.len(), "cli: headless launch — buffered stdin prompt");
+    }
+
     let skills = build_skills_registry_with(&profile);
     let mcps = build_mcp_registry_with(&profile, Some(&skills));
     let mcp_defs = mcps.as_ref().map_or_else(Vec::new, |registry| registry.list());
 
-    let command = providers::build_command(&resolved, system_prompt.as_deref(), &mcp_defs, provider_args)?;
+    let command = providers::build_command(
+        &resolved,
+        system_prompt.as_deref(),
+        &mcp_defs,
+        provider_args,
+        prompt.as_deref(),
+    )?;
 
     if cfg
         .multiplexer
@@ -96,6 +118,54 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
 /// `exec()` at the end of `run`.
 fn resolve_launch_cwd(flag: Option<PathBuf>, configured: Option<PathBuf>) -> Option<PathBuf> {
     flag.or(configured).or_else(|| std::env::current_dir().ok())
+}
+
+/// Decide the headless prompt for a launch. Effective headless is
+/// `profile_headless || !stdin_is_tty` (a piped stdin auto-triggers
+/// it). Returns:
+///
+/// - `Ok(None)` — interactive launch, OR the escape-hatch path where
+///   the captain supplied trailing `-- <provider args>`
+///   (`has_provider_args`). In the escape-hatch case stdin is NEVER
+///   read, so fd0 stays inherited and the vendor gets the raw pipe.
+/// - `Ok(Some(prompt))` — hyprpilot buffers stdin and projects the
+///   vendor's one-shot invocation with `prompt` as the argument.
+/// - `Err` — headless is active but stdin is a TTY (no piped prompt),
+///   or the piped prompt is empty.
+///
+/// `read_stdin` is injected so the decision logic is unit-testable
+/// without touching the process's real fd0.
+fn headless_prompt(
+    profile_headless: bool,
+    stdin_is_tty: bool,
+    has_provider_args: bool,
+    read_stdin: impl FnOnce() -> Result<String>,
+) -> Result<Option<String>> {
+    let effective = profile_headless || !stdin_is_tty;
+    if !effective || has_provider_args {
+        return Ok(None);
+    }
+    if stdin_is_tty {
+        bail!(
+            "headless launch requires a piped prompt on stdin \
+             (e.g. `echo \"fix the bug\" | hyprpilot <profile>`); stdin is a TTY"
+        );
+    }
+    let raw = read_stdin()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("headless launch requires a non-empty prompt on stdin");
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// Buffer ALL of stdin into a `String` — the headless prompt source.
+fn read_stdin_prompt() -> Result<String> {
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("headless: read prompt from stdin")?;
+    Ok(buf)
 }
 
 pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[Value]) -> Vec<ProfileSummary> {
@@ -153,6 +223,7 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: Some(PathBuf::from("/configured")),
+                headless: None,
                 command: None,
                 args: None,
                 env: Default::default(),
@@ -235,5 +306,63 @@ mod tests {
 
         let profiles = list_profiles(&cfg, None, &[]);
         assert_eq!(profiles[0].model.as_deref(), Some("patched"));
+    }
+
+    // ── headless prompt source (K-751) ───────────────────────────
+
+    fn never_read() -> Result<String> {
+        panic!("stdin must NOT be read on this path");
+    }
+
+    #[test]
+    fn interactive_tty_no_pipe_reads_nothing() {
+        // Not headless, stdin is a TTY, no provider args → interactive
+        // launch. stdin must never be touched.
+        let out = headless_prompt(false, true, false, never_read).unwrap();
+        assert_eq!(out, None);
+    }
+
+    #[test]
+    fn piped_stdin_auto_triggers_headless_and_buffers_prompt() {
+        // The `echo … | hyprpilot <id>` path: stdin is piped, so
+        // headless is auto-active and the buffered text becomes the
+        // prompt (trailing newline trimmed).
+        let out = headless_prompt(false, false, false, || Ok("fix the bug\n".into())).unwrap();
+        assert_eq!(out.as_deref(), Some("fix the bug"));
+    }
+
+    #[test]
+    fn profile_headless_flag_triggers_headless_on_pipe() {
+        let out = headless_prompt(true, false, false, || Ok("do it".into())).unwrap();
+        assert_eq!(out.as_deref(), Some("do it"));
+    }
+
+    #[test]
+    fn profile_headless_on_tty_without_pipe_errors() {
+        // `headless = true` but stdin is a TTY → no prompt source. The
+        // launch must error rather than open a picker (impossible sans
+        // TTY prompt) or hang.
+        let err = headless_prompt(true, true, false, never_read).expect_err("must error");
+        assert!(err.to_string().contains("piped prompt on stdin"), "{err}");
+    }
+
+    #[test]
+    fn empty_piped_prompt_errors() {
+        let err = headless_prompt(false, false, false, || Ok("   \n".into())).expect_err("must error");
+        assert!(err.to_string().contains("non-empty prompt"), "{err}");
+    }
+
+    #[test]
+    fn provider_args_are_the_escape_hatch_and_never_consume_stdin() {
+        // Trailing `-- <provider args>` → hyprpilot must NOT read stdin
+        // (fd0 stays inherited for the vendor's raw pipe) and must NOT
+        // generate a prompt projection, even though the piped stdin
+        // makes headless "effective".
+        let out = headless_prompt(false, false, true, never_read).unwrap();
+        assert_eq!(out, None, "escape hatch: no buffered prompt");
+
+        // Same with the profile `headless` flag set.
+        let out = headless_prompt(true, true, true, never_read).unwrap();
+        assert_eq!(out, None);
     }
 }

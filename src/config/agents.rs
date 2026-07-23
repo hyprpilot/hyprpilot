@@ -163,6 +163,16 @@ pub struct ProfileConfig {
     /// at consume time (mirrors `system_prompt`).
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
+    /// Force a headless (non-interactive) launch for this profile:
+    /// hyprpilot buffers stdin as the prompt and projects the vendor's
+    /// one-shot invocation (`claude -p` / `codex exec` / `opencode
+    /// run`), then the vendor exits. `None`/`false` (default) launch
+    /// the interactive TUI — but a piped stdin (`echo … | hyprpilot
+    /// <id>`) auto-triggers headless regardless of this flag. When
+    /// headless is active but stdin is a TTY (no piped prompt) the
+    /// launch errors.
+    #[garde(skip)]
+    pub headless: Option<bool>,
     /// When `Some`, REPLACES the base `[[agents]]` entry's `command`
     /// wholesale for this profile only.
     #[garde(inner(length(min = 1)))]
@@ -477,6 +487,7 @@ system_prompt = [
 ]
 mode = "ask"
 cwd = "~/work"
+headless = true
 command = "claude-beta"
 args = ["--fallback-model", "x"]
 
@@ -512,6 +523,7 @@ BAZ = "qux"
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/vue"));
         assert_eq!(full.mode.as_deref(), Some("ask"));
         assert_eq!(full.cwd.as_deref(), Some(PathBuf::from("~/work")).as_deref());
+        assert_eq!(full.headless, Some(true), "headless flag parses");
         assert_eq!(full.command.as_deref(), Some("claude-beta"));
         assert_eq!(
             full.args.as_deref(),
@@ -541,6 +553,7 @@ agent = "claude-code"
         let bare = cfg.profiles.iter().find(|p| p.id == "bare").expect("bare entry");
         assert!(bare.command.is_none(), "command must default to None when absent");
         assert!(bare.args.is_none(), "args must default to None when absent");
+        assert!(bare.headless.is_none(), "headless must default to None when absent");
         assert!(bare.env.is_empty(), "env must default to empty when absent");
         cfg.validate().expect("valid without flat overrides");
         fs::remove_file(&p).ok();

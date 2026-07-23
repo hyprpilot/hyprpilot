@@ -37,6 +37,13 @@ pub struct ResolvedProfile {
     /// Per-launch mode override, mapped onto the vendor CLI where
     /// supported (e.g. claude-code's `plan` / `edit`).
     pub mode: Option<String>,
+    /// Profile-requested headless launch. When `true`, the launcher
+    /// forces the vendor's non-interactive one-shot invocation even on
+    /// a TTY (which then requires a piped prompt). A piped stdin also
+    /// triggers headless regardless of this flag — the effective
+    /// decision is `headless || !stdin.is_terminal()`, computed on the
+    /// launch path in `spawn`.
+    pub headless: bool,
 }
 
 /// One pre-read system-prompt entry — body content + the per-entry
@@ -174,6 +181,7 @@ impl ResolvedProfile {
             effort,
             system_prompt,
             mode: profile.mode.clone(),
+            headless: profile.headless.unwrap_or(false),
         })
     }
 
@@ -283,6 +291,7 @@ mod tests {
             mcp: None,
             mode: None,
             cwd: None,
+            headless: None,
             command: None,
             args: None,
             env: Default::default(),
