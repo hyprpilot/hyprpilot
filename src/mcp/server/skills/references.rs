@@ -1,6 +1,5 @@
-//! Frontmatter reference resolution — mirrors mcphub's pattern
-//! (`~/.config/nvim/lua/ck/plugins/mcphub-nvim.lua:572-589`) while
-//! reusing the shared skill loader's parsed frontmatter.
+//! Frontmatter reference resolution — reuses the shared skill
+//! loader's parsed frontmatter.
 //!
 //! A skill's YAML frontmatter declares `references: [path1, path2, ...]`;
 //! the loader resolves each path relative to the skill bundle's

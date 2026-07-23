@@ -52,9 +52,13 @@ Key `src/` modules:
 - `resolve/mod.rs` — pure `Config` → resolution core: profile pick,
   patch folding, per-launch MCP + skills registry construction.
 - `spawn/` — `launch.rs` (`LaunchArgs` + the bare-launch entry
-  `run`), `mod.rs` (orchestration), `providers.rs` (per-vendor
-  native-flag projection + `exec`), `picker.rs` (interactive
-  profile picker), `multiplexer.rs` (tmux/zellij rename).
+  `run`), `mod.rs` (orchestration), `providers/` (per-vendor
+  native-flag projection + `exec`: `mod.rs` = dispatch / `exec` /
+  `base_command` / redaction / shared helpers, `argv.rs` =
+  flag-detection, `claude.rs` / `codex.rs` / `opencode.rs` = the
+  three vendor builders, `temp.rs` = the 0600 temp-config lifecycle +
+  reaper), `picker.rs` (interactive profile picker), `multiplexer.rs`
+  (tmux/zellij rename).
 - `profile.rs` — `ResolvedProfile` (flat runtime view).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
   (the in-tree `hyprpilot` server), `server/` (`mcp serve`).
@@ -197,7 +201,7 @@ system_prompt = [
   projection; a hand-rolled CLI declares its own `command` / `args`
   under one of these providers (or per-profile via the flat
   `command`/`args`/`env` override). New named vendor = new variant +
-  a `providers.rs` `build_*` arm.
+  a `providers/<vendor>.rs` `build_*` arm.
 - **`[[profiles]]`** (`ProfileConfig`): `id`, `agent`, `model?`,
   `effort?`, `system_prompt?` (array of `{ file, inject? }`), `mcps?`
   (per-profile MCP catalogue), `mcp?` (per-profile `[mcp]` block),
@@ -316,7 +320,7 @@ an optional `hyprpilot` namespace key:
   **server-relative** (`read_*`, prefix `mcp__<server>__` implicit).
   Exclude beats include; reject beats accept. `[mcp].auto_accept_tools`
   (default `["*"]`) is copied onto servers with no per-server override.
-- **Vendor projection** (`spawn/providers.rs`): claude gets
+- **Vendor projection** (`spawn/providers/`): claude gets
   `--mcp-config` (inline JSON) + `--allowedTools` / `--disallowedTools`;
   codex gets `-c mcp_servers.<name>.*` config overrides; opencode gets
   `OPENCODE_CONFIG_CONTENT` + `OPENCODE_PERMISSION` env. Transport is
@@ -381,7 +385,7 @@ selection:** a headless launch never opens the picker
 `headless`-flagged `[profile] default` resolves the default directly,
 erroring when no default is set; only an interactive TTY with a
 non-headless default falls through to the picker. Per-vendor
-projection (`providers.rs`, driven by `prompt: Option<&str>` on
+projection (`providers/`, driven by `prompt: Option<&str>` on
 `build_command` / `build_*`): claude `--print` + prompt positional;
 codex `exec` subcommand + prompt positional (approval-policy `mode`
 dropped — `codex exec` has no `--ask-for-approval`; sandbox modes still

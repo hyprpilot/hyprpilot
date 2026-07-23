@@ -20,7 +20,9 @@
 //!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata, frontmatter }] }`
 //!   - `read_skill { slug }` — `{ uri, body, metadata, frontmatter }`
 //!   - `load_skill_references { slug }` — `{ uri, body, metadata, frontmatter }`
-//!   - `reload` — rescan dirs, push list-changed notifications
+//!   - `reload` — rescan dirs, push a resource list-changed
+//!     notification (skills back the resource list; the tool list is
+//!     static, so no tool-list-changed fires)
 //!   - `open { path }` — open a URL, file, or directory in the
 //!     OS-default handler (`xdg-open` / `open` / `start`) via the
 //!     cross-platform `open` crate.
@@ -421,8 +423,12 @@ fn require_string<'a>(
 impl ServerHandler for HyprpilotServer {
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
+        // The tool set is static (`list_tools` always returns the same
+        // five) — do NOT advertise tool-list-changed. Skills back the
+        // resource list, which `reload` can change, so resources DO
+        // advertise list-changed (and `reload` fires it).
         caps.tools = Some(rmcp::model::ToolsCapability {
-            list_changed: Some(true),
+            list_changed: Some(false),
         });
         caps.resources = Some(rmcp::model::ResourcesCapability {
             subscribe: Some(false),
@@ -505,7 +511,7 @@ impl ServerHandler for HyprpilotServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args = request.arguments.unwrap_or_default();
         match request.name.as_ref() {
@@ -546,6 +552,14 @@ impl ServerHandler for HyprpilotServer {
             "reload" => {
                 self.reload_skills().await;
                 let count = self.skills_cache.read().await.skills.len();
+                // The resource list (one per skill) may have changed —
+                // fire the list-changed notification `get_info`
+                // advertises so a connected client re-fetches instead of
+                // trusting a stale `list_resources`. Best-effort: a
+                // failed notify logs but doesn't fail the reload.
+                if let Err(err) = context.peer.notify_resource_list_changed().await {
+                    tracing::debug!(%err, "mcp::server: reload resource list-changed notification failed");
+                }
                 Ok(CallToolResult::structured(serde_json::json!({
                     "reloaded": count,
                 })))

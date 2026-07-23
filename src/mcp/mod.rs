@@ -27,9 +27,7 @@ pub mod loader;
 pub mod server;
 pub mod transport;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,26 +89,7 @@ fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
 where
     F: FnMut(&str) -> Option<String>,
 {
-    let tilde = shellexpand::tilde(raw);
-    match shellexpand::env_with_context(tilde.as_ref(), |name| {
-        Ok::<Option<String>, std::convert::Infallible>(lookup_env(name, lookup))
-    }) {
-        Ok(expanded) => expanded.into_owned(),
-        Err(err) => {
-            tracing::warn!(value = raw, ctx, %err, "mcp::expand_value: expansion failed; using raw value");
-            raw.to_string()
-        }
-    }
-}
-
-fn lookup_env<F>(name: &str, lookup: &mut F) -> Option<String>
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    if let Some(value) = lookup(name) {
-        return Some(value);
-    }
-    name.strip_prefix("env:").and_then(lookup)
+    crate::paths::expand_env_value(raw, ctx, |name| lookup(name))
 }
 
 fn expand_raw_strings_with<F>(def: &MCPDefinition, raw: &Value, lookup: &mut F) -> Value
@@ -154,16 +133,6 @@ where
     }
 
     expanded
-}
-
-/// Owned MCP catalog — the resolved set after merging every file.
-/// Built per launch from the resolved profile's `mcps` files (the
-/// resolver in `loader.rs`).
-pub struct MCPsRegistry {
-    /// Resolved name → definition map. Order tracked separately so
-    /// `list()` is stable.
-    catalog: RwLock<HashMap<String, MCPDefinition>>,
-    order: RwLock<Vec<String>>,
 }
 
 /// Project an opaque `MCPDefinition.raw` JSON value onto its
@@ -253,75 +222,9 @@ where
     None
 }
 
-impl MCPsRegistry {
-    /// Construct from a pre-resolved set. Caller (`loader::load_files`)
-    /// has already merged + warned on bad files.
-    #[must_use]
-    pub fn new(defs: Vec<MCPDefinition>) -> Self {
-        let mut order = Vec::with_capacity(defs.len());
-        let mut catalog = HashMap::with_capacity(defs.len());
-        for d in defs {
-            // Later-wins on collision: `loader::load_files` already
-            // applies the file-iteration order, so by the time we get
-            // here the resolved set is collision-free. The
-            // contains_key guard is defensive — a bug in the loader
-            // would drop the duplicate silently otherwise.
-            order.retain(|n: &String| n.as_str() != d.name);
-            order.push(d.name.clone());
-            catalog.insert(d.name.clone(), d);
-        }
-        Self {
-            catalog: RwLock::new(catalog),
-            order: RwLock::new(order),
-        }
-    }
-
-    #[must_use]
-    pub fn list(&self) -> Vec<MCPDefinition> {
-        let catalog = self.catalog.read().expect("mcps catalog lock poisoned");
-        let order = self.order.read().expect("mcps order lock poisoned");
-        order.iter().filter_map(|name| catalog.get(name).cloned()).collect()
-    }
-
-    /// Per-name lookup. Test-only.
-    #[cfg(test)]
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<MCPDefinition> {
-        let catalog = self.catalog.read().expect("mcps catalog lock poisoned");
-        catalog.get(name).cloned()
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn count(&self) -> usize {
-        self.catalog.read().expect("mcps catalog lock poisoned").len()
-    }
-}
-
-impl std::fmt::Debug for MCPsRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MCPsRegistry").finish_non_exhaustive()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-
-    fn def(name: &str, source: &str, hyprpilot: HyprpilotExtension) -> MCPDefinition {
-        MCPDefinition {
-            name: name.to_string(),
-            raw: serde_json::json!({ "command": "echo", "args": [name] }),
-            hyprpilot,
-            source: PathBuf::from(source),
-        }
-    }
-
-    fn build_registry(defs: Vec<MCPDefinition>) -> Arc<MCPsRegistry> {
-        Arc::new(MCPsRegistry::new(defs))
-    }
 
     #[test]
     fn hyprpilot_extension_serializes_only_declared_tool_policy_fields() {
@@ -341,17 +244,6 @@ mod tests {
                 "autoAcceptTools": ["read_*"],
             })
         );
-    }
-
-    #[test]
-    fn list_preserves_insertion_order() {
-        let reg = build_registry(vec![
-            def("alpha", "a.json", HyprpilotExtension::default()),
-            def("beta", "a.json", HyprpilotExtension::default()),
-            def("gamma", "b.json", HyprpilotExtension::default()),
-        ]);
-        let names: Vec<String> = reg.list().into_iter().map(|m| m.name).collect();
-        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
     }
 
     #[test]
@@ -429,13 +321,5 @@ mod tests {
         assert_eq!(command.to_string_lossy(), "/tmp/mcp-bin");
         assert_eq!(args, vec!["--token", "secret-token"]);
         assert_eq!(env[0].1, "secret-token");
-    }
-
-    #[test]
-    fn empty_catalog_is_valid() {
-        let reg = build_registry(Vec::new());
-        assert_eq!(reg.count(), 0);
-        assert!(reg.list().is_empty());
-        assert!(reg.get("anything").is_none());
     }
 }

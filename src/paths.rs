@@ -116,3 +116,39 @@ pub fn resolve_user(s: &str) -> PathBuf {
         .map(|c| c.into_owned())
         .unwrap_or_else(|_| PathBuf::from(expanded))
 }
+
+/// Expand `~` and `${VAR}` / `$VAR` references in `raw`, resolving env
+/// names through `lookup` (with an `env:`-prefixed fallback: a
+/// `${env:FOO}` reference retries the bare `FOO`). On expansion failure
+/// the value is returned verbatim after a `warn!` stamped with `ctx`.
+///
+/// Single source for the tilde + `env_with_context` + warn-fallback +
+/// `env:`-prefix shape the launcher (`spawn::providers`, process env)
+/// and the MCP catalogue (`mcp`, injected lookups) both need — the two
+/// only differ in how a name resolves to a value, so `lookup` is the
+/// one parameter.
+pub fn expand_env_value<F>(raw: &str, ctx: &str, mut lookup: F) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let tilde = shellexpand::tilde(raw);
+    match shellexpand::env_with_context(tilde.as_ref(), |name| {
+        Ok::<Option<String>, std::convert::Infallible>(lookup_with_env_prefix(name, &mut lookup))
+    }) {
+        Ok(expanded) => expanded.into_owned(),
+        Err(err) => {
+            tracing::warn!(value = raw, ctx, %err, "env expansion failed; using raw value");
+            raw.to_string()
+        }
+    }
+}
+
+fn lookup_with_env_prefix<F>(name: &str, lookup: &mut F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    if let Some(value) = lookup(name) {
+        return Some(value);
+    }
+    name.strip_prefix("env:").and_then(lookup)
+}

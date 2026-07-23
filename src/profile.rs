@@ -77,40 +77,6 @@ impl ResolvedProfile {
 }
 
 impl ResolvedProfile {
-    /// Pick a profile (addressed id, then `[profile] default`),
-    /// fold root `[[patches]]`, and project the result through
-    /// `from_profile_explicit`. Errors when neither addresses a
-    /// real profile — there is no bare-agent fallback.
-    ///
-    /// Production callers go through `resolve::resolve_into_instance_and_profile`
-    /// which returns the patched `ProfileConfig` alongside, so downstream
-    /// MCP / skills registries read from the same shape. This entry point
-    /// is the thin test-only surface — production paths must use the
-    /// `resolve::` helper so the MCP / skills registries get the same
-    /// patched view, not a re-derived one that could drift.
-    #[cfg(test)]
-    pub fn from_config(config: &Config, profile_id: Option<&str>) -> Result<Self> {
-        let picked_id = profile_id
-            .map(str::to_string)
-            .or_else(|| config.profile.default.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no profile addressed and no `[profile] default` configured — \
-                 every spawn requires a `[[profiles]]` entry. \
-                 Pass the profile as the positional `hyprpilot <id>` argument \
-                 or set `[profile] default = '<id>'`."
-                )
-            })?;
-        let base = config
-            .profiles
-            .iter()
-            .find(|p| p.id == picked_id)
-            .cloned()
-            .with_context(|| format!("profile '{picked_id}' not found in [[profiles]] registry"))?;
-        let patched = apply_root_patches(config, base)?;
-        Self::from_profile_explicit(&patched, config)
-    }
-
     /// Resolve against an already-materialised `ProfileConfig` —
     /// the result of `resolve::resolve_effective_profile` (which picks
     /// the addressed profile, folds root `[[patches]]`, folds any
@@ -200,38 +166,6 @@ impl ResolvedProfile {
     }
 }
 
-/// Fold root-level `[[patches]]` into the captain-picked profile.
-/// Each patch may carry an optional `$match: { profile: "<glob>" }`
-/// directive — stripped before merging, skips non-matching entries.
-/// The result deserializes back through `ProfileConfig` so garde
-/// re-validates the post-merge shape.
-///
-/// Test-only — production paths use `resolve::resolve_effective_profile`
-/// (which composes this same logic + `--with-config` overlays) so MCP /
-/// skills registries read from the same patched view.
-#[cfg(test)]
-fn apply_root_patches(config: &Config, profile: ProfileConfig) -> Result<ProfileConfig> {
-    let Some(patches) = config.patches.as_deref() else {
-        return Ok(profile);
-    };
-    if patches.is_empty() {
-        return Ok(profile);
-    }
-
-    let profile_id = profile.id.clone();
-    let base = serde_json::to_value(&profile).context("apply_root_patches: profile serialize failed")?;
-    let merged = crate::config::patch::apply_root_patches_to_profile_with_context(
-        base,
-        patches,
-        crate::config::patch::PatchMatchContext::new(&profile_id),
-    );
-    let patched: ProfileConfig = serde_json::from_value(merged)
-        .with_context(|| format!("apply_root_patches: profile '{profile_id}' invalid after patch merge"))?;
-    garde::Validate::validate(&patched)
-        .with_context(|| format!("apply_root_patches: profile '{profile_id}' failed validation after patch merge"))?;
-    Ok(patched)
-}
-
 /// Read every entry's file body and pair it with the entry's inject
 /// toggle. Each path is `~`/env-expanded; missing files surface as
 /// readable errors stamped with `ctx_label`. Empty list returns an
@@ -261,6 +195,17 @@ mod tests {
 
     use super::*;
     use crate::config::{AgentProvider, AgentsConfig};
+
+    /// Route every test through the REAL production resolution glue
+    /// (`resolve::resolve_into_instance_and_profile` → pick base
+    /// profile → fold root `[[patches]]` → re-validate →
+    /// `from_profile_explicit`) rather than a test-only shadow, so the
+    /// production path and its error branches are what's actually
+    /// covered. `external_patches` is empty — these fixtures exercise
+    /// the base-profile + root-`[[patches]]` path.
+    fn resolve(cfg: &Config, profile_id: Option<&str>) -> Result<ResolvedProfile> {
+        crate::resolve::resolve_into_instance_and_profile(cfg, profile_id, &[]).map(|(resolved, _profile)| resolved)
+    }
 
     fn agent(id: &str, model: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -316,7 +261,7 @@ mod tests {
             profiles: vec![profile("strict", "cc", Some("opus-4"), None)],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("strict")).unwrap();
+        let r = resolve(&cfg, Some("strict")).unwrap();
         assert_eq!(r.agent.id, "cc");
         assert_eq!(r.model.as_deref(), Some("opus-4"));
     }
@@ -330,7 +275,7 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
         assert_eq!(r.model.as_deref(), Some("sonnet"));
     }
 
@@ -347,7 +292,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedProfile::from_config(&cfg, Some("plan")).unwrap();
+        let r = resolve(&cfg, Some("plan")).unwrap();
         assert_eq!(r.fresh_system_prompt().as_deref(), Some("You are a planner."));
     }
 
@@ -364,7 +309,7 @@ mod tests {
             profiles: vec![profile("layered", "cc", None, Some(vec![base, project]))],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("layered")).unwrap();
+        let r = resolve(&cfg, Some("layered")).unwrap();
         assert_eq!(
             r.fresh_system_prompt().as_deref(),
             Some("You are an agent.\n\nWorking on hyprpilot.")
@@ -381,7 +326,7 @@ mod tests {
             profiles: vec![profile("silent", "cc", None, Some(vec![]))],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("silent")).unwrap();
+        let r = resolve(&cfg, Some("silent")).unwrap();
         assert!(r.fresh_system_prompt().is_none());
     }
 
@@ -402,7 +347,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("no-inject")).unwrap();
+        let r = resolve(&cfg, Some("no-inject")).unwrap();
 
         // `inject = false` opts an entry out of the launcher's
         // fresh-launch injection entirely.
@@ -424,7 +369,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let err = ResolvedProfile::from_config(&cfg, Some("plan")).expect_err("missing file fails");
+        let err = resolve(&cfg, Some("plan")).expect_err("missing file fails");
         let msg = format!("{err:#}");
         assert!(msg.contains("plan"), "{msg}");
         assert!(msg.contains("system_prompt"), "{msg}");
@@ -442,13 +387,13 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, None).unwrap();
+        let r = resolve(&cfg, None).unwrap();
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
         // With `[profile] default` cleared AND no positional profile,
         // resolution errors — there is no bare-agent fallback.
         cfg.profile.default = None;
-        let err = ResolvedProfile::from_config(&cfg, None).expect_err("must error without a profile");
+        let err = resolve(&cfg, None).expect_err("must error without a profile");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("every spawn requires a") || msg.contains("no profile addressed"),
@@ -477,7 +422,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.agent.env.get("AGENT_ONLY").map(String::as_str), Some("from-agent"));
         assert_eq!(
@@ -505,7 +450,7 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.agent.command, "base-command");
         assert_eq!(r.agent.args, vec!["--base-flag".to_string()]);
@@ -525,7 +470,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
+        let r = resolve(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(r.agent.command, "claude-beta");
     }
@@ -546,7 +491,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
+        let r = resolve(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(
             r.agent.args,
@@ -581,7 +526,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
+        let r = resolve(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(
             r.agent.args,
@@ -608,7 +553,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
+        let r = resolve(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(r.agent.args, vec!["--new-flag".to_string()]);
     }
@@ -631,9 +576,10 @@ mod tests {
             ..Default::default()
         };
 
-        let err = ResolvedProfile::from_config(&cfg, Some("yolo"))
-            .expect_err("empty-string arg from a patch must fail re-validation");
-        assert!(err.to_string().contains("failed validation"), "{err}");
+        let err = resolve(&cfg, Some("yolo")).expect_err("empty-string arg from a patch must fail re-validation");
+        // The production resolver stamps the garde failure with
+        // `profile resolution: validation failed`.
+        assert!(err.to_string().contains("validation failed"), "{err}");
     }
 
     #[test]
@@ -653,7 +599,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
 
         assert_eq!(
             r.agent.cwd.as_deref(),
@@ -672,7 +618,7 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.agent.cwd.as_deref(), Some(std::path::Path::new("/agent-cwd")));
     }
@@ -689,7 +635,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.mode.as_deref(), Some("plan"));
     }
@@ -703,7 +649,7 @@ mod tests {
             profiles: vec![],
             ..Default::default()
         };
-        let err = ResolvedProfile::from_config(&cfg, Some("ghost")).expect_err("unknown profile");
+        let err = resolve(&cfg, Some("ghost")).expect_err("unknown profile");
         assert!(err.to_string().contains("profile 'ghost' not found"));
     }
 
@@ -728,7 +674,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedProfile::from_config(&cfg, Some("personal/claude/opus")).unwrap();
+        let r = resolve(&cfg, Some("personal/claude/opus")).unwrap();
         assert_eq!(
             r.fresh_system_prompt().as_deref(),
             Some("shared base prompt"),
@@ -756,13 +702,13 @@ mod tests {
             ..Default::default()
         };
 
-        let personal_resolved = ResolvedProfile::from_config(&cfg, Some("personal/claude/opus")).unwrap();
+        let personal_resolved = resolve(&cfg, Some("personal/claude/opus")).unwrap();
         assert_eq!(
             personal_resolved.fresh_system_prompt().as_deref(),
             Some("personal-only prompt")
         );
 
-        let work_resolved = ResolvedProfile::from_config(&cfg, Some("work/claude/opus")).unwrap();
+        let work_resolved = resolve(&cfg, Some("work/claude/opus")).unwrap();
         assert!(
             work_resolved.fresh_system_prompt().is_none(),
             "personal/* glob must not reach work/* profile"
@@ -789,7 +735,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
+        let r = resolve(&cfg, Some("ask")).unwrap();
         assert_eq!(
             r.fresh_system_prompt().as_deref(),
             Some("first\n\nsecond"),

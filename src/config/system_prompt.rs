@@ -33,7 +33,8 @@ fn default_inject() -> bool {
 #[serde(default, deny_unknown_fields)]
 pub struct SystemPromptEntry {
     /// Markdown / text file. `~` + env-var expansion happens at
-    /// read time. Required — empty paths reject at validation.
+    /// read time; a missing/unreadable file surfaces then, not at
+    /// validation (the path is `#[garde(skip)]` — not shape-checked).
     #[garde(skip)]
     pub file: PathBuf,
     /// Whether this entry's body rides the launch's system-prompt
