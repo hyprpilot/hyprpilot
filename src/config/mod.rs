@@ -19,7 +19,7 @@ use crate::paths;
 pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
 pub use extensions::{McpFile, SkillEntry};
 pub use mcp::McpConfig;
-use merge_strategies::{merge_profiles_by_id, overwrite_some};
+use merge_strategies::{append_layers, merge_profiles_by_id, overwrite_some};
 pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
 use validations::{
     validate_default_profile_id, validate_profile_agent_references, validate_profiles_ids, validate_profiles_non_empty,
@@ -78,13 +78,22 @@ pub struct Config {
     /// settings across profiles put them in a (possibly scoped)
     /// patch instead of duplicating per-profile.
     ///
+    /// **Additive across config layers** (`append_layers`): a user
+    /// config layer's `[[patches]]` EXTENDS the compiled-default seed
+    /// (the in-tree `hyprpilot` MCP skills-dir patch) rather than
+    /// replacing it — layers concatenate in declaration order, and the
+    /// resolve-time fold applies all of them so a later patch can
+    /// still override or wipe an earlier one's fields via
+    /// `$patch: replace`. This keeps a partial `[patches.mcp]` in a
+    /// user layer from silently dropping the seeded skills dir.
+    ///
     /// Stored as `Vec<Value>` so the captain's authoring vocabulary
     /// is whatever serde supports on `ProfileConfig` — typed
     /// validation happens AFTER patch application via
     /// `serde_json::from_value::<ProfileConfig>(...) + garde`.
     #[serde(default)]
     #[garde(skip)]
-    #[merge(strategy = overwrite_some)]
+    #[merge(strategy = append_layers)]
     pub patches: Option<Vec<serde_json::Value>>,
 }
 
@@ -364,9 +373,13 @@ mod tests {
     fn defaults_seed_mcp_via_root_patch() {
         // `[mcp]` is no longer a root field — it lives on
         // `ProfileConfig` and gets seeded via the default
-        // `[[patches]]` entry. Pin the seeded patch shape so a
-        // future captain removing the entry surfaces here instead
-        // of breaking auto-inject silently at runtime.
+        // `[[patches]]` entry. The seed carries ONLY the XDG skills
+        // dir (the load-bearing value that must survive additive
+        // layer merge); `enabled` / `autoAcceptTools` /
+        // `autoRejectTools` are the typed `McpConfig::default()` the
+        // resolver backfills, so they are intentionally absent here.
+        // Pin the seeded skills shape so a future captain removing the
+        // entry surfaces here instead of breaking auto-inject silently.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
         let patches = cfg.patches.as_deref().expect("defaults must seed [[patches]]");
         assert!(!patches.is_empty(), "defaults must seed at least one root patch");
@@ -376,11 +389,15 @@ mod tests {
             .find_map(|p| p.as_object()?.get("mcp"))
             .expect("a default patch must carry an mcp field");
         let m = mcp_patch.as_object().expect("mcp patch is an object");
-        assert_eq!(m.get("enabled").and_then(serde_json::Value::as_bool), Some(true));
         assert_eq!(
-            m.get("autoAcceptTools").and_then(serde_json::Value::as_array),
-            Some(&vec![serde_json::Value::String("*".into())]),
-            "default mcp.autoAcceptTools must be [\"*\"]",
+            m.get("enabled"),
+            None,
+            "mcp.enabled is single-sourced in McpConfig::default(), not the seed"
+        );
+        assert_eq!(
+            m.get("autoAcceptTools"),
+            None,
+            "mcp.autoAcceptTools is single-sourced in McpConfig::default(), not the seed"
         );
         let skills = m
             .get("skills")
@@ -551,5 +568,62 @@ inject = { on_update = true }
             Some("~/.config/hyprpilot/prompts/base.md")
         );
         fs::remove_file(&p).ok();
+    }
+
+    /// Cross-layer patch merge (K-746): a user config layer's
+    /// `[[patches]]` EXTENDS the defaults-seeded patch instead of
+    /// wholesale-replacing it. A partial `[patches.mcp]` in the user
+    /// layer (tightening the accept globs, no `skills`) must NOT drop
+    /// the seeded skills dir — both patches survive the layer merge
+    /// and fold in declaration order at resolve time. This is the
+    /// footgun the `append_layers` strategy fixes; under the old
+    /// `overwrite_some` the user layer clobbered the seed and the
+    /// skills dir silently vanished.
+    #[test]
+    fn user_layer_patches_extend_the_defaults_seed() {
+        let p = write_tmp(
+            "additive-patches.toml",
+            r#"
+[[profiles]]
+id = "engineer"
+agent = "claude-code"
+
+[[patches]]
+[patches.mcp]
+autoAcceptTools = ["read_*"]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        fs::remove_file(&p).ok();
+
+        // Both the defaults-seeded patch AND the user layer's patch
+        // survive the layer merge (append, not overwrite).
+        let patches = cfg.patches.as_deref().expect("patches set");
+        assert_eq!(patches.len(), 2, "seed + user-layer patch both present");
+
+        // Resolve the profile: the two patches fold in order — the
+        // seed's skills dir first, then the user's tighter accept
+        // globs on top.
+        let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
+        let mcp = patched.mcp.as_ref().expect("profile carries a folded mcp block");
+
+        // Seed's skills dir survived the partial user patch (the footgun).
+        let skills = mcp.skills.as_deref().expect("seeded skills dir preserved");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
+
+        // User layer's override folded on top.
+        assert_eq!(
+            mcp.auto_accept_tools.as_deref(),
+            Some(["read_*".to_string()].as_slice())
+        );
+
+        // The effective (backfilled) block carries the default value
+        // leaves the user patch never mentioned, and the seeded skills
+        // still flow through to the launch.
+        let effective = crate::resolve::effective_mcp_with(&patched);
+        assert!(effective.enabled(), "enabled backfilled from McpConfig::default()");
+        assert_eq!(effective.auto_accept_tools(), ["read_*".to_string()]);
+        assert_eq!(effective.resolved_skills().len(), 1, "seeded skills flow to the launch");
     }
 }

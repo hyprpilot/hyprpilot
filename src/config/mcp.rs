@@ -21,6 +21,7 @@ use garde::Validate;
 use merge::Merge;
 use serde::{Deserialize, Serialize};
 
+use super::extensions::validate_globs;
 use super::merge_strategies::overwrite_some;
 use super::SkillEntry;
 
@@ -49,11 +50,12 @@ use super::SkillEntry;
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 #[merge(strategy = overwrite_some)]
 pub struct McpConfig {
-    /// `true` (default — seeded by defaults.toml) → the launcher
-    /// auto-injects the in-tree MCP server when `skills` resolves to a
-    /// non-empty catalog. `false` → skip auto-inject entirely; agent
-    /// sees no `hyprpilot` server. Profile-level `false` override lets
-    /// the captain run a vendor-only launch.
+    /// `true` (default — `McpConfig::default()`, backfilled onto every
+    /// resolved profile) → the launcher auto-injects the in-tree MCP
+    /// server when `skills` resolves to a non-empty catalog. `false` →
+    /// skip auto-inject entirely; agent sees no `hyprpilot` server.
+    /// Profile-level `false` override lets the captain run a
+    /// vendor-only launch.
     #[garde(skip)]
     pub enabled: Option<bool>,
 
@@ -61,41 +63,50 @@ pub struct McpConfig {
     /// `<slug>/SKILL.md` bundles plus an optional per-entry glob
     /// `ignore` array filtering slugs at load time. Mirrors the old
     /// top-level `[[skills]]` shape verbatim — only the location
-    /// moved.
+    /// moved. The default `~/.config/hyprpilot/skills` root is seeded
+    /// by the default `[[patches]]` entry (a config layer, so it
+    /// survives additive layer merge), NOT by `McpConfig::default()`.
     #[garde(dive)]
     pub skills: Option<Vec<SkillEntry>>,
 
     /// Default glob patterns matching MCP tool leaf names for
-    /// auto-accept. Default `["*"]` (seeded by defaults.toml) → every
+    /// auto-accept. Default `["*"]` (`McpConfig::default()`) → every
     /// MCP tool on servers without a stricter per-server extension is
     /// projected as auto-approved onto the vendor's native approval
     /// surface. Tighten by setting
-    /// `auto_accept_tools = ["list_*", "read_*"]`.
-    #[garde(skip)]
+    /// `auto_accept_tools = ["list_*", "read_*"]`. Each pattern must
+    /// be a valid glob — a malformed one rejects at config-load.
+    #[garde(custom(validate_globs))]
     pub auto_accept_tools: Option<Vec<String>>,
 
-    /// Glob patterns for auto-reject. Default `[]` (seeded by
-    /// defaults.toml) — no rejects, every tool falls through to the
-    /// accept set. Reject beats accept on overlap.
-    #[garde(skip)]
+    /// Glob patterns for auto-reject. Default `[]`
+    /// (`McpConfig::default()`) — no rejects, every tool falls through
+    /// to the accept set. Reject beats accept on overlap. Each pattern
+    /// must be a valid glob — a malformed one rejects at config-load.
+    #[garde(custom(validate_globs))]
     pub auto_reject_tools: Option<Vec<String>>,
 }
 
 impl Default for McpConfig {
-    /// Mirror of the values seeded in `defaults.toml`. Lives here too
-    /// so `Config::default()` (used by tests that bypass the loader)
-    /// gets the same shape the loaded config sees. The
-    /// `defaults_seed_mcp_block` test in `config/mod.rs` and the
-    /// `default_matches_defaults_toml_seeded_values` test below pin
-    /// both representations together — a drift between them fails
-    /// the suite before it ships.
+    /// The per-leaf **fallback** the resolver backfills onto every
+    /// profile's (possibly partial or absent) `[mcp]` block via
+    /// `resolve::effective_mcp_with`. Carries only the non-path value
+    /// leaves the `.expect()` accessors below require —
+    /// `enabled = true`, `autoAcceptTools = ["*"]`,
+    /// `autoRejectTools = []`.
+    ///
+    /// **`skills` is deliberately `None` here.** The XDG skills-dir
+    /// default is the single load-bearing value that must survive
+    /// config-layer merge, so it lives ONLY in the default
+    /// `[[patches]]` entry (a config layer, additive across layers) —
+    /// duplicating it here would be the `defaults.toml`-drift
+    /// anti-pattern `CLAUDE.md` warns against. A profile that ends up
+    /// with no `mcp.skills` (the seed patch was cleared, or a
+    /// programmatic `Config`) simply auto-injects nothing.
     fn default() -> Self {
         Self {
             enabled: Some(true),
-            skills: Some(vec![SkillEntry {
-                dir: std::path::PathBuf::from("~/.config/hyprpilot/skills"),
-                ignore: None,
-            }]),
+            skills: None,
             auto_accept_tools: Some(vec!["*".to_string()]),
             auto_reject_tools: Some(Vec::new()),
         }
@@ -103,32 +114,32 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
-    /// `enabled.expect("seeded by McpConfig::default() / the default
-    /// [[patches]] entry")` — fatal if neither seeded it. The paired
-    /// test `defaults_seed_mcp_block` pins every leaf so this never
-    /// panics at runtime.
+    /// `enabled.expect(...)` — infallible in practice: the resolver
+    /// backfills the block onto `McpConfig::default()` (which seeds
+    /// `enabled`) before any consumer reads it, so this can only fire
+    /// if a caller constructs a raw partial `McpConfig` by hand.
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.enabled
-            .expect("[mcp] enabled seeded by McpConfig::default() / the default [[patches]] entry")
+            .expect("[mcp] enabled seeded by McpConfig::default() (backfilled in resolve::effective_mcp_with)")
     }
 
     /// Auto-accept globs as a borrowed slice. Defaults to `["*"]` per
-    /// `McpConfig::default()` / the default `[[patches]]` entry.
+    /// `McpConfig::default()`, backfilled by `effective_mcp_with`.
     #[must_use]
     pub fn auto_accept_tools(&self) -> &[String] {
         self.auto_accept_tools
             .as_deref()
-            .expect("[mcp] autoAcceptTools seeded by McpConfig::default() / the default [[patches]] entry")
+            .expect("[mcp] autoAcceptTools seeded by McpConfig::default() (backfilled in resolve::effective_mcp_with)")
     }
 
     /// Auto-reject globs as a borrowed slice. Defaults to `[]` per
-    /// `McpConfig::default()` / the default `[[patches]]` entry.
+    /// `McpConfig::default()`, backfilled by `effective_mcp_with`.
     #[must_use]
     pub fn auto_reject_tools(&self) -> &[String] {
         self.auto_reject_tools
             .as_deref()
-            .expect("[mcp] autoRejectTools seeded by McpConfig::default() / the default [[patches]] entry")
+            .expect("[mcp] autoRejectTools seeded by McpConfig::default() (backfilled in resolve::effective_mcp_with)")
     }
 
     /// Resolve every `[[mcp.skills]]` entry to its absolute path +
@@ -155,26 +166,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_matches_defaults_toml_seeded_patch_values() {
+    fn default_carries_value_leaves_but_not_skills() {
+        // `McpConfig::default()` is the per-leaf fallback the resolver
+        // backfills onto every profile. It must seed exactly the value
+        // leaves the `.expect()` accessors read — and must NOT carry
+        // the XDG skills dir (that lives solely in the default
+        // `[[patches]]` entry, single-sourced, so no `defaults.toml`
+        // drift). A captain who moves the skills default into this
+        // impl reintroduces the duplication and fails here.
+        let d = McpConfig::default();
+        assert_eq!(d.enabled, Some(true));
+        assert_eq!(d.auto_accept_tools.as_deref(), Some(["*".to_string()].as_slice()));
+        assert_eq!(d.auto_reject_tools.as_deref(), Some([].as_slice()));
+        assert_eq!(
+            d.skills, None,
+            "skills default is single-sourced in the seed patch, not here"
+        );
+    }
+
+    #[test]
+    fn seed_patch_is_the_single_source_of_the_skills_dir() {
         // Pairs with `config::tests::defaults_seed_mcp_via_root_patch`.
-        // `[mcp]` is no longer a root field — it's seeded via a
-        // `[[patches]]` entry. Deserialize that patch's `mcp` sub-
-        // object back into McpConfig and check it equals the typed
-        // `Default::default()`. If a captain updates defaults.toml's
-        // seeded mcp shape without also updating the `Default` impl
-        // (or vice versa), the two paths diverge here.
+        // The XDG skills dir lives in the default `[[patches]]` entry,
+        // never in `McpConfig::default()` — deserialize the seed's
+        // `mcp` sub-object and assert it carries the skills root while
+        // the typed default does not.
         let from_toml: super::super::Config = toml::from_str(super::super::DEFAULTS).expect("defaults parse");
         let patches = from_toml.patches.as_deref().expect("defaults seed [[patches]]");
         let mcp_value = patches
             .iter()
             .find_map(|p| p.as_object()?.get("mcp"))
             .expect("default patch carries an mcp field");
-        let mcp_from_patch: McpConfig =
+        let seed_mcp: McpConfig =
             serde_json::from_value(mcp_value.clone()).expect("patch's mcp deserializes as McpConfig");
-        assert_eq!(
-            mcp_from_patch,
-            McpConfig::default(),
-            "default `[[patches]]` mcp seed must match McpConfig::default()",
-        );
+        let skills = seed_mcp.skills.as_deref().expect("seed patch carries the skills dir");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].dir, std::path::PathBuf::from("~/.config/hyprpilot/skills"));
+        assert_eq!(McpConfig::default().skills, None);
+    }
+
+    #[test]
+    fn valid_tool_policy_globs_validate() {
+        let cfg = McpConfig {
+            enabled: Some(true),
+            skills: None,
+            auto_accept_tools: Some(vec!["read_*".into(), "list_*".into()]),
+            auto_reject_tools: Some(vec!["delete_*".into()]),
+        };
+        cfg.validate().expect("well-formed tool-policy globs must validate");
+    }
+
+    #[test]
+    fn malformed_auto_accept_glob_rejects_at_load() {
+        // Point-4 (K-746): `[mcp].autoAcceptTools` / `autoRejectTools`
+        // were previously `#[garde(skip)]`, so a malformed glob slipped
+        // through to match time. They now validate like the
+        // `mcps`/`skills` ignore globs.
+        let cfg = McpConfig {
+            enabled: Some(true),
+            skills: None,
+            auto_accept_tools: Some(vec!["[unterminated".into()]),
+            auto_reject_tools: None,
+        };
+        let err = cfg.validate().expect_err("malformed accept glob must reject");
+        assert!(err.to_string().contains("not a valid glob"), "got: {err}");
+    }
+
+    #[test]
+    fn malformed_auto_reject_glob_rejects_at_load() {
+        let cfg = McpConfig {
+            enabled: Some(true),
+            skills: None,
+            auto_accept_tools: None,
+            auto_reject_tools: Some(vec!["nuke[".into()]),
+        };
+        let err = cfg.validate().expect_err("malformed reject glob must reject");
+        assert!(err.to_string().contains("not a valid glob"), "got: {err}");
     }
 }
