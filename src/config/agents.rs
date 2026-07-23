@@ -168,8 +168,20 @@ pub struct ProfileConfig {
     /// at consume time (mirrors `system_prompt`).
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
-    /// Extra env vars the agent process inherits. `BTreeMap` for
-    /// deterministic serialisation; mirrors `AgentConfig.env`.
+    /// When `Some`, REPLACES the base `[[agents]]` entry's `command`
+    /// wholesale for this profile only.
+    #[garde(inner(length(min = 1)))]
+    pub command: Option<String>,
+    /// When `Some`, REPLACES the base agent's `args` wholesale — flags
+    /// have no stable key to append/merge by (`--flag value`, `-c
+    /// k=v`, positionals), so this is a wholesale swap, not an
+    /// append. Captains who want to add one flag to an otherwise
+    /// long agent-args list restate the full list here.
+    #[garde(inner(inner(length(min = 1))))]
+    pub args: Option<Vec<String>>,
+    /// OVERLAYS onto the base agent's `env` per-key (profile key wins
+    /// on collision). Absent keys leave the corresponding `agent.env`
+    /// entry untouched.
     #[serde(default)]
     #[garde(skip)]
     pub env: BTreeMap<String, String>,
@@ -451,6 +463,8 @@ system_prompt = [
 ]
 mode = "ask"
 cwd = "~/work"
+command = "claude-beta"
+args = ["--fallback-model", "x"]
 
 [profiles.mcp]
 skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
@@ -486,10 +500,76 @@ BAZ = "qux"
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/vue"));
         assert_eq!(full.mode.as_deref(), Some("ask"));
         assert_eq!(full.cwd.as_deref(), Some(PathBuf::from("~/work")).as_deref());
+        assert_eq!(full.command.as_deref(), Some("claude-beta"));
+        assert_eq!(
+            full.args.as_deref(),
+            Some(&["--fallback-model".to_string(), "x".to_string()][..])
+        );
         assert_eq!(full.env.get("FOO").map(String::as_str), Some("bar"));
         assert_eq!(full.env.get("BAZ").map(String::as_str), Some("qux"));
         cfg.validate().expect("valid full profile");
         fs::remove_file(&p).ok();
+    }
+
+    /// Absent `command` / `args` / `env` all parse to their no-op
+    /// defaults (`None` / `None` / empty map) — the shape
+    /// `from_profile_explicit` treats as "leave the base agent
+    /// untouched".
+    #[test]
+    fn profile_flat_overrides_absent_parse_as_defaults() {
+        let p = write_tmp(
+            "profile-no-override.toml",
+            r#"
+[[profiles]]
+id = "bare"
+agent = "claude-code"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let bare = cfg.profiles.iter().find(|p| p.id == "bare").expect("bare entry");
+        assert!(bare.command.is_none(), "command must default to None when absent");
+        assert!(bare.args.is_none(), "args must default to None when absent");
+        assert!(bare.env.is_empty(), "env must default to empty when absent");
+        cfg.validate().expect("valid without flat overrides");
+        fs::remove_file(&p).ok();
+    }
+
+    /// garde's `inner(inner(length(min = 1)))` rejects an
+    /// empty-string element inside `args` — catches a captain's stray
+    /// `args = [""]` at config-load instead of shipping a blank argv
+    /// element to the vendor `exec`.
+    #[test]
+    fn profile_rejects_empty_string_arg() {
+        let p = write_tmp(
+            "profile-blank-override-arg.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+args = ["--flag", ""]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("empty-string arg must reject");
+        assert!(err.to_string().contains("args"), "{err}");
+    }
+
+    /// garde's `inner(length(min = 1))` rejects an empty `command`
+    /// string on the profile.
+    #[test]
+    fn profile_rejects_empty_command() {
+        let p = write_tmp(
+            "profile-blank-override-command.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+command = ""
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("empty command must reject");
+        assert!(err.to_string().contains("command"), "{err}");
     }
 
     #[test]

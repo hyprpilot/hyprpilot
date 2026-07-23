@@ -1005,6 +1005,25 @@ mod tests {
         resolved
     }
 
+    /// `resolved.agent.args` already carries the resolve-time
+    /// profile `args` REPLACE merge by the time `build_command`
+    /// runs — that merge happens in
+    /// `adapters::profile::ResolvedInstance::from_profile_explicit`,
+    /// not here (pinned separately by
+    /// `flat_args_replace_base_agent_args_wholesale` in
+    /// `adapters/profile.rs`). This helper stands in for that
+    /// already-resolved shape, isolating `effort` / `mode` (both
+    /// `None`) so the ordering / suppression assertions only have to
+    /// reason about `--model`.
+    fn resolved_with_agent_args(provider: AgentProvider, args: Vec<String>) -> ResolvedInstance {
+        let mut resolved = resolved(provider);
+        resolved.agent.args = args;
+        resolved.effort = None;
+        resolved.mode = None;
+
+        resolved
+    }
+
     fn mcp_def() -> MCPDefinition {
         MCPDefinition {
             name: "hyprpilot-nvim".into(),
@@ -1115,6 +1134,92 @@ mod tests {
         .unwrap();
 
         assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--model").count(), 1);
+    }
+
+    /// Resolved argv order: profile-replaced `agent.args →
+    /// generated…`. `resolved.agent.args` here stands in for the
+    /// already-replaced list — a `--fallback-model` override arg must
+    /// precede the generated `--model` flag `build_command` appends
+    /// from `resolved.model`.
+    #[test]
+    fn override_agent_args_precede_generated_flags() {
+        let resolved = resolved_with_agent_args(
+            AgentProvider::ClaudeCode,
+            vec!["--fallback-model".into(), "claude-sonnet-4-5".into()],
+        );
+        let command = build_command(&resolved, None, &[], vec![]).unwrap();
+
+        let fallback_idx = command
+            .args
+            .iter()
+            .position(|a| a == "--fallback-model")
+            .expect("--fallback-model present");
+        let model_idx = command
+            .args
+            .iter()
+            .position(|a| a == "--model")
+            .expect("generated --model present");
+
+        assert!(
+            fallback_idx < model_idx,
+            "override args must precede generated vendor flags"
+        );
+        assert_eq!(
+            command.args[model_idx + 1],
+            "model-a",
+            "generated --model flag still carries resolved.model's value"
+        );
+    }
+
+    /// An override arg spelling a generated flag (`--model`)
+    /// suppresses the generated duplicate — the existing `has_flag`
+    /// dedup in `build_claude` covers `resolved.agent.args` the same
+    /// way it already covers `provider_args` (trailing `-- <args>`).
+    #[test]
+    fn override_authored_model_flag_suppresses_generated_duplicate() {
+        let resolved = resolved_with_agent_args(
+            AgentProvider::ClaudeCode,
+            vec!["--model".into(), "override-model".into()],
+        );
+        let command = build_command(&resolved, None, &[], vec![]).unwrap();
+
+        assert_eq!(
+            command.args.iter().filter(|arg| arg.as_str() == "--model").count(),
+            1,
+            "generated --model must not duplicate the override-authored one"
+        );
+        assert_eq!(
+            command.args,
+            vec!["--model".to_string(), "override-model".to_string()],
+            "override's --model value wins; no generated --model appended"
+        );
+    }
+
+    /// `${VAR}` expansion runs AFTER the profile-level `env`
+    /// overlay, not before. `resolved.agent.env` here stands in for
+    /// the already-overlaid map
+    /// `adapters::profile::from_profile_explicit` produces (pinned
+    /// separately by `flat_env_overlays_onto_agent_env_at_resolve`
+    /// in `adapters/profile.rs`) — this test pins the SECOND half of
+    /// that pipeline: an override-authored env value participates in
+    /// `expand_value` exactly like an agent-authored one.
+    #[test]
+    fn agent_env_expansion_runs_after_override_overlay() {
+        std::env::set_var("HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR", "expanded-value");
+        let mut resolved = resolved(AgentProvider::ClaudeCode);
+
+        resolved.agent.env.insert(
+            "OVERRIDE_OVERLAID".into(),
+            "${HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR}".into(),
+        );
+
+        let command = build_command(&resolved, None, &[], vec![]).unwrap();
+
+        assert_eq!(
+            command.env.get("OVERRIDE_OVERLAID").map(String::as_str),
+            Some("expanded-value")
+        );
+        std::env::remove_var("HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR");
     }
 
     #[test]

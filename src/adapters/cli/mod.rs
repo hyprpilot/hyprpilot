@@ -135,7 +135,9 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: Some(PathBuf::from("/configured")),
-                env: BTreeMap::new(),
+                command: None,
+                args: None,
+                env: Default::default(),
             }],
             ..Default::default()
         }
