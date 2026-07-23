@@ -30,10 +30,10 @@ Any layer can be any supported format — a YAML global config composes with a T
 
 The word "profile" lives in two parallel namespaces — keep them apart:
 
-| Concept              | Addressed via                                   | Purpose                                                                                     |
-| -------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Config-layer profile | `--config-profile` / `HYPRPILOT_CONFIG_PROFILE` | Layer a different config file overlay (e.g. `work` vs `personal`).                          |
-| Session profile      | `profiles` in config, picked via `--profile`    | Which agent + model + cwd + system prompt + MCPs a launch uses. See [Profiles](./profiles). |
+| Concept              | Addressed via                                               | Purpose                                                                                     |
+| -------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Config-layer profile | `--config-profile` / `HYPRPILOT_CONFIG_PROFILE`             | Layer a different config file overlay (e.g. `work` vs `personal`).                          |
+| Session profile      | `profiles` in config, picked via the positional `[PROFILE]` | Which agent + model + cwd + system prompt + MCPs a launch uses. See [Profiles](./profiles). |
 
 A config-layer profile can itself define or override session profiles — that is the point: `HYPRPILOT_CONFIG_PROFILE=work` can swap your whole `profiles` registry.
 

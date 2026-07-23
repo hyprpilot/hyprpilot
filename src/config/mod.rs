@@ -41,8 +41,8 @@ pub struct Config {
     #[serde(flatten)]
     pub agents: AgentsConfig,
     /// `[profile]` — global profile-scope singleton.
-    /// `default` is the profile id launched when `--profile`/`-p`
-    /// isn't passed.
+    /// `default` is the profile id launched when the positional
+    /// `[PROFILE]` argument isn't passed.
     #[garde(dive)]
     #[garde(custom(validate_default_profile_id(&self.profiles)))]
     pub profile: ProfileDefaults,
@@ -50,8 +50,8 @@ pub struct Config {
     /// optional model override + optional system prompt; resolved into a
     /// flat `ResolvedProfile` at launch time. **At least one
     /// entry is required** — there is no bare-agent fallback. Spawn
-    /// picks `--profile <id>` first, then `[profile] default`, then
-    /// errors when neither resolves to a real profile.
+    /// picks the positional `[PROFILE]` id first, then `[profile] default`,
+    /// then errors when neither resolves to a real profile.
     #[garde(dive)]
     #[garde(custom(validate_profiles_non_empty))]
     #[garde(custom(validate_profiles_ids))]

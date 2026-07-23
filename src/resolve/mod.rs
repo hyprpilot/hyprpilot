@@ -204,7 +204,7 @@ pub(crate) fn count_matching_patches(profile_id: &str, patches: &[Value], kind: 
 ///
 /// Resolution order:
 ///   1. Pick base profile via `base_profile_for_patches` (errors
-///      when neither `--profile <id>` nor `[profile] default`
+///      when neither the positional `[PROFILE]` id nor `[profile] default`
 ///      addresses a real `[[profiles]]` entry).
 ///   2. Fold root `[[patches]]` from the captain's on-disk config,
 ///      filtered by each patch's optional `$match.profile` glob.
@@ -247,7 +247,7 @@ pub(crate) fn resolve_effective_profile(
 }
 
 /// Pick the base `ProfileConfig` patches will fold onto. Resolves
-/// `--profile <id>` first, then `[profile] default`. Errors when
+/// the positional `[PROFILE]` id first, then `[profile] default`. Errors when
 /// neither addresses a real `[[profiles]]` entry — every spawn
 /// flows through a profile (no bare-agent fallback). Validation at
 /// config-load already rejects an empty `[[profiles]]` list, so the
@@ -268,7 +268,7 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::R
     }
     anyhow::bail!(
         "no profile addressed and no `[profile] default` configured — every spawn requires a `[[profiles]]` entry. \
-         Pass `--profile <id>` or set `[profile] default = '<id>'`."
+         Pass the profile as the positional `hyprpilot <id>` argument or set `[profile] default = '<id>'`."
     )
 }
 
@@ -279,38 +279,16 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::R
 ///
 /// `external_patches` is empty for plain launch paths; the
 /// `--with-config` path supplies non-empty patches that fold on top
-/// of root `[[patches]]`.
-///
-/// Explicit `agent_id` wins over whatever agent the patched profile
-/// names — captain intent for "run THIS profile but on a different
-/// vendor binary".
+/// of root `[[patches]]`. Every knob — agent, model, mode — comes
+/// from the resolved profile; there is no per-launch agent/model
+/// override (`--with-config` is the ad-hoc escape hatch).
 pub(crate) fn resolve_into_instance_and_profile(
     cfg: &Config,
-    agent_id: Option<&str>,
     profile_id: Option<&str>,
     external_patches: &[Value],
 ) -> anyhow::Result<(ResolvedProfile, ProfileConfig)> {
     let patched = resolve_effective_profile(cfg, profile_id, external_patches)?;
-    let mut resolved = ResolvedProfile::from_profile_explicit(&patched, cfg)?;
-
-    if let Some(wanted) = agent_id {
-        let agent = cfg
-            .agents
-            .agents
-            .iter()
-            .find(|a| a.id == wanted)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("agent '{wanted}' not found in [[agents]] registry"))?;
-        if resolved.model.is_none() || resolved.agent.id != agent.id {
-            resolved.model = resolved.model.or_else(|| agent.model.clone());
-        }
-        resolved.agent = agent;
-    }
-
-    if resolved.agent.id.is_empty() {
-        anyhow::bail!("no agent resolved — add a [[agents]] entry or pass agent_id / profile_id");
-    }
-
+    let resolved = ResolvedProfile::from_profile_explicit(&patched, cfg)?;
     Ok((resolved, patched))
 }
 

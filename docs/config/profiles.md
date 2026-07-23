@@ -5,7 +5,7 @@ order: 30
 
 # {{ $frontmatter.title }}
 
-A profile is a preset that binds together everything a launch needs: which agent vendor, which model, where it runs, what system prompt it loads, which MCPs it has access to, what mode it starts in. Pick a profile — from the interactive picker or `--profile`/`-p` — and hyprpilot resolves it, projects it onto the vendor's native flags, and `exec()`s.
+A profile is a preset that binds together everything a launch needs: which agent vendor, which model, where it runs, what system prompt it loads, which MCPs it has access to, what mode it starts in. Pick a profile — from the interactive picker or the positional `[PROFILE]` argument — and hyprpilot resolves it, projects it onto the vendor's native flags, and `exec()`s.
 
 <!-- more -->
 
@@ -15,7 +15,7 @@ This is the most important config you'll write. Everything else tunes the launch
 
 ```yaml
 profiles:
-  - id: engineer # picker label, also `-p engineer`
+  - id: engineer # picker label, also `hyprpilot engineer`
     agent: claude-code # must match an agents id
     model: claude-sonnet-4-5 # optional; overrides the agent's default
     cwd: ~/code/hyprpilot # optional; falls back to $PWD
@@ -32,7 +32,7 @@ Launch it:
 
 ```sh
 hyprpilot profiles            # list configured profiles
-hyprpilot -p engineer         # resolve + exec directly
+hyprpilot engineer            # resolve + exec directly (positional)
 hyprpilot                     # pick a profile interactively, then exec
 ```
 
@@ -45,9 +45,9 @@ profile:
 
 Resolution at launch time:
 
-1. `--profile <id>` (`-p`) wins.
+1. The positional `[PROFILE]` id wins.
 2. Otherwise `profile.default`.
-3. Otherwise — if you didn't pass a profile and no default is set — the interactive picker opens. If neither a picked nor a default profile resolves to a real `profiles` entry, the launch errors. There is no bare-agent fallback.
+3. Otherwise — if you didn't pass a profile and no default is set — the interactive picker opens with `profile.default` pre-selected under the cursor. If neither a picked nor a default profile resolves to a real `profiles` entry, the launch errors. There is no bare-agent fallback.
 
 The `profiles` list must be **non-empty** — the compiled defaults seed zero profiles, and validation rejects an empty list at load.
 
@@ -55,15 +55,15 @@ The `profiles` list must be **non-empty** — the compiled defaults seed zero pr
 
 ### `profile`
 
-| Field     | Type              | Default | What it does                                                                                  |
-| --------- | ----------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `default` | string (optional) | unset   | The `profiles[].id` bare `hyprpilot` launches when `-p` is omitted. Must name a real profile. |
+| Field     | Type              | Default | What it does                                                                                                 |
+| --------- | ----------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `default` | string (optional) | unset   | The `profiles[].id` bare `hyprpilot` launches when no positional profile is given. Must name a real profile. |
 
 ### `profiles` entries
 
 | Field           | Type                             | Default | What it does                                                                                                   |
 | --------------- | -------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
-| `id`            | string                           | —       | Unique within `profiles`. The picker row + `-p <id>`.                                                          |
+| `id`            | string                           | —       | Unique within `profiles`. The picker row + the positional `hyprpilot <id>`.                                    |
 | `agent`         | string                           | —       | Which `agents` entry to launch. Must reference a real `agents[].id`.                                           |
 | `model`         | string (optional)                | unset   | Overrides the agent's default model. Precedence: profile > agent > vendor default.                             |
 | `effort`        | string (optional)                | unset   | Reasoning-effort knob, mapped to the vendor's config surface where supported.                                  |
@@ -78,7 +78,7 @@ The `profiles` list must be **non-empty** — the compiled defaults seed zero pr
 
 ## What a profile overrides
 
-At resolve time the profile's `model` / `effort` / `mode` / `cwd` override the agent entry — the profile is the more specific scope. Model precedence, for example, is **profile > agent > vendor default**. CLI flags (`--model`, `--mode`, `--cwd`) then override the resolved profile per launch.
+At resolve time the profile's `model` / `effort` / `mode` / `cwd` override the agent entry — the profile is the more specific scope. Model precedence, for example, is **profile > agent > vendor default**. The `--mode` / `--cwd` flags then override the resolved profile per launch; for a one-off `model` (or any other profile field) use [`--with-config`](../runtime/with-config) — there is no `--model` flag.
 
 ## The flat `command` / `args` / `env` override
 

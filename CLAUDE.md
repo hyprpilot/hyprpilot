@@ -89,9 +89,9 @@ CI runs lint + test + build as separate jobs; any one red rejects.
 ```sh
 # Launch (bare invocation IS the launch)
 hyprpilot                       # pick a profile interactively, then exec
-hyprpilot -p engineer           # launch the `engineer` profile directly
-hyprpilot --profile engineer --cwd ~/code/foo
-hyprpilot -p review -- --resume # everything after `--` is forwarded verbatim
+hyprpilot engineer              # launch the `engineer` profile directly (positional)
+hyprpilot engineer --cwd ~/code/foo
+hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 
 # Subcommands
 hyprpilot profiles              # table of configured profiles
@@ -99,13 +99,18 @@ hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
 ```
 
-- **Bare launch** picks the profile via `--profile`/`-p`, falling back
-  to an interactive `nucleo` picker when omitted, then resolves and
-  `exec()`s into the vendor CLI.
-- **Launch flags** (bare invocation): `-p/--profile <id>`,
-  `--agent <id>` (swap the profile's agent entry), `--cwd <dir>`,
-  `--mode`, `--model`, `--with-config` / `--with-config-format`, and a
-  trailing `-- <provider args>` forwarded verbatim.
+- **Bare launch** picks the profile via the optional positional
+  `[PROFILE]` argument, falling back to an interactive `nucleo` picker
+  when omitted (with `[profile] default` pre-selected under the
+  cursor), then resolves and `exec()`s into the vendor CLI. Subcommands
+  resolve before the positional, so a profile named `profiles`/`mcp`
+  isn't positionally addressable.
+- **Launch flags** (bare invocation): positional `[PROFILE]`,
+  `--cwd <dir>`, `--mode`, `--with-config` / `--with-config-format`,
+  and a trailing `-- <provider args>` forwarded verbatim. The profile
+  is the single source of truth for its agent + model — there are **no**
+  `--agent` / `--model` launch flags; use `--with-config` (e.g.
+  `--with-config '@{"model":"..."}'`) for a one-off override.
 - **Global flags** (every subcommand): `--config <path>`
   (`HYPRPILOT_CONFIG`), `--config-profile <name>`
   (`HYPRPILOT_CONFIG_PROFILE`), `--log-level`
@@ -128,8 +133,8 @@ fields they set (`merge` crate derive).
    `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{ext}` when
    `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` is set. Same
    extension search + multi-format rejection. **Distinct** from the
-   session `[[profiles]]` registry (addressed per-launch via
-   `--profile <id>`).
+   session `[[profiles]]` registry (addressed per-launch via the
+   positional `[PROFILE]` argument).
 
 `Config::validate()` runs `garde` after merge and fails startup with a
 readable field-path error. `#[serde(deny_unknown_fields)]` + closed
@@ -202,8 +207,10 @@ system_prompt = [
   so the profile list is never polluted with a default-pretender).
 - **Profile override surface:** at resolve time the profile's
   `model` / `effort` / `mode` / `cwd` override the agent entry (profile
-  is the more specific scope). `--agent <id>` swaps the whole agent
-  entry for the launch. A `[[profiles]]` entry also carries flat
+  is the more specific scope). The profile is the single source of
+  truth for its agent + model — there is no per-launch `--agent` /
+  `--model` override; `--with-config` is the ad-hoc escape hatch for a
+  one-off swap. A `[[profiles]]` entry also carries flat
   top-level `command: Option<String>`, `args: Option<Vec<String>>`,
   and `env: BTreeMap<String, String>` fields — no nested override
   block. When set, `command` / `args` each REPLACE the base agent's
@@ -217,7 +224,7 @@ system_prompt = [
 are the one path every spawn flows through so the `ResolvedProfile`
 and the MCP / skills registries can't drift:
 
-1. Pick the base profile: `--profile <id>` first, then
+1. Pick the base profile: the positional `[PROFILE]` id first, then
    `[profile] default`; **error** when neither addresses a real
    `[[profiles]]` entry — there is no bare-agent fallback.
 2. Fold root `[[patches]]` (filtered by each patch's optional
@@ -226,7 +233,8 @@ and the MCP / skills registries can't drift:
 4. Deserialize the merged `Value` back into `ProfileConfig` + re-run
    `garde`.
 
-`--agent <id>` wins over whatever agent the patched profile names.
+Resolution flows purely profile → patches → `--with-config`; there is
+no post-hoc agent/model override applied on top.
 
 ## Root-level `[[patches]]`
 
@@ -353,8 +361,9 @@ projection) → optional multiplexer rename → `providers::exec`. On unix
 `exec()` **replaces** the process (no child); non-unix falls back to
 spawn + propagate exit code. Model precedence is profile > agent >
 vendor default. `system_prompt` files are read at **resolve** time so
-a missing file fails loudly on the next launch. CLI `--cwd` / `--model`
-/ `--mode` override the resolved profile after profile resolution.
+a missing file fails loudly on the next launch. CLI `--cwd` / `--mode`
+override the resolved profile after profile resolution (there is no
+`--model` / `--agent` flag — use `--with-config`).
 
 ### Multiplexer title
 
@@ -464,7 +473,8 @@ Baseline smokes:
   error naming the field path.
 - Partial config overrides compose: setting one nested field keeps
   every sibling falling through to `defaults.toml`.
-- `hyprpilot -p <id>` resolves the profile and `exec()`s the vendor
+- `hyprpilot <id>` (positional profile) resolves the profile and
+  `exec()`s the vendor
   CLI. Verify without an external agent by pointing a real-provider
   agent's `command` at a stub on `$PATH` — e.g. `[[agents]] provider =
   "claude-code"`, `command = "echo"` — so the launch execs the stub and

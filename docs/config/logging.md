@@ -39,5 +39,5 @@ Hyprpilot `exec()`s into the vendor CLI, so its own tracing only covers the brie
 That makes `--log-level debug` the go-to for launch problems — you get the whole resolve narrative, then the vendor starts (or the error that stopped it) with nothing else in between:
 
 ```sh
-hyprpilot -p engineer --log-level debug
+hyprpilot engineer --log-level debug
 ```

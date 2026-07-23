@@ -35,7 +35,7 @@ The docs write config in YAML, the recommended format. TOML and JSON work exactl
 
 ```sh
 hyprpilot                     # resolves the default profile, then execs `claude`
-hyprpilot -p engineer         # or address the profile explicitly
+hyprpilot engineer            # or address the profile explicitly (positional)
 ```
 
 Hyprpilot resolves the profile, projects it onto the vendor's native flags (here: `claude --model claude-sonnet-4-5`), and `exec()`s — the vendor TUI replaces hyprpilot in your terminal.

@@ -30,7 +30,7 @@ struct Cli {
     /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.toml`). Distinct
     /// from the session `[[profiles]]` registry driving agent +
     /// system-prompt overlays — session profiles are addressed per
-    /// call via `--profile`/`-p`.
+    /// call via the positional `[PROFILE]` argument.
     #[arg(long = "config-profile", global = true, env = "HYPRPILOT_CONFIG_PROFILE")]
     config_profile: Option<String>,
 
@@ -66,9 +66,9 @@ fn main() -> Result<ExitCode> {
     logging::apply_config_level(&log_reload, cli.log_level, cfg.logging.level)?;
 
     match cli.command {
-        // Bare `hyprpilot [--profile <id>]` IS the launch: pick the
-        // profile interactively when none is given, then exec into
-        // the resolved vendor CLI.
+        // Bare `hyprpilot [PROFILE]` IS the launch: pick the profile
+        // interactively when none is given, then exec into the
+        // resolved vendor CLI.
         None => spawn::run(cfg, cli.launch),
         Some(Command::Profiles(args)) => profiles::run(cfg, args),
         Some(Command::Mcp(args)) => {
