@@ -74,11 +74,14 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
 }
 
-/// Closed enum — each named variant maps to a per-vendor native-CLI
-/// command builder (model / effort / mode / system-prompt / MCP
-/// projection). `Custom` opens the door to user-supplied CLIs that
-/// need no vendor-specific projection (just `command` / `args` +
-/// env / cwd). Wire names are explicit so the vendor id stays stable.
+/// Closed enum — each variant maps to a per-vendor native-CLI command
+/// builder (model / effort / mode / system-prompt / MCP projection).
+/// There is no generic/custom escape hatch: every agent must be one
+/// of these predefined vendors, so every profile gets the full
+/// projection (a hand-rolled CLI that wants none of this can still
+/// declare its own `command` / `args` under one of these providers,
+/// accepting that vendor's flag conventions). Wire names are explicit
+/// so the vendor id stays stable.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AgentProvider {
     #[default]
@@ -88,12 +91,6 @@ pub enum AgentProvider {
     Codex,
     #[serde(rename = "opencode")]
     OpenCode,
-    /// User-supplied CLI. `command` / `args` are mandatory; no
-    /// vendor-specific projection runs (no model/effort/mode flags,
-    /// no system-prompt or MCP injection). For vendors that need
-    /// that projection, copy one of the three named providers.
-    #[serde(rename = "custom")]
-    Custom,
 }
 
 impl AgentProvider {
@@ -107,7 +104,6 @@ impl AgentProvider {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
-            Self::Custom => "custom",
         }
     }
 }
@@ -336,12 +332,31 @@ command = "b"
             (AgentProvider::ClaudeCode, "\"claude-code\""),
             (AgentProvider::Codex, "\"codex\""),
             (AgentProvider::OpenCode, "\"opencode\""),
-            (AgentProvider::Custom, "\"custom\""),
         ] {
             assert_eq!(serde_json::to_string(&v).unwrap(), literal);
             let back: AgentProvider = serde_json::from_str(literal).unwrap();
             assert_eq!(back, v);
         }
+    }
+
+    /// K-741: `custom` (and any other unrecognised provider string)
+    /// must reject at TOML parse time — `AgentProvider` is a closed
+    /// set of the three predefined vendors, no generic escape hatch.
+    #[test]
+    fn unknown_provider_rejects_at_load() {
+        let p = write_tmp(
+            "custom-provider.toml",
+            r#"
+[[agents]]
+id = "legacy"
+provider = "custom"
+command = "some-cli"
+"#,
+        );
+        let err = load(Some(&p), None).expect_err("unknown provider must fail to load");
+        let msg = err.to_string();
+        assert!(msg.contains("custom") || msg.contains("provider"), "{msg}");
+        fs::remove_file(&p).ok();
     }
 
     #[test]

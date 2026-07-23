@@ -3,7 +3,7 @@
 //! `[multiplexer] set_title = true` (seeded by defaults.toml) drives a
 //! best-effort rename of the current tmux window / zellij tab to
 //! `hyprpilot@<cwd-basename>` right before the launcher `exec()`s into
-//! the vendor CLI (see `spawn::spawn`). Mechanism is
+//! the vendor CLI (see `spawn::launch_profile`). Mechanism is
 //! shelling out to the vendor multiplexer CLI, NOT OSC escapes — OSC 2
 //! is gated by tmux `allow-rename`/`set-titles` and varies by zellij
 //! version, whereas `tmux rename-window` / `zellij action rename-tab`

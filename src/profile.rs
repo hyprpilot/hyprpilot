@@ -142,9 +142,9 @@ impl ResolvedProfile {
         // overrides onto a clone of the agent so the spawn path
         // (which reads `entry.command` / `entry.args` / iterates
         // `entry.env` / reads `entry.cwd`) sees the merged shape.
-        // `${VAR}` interpolation against the daemon's process env
-        // happens later in `providers.rs::expand_value`, AFTER this
-        // overlay.
+        // `${VAR}` interpolation against the launcher's own process
+        // env happens later in `providers.rs::expand_value`, AFTER
+        // this overlay.
         let mut agent = agent.clone();
 
         // `command` / `args` REPLACE the base agent's field
@@ -165,9 +165,9 @@ impl ResolvedProfile {
         // channel through which root `[[patches]]` `cwd` reaches
         // the spawn — patches land on `ProfileConfig.cwd`, then
         // this line projects it onto `AgentConfig.cwd`, which
-        // `AcpAgent::base_command` reads at spawn time. Without
-        // this line, captains writing `cwd: ~/notes` in a patch
-        // saw the agent spawn from `$HOME` (the daemon's inherited
+        // `providers::base_command` reads at spawn time. Without
+        // this line, captains writing `cwd: ~/notes` in a patch saw
+        // the agent spawn from `$HOME` (the launcher's inherited
         // cwd) and the patch silently no-op'd.
         if let Some(profile_cwd) = profile.cwd.as_ref() {
             agent.cwd = Some(profile_cwd.clone());

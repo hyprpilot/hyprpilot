@@ -28,7 +28,7 @@ pub(crate) struct SpawnRequest {
     pub provider_args: Vec<String>,
 }
 
-pub(crate) fn spawn(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
+pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     let SpawnRequest {
         profile_id,
         agent_id,
