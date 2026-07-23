@@ -36,11 +36,12 @@ pub(super) fn build_command(
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
+    prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
     match resolved.agent.provider {
-        AgentProvider::ClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args),
-        AgentProvider::Codex => build_codex(resolved, system_prompt, mcp_defs, provider_args),
-        AgentProvider::OpenCode => build_opencode(resolved, system_prompt, mcp_defs, provider_args),
+        AgentProvider::ClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args, prompt),
+        AgentProvider::Codex => build_codex(resolved, system_prompt, mcp_defs, provider_args, prompt),
+        AgentProvider::OpenCode => build_opencode(resolved, system_prompt, mcp_defs, provider_args, prompt),
     }
 }
 
@@ -97,8 +98,18 @@ fn build_claude(
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
+    prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
+    // Headless: `claude -p/--print <prompt>` — one-shot non-interactive
+    // output. The prompt is ALWAYS the positional arg (a piped stdin is
+    // input DATA, not the prompt), so it rides after every generated
+    // flag as the final positional. `--print` is prepended so the whole
+    // model/effort/mode/system-prompt/MCP projection below is shared
+    // with the interactive path.
+    if prompt.is_some() && !has_flag(&command.args, "--print", Some("-p")) {
+        command.args.insert(0, "--print".into());
+    }
     let detect_args = combined_args(&command.args, &provider_args);
 
     if let Some(model) = resolved.model.as_deref() {
@@ -148,6 +159,9 @@ fn build_claude(
     }
 
     command.args.extend(provider_args);
+    if let Some(prompt) = prompt {
+        command.args.push(prompt.into());
+    }
 
     Ok(command)
 }
@@ -157,8 +171,21 @@ fn build_codex(
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
+    prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
+    // Headless: `codex exec [OPTIONS] <prompt>` — the non-interactive
+    // subcommand. `exec` is prepended before every generated `-c` /
+    // `--model` / `--cd` / `-s` option (all valid `codex exec` flags)
+    // and the prompt rides last as the positional. `codex exec` reads
+    // stdin too, but hyprpilot has already consumed it to build the
+    // prompt, so fd0 is at EOF and codex does not block (verified live
+    // against codex 0.145; the arg form does NOT hang with consumed
+    // stdin, so plain `exec()` suffices — no spawn/child-stdin dance).
+    let headless = prompt.is_some();
+    if headless {
+        command.args.insert(0, "exec".into());
+    }
     let detect_args = combined_args(&command.args, &provider_args);
 
     if let Some(cwd) = command.cwd.as_ref() {
@@ -182,7 +209,7 @@ fn build_codex(
         );
     }
     if let Some(mode) = resolved.mode.as_deref() {
-        push_codex_mode_if_absent(&mut command.args, &detect_args, mode)?;
+        push_codex_mode_if_absent(&mut command.args, &detect_args, mode, headless)?;
     }
     if let Some(prompt) = system_prompt {
         if !prompt.is_empty() {
@@ -198,6 +225,9 @@ fn build_codex(
     }
 
     command.args.extend(provider_args);
+    if let Some(prompt) = prompt {
+        command.args.push(prompt.into());
+    }
 
     Ok(command)
 }
@@ -207,8 +237,17 @@ fn build_opencode(
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
+    prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
+    // Headless: `opencode run [OPTIONS] <prompt>` — the one-shot
+    // subcommand. opencode has no stdin prompt support, so the buffered
+    // prompt is the positional `message`. `run` is prepended before the
+    // generated `--model` / `--agent` flags (both valid `run` options)
+    // and the env-projected config still applies unchanged.
+    if prompt.is_some() {
+        command.args.insert(0, "run".into());
+    }
     let detect_args = combined_args(&command.args, &provider_args);
     let agent_name = flag_value(&detect_args, "--agent", None)
         .or_else(|| resolved.mode.clone())
@@ -253,6 +292,9 @@ fn build_opencode(
     }
 
     command.args.extend(provider_args);
+    if let Some(prompt) = prompt {
+        command.args.push(prompt.into());
+    }
 
     Ok(command)
 }
@@ -362,9 +404,22 @@ fn push_codex_config_if_absent(args: &mut Vec<String>, detect_args: &[String], k
     args.push(format!("{key}={value}"));
 }
 
-fn push_codex_mode_if_absent(args: &mut Vec<String>, detect_args: &[String], mode: &str) -> Result<()> {
+fn push_codex_mode_if_absent(args: &mut Vec<String>, detect_args: &[String], mode: &str, headless: bool) -> Result<()> {
     let mode = mode.trim();
     if CODEX_APPROVAL_POLICIES.contains(&mode) {
+        // `codex exec` is non-interactive — approval is always "never"
+        // and the subcommand rejects `--ask-for-approval` outright.
+        // Drop the approval-policy mode (warn) instead of shipping a
+        // flag codex will error on; sandbox modes below still project
+        // via `-s`, which IS a valid `codex exec` flag.
+        if headless {
+            tracing::warn!(
+                mode,
+                "cli spawn: codex exec is non-interactive (approval always 'never'); ignoring approval-policy mode in headless launch"
+            );
+
+            return Ok(());
+        }
         if !has_flag(detect_args, "--ask-for-approval", Some("-a")) {
             args.push("--ask-for-approval".into());
             args.push(mode.into());
@@ -1109,6 +1164,7 @@ mod tests {
             effort: Some("high".into()),
             system_prompt: Vec::new(),
             mode: Some("plan".into()),
+            headless: false,
         }
     }
 
@@ -1298,6 +1354,7 @@ mod tests {
             None,
             &[],
             vec!["--model".into(), "user-model".into()],
+            None,
         )
         .unwrap();
 
@@ -1315,7 +1372,7 @@ mod tests {
             AgentProvider::ClaudeCode,
             vec!["--fallback-model".into(), "claude-sonnet-4-5".into()],
         );
-        let command = build_command(&resolved, None, &[], vec![]).unwrap();
+        let command = build_command(&resolved, None, &[], vec![], None).unwrap();
 
         let fallback_idx = command
             .args
@@ -1349,7 +1406,7 @@ mod tests {
             AgentProvider::ClaudeCode,
             vec!["--model".into(), "override-model".into()],
         );
-        let command = build_command(&resolved, None, &[], vec![]).unwrap();
+        let command = build_command(&resolved, None, &[], vec![], None).unwrap();
 
         assert_eq!(
             command.args.iter().filter(|arg| arg.as_str() == "--model").count(),
@@ -1381,7 +1438,7 @@ mod tests {
             "${HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR}".into(),
         );
 
-        let command = build_command(&resolved, None, &[], vec![]).unwrap();
+        let command = build_command(&resolved, None, &[], vec![], None).unwrap();
 
         assert_eq!(
             command.env.get("OVERRIDE_OVERLAID").map(String::as_str),
@@ -1398,6 +1455,7 @@ mod tests {
             None,
             &[mcp_def_with_home_env()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let path = command
@@ -1429,6 +1487,7 @@ mod tests {
             None,
             &[remote_mcp_def_with_headers()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let path = command
@@ -1478,6 +1537,7 @@ mod tests {
             None,
             &[mcp_def_with_permissions()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let allowed = command
@@ -1502,6 +1562,7 @@ mod tests {
             None,
             &[mcp_def_with_visibility()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let allowed = command
@@ -1531,6 +1592,7 @@ mod tests {
                 "--disallowedTools".into(),
                 "Bash".into(),
             ],
+            None,
         )
         .unwrap();
 
@@ -1559,6 +1621,7 @@ mod tests {
             Some("be terse"),
             &[mcp_def()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let joined = command.args.join("\n");
@@ -1593,6 +1656,7 @@ mod tests {
             None,
             &[mcp_def_with_visibility()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let joined = command.args.join("\n");
@@ -1611,6 +1675,7 @@ mod tests {
             None,
             &[],
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -1627,6 +1692,7 @@ mod tests {
             None,
             &[],
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -1641,6 +1707,7 @@ mod tests {
             None,
             &[],
             vec!["-C".into(), "/tmp/other".into()],
+            None,
         )
         .unwrap();
 
@@ -1655,6 +1722,7 @@ mod tests {
             None,
             &[],
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -1668,6 +1736,7 @@ mod tests {
             None,
             &[],
             Vec::new(),
+            None,
         )
         .expect_err("unknown mode should fail before spawning codex");
 
@@ -1681,6 +1750,7 @@ mod tests {
             None,
             &[],
             vec!["--ask-for-approval".into(), "never".into()],
+            None,
         )
         .unwrap();
 
@@ -1701,6 +1771,7 @@ mod tests {
             Some("be terse"),
             &[mcp_def()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let config: serde_json::Value =
@@ -1719,6 +1790,7 @@ mod tests {
             None,
             &[mcp_def_with_visibility()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let permissions: serde_json::Value =
@@ -1738,6 +1810,7 @@ mod tests {
             None,
             &[mcp_def_with_visibility_conflicts()],
             Vec::new(),
+            None,
         )
         .unwrap();
         let permissions = command.env.get("OPENCODE_PERMISSION").unwrap();
@@ -1792,7 +1865,14 @@ mod tests {
 
     #[test]
     fn claude_emits_model_effort_mode_and_system_prompt_flags() {
-        let command = build_command(&resolved(AgentProvider::ClaudeCode), Some("be terse"), &[], vec![]).unwrap();
+        let command = build_command(
+            &resolved(AgentProvider::ClaudeCode),
+            Some("be terse"),
+            &[],
+            vec![],
+            None,
+        )
+        .unwrap();
 
         assert!(command.args.windows(2).any(|w| w == ["--model", "model-a"]));
         assert!(command.args.windows(2).any(|w| w == ["--effort", "high"]));
@@ -1805,7 +1885,7 @@ mod tests {
 
     #[test]
     fn claude_omits_append_system_prompt_when_empty() {
-        let command = build_command(&resolved(AgentProvider::ClaudeCode), Some(""), &[], vec![]).unwrap();
+        let command = build_command(&resolved(AgentProvider::ClaudeCode), Some(""), &[], vec![], None).unwrap();
 
         assert!(!command.args.iter().any(|arg| arg == "--append-system-prompt"));
     }
@@ -1822,6 +1902,7 @@ mod tests {
                 "--permission-mode".into(),
                 "acceptEdits".into(),
             ],
+            None,
         )
         .unwrap();
 
@@ -1869,6 +1950,7 @@ mod tests {
             None,
             &[],
             vec![],
+            None,
         )
         .unwrap();
 
@@ -1882,6 +1964,7 @@ mod tests {
             Some("generated prompt"),
             &[],
             vec!["-c".into(), "instructions=\"user\"".into()],
+            None,
         )
         .unwrap();
         let joined = command.args.join("\n");
@@ -1908,6 +1991,7 @@ mod tests {
             None,
             &[],
             vec!["--model".into(), "user-model".into()],
+            None,
         )
         .unwrap();
 
@@ -1930,7 +2014,14 @@ mod tests {
 
     #[test]
     fn opencode_agent_name_falls_back_to_hyprpilot() {
-        let command = build_command(&resolved_with_mode(AgentProvider::OpenCode, None), None, &[], vec![]).unwrap();
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::OpenCode, None),
+            None,
+            &[],
+            vec![],
+            None,
+        )
+        .unwrap();
 
         assert!(command.args.windows(2).any(|w| w == ["--agent", "hyprpilot"]));
     }
@@ -1942,6 +2033,7 @@ mod tests {
             None,
             &[],
             vec!["--model".into(), "user-model".into()],
+            None,
         )
         .unwrap();
 
@@ -1955,7 +2047,7 @@ mod tests {
             .agent
             .env
             .insert("OPENCODE_CONFIG_CONTENT".into(), "{\"preset\":true}".into());
-        let command = build_command(&resolved, Some("be terse"), &[mcp_def()], vec![]).unwrap();
+        let command = build_command(&resolved, Some("be terse"), &[mcp_def()], vec![], None).unwrap();
 
         assert_eq!(
             command.env.get("OPENCODE_CONFIG_CONTENT").map(String::as_str),
@@ -1971,7 +2063,7 @@ mod tests {
             .agent
             .env
             .insert("OPENCODE_PERMISSION".into(), "{\"preset\":\"allow\"}".into());
-        let command = build_command(&resolved, None, &[mcp_def_with_visibility()], vec![]).unwrap();
+        let command = build_command(&resolved, None, &[mcp_def_with_visibility()], vec![], None).unwrap();
 
         assert_eq!(
             command.env.get("OPENCODE_PERMISSION").map(String::as_str),
@@ -1995,6 +2087,7 @@ mod tests {
             None,
             &[mcp_def_with_charclass_glob()],
             vec![],
+            None,
         )
         .unwrap();
         let permissions: serde_json::Value =
@@ -2019,5 +2112,144 @@ mod tests {
     fn ensure_inline_size_accepts_within_limit() {
         assert!(ensure_inline_size("test payload", "small").is_ok());
         assert!(ensure_inline_size("test payload", &"x".repeat(INLINE_CONFIG_LIMIT)).is_ok());
+    }
+
+    // ── headless projection (K-751) ──────────────────────────────
+
+    #[test]
+    fn claude_headless_projects_print_and_prompt_positional() {
+        // `claude -p/--print <prompt>` — `--print` present, model/mode
+        // projection still applies, and the prompt is the final
+        // positional arg.
+        let command = build_command(
+            &resolved(AgentProvider::ClaudeCode),
+            None,
+            &[],
+            vec![],
+            Some("fix the bug"),
+        )
+        .unwrap();
+
+        assert!(command.args.iter().any(|a| a == "--print"), "{:?}", command.args);
+        assert!(command.args.iter().any(|a| a == "--model"), "model still projected");
+        assert_eq!(
+            command.args.last().map(String::as_str),
+            Some("fix the bug"),
+            "prompt is the final positional"
+        );
+    }
+
+    #[test]
+    fn claude_interactive_has_no_print_or_prompt() {
+        // No prompt → interactive path is byte-for-byte unchanged (no
+        // `--print`, no trailing positional).
+        let command = build_command(&resolved(AgentProvider::ClaudeCode), None, &[], vec![], None).unwrap();
+
+        assert!(!command.args.iter().any(|a| a == "--print"), "{:?}", command.args);
+        assert_eq!(command.args.last().map(String::as_str), Some("plan")); // --permission-mode plan
+    }
+
+    #[test]
+    fn codex_headless_projects_exec_subcommand_and_prompt_positional() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, None),
+            None,
+            &[],
+            vec![],
+            Some("summarize the diff"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            command.args.first().map(String::as_str),
+            Some("exec"),
+            "exec is the subcommand"
+        );
+        assert!(command.args.iter().any(|a| a == "--model"), "model still projected");
+        assert_eq!(command.args.last().map(String::as_str), Some("summarize the diff"));
+    }
+
+    #[test]
+    fn codex_headless_skips_approval_policy_mode() {
+        // `codex exec` has no `--ask-for-approval` (approval is always
+        // "never") — an approval-policy mode must be dropped, not shipped.
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
+            None,
+            &[],
+            vec![],
+            Some("do it"),
+        )
+        .unwrap();
+
+        assert!(
+            !command.args.iter().any(|a| a == "--ask-for-approval"),
+            "approval-policy mode must be dropped in headless: {:?}",
+            command.args
+        );
+        assert_eq!(command.args.first().map(String::as_str), Some("exec"));
+    }
+
+    #[test]
+    fn codex_headless_keeps_sandbox_mode() {
+        // Sandbox modes ARE valid `codex exec` flags — they still project.
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, Some("read-only")),
+            None,
+            &[],
+            vec![],
+            Some("do it"),
+        )
+        .unwrap();
+
+        let sandbox = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--sandbox").then_some(w[1].as_str()));
+        assert_eq!(sandbox, Some("read-only"), "{:?}", command.args);
+    }
+
+    #[test]
+    fn codex_interactive_still_projects_approval_policy_mode() {
+        // Interactive path is unchanged — approval-policy modes map to
+        // `--ask-for-approval`.
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
+            None,
+            &[],
+            vec![],
+            None,
+        )
+        .unwrap();
+
+        let approval = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--ask-for-approval").then_some(w[1].as_str()));
+        assert_eq!(approval, Some("on-request"));
+        assert!(
+            !command.args.iter().any(|a| a == "exec"),
+            "no exec subcommand interactively"
+        );
+    }
+
+    #[test]
+    fn opencode_headless_projects_run_subcommand_and_prompt_positional() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::OpenCode, None),
+            None,
+            &[],
+            vec![],
+            Some("write the readme"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            command.args.first().map(String::as_str),
+            Some("run"),
+            "run is the subcommand"
+        );
+        assert!(command.args.iter().any(|a| a == "--model"), "model still projected");
+        assert_eq!(command.args.last().map(String::as_str), Some("write the readme"));
     }
 }

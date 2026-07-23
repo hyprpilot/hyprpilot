@@ -3,10 +3,11 @@ mod multiplexer;
 mod picker;
 mod providers;
 
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 pub use launch::{run, LaunchArgs};
@@ -35,9 +36,11 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         provider_args,
     } = request;
 
+    let stdin_is_tty = std::io::stdin().is_terminal();
+
     let profile_id = match profile_id {
         Some(id) => id,
-        None => picker::pick_profile(list_profiles(&cfg, cwd.as_deref(), &config_patches))?.id,
+        None => select_profile_without_positional(&cfg, stdin_is_tty, cwd.as_deref(), &config_patches)?,
     };
     let (mut resolved, profile) = resolve_into_instance_and_profile(&cfg, Some(profile_id.as_str()), &config_patches)?;
 
@@ -63,11 +66,32 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
 
     let system_prompt = resolved.fresh_system_prompt();
 
+    // Headless prompt source. Only the auto/generated path buffers
+    // stdin — when the captain supplies the vendor's own invocation via
+    // trailing `-- …`, `provider_args` is non-empty and fd0 stays
+    // inherited so the vendor gets the raw pipe (the existing dedup
+    // suppresses hyprpilot's projection).
+    let prompt = headless_prompt(
+        resolved.headless,
+        stdin_is_tty,
+        !provider_args.is_empty(),
+        read_stdin_prompt,
+    )?;
+    if let Some(prompt) = prompt.as_deref() {
+        tracing::info!(bytes = prompt.len(), "cli: headless launch — buffered stdin prompt");
+    }
+
     let skills = build_skills_registry_with(&profile);
     let mcps = build_mcp_registry_with(&profile, Some(&skills));
     let mcp_defs = mcps.as_ref().map_or_else(Vec::new, |registry| registry.list());
 
-    let command = providers::build_command(&resolved, system_prompt.as_deref(), &mcp_defs, provider_args)?;
+    let command = providers::build_command(
+        &resolved,
+        system_prompt.as_deref(),
+        &mcp_defs,
+        provider_args,
+        prompt.as_deref(),
+    )?;
 
     if cfg
         .multiplexer
@@ -96,6 +120,92 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
 /// `exec()` at the end of `run`.
 fn resolve_launch_cwd(flag: Option<PathBuf>, configured: Option<PathBuf>) -> Option<PathBuf> {
     flag.or(configured).or_else(|| std::env::current_dir().ok())
+}
+
+/// Pick the profile id when no positional `[PROFILE]` was passed.
+///
+/// A **headless** launch (piped stdin, OR the `[profile] default`
+/// entry itself sets `headless = true`) must NOT open the interactive
+/// picker — there may be no TTY, and stdin may be a consumed pipe. It
+/// resolves `[profile] default` directly, erroring cleanly when no
+/// default is configured. Only a genuinely interactive launch
+/// (TTY + non-headless default) falls through to the picker, which
+/// pre-selects the default under the cursor.
+fn select_profile_without_positional(
+    cfg: &Config,
+    stdin_is_tty: bool,
+    cwd: Option<&Path>,
+    config_patches: &[Value],
+) -> Result<String> {
+    // `[profile] default`'s own `headless` flag: a default profile that
+    // forces headless can't be launched through the picker either, even
+    // on a TTY (it needs a piped prompt, which the picker path can't
+    // supply).
+    let default_is_headless = cfg
+        .profile
+        .default
+        .as_deref()
+        .and_then(|id| cfg.profiles.iter().find(|p| p.id == id))
+        .is_some_and(|p| p.headless.unwrap_or(false));
+
+    if !stdin_is_tty || default_is_headless {
+        return cfg.profile.default.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "headless launch requires a profile: pass one positionally \
+                 (`hyprpilot <id>`) or set `[profile] default`"
+            )
+        });
+    }
+
+    Ok(picker::pick_profile(list_profiles(cfg, cwd, config_patches))?.id)
+}
+
+/// Decide the headless prompt for a launch. Effective headless is
+/// `profile_headless || !stdin_is_tty` (a piped stdin auto-triggers
+/// it). Returns:
+///
+/// - `Ok(None)` — interactive launch, OR the escape-hatch path where
+///   the captain supplied trailing `-- <provider args>`
+///   (`has_provider_args`). In the escape-hatch case stdin is NEVER
+///   read, so fd0 stays inherited and the vendor gets the raw pipe.
+/// - `Ok(Some(prompt))` — hyprpilot buffers stdin and projects the
+///   vendor's one-shot invocation with `prompt` as the argument.
+/// - `Err` — headless is active but stdin is a TTY (no piped prompt),
+///   or the piped prompt is empty.
+///
+/// `read_stdin` is injected so the decision logic is unit-testable
+/// without touching the process's real fd0.
+fn headless_prompt(
+    profile_headless: bool,
+    stdin_is_tty: bool,
+    has_provider_args: bool,
+    read_stdin: impl FnOnce() -> Result<String>,
+) -> Result<Option<String>> {
+    let effective = profile_headless || !stdin_is_tty;
+    if !effective || has_provider_args {
+        return Ok(None);
+    }
+    if stdin_is_tty {
+        bail!(
+            "headless launch requires a piped prompt on stdin \
+             (e.g. `echo \"fix the bug\" | hyprpilot <profile>`); stdin is a TTY"
+        );
+    }
+    let raw = read_stdin()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("headless launch requires a non-empty prompt on stdin");
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// Buffer ALL of stdin into a `String` — the headless prompt source.
+fn read_stdin_prompt() -> Result<String> {
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("headless: read prompt from stdin")?;
+    Ok(buf)
 }
 
 pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[Value]) -> Vec<ProfileSummary> {
@@ -153,6 +263,7 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: Some(PathBuf::from("/configured")),
+                headless: None,
                 command: None,
                 args: None,
                 env: Default::default(),
@@ -235,5 +346,94 @@ mod tests {
 
         let profiles = list_profiles(&cfg, None, &[]);
         assert_eq!(profiles[0].model.as_deref(), Some("patched"));
+    }
+
+    // ── headless prompt source (K-751) ───────────────────────────
+
+    fn never_read() -> Result<String> {
+        panic!("stdin must NOT be read on this path");
+    }
+
+    #[test]
+    fn interactive_tty_no_pipe_reads_nothing() {
+        // Not headless, stdin is a TTY, no provider args → interactive
+        // launch. stdin must never be touched.
+        let out = headless_prompt(false, true, false, never_read).unwrap();
+        assert_eq!(out, None);
+    }
+
+    #[test]
+    fn piped_stdin_auto_triggers_headless_and_buffers_prompt() {
+        // The `echo … | hyprpilot <id>` path: stdin is piped, so
+        // headless is auto-active and the buffered text becomes the
+        // prompt (trailing newline trimmed).
+        let out = headless_prompt(false, false, false, || Ok("fix the bug\n".into())).unwrap();
+        assert_eq!(out.as_deref(), Some("fix the bug"));
+    }
+
+    #[test]
+    fn profile_headless_flag_triggers_headless_on_pipe() {
+        let out = headless_prompt(true, false, false, || Ok("do it".into())).unwrap();
+        assert_eq!(out.as_deref(), Some("do it"));
+    }
+
+    #[test]
+    fn profile_headless_on_tty_without_pipe_errors() {
+        // `headless = true` but stdin is a TTY → no prompt source. The
+        // launch must error rather than open a picker (impossible sans
+        // TTY prompt) or hang.
+        let err = headless_prompt(true, true, false, never_read).expect_err("must error");
+        assert!(err.to_string().contains("piped prompt on stdin"), "{err}");
+    }
+
+    #[test]
+    fn empty_piped_prompt_errors() {
+        let err = headless_prompt(false, false, false, || Ok("   \n".into())).expect_err("must error");
+        assert!(err.to_string().contains("non-empty prompt"), "{err}");
+    }
+
+    #[test]
+    fn provider_args_are_the_escape_hatch_and_never_consume_stdin() {
+        // Trailing `-- <provider args>` → hyprpilot must NOT read stdin
+        // (fd0 stays inherited for the vendor's raw pipe) and must NOT
+        // generate a prompt projection, even though the piped stdin
+        // makes headless "effective".
+        let out = headless_prompt(false, false, true, never_read).unwrap();
+        assert_eq!(out, None, "escape hatch: no buffered prompt");
+
+        // Same with the profile `headless` flag set.
+        let out = headless_prompt(true, true, true, never_read).unwrap();
+        assert_eq!(out, None);
+    }
+
+    // ── headless profile selection without a positional (K-751) ──
+
+    #[test]
+    fn headless_no_positional_uses_default_not_picker() {
+        // Piped stdin (`stdin_is_tty = false`) + no positional profile
+        // must resolve `[profile] default` directly — never the picker,
+        // which would return a `NotInteractive` error with no TTY.
+        let cfg = cfg_with_profile_cwd(); // default = "engineer"
+        let id = select_profile_without_positional(&cfg, false, None, &[]).unwrap();
+        assert_eq!(id, "engineer");
+    }
+
+    #[test]
+    fn headless_no_positional_no_default_errors_cleanly() {
+        let mut cfg = cfg_with_profile_cwd();
+        cfg.profile.default = None;
+        let err = select_profile_without_positional(&cfg, false, None, &[]).expect_err("must error");
+        assert!(err.to_string().contains("headless launch requires a profile"), "{err}");
+    }
+
+    #[test]
+    fn headless_default_profile_bypasses_picker_even_on_tty() {
+        // A `[profile] default` that itself sets `headless = true` must
+        // resolve directly even at an interactive TTY — the picker path
+        // can't feed it the piped prompt it needs.
+        let mut cfg = cfg_with_profile_cwd();
+        cfg.profiles[0].headless = Some(true);
+        let id = select_profile_without_positional(&cfg, true, None, &[]).unwrap();
+        assert_eq!(id, "engineer");
     }
 }

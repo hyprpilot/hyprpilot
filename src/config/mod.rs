@@ -334,6 +334,7 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: None,
+                headless: None,
                 command: None,
                 args: None,
                 env: Default::default(),

@@ -69,6 +69,7 @@ The `profiles` list must be **non-empty** — the compiled defaults seed zero pr
 | `effort`        | string (optional)                | unset   | Reasoning-effort knob, mapped to the vendor's config surface where supported.                                  |
 | `cwd`           | path (optional)                  | unset   | Where the agent runs. `~`, `${VAR}` expansion supported; falls back to the agent `cwd`, then `$PWD`.           |
 | `mode`          | string (optional)                | unset   | Vendor-specific starting mode. See [Agents → Modes](./agents#modes).                                           |
+| `headless`      | bool (optional)                  | `false` | Force a non-interactive one-shot launch (requires a piped prompt). See [Headless](#headless).                  |
 | `system_prompt` | `{ file, inject? }[]` (optional) | unset   | Prompt files read at resolve time and prepended to the first turn. `[]` = no prompt. `inject` defaults `true`. |
 | `mcps`          | `{ file … }[]` (optional)        | unset   | Per-profile MCP catalogue — wholesale-replaces the shared set. `[]` = no MCPs. See [MCP](./mcp).               |
 | `mcp`           | `mcp` block (optional)           | unset   | Per-profile override of the in-tree MCP / skills block — wholesale-replaces the global.                        |
@@ -128,6 +129,25 @@ system_prompt:
 | -------- | --------------- | ------- | --------------------------------------------------------------------- |
 | `file`   | path            | —       | Prompt file, read at resolve time — a missing file fails the launch.  |
 | `inject` | bool (optional) | `true`  | Whether this entry's body rides the launch's system-prompt injection. |
+
+## Headless
+
+`headless: true` forces the profile to launch **non-interactively** — hyprpilot buffers stdin as the prompt and projects the vendor's one-shot invocation (`claude --print` / `codex exec` / `opencode run`), then the vendor exits:
+
+```yaml
+profiles:
+  - id: commit-msg
+    agent: claude-code
+    headless: true
+    system_prompt:
+      - file: ~/.config/hyprpilot/prompts/commit.md
+```
+
+```sh
+git diff --staged | hyprpilot commit-msg
+```
+
+The flag defaults `false` (interactive TUI). Note that a piped stdin **auto-triggers** headless regardless of this flag — `headless: true` is only needed when you want a profile to _refuse_ an interactive launch. When headless is active but stdin is an interactive TTY (no prompt to read), the launch errors instead of opening a picker it can't drive. Full details, per-vendor projection, and the `-- …` escape hatch live in [Runtime → Launching → Headless](../runtime/launch#headless-stdin-pass-through).
 
 ## MCPs and skills
 

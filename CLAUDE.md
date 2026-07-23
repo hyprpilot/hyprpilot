@@ -201,7 +201,8 @@ system_prompt = [
 - **`[[profiles]]`** (`ProfileConfig`): `id`, `agent`, `model?`,
   `effort?`, `system_prompt?` (array of `{ file, inject? }`), `mcps?`
   (per-profile MCP catalogue), `mcp?` (per-profile `[mcp]` block),
-  `mode?`, `cwd?`, `env`. **At least one entry is required** —
+  `mode?`, `cwd?`, `headless?` (force non-interactive launch — see
+  Headless below), `env`. **At least one entry is required** —
   `validate_profiles_non_empty` rejects an empty list at load.
   `defaults.toml` seeds **zero** profiles (captains supply their own,
   so the profile list is never polluted with a default-pretender).
@@ -364,6 +365,34 @@ vendor default. `system_prompt` files are read at **resolve** time so
 a missing file fails loudly on the next launch. CLI `--cwd` / `--mode`
 override the resolved profile after profile resolution (there is no
 `--model` / `--agent` flag — use `--with-config`).
+
+### Headless / stdin pass-through
+
+Effective headless = `profile.headless == true` **OR** stdin is piped
+(`!std::io::stdin().is_terminal()`). `headless: Option<bool>` on
+`ProfileConfig` threads into `ResolvedProfile.headless`. When headless
+is active AND hyprpilot generates the projection (**no** trailing `--
+<provider args>`), `spawn::headless_prompt` buffers **all** of stdin
+into a `String` and passes it as the vendor's prompt ARGUMENT — else it
+returns `None` (interactive, or the escape-hatch path). Headless + a
+TTY (no pipe) → error; empty piped prompt → error. **Profile
+selection:** a headless launch never opens the picker
+(`select_profile_without_positional`) — piped stdin OR a
+`headless`-flagged `[profile] default` resolves the default directly,
+erroring when no default is set; only an interactive TTY with a
+non-headless default falls through to the picker. Per-vendor
+projection (`providers.rs`, driven by `prompt: Option<&str>` on
+`build_command` / `build_*`): claude `--print` + prompt positional;
+codex `exec` subcommand + prompt positional (approval-policy `mode`
+dropped — `codex exec` has no `--ask-for-approval`; sandbox modes still
+project via `-s`); opencode `run` subcommand + prompt positional. All
+share the interactive model/effort/mode/MCP/tool-policy projection +
+arg-dedup — headless only changes prompt DELIVERY. **exec, not spawn**:
+hyprpilot consumes stdin before `exec()`, so fd0 is at EOF and `codex
+exec` does not block on it (verified live). **Escape hatch:** trailing
+`-- <provider args>` (non-empty `provider_args`) makes hyprpilot skip
+stdin entirely — fd0 stays inherited so the vendor gets the raw pipe as
+input data, and the existing dedup suppresses the generated projection.
 
 ### Multiplexer title
 
