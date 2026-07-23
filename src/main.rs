@@ -59,10 +59,23 @@ enum Command {
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
-    let log_reload = logging::init(cli.log_level)?;
-
+    // Load the config QUIETLY (before any subscriber is installed) so
+    // its `[logging] level` can feed the one-and-only tracing filter —
+    // no early-init/late-reload dance. `init` then installs the
+    // subscriber once with the fully-resolved level, and the
+    // "config: loaded" line is emitted AFTER, so it honours that level
+    // (e.g. `--log-level error` / `[logging] level = "error"` suppress
+    // it along with every other info line).
     let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;
-    logging::apply_config_level(&log_reload, cli.log_level, cfg.logging.level)?;
+    logging::init(cli.log_level, cfg.logging.level)?;
+    tracing::info!(
+        config = ?cli.config,
+        config_profile = ?cli.config_profile,
+        agents = cfg.agents.agents.len(),
+        profiles = cfg.profiles.len(),
+        default_profile = ?cfg.profile.default,
+        "config: loaded"
+    );
 
     match cli.command {
         // Bare `hyprpilot [PROFILE]` IS the launch: pick the profile
