@@ -95,10 +95,9 @@ pub enum AgentProvider {
 
 impl AgentProvider {
     /// Wire id — the string serde produces / consumes for this variant.
-    /// Single source of truth for the per-vendor identifier. Retained
-    /// for callers that need the ascii vendor key without duplicating
-    /// the literal.
-    #[allow(dead_code)]
+    /// Single source of truth for the per-vendor identifier; used by
+    /// `spawn::launch_profile` to trace the resolved provider without
+    /// duplicating the literal.
     pub const fn wire_id(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",

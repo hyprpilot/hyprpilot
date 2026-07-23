@@ -82,9 +82,8 @@ pub struct MCPDefinition {
     pub name: String,
     pub raw: Value,
     pub hyprpilot: HyprpilotExtension,
-    /// Source file the entry came from. Retained for diagnostics; not
-    /// read on the launcher exec path.
-    #[allow(dead_code)]
+    /// Source file the entry came from; traced by
+    /// `resolve::build_mcp_registry_with` for diagnostics.
     pub source: PathBuf,
 }
 
@@ -284,8 +283,8 @@ impl MCPsRegistry {
         order.iter().filter_map(|name| catalog.get(name).cloned()).collect()
     }
 
-    /// Per-name lookup. Stays for tests + future consumers.
-    #[allow(dead_code)]
+    /// Per-name lookup. Test-only.
+    #[cfg(test)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<MCPDefinition> {
         let catalog = self.catalog.read().expect("mcps catalog lock poisoned");

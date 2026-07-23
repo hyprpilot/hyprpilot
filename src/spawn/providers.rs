@@ -1054,7 +1054,6 @@ mod tests {
                 cwd: None,
                 env: BTreeMap::new(),
             },
-            profile_id: Some("profile".into()),
             model: Some("model-a".into()),
             effort: Some("high".into()),
             system_prompt: Vec::new(),

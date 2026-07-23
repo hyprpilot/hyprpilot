@@ -699,7 +699,6 @@ references:
             body: "body".to_string(),
             path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
             frontmatter,
-            references: Vec::new(),
         };
 
         let metadata = SkillMetadata::from_skill(&skill, &refs);
@@ -728,7 +727,6 @@ references:
             body: "body".to_string(),
             path: PathBuf::from("/tmp/myskill/SKILL.md"),
             frontmatter,
-            references: Vec::new(),
         };
 
         let cache = build_cache(vec![skill]);
@@ -754,7 +752,6 @@ license: MIT
             body: "body".to_string(),
             path: PathBuf::from("/tmp/myskill/SKILL.md"),
             frontmatter: frontmatter.clone(),
-            references: Vec::new(),
         };
 
         let cache = build_cache(vec![skill]);
@@ -934,7 +931,6 @@ metadata:
                 body: "body".to_string(),
                 path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
                 frontmatter: frontmatter.clone(),
-                references: Vec::new(),
             },
             &refs,
         );

@@ -27,10 +27,6 @@ use crate::config::Config;
 #[derive(Debug, Clone)]
 pub struct ResolvedProfile {
     pub agent: AgentConfig,
-    /// Resolved profile id — carried for diagnostics / future launcher
-    /// surfacing. Not read on the exec path yet.
-    #[allow(dead_code)]
-    pub profile_id: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     /// Resolved per-entry system-prompt list. Each entry carries its
@@ -175,7 +171,6 @@ impl ResolvedProfile {
 
         Ok(Self {
             agent,
-            profile_id: Some(profile.id.clone()),
             model,
             effort,
             system_prompt,
@@ -446,7 +441,6 @@ mod tests {
             ..Default::default()
         };
         let r = ResolvedProfile::from_config(&cfg, None).unwrap();
-        assert_eq!(r.profile_id.as_deref(), Some("ask"));
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
         // With `[profile] default` cleared AND no `--profile`,
