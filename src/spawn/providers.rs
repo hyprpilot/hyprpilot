@@ -41,7 +41,6 @@ pub(super) fn build_command(
         AgentProvider::ClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args),
         AgentProvider::Codex => build_codex(resolved, system_prompt, mcp_defs, provider_args),
         AgentProvider::OpenCode => build_opencode(resolved, system_prompt, mcp_defs, provider_args),
-        AgentProvider::Custom => build_generic(resolved, provider_args),
     }
 }
 
@@ -88,13 +87,6 @@ pub(super) fn exec(command: SpawnCommand) -> Result<ExitCode> {
             .code()
             .map_or_else(|| ExitCode::from(1), |code| ExitCode::from(code as u8)))
     }
-}
-
-fn build_generic(resolved: &ResolvedProfile, provider_args: Vec<String>) -> Result<SpawnCommand> {
-    let mut command = base_command(resolved)?;
-    command.args.extend(provider_args);
-
-    Ok(command)
 }
 
 fn build_claude(
@@ -1697,23 +1689,6 @@ mod tests {
             },
             source: "<test>".into(),
         }
-    }
-
-    // build_generic (custom provider) — no vendor projection.
-
-    #[test]
-    fn build_generic_passes_through_command_and_provider_args_only() {
-        let mut resolved = resolved(AgentProvider::Custom);
-        resolved.agent.command = "my-tool".into();
-        resolved.agent.args = vec!["--base".into()];
-        let command = build_command(&resolved, Some("ignored prompt"), &[mcp_def()], vec!["--extra".into()]).unwrap();
-
-        assert_eq!(command.program, "my-tool");
-        assert_eq!(command.args, vec!["--base".to_string(), "--extra".to_string()]);
-        assert!(!command.args.iter().any(|arg| arg == "--model"));
-        assert!(!command.args.iter().any(|arg| arg == "--effort"));
-        assert!(!command.args.iter().any(|arg| arg == "--mcp-config"));
-        assert!(!command.args.iter().any(|arg| arg == "--append-system-prompt"));
     }
 
     // claude flag emission.

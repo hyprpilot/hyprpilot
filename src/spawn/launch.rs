@@ -35,7 +35,7 @@ pub struct LaunchArgs {
 pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
     let config_patches = args.with_config.into_patches()?;
 
-    super::spawn(
+    super::launch_profile(
         cfg,
         SpawnRequest {
             profile_id: args.profile_id,

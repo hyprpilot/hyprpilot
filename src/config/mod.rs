@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn defaults_seed_multiplexer_set_title() {
-        // Pins the leaf `spawn::spawn` `.expect()`s at
+        // Pins the leaf `spawn::launch_profile` `.expect()`s at
         // spawn time — a captain deleting `[multiplexer]` from
         // defaults.toml must fail here, not panic at launch.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
