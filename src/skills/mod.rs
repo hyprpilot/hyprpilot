@@ -113,8 +113,6 @@ pub struct Skill {
     /// Raw YAML frontmatter; `serde_yaml::Value` to stay agnostic of
     /// the author's schema.
     pub frontmatter: YamlValue,
-    /// Relative paths extracted from markdown links in the body.
-    pub references: Vec<String>,
 }
 
 /// Owned skill catalogue. Carries its configured roots `dirs` so
@@ -215,9 +213,9 @@ impl SkillsRegistry {
     }
 
     /// Lookup by slug. Returns an owned clone so the caller doesn't
-    /// hold the read lock across their work. Retained for tests +
-    /// future consumers; the MCP server reads through `list()`.
-    #[allow(dead_code)]
+    /// hold the read lock across their work. Test-only — the MCP
+    /// server reads through `list()`.
+    #[cfg(test)]
     #[must_use]
     pub fn get(&self, slug: &SkillSlug) -> Option<Skill> {
         let skills = self.skills.read().expect("skills lock poisoned");

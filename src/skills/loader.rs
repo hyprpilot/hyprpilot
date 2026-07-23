@@ -8,8 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_yaml::Value as YamlValue;
 use tracing::warn;
 
@@ -93,7 +91,6 @@ fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
     let description = frontmatter_str(&frontmatter, "description")
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Guidance for {}", slug.as_str()));
-    let references = extract_references(&body);
     Ok(Some(Skill {
         slug,
         title,
@@ -101,7 +98,6 @@ fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
         body,
         path: path.to_path_buf(),
         frontmatter,
-        references,
     }))
 }
 
@@ -146,27 +142,6 @@ fn find_fence_end(rest: &str) -> Option<usize> {
 
 fn frontmatter_str<'a>(fm: &'a YamlValue, key: &str) -> Option<&'a str> {
     fm.get(key).and_then(YamlValue::as_str)
-}
-
-/// Markdown link references `[text](target)` where `target` is a
-/// relative path (no URL scheme). Mirrors the python loader's regex.
-fn extract_references(body: &str) -> Vec<String> {
-    static LINK_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex"));
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut out: Vec<String> = Vec::new();
-    for caps in LINK_PATTERN.captures_iter(body) {
-        let target = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
-        if target.is_empty() {
-            continue;
-        }
-        if target.contains("://") || target.starts_with('#') || target.starts_with("mailto:") {
-            continue;
-        }
-        if seen.insert(target.to_owned()) {
-            out.push(target.to_owned());
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -219,7 +194,6 @@ Body. See [README](../README.md) for more.
         assert_eq!(s.slug.as_str(), "git-commit");
         assert_eq!(s.description, "Stage and commit changes");
         assert!(s.body.contains("Body."));
-        assert_eq!(s.references, vec!["../README.md".to_string()]);
         assert_eq!(s.title, "git-commit");
     }
 
@@ -340,31 +314,6 @@ body
         let skills = load_skills(tmp.path()).unwrap();
         let order: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
         assert_eq!(order, ["aaa-first", "mmm-middle", "zzz-last"]);
-    }
-
-    #[test]
-    fn references_ignore_absolute_urls_and_anchors() {
-        let tmp = TempDir::new().unwrap();
-        write_skill(
-            tmp.path(),
-            "refs",
-            r#"---
-description: with refs
----
-
-# References
-
-See [docs](./docs.md), [github](https://github.com), [anchor](#foo),
-and [mail](mailto:a@b.com). Plus [relative](../other.md).
-"#,
-        );
-        let skills = load_skills(tmp.path()).unwrap();
-        let refs = &skills[0].references;
-        assert!(refs.contains(&"./docs.md".to_string()));
-        assert!(refs.contains(&"../other.md".to_string()));
-        assert!(!refs.iter().any(|r| r.starts_with("http")));
-        assert!(!refs.iter().any(|r| r.starts_with('#')));
-        assert!(!refs.iter().any(|r| r.starts_with("mailto")));
     }
 
     #[test]
