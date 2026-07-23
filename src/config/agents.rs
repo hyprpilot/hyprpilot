@@ -134,10 +134,11 @@ pub struct ProfileConfig {
     /// Profile-level system-prompt list: array of `{ file, inject? }`
     /// entries. Captains compose layered prompts (base persona +
     /// project-specific addendum) by listing multiple entries;
-    /// per-entry `inject` gates which injection paths each file rides
-    /// on. Shared prompts across profiles come from a root
-    /// `[[patches]]` entry, which folds onto this list; `system_prompt
-    /// = []` is the explicit "no prompt" off-switch.
+    /// per-entry `inject` (default `true`) opts a file out of
+    /// injection without removing it from the list. Shared prompts
+    /// across profiles come from a root `[[patches]]` entry, which
+    /// folds onto this list; `system_prompt = []` is the explicit
+    /// "no prompt" off-switch.
     #[garde(dive)]
     pub system_prompt: Option<Vec<crate::config::SystemPromptEntry>>,
     /// Profile-level MCP catalog. `None` (unset) → whatever a root
@@ -472,7 +473,7 @@ agent = "claude-code"
 model = "claude-opus-4-5"
 system_prompt = [
   { file = "~/.config/hyprpilot/prompts/base.md" },
-  { file = "~/.config/hyprpilot/prompts/full.md", inject = { on_create = true, on_update = true } },
+  { file = "~/.config/hyprpilot/prompts/full.md", inject = false },
 ]
 mode = "ask"
 cwd = "~/work"
@@ -496,15 +497,13 @@ BAZ = "qux"
             prompts[0].file,
             std::path::PathBuf::from("~/.config/hyprpilot/prompts/base.md")
         );
-        // Default inject: on_create=true, on_update=false.
-        assert!(prompts[0].inject.on_create);
-        assert!(!prompts[0].inject.on_update);
+        // Default inject: true.
+        assert!(prompts[0].inject);
         assert_eq!(
             prompts[1].file,
             std::path::PathBuf::from("~/.config/hyprpilot/prompts/full.md")
         );
-        assert!(prompts[1].inject.on_create);
-        assert!(prompts[1].inject.on_update, "explicit on_update=true honoured");
+        assert!(!prompts[1].inject, "explicit inject=false honoured");
         assert_eq!(full.mcps, None, "absent mcps parses as None");
         let mcp_block = full.mcp.as_ref().expect("[profiles.mcp] block parsed");
         let skills = mcp_block.skills.as_deref().expect("[profiles.mcp].skills set");

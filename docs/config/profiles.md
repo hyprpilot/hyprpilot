@@ -61,20 +61,20 @@ The `profiles` list must be **non-empty** — the compiled defaults seed zero pr
 
 ### `profiles` entries
 
-| Field           | Type                             | Default | What it does                                                                                         |
-| --------------- | -------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `id`            | string                           | —       | Unique within `profiles`. The picker row + `-p <id>`.                                                |
-| `agent`         | string                           | —       | Which `agents` entry to launch. Must reference a real `agents[].id`.                                 |
-| `model`         | string (optional)                | unset   | Overrides the agent's default model. Precedence: profile > agent > vendor default.                   |
-| `effort`        | string (optional)                | unset   | Reasoning-effort knob, mapped to the vendor's config surface where supported.                        |
-| `cwd`           | path (optional)                  | unset   | Where the agent runs. `~`, `${VAR}` expansion supported; falls back to the agent `cwd`, then `$PWD`. |
-| `mode`          | string (optional)                | unset   | Vendor-specific starting mode. See [Agents → Modes](./agents#modes).                                 |
-| `system_prompt` | `{ file, inject? }[]` (optional) | unset   | Prompt files read at resolve time and prepended to the first turn. `[]` = no prompt.                 |
-| `mcps`          | `{ file … }[]` (optional)        | unset   | Per-profile MCP catalogue — wholesale-replaces the shared set. `[]` = no MCPs. See [MCP](./mcp).     |
-| `mcp`           | `mcp` block (optional)           | unset   | Per-profile override of the in-tree MCP / skills block — wholesale-replaces the global.              |
-| `command`       | string (optional)                | unset   | Replaces the base agent's `command` wholesale for this profile.                                      |
-| `args`          | string[] (optional)              | unset   | Replaces the base agent's `args` wholesale for this profile.                                         |
-| `env`           | map (optional)                   | `{}`    | Overlays the base agent's `env` per key; the profile's key wins on collision.                        |
+| Field           | Type                             | Default | What it does                                                                                                   |
+| --------------- | -------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `id`            | string                           | —       | Unique within `profiles`. The picker row + `-p <id>`.                                                          |
+| `agent`         | string                           | —       | Which `agents` entry to launch. Must reference a real `agents[].id`.                                           |
+| `model`         | string (optional)                | unset   | Overrides the agent's default model. Precedence: profile > agent > vendor default.                             |
+| `effort`        | string (optional)                | unset   | Reasoning-effort knob, mapped to the vendor's config surface where supported.                                  |
+| `cwd`           | path (optional)                  | unset   | Where the agent runs. `~`, `${VAR}` expansion supported; falls back to the agent `cwd`, then `$PWD`.           |
+| `mode`          | string (optional)                | unset   | Vendor-specific starting mode. See [Agents → Modes](./agents#modes).                                           |
+| `system_prompt` | `{ file, inject? }[]` (optional) | unset   | Prompt files read at resolve time and prepended to the first turn. `[]` = no prompt. `inject` defaults `true`. |
+| `mcps`          | `{ file … }[]` (optional)        | unset   | Per-profile MCP catalogue — wholesale-replaces the shared set. `[]` = no MCPs. See [MCP](./mcp).               |
+| `mcp`           | `mcp` block (optional)           | unset   | Per-profile override of the in-tree MCP / skills block — wholesale-replaces the global.                        |
+| `command`       | string (optional)                | unset   | Replaces the base agent's `command` wholesale for this profile.                                                |
+| `args`          | string[] (optional)              | unset   | Replaces the base agent's `args` wholesale for this profile.                                                   |
+| `env`           | map (optional)                   | `{}`    | Overlays the base agent's `env` per key; the profile's key wins on collision.                                  |
 
 ## What a profile overrides
 
@@ -115,20 +115,19 @@ Composition lets a base persona + per-profile addendum land without juggling tem
 
 ### Per-entry inject toggle
 
-Each entry takes an optional `inject` object. On the launcher path only the fresh-launch injection runs, so the relevant gate is `on_create` (default `true`):
+Each entry takes an optional `inject` boolean (default `true`). Set it `false` to keep a file listed — for reference, or to stage it for later — without its body actually being injected:
 
 ```yaml
 system_prompt:
   - file: ~/.config/hyprpilot/prompts/base.md
   - file: ~/.config/hyprpilot/prompts/notes.md
-    inject:
-      on_create: false # skipped
+    inject: false # skipped
 ```
 
-| Field    | Type              | Default | What it does                                                                         |
-| -------- | ----------------- | ------- | ------------------------------------------------------------------------------------ |
-| `file`   | path              | —       | Prompt file, read at resolve time — a missing file fails the launch.                 |
-| `inject` | object (optional) | unset   | Injection gates. On the launcher path only `on_create` (default `true`) is relevant. |
+| Field    | Type            | Default | What it does                                                          |
+| -------- | --------------- | ------- | --------------------------------------------------------------------- |
+| `file`   | path            | —       | Prompt file, read at resolve time — a missing file fails the launch.  |
+| `inject` | bool (optional) | `true`  | Whether this entry's body rides the launch's system-prompt injection. |
 
 ## MCPs and skills
 

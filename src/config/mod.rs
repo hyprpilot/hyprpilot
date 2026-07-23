@@ -20,7 +20,7 @@ pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, Profil
 pub use extensions::{McpFile, SkillEntry};
 pub use mcp::McpConfig;
 use merge_strategies::{append_layers, merge_profiles_by_id, overwrite_some};
-pub use system_prompt::{SystemPromptEntry, SystemPromptInject};
+pub use system_prompt::SystemPromptEntry;
 use validations::{
     validate_default_profile_id, validate_profile_agent_references, validate_profiles_ids, validate_profiles_non_empty,
 };
@@ -547,7 +547,7 @@ file = "~/.config/hyprpilot/prompts/base.md"
 
 [[patches.system_prompt]]
 file = "~/.config/hyprpilot/prompts/global.md"
-inject = { on_update = true }
+inject = false
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");

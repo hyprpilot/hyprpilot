@@ -30,9 +30,9 @@ pub struct ResolvedProfile {
     pub model: Option<String>,
     pub effort: Option<String>,
     /// Resolved per-entry system-prompt list. Each entry carries its
-    /// own pre-read body + inject toggles; `fresh_system_prompt`
-    /// filters by `inject.on_create` and concatenates the surviving
-    /// entries. `Some(vec![])` / `None` both mean "no prompt".
+    /// own pre-read body + inject toggle; `fresh_system_prompt`
+    /// filters by `inject` and concatenates the surviving entries.
+    /// `Some(vec![])` / `None` both mean "no prompt".
     pub system_prompt: Vec<ResolvedSystemPromptEntry>,
     /// Per-launch mode override, mapped onto the vendor CLI where
     /// supported (e.g. claude-code's `plan` / `edit`).
@@ -40,27 +40,25 @@ pub struct ResolvedProfile {
 }
 
 /// One pre-read system-prompt entry — body content + the per-entry
-/// inject toggles. `fresh_system_prompt` filters by `inject.on_create`
-/// and concatenates the surviving bodies.
+/// inject toggle. `fresh_system_prompt` filters by `inject` and
+/// concatenates the surviving bodies.
 #[derive(Debug, Clone)]
 pub struct ResolvedSystemPromptEntry {
     pub body: String,
-    pub inject: crate::config::SystemPromptInject,
+    pub inject: bool,
 }
 
 impl ResolvedProfile {
-    /// Filter `system_prompt` entries by `inject.on_create` and
-    /// concatenate the surviving bodies with a blank-line separator.
-    /// The launcher only ever bootstraps a brand-new session, so
-    /// `on_create` is the sole gate. Returns `None` when no entry
-    /// qualifies (no entries configured, or every entry's create
-    /// toggle is off).
+    /// Filter `system_prompt` entries by `inject` and concatenate the
+    /// surviving bodies with a blank-line separator. Returns `None`
+    /// when no entry qualifies (no entries configured, or every
+    /// entry's inject toggle is off).
     #[must_use]
     pub fn fresh_system_prompt(&self) -> Option<String> {
         let bodies: Vec<&str> = self
             .system_prompt
             .iter()
-            .filter(|e| e.inject.on_create)
+            .filter(|e| e.inject)
             .map(|e| e.body.as_str())
             .collect();
         if bodies.is_empty() {
@@ -225,10 +223,10 @@ fn apply_root_patches(config: &Config, profile: ProfileConfig) -> Result<Profile
     Ok(patched)
 }
 
-/// Read every entry's file body and pair it with the entry's
-/// inject toggles. Each path is `~`/env-expanded; missing files
-/// surface as readable errors stamped with `ctx_label`. Empty list
-/// returns an empty Vec (the explicit off-switch shape).
+/// Read every entry's file body and pair it with the entry's inject
+/// toggle. Each path is `~`/env-expanded; missing files surface as
+/// readable errors stamped with `ctx_label`. Empty list returns an
+/// empty Vec (the explicit off-switch shape).
 fn read_prompt_entries(
     entries: &[crate::config::SystemPromptEntry],
     ctx_label: &str,
@@ -240,7 +238,7 @@ fn read_prompt_entries(
             .with_context(|| format!("{ctx_label}: failed to read system_prompt {}", expanded.display()))?;
         out.push(ResolvedSystemPromptEntry {
             body,
-            inject: entry.inject.clone(),
+            inject: entry.inject,
         });
     }
     Ok(out)
@@ -277,10 +275,7 @@ mod tests {
             system_prompt: prompt_files.map(|files| {
                 files
                     .into_iter()
-                    .map(|file| crate::config::SystemPromptEntry {
-                        file,
-                        inject: crate::config::SystemPromptInject::default(),
-                    })
+                    .map(|file| crate::config::SystemPromptEntry { file, inject: true })
                     .collect()
             }),
             mcps: None,
@@ -381,16 +376,13 @@ mod tests {
     }
 
     #[test]
-    fn profile_system_prompt_create_toggle_off_is_absent_on_fresh_spawn() {
+    fn profile_system_prompt_inject_false_is_absent_on_fresh_spawn() {
         let dir = tempfile::tempdir().unwrap();
-        let prompt_path = write_prompt(&dir, "update-only.md", "Update-only prompt.");
-        let mut p = profile("update-only", "cc", None, None);
+        let prompt_path = write_prompt(&dir, "no-inject.md", "Not injected.");
+        let mut p = profile("no-inject", "cc", None, None);
         p.system_prompt = Some(vec![crate::config::SystemPromptEntry {
             file: prompt_path,
-            inject: crate::config::SystemPromptInject {
-                on_create: false,
-                on_update: true,
-            },
+            inject: false,
         }]);
 
         let cfg = Config {
@@ -400,10 +392,10 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedProfile::from_config(&cfg, Some("update-only")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("no-inject")).unwrap();
 
-        // The launcher only bootstraps fresh sessions; an entry gated
-        // to `on_update` (create toggle off) never injects.
+        // `inject = false` opts an entry out of the launcher's
+        // fresh-launch injection entirely.
         assert!(r.fresh_system_prompt().is_none());
     }
 
