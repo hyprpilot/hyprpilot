@@ -6,4 +6,5 @@
 //! plug into the same `HyprpilotServer` in `super::serve` rather than
 //! getting their own subcommands.
 
+pub mod metadata;
 pub mod references;
