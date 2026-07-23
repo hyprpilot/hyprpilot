@@ -997,15 +997,7 @@ fn elide_value(value: &str) -> String {
     } else {
         ""
     };
-    format!("<{}{kind}>", human_size(value.len()))
-}
-
-fn human_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else {
-        format!("{:.1}KiB", bytes as f64 / 1024.0)
-    }
+    format!("<{}{kind}>", bytesize::ByteSize(value.len() as u64))
 }
 
 fn ensure_inline_size(label: &str, value: &str) -> Result<()> {
@@ -1215,13 +1207,13 @@ mod tests {
         assert!(redacted.iter().any(|arg| arg.ends_with("json>")), "{redacted:?}");
         assert!(redacted
             .iter()
-            .any(|arg| arg == &format!("<{}>", human_size(secret.len()))));
+            .any(|arg| arg == &format!("<{}>", bytesize::ByteSize(secret.len() as u64))));
     }
 
     #[test]
-    fn human_size_renders_bytes_then_kib() {
-        assert_eq!(human_size(512), "512B");
-        assert_eq!(human_size(2150), "2.1KiB");
+    fn byte_size_renders_bytes_then_kib() {
+        assert_eq!(bytesize::ByteSize(512).to_string(), "512 B");
+        assert_eq!(bytesize::ByteSize(2150).to_string(), "2.1 KiB");
     }
 
     fn assert_json_key_before(body: &str, before: &str, after: &str) {
