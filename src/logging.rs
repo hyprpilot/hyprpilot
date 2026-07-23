@@ -2,7 +2,15 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{fmt, reload, EnvFilter, Registry};
+
+/// Handle to the installed `EnvFilter`, returned by [`init`] so the
+/// filter can be swapped once — after `config::load` — to honour the
+/// `[logging] level` config field. The filter lives behind a
+/// [`reload::Layer`] precisely because the subscriber is installed
+/// before the config is read (early enough that `config::load`'s own
+/// lines are captured).
+pub type LogReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 /// Tracing level, shared between the `--log-level` CLI flag (via
 /// `clap::ValueEnum`) and the `[logging] level` config field (via
@@ -32,46 +40,38 @@ impl std::fmt::Display for LogLevel {
     }
 }
 
-/// Installs the tracing subscriber. Always writes to stderr — both
-/// debug and release builds. systemd / journald already capture
-/// stdout / stderr from the unit, and a captain running the daemon
-/// in a terminal sees output where they expect it. Daily-rolled
-/// files under `$XDG_STATE_HOME/hyprpilot/logs/` were duplicate
-/// plumbing over what every standard service supervisor already
-/// provides; removed.
+/// Installs the tracing subscriber and returns a [`LogReloadHandle`]
+/// so the filter can be reloaded once the config is known. Always
+/// writes to stderr — both debug and release builds — so a captain
+/// launching the binary by hand sees output where they expect it, and
+/// the `profiles --json` path keeps stdout pure (info → stderr).
 ///
-/// The previous file-only release path also meant any captain who
-/// launched the release binary by hand under `RUST_LOG=...` saw an
-/// empty terminal even though traces were firing — their output was
-/// silently shoved into a log file they had to know about.
-pub fn init(level: Option<LogLevel>) -> Result<()> {
-    // `log::Record` events (emitted by `tauri-plugin-log` on behalf of
-    // the webview's `log.*` wrapper) route into this tracing subscriber
-    // via `LogTracer`, auto-installed by `tracing-subscriber`'s
-    // `tracing-log` feature when `try_init()` runs below — so UI and
-    // backend share one sink. Do NOT call `LogTracer::init()` here;
-    // it collides with that auto-install and the second setter panics
-    // with "attempted to set a logger after the logging system was
-    // already initialized". `tauri-plugin-log` is registered with
-    // `.skip_logger()` so it doesn't fight for the same slot.
+/// Filter precedence, highest first: `--log-level` (`level` here) →
+/// `RUST_LOG` → `[logging] level` (applied later via
+/// [`apply_config_level`]) → the `warn,hyprpilot=info` default. That
+/// default keeps third-party crates (tokio / rmcp / nucleo) at `warn`
+/// while surfacing the launcher's own `info` lifecycle narrative.
+///
+/// `file:line` tagging rides only on `debug` / `trace` — the info
+/// narrative stays terse. Captain's call; flip `verbose` to always-on
+/// if the extra provenance is wanted.
+pub fn init(level: Option<LogLevel>) -> Result<LogReloadHandle> {
     let filter = match level {
         Some(l) => EnvFilter::try_new(l.to_string()).context("failed to build log level filter")?,
-        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,hyprpilot=info")),
     };
+    let (filter, reload_handle) = reload::Layer::new(filter);
 
-    // ANSI always on. journald stores the raw bytes and `journalctl`
-    // passes ANSI through when its own stdout is a TTY (and strips
-    // when piped) — so a captain running `journalctl -fu hyprpilot`
-    // sees the same coloured output the dev terminal does, while a
-    // grep / log-shipper / file redirect renders plain text. The
-    // alternative — disabling ANSI in release builds — burned the
-    // colour context in journald even when it would have rendered.
+    let verbose = matches!(level, Some(LogLevel::Debug | LogLevel::Trace));
+
+    // ANSI always on. `journalctl` / a TTY render it; a pipe or
+    // log-shipper strips it — so the same build serves both.
     let layer = fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(true)
         .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
+        .with_file(verbose)
+        .with_line_number(verbose)
         .with_thread_ids(false)
         .with_thread_names(false);
 
@@ -81,5 +81,26 @@ pub fn init(level: Option<LogLevel>) -> Result<()> {
         .try_init()
         .context("failed to install tracing subscriber")?;
 
+    Ok(reload_handle)
+}
+
+/// Reload the filter to `[logging] level` when — and only when — no
+/// higher-precedence source spoke: `--log-level` unset (`cli_level`
+/// is `None`) AND `RUST_LOG` unset. A no-op otherwise, so the
+/// precedence `--log-level` > `RUST_LOG` > `[logging] level` holds.
+pub fn apply_config_level(
+    handle: &LogReloadHandle,
+    cli_level: Option<LogLevel>,
+    config_level: Option<LogLevel>,
+) -> Result<()> {
+    if cli_level.is_some() || std::env::var_os("RUST_LOG").is_some() {
+        return Ok(());
+    }
+    let Some(level) = config_level else {
+        return Ok(());
+    };
+    let filter = EnvFilter::try_new(level.to_string()).context("failed to build [logging].level filter")?;
+    handle.reload(filter).context("failed to apply [logging].level")?;
+    tracing::debug!(%level, "logging: applied [logging].level");
     Ok(())
 }

@@ -59,10 +59,11 @@ enum Command {
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
-    logging::init(cli.log_level)?;
+    let log_reload = logging::init(cli.log_level)?;
 
     let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;
     cfg.validate()?;
+    logging::apply_config_level(&log_reload, cli.log_level, cfg.logging.level)?;
 
     match cli.command {
         // Bare `hyprpilot [--profile <id>]` IS the launch: pick the

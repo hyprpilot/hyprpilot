@@ -56,6 +56,22 @@ pub(super) fn exec(command: DirectCommand) -> Result<ExitCode> {
         cmd.current_dir(cwd);
     }
 
+    // Secrets rule: argv values (codex `-c instructions=…`, claude
+    // `--append-system-prompt`, `--mcp-config`) and env values carry
+    // the system prompt + bearer tokens. `info` shows flag + env-key
+    // names only; `debug` shows argv with every value payload elided
+    // to a size; `trace` — and ONLY trace — dumps the raw argv + env
+    // values. Never enable trace where the log sink is shared.
+    tracing::info!(
+        program = %command.program,
+        cwd = ?command.cwd,
+        args = ?arg_flag_names(&command.args),
+        env = ?command.env.keys().collect::<Vec<_>>(),
+        "cli: exec handoff"
+    );
+    tracing::debug!(argv = ?redacted_argv(&command.args), "cli: exec handoff argv (values elided)");
+    tracing::trace!(argv = ?command.args, env = ?command.env, "cli: exec handoff raw argv + env (secrets)");
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -947,6 +963,43 @@ fn toml_array(values: &[String]) -> String {
     format!("[{body}]")
 }
 
+/// Flag tokens from argv with any `=payload` suffix stripped — the
+/// `info`-level view. Value tokens (positionals, `-c key=value`
+/// bodies, `--mcp-config` / `--append-system-prompt` payloads) do not
+/// start with `-`, so they are dropped entirely and no secret
+/// material reaches `info`.
+fn arg_flag_names(args: &[String]) -> Vec<&str> {
+    args.iter()
+        .filter(|arg| arg.starts_with('-'))
+        .map(|arg| arg.split('=').next().unwrap_or(arg.as_str()))
+        .collect()
+}
+
+/// argv with every value token replaced by a `<size[ json]>`
+/// placeholder — the `debug`-level view. Flag tokens survive; value
+/// payloads never do, so bearer tokens / the system prompt stay out
+/// of `debug` logs while argv shape stays legible.
+fn redacted_argv(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|arg| {
+            if arg.starts_with('-') {
+                arg.clone()
+            } else {
+                elide_value(arg)
+            }
+        })
+        .collect()
+}
+
+fn elide_value(value: &str) -> String {
+    let kind = if value.trim_start().starts_with(['{', '[']) {
+        " json"
+    } else {
+        ""
+    };
+    format!("<{}{kind}>", bytesize::ByteSize(value.len() as u64))
+}
+
 fn ensure_inline_size(label: &str, value: &str) -> Result<()> {
     if value.len() > INLINE_CONFIG_LIMIT {
         bail!(
@@ -1115,6 +1168,52 @@ mod tests {
             },
             source: "<test>".into(),
         }
+    }
+
+    #[test]
+    fn redaction_keeps_flags_and_elides_secret_value_payloads() {
+        let secret = "You are a secret system prompt with a bearer token abc123";
+        let mcp_json = r#"{"mcpServers":{"x":{"command":"y"}}}"#;
+        let argv = vec![
+            "--model".to_string(),
+            "claude-opus".to_string(),
+            "--append-system-prompt".to_string(),
+            secret.to_string(),
+            "--mcp-config".to_string(),
+            mcp_json.to_string(),
+            "-c".to_string(),
+            "instructions=\"secret-instructions\"".to_string(),
+        ];
+
+        // info view: flag names only — no value ever appears.
+        let flags = arg_flag_names(&argv);
+        assert_eq!(flags, vec!["--model", "--append-system-prompt", "--mcp-config", "-c"]);
+        let flags_joined = flags.join(" ");
+        assert!(!flags_joined.contains("claude-opus"));
+        assert!(!flags_joined.contains("secret"));
+        assert!(!flags_joined.contains("abc123"));
+
+        // debug view: flags survive, every value payload is elided to
+        // a size (never the raw bytes).
+        let redacted = redacted_argv(&argv);
+        let redacted_joined = redacted.join(" ");
+        assert!(redacted_joined.contains("--append-system-prompt"));
+        assert!(redacted_joined.contains("--mcp-config"));
+        assert!(!redacted_joined.contains("secret"));
+        assert!(!redacted_joined.contains("abc123"));
+        assert!(!redacted_joined.contains("claude-opus"));
+        assert!(!redacted_joined.contains("instructions="));
+        // json payloads annotate their kind; sizes are rendered.
+        assert!(redacted.iter().any(|arg| arg.ends_with("json>")), "{redacted:?}");
+        assert!(redacted
+            .iter()
+            .any(|arg| arg == &format!("<{}>", bytesize::ByteSize(secret.len() as u64))));
+    }
+
+    #[test]
+    fn byte_size_renders_bytes_then_kib() {
+        assert_eq!(bytesize::ByteSize(512).to_string(), "512 B");
+        assert_eq!(bytesize::ByteSize(2150).to_string(), "2.1 KiB");
     }
 
     fn assert_json_key_before(body: &str, before: &str, after: &str) {

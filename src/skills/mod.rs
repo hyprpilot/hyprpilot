@@ -20,7 +20,7 @@ use std::sync::RwLock;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// Directory-name slug. Constructor enforces the
 /// `[a-z0-9][a-z0-9_-]*` shape so filesystem + RPC lookups share one
@@ -189,7 +189,11 @@ impl SkillsRegistry {
             *ord = order;
         }
         let dirs_display: Vec<String> = self.entries.iter().map(|e| e.dir.display().to_string()).collect();
-        info!(count, dirs = ?dirs_display, "skills registry: reloaded");
+        // `debug`, not `info`: the launcher's canonical "skills
+        // registry built" info line lives in `resolve::build_skills_registry_with`
+        // with stable field names; this per-reload detail would
+        // duplicate it in the launch narrative.
+        debug!(count, dirs = ?dirs_display, "skills registry: reloaded");
         Ok(())
     }
 
