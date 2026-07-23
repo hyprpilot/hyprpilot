@@ -391,12 +391,15 @@ Effective headless = `--prompt`/`--file` given **OR**
 `profile.headless == true` **OR** stdin is piped
 (`!std::io::stdin().is_terminal()`). `headless: Option<bool>` on
 `ProfileConfig` threads into `ResolvedProfile.headless`.
-`spawn::headless_prompt(prompt_override, …)` resolves the prompt:
-escape hatch (trailing `-- <provider args>`) → `None` first; else, when
-effective, an explicit `--prompt`/`--file` value (`prompt_override`,
-resolved in `LaunchArgs::prompt_override` — `--file` read via
-`paths::resolve_user`, read error surfaced cleanly) wins over piped
-stdin; otherwise **all** of stdin is buffered. Headless + a TTY with no
+`spawn::headless_prompt(prompt_override, …)` resolves the prompt: an
+explicit `--prompt`/`--file` value (`prompt_override`, resolved in
+`LaunchArgs::prompt_override` — `--file` read via `paths::resolve_user`,
+read error surfaced cleanly) is delivered FIRST — **even alongside**
+trailing `-- <provider args>`, so `-p`/`-f` COMPOSE with the escape
+hatch (prompt delivered + extra flags forwarded); else the escape hatch
+(trailing `-- <provider args>` with no `--prompt`/`--file`) → `None`;
+else, when effective, piped stdin wins and **all** of stdin is
+buffered. Headless + a TTY with no
 `--prompt`/`--file`/pipe → error; empty prompt → error. `--prompt` and
 `--file` are `conflicts_with` at the clap layer. **Profile selection:**
 a headless launch never opens the picker
@@ -431,10 +434,14 @@ always drain them (no deadlock against the blocking stdin write). The
 EOF close is what keeps `codex exec` from hanging on an idle pipe
 (openai/codex#20919). Interactive and opencode-headless keep the unix
 `exec()` handoff. **Escape hatch:** trailing `-- <provider args>`
-(non-empty `provider_args`) makes hyprpilot skip stdin entirely — fd0
-stays inherited so the vendor gets the raw pipe as input data, and the
-existing dedup suppresses the generated projection (wins even over
-`--prompt`/`--file`).
+(non-empty `provider_args`) **with no explicit `--prompt`/`--file`**
+makes hyprpilot skip stdin entirely — fd0 stays inherited so the vendor
+gets the raw pipe as input data, and the existing dedup suppresses the
+generated projection. An explicit `--prompt`/`--file` overrides this: it
+COMPOSES with the escape hatch — the prompt rides its usual delivery
+path (stdin for claude/codex, positional for opencode) while the
+`-- <args>` still append to argv (dedup lets a hand-passed flag suppress
+the generated equivalent).
 
 ### Multiplexer title
 
