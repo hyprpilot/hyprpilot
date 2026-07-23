@@ -118,7 +118,7 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: Some(PathBuf::from("/configured")),
-                env: BTreeMap::new(),
+                agent_override: None,
             }],
             ..Default::default()
         }

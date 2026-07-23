@@ -168,9 +168,37 @@ pub struct ProfileConfig {
     /// at consume time (mirrors `system_prompt`).
     #[garde(skip)]
     pub cwd: Option<PathBuf>,
-    /// Extra env vars the agent process inherits. `BTreeMap` for
-    /// deterministic serialisation; mirrors `AgentConfig.env`.
+    /// Groups the profile's agent-launch overrides — `command` /
+    /// `args` / `env`. Absent block leaves the base `[[agents]]`
+    /// entry entirely untouched; see `ProfileAgentOverride` for the
+    /// per-field merge semantics.
     #[serde(default)]
+    #[garde(dive)]
+    pub agent_override: Option<ProfileAgentOverride>,
+}
+
+/// `[profiles.agent_override]` — replaces / overlays the base
+/// agent's launch surface for this profile only.
+///
+/// - `command`: when `Some`, REPLACES `agent.command` wholesale.
+/// - `args`: when `Some`, REPLACES `agent.args` wholesale — flags
+///   have no stable key to append/merge by (`--flag value`, `-c
+///   k=v`, positionals), so this is a wholesale swap, not an
+///   append. Captains who want to add one flag to an otherwise
+///   long agent-args list restate the full list here.
+/// - `env`: OVERLAYS onto `agent.env` per-key (profile key wins on
+///   collision) — mirrors the prior top-level `ProfileConfig.env`
+///   overlay, now grouped under this block.
+///
+/// Every field left `None` (or the whole block absent) leaves the
+/// corresponding `agent.*` value untouched.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProfileAgentOverride {
+    #[garde(inner(length(min = 1)))]
+    pub command: Option<String>,
+    #[garde(inner(inner(length(min = 1))))]
+    pub args: Option<Vec<String>>,
     #[garde(skip)]
     pub env: BTreeMap<String, String>,
 }
@@ -455,7 +483,11 @@ cwd = "~/work"
 [profiles.mcp]
 skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
 
-[profiles.env]
+[profiles.agent_override]
+command = "claude-beta"
+args = ["--fallback-model", "x"]
+
+[profiles.agent_override.env]
 FOO = "bar"
 BAZ = "qux"
 "#,
@@ -486,9 +518,121 @@ BAZ = "qux"
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/vue"));
         assert_eq!(full.mode.as_deref(), Some("ask"));
         assert_eq!(full.cwd.as_deref(), Some(PathBuf::from("~/work")).as_deref());
-        assert_eq!(full.env.get("FOO").map(String::as_str), Some("bar"));
-        assert_eq!(full.env.get("BAZ").map(String::as_str), Some("qux"));
+        let over = full.agent_override.as_ref().expect("agent_override parsed");
+        assert_eq!(over.command.as_deref(), Some("claude-beta"));
+        assert_eq!(
+            over.args.as_deref(),
+            Some(&["--fallback-model".to_string(), "x".to_string()][..])
+        );
+        assert_eq!(over.env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(over.env.get("BAZ").map(String::as_str), Some("qux"));
         cfg.validate().expect("valid full profile");
+        fs::remove_file(&p).ok();
+    }
+
+    /// Absent `[profiles.agent_override]` block parses as `None` —
+    /// the explicit no-op shape `from_profile_explicit` treats as
+    /// "leave the base agent untouched".
+    #[test]
+    fn profile_agent_override_absent_parses_as_none() {
+        let p = write_tmp(
+            "profile-no-override.toml",
+            r#"
+[[profiles]]
+id = "bare"
+agent = "claude-code"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let bare = cfg.profiles.iter().find(|p| p.id == "bare").expect("bare entry");
+        assert!(
+            bare.agent_override.is_none(),
+            "agent_override must default to None when absent"
+        );
+        cfg.validate().expect("valid without agent_override");
+        fs::remove_file(&p).ok();
+    }
+
+    /// garde's `inner(inner(length(min = 1)))` rejects an
+    /// empty-string element inside `agent_override.args` — catches a
+    /// captain's stray `args = [""]` at config-load instead of
+    /// shipping a blank argv element to the vendor `exec`.
+    #[test]
+    fn profile_agent_override_rejects_empty_string_arg() {
+        let p = write_tmp(
+            "profile-blank-override-arg.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+
+[profiles.agent_override]
+args = ["--flag", ""]
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("empty-string arg must reject");
+        assert!(err.to_string().contains("agent_override"), "{err}");
+    }
+
+    /// garde's `inner(length(min = 1))` rejects an empty `command`
+    /// string on `agent_override`.
+    #[test]
+    fn profile_agent_override_rejects_empty_command() {
+        let p = write_tmp(
+            "profile-blank-override-command.toml",
+            r#"
+[[profiles]]
+id = "busted"
+agent = "claude-code"
+
+[profiles.agent_override]
+command = ""
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let err = cfg.validate().expect_err("empty command must reject");
+        assert!(err.to_string().contains("agent_override"), "{err}");
+    }
+
+    /// The OLD flat `profile.args` field is gone — `deny_unknown_fields`
+    /// hard-fails a config still authored against the superseded
+    /// design, instead of silently swallowing it.
+    #[test]
+    fn profile_rejects_old_flat_args_field() {
+        let p = write_tmp(
+            "profile-old-flat-args.toml",
+            r#"
+[[profiles]]
+id = "legacy"
+agent = "claude-code"
+args = ["--fallback-model", "x"]
+"#,
+        );
+        let err = load(Some(&p), None).expect_err("old flat `args` field must hard-fail at load");
+        assert!(err.to_string().contains("args"), "{err}");
+        fs::remove_file(&p).ok();
+    }
+
+    /// The OLD standalone top-level `[profiles.env]` block is gone —
+    /// env now only exists nested under `agent_override.env`.
+    /// `deny_unknown_fields` hard-fails configs still authored
+    /// against the superseded design.
+    #[test]
+    fn profile_rejects_old_top_level_env_block() {
+        let p = write_tmp(
+            "profile-old-top-level-env.toml",
+            r#"
+[[profiles]]
+id = "legacy"
+agent = "claude-code"
+
+[profiles.env]
+FOO = "bar"
+"#,
+        );
+        let err = load(Some(&p), None).expect_err("old top-level `env` block must hard-fail at load");
+        assert!(err.to_string().contains("env"), "{err}");
         fs::remove_file(&p).ok();
     }
 
