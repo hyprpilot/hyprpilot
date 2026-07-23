@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/hyprpilot/hyprpilot/compare/v3.1.0...v3.1.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* compose -p/-f headless prompt with trailing -- &lt;provider args&gt; ([#206](https://github.com/hyprpilot/hyprpilot/issues/206)) ([db3ebc0](https://github.com/hyprpilot/hyprpilot/commit/db3ebc00bb685fc41f090483b0799898e79557b0))
+
 ## [3.1.0](https://github.com/hyprpilot/hyprpilot/compare/v3.0.0...v3.1.0) (2026-07-23)
 
 
