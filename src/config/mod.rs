@@ -305,7 +305,9 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: None,
-                agent_override: None,
+                command: None,
+                args: None,
+                env: Default::default(),
             });
         }
         out

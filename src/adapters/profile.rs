@@ -138,30 +138,27 @@ impl ResolvedInstance {
         let effort = profile.effort.clone().or_else(|| agent.effort.clone());
         let system_prompt = Self::load_system_prompt(profile)?;
 
-        // Project the profile's `agent_override` block onto a clone
-        // of the agent so the spawn path (which reads `entry.command`
-        // / `entry.args` / iterates `entry.env` / reads `entry.cwd`)
-        // sees the merged shape. `${VAR}` interpolation against the
-        // daemon's process env happens later in
-        // `providers.rs::expand_value`, AFTER this overlay.
+        // Project the profile's flat `command` / `args` / `env`
+        // overrides onto a clone of the agent so the spawn path
+        // (which reads `entry.command` / `entry.args` / iterates
+        // `entry.env` / reads `entry.cwd`) sees the merged shape.
+        // `${VAR}` interpolation against the daemon's process env
+        // happens later in `providers.rs::expand_value`, AFTER this
+        // overlay.
         let mut agent = agent.clone();
 
-        if let Some(over) = profile.agent_override.as_ref() {
-            // `command` / `args` REPLACE the base agent's field
-            // wholesale when set — flags have no stable key to
-            // append/merge by (`--flag value`, `-c k=v`,
-            // positionals). `env` OVERLAYS per-key (profile key wins
-            // on collision), mirroring the prior top-level
-            // `ProfileConfig.env` overlay this block replaced.
-            if let Some(command) = over.command.as_ref() {
-                agent.command = command.clone();
-            }
-            if let Some(args) = over.args.as_ref() {
-                agent.args = args.clone();
-            }
-            for (k, v) in over.env.iter() {
-                agent.env.insert(k.clone(), v.clone());
-            }
+        // `command` / `args` REPLACE the base agent's field
+        // wholesale when set — flags have no stable key to
+        // append/merge by (`--flag value`, `-c k=v`, positionals).
+        // `env` OVERLAYS per-key (profile key wins on collision).
+        if let Some(command) = profile.command.as_ref() {
+            agent.command = command.clone();
+        }
+        if let Some(args) = profile.args.as_ref() {
+            agent.args = args.clone();
+        }
+        for (k, v) in profile.env.iter() {
+            agent.env.insert(k.clone(), v.clone());
         }
 
         // `profile.cwd` overrides `agent.cwd` when set. This is the
@@ -261,7 +258,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config::agents::ProfileAgentOverride;
     use crate::config::{AgentProvider, AgentsConfig};
 
     fn agent(id: &str, model: Option<&str>) -> AgentConfig {
@@ -296,7 +292,9 @@ mod tests {
             mcp: None,
             mode: None,
             cwd: None,
-            agent_override: None,
+            command: None,
+            args: None,
+            env: Default::default(),
         }
     }
 
@@ -463,10 +461,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_override_env_overlays_onto_agent_env_at_resolve() {
-        // `agent_override.env` entries overlay onto the spawned
-        // process env. Override values win on key collision (the
-        // override is the more specific scope); keys only on the
+    fn flat_env_overlays_onto_agent_env_at_resolve() {
+        // Profile-level `env` entries overlay onto the spawned
+        // process env. Profile values win on key collision (the
+        // profile is the more specific scope); keys only on the
         // agent side survive untouched.
         let mut a = agent("cc", None);
 
@@ -474,14 +472,10 @@ mod tests {
         a.env.insert("OVERRIDDEN".into(), "agent-value".into());
         let mut p = profile("ask", "cc", None, None);
 
-        p.agent_override = Some(ProfileAgentOverride {
-            command: None,
-            args: None,
-            env: BTreeMap::from([
-                ("OVERRIDDEN".to_string(), "override-value".to_string()),
-                ("OVERRIDE_ONLY".to_string(), "from-override".to_string()),
-            ]),
-        });
+        p.env = BTreeMap::from([
+            ("OVERRIDDEN".to_string(), "override-value".to_string()),
+            ("OVERRIDE_ONLY".to_string(), "from-override".to_string()),
+        ]);
         let cfg = Config {
             agents: AgentsConfig { agents: vec![a] },
             profiles: vec![p],
@@ -501,9 +495,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_override_absent_leaves_agent_command_args_env_untouched() {
-        // No `agent_override` block at all — the base agent's
-        // command / args / env survive resolution byte-for-byte.
+    fn flat_overrides_absent_leave_agent_command_args_env_untouched() {
+        // No `command` / `args` / `env` set on the profile at all —
+        // the base agent's command / args / env survive resolution
+        // byte-for-byte.
         let mut a = agent("cc", None);
 
         a.command = "base-command".into();
@@ -522,17 +517,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_override_command_replaces_base_agent_command() {
+    fn flat_command_replaces_base_agent_command() {
         let mut a = agent("cc", None);
 
         a.command = "claude".into();
         let mut p = profile("yolo", "cc", None, None);
 
-        p.agent_override = Some(ProfileAgentOverride {
-            command: Some("claude-beta".into()),
-            args: None,
-            env: Default::default(),
-        });
+        p.command = Some("claude-beta".into());
         let cfg = Config {
             agents: AgentsConfig { agents: vec![a] },
             profiles: vec![p],
@@ -544,20 +535,16 @@ mod tests {
     }
 
     #[test]
-    fn agent_override_args_replace_base_agent_args_wholesale() {
-        // `agent_override.args` REPLACES the base agent's `args` —
+    fn flat_args_replace_base_agent_args_wholesale() {
+        // Profile-level `args` REPLACES the base agent's `args` —
         // NOT an append. The base agent's `--verbose` must be gone
-        // once an override list is set.
+        // once a profile-level list is set.
         let mut a = agent("cc", None);
 
         a.args = vec!["--verbose".into()];
         let mut p = profile("yolo", "cc", None, None);
 
-        p.agent_override = Some(ProfileAgentOverride {
-            command: None,
-            args: Some(vec!["--fallback-model".into(), "x".into()]),
-            env: Default::default(),
-        });
+        p.args = Some(vec!["--fallback-model".into(), "x".into()]);
         let cfg = Config {
             agents: AgentsConfig { agents: vec![a] },
             profiles: vec![p],
@@ -568,36 +555,32 @@ mod tests {
         assert_eq!(
             r.agent.args,
             vec!["--fallback-model".to_string(), "x".to_string()],
-            "override args must wholesale-replace the base agent's args, not append"
+            "profile args must wholesale-replace the base agent's args, not append"
         );
     }
 
-    // ── root `[[patches]]` reach `agent_override.args` ────────────
+    // ── root `[[patches]]` reach the profile's flat `args` ────────
 
     #[test]
-    fn root_patch_appends_onto_agent_override_args_via_primitive_array_merge() {
+    fn root_patch_appends_onto_profile_args_via_primitive_array_merge() {
         // Patches merge primitive arrays via append+dedupe
         // (`config::patch::merge_primitive_arrays`) by default — a
-        // patch's `agent_override.args` list appends onto whatever
-        // the profile's own override already declares. This is
-        // separate from the RESOLVE-time replace semantics `over.args`
-        // gets folded onto `agent.args` with — the patch merge only
-        // decides what `profile.agent_override.args` itself ends up
-        // containing before that resolve-time replace runs.
+        // patch's `args` list appends onto whatever the profile
+        // already declares. This is separate from the RESOLVE-time
+        // replace semantics `profile.args` gets folded onto
+        // `agent.args` with — the patch merge only decides what
+        // `profile.args` itself ends up containing before that
+        // resolve-time replace runs.
         let mut p = profile("yolo", "cc", None, None);
 
-        p.agent_override = Some(ProfileAgentOverride {
-            command: None,
-            args: Some(vec!["--verbose".into()]),
-            env: Default::default(),
-        });
+        p.args = Some(vec!["--verbose".into()]);
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
             },
             profiles: vec![p],
             patches: Some(vec![serde_json::json!({
-                "agent_override": { "args": ["--fallback-model", "x"] },
+                "args": ["--fallback-model", "x"],
             })]),
             ..Default::default()
         };
@@ -611,24 +594,20 @@ mod tests {
     }
 
     #[test]
-    fn root_patch_replace_directive_wholesale_replaces_agent_override_args() {
+    fn root_patch_replace_directive_wholesale_replaces_profile_args() {
         // `[{"$patch": "replace"}, ...rest]` sentinel drops the
-        // profile's own `agent_override.args` list wholesale instead
-        // of the default append+dedupe primitive-array merge.
+        // profile's own `args` list wholesale instead of the default
+        // append+dedupe primitive-array merge.
         let mut p = profile("yolo", "cc", None, None);
 
-        p.agent_override = Some(ProfileAgentOverride {
-            command: None,
-            args: Some(vec!["--old-flag".into()]),
-            env: Default::default(),
-        });
+        p.args = Some(vec!["--old-flag".into()]);
         let cfg = Config {
             agents: AgentsConfig {
                 agents: vec![agent("cc", None)],
             },
             profiles: vec![p],
             patches: Some(vec![serde_json::json!({
-                "agent_override": { "args": [{ "$patch": "replace" }, "--new-flag"] },
+                "args": [{ "$patch": "replace" }, "--new-flag"],
             })]),
             ..Default::default()
         };
@@ -640,7 +619,7 @@ mod tests {
 
     #[test]
     fn root_patch_introducing_empty_string_arg_fails_post_patch_validation() {
-        // The `agent_override.args` field's garde rule
+        // The profile's `args` field's garde rule
         // (`inner(inner(length(min = 1)))`) re-runs after the patch
         // merge — an empty-string arg introduced by a patch must
         // reject just as loudly as one authored directly on the
@@ -651,7 +630,7 @@ mod tests {
             },
             profiles: vec![profile("yolo", "cc", None, None)],
             patches: Some(vec![serde_json::json!({
-                "agent_override": { "args": ["--flag", ""] },
+                "args": ["--flag", ""],
             })]),
             ..Default::default()
         };

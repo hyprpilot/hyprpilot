@@ -995,11 +995,11 @@ mod tests {
     }
 
     /// `resolved.agent.args` already carries the resolve-time
-    /// `agent_override.args` REPLACE merge by the time `build_command`
+    /// profile `args` REPLACE merge by the time `build_command`
     /// runs — that merge happens in
     /// `adapters::profile::ResolvedInstance::from_profile_explicit`,
     /// not here (pinned separately by
-    /// `agent_override_args_replace_base_agent_args_wholesale` in
+    /// `flat_args_replace_base_agent_args_wholesale` in
     /// `adapters/profile.rs`). This helper stands in for that
     /// already-resolved shape, isolating `effort` / `mode` (both
     /// `None`) so the ordering / suppression assertions only have to
@@ -1125,7 +1125,7 @@ mod tests {
         assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--model").count(), 1);
     }
 
-    /// Resolved argv order: `agent_override`-replaced `agent.args →
+    /// Resolved argv order: profile-replaced `agent.args →
     /// generated…`. `resolved.agent.args` here stands in for the
     /// already-replaced list — a `--fallback-model` override arg must
     /// precede the generated `--model` flag `build_command` appends
@@ -1184,11 +1184,11 @@ mod tests {
         );
     }
 
-    /// `${VAR}` expansion runs AFTER the `agent_override.env`
+    /// `${VAR}` expansion runs AFTER the profile-level `env`
     /// overlay, not before. `resolved.agent.env` here stands in for
     /// the already-overlaid map
     /// `adapters::profile::from_profile_explicit` produces (pinned
-    /// separately by `agent_override_env_overlays_onto_agent_env_at_resolve`
+    /// separately by `flat_env_overlays_onto_agent_env_at_resolve`
     /// in `adapters/profile.rs`) — this test pins the SECOND half of
     /// that pipeline: an override-authored env value participates in
     /// `expand_value` exactly like an agent-authored one.

@@ -118,7 +118,9 @@ mod tests {
                 mcp: None,
                 mode: None,
                 cwd: Some(PathBuf::from("/configured")),
-                agent_override: None,
+                command: None,
+                args: None,
+                env: Default::default(),
             }],
             ..Default::default()
         }
