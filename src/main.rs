@@ -1,12 +1,12 @@
 mod adapters;
 mod config;
-mod direct_spawn;
 mod logging;
 mod mcp;
 mod paths;
 mod profiles;
 mod resolve;
 mod skills;
+mod spawn;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -39,7 +39,7 @@ struct Cli {
     log_level: Option<logging::LogLevel>,
 
     #[command(flatten)]
-    launch: direct_spawn::LaunchArgs,
+    launch: spawn::LaunchArgs,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -68,7 +68,7 @@ fn main() -> Result<ExitCode> {
         // Bare `hyprpilot [--profile <id>]` IS the launch: pick the
         // profile interactively when none is given, then exec into
         // the resolved vendor CLI.
-        None => direct_spawn::run(cfg, cli.launch),
+        None => spawn::run(cfg, cli.launch),
         Some(Command::Profiles(args)) => profiles::run(cfg, args),
         Some(Command::Mcp(args)) => {
             // The MCP sidecar owns stdin/stdout for its protocol;
