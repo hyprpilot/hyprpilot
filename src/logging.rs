@@ -104,3 +104,55 @@ pub fn apply_config_level(
     tracing::debug!(%level, "logging: applied [logging].level");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use tracing_subscriber::{reload, EnvFilter, Registry};
+
+    use super::*;
+
+    /// The reload `Layer` must stay alive for the handle's `Weak` to
+    /// upgrade — the returned guard keeps it in scope.
+    fn handle_at(initial: &str) -> (reload::Layer<EnvFilter, Registry>, LogReloadHandle) {
+        reload::Layer::<EnvFilter, Registry>::new(EnvFilter::new(initial))
+    }
+
+    fn current(handle: &LogReloadHandle) -> String {
+        handle.clone_current().map(|f| f.to_string()).unwrap_or_default()
+    }
+
+    #[test]
+    fn apply_config_level_precedence() {
+        // Single test so RUST_LOG mutation stays serial even under
+        // `cargo test`'s in-process threads.
+        let saved = std::env::var_os("RUST_LOG");
+        std::env::remove_var("RUST_LOG");
+
+        // Branch 4: --log-level unset, RUST_LOG unset, config set →
+        // the config level is applied.
+        let (_keep, handle) = handle_at("info");
+        apply_config_level(&handle, None, Some(LogLevel::Debug)).unwrap();
+        assert!(current(&handle).contains("debug"), "config level must apply");
+
+        // Branch 3: config None → no-op, filter untouched.
+        let (_keep, handle) = handle_at("info");
+        apply_config_level(&handle, None, None).unwrap();
+        assert!(current(&handle).contains("info") && !current(&handle).contains("debug"));
+
+        // Branch 1: --log-level set wins → config ignored.
+        let (_keep, handle) = handle_at("info");
+        apply_config_level(&handle, Some(LogLevel::Warn), Some(LogLevel::Debug)).unwrap();
+        assert!(current(&handle).contains("info") && !current(&handle).contains("debug"));
+
+        // Branch 2: RUST_LOG set wins → config ignored.
+        std::env::set_var("RUST_LOG", "trace");
+        let (_keep, handle) = handle_at("info");
+        apply_config_level(&handle, None, Some(LogLevel::Debug)).unwrap();
+        assert!(current(&handle).contains("info") && !current(&handle).contains("debug"));
+
+        match saved {
+            Some(v) => std::env::set_var("RUST_LOG", v),
+            None => std::env::remove_var("RUST_LOG"),
+        }
+    }
+}

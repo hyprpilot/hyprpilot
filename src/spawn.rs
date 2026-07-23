@@ -33,7 +33,6 @@ pub struct LaunchArgs {
 }
 
 pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
-    let cwd = args.cwd.or_else(|| std::env::current_dir().ok());
     let config_patches = args.with_config.into_patches()?;
 
     crate::adapters::cli::run(
@@ -41,7 +40,11 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
         SpawnRequest {
             profile_id: args.profile_id,
             agent_id: args.agent_id,
-            cwd,
+            // Only the EXPLICIT `--cwd` flag rides through here. The
+            // `current_dir()` fallback is applied last, inside
+            // `cli::run`, so a configured profile/agent `cwd` is not
+            // clobbered when the flag is omitted.
+            cwd: args.cwd,
             mode: args.mode,
             model: args.model,
             config_patches,

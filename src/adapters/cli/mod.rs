@@ -44,9 +44,7 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     let (mut resolved, profile) =
         resolve_into_instance_and_profile(&cfg, agent_id.as_deref(), Some(profile_id.as_str()), &config_patches)?;
 
-    if let Some(cwd) = cwd {
-        resolved.agent.cwd = Some(cwd);
-    }
+    resolved.agent.cwd = resolve_launch_cwd(cwd, resolved.agent.cwd.take());
     if model.is_some() {
         resolved.model = model;
     }
@@ -94,6 +92,16 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     }
 
     providers::exec(command)
+}
+
+/// cwd precedence for the launch: explicit `--cwd` flag wins, then
+/// the profile/agent `cwd` (already projected onto
+/// `resolved.agent.cwd` by `from_profile_explicit`), and only when
+/// neither is set does `current_dir()` fill in. Kept a free fn so the
+/// precedence — the K-740 bug's fix — is unit-testable without an
+/// `exec()` at the end of `run`.
+fn resolve_launch_cwd(flag: Option<PathBuf>, configured: Option<PathBuf>) -> Option<PathBuf> {
+    flag.or(configured).or_else(|| std::env::current_dir().ok())
 }
 
 pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[Value]) -> Vec<ProfileSummary> {
@@ -171,6 +179,56 @@ mod tests {
         let profiles = list_profiles(&cfg_with_profile_cwd(), None, &[]);
 
         assert_eq!(profiles[0].cwd.as_deref(), Some("/configured"));
+    }
+
+    // ── cwd precedence (K-740) ───────────────────────────────────
+
+    #[test]
+    fn launch_cwd_prefers_explicit_flag() {
+        assert_eq!(
+            resolve_launch_cwd(Some(PathBuf::from("/flag")), Some(PathBuf::from("/configured"))),
+            Some(PathBuf::from("/flag")),
+            "an explicit --cwd flag wins over the configured profile/agent cwd"
+        );
+    }
+
+    #[test]
+    fn launch_cwd_keeps_configured_cwd_when_flag_omitted() {
+        // The K-740 regression: with no --cwd flag the configured
+        // profile/agent cwd (already projected onto
+        // `resolved.agent.cwd`) must survive — it used to be clobbered
+        // by an eagerly-resolved current_dir().
+        assert_eq!(
+            resolve_launch_cwd(None, Some(PathBuf::from("/configured"))),
+            Some(PathBuf::from("/configured"))
+        );
+    }
+
+    #[test]
+    fn launch_cwd_falls_back_to_current_dir_when_neither_set() {
+        assert_eq!(resolve_launch_cwd(None, None), std::env::current_dir().ok());
+    }
+
+    #[test]
+    fn configured_profile_cwd_resolves_when_flag_omitted() {
+        // End-to-end at the resolve layer: a profile `cwd` projects
+        // onto `resolved.agent.cwd`, and the launch-cwd precedence
+        // then preserves it when `--cwd` is omitted — exactly the
+        // value the `cli: profile resolved` info line surfaces.
+        let cfg = cfg_with_profile_cwd();
+        let (mut resolved, _profile) = resolve_into_instance_and_profile(&cfg, None, Some("engineer"), &[]).unwrap();
+        resolved.agent.cwd = resolve_launch_cwd(None, resolved.agent.cwd.take());
+
+        assert_eq!(resolved.agent.cwd.as_deref(), Some(Path::new("/configured")));
+    }
+
+    #[test]
+    fn explicit_flag_overrides_configured_profile_cwd() {
+        let cfg = cfg_with_profile_cwd();
+        let (mut resolved, _profile) = resolve_into_instance_and_profile(&cfg, None, Some("engineer"), &[]).unwrap();
+        resolved.agent.cwd = resolve_launch_cwd(Some(PathBuf::from("/flag")), resolved.agent.cwd.take());
+
+        assert_eq!(resolved.agent.cwd.as_deref(), Some(Path::new("/flag")));
     }
 
     #[test]

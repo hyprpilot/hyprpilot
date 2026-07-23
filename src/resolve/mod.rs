@@ -302,3 +302,80 @@ pub(crate) fn resolve_into_instance_and_profile(
 
     Ok((resolved, patched))
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::config::McpConfig;
+    use crate::mcp::{HyprpilotExtension, MCPDefinition};
+
+    fn cfg_with_globs(accept: &[&str], reject: &[&str]) -> McpConfig {
+        McpConfig {
+            enabled: Some(true),
+            skills: None,
+            auto_accept_tools: Some(accept.iter().map(|s| s.to_string()).collect()),
+            auto_reject_tools: Some(reject.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    fn def(accept: Vec<String>, reject: Vec<String>) -> MCPDefinition {
+        MCPDefinition {
+            name: "srv".into(),
+            raw: json!({ "command": "srv" }),
+            hyprpilot: HyprpilotExtension {
+                include_tools: None,
+                exclude_tools: Vec::new(),
+                auto_accept_tools: accept,
+                auto_reject_tools: reject,
+            },
+            source: "<test>".into(),
+        }
+    }
+
+    #[test]
+    fn glob_defaults_copied_onto_defs_without_per_server_policy() {
+        let cfg = cfg_with_globs(&["read_*"], &["delete_*"]);
+        let mut defs = vec![def(Vec::new(), Vec::new())];
+        apply_mcp_glob_defaults(&mut defs, &cfg);
+
+        assert_eq!(defs[0].hyprpilot.auto_accept_tools, vec!["read_*".to_string()]);
+        assert_eq!(defs[0].hyprpilot.auto_reject_tools, vec!["delete_*".to_string()]);
+    }
+
+    #[test]
+    fn glob_defaults_preserve_existing_per_server_overrides() {
+        let cfg = cfg_with_globs(&["read_*"], &["delete_*"]);
+        let mut defs = vec![def(vec!["custom_*".into()], vec!["nuke_*".into()])];
+        apply_mcp_glob_defaults(&mut defs, &cfg);
+
+        assert_eq!(defs[0].hyprpilot.auto_accept_tools, vec!["custom_*".to_string()]);
+        assert_eq!(defs[0].hyprpilot.auto_reject_tools, vec!["nuke_*".to_string()]);
+    }
+
+    #[test]
+    fn glob_defaults_fill_only_the_empty_axis() {
+        // Accept already set, reject empty → only reject gets the
+        // default; the set accept axis is left untouched.
+        let cfg = cfg_with_globs(&["read_*"], &["delete_*"]);
+        let mut defs = vec![def(vec!["custom_*".into()], Vec::new())];
+        apply_mcp_glob_defaults(&mut defs, &cfg);
+
+        assert_eq!(defs[0].hyprpilot.auto_accept_tools, vec!["custom_*".to_string()]);
+        assert_eq!(defs[0].hyprpilot.auto_reject_tools, vec!["delete_*".to_string()]);
+    }
+
+    #[test]
+    fn count_matching_patches_counts_only_applicable_patches() {
+        let patches = vec![
+            json!({ "model": "a" }),
+            json!({ "$match": { "profile": "work/*" }, "model": "b" }),
+            json!({ "$match": { "profile": "personal/*" }, "model": "c" }),
+        ];
+
+        assert_eq!(count_matching_patches("personal/claude/opus", &patches, "test"), 2);
+        assert_eq!(count_matching_patches("work/claude/opus", &patches, "test"), 2);
+        assert_eq!(count_matching_patches("other/id", &patches, "test"), 1);
+    }
+}

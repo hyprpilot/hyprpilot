@@ -641,6 +641,47 @@ mod tests {
     }
 
     #[test]
+    fn profile_cwd_projects_onto_resolved_agent_cwd() {
+        // K-740: the profile's `cwd` must land on `resolved.agent.cwd`
+        // so the launch path (and the `current_dir()` fallback in
+        // `cli::run`) sees the configured directory. Without this the
+        // agent's own `cwd` (or none) leaks through.
+        let mut a = agent("cc", None);
+
+        a.cwd = Some(PathBuf::from("/agent-cwd"));
+        let mut p = profile("ask", "cc", None, None);
+
+        p.cwd = Some(PathBuf::from("/profile-cwd"));
+        let cfg = Config {
+            agents: AgentsConfig { agents: vec![a] },
+            profiles: vec![p],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+
+        assert_eq!(
+            r.agent.cwd.as_deref(),
+            Some(std::path::Path::new("/profile-cwd")),
+            "profile cwd overrides the agent's own cwd"
+        );
+    }
+
+    #[test]
+    fn profile_cwd_absent_leaves_agent_cwd() {
+        let mut a = agent("cc", None);
+
+        a.cwd = Some(PathBuf::from("/agent-cwd"));
+        let cfg = Config {
+            agents: AgentsConfig { agents: vec![a] },
+            profiles: vec![profile("ask", "cc", None, None)],
+            ..Default::default()
+        };
+        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+
+        assert_eq!(r.agent.cwd.as_deref(), Some(std::path::Path::new("/agent-cwd")));
+    }
+
+    #[test]
     fn profile_mode_propagates_to_resolved_instance() {
         let mut p = profile("ask", "cc", None, None);
 
