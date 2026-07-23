@@ -196,14 +196,15 @@ system_prompt = [
   `defaults.toml` seeds **zero** profiles (captains supply their own,
   so the profile list is never polluted with a default-pretender).
 - **Profile override surface:** at resolve time the profile's
-  `model` / `effort` / `mode` / `cwd` / `env` override the agent entry
-  (profile is the more specific scope; env merges key-by-key, profile
-  wins on collision). `--agent <id>` swaps the whole agent entry for
-  the launch. *(A profile-level `command` / `args` / `env` agent
-  override — `[profiles.agent_override]`, Replace semantics for
-  `args` — is landing via K-735 / #181 in `config/agents.rs` +
-  `adapters/profile.rs`; it is **not merged on `beta` yet**, so do not
-  author it in config until that ships.)*
+  `model` / `effort` / `mode` / `cwd` override the agent entry (profile
+  is the more specific scope). `--agent <id>` swaps the whole agent
+  entry for the launch. A `[[profiles]]` entry also carries flat
+  top-level `command: Option<String>`, `args: Option<Vec<String>>`,
+  and `env: BTreeMap<String, String>` fields — no nested override
+  block. When set, `command` / `args` each REPLACE the base agent's
+  value wholesale (no append/merge — flags have no stable key to
+  merge by); `env` OVERLAYS the base agent's `env` per-key, with the
+  profile's key winning on collision and absent keys left untouched.
 
 ### Resolution (single source of truth)
 
