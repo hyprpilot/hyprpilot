@@ -4,82 +4,39 @@
 version: "3"
 
 vars:
-  # Route node-based commands through `mise exec` so the
-  # mise-pinned node 24 + pnpm 10.33.4 always run, regardless of
-  # which `node` / `pnpm` happens to come first on the developer's
-  # PATH (bun's node shim, system node, an older pnpm). Matches
-  # what CI does — node version mismatches silently let TS errors
-  # slip locally that CI then catches.
+  # Route node-based commands through `mise exec` so the mise-pinned
+  # node 24 + pnpm 10 always run the docs/ build, regardless of which
+  # `node` / `pnpm` happens to come first on the developer's PATH
+  # (system node, an older pnpm). Matches what CI does — node version
+  # mismatches silently let TS errors slip locally that CI then catches.
   pnpm: mise exec -- pnpm
-  tauri: mise exec -- ./node_modules/.bin/tauri
 
 env:
   # Default `RUST_LOG` for every `task` invocation (notably `task run`).
-  # Bare `warn` keeps daemon-wide noise low; per-target `=trace`
-  # enables the diagnostic stamps we rely on across the live-event
-  # pipeline. Captains override per-shell when they need a tighter
-  # or noisier filter:
+  # The launcher resolves a profile from layered config and `exec()`s
+  # into the vendor CLI, so `hyprpilot`'s own tracing only covers the
+  # brief resolve phase. `warn` keeps the pre-exec output quiet;
+  # `hyprpilot=info` surfaces config-load + resolution breadcrumbs.
+  # Captains override per-shell:
   #   RUST_LOG='trace' task run                  # everything at trace
-  #   RUST_LOG='warn,hyprpilot=info' task run    # near-silent
-  #
-  # Targets in the default set:
-  #   * `hyprpilot=info`        — daemon-wide breadcrumbs (config
-  #     load, registry actions, RPC dispatch entries).
-  #   * `acp::emit=trace`       — actor → broadcast lifecycle events
-  #     (TurnStarted/Ended, UsageUpdate, InstanceMeta, ...).
-  #     `acp::emit::chunk` (transcript / terminal) is OFF by default
-  #     (~30 lines/sec during streaming); opt in per shell.
-  #   * `tauri::emit=trace`     — webview-bound app.emit lifecycle
-  #     calls. `tauri::emit::chunk` opt-in.
-  #   * `snapshot::mirror=trace` — mirror.apply lifecycle writes.
-  #     `snapshot::mirror::chunk` opt-in.
-  #   * `snapshot::meta=trace`  — every served meta snapshot RPC.
-  #   * `snapshot::chat=trace`  — every served chat-page RPC.
-  #   * `acp::wire=trace`,`acp::thought=trace` — raw vendor wire +
-  #     thought-extraction outcomes.
-  #   * `webview=trace`         — UI-side `log.trace(...)` calls.
-  #     tauri-plugin-log targets `webview` / `webview:<file:line>`.
-  #     Without this the daemon stderr only shows the Rust half of
-  #     the pipeline and a captain debugging UI events sees nothing.
-  RUST_LOG: warn,hyprpilot=info,acp::emit=trace,tauri::emit=trace,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace,acp::wire=trace,acp::thought=trace,webview=trace
+  #   RUST_LOG='warn' task run                   # near-silent
+  RUST_LOG: warn,hyprpilot=info
 
 tasks:
   install:
     desc: Install Rust and frontend dependencies.
     cmds:
-      - cargo fetch --manifest-path src-tauri/Cargo.toml
+      - cargo fetch
       - "{{ .pnpm }} install"
 
   test:
-    desc: Run Rust (cargo-nextest) and frontend test suites; both finish before task fails.
-    deps: [test:rust, test:ui]
+    desc: Run the Rust (cargo-nextest) test suite.
+    deps: [test:rust]
 
   test:rust:
     desc: Run the Rust nextest suite, surfacing every failure (no fail-fast).
     cmds:
-      - cargo nextest run --manifest-path src-tauri/Cargo.toml --all-targets --no-fail-fast
-
-  test:ui:
-    desc: Run the Vitest component suite (colocated *.test.ts).
-    cmds:
-      - "{{ .pnpm }} --filter hyprpilot-ui test"
-
-  test:e2e:
-    desc: Run Playwright e2e against the bridged debug binary.
-    cmds:
-      - TAURI_CONFIG="$(cat src-tauri/tauri.conf.e2e.json)" cargo build --manifest-path src-tauri/Cargo.toml --features e2e-testing
-      - "{{ .pnpm }} --filter hyprpilot-ui build"
-      - "{{ .pnpm }} --filter hyprpilot-e2e test"
-
-  test:e2e:live:
-    desc: Run Playwright e2e in tauri-mode against a real daemon spawned with claude-code + haiku (tests/e2e/fixtures/live-config.toml). Network-bound — bunx fetches the ACP package on first run.
-    env:
-      HYPRPILOT_E2E_MODE: tauri
-      HYPRPILOT_E2E_CONFIG: tests/e2e/fixtures/live-config.toml
-    cmds:
-      - cargo build --manifest-path src-tauri/Cargo.toml
-      - "{{ .pnpm }} --filter hyprpilot-ui build"
-      - "{{ .pnpm }} --filter hyprpilot-e2e test"
+      - cargo nextest run --all-targets --no-fail-fast
 
   format:
     desc: Format Rust and every pnpm package.
@@ -88,7 +45,7 @@ tasks:
   format:rust:
     desc: Run `cargo fmt` across the Rust workspace.
     cmds:
-      - cargo fmt --manifest-path src-tauri/Cargo.toml --all
+      - cargo fmt --all
 
   format:node:
     desc: Run the `format` script in every pnpm package that defines one.
@@ -102,8 +59,8 @@ tasks:
   lint:rust:
     desc: "`cargo fmt --check` + `cargo clippy` on the Rust workspace."
     cmds:
-      - cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-      - cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets -- -D warnings
 
   lint:node:
     desc: Run the `lint` script in every pnpm package that defines one.
@@ -111,24 +68,24 @@ tasks:
       - "{{ .pnpm }} -r --parallel --if-present run lint"
 
   run:
-    desc: Run the Tauri app with live-reload.
+    desc: Build and run the launcher binary.
     cmds:
-      - "{{ .tauri }} dev -- -- {{ .CLI_ARGS }}"
+      - cargo run -- {{ .CLI_ARGS }}
 
   cli:
-    desc: Invoke the built debug binary against an already-running
+    desc: Invoke the built debug binary.
     cmds:
       - ./target/debug/hyprpilot {{ .CLI_ARGS }}
 
   build:
-    desc: Build a debug Tauri bundle.
+    desc: Build the debug launcher binary.
     cmds:
-      - "{{ .tauri }} build --debug"
+      - cargo build
 
   release:
-    desc: Build a release Tauri bundle.
+    desc: Build the release launcher binary.
     cmds:
-      - "{{ .tauri }} build"
+      - cargo build --release
 
   docs:dev:
     desc: VitePress dev server for the documentation site.
@@ -144,8 +101,3 @@ tasks:
     desc: Preview the production-built documentation site locally.
     cmds:
       - "{{ .pnpm }} --filter hyprpilot-docs run preview"
-
-  docs:screenshots:
-    desc: Capture all documentation screenshots via Playwright (requires UI dev server).
-    cmds:
-      - "{{ .pnpm }} --filter hyprpilot-docs run screenshots"

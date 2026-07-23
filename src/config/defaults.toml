@@ -1,0 +1,72 @@
+# `[logging]` is intentionally NOT seeded. Leaving `logging.level`
+# unset lets the code fallback in `logging::init` — `warn,hyprpilot=info`
+# — own the default, keeping third-party crates (tokio / rmcp / nucleo)
+# at `warn` while surfacing hyprpilot's own `info` narrative. Seeding
+# `level = "info"` here would instead force a flat global `info` that
+# drowns the launcher's lines under vendor-SDK chatter. Set
+# `[logging] level` in your own config to override.
+
+# `[multiplexer]` — best-effort tmux/zellij window/tab rename right
+# before `exec()`-ing into the vendor CLI. Titles as
+# `hyprpilot@<resolved-cwd-basename>` so the captain can tell agent
+# panes apart. No-op outside tmux/zellij regardless of this flag.
+[multiplexer]
+set_title = true
+
+# `[[patches]]` — root-level profile patches. Each patch is a
+# partial `ProfileConfig` shape that gets folded onto whichever
+# profile the captain picked. An optional `$match.profile` glob
+# filters which profiles a patch applies to — unset means "applies
+# to every profile". Same strategic-merge engine the `--with-config`
+# flag uses; `$patch: replace` / `$deleteFromPrimitiveList/<field>`
+# directives compose.
+#
+# **Additive across config layers**: a user config layer's
+# `[[patches]]` EXTENDS this list rather than replacing it, so the
+# seed below always survives. Captains add more `[[patches]]` entries
+# (later wins on field collision) or override the `mcp` field
+# per-profile; to wipe an earlier patch's field, fold a later patch
+# with `$patch: replace` inside the field body.
+#
+# Default seed: one unscoped patch that points the in-tree `hyprpilot`
+# MCP server at the XDG skills directory. Only the skills dir lives
+# here — `enabled = true`, `autoAcceptTools = ["*"]`, and
+# `autoRejectTools = []` are the typed `McpConfig::default()` the
+# resolver backfills, so those values are single-sourced in Rust and
+# not duplicated in this file.
+[[patches]]
+[patches.mcp]
+[[patches.mcp.skills]]
+dir = "~/.config/hyprpilot/skills"
+
+# `[[agents]]` — vendor registry. `command` / `args` are the NATIVE
+# vendor CLI the launcher `exec`s into directly (no ACP bridge). The
+# launcher projects the resolved profile's model / effort / mode /
+# system-prompt / MCP catalog onto each vendor's native flags at
+# spawn time; bare `args = []` launches the vendor's interactive TUI.
+[[agents]]
+id = "claude-code"
+provider = "claude-code"
+command = "claude"
+args = []
+
+[[agents]]
+id = "codex"
+provider = "codex"
+command = "codex"
+args = []
+
+[[agents]]
+id = "opencode"
+provider = "opencode"
+command = "opencode"
+args = []
+
+# `[[profiles]]` — captain-supplied. NOT seeded by defaults so a
+# fresh install presents a single source of truth for "which profiles
+# exist": the captain's on-disk config. Validation rejects an empty
+# `[[profiles]]` list at config-load, so fresh installs without any
+# profile won't launch — the captain configures at least one before
+# spawning. `[profile] default` picks which profile runs when the
+# positional `[PROFILE]` argument isn't passed; required when more than
+# one profile exists.

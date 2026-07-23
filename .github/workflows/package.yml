@@ -35,10 +35,9 @@ jobs:
           # tarball checksums to refresh.
           test: true
           # `test: true` runs `makepkg --check`; default invocation
-          # skips dependency installation, so the prepare()'s
-          # `pnpm install` line crashes at line 43 with
-          # `pnpm: command not found`. `--syncdeps` makes the action
-          # `pacman -S --noconfirm` the makedepends (nodejs, pnpm,
-          # cargo, pkgconf) before the build.
+          # skips dependency installation, so `cargo build` crashes
+          # with `cargo: command not found`. `--syncdeps` makes the
+          # action `pacman -S --noconfirm` the makedepends (git,
+          # git-lfs, cargo, pkgconf) before the build.
           test_flags: --syncdeps --noconfirm
           force_push: false
