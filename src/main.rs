@@ -62,18 +62,37 @@ fn main() -> Result<ExitCode> {
     let log_reload = logging::init(cli.log_level)?;
 
     let cfg = config::load(cli.config.as_deref(), cli.config_profile.as_deref())?;
-    cfg.validate()?;
     logging::apply_config_level(&log_reload, cli.log_level, cfg.logging.level)?;
 
     match cli.command {
         // Bare `hyprpilot [PROFILE]` IS the launch: pick the profile
         // interactively when none is given, then exec into the
         // resolved vendor CLI.
-        None => spawn::run(cfg, cli.launch),
-        Some(Command::Profiles(args)) => profiles::run(cfg, args),
+        None => {
+            cfg.validate()?;
+            spawn::run(cfg, cli.launch)
+        }
+        Some(Command::Profiles(args)) => {
+            // A subcommand is not a launch: launch-only args (positional
+            // profile, `--cwd`, `--mode`, trailing `-- <args>`) can't
+            // apply, so reject them rather than silently dropping the
+            // launch intent. `--with-config` is the one launch flag the
+            // listing honors — the table reflects the same overlay a
+            // launch would fold.
+            cli.launch.reject_launch_only_args("profiles", true)?;
+            cfg.validate()?;
+            let patches = cli.launch.into_config_patches()?;
+            profiles::run(cfg, patches, args)
+        }
         Some(Command::Mcp(args)) => {
-            // The MCP sidecar owns stdin/stdout for its protocol;
-            // a dedicated tokio runtime keeps the sidecar self-contained.
+            // The sidecar honors none of the launch flags — reject
+            // `--with-config` too (`allow_with_config = false`).
+            cli.launch.reject_launch_only_args("mcp", false)?;
+            // The MCP sidecar consumes only its own `--skill-dir` args —
+            // it never touches the launch/profile config — so
+            // `validate()` is skipped deliberately: an invalid launch
+            // config (e.g. an empty `[[profiles]]` list) must NOT kill
+            // the skills sidecar the vendor respawns over stdio.
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(args.run())?;
             Ok(ExitCode::SUCCESS)

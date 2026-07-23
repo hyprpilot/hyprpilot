@@ -213,8 +213,22 @@ pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[
     cfg.profiles
         .iter()
         .map(|profile| {
-            let resolved = resolve_effective_profile(cfg, Some(profile.id.as_str()), config_patches)
-                .unwrap_or_else(|_| profile.clone());
+            // On patch-resolution failure, fall back to the UNPATCHED
+            // profile for the displayed fields but record the error so
+            // the row is visibly marked — a broken patch must not pass
+            // stale model/cwd off as the resolved shape (K-750 item 5).
+            let (resolved, error) = match resolve_effective_profile(cfg, Some(profile.id.as_str()), config_patches) {
+                Ok(resolved) => (resolved, None),
+                Err(err) => {
+                    let error = format!("{err:#}");
+                    tracing::warn!(
+                        profile = %profile.id,
+                        %error,
+                        "resolve: profile patch resolution failed; listing shows unpatched base values"
+                    );
+                    (profile.clone(), Some(error))
+                }
+            };
             ProfileSummary {
                 id: resolved.id.clone(),
                 agent: resolved.agent.clone(),
@@ -223,6 +237,7 @@ pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[
                     .map(|cwd| cwd.display().to_string())
                     .or_else(|| resolved.cwd.as_ref().map(|cwd| cwd.display().to_string())),
                 is_default: default_profile == Some(profile.id.as_str()),
+                error,
             }
         })
         .collect()
@@ -346,6 +361,22 @@ mod tests {
 
         let profiles = list_profiles(&cfg, None, &[]);
         assert_eq!(profiles[0].model.as_deref(), Some("patched"));
+    }
+
+    #[test]
+    fn profile_listing_flags_broken_patch_instead_of_showing_stale_data() {
+        // An external patch that sets `model` to a non-string makes the
+        // post-merge ProfileConfig fail to deserialize. The row must be
+        // flagged (`error` set) rather than silently falling back to the
+        // unpatched base values as if they resolved cleanly (K-750 item 5).
+        let cfg = cfg_with_profile_cwd();
+        let patches = vec![serde_json::json!({ "model": 123 })];
+        let profiles = list_profiles(&cfg, None, &patches);
+
+        assert!(
+            profiles[0].error.is_some(),
+            "a broken patch must flag the row, not silently show stale data"
+        );
     }
 
     // ── headless prompt source (K-751) ───────────────────────────

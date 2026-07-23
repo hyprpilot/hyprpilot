@@ -19,7 +19,9 @@ logging:
 
 | Field   | Type | Default | What it does                                                                                                         |
 | ------- | ---- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `level` | enum | `info`  | One of `trace` / `debug` / `info` / `warn` / `error`. Applied only when `--log-level` and `RUST_LOG` are both unset. |
+| `level` | enum | _unset_ | One of `trace` / `debug` / `info` / `warn` / `error`. Applied only when `--log-level` and `RUST_LOG` are both unset. |
+
+`logging.level` is **not seeded** — leaving it unset lets the built-in `warn,hyprpilot=info` filter (below) own the default, which keeps third-party crates (tokio, rmcp, nucleo) quiet at `warn` while surfacing hyprpilot's own `info` narrative. Setting `level: info` instead forces a flat global `info` that drowns the launcher's lines under vendor-SDK chatter — set an explicit level only when you actually want that global floor.
 
 ## Filter precedence
 

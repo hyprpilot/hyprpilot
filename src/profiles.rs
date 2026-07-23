@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::config::Config;
 use crate::resolve::ProfileSummary;
@@ -28,6 +29,11 @@ struct ProfileListEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     is_default: bool,
+    /// Present when patch resolution failed — the row's model/cwd are
+    /// the unpatched base values, flagged so consumers don't mistake
+    /// them for the resolved shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 impl From<&ProfileSummary> for ProfileListEntry {
@@ -37,12 +43,16 @@ impl From<&ProfileSummary> for ProfileListEntry {
             agent: profile.agent.clone(),
             model: profile.model.clone(),
             is_default: profile.is_default,
+            error: profile.error.clone(),
         }
     }
 }
 
-pub fn run(cfg: Config, args: ProfilesArgs) -> Result<ExitCode> {
-    let profiles = profile_entries(&crate::spawn::list_profiles(&cfg, None, &[]));
+pub fn run(cfg: Config, config_patches: Vec<Value>, args: ProfilesArgs) -> Result<ExitCode> {
+    // `config_patches` carries the `--with-config` overlay from the CLI
+    // root, so the listing folds the same patches a launch would — the
+    // table/JSON reflects what a launch with these flags resolves to.
+    let profiles = profile_entries(&crate::spawn::list_profiles(&cfg, None, &config_patches));
     if args.json {
         println!("{}", serde_json::to_string_pretty(&ProfilesOutput { profiles })?);
     } else {
@@ -64,12 +74,22 @@ fn render_table(profiles: &[ProfileListEntry]) -> String {
     let rows: Vec<[String; 4]> = profiles
         .iter()
         .map(|profile| {
-            [
-                if profile.is_default { "*" } else { "" }.into(),
-                profile.id.clone(),
-                profile.agent.clone(),
-                profile.model.clone().unwrap_or_else(|| "-".into()),
-            ]
+            // A `!` marker (over the `*` default marker — a broken
+            // default is still broken) flags a resolution failure, and
+            // the model cell carries the error so the row is never a
+            // silent stale-data lie.
+            let marker = if profile.error.is_some() {
+                "!"
+            } else if profile.is_default {
+                "*"
+            } else {
+                ""
+            };
+            let model = match &profile.error {
+                Some(error) => format!("! resolve failed: {error}"),
+                None => profile.model.clone().unwrap_or_else(|| "-".into()),
+            };
+            [marker.into(), profile.id.clone(), profile.agent.clone(), model]
         })
         .collect();
     let headers = ["", "profile", "agent", "model"];
@@ -122,6 +142,7 @@ mod tests {
                 model: Some("claude-sonnet-4-5".into()),
                 cwd: Some("~/code/hyprpilot".into()),
                 is_default: true,
+                error: None,
             },
             ProfileSummary {
                 id: "review".into(),
@@ -129,12 +150,49 @@ mod tests {
                 model: None,
                 cwd: None,
                 is_default: false,
+                error: None,
             },
         ]));
 
         assert!(out.contains("*  engineer"));
         assert!(out.contains("review"));
         assert!(out.contains("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn table_flags_errored_row_with_bang_and_error() {
+        let out = render_table(&profile_entries(&[ProfileSummary {
+            id: "broken".into(),
+            agent: "claude-code".into(),
+            model: Some("stale-model".into()),
+            cwd: None,
+            is_default: true,
+            error: Some("invalid shape after patches".into()),
+        }]));
+
+        // `!` marker wins over the `*` default marker, and the stale
+        // model is replaced by the error so it can't read as resolved.
+        assert!(out.contains("!  broken"), "errored row leads with `!`: {out}");
+        assert!(out.contains("resolve failed: invalid shape after patches"), "{out}");
+        assert!(
+            !out.contains("stale-model"),
+            "stale model must be replaced by the error: {out}"
+        );
+    }
+
+    #[test]
+    fn json_entry_carries_error_field() {
+        let profiles = profile_entries(&[ProfileSummary {
+            id: "broken".into(),
+            agent: "claude-code".into(),
+            model: None,
+            cwd: None,
+            is_default: false,
+            error: Some("boom".into()),
+        }]);
+        let json = serde_json::to_string(&ProfilesOutput { profiles }).unwrap();
+
+        assert!(json.contains("\"error\":\"boom\""), "{json}");
     }
 
     #[test]
@@ -145,6 +203,7 @@ mod tests {
             model: None,
             cwd: Some("/tmp/launch".into()),
             is_default: true,
+            error: None,
         }]));
 
         assert!(!out.lines().next().unwrap().contains("cwd"));
@@ -159,6 +218,7 @@ mod tests {
             model: None,
             cwd: Some("/tmp/launch".into()),
             is_default: true,
+            error: None,
         }]);
         let json = serde_json::to_string(&ProfilesOutput { profiles }).unwrap();
 

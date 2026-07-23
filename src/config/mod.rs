@@ -371,6 +371,17 @@ mod tests {
     }
 
     #[test]
+    fn defaults_do_not_seed_logging_level() {
+        // K-750 item 1: seeding `[logging] level = "info"` made the
+        // code fallback `warn,hyprpilot=info` unreachable, so rmcp /
+        // tokio logged at a flat global `info`. The seed is removed so
+        // an unset `logging.level` lets that scoped fallback own the
+        // default. Pin the absence so a future re-seed surfaces here.
+        let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
+        assert_eq!(cfg.logging.level, None, "defaults must NOT seed logging.level");
+    }
+
+    #[test]
     fn defaults_seed_mcp_via_root_patch() {
         // `[mcp]` is no longer a root field — it lives on
         // `ProfileConfig` and gets seeded via the default
