@@ -101,7 +101,7 @@ For **claude** and **codex**, hyprpilot spawns the vendor, writes the prompt to 
 - **Profile selection.** A headless launch never opens the interactive picker (there may be no TTY, and stdin may be a consumed pipe). With no positional profile it resolves [`profile.default`](../config/profiles#picking-the-default) directly, and errors cleanly when no default is configured — pass a positional profile or set a default.
 - **Headless without a prompt.** If headless is forced (profile `headless = true`, or `--prompt`/`--file` — though those always carry a prompt) but no prompt resolves — e.g. `headless = true` on an interactive TTY with no pipe and no `--prompt`/`--file` — the launch **errors** rather than opening a picker it can't drive. An empty prompt (empty pipe, or empty `--prompt`/`--file`) errors too.
 - **`--with-config -` already drains stdin.** `--with-config -` reads the pipe to build the overlay, so the same pipe can't also be the headless prompt. Piping into a headless launch that also passes `--with-config -` **errors** with a targeted message (rather than misreporting an "empty prompt") — pass the prompt via `--prompt` / `--file` instead, or forward it through a trailing `-- <provider args>`.
-- **Escape hatch — bring your own invocation.** When you pass the vendor's headless flags yourself via `-- …`, hyprpilot does **not** read stdin — fd0 stays inherited so the vendor gets the raw pipe as input data, and the trailing args suppress hyprpilot's generated projection:
+- **Escape hatch — bring your own invocation.** When you pass the vendor's headless flags yourself via `-- …` **without** a `--prompt`/`--file`, hyprpilot does **not** read stdin — fd0 stays inherited so the vendor gets the raw pipe as input data, and the trailing args suppress hyprpilot's generated projection:
 
   ```sh
   cat data.json | hyprpilot engineer -- -p "summarize this"
@@ -109,6 +109,15 @@ For **claude** and **codex**, hyprpilot spawns the vendor, writes the prompt to 
   ```
 
   Only the automatic path (no trailing `--` args) buffers stdin.
+
+- **`-p`/`-f` compose with `-- <provider args>`.** An explicit `--prompt` / `--file` is a deliberate prompt, so it is **delivered even when you also pass trailing `-- <provider args>`** — the two compose rather than being mutually exclusive. hyprpilot delivers the prompt on its usual vendor path (stdin for `claude` / `codex`, positional for `opencode`) **and** appends your `-- <args>` to the vendor argv, where the existing dedup lets a hand-passed flag suppress hyprpilot's generated equivalent:
+
+  ```sh
+  hyprpilot engineer -p "fix the bug" -- --allowedTools Read
+  # → claude gets "fix the bug" on stdin AND `--allowedTools Read` on argv
+  ```
+
+  Only the escape hatch **without** an explicit `--prompt`/`--file` skips stdin entirely.
 
 ## Global flags
 

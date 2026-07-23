@@ -189,14 +189,18 @@ fn select_profile_without_positional(
 /// explicit `--prompt` / `--file`, a `headless` profile, or a piped
 /// stdin each trigger it). Returns:
 ///
-/// - `Ok(None)` — interactive launch, OR the escape-hatch path where
-///   the captain supplied trailing `-- <provider args>`
-///   (`has_provider_args`). In the escape-hatch case stdin is NEVER
-///   read, so fd0 stays inherited and the vendor gets the raw pipe.
 /// - `Ok(Some(prompt))` — the resolved prompt hyprpilot forwards to the
-///   vendor. Source priority: the explicit `--prompt` / `--file` value
+///   vendor. Source priority: an explicit `--prompt` / `--file` value
 ///   (`prompt_override`) wins over piped stdin; otherwise the buffered
-///   stdin is used.
+///   stdin is used. An explicit `prompt_override` is delivered even
+///   alongside trailing `-- <provider args>`: a deliberate `-p`/`-f`
+///   COMPOSES with the escape hatch — the prompt rides its usual
+///   delivery path (stdin for claude/codex, positional for opencode)
+///   while the `-- <args>` still append to argv via the existing dedup.
+/// - `Ok(None)` — interactive launch, OR the escape-hatch path where
+///   the captain supplied trailing `-- <provider args>` **without** an
+///   explicit `--prompt`/`--file`. In the escape-hatch case stdin is
+///   NEVER read, so fd0 stays inherited and the vendor gets the raw pipe.
 /// - `Err` — headless is active but no prompt source resolved: stdin is
 ///   a TTY (no pipe, no `--prompt`/`--file`), stdin was already drained
 ///   by `--with-config -`, or the resolved prompt is empty.
@@ -211,24 +215,28 @@ fn headless_prompt(
     stdin_consumed: bool,
     read_stdin: impl FnOnce() -> Result<String>,
 ) -> Result<Option<String>> {
-    // Escape hatch: the captain supplied the vendor's own invocation via
-    // trailing `-- <provider args>` — never buffer or forward a prompt,
-    // even when `--prompt`/`--file`/a pipe would otherwise trigger it.
-    if has_provider_args {
-        return Ok(None);
-    }
-    let effective = prompt_override.is_some() || profile_headless || !stdin_is_tty;
-    if !effective {
-        return Ok(None);
-    }
-    // An explicit `--prompt` / `--file` value wins over any piped stdin
-    // and is honored even on a TTY (the non-pipe headless entry point).
+    // An explicit `--prompt` / `--file` is a deliberate prompt: deliver
+    // it BEFORE the escape hatch so it COMPOSES with trailing
+    // `-- <provider args>` (prompt on its usual path + the extra flags
+    // appended to argv). Honored even on a TTY (the non-pipe headless
+    // entry point).
     if let Some(over) = prompt_override {
         let trimmed = over.trim();
         if trimmed.is_empty() {
             bail!("the headless prompt from `--prompt` / `--file` is empty");
         }
         return Ok(Some(trimmed.to_string()));
+    }
+    // Escape hatch: the captain supplied the vendor's own invocation via
+    // trailing `-- <provider args>` and no explicit `--prompt`/`--file` —
+    // never buffer or forward a prompt, even when a pipe would otherwise
+    // trigger it, so fd0 stays inherited for the vendor's raw pipe.
+    if has_provider_args {
+        return Ok(None);
+    }
+    let effective = profile_headless || !stdin_is_tty;
+    if !effective {
+        return Ok(None);
     }
     if stdin_is_tty {
         bail!(
@@ -511,20 +519,36 @@ mod tests {
 
     #[test]
     fn provider_args_are_the_escape_hatch_and_never_consume_stdin() {
-        // Trailing `-- <provider args>` → hyprpilot must NOT read stdin
-        // (fd0 stays inherited for the vendor's raw pipe) and must NOT
-        // generate a prompt projection, even though the piped stdin
-        // makes headless "effective".
+        // Trailing `-- <provider args>` WITHOUT an explicit
+        // `--prompt`/`--file` → hyprpilot must NOT read stdin (fd0 stays
+        // inherited for the vendor's raw pipe) and must NOT generate a
+        // prompt projection, even though the piped stdin makes headless
+        // "effective".
         let out = headless_prompt(None, false, false, true, false, never_read).unwrap();
         assert_eq!(out, None, "escape hatch: no buffered prompt");
 
         // Same with the profile `headless` flag set.
         let out = headless_prompt(None, true, true, true, false, never_read).unwrap();
         assert_eq!(out, None);
+    }
 
-        // Even an explicit `--prompt` yields to the escape hatch.
-        let out = headless_prompt(Some("ignored".into()), false, false, true, false, never_read).unwrap();
-        assert_eq!(out, None);
+    #[test]
+    fn prompt_override_delivered_even_with_provider_args() {
+        // An explicit `--prompt`/`--file` COMPOSES with the escape hatch:
+        // the prompt is delivered (on its usual vendor path) while the
+        // trailing `-- <provider args>` still append to argv. stdin is
+        // never read — the override is the prompt source.
+        let out = headless_prompt(Some("p".into()), false, false, true, false, never_read).unwrap();
+        assert_eq!(out.as_deref(), Some("p"), "explicit prompt composes with `-- <args>`");
+
+        // Also on a TTY with the profile `headless` flag set.
+        let out = headless_prompt(Some("do it".into()), true, true, true, false, never_read).unwrap();
+        assert_eq!(out.as_deref(), Some("do it"));
+
+        // An empty override still errors, even with provider args.
+        let err = headless_prompt(Some("  \n".into()), false, false, true, false, never_read)
+            .expect_err("empty override must error even with provider args");
+        assert!(err.to_string().contains("`--prompt` / `--file` is empty"), "{err}");
     }
 
     // ── headless profile selection without a positional (K-751) ──
