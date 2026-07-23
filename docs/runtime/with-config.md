@@ -35,7 +35,7 @@ gh api …upstream-config… | jq '{mcps: [.]}' | hyprpilot -p engineer --with-c
 
 ## Merge semantics
 
-Overlays use the same strategic-merge engine as [`patches`](../config/patches) — object-field merge, keyed-array merge by `id`, primitive-array append + dedupe, and the `$patch: replace` / `$deleteFromPrimitiveList/<field>` directives. See [Config → Patches → Merge semantics](../config/patches#merge-semantics).
+Overlays use the same strategic-merge engine as [`patches`](../config/patches) — object-field merge, keyed-array merge by `id`, primitive-array append + dedupe, and the `$patch: replace` / `$patch: delete` / `$deleteFromPrimitiveList/<field>` directives. See [Config → Patches → Merge semantics](../config/patches#merge-semantics).
 
 ## Where it sits in resolution
 

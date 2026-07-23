@@ -27,7 +27,7 @@ The skills catalogue is configured under the [`mcp` block](../config/mcp#the-mcp
 
 Per-root `ignore` globs skip matching slugs at load. On a slug collision across roots, the first root wins. Missing roots warn and are skipped.
 
-The compiled defaults seed the `mcp` block (via a root [`patches`](../config/patches) entry) with `enabled: true`, `autoAcceptTools: ['*']`, and the single XDG skills root `~/.config/hyprpilot/skills` — so skills work out of the box once you drop a `SKILL.md` in. A profile's own `mcp` block wholesale-replaces the global one — point a profile at a different skills root, or disable the server entirely.
+The compiled defaults seed the XDG skills root `~/.config/hyprpilot/skills` (via a root [`patches`](../config/patches) entry), and the built-in `mcp` defaults (`enabled: true`, `autoAcceptTools: ['*']`) fill in the rest — so skills work out of the box once you drop a `SKILL.md` in. A profile's own `mcp` block wholesale-replaces the global one — point a profile at a different skills root, or disable the server entirely.
 
 ## Auto-injection
 

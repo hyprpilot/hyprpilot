@@ -49,7 +49,7 @@ Patches fold left-to-right in declaration order; a later patch wins on field col
 
 `patches` accumulates across [config layers](./layering) instead of overwriting: the compiled defaults' patches come first, then your global config's, then the named config-layer profile's — each layer **appends** to the list, and the whole accumulated list folds onto the picked profile in that order.
 
-That means a config-layer profile can add a work-only MCP patch without wiping the seeded default patch or your global ones. It also means you cannot delete an earlier layer's patch by redeclaring the list — to neutralize an inherited patch, add a later patch that overrides the same fields, using the `$patch: replace` directive to wipe rather than merge:
+That means a config-layer profile can add a work-only MCP patch without wiping the seeded default patch or your global ones. It also means you cannot delete an earlier layer's patch by redeclaring the list — to neutralize an inherited patch, add a later patch that overrides the same fields, using the [merge directives](#merge-semantics) to wipe rather than merge:
 
 ```yaml
 # In a later layer: undo an inherited patch's extra prompts for `scratch`.
@@ -57,20 +57,22 @@ patches:
   - $match:
       profile: scratch
     system_prompt:
-      $patch: replace
+      - $patch: replace # sentinel: replace the whole array with the rest (nothing)
 ```
 
 ## Merge semantics
 
 Patches fold with a strategic-merge engine — the same one [`--with-config`](../runtime/with-config) uses:
 
-| Directive                          | Where            | Effect                                          |
-| ---------------------------------- | ---------------- | ----------------------------------------------- |
-| _(none)_                           | objects          | Recursive field merge; scalar leaves overwrite. |
-| _(none)_                           | keyed arrays     | Merge by `id`; new ids append.                  |
-| _(none)_                           | primitive arrays | Append + de-duplicate.                          |
-| `$patch: replace`                  | object / array   | Wholesale replace instead of merge.             |
-| `$deleteFromPrimitiveList/<field>` | primitive arrays | Remove the listed entries from the base array.  |
+| Directive                          | Where            | Effect                                                                                      |
+| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------- |
+| _(none)_                           | objects          | Recursive field merge; scalar leaves overwrite (later wins).                                |
+| _(none)_                           | keyed arrays     | Merge by `id`; new ids append.                                                              |
+| _(none)_                           | primitive arrays | Append + de-duplicate.                                                                      |
+| `$patch: replace` (object key)     | objects / maps   | `field: { $patch: replace, … }` drops the base value and takes the patch's.                 |
+| `- $patch: replace` (sentinel)     | arrays           | A `{ $patch: replace }` first element replaces the whole array with the remaining elements. |
+| `$patch: delete` (keyed entry)     | keyed arrays     | `{ id: …, $patch: delete }` removes the entry with that `id`.                               |
+| `$deleteFromPrimitiveList/<field>` | primitive arrays | Remove the listed entries from the base array.                                              |
 
 `$patch: replace` also works on the profile side — a profile can shield a field from patch overlays:
 
@@ -84,20 +86,16 @@ profiles:
 
 ## The default patch
 
-The compiled defaults seed one unscoped patch that enables the in-tree `hyprpilot` MCP server with auto-accept-everything and the XDG skills directory — this is why [skills](../runtime/skills) work out of the box:
+The compiled defaults seed one unscoped patch that points the in-tree `hyprpilot` MCP server at the XDG skills directory — this is why [skills](../runtime/skills) work out of the box:
 
 ```yaml
 patches:
   - mcp:
-      enabled: true
-      autoAcceptTools:
-        - '*'
-      autoRejectTools: []
       skills:
         - dir: ~/.config/hyprpilot/skills
 ```
 
-Because patches accumulate, your own `patches` entries land **after** this seed (later wins on field collision) — or override the `mcp` field per-profile.
+The seed carries **only** the skills root. The other `mcp` knobs — `enabled: true`, `autoAcceptTools: ['*']`, `autoRejectTools: []` — are the built-in defaults, backfilled per leaf at resolve time rather than spelled out in the seed. Because patches accumulate, your own `patches` entries land **after** this seed (later wins on field collision) — or override the `mcp` field per-profile.
 
 ## Where patches sit in resolution
 

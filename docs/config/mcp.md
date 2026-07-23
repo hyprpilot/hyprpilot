@@ -138,7 +138,9 @@ mcp:
 | `autoAcceptTools` | string[] (globs)     | `['*']`  | Default tool-approval accept list, copied onto servers with no per-server policy.  |
 | `autoRejectTools` | string[] (globs)     | `[]`     | Default tool-approval reject list. Reject beats accept.                            |
 
-The defaults are seeded through an unscoped [`patches`](./patches) entry with the single root `~/.config/hyprpilot/skills`. A profile's `mcp` field wholesale-replaces this block.
+The skills root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry; `enabled` / `autoAcceptTools` / `autoRejectTools` fall back to the built-in defaults above without appearing in the seed. A profile's `mcp` field wholesale-replaces this block.
+
+`autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
 ### `skills` entries
 
