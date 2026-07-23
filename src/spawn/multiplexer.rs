@@ -114,6 +114,60 @@ impl Multiplexer {
     }
 }
 
+/// Editor env markers meaning hyprpilot runs as a child job/terminal of
+/// an editor that owns the multiplexer pane. Renaming the window/tab
+/// from underneath it is wrong, so the title rename is skipped when any
+/// is set. `NVIM` (the RPC socket nvim ≥0.5 exports to every spawned
+/// job/terminal) is the primary target.
+const EDITOR_ENV_MARKERS: &[&str] = &[
+    "NVIM",                // nvim ≥0.5
+    "NVIM_LISTEN_ADDRESS", // older nvim
+    "INSIDE_EMACS",
+    "VSCODE_PID",
+    "VIM", // lower-confidence: vim/nvim job env
+];
+
+/// The reason the multiplexer title rename should be skipped, or `None`
+/// to proceed. Checks the explicit `HYPRPILOT_NO_TITLE` override first
+/// (the authoritative hook a launcher like `sidekick.nvim` sets in its
+/// per-tool env), then editor auto-detection. Independent of the
+/// `[multiplexer] set_title` flag — the caller applies that separately.
+pub(crate) fn title_rename_skip_reason() -> Option<&'static str> {
+    title_rename_skip_reason_with(|name| std::env::var(name).ok())
+}
+
+/// Same decision as [`title_rename_skip_reason`], routed through a
+/// caller-supplied lookup so tests never touch real process env.
+pub(crate) fn title_rename_skip_reason_with(lookup: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    if lookup("HYPRPILOT_NO_TITLE").is_some_and(env_is_truthy) {
+        return Some("HYPRPILOT_NO_TITLE");
+    }
+    running_under_editor_with(lookup)
+}
+
+/// Env-var truthiness for opt-out flags: empty / `0` / `false`
+/// (case-insensitive) are falsey; every other value is truthy.
+fn env_is_truthy(value: String) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("0") && !trimmed.eq_ignore_ascii_case("false")
+}
+
+/// The name of the first editor env marker present, or `None` when
+/// hyprpilot is not running under a recognised editor. Also treats
+/// `TERM_PROGRAM == "vscode"` as a VS Code context. Routed through a
+/// caller-supplied lookup so tests never touch real process env.
+fn running_under_editor_with(lookup: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    for marker in EDITOR_ENV_MARKERS {
+        if lookup(marker).is_some_and(|value| !value.is_empty()) {
+            return Some(marker);
+        }
+    }
+    if lookup("TERM_PROGRAM").as_deref() == Some("vscode") {
+        return Some("TERM_PROGRAM=vscode");
+    }
+    None
+}
+
 /// `hyprpilot@<basename>` — `cwd`'s final path component, or the full
 /// display string when `file_name()` is `None` (e.g. cwd is `/`).
 pub(crate) fn title_for(cwd: &Path) -> String {
@@ -200,5 +254,68 @@ mod tests {
     #[test]
     fn title_for_falls_back_to_full_display_at_root() {
         assert_eq!(title_for(Path::new("/")), "hyprpilot@/");
+    }
+
+    #[test]
+    fn skip_reason_detects_nvim_socket() {
+        let lookup = |name: &str| (name == "NVIM").then(|| "/run/user/1000/nvim.123.0".to_string());
+
+        assert_eq!(title_rename_skip_reason_with(lookup), Some("NVIM"));
+    }
+
+    #[test]
+    fn skip_reason_detects_vscode_term_program() {
+        let lookup = |name: &str| (name == "TERM_PROGRAM").then(|| "vscode".to_string());
+
+        assert_eq!(title_rename_skip_reason_with(lookup), Some("TERM_PROGRAM=vscode"));
+    }
+
+    #[test]
+    fn skip_reason_ignores_empty_editor_marker() {
+        // An exported-but-empty `NVIM` (e.g. a shell that blanked it) is
+        // not an editor context.
+        let lookup = |name: &str| (name == "NVIM").then(String::new);
+
+        assert_eq!(title_rename_skip_reason_with(lookup), None);
+    }
+
+    #[test]
+    fn skip_reason_none_in_plain_shell() {
+        let lookup = |name: &str| match name {
+            "TMUX" => Some("/tmp/tmux-1000/default,1,0".to_string()),
+            "TERM_PROGRAM" => Some("tmux".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(title_rename_skip_reason_with(lookup), None);
+    }
+
+    #[test]
+    fn skip_reason_honors_no_title_env_override() {
+        // `HYPRPILOT_NO_TITLE` is the authoritative opt-out — truthy
+        // wins even outside an editor.
+        let lookup = |name: &str| (name == "HYPRPILOT_NO_TITLE").then(|| "1".to_string());
+        assert_eq!(title_rename_skip_reason_with(lookup), Some("HYPRPILOT_NO_TITLE"));
+
+        // Falsey values (`0` / `false` / empty) do NOT skip.
+        for falsey in ["0", "false", "", "  "] {
+            let lookup = |name: &str| (name == "HYPRPILOT_NO_TITLE").then(|| falsey.to_string());
+            assert_eq!(
+                title_rename_skip_reason_with(lookup),
+                None,
+                "value {falsey:?} must be falsey"
+            );
+        }
+    }
+
+    #[test]
+    fn skip_reason_env_override_precedes_editor_detect() {
+        // The explicit override wins and reports itself even under nvim.
+        let lookup = |name: &str| match name {
+            "HYPRPILOT_NO_TITLE" => Some("true".to_string()),
+            "NVIM" => Some("/run/user/1000/nvim.123.0".to_string()),
+            _ => None,
+        };
+        assert_eq!(title_rename_skip_reason_with(lookup), Some("HYPRPILOT_NO_TITLE"));
     }
 }
