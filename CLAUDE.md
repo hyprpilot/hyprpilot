@@ -43,7 +43,6 @@ Key `src/` modules:
 
 - `main.rs` — `clap`-derive CLI. Bare invocation launches; `mcp` /
   `profiles` are the only subcommands.
-- `direct_spawn.rs` — `LaunchArgs` + the bare-launch entry (`run`).
 - `config/` — layered load (`mod.rs`), `merge` crate strategies,
   `garde` validation, `agents.rs` (`[[agents]]` / `[profile]` /
   `[[profiles]]`), `mcp.rs` (`[mcp]`), `extensions.rs`
@@ -51,11 +50,12 @@ Key `src/` modules:
   `with_config.rs` (`--with-config`), `system_prompt.rs`,
   `defaults.toml` (compiled defaults).
 - `resolve/mod.rs` — pure `Config` → resolution core: profile pick,
-  patch folding, per-instance MCP + skills registry construction.
-- `adapters/cli/` — `mod.rs` (orchestration), `providers.rs` (per-
-  vendor native-flag projection + `exec`), `picker.rs` (interactive
+  patch folding, per-launch MCP + skills registry construction.
+- `spawn/` — `launch.rs` (`LaunchArgs` + the bare-launch entry
+  `run`), `mod.rs` (orchestration), `providers.rs` (per-vendor
+  native-flag projection + `exec`), `picker.rs` (interactive
   profile picker), `multiplexer.rs` (tmux/zellij rename).
-- `adapters/profile.rs` — `ResolvedInstance` (flat runtime view).
+- `profile.rs` — `ResolvedProfile` (flat runtime view).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
   (the in-tree `hyprpilot` server), `server/` (`mcp serve`).
 - `skills/` — `SkillsRegistry` + `SKILL.md` loader.
@@ -209,7 +209,7 @@ system_prompt = [
 ### Resolution (single source of truth)
 
 `resolve::resolve_effective_profile` / `resolve_into_instance_and_profile`
-are the one path every spawn flows through so the `ResolvedInstance`
+are the one path every spawn flows through so the `ResolvedProfile`
 and the MCP / skills registries can't drift:
 
 1. Pick the base profile: `--profile <id>` first, then
@@ -284,7 +284,7 @@ an optional `hyprpilot` namespace key:
   **server-relative** (`read_*`, prefix `mcp__<server>__` implicit).
   Exclude beats include; reject beats accept. `[mcp].auto_accept_tools`
   (default `["*"]`) is copied onto servers with no per-server override.
-- **Vendor projection** (`adapters/cli/providers.rs`): claude gets
+- **Vendor projection** (`spawn/providers.rs`): claude gets
   `--mcp-config` (inline JSON) + `--allowedTools` / `--disallowedTools`;
   codex gets `-c mcp_servers.<name>.*` config overrides; opencode gets
   `OPENCODE_CONFIG_CONTENT` + `OPENCODE_PERMISSION` env. Transport is
@@ -322,16 +322,16 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   `SkillsRegistry` discovery the launcher uses — so editing a skill
   and calling `reload` refreshes without restarting the session.
 
-## Launch / exec (`adapters/cli`)
+## Launch / exec (`spawn`)
 
-`adapters::cli::run`: resolve the profile → build per-instance skills
+`spawn::spawn`: resolve the profile → build per-launch skills
 + MCP registries → `providers::build_command` (per-vendor native-flag
 projection) → optional multiplexer rename → `providers::exec`. On unix
 `exec()` **replaces** the process (no child); non-unix falls back to
 spawn + propagate exit code. Model precedence is profile > agent >
 vendor default. `system_prompt` files are read at **resolve** time so
 a missing file fails loudly on the next launch. CLI `--cwd` / `--model`
-/ `--mode` override the resolved instance after profile resolution.
+/ `--mode` override the resolved profile after profile resolution.
 
 ### Multiplexer title
 

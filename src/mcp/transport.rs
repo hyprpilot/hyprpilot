@@ -5,7 +5,7 @@
 //! `transport` -> http/sse). Replaces the ACP crate's `McpServer` /
 //! `HttpHeader` schema types (K-731) — the ACP wire runtime is gone
 //! (K-727) and the only remaining consumer is
-//! `adapters::cli::providers`'s vendor-native config projection, which
+//! `spawn::providers`'s vendor-native config projection, which
 //! never needed the full upstream schema.
 
 use std::path::PathBuf;

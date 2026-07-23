@@ -74,7 +74,7 @@ impl HyprpilotExtension {
 /// indexing + UI labels + tool→server attribution). `raw` carries the
 /// untouched server entry minus the hyprpilot extension key — gets
 /// projected onto `McpTransport` at vendor-native config build time
-/// (`adapters::cli::providers`). `hyprpilot` is the only typed slice;
+/// (`spawn::providers`). `hyprpilot` is the only typed slice;
 /// everything else stays opaque so future MCP-spec additions ride
 /// through without a hyprpilot release.
 #[derive(Debug, Clone)]

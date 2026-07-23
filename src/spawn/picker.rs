@@ -3,7 +3,7 @@ use std::fmt;
 use anyhow::{bail, Result};
 use nucleo_picker::{render::DisplayRenderer, PickerOptions};
 
-use crate::adapters::ProfileSummary;
+use crate::resolve::ProfileSummary;
 
 #[derive(Clone)]
 struct ProfileChoice(ProfileSummary);

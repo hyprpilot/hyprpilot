@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
 
-use crate::adapters::ProfileSummary;
 use crate::config::Config;
+use crate::resolve::ProfileSummary;
 
 #[derive(Args, Debug)]
 pub struct ProfilesArgs {
@@ -42,7 +42,7 @@ impl From<&ProfileSummary> for ProfileListEntry {
 }
 
 pub fn run(cfg: Config, args: ProfilesArgs) -> Result<ExitCode> {
-    let profiles = profile_entries(&crate::adapters::cli::list_profiles(&cfg, None, &[]));
+    let profiles = profile_entries(&crate::spawn::list_profiles(&cfg, None, &[]));
     if args.json {
         println!("{}", serde_json::to_string_pretty(&ProfilesOutput { profiles })?);
     } else {

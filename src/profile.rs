@@ -1,13 +1,13 @@
 //! Profile vocabulary — re-exports the config-side `AgentConfig` /
-//! `ProfileConfig` / `AgentProvider` types the adapter layer consumes,
-//! plus the flat `ResolvedInstance` view built by resolving a
+//! `ProfileConfig` / `AgentProvider` types the launcher consumes,
+//! plus the flat `ResolvedProfile` view built by resolving a
 //! `(Config, profile_id?)` pair.
 //!
 //! The types themselves stay declared in `config::` because the TOML
 //! deserialize + garde-validate wiring belongs with the rest of the
-//! config tree. Re-exports here keep the adapter surface symmetric —
-//! callers reach for `adapters::profile::ProfileConfig`, never
-//! `config::ProfileConfig`, when operating at the adapter layer.
+//! config tree. Re-exports here keep the launch surface symmetric —
+//! callers reach for `profile::ProfileConfig`, never
+//! `config::ProfileConfig`, when operating on a resolved launch.
 
 pub use crate::config::{AgentConfig, ProfileConfig};
 
@@ -16,16 +16,16 @@ use anyhow::{Context, Result};
 use crate::config::Config;
 
 /// Flat, runtime-ready view of an agent + its profile overlay. The
-/// adapter takes this (not a raw `Config`) so the actor body never
+/// launcher takes this (not a raw `Config`) so the exec path never
 /// reaches back into the layered config tree.
 ///
 /// Model precedence: profile > agent > vendor default (the vendor
 /// default is applied lazily at spawn time when `model` is `None`).
 /// The system prompt is read from disk at resolve time, not at spawn
 /// time, so a missing file surfaces as a readable error on the
-/// submit path rather than inside the actor.
+/// launch path rather than during `exec()`.
 #[derive(Debug, Clone)]
-pub struct ResolvedInstance {
+pub struct ResolvedProfile {
     pub agent: AgentConfig,
     /// Resolved profile id — carried for diagnostics / future launcher
     /// surfacing. Not read on the exec path yet.
@@ -38,7 +38,7 @@ pub struct ResolvedInstance {
     /// filters by `inject.on_create` and concatenates the surviving
     /// entries. `Some(vec![])` / `None` both mean "no prompt".
     pub system_prompt: Vec<ResolvedSystemPromptEntry>,
-    /// Per-instance mode override, mapped onto the vendor CLI where
+    /// Per-launch mode override, mapped onto the vendor CLI where
     /// supported (e.g. claude-code's `plan` / `edit`).
     pub mode: Option<String>,
 }
@@ -52,7 +52,7 @@ pub struct ResolvedSystemPromptEntry {
     pub inject: crate::config::SystemPromptInject,
 }
 
-impl ResolvedInstance {
+impl ResolvedProfile {
     /// Filter `system_prompt` entries by `inject.on_create` and
     /// concatenate the surviving bodies with a blank-line separator.
     /// The launcher only ever bootstraps a brand-new session, so
@@ -75,7 +75,7 @@ impl ResolvedInstance {
     }
 }
 
-impl ResolvedInstance {
+impl ResolvedProfile {
     /// Pick a profile (addressed id, then `[profile] default`),
     /// fold root `[[patches]]`, and project the result through
     /// `from_profile_explicit`. Errors when neither addresses a
@@ -118,7 +118,7 @@ impl ResolvedInstance {
     ///
     /// Production callers go through
     /// `resolve::resolve_into_instance_and_profile`, which returns the
-    /// patched `ProfileConfig` alongside the `ResolvedInstance` so
+    /// patched `ProfileConfig` alongside the `ResolvedProfile` so
     /// downstream MCP / skills registry builders read from the same
     /// shape.
     pub fn from_profile_explicit(profile: &ProfileConfig, config: &Config) -> Result<Self> {
@@ -184,8 +184,8 @@ impl ResolvedInstance {
     }
 
     /// Resolve the system prompt for a profile. Each entry's body is
-    /// read in list order at resolve time; the actor filters the list
-    /// against the bootstrap variant at spawn time and concatenates
+    /// read in list order at resolve time; `fresh_system_prompt`
+    /// filters the list at launch time and concatenates
     /// the surviving bodies with a blank-line separator. `system_prompt
     /// = []` is the explicit off-switch and resolves to an empty list.
     /// `None` resolves to an empty list too — there is no root-level
@@ -316,7 +316,7 @@ mod tests {
             profiles: vec![profile("strict", "cc", Some("opus-4"), None)],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("strict")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("strict")).unwrap();
         assert_eq!(r.agent.id, "cc");
         assert_eq!(r.model.as_deref(), Some("opus-4"));
     }
@@ -330,7 +330,7 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
         assert_eq!(r.model.as_deref(), Some("sonnet"));
     }
 
@@ -347,7 +347,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedInstance::from_config(&cfg, Some("plan")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("plan")).unwrap();
         assert_eq!(r.fresh_system_prompt().as_deref(), Some("You are a planner."));
     }
 
@@ -364,7 +364,7 @@ mod tests {
             profiles: vec![profile("layered", "cc", None, Some(vec![base, project]))],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("layered")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("layered")).unwrap();
         assert_eq!(
             r.fresh_system_prompt().as_deref(),
             Some("You are an agent.\n\nWorking on hyprpilot.")
@@ -381,7 +381,7 @@ mod tests {
             profiles: vec![profile("silent", "cc", None, Some(vec![]))],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("silent")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("silent")).unwrap();
         assert!(r.fresh_system_prompt().is_none());
     }
 
@@ -405,7 +405,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("update-only")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("update-only")).unwrap();
 
         // The launcher only bootstraps fresh sessions; an entry gated
         // to `on_update` (create toggle off) never injects.
@@ -427,7 +427,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let err = ResolvedInstance::from_config(&cfg, Some("plan")).expect_err("missing file fails");
+        let err = ResolvedProfile::from_config(&cfg, Some("plan")).expect_err("missing file fails");
         let msg = format!("{err:#}");
         assert!(msg.contains("plan"), "{msg}");
         assert!(msg.contains("system_prompt"), "{msg}");
@@ -445,14 +445,14 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, None).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, None).unwrap();
         assert_eq!(r.profile_id.as_deref(), Some("ask"));
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
         // With `[profile] default` cleared AND no `--profile`,
         // resolution errors — there is no bare-agent fallback.
         cfg.profile.default = None;
-        let err = ResolvedInstance::from_config(&cfg, None).expect_err("must error without a profile");
+        let err = ResolvedProfile::from_config(&cfg, None).expect_err("must error without a profile");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("every spawn requires a") || msg.contains("no profile addressed"),
@@ -481,7 +481,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.agent.env.get("AGENT_ONLY").map(String::as_str), Some("from-agent"));
         assert_eq!(
@@ -509,7 +509,7 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.agent.command, "base-command");
         assert_eq!(r.agent.args, vec!["--base-flag".to_string()]);
@@ -529,7 +529,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("yolo")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(r.agent.command, "claude-beta");
     }
@@ -550,7 +550,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("yolo")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(
             r.agent.args,
@@ -585,7 +585,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedInstance::from_config(&cfg, Some("yolo")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(
             r.agent.args,
@@ -612,7 +612,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedInstance::from_config(&cfg, Some("yolo")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("yolo")).unwrap();
 
         assert_eq!(r.agent.args, vec!["--new-flag".to_string()]);
     }
@@ -635,7 +635,7 @@ mod tests {
             ..Default::default()
         };
 
-        let err = ResolvedInstance::from_config(&cfg, Some("yolo"))
+        let err = ResolvedProfile::from_config(&cfg, Some("yolo"))
             .expect_err("empty-string arg from a patch must fail re-validation");
         assert!(err.to_string().contains("failed validation"), "{err}");
     }
@@ -657,7 +657,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
 
         assert_eq!(
             r.agent.cwd.as_deref(),
@@ -676,13 +676,13 @@ mod tests {
             profiles: vec![profile("ask", "cc", None, None)],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.agent.cwd.as_deref(), Some(std::path::Path::new("/agent-cwd")));
     }
 
     #[test]
-    fn profile_mode_propagates_to_resolved_instance() {
+    fn profile_mode_propagates_to_resolved_profile() {
         let mut p = profile("ask", "cc", None, None);
 
         p.mode = Some("plan".into());
@@ -693,7 +693,7 @@ mod tests {
             profiles: vec![p],
             ..Default::default()
         };
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
 
         assert_eq!(r.mode.as_deref(), Some("plan"));
     }
@@ -707,7 +707,7 @@ mod tests {
             profiles: vec![],
             ..Default::default()
         };
-        let err = ResolvedInstance::from_config(&cfg, Some("ghost")).expect_err("unknown profile");
+        let err = ResolvedProfile::from_config(&cfg, Some("ghost")).expect_err("unknown profile");
         assert!(err.to_string().contains("profile 'ghost' not found"));
     }
 
@@ -732,7 +732,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedInstance::from_config(&cfg, Some("personal/claude/opus")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("personal/claude/opus")).unwrap();
         assert_eq!(
             r.fresh_system_prompt().as_deref(),
             Some("shared base prompt"),
@@ -760,13 +760,13 @@ mod tests {
             ..Default::default()
         };
 
-        let personal_resolved = ResolvedInstance::from_config(&cfg, Some("personal/claude/opus")).unwrap();
+        let personal_resolved = ResolvedProfile::from_config(&cfg, Some("personal/claude/opus")).unwrap();
         assert_eq!(
             personal_resolved.fresh_system_prompt().as_deref(),
             Some("personal-only prompt")
         );
 
-        let work_resolved = ResolvedInstance::from_config(&cfg, Some("work/claude/opus")).unwrap();
+        let work_resolved = ResolvedProfile::from_config(&cfg, Some("work/claude/opus")).unwrap();
         assert!(
             work_resolved.fresh_system_prompt().is_none(),
             "personal/* glob must not reach work/* profile"
@@ -793,7 +793,7 @@ mod tests {
             ..Default::default()
         };
 
-        let r = ResolvedInstance::from_config(&cfg, Some("ask")).unwrap();
+        let r = ResolvedProfile::from_config(&cfg, Some("ask")).unwrap();
         assert_eq!(
             r.fresh_system_prompt().as_deref(),
             Some("first\n\nsecond"),
