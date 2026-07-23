@@ -283,11 +283,11 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
 }
 
 impl Config {
-    /// Run garde's tree walk. Every cross-field rule (keymaps
-    /// collisions, profile prompt-source exclusivity, agent /
-    /// profile / mcp reference checks) lives inside the derive
-    /// walk via higher-order `custom(fn(&self.x))` hooks — this
-    /// method is the single dispatch point that wraps the report.
+    /// Run garde's tree walk. Every cross-field rule (agent / profile
+    /// / mcp reference checks, non-empty profiles, MCP file-xor-inline)
+    /// lives inside the derive walk via higher-order
+    /// `custom(fn(&self.x))` hooks — this method is the single
+    /// dispatch point that wraps the report.
     pub fn validate(&self) -> Result<()> {
         <Self as Validate>::validate(self).map_err(|report| {
             tracing::error!(%report, "config::validate: garde report");

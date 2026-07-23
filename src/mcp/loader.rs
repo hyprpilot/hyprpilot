@@ -26,8 +26,9 @@ use crate::config::{ResolvedMcpFile, ResolvedMcpSource};
 /// fs path, so the angle-bracket sentinel is safe.
 const INLINE_SOURCE_LABEL: &str = "<inline>";
 
-/// Load + merge every entry in `entries`. Returns the resolved
-/// definition list ready to hand to `MCPsRegistry::new`. Per-entry
+/// Load + merge every entry in `entries`. Returns the resolved,
+/// collision-free `MCPDefinition` list the spawn path projects onto
+/// the vendor CLI (via `resolve::build_mcp_registry_with`). Per-entry
 /// `ignore` glob (when present) filters the loaded servers by name
 /// before merging. Errors are per-entry: a single bad file logs and
 /// is skipped; the others still load. Inline entries skip the fs

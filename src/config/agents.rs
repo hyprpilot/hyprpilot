@@ -316,13 +316,11 @@ command = "b"
 
     #[test]
     fn validate_rejects_empty_profiles_list() {
-        // Bypass the defaults-merge path — exercise `validate()`
-        // directly on a Config with `profiles = []`. Every spawn
-        // flows through a profile so this must reject at
-        // config-load instead of erroring per-spawn. (The actual
-        // load() path always merges in the default seed profile so
-        // captains never hit this in practice unless their TOML
-        // explicitly `$patch: replace`s the profiles list.)
+        // Exercise `validate()` directly on a Config with
+        // `profiles = []`. `defaults.toml` seeds ZERO profiles, so an
+        // empty list is exactly what a captain who authored none ends
+        // up with — every spawn flows through a profile, so this must
+        // reject at config-load instead of erroring per-spawn.
         let cfg = Config {
             profiles: Vec::new(),
             ..Default::default()

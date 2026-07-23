@@ -87,8 +87,7 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
     }
 
     let skills = build_skills_registry_with(&profile);
-    let mcps = build_mcp_registry_with(&profile, Some(&skills));
-    let mcp_defs = mcps.as_ref().map_or_else(Vec::new, |registry| registry.list());
+    let mcp_defs = build_mcp_registry_with(&profile, Some(&skills));
 
     let command = providers::build_command(
         &resolved,

@@ -271,14 +271,6 @@ fn apply_root_patches_to_profile(profile: Value, patches: &[Value], profile_id: 
     apply_profile_patches(profile, patches, profile_id)
 }
 
-pub fn apply_root_patches_to_profile_with_context(
-    profile: Value,
-    patches: &[Value],
-    ctx: PatchMatchContext<'_>,
-) -> Value {
-    apply_profile_patches_with_context(profile, patches, ctx)
-}
-
 /// Whether `patch` would fold onto the profile named by `ctx` — its
 /// optional `$match` directive applies (or is absent). Non-object
 /// patches are skipped at fold, so they never apply. Exposed so the
@@ -525,8 +517,7 @@ mod tests {
             "env": { "$patch": "replace" }
         })];
 
-        let patched =
-            apply_root_patches_to_profile_with_context(profile, &patches, PatchMatchContext::new("work/claude/opus"));
+        let patched = apply_profile_patches_with_context(profile, &patches, PatchMatchContext::new("work/claude/opus"));
         assert_eq!(
             patched,
             json!({
@@ -556,11 +547,7 @@ mod tests {
         ];
 
         assert_eq!(
-            apply_root_patches_to_profile_with_context(
-                profile.clone(),
-                &patches,
-                PatchMatchContext::new("work/claude/opus"),
-            ),
+            apply_profile_patches_with_context(profile.clone(), &patches, PatchMatchContext::new("work/claude/opus"),),
             profile
         );
     }

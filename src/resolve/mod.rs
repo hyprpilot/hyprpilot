@@ -66,7 +66,7 @@ pub(crate) fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::co
 pub(crate) fn build_mcp_registry_with(
     profile: &ProfileConfig,
     skills: Option<&Arc<crate::skills::SkillsRegistry>>,
-) -> Option<Arc<crate::mcp::MCPsRegistry>> {
+) -> Vec<crate::mcp::MCPDefinition> {
     let mcp_cfg = effective_mcp_with(profile);
     let files = effective_mcp_files_with(profile);
     let mut defs = crate::mcp::loader::load_files(&files);
@@ -91,8 +91,12 @@ pub(crate) fn build_mcp_registry_with(
     }
 
     if defs.is_empty() {
-        return None;
+        return defs;
     }
+    // `loader::load_files` + `prepend_auto_mcp_definition` already
+    // apply file-iteration order and dedupe the reserved name, so the
+    // returned list is collision-free and ordered — the spawn path
+    // projects it onto the vendor CLI as-is.
     tracing::info!(
         servers = ?defs.iter().map(|def| def.name.as_str()).collect::<Vec<_>>(),
         auto_injected,
@@ -101,7 +105,7 @@ pub(crate) fn build_mcp_registry_with(
     for def in &defs {
         tracing::debug!(server = %def.name, source = %def.source.display(), "resolve: mcp server source");
     }
-    Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
+    defs
 }
 
 pub(crate) fn prepend_auto_mcp_definition(defs: &mut Vec<crate::mcp::MCPDefinition>, auto: crate::mcp::MCPDefinition) {
@@ -230,7 +234,7 @@ pub(crate) fn resolve_effective_profile(
 
     let with_root = match cfg.patches.as_deref() {
         Some(rp) if !rp.is_empty() => {
-            crate::config::patch::apply_root_patches_to_profile_with_context(base_value, rp, match_context)
+            crate::config::patch::apply_profile_patches_with_context(base_value, rp, match_context)
         }
         _ => base_value,
     };

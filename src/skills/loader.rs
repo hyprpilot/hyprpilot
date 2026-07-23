@@ -1,8 +1,7 @@
-//! File-system loader for `<skills_dir>/<slug>/SKILL.md` bundles.
-//! Mirrors `wayland/scripts/lib/skills.py::load_skills`: enumerate
-//! every direct subdirectory, parse YAML frontmatter + markdown body
-//! out of `SKILL.md`, skip bad entries with a warn log instead of
-//! failing the whole registry.
+//! File-system loader for `<skills_dir>/<slug>/SKILL.md` bundles:
+//! enumerate every direct subdirectory, parse YAML frontmatter +
+//! markdown body out of `SKILL.md`, skip bad entries with a warn log
+//! instead of failing the whole registry.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,8 +13,9 @@ use tracing::warn;
 use super::{Skill, SkillSlug};
 
 /// Walk `dir` looking for `<slug>/SKILL.md`. Missing dir / unreadable
-/// entries log + return an empty list; a bad individual skill logs
-/// + is skipped. Always returns `Ok` — hard failure is the watcher's problem, not the loader's.
+/// entries log and return an empty list; a bad individual skill logs
+/// and is skipped. Always returns `Ok` — a bad skill root never
+/// aborts the registry build.
 pub(crate) fn load_skills(dir: &Path) -> Result<Vec<Skill>> {
     let entries = match fs::read_dir(dir) {
         Ok(it) => it,
