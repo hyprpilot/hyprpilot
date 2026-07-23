@@ -103,31 +103,32 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
-    /// `enabled.expect("seeded by defaults.toml")` — fatal if the
-    /// defaults didn't seed it. The paired test
-    /// `defaults_seed_mcp_block` pins every leaf so this never
+    /// `enabled.expect("seeded by McpConfig::default() / the default
+    /// [[patches]] entry")` — fatal if neither seeded it. The paired
+    /// test `defaults_seed_mcp_block` pins every leaf so this never
     /// panics at runtime.
     #[must_use]
     pub fn enabled(&self) -> bool {
-        self.enabled.expect("[mcp] enabled seeded by defaults.toml")
+        self.enabled
+            .expect("[mcp] enabled seeded by McpConfig::default() / the default [[patches]] entry")
     }
 
     /// Auto-accept globs as a borrowed slice. Defaults to `["*"]` per
-    /// defaults.toml.
+    /// `McpConfig::default()` / the default `[[patches]]` entry.
     #[must_use]
     pub fn auto_accept_tools(&self) -> &[String] {
         self.auto_accept_tools
             .as_deref()
-            .expect("[mcp] autoAcceptTools seeded by defaults.toml")
+            .expect("[mcp] autoAcceptTools seeded by McpConfig::default() / the default [[patches]] entry")
     }
 
     /// Auto-reject globs as a borrowed slice. Defaults to `[]` per
-    /// defaults.toml.
+    /// `McpConfig::default()` / the default `[[patches]]` entry.
     #[must_use]
     pub fn auto_reject_tools(&self) -> &[String] {
         self.auto_reject_tools
             .as_deref()
-            .expect("[mcp] autoRejectTools seeded by defaults.toml")
+            .expect("[mcp] autoRejectTools seeded by McpConfig::default() / the default [[patches]] entry")
     }
 
     /// Resolve every `[[mcp.skills]]` entry to its absolute path +

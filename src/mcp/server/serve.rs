@@ -455,7 +455,7 @@ impl ServerHandler for HyprpilotServer {
         let tools = vec![
             Tool::new_with_raw(
                 "list_skills",
-                Some("List every skill the daemon resolved for this session, including frontmatter metadata.".into()),
+                Some("List every skill resolved for this session, including frontmatter metadata.".into()),
                 empty_object_schema(),
             ),
             Tool::new_with_raw(
@@ -493,7 +493,7 @@ impl ServerHandler for HyprpilotServer {
                     "Open a URL, file path, or directory in the OS default handler. \
                      Uses `xdg-open` on Linux, `open` on macOS, `start` on Windows. \
                      The MCP sidecar is a plain stdio process — this is a native OS \
-                     call, not Tauri."
+                     call."
                         .into(),
                 ),
                 open_object_schema(),

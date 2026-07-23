@@ -2,9 +2,7 @@
 //!
 //! Mirrors the three variants the `mcpServers` JSON spec expresses via
 //! field presence (`command` -> stdio; `url` + optional `type` /
-//! `transport` -> http/sse). Replaces the ACP crate's `McpServer` /
-//! `HttpHeader` schema types (K-731) — the ACP wire runtime is gone
-//! (K-727) and the only remaining consumer is
+//! `transport` -> http/sse). The only consumer is
 //! `spawn::providers`'s vendor-native config projection, which
 //! never needed the full upstream schema.
 
