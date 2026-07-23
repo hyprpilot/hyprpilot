@@ -30,14 +30,16 @@ Because subcommands resolve before the positional, `hyprpilot profiles` and `hyp
 
 ## Launch flags
 
-| Flag                                      | Purpose                                                                                              |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `[PROFILE]`                               | Positional session-profile id to resolve and launch. Omit to pick interactively.                     |
-| `--cwd <dir>`                             | Working directory for the vendor process.                                                            |
-| `--mode <mode>`                           | Mode override, projected onto the vendor where supported.                                            |
-| `--with-config <path\|@inline\|->`        | Profile overlay patch (repeatable). See [Ad-hoc Overlays](./with-config).                            |
-| `--with-config-format <toml\|json\|yaml>` | Format for stdin / inline / extension-less overlays (default `json`).                                |
-| `-- <args>`                               | Everything after `--` is forwarded verbatim to the vendor CLI; generated equivalents are suppressed. |
+| Flag                                      | Purpose                                                                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `[PROFILE]`                               | Positional session-profile id to resolve and launch. Omit to pick interactively.                             |
+| `-p, --prompt <PROMPT>`                   | Inline headless prompt — the non-pipe alternative to `echo … \| hyprpilot`. Forces headless.                 |
+| `-f, --file <PATH>`                       | Read the headless prompt from a file (`~` / `$VAR` / relative expanded). Mutually exclusive with `--prompt`. |
+| `--cwd <dir>`                             | Working directory for the vendor process.                                                                    |
+| `--mode <mode>`                           | Mode override, projected onto the vendor where supported.                                                    |
+| `--with-config <path\|@inline\|->`        | Profile overlay patch (repeatable). See [Ad-hoc Overlays](./with-config).                                    |
+| `--with-config-format <toml\|json\|yaml>` | Format for stdin / inline / extension-less overlays (default `json`).                                        |
+| `-- <args>`                               | Everything after `--` is forwarded verbatim to the vendor CLI; generated equivalents are suppressed.         |
 
 ## Overriding per launch
 
@@ -69,28 +71,36 @@ hyprpilot review -- --dangerously-skip-permissions
 
 Any provider-native argument you pass this way suppresses hyprpilot's generated equivalent, so your hand-written flag always wins over the projection.
 
-## Headless / stdin pass-through
+## Headless / prompt delivery
 
-Pipe a prompt in and hyprpilot launches the vendor **non-interactively** — one shot, then exit, like `claude --print`:
+Give hyprpilot a prompt and it launches the vendor **non-interactively** — one shot, then exit, like `claude --print`. There are three ways to supply the prompt:
 
 ```sh
-echo "fix the failing test" | hyprpilot engineer
-git diff | hyprpilot review        # the diff becomes the prompt
+echo "fix the failing test" | hyprpilot engineer   # piped stdin
+git diff | hyprpilot review                         # the diff becomes the prompt
+hyprpilot engineer --prompt "fix the failing test"  # inline flag, no pipe needed
+hyprpilot engineer --file ./task.md                 # prompt read from a file
 ```
 
-Headless is **effective** when either the piped stdin is detected (stdin is not a TTY) **or** the profile sets [`headless = true`](../config/profiles#headless). hyprpilot buffers **all** of stdin into a string and projects it as each vendor's prompt argument:
-
-| Vendor     | Projected invocation        |
-| ---------- | --------------------------- |
-| `claude`   | `claude --print "<prompt>"` |
-| `codex`    | `codex exec "<prompt>"`     |
-| `opencode` | `opencode run "<prompt>"`   |
+Headless is **effective** when any of these is true: `--prompt` / `--file` is given, the profile sets [`headless = true`](../config/profiles#headless), or stdin is a pipe (not a TTY). The **prompt source** resolves in priority order — an explicit `--prompt` / `--file` value wins over piped stdin (`--prompt` and `--file` are mutually exclusive; passing both errors).
 
 The full model / effort / mode / MCP / tool-policy projection — plus `--cwd`, `--mode`, and `--with-config` — still applies; headless only changes _how the prompt is delivered_, not _what the profile resolves to_.
 
+### How the prompt reaches the vendor
+
+hyprpilot delivers the resolved prompt on the vendor's **stdin** where the vendor supports it, and as a positional argument otherwise:
+
+| Vendor     | Projected invocation               | Prompt delivery               |
+| ---------- | ---------------------------------- | ----------------------------- |
+| `claude`   | `claude --print` (prompt on stdin) | **stdin** (spawned, then EOF) |
+| `codex`    | `codex exec` (prompt on stdin)     | **stdin** (spawned, then EOF) |
+| `opencode` | `opencode run "<prompt>"`          | positional argument           |
+
+For **claude** and **codex**, hyprpilot spawns the vendor, writes the prompt to its stdin, and closes the pipe (EOF). This is deliberate: claude's `--allowedTools` / `--disallowedTools` are **variadic** flags that would greedily swallow a trailing positional prompt as a tool entry, and a positional never reaches the model; stdin has no such ambiguity. **opencode** has no stdin prompt support (its `run [message…]` is positional-only), so the prompt stays a positional argument there. The interactive (non-headless) path always `exec()`s, unchanged.
+
 - **Profile selection.** A headless launch never opens the interactive picker (there may be no TTY, and stdin may be a consumed pipe). With no positional profile it resolves [`profile.default`](../config/profiles#picking-the-default) directly, and errors cleanly when no default is configured — pass a positional profile or set a default.
-- **`headless = true` without a pipe.** If a profile forces headless but stdin is an interactive TTY (no prompt to read), the launch **errors** rather than opening a picker it can't drive. An empty piped prompt errors too.
-- **`--with-config -` already drains stdin.** `--with-config -` reads the pipe to build the overlay, so the same pipe can't also be the headless prompt. Piping into a headless launch that also passes `--with-config -` **errors** with a targeted message (rather than misreporting an "empty prompt") — pass the overlay as a file or `@inline` and keep stdin for the prompt, or forward the prompt via a trailing `-- <provider args>`.
+- **Headless without a prompt.** If headless is forced (profile `headless = true`, or `--prompt`/`--file` — though those always carry a prompt) but no prompt resolves — e.g. `headless = true` on an interactive TTY with no pipe and no `--prompt`/`--file` — the launch **errors** rather than opening a picker it can't drive. An empty prompt (empty pipe, or empty `--prompt`/`--file`) errors too.
+- **`--with-config -` already drains stdin.** `--with-config -` reads the pipe to build the overlay, so the same pipe can't also be the headless prompt. Piping into a headless launch that also passes `--with-config -` **errors** with a targeted message (rather than misreporting an "empty prompt") — pass the prompt via `--prompt` / `--file` instead, or forward it through a trailing `-- <provider args>`.
 - **Escape hatch — bring your own invocation.** When you pass the vendor's headless flags yourself via `-- …`, hyprpilot does **not** read stdin — fd0 stays inherited so the vendor gets the raw pipe as input data, and the trailing args suppress hyprpilot's generated projection:
 
   ```sh
@@ -116,7 +126,7 @@ HYPRPILOT_CONFIG_PROFILE=work hyprpilot engineer
 
 `--config-profile` layers a named config file (`~/.config/hyprpilot/profiles/<name>.yaml`) on top of your global config — a **config-layer** profile, distinct from the session `profiles` you address with the positional `[PROFILE]`. See [Config → Layering](../config/layering).
 
-Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → the built-in `warn,hyprpilot=info` default; tracing always writes to stderr. See [Config → Logging](../config/logging).
+Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → the built-in `error` default (a fresh run is quiet — errors only — unless a level is explicitly requested); tracing always writes to stderr. See [Config → Logging](../config/logging).
 
 ## What a launch does
 

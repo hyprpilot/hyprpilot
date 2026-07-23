@@ -44,6 +44,15 @@ pub(crate) struct SpawnCommand {
     pub(super) args: Vec<String>,
     pub(super) env: BTreeMap<String, String>,
     pub(super) cwd: Option<PathBuf>,
+    /// Headless prompt to write to the child's stdin. When `Some`, the
+    /// launcher SPAWNS the vendor (not `exec()`) and pipes this prompt
+    /// into its stdin, then waits — the delivery path claude/codex use
+    /// so the prompt reaches the vendor's stdin reader instead of riding
+    /// argv (where claude's variadic `--allowedTools`/`--disallowedTools`
+    /// would swallow a trailing positional, and where a consumed pipe
+    /// would leave codex reading EOF). `None` keeps the `exec()` handoff
+    /// (interactive, and opencode's positional-prompt headless path).
+    pub(super) stdin_prompt: Option<String>,
 }
 
 impl SpawnCommand {
@@ -72,16 +81,6 @@ pub(crate) fn build_command(
 }
 
 pub(crate) fn exec(command: SpawnCommand) -> Result<ExitCode> {
-    let mut cmd = std::process::Command::new(&command.program);
-    cmd.args(&command.args)
-        .envs(&command.env)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    if let Some(cwd) = command.cwd.as_ref() {
-        cmd.current_dir(cwd);
-    }
-
     // Secrets rule: argv values (codex `-c instructions=…`, claude
     // `--append-system-prompt`) and env values carry the system prompt
     // + bearer tokens. Claude's `--mcp-config` carries only a path to a
@@ -91,15 +90,46 @@ pub(crate) fn exec(command: SpawnCommand) -> Result<ExitCode> {
     // `debug` shows argv with every value payload elided to a size;
     // `trace` — and ONLY trace — dumps the raw argv + env values. Never
     // enable trace where the log sink is shared.
+    let handoff = if command.stdin_prompt.is_some() {
+        "cli: spawn handoff (prompt on stdin)"
+    } else {
+        "cli: exec handoff"
+    };
     tracing::info!(
         program = %command.program,
         cwd = ?command.cwd,
         args = ?arg_flag_names(&command.args),
         env = ?command.env.keys().collect::<Vec<_>>(),
-        "cli: exec handoff"
+        stdin_prompt = command.stdin_prompt.is_some(),
+        "{handoff}"
     );
-    tracing::debug!(argv = ?redacted_argv(&command.args), "cli: exec handoff argv (values elided)");
-    tracing::trace!(argv = ?command.args, env = ?command.env, "cli: exec handoff raw argv + env (secrets)");
+    tracing::debug!(argv = ?redacted_argv(&command.args), "{handoff} argv (values elided)");
+    tracing::trace!(argv = ?command.args, env = ?command.env, "{handoff} raw argv + env (secrets)");
+
+    // Headless claude/codex: the prompt rides the child's stdin, so we
+    // must SPAWN (not `exec()`) to keep a handle on the pipe, write the
+    // prompt, close it (EOF), and propagate the exit code. stdout/stderr
+    // stay inherited, so the child can always drain them and never
+    // deadlocks against our blocking stdin write.
+    if let Some(prompt) = command.stdin_prompt {
+        return spawn_with_stdin_prompt(
+            &command.program,
+            &command.args,
+            &command.env,
+            command.cwd.as_deref(),
+            &prompt,
+        );
+    }
+
+    let mut cmd = std::process::Command::new(&command.program);
+    cmd.args(&command.args)
+        .envs(&command.env)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if let Some(cwd) = command.cwd.as_ref() {
+        cmd.current_dir(cwd);
+    }
 
     #[cfg(unix)]
     {
@@ -117,6 +147,44 @@ pub(crate) fn exec(command: SpawnCommand) -> Result<ExitCode> {
             .code()
             .map_or_else(|| ExitCode::from(1), |code| ExitCode::from(code as u8)))
     }
+}
+
+/// Spawn the vendor with the headless prompt written to its stdin, then
+/// wait and propagate the exit code. Used for claude (`--print`) and
+/// codex (`exec`) headless launches, which read the prompt from stdin
+/// when no positional is given.
+fn spawn_with_stdin_prompt(
+    program: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    cwd: Option<&Path>,
+    prompt: &str,
+) -> Result<ExitCode> {
+    use std::io::Write;
+
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+
+    let mut child = cmd.spawn().with_context(|| format!("spawning {program}"))?;
+    {
+        let mut stdin = child.stdin.take().context("child stdin pipe missing after spawn")?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .with_context(|| format!("writing headless prompt to {program} stdin"))?;
+        // `stdin` drops here, closing the pipe so the child sees EOF.
+    }
+    let status = child.wait().with_context(|| format!("waiting on {program}"))?;
+
+    Ok(status
+        .code()
+        .map_or_else(|| ExitCode::from(1), |code| ExitCode::from(code as u8)))
 }
 
 /// Project the agent's `command`/`args`/`env`/`cwd` into a
@@ -148,6 +216,7 @@ pub(super) fn base_command(resolved: &ResolvedProfile) -> SpawnCommand {
         args,
         env,
         cwd,
+        stdin_prompt: None,
     }
 }
 

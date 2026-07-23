@@ -2,15 +2,7 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{fmt, reload, EnvFilter, Registry};
-
-/// Handle to the installed `EnvFilter`, returned by [`init`] so the
-/// filter can be swapped once — after `config::load` — to honour the
-/// `[logging] level` config field. The filter lives behind a
-/// [`reload::Layer`] precisely because the subscriber is installed
-/// before the config is read (early enough that `config::load`'s own
-/// lines are captured).
-pub type LogReloadHandle = reload::Handle<EnvFilter, Registry>;
+use tracing_subscriber::{fmt, EnvFilter};
 
 /// Tracing level, shared between the `--log-level` CLI flag (via
 /// `clap::ValueEnum`) and the `[logging] level` config field (via
@@ -40,29 +32,26 @@ impl std::fmt::Display for LogLevel {
     }
 }
 
-/// Installs the tracing subscriber and returns a [`LogReloadHandle`]
-/// so the filter can be reloaded once the config is known. Always
-/// writes to stderr — both debug and release builds — so a captain
-/// launching the binary by hand sees output where they expect it, and
-/// the `profiles --json` path keeps stdout pure (info → stderr).
+/// Installs the tracing subscriber ONCE with the fully-resolved filter.
+/// Always writes to stderr — both debug and release builds — so a
+/// captain launching the binary by hand sees output where they expect
+/// it, and the `profiles --json` path keeps stdout pure (info →
+/// stderr).
 ///
-/// Filter precedence, highest first: `--log-level` (`level` here) →
-/// `RUST_LOG` → `[logging] level` (applied later via
-/// [`apply_config_level`]) → the `warn,hyprpilot=info` default. That
-/// default keeps third-party crates (tokio / rmcp / nucleo) at `warn`
-/// while surfacing the launcher's own `info` lifecycle narrative.
+/// The filter folds in `[logging] level` up front, so the caller must
+/// load the config BEFORE calling `init` (and emit the "config loaded"
+/// line AFTER, so it honours the resolved level). This replaces the old
+/// early-init/late-reload dance — there is no second subscriber install.
+///
+/// Filter precedence, highest first: `--log-level` (`cli_level`) →
+/// `RUST_LOG` → `[logging] level` (`config_level`) → the `error`
+/// default. The `error` default keeps a fresh run quiet — only errors
+/// surface unless a level is explicitly requested.
 ///
 /// `file:line` tagging rides only on `debug` / `trace` — the info
-/// narrative stays terse. Captain's call; flip `verbose` to always-on
-/// if the extra provenance is wanted.
-pub fn init(level: Option<LogLevel>) -> Result<LogReloadHandle> {
-    let filter = match level {
-        Some(l) => EnvFilter::try_new(l.to_string()).context("failed to build log level filter")?,
-        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,hyprpilot=info")),
-    };
-    let (filter, reload_handle) = reload::Layer::new(filter);
-
-    let verbose = matches!(level, Some(LogLevel::Debug | LogLevel::Trace));
+/// narrative stays terse.
+pub fn init(cli_level: Option<LogLevel>, config_level: Option<LogLevel>) -> Result<()> {
+    let (filter, verbose) = resolve_filter(cli_level, config_level)?;
 
     // ANSI always on. `journalctl` / a TTY render it; a pipe or
     // log-shipper strips it — so the same build serves both.
@@ -81,74 +70,67 @@ pub fn init(level: Option<LogLevel>) -> Result<LogReloadHandle> {
         .try_init()
         .context("failed to install tracing subscriber")?;
 
-    Ok(reload_handle)
+    Ok(())
 }
 
-/// Reload the filter to `[logging] level` when — and only when — no
-/// higher-precedence source spoke: `--log-level` unset (`cli_level`
-/// is `None`) AND `RUST_LOG` unset. A no-op otherwise, so the
-/// precedence `--log-level` > `RUST_LOG` > `[logging] level` holds.
-pub fn apply_config_level(
-    handle: &LogReloadHandle,
-    cli_level: Option<LogLevel>,
-    config_level: Option<LogLevel>,
-) -> Result<()> {
-    if cli_level.is_some() || std::env::var_os("RUST_LOG").is_some() {
-        return Ok(());
+/// Resolve the tracing `EnvFilter` and whether `file:line` provenance
+/// rides (`verbose`), applying the precedence `--log-level` → `RUST_LOG`
+/// → `[logging] level` → the `error` default.
+fn resolve_filter(cli_level: Option<LogLevel>, config_level: Option<LogLevel>) -> Result<(EnvFilter, bool)> {
+    if let Some(level) = cli_level {
+        return Ok((filter_for(level)?, is_verbose(level)));
     }
-    let Some(level) = config_level else {
-        return Ok(());
-    };
-    let filter = EnvFilter::try_new(level.to_string()).context("failed to build [logging].level filter")?;
-    handle.reload(filter).context("failed to apply [logging].level")?;
-    tracing::debug!(%level, "logging: applied [logging].level");
-    Ok(())
+    // RUST_LOG wins over `[logging] level`; a set-but-unparseable
+    // RUST_LOG falls through to the config/default below.
+    if std::env::var_os("RUST_LOG").is_some() {
+        if let Ok(filter) = EnvFilter::try_from_default_env() {
+            return Ok((filter, false));
+        }
+    }
+    if let Some(level) = config_level {
+        return Ok((filter_for(level)?, is_verbose(level)));
+    }
+    Ok((EnvFilter::new("error"), false))
+}
+
+fn filter_for(level: LogLevel) -> Result<EnvFilter> {
+    EnvFilter::try_new(level.to_string()).context("failed to build log level filter")
+}
+
+fn is_verbose(level: LogLevel) -> bool {
+    matches!(level, LogLevel::Debug | LogLevel::Trace)
 }
 
 #[cfg(test)]
 mod tests {
-    use tracing_subscriber::{reload, EnvFilter, Registry};
-
     use super::*;
 
-    /// The reload `Layer` must stay alive for the handle's `Weak` to
-    /// upgrade — the returned guard keeps it in scope.
-    fn handle_at(initial: &str) -> (reload::Layer<EnvFilter, Registry>, LogReloadHandle) {
-        reload::Layer::<EnvFilter, Registry>::new(EnvFilter::new(initial))
-    }
-
-    fn current(handle: &LogReloadHandle) -> String {
-        handle.clone_current().map(|f| f.to_string()).unwrap_or_default()
-    }
-
     #[test]
-    fn apply_config_level_precedence() {
+    fn resolve_filter_precedence() {
         // Single test so RUST_LOG mutation stays serial even under
         // `cargo test`'s in-process threads.
         let saved = std::env::var_os("RUST_LOG");
         std::env::remove_var("RUST_LOG");
 
-        // Branch 4: --log-level unset, RUST_LOG unset, config set →
-        // the config level is applied.
-        let (_keep, handle) = handle_at("info");
-        apply_config_level(&handle, None, Some(LogLevel::Debug)).unwrap();
-        assert!(current(&handle).contains("debug"), "config level must apply");
+        let level_of = |cli, config| resolve_filter(cli, config).unwrap().0.to_string();
 
-        // Branch 3: config None → no-op, filter untouched.
-        let (_keep, handle) = handle_at("info");
-        apply_config_level(&handle, None, None).unwrap();
-        assert!(current(&handle).contains("info") && !current(&handle).contains("debug"));
-
-        // Branch 1: --log-level set wins → config ignored.
-        let (_keep, handle) = handle_at("info");
-        apply_config_level(&handle, Some(LogLevel::Warn), Some(LogLevel::Debug)).unwrap();
-        assert!(current(&handle).contains("info") && !current(&handle).contains("debug"));
-
-        // Branch 2: RUST_LOG set wins → config ignored.
+        // `--log-level` wins over RUST_LOG and config.
         std::env::set_var("RUST_LOG", "trace");
-        let (_keep, handle) = handle_at("info");
-        apply_config_level(&handle, None, Some(LogLevel::Debug)).unwrap();
-        assert!(current(&handle).contains("info") && !current(&handle).contains("debug"));
+        assert_eq!(level_of(Some(LogLevel::Warn), Some(LogLevel::Debug)), "warn");
+
+        // RUST_LOG wins over `[logging] level` when `--log-level` unset.
+        assert_eq!(level_of(None, Some(LogLevel::Debug)), "trace");
+        std::env::remove_var("RUST_LOG");
+
+        // `[logging] level` applies when `--log-level` + RUST_LOG unset.
+        assert_eq!(level_of(None, Some(LogLevel::Error)), "error");
+
+        // Bare run: no source set → the quiet `error` default.
+        assert_eq!(level_of(None, None), "error");
+
+        // `--log-level` debug/trace turns on `file:line` provenance.
+        assert!(resolve_filter(Some(LogLevel::Debug), None).unwrap().1);
+        assert!(!resolve_filter(Some(LogLevel::Info), None).unwrap().1);
 
         match saved {
             Some(v) => std::env::set_var("RUST_LOG", v),

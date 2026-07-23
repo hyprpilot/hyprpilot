@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 use serde_json::Value;
 
@@ -14,6 +14,14 @@ pub struct LaunchArgs {
     /// Session profile id to resolve and launch directly in the provider TUI. Omit to pick interactively.
     #[arg(value_name = "PROFILE")]
     profile_id: Option<String>,
+    /// Inline prompt that runs the launch headless (non-interactive) —
+    /// the non-pipe alternative to `echo … | hyprpilot <profile>`.
+    #[arg(short = 'p', long = "prompt", value_name = "PROMPT", conflicts_with = "file")]
+    prompt: Option<String>,
+    /// Read the headless prompt from a file (`~` / `$VAR` / relative
+    /// paths expanded). Mutually exclusive with `--prompt`.
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    file: Option<PathBuf>,
     /// Working directory for the provider process. Defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
@@ -46,6 +54,12 @@ impl LaunchArgs {
         if self.profile_id.is_some() {
             offenders.push("positional <PROFILE>");
         }
+        if self.prompt.is_some() {
+            offenders.push("--prompt");
+        }
+        if self.file.is_some() {
+            offenders.push("--file");
+        }
         if self.cwd.is_some() {
             offenders.push("--cwd");
         }
@@ -73,9 +87,30 @@ impl LaunchArgs {
     pub fn into_config_patches(self) -> Result<Vec<Value>> {
         self.with_config.into_patches()
     }
+
+    /// The explicit headless prompt from `--prompt` (inline) or
+    /// `--file` (contents). clap `conflicts_with` guarantees at most one
+    /// is set. `None` when neither is given — the launch then falls back
+    /// to piped stdin. A `--file` read error is surfaced cleanly, not a
+    /// panic.
+    fn prompt_override(&self) -> Result<Option<String>> {
+        if let Some(prompt) = &self.prompt {
+            return Ok(Some(prompt.clone()));
+        }
+        if let Some(file) = &self.file {
+            let path = crate::paths::resolve_user(&file.to_string_lossy());
+            let body =
+                std::fs::read_to_string(&path).with_context(|| format!("could not read --file {}", path.display()))?;
+            return Ok(Some(body));
+        }
+        Ok(None)
+    }
 }
 
 pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
+    // Resolve the explicit `--prompt` / `--file` override BEFORE
+    // `into_patches()` moves `args.with_config`.
+    let prompt = args.prompt_override()?;
     // Whether `--with-config -` will drain stdin — captured BEFORE
     // `into_patches()` consumes it, so `launch_profile` knows stdin is
     // no longer available as a headless prompt source.
@@ -86,6 +121,7 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
         cfg,
         SpawnRequest {
             profile_id: args.profile_id,
+            prompt,
             // Only the EXPLICIT `--cwd` flag rides through here. The
             // `current_dir()` fallback is applied last, inside
             // `launch_profile`, so a configured profile/agent `cwd` is
@@ -137,6 +173,29 @@ mod tests {
         assert!(msg.contains("--cwd"), "{msg}");
         assert!(msg.contains("--mode"), "{msg}");
         assert!(msg.contains("provider args"), "{msg}");
+    }
+
+    #[test]
+    fn subcommand_rejects_prompt_and_file() {
+        let args = LaunchArgs {
+            prompt: Some("do it".into()),
+            ..Default::default()
+        };
+        let msg = args
+            .reject_launch_only_args("profiles", true)
+            .expect_err("--prompt + subcommand must error")
+            .to_string();
+        assert!(msg.contains("--prompt"), "{msg}");
+
+        let args = LaunchArgs {
+            file: Some(PathBuf::from("/tmp/prompt.md")),
+            ..Default::default()
+        };
+        let msg = args
+            .reject_launch_only_args("profiles", true)
+            .expect_err("--file + subcommand must error")
+            .to_string();
+        assert!(msg.contains("--file"), "{msg}");
     }
 
     #[test]

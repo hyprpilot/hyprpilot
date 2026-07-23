@@ -103,9 +103,10 @@ pub struct Config {
 pub struct Logging {
     /// Tracing filter level. Applied only when neither `--log-level`
     /// nor `RUST_LOG` is set — precedence is `--log-level` >
-    /// `RUST_LOG` > `[logging] level` > the `warn,hyprpilot=info`
-    /// default. Unknown levels reject at TOML parse (serde closed
-    /// enum). Wired in `main.rs` via `logging::apply_config_level`.
+    /// `RUST_LOG` > `[logging] level` > the `error` default. Unknown
+    /// levels reject at TOML parse (serde closed enum). Folded into the
+    /// filter in `logging::init`, which `main` calls after `config::load`
+    /// so this level takes effect before the first info line.
     #[garde(skip)]
     pub level: Option<crate::logging::LogLevel>,
 }
@@ -232,16 +233,17 @@ fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Res
     }
 }
 
+/// Load + merge the config layers. Runs BEFORE the tracing subscriber
+/// is installed (its `[logging] level` feeds the filter), so it stays
+/// quiet: failures surface through the returned `Result` and `main`
+/// emits the "config: loaded" summary AFTER logging init.
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
-    tracing::debug!(cli_path = ?cli_path, profile = ?profile, "config::load: loading layers");
-
     let mut cfg =
         parse_layer_body(DEFAULTS, ConfigFormat::Toml, None).context("failed to parse compiled defaults.toml")?;
 
     let root_layer_path: Option<PathBuf> = match cli_path {
         Some(p) => {
             if !p.exists() {
-                tracing::error!(path = %p.display(), "config::load: cli path missing");
                 bail!("config file not found: {}", p.display());
             }
             Some(p.to_path_buf())
@@ -250,7 +252,6 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
     };
 
     if let Some(p) = root_layer_path.as_deref() {
-        tracing::debug!(path = %p.display(), "config::load: reading root layer");
         let layer = parse_layer_file(p)?;
         cfg.merge(layer);
     }
@@ -259,25 +260,14 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
         let resolved = paths::find_profile_config_file(name)
             .with_context(|| format!("failed to locate profile '{name}'"))?
             .ok_or_else(|| {
-                tracing::error!(profile = name, "config::load: profile not found");
                 anyhow!(
                     "profile '{name}' not found at {} (tried .toml / .json / .yaml / .yml)",
                     paths::profile_config_file(name).display()
                 )
             })?;
-        tracing::debug!(profile = name, path = %resolved.display(), "config::load: reading profile layer");
         let layer = parse_layer_file(&resolved)?;
         cfg.merge(layer);
     }
-
-    tracing::info!(
-        root_layer = ?root_layer_path,
-        profile = ?profile,
-        agents = cfg.agents.agents.len(),
-        profiles = cfg.profiles.len(),
-        default_profile = ?cfg.profile.default,
-        "config::load: layers merged"
-    );
 
     Ok(cfg)
 }

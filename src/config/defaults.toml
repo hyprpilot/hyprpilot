@@ -1,10 +1,10 @@
 # `[logging]` is intentionally NOT seeded. Leaving `logging.level`
-# unset lets the code fallback in `logging::init` — `warn,hyprpilot=info`
-# — own the default, keeping third-party crates (tokio / rmcp / nucleo)
-# at `warn` while surfacing hyprpilot's own `info` narrative. Seeding
-# `level = "info"` here would instead force a flat global `info` that
-# drowns the launcher's lines under vendor-SDK chatter. Set
-# `[logging] level` in your own config to override.
+# unset lets the code fallback in `logging::init` — `error` — own the
+# default, keeping a fresh run quiet (errors only) unless a level is
+# explicitly requested via `--log-level`, `RUST_LOG`, or `[logging]
+# level`. Seeding a level here would re-nullify the scoped `[logging]
+# level` filter (K-750), so the CODE fallback owns the default. Set
+# `[logging] level` in your own config to raise verbosity.
 
 # `[multiplexer]` — best-effort tmux/zellij window/tab rename right
 # before `exec()`-ing into the vendor CLI. Titles as

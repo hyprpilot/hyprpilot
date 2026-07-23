@@ -409,6 +409,42 @@ fn tool_error(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg)])
 }
 
+/// A successful tool result carrying BOTH a human-readable `content`
+/// text block AND the structured JSON payload. Clients that render only
+/// `structuredContent` (Claude Code) read the JSON; clients that render
+/// only `content` (opencode) read the text — a structured-only result
+/// shows there as "Unknown". `CallToolResult::structured` sets
+/// `structured_content` and a raw-JSON text block whose exact shape is
+/// an rmcp-version detail, so we overwrite `content` with an explicit,
+/// legible summary to guarantee the text block regardless of client or
+/// rmcp version. `#[non_exhaustive]` forbids the struct literal but not
+/// mutating the owned instance's public fields.
+fn structured_with_text(summary: impl Into<String>, value: serde_json::Value) -> CallToolResult {
+    let mut result = CallToolResult::structured(value);
+    result.content = vec![Content::text(summary)];
+    result
+}
+
+/// A one-line-per-skill catalogue for the `list_skills` text block.
+fn list_skills_summary(cache: &SkillsCache) -> String {
+    if cache.order.is_empty() {
+        return "No skills available.".into();
+    }
+    let mut out = format!("{} skill(s) available:\n", cache.order.len());
+    for slug in &cache.order {
+        let Some(skill) = cache.skills.get(slug) else {
+            continue;
+        };
+        if skill.description.is_empty() {
+            out.push_str(&format!("- {}\n", skill.slug));
+        } else {
+            out.push_str(&format!("- {}: {}\n", skill.slug, skill.description));
+        }
+    }
+    out.push_str("Call `read_skill` with a slug to fetch the full SKILL.md body.");
+    out
+}
+
 fn require_string<'a>(
     args: &'a serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -517,7 +553,10 @@ impl ServerHandler for HyprpilotServer {
         match request.name.as_ref() {
             "list_skills" => {
                 let cache = self.skills_cache.read().await;
-                Ok(CallToolResult::structured(list_skills_payload(&cache)))
+                Ok(structured_with_text(
+                    list_skills_summary(&cache),
+                    list_skills_payload(&cache),
+                ))
             }
             "read_skill" => {
                 let slug = require_string(&args, "slug")?;
@@ -525,12 +564,15 @@ impl ServerHandler for HyprpilotServer {
                 let Some(skill) = cache.skills.get(slug) else {
                     return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
-                Ok(CallToolResult::structured(serde_json::json!({
-                    "uri": skill_uri(slug),
-                    "body": skill.body,
-                    "metadata": skill.metadata,
-                    "frontmatter": skill.frontmatter_json,
-                })))
+                Ok(structured_with_text(
+                    skill.body.clone(),
+                    serde_json::json!({
+                        "uri": skill_uri(slug),
+                        "body": skill.body,
+                        "metadata": skill.metadata,
+                        "frontmatter": skill.frontmatter_json,
+                    }),
+                ))
             }
             "load_skill_references" => {
                 let slug = require_string(&args, "slug")?;
@@ -542,12 +584,15 @@ impl ServerHandler for HyprpilotServer {
                     return Ok(tool_error("skill path has no parent directory"));
                 };
                 let body = bundle_references(bundle_dir, &skill.refs);
-                Ok(CallToolResult::structured(serde_json::json!({
-                    "uri": skill_references_uri(slug),
-                    "body": body,
-                    "metadata": skill.metadata,
-                    "frontmatter": skill.frontmatter_json,
-                })))
+                Ok(structured_with_text(
+                    body.clone(),
+                    serde_json::json!({
+                        "uri": skill_references_uri(slug),
+                        "body": body,
+                        "metadata": skill.metadata,
+                        "frontmatter": skill.frontmatter_json,
+                    }),
+                ))
             }
             "reload" => {
                 self.reload_skills().await;
@@ -560,16 +605,18 @@ impl ServerHandler for HyprpilotServer {
                 if let Err(err) = context.peer.notify_resource_list_changed().await {
                     tracing::debug!(%err, "mcp::server: reload resource list-changed notification failed");
                 }
-                Ok(CallToolResult::structured(serde_json::json!({
-                    "reloaded": count,
-                })))
+                Ok(structured_with_text(
+                    format!("Reloaded {count} skill(s)."),
+                    serde_json::json!({ "reloaded": count }),
+                ))
             }
             "open" => {
                 let path = require_string(&args, "path")?;
                 match open::that_detached(path) {
-                    Ok(()) => Ok(CallToolResult::structured(serde_json::json!({
-                        "opened": path,
-                    }))),
+                    Ok(()) => Ok(structured_with_text(
+                        format!("Opened {path}"),
+                        serde_json::json!({ "opened": path }),
+                    )),
                     Err(err) => Ok(tool_error(format!("open failed: {err}"))),
                 }
             }
@@ -590,8 +637,11 @@ impl ServerHandler for HyprpilotServer {
         let mut resources = Vec::with_capacity(cache.skills.len());
         for slug in &cache.order {
             let Some(skill) = cache.skills.get(slug) else { continue };
+            // Body resource. `name` is the always-present slug; `title`
+            // is the human title; `description` / `mimeType` / `size` /
+            // `_meta` fill in the standard MCP Resource fields.
             resources.push(rmcp::model::Resource::new(
-                RawResource::new(skill_uri(slug), slug.clone())
+                RawResource::new(skill_uri(slug), skill.slug.clone())
                     .with_title(skill.title.clone())
                     .with_description(skill.description.clone())
                     .with_mime_type("text/markdown")
@@ -599,6 +649,22 @@ impl ServerHandler for HyprpilotServer {
                     .with_meta(skill_meta(skill)),
                 None,
             ));
+            // References resource — only listed when the skill actually
+            // declares references, so the list never advertises an empty
+            // bundle. Same standard-field population as the body.
+            if !skill.refs.references.is_empty() {
+                resources.push(rmcp::model::Resource::new(
+                    RawResource::new(skill_references_uri(slug), format!("{}/references", skill.slug))
+                        .with_title(format!("{} — references", skill.title))
+                        .with_description(format!(
+                            "Bundled reference files for the `{slug}` skill ({} declared).",
+                            skill.refs.references.len()
+                        ))
+                        .with_mime_type("text/markdown")
+                        .with_meta(skill_meta(skill)),
+                    None,
+                ));
+            }
         }
         Ok(ListResourcesResult::with_all_items(resources))
     }

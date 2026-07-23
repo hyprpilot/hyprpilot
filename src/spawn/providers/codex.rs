@@ -21,14 +21,14 @@ pub(super) fn build_codex(
     prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
-    // Headless: `codex exec [OPTIONS] <prompt>` — the non-interactive
-    // subcommand. `exec` is prepended before every generated `-c` /
-    // `--model` / `--cd` / `-s` option (all valid `codex exec` flags)
-    // and the prompt rides last as the positional. `codex exec` reads
-    // stdin too, but hyprpilot has already consumed it to build the
-    // prompt, so fd0 is at EOF and codex does not block (verified live
-    // against codex 0.145; the arg form does NOT hang with consumed
-    // stdin, so plain `exec()` suffices — no spawn/child-stdin dance).
+    // Headless: `codex exec [OPTIONS]` reading the prompt from STDIN —
+    // the non-interactive subcommand. `exec` is prepended before every
+    // generated `-c` / `--model` / `--cd` / `-s` option (all valid
+    // `codex exec` flags). The prompt is delivered on the child's stdin
+    // (see `stdin_prompt` below), NOT as a positional: hyprpilot spawns
+    // codex and writes the prompt to a fresh pipe, then closes it (EOF),
+    // so `codex exec` reads it without the non-TTY hang that an inherited
+    // already-at-EOF fd0 or an open-but-idle pipe would cause.
     let headless = prompt.is_some();
     if headless {
         command.args.insert(0, "exec".into());
@@ -72,9 +72,9 @@ pub(super) fn build_codex(
     }
 
     command.args.extend(provider_args);
-    if let Some(prompt) = prompt {
-        command.args.push(prompt.into());
-    }
+    // Deliver the headless prompt on stdin (see the `exec` comment
+    // above) — never as a positional.
+    command.stdin_prompt = prompt.map(str::to_string);
 
     Ok(command)
 }
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_headless_projects_exec_subcommand_and_prompt_positional() {
+    fn codex_headless_projects_exec_subcommand_and_prompt_on_stdin() {
         let command = build_command(
             &resolved_with_mode(AgentProvider::Codex, None),
             None,
@@ -673,7 +673,16 @@ mod tests {
             "exec is the subcommand"
         );
         assert!(command.args.iter().any(|a| a == "--model"), "model still projected");
-        assert_eq!(command.args.last().map(String::as_str), Some("summarize the diff"));
+        assert_eq!(
+            command.stdin_prompt.as_deref(),
+            Some("summarize the diff"),
+            "prompt is delivered on stdin"
+        );
+        assert!(
+            !command.args.iter().any(|a| a == "summarize the diff"),
+            "prompt must NOT be a positional arg: {:?}",
+            command.args
+        );
     }
 
     #[test]
