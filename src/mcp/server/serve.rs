@@ -43,9 +43,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ErrorCode, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource, RawResourceTemplate,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, Implementation, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
+    ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
@@ -406,7 +406,7 @@ fn open_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
 /// message. Uses `CallToolResult::error` so the struct's `#[non_exhaustive]`
 /// guard is respected — direct construction is rejected by the compiler.
 fn tool_error(msg: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(msg)])
+    CallToolResult::error(vec![ContentBlock::text(msg)])
 }
 
 /// A successful tool result carrying BOTH a human-readable `content`
@@ -421,7 +421,7 @@ fn tool_error(msg: impl Into<String>) -> CallToolResult {
 /// mutating the owned instance's public fields.
 fn structured_with_text(summary: impl Into<String>, value: serde_json::Value) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(summary)];
+    result.content = vec![ContentBlock::text(summary)];
     result
 }
 
@@ -463,13 +463,16 @@ impl ServerHandler for HyprpilotServer {
         // five) — do NOT advertise tool-list-changed. Skills back the
         // resource list, which `reload` can change, so resources DO
         // advertise list-changed (and `reload` fires it).
-        caps.tools = Some(rmcp::model::ToolsCapability {
-            list_changed: Some(false),
-        });
-        caps.resources = Some(rmcp::model::ResourcesCapability {
-            subscribe: Some(false),
-            list_changed: Some(true),
-        });
+        // rmcp 2 marks these `#[non_exhaustive]` — no struct literal
+        // outside the crate — so mutate the owned `default()` instances'
+        // public fields instead.
+        let mut tools = rmcp::model::ToolsCapability::default();
+        tools.list_changed = Some(false);
+        caps.tools = Some(tools);
+        let mut resources = rmcp::model::ResourcesCapability::default();
+        resources.subscribe = Some(false);
+        resources.list_changed = Some(true);
+        caps.resources = Some(resources);
         ServerInfo::new(caps)
             .with_server_info(Implementation::new(
                 SKILLS_SERVER_NAME.to_string(),
@@ -640,21 +643,20 @@ impl ServerHandler for HyprpilotServer {
             // Body resource. `name` is the always-present slug; `title`
             // is the human title; `description` / `mimeType` / `size` /
             // `_meta` fill in the standard MCP Resource fields.
-            resources.push(rmcp::model::Resource::new(
-                RawResource::new(skill_uri(slug), skill.slug.clone())
+            resources.push(
+                rmcp::model::Resource::new(skill_uri(slug), skill.slug.clone())
                     .with_title(skill.title.clone())
                     .with_description(skill.description.clone())
                     .with_mime_type("text/markdown")
-                    .with_size(skill.body.len().try_into().unwrap_or(u32::MAX))
+                    .with_size(skill.body.len() as u64)
                     .with_meta(skill_meta(skill)),
-                None,
-            ));
+            );
             // References resource — only listed when the skill actually
             // declares references, so the list never advertises an empty
             // bundle. Same standard-field population as the body.
             if !skill.refs.references.is_empty() {
-                resources.push(rmcp::model::Resource::new(
-                    RawResource::new(skill_references_uri(slug), format!("{}/references", skill.slug))
+                resources.push(
+                    rmcp::model::Resource::new(skill_references_uri(slug), format!("{}/references", skill.slug))
                         .with_title(format!("{} — references", skill.title))
                         .with_description(format!(
                             "Bundled reference files for the `{slug}` skill ({} declared).",
@@ -662,8 +664,7 @@ impl ServerHandler for HyprpilotServer {
                         ))
                         .with_mime_type("text/markdown")
                         .with_meta(skill_meta(skill)),
-                    None,
-                ));
+                );
             }
         }
         Ok(ListResourcesResult::with_all_items(resources))
@@ -675,21 +676,15 @@ impl ServerHandler for HyprpilotServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
         let templates = vec![
-            rmcp::model::ResourceTemplate::new(
-                RawResourceTemplate::new("hyprpilot://skills/{slug}", "skill")
-                    .with_description("Full SKILL.md body for the addressed skill slug.")
-                    .with_mime_type("text/markdown"),
-                None,
-            ),
-            rmcp::model::ResourceTemplate::new(
-                RawResourceTemplate::new("hyprpilot://skills/{slug}/references", "skill-references")
-                    .with_description(
-                        "Bundle of every reference declared in the skill's frontmatter, \
+            rmcp::model::ResourceTemplate::new("hyprpilot://skills/{slug}", "skill")
+                .with_description("Full SKILL.md body for the addressed skill slug.")
+                .with_mime_type("text/markdown"),
+            rmcp::model::ResourceTemplate::new("hyprpilot://skills/{slug}/references", "skill-references")
+                .with_description(
+                    "Bundle of every reference declared in the skill's frontmatter, \
                      concatenated with `--- <basename> ---` delimiters.",
-                    )
-                    .with_mime_type("text/markdown"),
-                None,
-            ),
+                )
+                .with_mime_type("text/markdown"),
         ];
         Ok(ListResourceTemplatesResult::with_all_items(templates))
     }
