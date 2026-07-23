@@ -91,26 +91,7 @@ fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
 where
     F: FnMut(&str) -> Option<String>,
 {
-    let tilde = shellexpand::tilde(raw);
-    match shellexpand::env_with_context(tilde.as_ref(), |name| {
-        Ok::<Option<String>, std::convert::Infallible>(lookup_env(name, lookup))
-    }) {
-        Ok(expanded) => expanded.into_owned(),
-        Err(err) => {
-            tracing::warn!(value = raw, ctx, %err, "mcp::expand_value: expansion failed; using raw value");
-            raw.to_string()
-        }
-    }
-}
-
-fn lookup_env<F>(name: &str, lookup: &mut F) -> Option<String>
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    if let Some(value) = lookup(name) {
-        return Some(value);
-    }
-    name.strip_prefix("env:").and_then(lookup)
+    crate::paths::expand_env_value(raw, ctx, |name| lookup(name))
 }
 
 fn expand_raw_strings_with<F>(def: &MCPDefinition, raw: &Value, lookup: &mut F) -> Value
