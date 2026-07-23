@@ -4,43 +4,23 @@
 version: "3"
 
 vars:
-  # Route node-based commands through `mise exec` so the
-  # mise-pinned node 24 + pnpm 10.33.4 always run, regardless of
-  # which `node` / `pnpm` happens to come first on the developer's
-  # PATH (bun's node shim, system node, an older pnpm). Matches
-  # what CI does — node version mismatches silently let TS errors
-  # slip locally that CI then catches.
+  # Route node-based commands through `mise exec` so the mise-pinned
+  # node 24 + pnpm 10 always run the docs/ build, regardless of which
+  # `node` / `pnpm` happens to come first on the developer's PATH
+  # (system node, an older pnpm). Matches what CI does — node version
+  # mismatches silently let TS errors slip locally that CI then catches.
   pnpm: mise exec -- pnpm
 
 env:
   # Default `RUST_LOG` for every `task` invocation (notably `task run`).
-  # Bare `warn` keeps daemon-wide noise low; per-target `=trace`
-  # enables the diagnostic stamps we rely on across the live-event
-  # pipeline. Captains override per-shell when they need a tighter
-  # or noisier filter:
+  # The launcher resolves a profile from layered config and `exec()`s
+  # into the vendor CLI, so `hyprpilot`'s own tracing only covers the
+  # brief resolve phase. `warn` keeps the pre-exec output quiet;
+  # `hyprpilot=info` surfaces config-load + resolution breadcrumbs.
+  # Captains override per-shell:
   #   RUST_LOG='trace' task run                  # everything at trace
-  #   RUST_LOG='warn,hyprpilot=info' task run    # near-silent
-  #
-  # Targets in the default set:
-  #   * `hyprpilot=info`        — daemon-wide breadcrumbs (config
-  #     load, registry actions, RPC dispatch entries).
-  #   * `acp::emit=trace`       — actor → broadcast lifecycle events
-  #     (TurnStarted/Ended, UsageUpdate, InstanceMeta, ...).
-  #     `acp::emit::chunk` (transcript / terminal) is OFF by default
-  #     (~30 lines/sec during streaming); opt in per shell.
-  #   * `tauri::emit=trace`     — webview-bound app.emit lifecycle
-  #     calls. `tauri::emit::chunk` opt-in.
-  #   * `snapshot::mirror=trace` — mirror.apply lifecycle writes.
-  #     `snapshot::mirror::chunk` opt-in.
-  #   * `snapshot::meta=trace`  — every served meta snapshot RPC.
-  #   * `snapshot::chat=trace`  — every served chat-page RPC.
-  #   * `acp::wire=trace`,`acp::thought=trace` — raw vendor wire +
-  #     thought-extraction outcomes.
-  #   * `webview=trace`         — UI-side `log.trace(...)` calls.
-  #     tauri-plugin-log targets `webview` / `webview:<file:line>`.
-  #     Without this the daemon stderr only shows the Rust half of
-  #     the pipeline and a captain debugging UI events sees nothing.
-  RUST_LOG: warn,hyprpilot=info,acp::emit=trace,tauri::emit=trace,snapshot::mirror=trace,snapshot::meta=trace,snapshot::chat=trace,acp::wire=trace,acp::thought=trace,webview=trace
+  #   RUST_LOG='warn' task run                   # near-silent
+  RUST_LOG: warn,hyprpilot=info
 
 tasks:
   install:
