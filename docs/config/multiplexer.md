@@ -1,6 +1,6 @@
 ---
-title: Multiplexer Title
-order: 70
+title: Multiplexer
+order: 60
 ---
 
 # {{ $frontmatter.title }}
@@ -13,10 +13,14 @@ When hyprpilot launches inside tmux or zellij, it renames the current window / t
 
 It is on by default:
 
-```toml
-[multiplexer]
-set_title = true # default; set false to opt out
+```yaml
+multiplexer:
+  set_title: true # default; set false to opt out
 ```
+
+| Field       | Type | Default | What it does                                                                           |
+| ----------- | ---- | ------- | -------------------------------------------------------------------------------------- |
+| `set_title` | bool | `true`  | Rename the current tmux window / zellij tab to `hyprpilot@<cwd-basename>` before exec. |
 
 ## How it renames
 
