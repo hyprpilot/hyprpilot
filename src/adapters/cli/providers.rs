@@ -376,7 +376,7 @@ fn push_codex_mode_if_absent(args: &mut Vec<String>, detect_args: &[String], mod
     }
 
     bail!(
-        "codex direct spawn mode '{mode}' is not supported by Codex CLI; use an approval policy ({}) or sandbox mode ({})",
+        "codex spawn mode '{mode}' is not supported by Codex CLI; use an approval policy ({}) or sandbox mode ({})",
         CODEX_APPROVAL_POLICIES.join(", "),
         CODEX_SANDBOX_MODES.join(", ")
     );
@@ -1351,7 +1351,7 @@ mod tests {
         )
         .expect_err("unknown mode should fail before spawning codex");
 
-        assert!(err.to_string().contains("codex direct spawn mode 'plan'"), "{err}");
+        assert!(err.to_string().contains("codex spawn mode 'plan'"), "{err}");
     }
 
     #[test]
