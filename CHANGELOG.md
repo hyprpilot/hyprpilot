@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/hyprpilot/hyprpilot/compare/v2.8.0...v3.0.0) (2026-07-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* the `daemon` and `ctl` subcommands are gone. hyprpilot is a fire-and-exec launcher — `spawn`, `profiles`, and `mcp serve` are the surviving subcommands.
+
+### Performance
+
+* strip hyprpilot to a config-driven fire-and-exec launcher ([#192](https://github.com/hyprpilot/hyprpilot/issues/192)) ([ec2be8c](https://github.com/hyprpilot/hyprpilot/commit/ec2be8c07eab39bd6c9b6b94f754ba37745ab693))
+
 ## [2.8.0](https://github.com/hyprpilot/hyprpilot/compare/v2.7.1...v2.8.0) (2026-06-17)
 
 
