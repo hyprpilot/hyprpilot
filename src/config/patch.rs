@@ -622,6 +622,41 @@ mod tests {
         );
     }
 
+    // ── patch_applies (predicate used by count_matching_patches) ──
+
+    #[test]
+    fn patch_applies_true_when_no_match_directive() {
+        let patch = json!({ "model": "a" });
+        assert!(patch_applies(&patch, PatchMatchContext::new("any/profile")));
+    }
+
+    #[test]
+    fn patch_applies_respects_profile_glob() {
+        let patch = json!({ "$match": { "profile": "personal/*" }, "model": "a" });
+        assert!(patch_applies(&patch, PatchMatchContext::new("personal/claude/opus")));
+        assert!(!patch_applies(&patch, PatchMatchContext::new("work/claude/opus")));
+    }
+
+    #[test]
+    fn patch_applies_false_for_non_object_or_malformed_match() {
+        assert!(!patch_applies(&json!("not-an-object"), PatchMatchContext::new("x")));
+        assert!(!patch_applies(
+            &json!({ "$match": "not-an-object" }),
+            PatchMatchContext::new("x")
+        ));
+        assert!(!patch_applies(
+            &json!({ "$match": { "profile": 1 } }),
+            PatchMatchContext::new("x")
+        ));
+        assert!(
+            !patch_applies(
+                &json!({ "$match": { "profile": "work/[" } }),
+                PatchMatchContext::new("x")
+            ),
+            "a malformed glob fails closed"
+        );
+    }
+
     #[test]
     fn root_patch_non_object_value_is_skipped_silently() {
         // Defensive — config-load validation should reject malformed

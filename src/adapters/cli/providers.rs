@@ -407,6 +407,14 @@ fn has_codex_mode_override(args: &[String]) -> bool {
 fn claude_mcp_config(defs: &[MCPDefinition]) -> Result<String> {
     let mut servers = serde_json::Map::new();
     for def in defs {
+        // Parity with codex/opencode, which warn+skip transportless
+        // defs: claude used to serialize any raw entry verbatim, so a
+        // def missing both `command` and `url` reached the vendor as a
+        // malformed server. Skip it here instead.
+        if project_transport(def).is_none() {
+            tracing::warn!(name = %def.name, "cli spawn: skipping MCP entry without command or url for claude");
+            continue;
+        }
         servers.insert(def.name.clone(), claude_mcp_server_config(def));
     }
     serde_json::to_string(&serde_json::json!({ "mcpServers": servers })).context("serialize claude MCP config")
@@ -650,6 +658,13 @@ fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
                 }
             }
             McpTransport::Sse { name, url, headers } => {
+                // Codex's config exposes only a bare `.url` remote-MCP
+                // shape — no distinct SSE discriminator. Project as
+                // HTTP but warn loudly so the downgrade is not silent.
+                tracing::warn!(
+                    server = %name,
+                    "cli spawn: codex has no distinct SSE MCP transport; projecting `type=sse` server as HTTP (url + headers)"
+                );
                 let prefix = toml_key_path(&["mcp_servers", &name]);
                 entries.push((format!("{prefix}.url"), toml_string(&url)));
                 for (key, value) in headers {
@@ -806,6 +821,13 @@ fn opencode_mcp_config(defs: &[MCPDefinition]) -> serde_json::Map<String, serde_
                 out.insert(name, opencode_remote_mcp(url, headers));
             }
             McpTransport::Sse { name, url, headers } => {
+                // opencode's `type: "remote"` MCP entry carries no SSE
+                // discriminator — the SSE-ness is dropped. Warn so the
+                // downgrade to HTTP-style remote is not silent.
+                tracing::warn!(
+                    server = %name,
+                    "cli spawn: opencode has no distinct SSE MCP transport; projecting `type=sse` server as a `remote` (HTTP) server"
+                );
                 out.insert(name, opencode_remote_mcp(url, headers));
             }
         }
@@ -879,11 +901,16 @@ fn opencode_permission_json(permissions: &[(String, String)]) -> serde_json::Res
 
 fn opencode_mcp_tool_pattern(server: &str, pattern: &str) -> Option<String> {
     let leaf = mcp_leaf_pattern(server, pattern)?;
-    Some(format!(
-        "{}_{}",
-        opencode_sanitize_tool_name(server),
-        opencode_sanitize_tool_pattern(leaf)
-    ))
+    let sanitized_leaf = opencode_sanitize_tool_pattern(leaf);
+    if sanitized_leaf != leaf {
+        tracing::warn!(
+            server = %server,
+            pattern = %leaf,
+            sanitized = %sanitized_leaf,
+            "cli spawn: opencode permission pattern altered by sanitization; character-class globs (e.g. `[abc]`) collapse to `_` and no longer match the intended tools"
+        );
+    }
+    Some(format!("{}_{}", opencode_sanitize_tool_name(server), sanitized_leaf))
 }
 
 fn opencode_sanitize_tool_name(value: &str) -> String {
@@ -1636,5 +1663,289 @@ mod tests {
         assert_json_key_before(permissions, "filesystem_write_file", "filesystem_*");
         assert_json_key_before(permissions, "filesystem_*", "filesystem_read_file");
         assert_json_key_before(permissions, "filesystem_read_file", "filesystem_delete_*");
+    }
+
+    // ── K-740 additions ──────────────────────────────────────────
+
+    fn sse_mcp_def() -> MCPDefinition {
+        MCPDefinition {
+            name: "events".into(),
+            raw: json!({ "url": "https://example.test/sse", "type": "sse" }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: "<test>".into(),
+        }
+    }
+
+    fn transportless_mcp_def() -> MCPDefinition {
+        MCPDefinition {
+            name: "broken".into(),
+            raw: json!({ "note": "no command or url" }),
+            hyprpilot: HyprpilotExtension::default(),
+            source: "<test>".into(),
+        }
+    }
+
+    fn mcp_def_with_charclass_glob() -> MCPDefinition {
+        MCPDefinition {
+            name: "filesystem".into(),
+            raw: json!({ "command": "npx", "args": ["srv"] }),
+            hyprpilot: HyprpilotExtension {
+                include_tools: None,
+                exclude_tools: Vec::new(),
+                auto_accept_tools: vec!["read_[abc]".into()],
+                auto_reject_tools: Vec::new(),
+            },
+            source: "<test>".into(),
+        }
+    }
+
+    // build_generic (custom provider) — no vendor projection.
+
+    #[test]
+    fn build_generic_passes_through_command_and_provider_args_only() {
+        let mut resolved = resolved(AgentProvider::Custom);
+        resolved.agent.command = "my-tool".into();
+        resolved.agent.args = vec!["--base".into()];
+        let command = build_command(&resolved, Some("ignored prompt"), &[mcp_def()], vec!["--extra".into()]).unwrap();
+
+        assert_eq!(command.program, "my-tool");
+        assert_eq!(command.args, vec!["--base".to_string(), "--extra".to_string()]);
+        assert!(!command.args.iter().any(|arg| arg == "--model"));
+        assert!(!command.args.iter().any(|arg| arg == "--effort"));
+        assert!(!command.args.iter().any(|arg| arg == "--mcp-config"));
+        assert!(!command.args.iter().any(|arg| arg == "--append-system-prompt"));
+    }
+
+    // claude flag emission.
+
+    #[test]
+    fn claude_emits_model_effort_mode_and_system_prompt_flags() {
+        let command = build_command(&resolved(AgentProvider::ClaudeCode), Some("be terse"), &[], vec![]).unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--model", "model-a"]));
+        assert!(command.args.windows(2).any(|w| w == ["--effort", "high"]));
+        assert!(command.args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
+        assert!(command
+            .args
+            .windows(2)
+            .any(|w| w == ["--append-system-prompt", "be terse"]));
+    }
+
+    #[test]
+    fn claude_omits_append_system_prompt_when_empty() {
+        let command = build_command(&resolved(AgentProvider::ClaudeCode), Some(""), &[], vec![]).unwrap();
+
+        assert!(!command.args.iter().any(|arg| arg == "--append-system-prompt"));
+    }
+
+    #[test]
+    fn claude_effort_and_mode_deduped_when_provider_args_set_them() {
+        let command = build_command(
+            &resolved(AgentProvider::ClaudeCode),
+            None,
+            &[],
+            vec![
+                "--effort".into(),
+                "low".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--effort").count(), 1);
+        assert_eq!(
+            command
+                .args
+                .iter()
+                .filter(|arg| arg.as_str() == "--permission-mode")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn claude_skips_transportless_mcp_def() {
+        let config = claude_mcp_config(&[transportless_mcp_def(), mcp_def()]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+
+        assert!(
+            parsed["mcpServers"].get("broken").is_none(),
+            "transportless def must be skipped for parity with codex/opencode"
+        );
+        assert!(
+            parsed["mcpServers"].get("hyprpilot-nvim").is_some(),
+            "a valid def alongside a transportless one still serialises"
+        );
+    }
+
+    #[test]
+    fn claude_preserves_sse_transport_type() {
+        let config = claude_mcp_config(&[sse_mcp_def()]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+
+        assert_eq!(parsed["mcpServers"]["events"]["type"], "sse");
+        assert_eq!(parsed["mcpServers"]["events"]["url"], "https://example.test/sse");
+    }
+
+    // codex config projection.
+
+    #[test]
+    fn codex_emits_model_reasoning_effort() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
+            None,
+            &[],
+            vec![],
+        )
+        .unwrap();
+
+        assert!(command.args.join("\n").contains("model_reasoning_effort=\"high\""));
+    }
+
+    #[test]
+    fn codex_instructions_deduped_when_provider_arg_sets_it() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
+            Some("generated prompt"),
+            &[],
+            vec!["-c".into(), "instructions=\"user\"".into()],
+        )
+        .unwrap();
+        let joined = command.args.join("\n");
+
+        assert!(
+            !joined.contains("instructions=\"generated prompt\""),
+            "generated instructions must be suppressed when a provider arg sets the key"
+        );
+        assert!(joined.contains("instructions=\"user\""));
+        assert_eq!(
+            command
+                .args
+                .iter()
+                .filter(|arg| arg.starts_with("instructions="))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn codex_model_deduped_when_provider_arg_sets_it() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::Codex, Some("on-request")),
+            None,
+            &[],
+            vec!["--model".into(), "user-model".into()],
+        )
+        .unwrap();
+
+        assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--model").count(), 1);
+    }
+
+    #[test]
+    fn codex_projects_sse_as_http_url() {
+        let entries = codex_mcp_config_entries(&[sse_mcp_def()]);
+        let rendered = entries
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("mcp_servers.events.url=\"https://example.test/sse\""));
+    }
+
+    // opencode config / permission projection.
+
+    #[test]
+    fn opencode_agent_name_falls_back_to_hyprpilot() {
+        let command = build_command(&resolved_with_mode(AgentProvider::OpenCode, None), None, &[], vec![]).unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--agent", "hyprpilot"]));
+    }
+
+    #[test]
+    fn opencode_model_deduped_when_provider_arg_sets_it() {
+        let command = build_command(
+            &resolved(AgentProvider::OpenCode),
+            None,
+            &[],
+            vec!["--model".into(), "user-model".into()],
+        )
+        .unwrap();
+
+        assert_eq!(command.args.iter().filter(|arg| arg.as_str() == "--model").count(), 1);
+    }
+
+    #[test]
+    fn opencode_preset_config_content_is_not_overwritten() {
+        let mut resolved = resolved(AgentProvider::OpenCode);
+        resolved
+            .agent
+            .env
+            .insert("OPENCODE_CONFIG_CONTENT".into(), "{\"preset\":true}".into());
+        let command = build_command(&resolved, Some("be terse"), &[mcp_def()], vec![]).unwrap();
+
+        assert_eq!(
+            command.env.get("OPENCODE_CONFIG_CONTENT").map(String::as_str),
+            Some("{\"preset\":true}"),
+            "an agent-provided OPENCODE_CONFIG_CONTENT must not be clobbered by generated config"
+        );
+    }
+
+    #[test]
+    fn opencode_preset_permission_is_not_overwritten() {
+        let mut resolved = resolved(AgentProvider::OpenCode);
+        resolved
+            .agent
+            .env
+            .insert("OPENCODE_PERMISSION".into(), "{\"preset\":\"allow\"}".into());
+        let command = build_command(&resolved, None, &[mcp_def_with_visibility()], vec![]).unwrap();
+
+        assert_eq!(
+            command.env.get("OPENCODE_PERMISSION").map(String::as_str),
+            Some("{\"preset\":\"allow\"}"),
+            "an agent-provided OPENCODE_PERMISSION must not be clobbered by generated policy"
+        );
+    }
+
+    #[test]
+    fn opencode_projects_sse_as_remote() {
+        let map = serde_json::Value::Object(opencode_mcp_config(&[sse_mcp_def()]));
+
+        assert_eq!(map["events"]["type"], "remote");
+        assert_eq!(map["events"]["url"], "https://example.test/sse");
+    }
+
+    #[test]
+    fn opencode_sanitizes_charclass_glob_in_permission_key() {
+        let command = build_command(
+            &resolved_with_mode(AgentProvider::OpenCode, None),
+            None,
+            &[mcp_def_with_charclass_glob()],
+            vec![],
+        )
+        .unwrap();
+        let permissions: serde_json::Value =
+            serde_json::from_str(command.env.get("OPENCODE_PERMISSION").unwrap()).unwrap();
+
+        // `[` and `]` collapse to `_`: read_[abc] → read__abc_ (the
+        // pattern no longer matches the intended tools — hence the warn).
+        assert_eq!(permissions["filesystem_read__abc_"], "allow");
+    }
+
+    // ensure_inline_size guard.
+
+    #[test]
+    fn ensure_inline_size_rejects_oversized_payload() {
+        let big = "x".repeat(INLINE_CONFIG_LIMIT + 1);
+        let err = ensure_inline_size("test payload", &big).expect_err("oversized payload must error");
+
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn ensure_inline_size_accepts_within_limit() {
+        assert!(ensure_inline_size("test payload", "small").is_ok());
+        assert!(ensure_inline_size("test payload", &"x".repeat(INLINE_CONFIG_LIMIT)).is_ok());
     }
 }
