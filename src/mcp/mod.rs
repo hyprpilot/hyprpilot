@@ -25,6 +25,7 @@
 pub mod auto_inject;
 pub mod loader;
 pub mod server;
+pub mod transport;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,6 +33,8 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use transport::McpTransport;
 
 /// hyprpilot-namespace fields under each `mcpServers` entry. CamelCase
 /// to match the surrounding `mcpServers` JSON style.
@@ -70,8 +73,8 @@ impl HyprpilotExtension {
 /// One server entry. `name` is the `mcpServers` map key (used for
 /// indexing + UI labels + tool→server attribution). `raw` carries the
 /// untouched server entry minus the hyprpilot extension key — gets
-/// projected onto `agent_client_protocol::schema::McpServer` at
-/// `session/new` injection time. `hyprpilot` is the only typed slice;
+/// projected onto `McpTransport` at vendor-native config build time
+/// (`adapters::cli::providers`). `hyprpilot` is the only typed slice;
 /// everything else stays opaque so future MCP-spec additions ride
 /// through without a hyprpilot release.
 #[derive(Debug, Clone)]
@@ -84,21 +87,6 @@ pub struct MCPDefinition {
     /// is gone).
     #[allow(dead_code)]
     pub source: PathBuf,
-}
-
-/// Compiled per-server glob policy. Built once at registry
-/// construction so a permission-decide path reads from the cache
-/// instead of running `GlobSetBuilder::build()` on every tool call.
-/// Retained pending the tool-policy prune (K-731); the launcher
-/// projects policy into provider-native config directly.
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct CompiledToolPolicy {
-    pub include: Option<globset::GlobSet>,
-    pub exclude: Option<globset::GlobSet>,
-    pub reject: Option<globset::GlobSet>,
-    pub accept: Option<globset::GlobSet>,
-    pub include_set: bool,
 }
 
 fn expand_value_with<F>(raw: &str, ctx: &str, lookup: &mut F) -> String
@@ -170,34 +158,6 @@ where
     expanded
 }
 
-/// Compile a list of glob patterns into a `GlobSet`. `None` when the
-/// input is empty or every pattern fails to compile (logged). The
-/// per-server tool-name globs are tiny so build cost is negligible at
-/// construction; caching the result so the per-call decide path
-/// doesn't pay for it is the win.
-fn compile_glob_set(patterns: &[String]) -> Option<globset::GlobSet> {
-    if patterns.is_empty() {
-        return None;
-    }
-    let mut builder = globset::GlobSetBuilder::new();
-    let mut added = 0_usize;
-    for p in patterns {
-        match globset::Glob::new(p) {
-            Ok(g) => {
-                builder.add(g);
-                added += 1;
-            }
-            Err(err) => {
-                tracing::warn!(pattern = %p, %err, "mcp::compile_glob_set: skipping invalid glob");
-            }
-        }
-    }
-    if added == 0 {
-        return None;
-    }
-    builder.build().ok()
-}
-
 /// Owned MCP catalog — the resolved set after merging every file.
 /// Constructed at daemon boot from the global `mcps` paths. Profiles
 /// with their own `mcps` field build per-profile registries on
@@ -207,42 +167,30 @@ pub struct MCPsRegistry {
     /// `list()` is stable.
     catalog: RwLock<HashMap<String, MCPDefinition>>,
     order: RwLock<Vec<String>>,
-    /// Per-server compiled tool policy. Built once at construction.
-    /// Retained pending the tool-policy prune (K-731) — no live
-    /// consumer after the permission controller was removed.
-    #[allow(dead_code)]
-    globs: HashMap<String, CompiledToolPolicy>,
 }
 
-/// Project an opaque `MCPDefinition.raw` JSON value onto the ACP wire
-/// shape. The `mcpServers` JSON spec encodes transport via field
-/// presence (`command` → stdio, `url` + optional `transport` →
-/// http/sse); ACP's typed `McpServer` enum carries the same three
-/// variants. Returns `None` when the entry doesn't match any known
-/// transport — daemon logs + skips so a malformed entry doesn't
-/// brick session/new.
+/// Project an opaque `MCPDefinition.raw` JSON value onto its
+/// `McpTransport` shape. The `mcpServers` JSON spec encodes transport
+/// via field presence (`command` → stdio, `url` + optional
+/// `type`/`transport` → http/sse). Returns `None` when the entry
+/// doesn't match any known transport — callers log + skip so a
+/// malformed entry doesn't brick a spawn.
 #[must_use]
-pub fn project_to_acp(def: &MCPDefinition) -> Option<agent_client_protocol::schema::McpServer> {
-    project_to_acp_with_lookup(def, &mut |name| std::env::var(name).ok())
+pub fn project_transport(def: &MCPDefinition) -> Option<McpTransport> {
+    project_transport_with_lookup(def, &mut |name| std::env::var(name).ok())
 }
 
 /// Return the raw server entry after applying the same `~` and
-/// environment-variable expansion used by ACP projection.
+/// environment-variable expansion used by transport projection.
 #[must_use]
 pub fn expanded_raw(def: &MCPDefinition) -> Value {
     expand_raw_strings_with(def, &def.raw, &mut |name| std::env::var(name).ok())
 }
 
-fn project_to_acp_with_lookup<F>(
-    def: &MCPDefinition,
-    lookup: &mut F,
-) -> Option<agent_client_protocol::schema::McpServer>
+fn project_transport_with_lookup<F>(def: &MCPDefinition, lookup: &mut F) -> Option<McpTransport>
 where
     F: FnMut(&str) -> Option<String>,
 {
-    use agent_client_protocol::schema::{
-        EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
-    };
     let expanded = expand_raw_strings_with(def, &def.raw, lookup);
     let obj = expanded.as_object()?;
 
@@ -255,19 +203,21 @@ where
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        let env: Vec<EnvVariable> = obj
+        let env: Vec<(String, String)> = obj
             .get("env")
             .and_then(|v| v.as_object())
             .map(|map| {
                 map.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| EnvVariable::new(k.clone(), s.to_string())))
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
             .unwrap_or_default();
-        let mut stdio = McpServerStdio::new(def.name.clone(), std::path::PathBuf::from(command_str));
-        stdio.args = args;
-        stdio.env = env;
-        return Some(McpServer::Stdio(stdio));
+        return Some(McpTransport::Stdio {
+            name: def.name.clone(),
+            command: PathBuf::from(command_str),
+            args,
+            env,
+        });
     }
 
     // HTTP / SSE: `url` is the discriminator; `type` (when present)
@@ -280,23 +230,27 @@ where
             .or_else(|| obj.get("transport"))
             .and_then(|v| v.as_str())
             .unwrap_or("http");
-        let headers: Vec<HttpHeader> = obj
+        let headers: Vec<(String, String)> = obj
             .get("headers")
             .and_then(|v| v.as_object())
             .map(|map| {
                 map.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| HttpHeader::new(k.clone(), s.to_string())))
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
             .unwrap_or_default();
         if kind.eq_ignore_ascii_case("sse") {
-            let mut sse = McpServerSse::new(def.name.clone(), url_str);
-            sse.headers = headers;
-            return Some(McpServer::Sse(sse));
+            return Some(McpTransport::Sse {
+                name: def.name.clone(),
+                url: url_str.to_string(),
+                headers,
+            });
         }
-        let mut http = McpServerHttp::new(def.name.clone(), url_str);
-        http.headers = headers;
-        return Some(McpServer::Http(http));
+        return Some(McpTransport::Http {
+            name: def.name.clone(),
+            url: url_str.to_string(),
+            headers,
+        });
     }
 
     None
@@ -304,14 +258,11 @@ where
 
 impl MCPsRegistry {
     /// Construct from a pre-resolved set. Caller (`loader::load_files`)
-    /// has already merged + warned on bad files. Compiles per-server
-    /// `(reject, accept)` `GlobSet` pairs eagerly so the decide hot
-    /// path reads them without allocating.
+    /// has already merged + warned on bad files.
     #[must_use]
     pub fn new(defs: Vec<MCPDefinition>) -> Self {
         let mut order = Vec::with_capacity(defs.len());
         let mut catalog = HashMap::with_capacity(defs.len());
-        let mut globs = HashMap::with_capacity(defs.len());
         for d in defs {
             // Later-wins on collision: `loader::load_files` already
             // applies the file-iteration order, so by the time we get
@@ -320,31 +271,12 @@ impl MCPsRegistry {
             // would drop the duplicate silently otherwise.
             order.retain(|n: &String| n.as_str() != d.name);
             order.push(d.name.clone());
-            globs.insert(
-                d.name.clone(),
-                CompiledToolPolicy {
-                    include: d.hyprpilot.include_tools.as_deref().and_then(compile_glob_set),
-                    exclude: compile_glob_set(&d.hyprpilot.exclude_tools),
-                    reject: compile_glob_set(&d.hyprpilot.auto_reject_tools),
-                    accept: compile_glob_set(&d.hyprpilot.auto_accept_tools),
-                    include_set: d.hyprpilot.include_tools.is_some(),
-                },
-            );
             catalog.insert(d.name.clone(), d);
         }
         Self {
             catalog: RwLock::new(catalog),
             order: RwLock::new(order),
-            globs,
         }
-    }
-
-    /// Cached tool policy for `name`, or `None` when the server isn't
-    /// in the registry. Retained pending the tool-policy prune (K-731).
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn globs_for(&self, name: &str) -> Option<&CompiledToolPolicy> {
-        self.globs.get(name)
     }
 
     #[must_use]
@@ -354,39 +286,13 @@ impl MCPsRegistry {
         order.iter().filter_map(|name| catalog.get(name).cloned()).collect()
     }
 
-    /// Per-name lookup. The decide hot path uses `globs_for` instead;
-    /// this accessor stays for tests + future consumers (per-instance
+    /// Per-name lookup. Stays for tests + future consumers (per-instance
     /// MCP override planning).
     #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<MCPDefinition> {
         let catalog = self.catalog.read().expect("mcps catalog lock poisoned");
         catalog.get(name).cloned()
-    }
-
-    /// Project every entry onto its ACP `McpServer` typed shape.
-    /// Skips entries that don't match a known transport (`command` for
-    /// stdio, `url` for http/sse) — a `warn!` with the offending name
-    /// records the drop. Order tracks `list()`. Retained pending the
-    /// tool-policy prune (K-731); the launcher builds provider-native
-    /// config via `project_to_acp` per entry instead.
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn to_acp_servers(&self) -> Vec<agent_client_protocol::schema::McpServer> {
-        self.list()
-            .into_iter()
-            .filter_map(|def| match project_to_acp(&def) {
-                Some(server) => Some(server),
-                None => {
-                    tracing::warn!(
-                        name = %def.name,
-                        source = %def.source.display(),
-                        "mcp::to_acp_servers: skipping entry — no `command` or `url` field"
-                    );
-                    None
-                }
-            })
-            .collect()
     }
 
     #[cfg(test)]
@@ -453,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn project_to_acp_expands_stdio_command_args_and_env() {
+    fn project_transport_expands_stdio_command_args_and_env() {
         let def = MCPDefinition {
             name: "memory".into(),
             raw: serde_json::json!({
@@ -465,22 +371,22 @@ mod tests {
             source: PathBuf::from("test.json"),
         };
 
-        let projected = project_to_acp_with_lookup(&def, &mut |name| match name {
+        let projected = project_transport_with_lookup(&def, &mut |name| match name {
             "HYPRPILOT_TEST_MCP_BIN" => Some("/tmp/mcp-bin".into()),
             "HYPRPILOT_TEST_MCP_ENV" => Some("expanded-env".into()),
             _ => None,
         })
         .expect("stdio projects");
-        let agent_client_protocol::schema::McpServer::Stdio(stdio) = projected else {
+        let McpTransport::Stdio { command, args, env, .. } = projected else {
             panic!("expected stdio server");
         };
-        assert_eq!(stdio.command.to_string_lossy(), "/tmp/mcp-bin");
-        assert_eq!(stdio.args, vec!["--path", "expanded-env"]);
-        assert_eq!(stdio.env[0].value, "expanded-env/memory.jsonl");
+        assert_eq!(command.to_string_lossy(), "/tmp/mcp-bin");
+        assert_eq!(args, vec!["--path", "expanded-env"]);
+        assert_eq!(env[0].1, "expanded-env/memory.jsonl");
     }
 
     #[test]
-    fn project_to_acp_expands_http_headers() {
+    fn project_transport_expands_http_headers() {
         let def = MCPDefinition {
             name: "github".into(),
             raw: serde_json::json!({
@@ -491,19 +397,19 @@ mod tests {
             source: PathBuf::from("test.json"),
         };
 
-        let projected = project_to_acp_with_lookup(&def, &mut |name| match name {
+        let projected = project_transport_with_lookup(&def, &mut |name| match name {
             "HYPRPILOT_TEST_MCP_TOKEN" => Some("secret-token".into()),
             _ => None,
         })
         .expect("http projects");
-        let agent_client_protocol::schema::McpServer::Http(http) = projected else {
+        let McpTransport::Http { headers, .. } = projected else {
             panic!("expected http server");
         };
-        assert_eq!(http.headers[0].value, "Bearer secret-token");
+        assert_eq!(headers[0].1, "Bearer secret-token");
     }
 
     #[test]
-    fn project_to_acp_expands_env_prefixed_placeholders() {
+    fn project_transport_expands_env_prefixed_placeholders() {
         let def = MCPDefinition {
             name: "github".into(),
             raw: serde_json::json!({
@@ -515,18 +421,18 @@ mod tests {
             source: PathBuf::from("test.json"),
         };
 
-        let projected = project_to_acp_with_lookup(&def, &mut |name| match name {
+        let projected = project_transport_with_lookup(&def, &mut |name| match name {
             "HYPRPILOT_TEST_MCP_BIN" => Some("/tmp/mcp-bin".into()),
             "HYPRPILOT_TEST_MCP_TOKEN" => Some("secret-token".into()),
             _ => None,
         })
         .expect("stdio projects");
-        let agent_client_protocol::schema::McpServer::Stdio(stdio) = projected else {
+        let McpTransport::Stdio { command, args, env, .. } = projected else {
             panic!("expected stdio server");
         };
-        assert_eq!(stdio.command.to_string_lossy(), "/tmp/mcp-bin");
-        assert_eq!(stdio.args, vec!["--token", "secret-token"]);
-        assert_eq!(stdio.env[0].value, "secret-token");
+        assert_eq!(command.to_string_lossy(), "/tmp/mcp-bin");
+        assert_eq!(args, vec!["--token", "secret-token"]);
+        assert_eq!(env[0].1, "secret-token");
     }
 
     #[test]

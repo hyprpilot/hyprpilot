@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{ExitCode, Stdio};
 
-use agent_client_protocol::schema::McpServer;
 use anyhow::{bail, Context, Result};
 
 use crate::adapters::profile::ResolvedInstance;
 use crate::config::AgentProvider;
-use crate::mcp::{expanded_raw, project_to_acp, MCPDefinition};
+use crate::mcp::{expanded_raw, project_transport, MCPDefinition, McpTransport};
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
@@ -596,42 +595,40 @@ fn codex_mcp_tool_policy(def: &MCPDefinition) -> CodexToolPolicy {
 fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
     let mut entries = Vec::new();
     for def in defs {
-        let Some(server) = project_to_acp(def) else {
+        let Some(server) = project_transport(def) else {
             tracing::warn!(name = %def.name, "cli spawn: skipping MCP entry without command or url for codex");
             continue;
         };
         match server {
-            McpServer::Stdio(stdio) => {
-                let prefix = toml_key_path(&["mcp_servers", &stdio.name]);
-                entries.push((
-                    format!("{prefix}.command"),
-                    toml_string(&stdio.command.to_string_lossy()),
-                ));
-                if !stdio.args.is_empty() {
-                    entries.push((format!("{prefix}.args"), toml_array(&stdio.args)));
+            McpTransport::Stdio {
+                name,
+                command,
+                args,
+                env,
+            } => {
+                let prefix = toml_key_path(&["mcp_servers", &name]);
+                entries.push((format!("{prefix}.command"), toml_string(&command.to_string_lossy())));
+                if !args.is_empty() {
+                    entries.push((format!("{prefix}.args"), toml_array(&args)));
                 }
-                for env in stdio.env {
-                    entries.push((
-                        toml_key_path(&["mcp_servers", &stdio.name, "env", &env.name]),
-                        toml_string(&env.value),
-                    ));
-                }
-            }
-            McpServer::Http(http) => {
-                let prefix = toml_key_path(&["mcp_servers", &http.name]);
-                entries.push((format!("{prefix}.url"), toml_string(&http.url)));
-                for header in http.headers {
-                    push_codex_http_header(&mut entries, def, &http.name, &header.name, &header.value);
+                for (key, value) in env {
+                    entries.push((toml_key_path(&["mcp_servers", &name, "env", &key]), toml_string(&value)));
                 }
             }
-            McpServer::Sse(sse) => {
-                let prefix = toml_key_path(&["mcp_servers", &sse.name]);
-                entries.push((format!("{prefix}.url"), toml_string(&sse.url)));
-                for header in sse.headers {
-                    push_codex_http_header(&mut entries, def, &sse.name, &header.name, &header.value);
+            McpTransport::Http { name, url, headers } => {
+                let prefix = toml_key_path(&["mcp_servers", &name]);
+                entries.push((format!("{prefix}.url"), toml_string(&url)));
+                for (key, value) in headers {
+                    push_codex_http_header(&mut entries, def, &name, &key, &value);
                 }
             }
-            _ => {}
+            McpTransport::Sse { name, url, headers } => {
+                let prefix = toml_key_path(&["mcp_servers", &name]);
+                entries.push((format!("{prefix}.url"), toml_string(&url)));
+                for (key, value) in headers {
+                    push_codex_http_header(&mut entries, def, &name, &key, &value);
+                }
+            }
         }
     }
 
@@ -750,37 +747,40 @@ fn opencode_config_content(
 fn opencode_mcp_config(defs: &[MCPDefinition]) -> serde_json::Map<String, serde_json::Value> {
     let mut out = serde_json::Map::new();
     for def in defs {
-        let Some(server) = project_to_acp(def) else {
+        let Some(server) = project_transport(def) else {
             tracing::warn!(name = %def.name, "cli spawn: skipping MCP entry without command or url for opencode");
             continue;
         };
         match server {
-            McpServer::Stdio(stdio) => {
-                let mut command = Vec::with_capacity(1 + stdio.args.len());
-                command.push(stdio.command.to_string_lossy().to_string());
-                command.extend(stdio.args);
-                let environment: serde_json::Map<String, serde_json::Value> = stdio
-                    .env
+            McpTransport::Stdio {
+                name,
+                command,
+                args,
+                env,
+            } => {
+                let mut cmd = Vec::with_capacity(1 + args.len());
+                cmd.push(command.to_string_lossy().to_string());
+                cmd.extend(args);
+                let environment: serde_json::Map<String, serde_json::Value> = env
                     .into_iter()
-                    .map(|env| (env.name, serde_json::Value::String(env.value)))
+                    .map(|(key, value)| (key, serde_json::Value::String(value)))
                     .collect();
                 let mut entry = serde_json::json!({
                     "type": "local",
-                    "command": command,
+                    "command": cmd,
                     "enabled": true,
                 });
                 if !environment.is_empty() {
                     entry["environment"] = serde_json::Value::Object(environment);
                 }
-                out.insert(stdio.name, entry);
+                out.insert(name, entry);
             }
-            McpServer::Http(http) => {
-                out.insert(http.name.clone(), opencode_remote_mcp(http.url, http.headers));
+            McpTransport::Http { name, url, headers } => {
+                out.insert(name, opencode_remote_mcp(url, headers));
             }
-            McpServer::Sse(sse) => {
-                out.insert(sse.name.clone(), opencode_remote_mcp(sse.url, sse.headers));
+            McpTransport::Sse { name, url, headers } => {
+                out.insert(name, opencode_remote_mcp(url, headers));
             }
-            _ => {}
         }
     }
 
@@ -885,7 +885,7 @@ fn opencode_sanitize_tool_pattern(value: &str) -> String {
         .collect()
 }
 
-fn opencode_remote_mcp(url: String, headers: Vec<agent_client_protocol::schema::HttpHeader>) -> serde_json::Value {
+fn opencode_remote_mcp(url: String, headers: Vec<(String, String)>) -> serde_json::Value {
     let mut entry = serde_json::json!({
         "type": "remote",
         "url": url,
@@ -894,7 +894,7 @@ fn opencode_remote_mcp(url: String, headers: Vec<agent_client_protocol::schema::
     if !headers.is_empty() {
         let headers: serde_json::Map<String, serde_json::Value> = headers
             .into_iter()
-            .map(|header| (header.name, serde_json::Value::String(header.value)))
+            .map(|(key, value)| (key, serde_json::Value::String(value)))
             .collect();
         entry["headers"] = serde_json::Value::Object(headers);
     }

@@ -18,7 +18,6 @@ panic = "abort"
 strip = "symbols"
 
 [dependencies]
-agent-client-protocol = { version = "0.12", features = ["unstable"] }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "env"] }
 directories = "6"
@@ -35,8 +34,6 @@ tokio = { version = "1.52", features = ["full"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "tracing-log"] }
-nucleo = "0.5.0"
-nucleo-matcher = "0.3.1"
 nucleo-picker = "0.11.1"
 path-absolutize = "3.1.1"
 merge = { version = "0.2.0", features = ["derive"] }
