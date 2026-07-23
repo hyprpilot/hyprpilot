@@ -43,7 +43,7 @@ There is no generic escape-hatch provider. If you want to launch a wrapper or a 
 
 Each provider variant maps to a per-vendor command builder that projects the resolved profile — model, effort, mode, system prompt, MCP catalogue, tool policy — onto that vendor's flags and environment:
 
-- **`claude-code`** — `--model`, `--effort`, `--permission-mode` (from `mode`), `--append-system-prompt`, MCP servers as an inline `--mcp-config` JSON blob, and tool policy as `--allowedTools` / `--disallowedTools` (`mcp__server__tool` naming).
+- **`claude-code`** — `--model`, `--effort`, `--permission-mode` (from `mode`), `--append-system-prompt`, MCP servers as `--mcp-config <path>` pointing at a per-launch 0600 temp file (keeps expanded header secrets out of the world-readable argv — see [MCP § Secrets](./mcp.md#secrets-in-the-vendor-handoff)), and tool policy as `--allowedTools` / `--disallowedTools` (`mcp__server__tool` naming).
 - **`codex`** — `--model`, effort as a `-c model_reasoning_effort=…` override, MCP servers as `-c mcp_servers.<name>.*` config keys, and tool policy as exact-name `enabled_tools` / `disabled_tools` / per-tool `approval_mode`. Codex does not support wildcard tool patterns in those fields, so wildcard patterns are skipped for Codex with a warning.
 - **`opencode`** — `--model`, `mode` as the opencode `--agent` name (a synthetic `hyprpilot` agent when unset), config (system prompt, effort variant, MCP servers) via `OPENCODE_CONFIG_CONTENT`, and tool policy as ordered `OPENCODE_PERMISSION` rules (`server_tool` naming, wildcards supported).
 
