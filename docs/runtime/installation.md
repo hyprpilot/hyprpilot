@@ -63,20 +63,20 @@ Terminal=true
 
 ## Launch from a compositor keybind
 
-If you prefer a keybind over an app launcher, bind a key to a terminal that runs hyprpilot. Bare `hyprpilot` opens the interactive picker; `hyprpilot -p <id>` skips straight to a profile.
+If you prefer a keybind over an app launcher, bind a key to a terminal that runs hyprpilot. Bare `hyprpilot` opens the interactive picker; `hyprpilot <id>` skips straight to a profile.
 
 ::: code-group
 
 ```ini [Hyprland]
 # ~/.config/hypr/hyprland.conf
 bind = SUPER, RETURN, exec, foot -e hyprpilot
-bind = SUPER SHIFT, RETURN, exec, foot -e hyprpilot -p engineer
+bind = SUPER SHIFT, RETURN, exec, foot -e hyprpilot engineer
 ```
 
 ```sh [Sway]
 # ~/.config/sway/config
 bindsym $mod+Return exec foot -e hyprpilot
-bindsym $mod+Shift+Return exec foot -e hyprpilot -p engineer
+bindsym $mod+Shift+Return exec foot -e hyprpilot engineer
 ```
 
 :::

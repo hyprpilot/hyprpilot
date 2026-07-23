@@ -90,7 +90,8 @@ impl ResolvedProfile {
                 anyhow::anyhow!(
                     "no profile addressed and no `[profile] default` configured — \
                  every spawn requires a `[[profiles]]` entry. \
-                 Pass `--profile <id>` or set `[profile] default = '<id>'`."
+                 Pass the profile as the positional `hyprpilot <id>` argument \
+                 or set `[profile] default = '<id>'`."
                 )
             })?;
         let base = config
@@ -435,7 +436,7 @@ mod tests {
         let r = ResolvedProfile::from_config(&cfg, None).unwrap();
         assert_eq!(r.model.as_deref(), Some("sonnet"));
 
-        // With `[profile] default` cleared AND no `--profile`,
+        // With `[profile] default` cleared AND no positional profile,
         // resolution errors — there is no bare-agent fallback.
         cfg.profile.default = None;
         let err = ResolvedProfile::from_config(&cfg, None).expect_err("must error without a profile");

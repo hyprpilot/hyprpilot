@@ -28,10 +28,10 @@ pub struct AgentsConfig {
 }
 
 /// `[profile]` — global profile-scope singleton. `default` is the
-/// `[[profiles]]` id launched when `--profile`/`-p` isn't passed. The
-/// launch fails when neither `--profile` nor `[profile] default`
-/// resolves — there is no bare-agent fallback. Cross-field validation
-/// against `[[profiles]].id` lives at `Config` level.
+/// `[[profiles]]` id launched when the positional `[PROFILE]` argument
+/// isn't passed. The launch fails when neither the positional profile
+/// nor `[profile] default` resolves — there is no bare-agent fallback.
+/// Cross-field validation against `[[profiles]].id` lives at `Config` level.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]

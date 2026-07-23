@@ -14,7 +14,7 @@ Hyprpilot is a **config-driven, fire-and-exec launcher for terminal coding agent
 
 A launch is one straight line:
 
-1. **Resolve** — pick a profile (`--profile <id>`, the configured default, or the interactive picker) and fold config layers, [`patches`](../config/patches), and [`--with-config`](./with-config) overlays onto it.
+1. **Resolve** — pick a profile (the positional `[PROFILE]` id, the configured default, or the interactive picker) and fold config layers, [`patches`](../config/patches), and [`--with-config`](./with-config) overlays onto it.
 2. **Project** — translate the resolved profile (model, mode, system prompt, MCP catalogue, tool policy) onto the vendor's own flags and environment variables.
 3. **Rename** — optionally retitle the current tmux window / zellij tab to `hyprpilot@<cwd>`.
 4. **`exec()`** — replace the hyprpilot process with the vendor CLI. On unix there is no child process left behind; the vendor TUI simply _is_ your terminal from that point on.
@@ -34,7 +34,7 @@ The single component that outlives the launch is the in-tree **MCP server** (`hy
 If you launch the same agent CLI with the same model, working directory, system prompt, and MCP servers every day, hyprpilot turns that incantation into a named profile:
 
 ```sh
-hyprpilot -p engineer         # instead of a 200-character vendor invocation
+hyprpilot engineer            # instead of a 200-character vendor invocation
 ```
 
 If you switch between vendors, profiles keep each vendor's flag dialect out of your muscle memory — the same profile shape projects onto whichever provider the profile names.

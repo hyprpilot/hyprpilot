@@ -101,9 +101,9 @@ The seed carries **only** the skills root. The other `mcp` knobs — `enabled: t
 
 Every launch resolves the effective profile through one path:
 
-1. Pick the base profile — `--profile <id>` first, then `profile.default`. Errors when neither names a real `profiles` entry.
+1. Pick the base profile — the positional `[PROFILE]` id first, then `profile.default`. Errors when neither names a real `profiles` entry.
 2. Fold each accumulated `patches` entry (filtered by its `$match.profile` glob) in declaration order.
 3. Fold each [`--with-config`](../runtime/with-config) overlay in declaration order.
 4. Deserialize the merged result back into a profile and re-validate.
 
-`--agent <id>` wins over whatever agent the patched profile names.
+The resolved profile is the single source of truth for its agent and model — there is no per-launch `--agent` / `--model` override. To swap either for one launch, add an [`--with-config`](../runtime/with-config) overlay (e.g. `--with-config '@{"agent":"codex"}'`).

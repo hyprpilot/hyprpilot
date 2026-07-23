@@ -62,6 +62,6 @@ args = []
 # exist": the captain's on-disk config. Validation rejects an empty
 # `[[profiles]]` list at config-load, so fresh installs without any
 # profile won't launch — the captain configures at least one before
-# spawning. `[profile] default` picks which profile runs when
-# `--profile <id>` isn't passed; required when more than one profile
-# exists.
+# spawning. `[profile] default` picks which profile runs when the
+# positional `[PROFILE]` argument isn't passed; required when more than
+# one profile exists.

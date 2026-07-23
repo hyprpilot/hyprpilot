@@ -24,8 +24,9 @@ pub(super) fn validate_agents_ids(agents: &[AgentConfig], _ctx: &()) -> garde::R
 pub(super) fn validate_profiles_non_empty(profiles: &[ProfileConfig], _ctx: &()) -> garde::Result {
     if profiles.is_empty() {
         return Err(garde::Error::new(
-            "configure at least one [[profiles]] entry — spawn requires a profile (set `--profile <id>` \
-             or `[profile] default = '<id>'`); there is no bare-agent fallback",
+            "configure at least one [[profiles]] entry — spawn requires a profile (pass the profile as \
+             the positional `hyprpilot <id>` argument or set `[profile] default = '<id>'`); \
+             there is no bare-agent fallback",
         ));
     }
     Ok(())

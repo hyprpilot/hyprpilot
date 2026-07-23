@@ -83,10 +83,10 @@ MCP transport (stdio / http / sse) is inferred from field presence (`command` �
 
 ## Swapping the agent per launch
 
-If you want to run an existing profile against a different vendor for one launch, `--agent <id>` swaps the whole agent entry:
+The profile is the single source of truth for which agent it runs — there is no `--agent` launch flag. To run an existing profile against a different vendor for one launch, overlay the `agent` field with [`--with-config`](../runtime/with-config):
 
 ```sh
-hyprpilot -p engineer --agent codex
+hyprpilot engineer --with-config '@{"agent":"codex"}'
 ```
 
-`--agent` wins over whatever agent the (patched) profile names — the profile's own `model` / `mode` / prompt overlays still apply, projected through the new agent's provider.
+The overlay wins over whatever agent the (patched) profile names — the profile's own `model` / `mode` / prompt overlays still apply, projected through the new agent's provider. To make the swap permanent, add a dedicated `profiles` entry instead.

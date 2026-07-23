@@ -20,10 +20,8 @@ use crate::resolve::{
 #[derive(Debug)]
 pub(crate) struct SpawnRequest {
     pub profile_id: Option<String>,
-    pub agent_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub mode: Option<String>,
-    pub model: Option<String>,
     pub config_patches: Vec<Value>,
     pub provider_args: Vec<String>,
 }
@@ -31,10 +29,8 @@ pub(crate) struct SpawnRequest {
 pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     let SpawnRequest {
         profile_id,
-        agent_id,
         cwd,
         mode,
-        model,
         config_patches,
         provider_args,
     } = request;
@@ -43,13 +39,9 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         Some(id) => id,
         None => picker::pick_profile(list_profiles(&cfg, cwd.as_deref(), &config_patches))?.id,
     };
-    let (mut resolved, profile) =
-        resolve_into_instance_and_profile(&cfg, agent_id.as_deref(), Some(profile_id.as_str()), &config_patches)?;
+    let (mut resolved, profile) = resolve_into_instance_and_profile(&cfg, Some(profile_id.as_str()), &config_patches)?;
 
     resolved.agent.cwd = resolve_launch_cwd(cwd, resolved.agent.cwd.take());
-    if model.is_some() {
-        resolved.model = model;
-    }
     if mode.is_some() {
         resolved.mode = mode;
     }
@@ -218,7 +210,7 @@ mod tests {
         // then preserves it when `--cwd` is omitted — exactly the
         // value the `cli: profile resolved` info line surfaces.
         let cfg = cfg_with_profile_cwd();
-        let (mut resolved, _profile) = resolve_into_instance_and_profile(&cfg, None, Some("engineer"), &[]).unwrap();
+        let (mut resolved, _profile) = resolve_into_instance_and_profile(&cfg, Some("engineer"), &[]).unwrap();
         resolved.agent.cwd = resolve_launch_cwd(None, resolved.agent.cwd.take());
 
         assert_eq!(resolved.agent.cwd.as_deref(), Some(Path::new("/configured")));
@@ -227,7 +219,7 @@ mod tests {
     #[test]
     fn explicit_flag_overrides_configured_profile_cwd() {
         let cfg = cfg_with_profile_cwd();
-        let (mut resolved, _profile) = resolve_into_instance_and_profile(&cfg, None, Some("engineer"), &[]).unwrap();
+        let (mut resolved, _profile) = resolve_into_instance_and_profile(&cfg, Some("engineer"), &[]).unwrap();
         resolved.agent.cwd = resolve_launch_cwd(Some(PathBuf::from("/flag")), resolved.agent.cwd.take());
 
         assert_eq!(resolved.agent.cwd.as_deref(), Some(Path::new("/flag")));

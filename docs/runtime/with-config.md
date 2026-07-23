@@ -12,9 +12,9 @@ If you want to bend a profile for a single launch — a different MCP set, one e
 ## Input shapes
 
 ```sh
-hyprpilot -p engineer --with-config ./overlay.yaml
-hyprpilot -p engineer --with-config '@{"model":"claude-opus-4-5"}'
-some-generator | hyprpilot -p engineer --with-config -
+hyprpilot engineer --with-config ./overlay.yaml
+hyprpilot engineer --with-config '@{"model":"claude-opus-4-5"}'
+some-generator | hyprpilot engineer --with-config -
 ```
 
 Each value is one of three shapes:
@@ -30,7 +30,7 @@ The flag is repeatable; overlays fold in declaration order, later wins on field 
 `--with-config-format toml|json|yaml` drives stdin, inline, and extension-less inputs. It defaults to `json` — the best fit for CLI piping and inline one-liners:
 
 ```sh
-gh api …upstream-config… | jq '{mcps: [.]}' | hyprpilot -p engineer --with-config -
+gh api …upstream-config… | jq '{mcps: [.]}' | hyprpilot engineer --with-config -
 ```
 
 ## Merge semantics
@@ -39,4 +39,4 @@ Overlays use the same strategic-merge engine as [`patches`](../config/patches) �
 
 ## Where it sits in resolution
 
-`--with-config` overlays are folded **after** the root `patches` — they are the most specific config layer, beaten only by the direct CLI flags (`--model`, `--mode`, `--cwd`, `--agent`) applied on top of the resolved profile.
+`--with-config` overlays are folded **after** the root `patches` — they are the most specific config layer. Because the profile owns its agent and model, `--with-config` is _the_ way to change either for one launch (there are no `--agent` / `--model` flags); the only knobs applied on top of the resolved profile afterwards are `--mode` and `--cwd`.
