@@ -40,7 +40,7 @@ pub const SKILLS_SERVER_NAME: &str = "hyprpilot";
 /// Returns `None` when the registry is empty — auto-inject is gated
 /// on having something to serve. The caller is responsible for the
 /// `enabled` gate (see `effective_mcp_with` in
-/// `adapters/acp/instances.rs`); this builder assumes the captain
+/// `resolve/mod.rs`); this builder assumes the captain
 /// wants the server when called.
 ///
 /// `cfg.auto_accept_tools` / `cfg.auto_reject_tools` ride through to

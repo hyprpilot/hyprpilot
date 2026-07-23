@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Args;
 
-use crate::adapters::cli::SpawnRequest;
+use super::SpawnRequest;
 use crate::config::with_config::WithConfigArgs;
 use crate::config::Config;
 
@@ -35,7 +35,7 @@ pub struct LaunchArgs {
 pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
     let config_patches = args.with_config.into_patches()?;
 
-    crate::adapters::cli::run(
+    super::spawn(
         cfg,
         SpawnRequest {
             profile_id: args.profile_id,

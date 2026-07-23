@@ -3,7 +3,7 @@
 //! No process spawning, no ACP wire types, no daemon/RPC state — just
 //! `Config` + `ProfileConfig` in, a resolved shape out.
 //!
-//! Consumed by the launcher (`adapters::cli`); returns
+//! Consumed by the launcher (`spawn`); returns
 //! `anyhow::Error` so nothing here depends on a transport-specific
 //! error type.
 
@@ -13,8 +13,8 @@ use anyhow::Context;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::adapters::profile::ResolvedInstance;
 use crate::config::{Config, ProfileConfig};
+use crate::profile::ResolvedProfile;
 
 /// Wire shape for `profiles_list` / `config/profiles` entries.
 #[derive(Debug, Clone, Serialize)]
@@ -187,7 +187,7 @@ pub(crate) fn count_matching_patches(profile_id: &str, patches: &[Value], kind: 
 
 /// Single source of truth for the captain-intended `ProfileConfig`
 /// at spawn time. Every consumer that needs to ask "what does the
-/// captain want?" — `ResolvedInstance` builder, MCP registry
+/// captain want?" — `ResolvedProfile` builder, MCP registry
 /// builder, skills registry builder, session-info shape — calls
 /// this and reads from the returned profile.
 ///
@@ -262,7 +262,7 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::R
 }
 
 /// One-stop spawn-time resolver: pick + patch the profile, project
-/// onto a `ResolvedInstance`, return both. The patched
+/// onto a `ResolvedProfile`, return both. The patched
 /// `ProfileConfig` is the single source the MCP registry, skills
 /// registry, and per-instance context downstream all read from.
 ///
@@ -278,9 +278,9 @@ pub(crate) fn resolve_into_instance_and_profile(
     agent_id: Option<&str>,
     profile_id: Option<&str>,
     external_patches: &[Value],
-) -> anyhow::Result<(ResolvedInstance, ProfileConfig)> {
+) -> anyhow::Result<(ResolvedProfile, ProfileConfig)> {
     let patched = resolve_effective_profile(cfg, profile_id, external_patches)?;
-    let mut resolved = ResolvedInstance::from_profile_explicit(&patched, cfg)?;
+    let mut resolved = ResolvedProfile::from_profile_explicit(&patched, cfg)?;
 
     if let Some(wanted) = agent_id {
         let agent = cfg

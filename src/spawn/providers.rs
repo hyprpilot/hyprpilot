@@ -4,23 +4,23 @@ use std::process::{ExitCode, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-use crate::adapters::profile::ResolvedInstance;
 use crate::config::AgentProvider;
 use crate::mcp::{expanded_raw, project_transport, MCPDefinition, McpTransport};
+use crate::profile::ResolvedProfile;
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
 
 #[derive(Debug)]
-pub(super) struct DirectCommand {
+pub(super) struct SpawnCommand {
     program: String,
     args: Vec<String>,
     env: BTreeMap<String, String>,
     cwd: Option<PathBuf>,
 }
 
-impl DirectCommand {
+impl SpawnCommand {
     /// The resolved cwd this command will `exec()` into — same
     /// `expand_value`-expanded value `base_command` derived from the
     /// profile's `agent.cwd`. Consumed by the multiplexer title so the
@@ -32,11 +32,11 @@ impl DirectCommand {
 }
 
 pub(super) fn build_command(
-    resolved: &ResolvedInstance,
+    resolved: &ResolvedProfile,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
-) -> Result<DirectCommand> {
+) -> Result<SpawnCommand> {
     match resolved.agent.provider {
         AgentProvider::ClaudeCode => build_claude(resolved, system_prompt, mcp_defs, provider_args),
         AgentProvider::Codex => build_codex(resolved, system_prompt, mcp_defs, provider_args),
@@ -45,7 +45,7 @@ pub(super) fn build_command(
     }
 }
 
-pub(super) fn exec(command: DirectCommand) -> Result<ExitCode> {
+pub(super) fn exec(command: SpawnCommand) -> Result<ExitCode> {
     let mut cmd = std::process::Command::new(&command.program);
     cmd.args(&command.args)
         .envs(&command.env)
@@ -90,7 +90,7 @@ pub(super) fn exec(command: DirectCommand) -> Result<ExitCode> {
     }
 }
 
-fn build_generic(resolved: &ResolvedInstance, provider_args: Vec<String>) -> Result<DirectCommand> {
+fn build_generic(resolved: &ResolvedProfile, provider_args: Vec<String>) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
     command.args.extend(provider_args);
 
@@ -98,11 +98,11 @@ fn build_generic(resolved: &ResolvedInstance, provider_args: Vec<String>) -> Res
 }
 
 fn build_claude(
-    resolved: &ResolvedInstance,
+    resolved: &ResolvedProfile,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
-) -> Result<DirectCommand> {
+) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
     let detect_args = combined_args(&command.args, &provider_args);
 
@@ -153,11 +153,11 @@ fn build_claude(
 }
 
 fn build_codex(
-    resolved: &ResolvedInstance,
+    resolved: &ResolvedProfile,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
-) -> Result<DirectCommand> {
+) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
     let detect_args = combined_args(&command.args, &provider_args);
 
@@ -203,11 +203,11 @@ fn build_codex(
 }
 
 fn build_opencode(
-    resolved: &ResolvedInstance,
+    resolved: &ResolvedProfile,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
-) -> Result<DirectCommand> {
+) -> Result<SpawnCommand> {
     let mut command = base_command(resolved)?;
     let detect_args = combined_args(&command.args, &provider_args);
     let agent_name = flag_value(&detect_args, "--agent", None)
@@ -257,7 +257,7 @@ fn build_opencode(
     Ok(command)
 }
 
-fn base_command(resolved: &ResolvedInstance) -> Result<DirectCommand> {
+fn base_command(resolved: &ResolvedProfile) -> Result<SpawnCommand> {
     let program = expand_value(&resolved.agent.command, "agents.command");
     let args = resolved
         .agent
@@ -277,7 +277,7 @@ fn base_command(resolved: &ResolvedInstance) -> Result<DirectCommand> {
         .as_ref()
         .map(|path| PathBuf::from(expand_value(&path.to_string_lossy(), "agents.cwd")));
 
-    Ok(DirectCommand {
+    Ok(SpawnCommand {
         program,
         args,
         env,
@@ -1050,8 +1050,8 @@ mod tests {
     use crate::config::AgentConfig;
     use crate::mcp::{HyprpilotExtension, MCPDefinition};
 
-    fn resolved(provider: AgentProvider) -> ResolvedInstance {
-        ResolvedInstance {
+    fn resolved(provider: AgentProvider) -> ResolvedProfile {
+        ResolvedProfile {
             agent: AgentConfig {
                 id: "agent".into(),
                 provider,
@@ -1070,14 +1070,14 @@ mod tests {
         }
     }
 
-    fn resolved_with_mode(provider: AgentProvider, mode: Option<&str>) -> ResolvedInstance {
+    fn resolved_with_mode(provider: AgentProvider, mode: Option<&str>) -> ResolvedProfile {
         let mut resolved = resolved(provider);
         resolved.mode = mode.map(str::to_string);
 
         resolved
     }
 
-    fn resolved_with_cwd(provider: AgentProvider, cwd: &str) -> ResolvedInstance {
+    fn resolved_with_cwd(provider: AgentProvider, cwd: &str) -> ResolvedProfile {
         let mut resolved = resolved(provider);
         resolved.agent.cwd = Some(PathBuf::from(cwd));
         resolved.mode = None;
@@ -1088,14 +1088,14 @@ mod tests {
     /// `resolved.agent.args` already carries the resolve-time
     /// profile `args` REPLACE merge by the time `build_command`
     /// runs — that merge happens in
-    /// `adapters::profile::ResolvedInstance::from_profile_explicit`,
+    /// `profile::ResolvedProfile::from_profile_explicit`,
     /// not here (pinned separately by
     /// `flat_args_replace_base_agent_args_wholesale` in
-    /// `adapters/profile.rs`). This helper stands in for that
+    /// `profile.rs`). This helper stands in for that
     /// already-resolved shape, isolating `effort` / `mode` (both
     /// `None`) so the ordering / suppression assertions only have to
     /// reason about `--model`.
-    fn resolved_with_agent_args(provider: AgentProvider, args: Vec<String>) -> ResolvedInstance {
+    fn resolved_with_agent_args(provider: AgentProvider, args: Vec<String>) -> ResolvedProfile {
         let mut resolved = resolved(provider);
         resolved.agent.args = args;
         resolved.effort = None;
@@ -1324,9 +1324,9 @@ mod tests {
     /// `${VAR}` expansion runs AFTER the profile-level `env`
     /// overlay, not before. `resolved.agent.env` here stands in for
     /// the already-overlaid map
-    /// `adapters::profile::from_profile_explicit` produces (pinned
+    /// `profile::from_profile_explicit` produces (pinned
     /// separately by `flat_env_overlays_onto_agent_env_at_resolve`
-    /// in `adapters/profile.rs`) — this test pins the SECOND half of
+    /// in `profile.rs`) — this test pins the SECOND half of
     /// that pipeline: an override-authored env value participates in
     /// `expand_value` exactly like an agent-authored one.
     #[test]

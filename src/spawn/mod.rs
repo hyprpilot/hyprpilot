@@ -1,3 +1,4 @@
+mod launch;
 mod multiplexer;
 mod picker;
 mod providers;
@@ -8,11 +9,12 @@ use std::process::ExitCode;
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::adapters::ProfileSummary;
+pub use launch::{run, LaunchArgs};
+
 use crate::config::Config;
 use crate::resolve::{
     build_mcp_registry_with, build_skills_registry_with, count_matching_patches, resolve_effective_profile,
-    resolve_into_instance_and_profile,
+    resolve_into_instance_and_profile, ProfileSummary,
 };
 
 #[derive(Debug)]
@@ -26,7 +28,7 @@ pub(crate) struct SpawnRequest {
     pub provider_args: Vec<String>,
 }
 
-pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
+pub(crate) fn spawn(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     let SpawnRequest {
         profile_id,
         agent_id,

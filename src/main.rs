@@ -1,8 +1,8 @@
-mod adapters;
 mod config;
 mod logging;
 mod mcp;
 mod paths;
+mod profile;
 mod profiles;
 mod resolve;
 mod skills;

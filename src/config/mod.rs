@@ -48,7 +48,7 @@ pub struct Config {
     pub profile: ProfileDefaults,
     /// `[[profiles]]` at TOML root. Each profile binds an agent id to an
     /// optional model override + optional system prompt; resolved into a
-    /// flat `ResolvedInstance` at `session/submit` time. **At least one
+    /// flat `ResolvedProfile` at launch time. **At least one
     /// entry is required** — there is no bare-agent fallback. Spawn
     /// picks `--profile <id>` first, then `[profile] default`, then
     /// errors when neither resolves to a real profile.
@@ -106,7 +106,7 @@ pub struct Logging {
 /// current tmux window or zellij tab to `hyprpilot@<cwd-basename>`
 /// right before `exec()`-ing into the vendor CLI. `false` is the
 /// explicit opt-out; outside a multiplexer the feature is a no-op
-/// regardless of this flag. See `adapters::cli::multiplexer`.
+/// regardless of this flag. See `spawn::multiplexer`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn defaults_seed_multiplexer_set_title() {
-        // Pins the leaf `adapters::cli::mod::run` `.expect()`s at
+        // Pins the leaf `spawn::spawn` `.expect()`s at
         // spawn time — a captain deleting `[multiplexer]` from
         // defaults.toml must fail here, not panic at launch.
         let cfg: Config = toml::from_str(DEFAULTS).expect("defaults must parse");
