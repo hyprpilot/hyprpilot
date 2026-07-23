@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/hyprpilot/hyprpilot/compare/v3.0.0...v3.1.0) (2026-07-23)
+
+
+### Features
+
+* headless prompt flags (-p/--prompt, -f/--file) + stdin delivery, MCP spec compliance, logging & multiplexer fixes ([#204](https://github.com/hyprpilot/hyprpilot/issues/204)) ([7e45b86](https://github.com/hyprpilot/hyprpilot/commit/7e45b86e9471d8b02662dcc131ff010fa5d325dc))
+
 ## [3.0.0](https://github.com/hyprpilot/hyprpilot/compare/v2.8.0...v3.0.0) (2026-07-23)
 
 
