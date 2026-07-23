@@ -1,5 +1,10 @@
-[logging]
-level = "info"
+# `[logging]` is intentionally NOT seeded. Leaving `logging.level`
+# unset lets the code fallback in `logging::init` — `warn,hyprpilot=info`
+# — own the default, keeping third-party crates (tokio / rmcp / nucleo)
+# at `warn` while surfacing hyprpilot's own `info` narrative. Seeding
+# `level = "info"` here would instead force a flat global `info` that
+# drowns the launcher's lines under vendor-SDK chatter. Set
+# `[logging] level` in your own config to override.
 
 # `[multiplexer]` — best-effort tmux/zellij window/tab rename right
 # before `exec()`-ing into the vendor CLI. Titles as

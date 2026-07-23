@@ -33,6 +33,12 @@ pub struct ProfileSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub is_default: bool,
+    /// Set when patch resolution failed for this profile. The listing
+    /// then shows the UNPATCHED base values (model / cwd), so surface
+    /// the failure — a `!` marker + this message in the table/picker —
+    /// rather than passing stale data off as the resolved shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Project the patched profile's `mcps` field onto the resolved

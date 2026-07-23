@@ -480,6 +480,10 @@ not YAML structure).
   merge.
 - Every issue is picked up on a dedicated branch — **never implement on
   `main` or `beta` directly.** PRs target **`beta`**, never `main`.
+- **Feature changes and feature additions MUST include documentation
+  updates (`docs/` + `CLAUDE.md`) in the same PR.** A user-observable
+  behavior change that ships without the matching docs edit is
+  incomplete — the doc update is part of the change, not a follow-up.
 - Commit style: conventional commits with a `refs K-<id>` /
   `closes K-<id>` trailer.
 - Prefer the MCP tools over CLIs for git / GitLab / Linear / GitHub;

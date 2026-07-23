@@ -135,11 +135,25 @@ The working directory the vendor launches in resolves as: explicit `--cwd` flag 
 ```sh
 hyprpilot profiles              # table: default marker, profile, agent, model
 hyprpilot profiles --json       # machine-readable
+hyprpilot --with-config '@{"model":"claude-opus-4-5"}' profiles   # preview an overlay
 ```
 
-The listing resolves config the same way a launch does — including [`patches`](../config/patches) — but stops before exec, so the displayed summaries reflect what a launch _would_ use. `--json` keeps stdout pure (all tracing goes to stderr), safe to pipe into `jq`.
+The listing resolves config the same way a launch does — including [`patches`](../config/patches) **and any [`--with-config`](./with-config) overlay you pass** — but stops before exec, so the displayed summaries reflect what a launch _would_ use. `--json` keeps stdout pure (all tracing goes to stderr), safe to pipe into `jq`.
+
+If a `patches` / `--with-config` overlay fails to resolve for a profile, that row is flagged with a `!` marker and the error message (in the table, the JSON gains an `error` field) instead of silently showing the un-overlaid base values — so a broken patch is never mistaken for the resolved shape.
 
 An empty `profiles` list is a validation error, not an empty table — fresh installs refuse to run until you configure at least one profile ([Quickstart](./quickstart)). A config typo aborts with an error naming the offending field path.
+
+### Subcommands are not launches
+
+`profiles` and `mcp serve` are subcommands, not launches, so **launch-only arguments do not apply to them** — the positional `[PROFILE]`, `--cwd`, `--mode`, and a trailing `-- <provider args>` are all rejected with a clear error rather than silently dropped:
+
+```sh
+hyprpilot engineer profiles     # error: positional <PROFILE> does not apply to `profiles`
+hyprpilot --cwd /tmp profiles   # error: --cwd does not apply to `profiles`
+```
+
+The one exception is `--with-config`: `profiles` honors it (the overlay preview above), while `mcp serve` — which reads none of the launch config — rejects it too. Run the launch and the subcommand as separate invocations.
 
 ## Exit behavior
 

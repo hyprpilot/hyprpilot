@@ -11,10 +11,31 @@ struct ProfileChoice(ProfileSummary);
 impl fmt::Display for ProfileChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let profile = &self.0;
+        // `!` (over the `*` default marker) flags a patch-resolution
+        // failure, and the error replaces the model/cwd columns — the
+        // row surfaces the broken patch instead of showing stale base
+        // values as if they resolved cleanly (K-750 item 5).
+        let marker = if profile.error.is_some() {
+            "!"
+        } else if profile.is_default {
+            "*"
+        } else {
+            " "
+        };
+        if let Some(error) = profile.error.as_deref() {
+            return write!(
+                f,
+                "{}  {}  {}  ! resolve failed: {}",
+                marker,
+                profile.id.as_str(),
+                profile.agent.as_str(),
+                error
+            );
+        }
         write!(
             f,
             "{}  {}  {}  {}  {}",
-            if profile.is_default { "*" } else { " " },
+            marker,
             profile.id.as_str(),
             profile.agent.as_str(),
             profile.model.as_deref().unwrap_or("-"),
@@ -91,7 +112,18 @@ mod tests {
             model: None,
             cwd: None,
             is_default,
+            error: None,
         }
+    }
+
+    #[test]
+    fn errored_row_shows_bang_marker_and_error() {
+        let mut errored = summary("broken", true);
+        errored.error = Some("invalid shape after patches".into());
+        let line = ProfileChoice(errored).to_string();
+
+        assert!(line.starts_with("!  broken"), "errored row leads with `!`: {line}");
+        assert!(line.contains("resolve failed: invalid shape after patches"), "{line}");
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Args;
+use serde_json::Value;
 
 use super::SpawnRequest;
 use crate::config::with_config::WithConfigArgs;
@@ -26,6 +27,54 @@ pub struct LaunchArgs {
     provider_args: Vec<String>,
 }
 
+impl LaunchArgs {
+    /// Reject launch-only arguments that a subcommand can't honor.
+    ///
+    /// `LaunchArgs` is flattened at the CLI root, so clap happily parses
+    /// `hyprpilot engineer profiles` (positional + subcommand) or
+    /// `hyprpilot --cwd x profiles` (launch flag + subcommand) — the
+    /// subcommand then wins the dispatch and the launch args used to be
+    /// **silently dropped**. Surface them as a hard error instead.
+    ///
+    /// `--with-config` is the one launch flag some subcommands honor
+    /// (`profiles` folds the same overlay a launch would); pass
+    /// `allow_with_config = true` there and `false` where the subcommand
+    /// ignores it (`mcp`), so an unhonored overlay never silently
+    /// vanishes either.
+    pub fn reject_launch_only_args(&self, subcommand: &str, allow_with_config: bool) -> Result<()> {
+        let mut offenders = Vec::new();
+        if self.profile_id.is_some() {
+            offenders.push("positional <PROFILE>");
+        }
+        if self.cwd.is_some() {
+            offenders.push("--cwd");
+        }
+        if self.mode.is_some() {
+            offenders.push("--mode");
+        }
+        if !self.provider_args.is_empty() {
+            offenders.push("trailing `-- <provider args>`");
+        }
+        if !allow_with_config && !self.with_config.with_config.is_empty() {
+            offenders.push("--with-config");
+        }
+        if !offenders.is_empty() {
+            bail!(
+                "`{subcommand}` is a subcommand, not a launch — these launch-only arguments do not apply to it: {}. \
+                 Run the launch and `{subcommand}` as separate invocations.",
+                offenders.join(", ")
+            );
+        }
+        Ok(())
+    }
+
+    /// The `--with-config` overlay patches — the one launch flag a
+    /// subcommand (`profiles`) folds so its output mirrors a launch.
+    pub fn into_config_patches(self) -> Result<Vec<Value>> {
+        self.with_config.into_patches()
+    }
+}
+
 pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
     let config_patches = args.with_config.into_patches()?;
 
@@ -43,4 +92,61 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
             provider_args: args.provider_args,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subcommand_accepts_launch_args_with_no_launch_only_flags() {
+        LaunchArgs::default()
+            .reject_launch_only_args("profiles", true)
+            .expect("bare default carries no launch-only args");
+    }
+
+    #[test]
+    fn subcommand_rejects_positional_profile() {
+        let args = LaunchArgs {
+            profile_id: Some("engineer".into()),
+            ..Default::default()
+        };
+        let err = args
+            .reject_launch_only_args("profiles", true)
+            .expect_err("positional profile + subcommand must error");
+        assert!(err.to_string().contains("positional <PROFILE>"), "{err}");
+    }
+
+    #[test]
+    fn subcommand_rejects_cwd_mode_and_provider_args() {
+        let args = LaunchArgs {
+            cwd: Some(PathBuf::from("/tmp")),
+            mode: Some("plan".into()),
+            provider_args: vec!["--resume".into()],
+            ..Default::default()
+        };
+        let msg = args
+            .reject_launch_only_args("profiles", true)
+            .expect_err("launch flags + subcommand must error")
+            .to_string();
+        assert!(msg.contains("--cwd"), "{msg}");
+        assert!(msg.contains("--mode"), "{msg}");
+        assert!(msg.contains("provider args"), "{msg}");
+    }
+
+    #[test]
+    fn profiles_honors_with_config_but_mcp_rejects_it() {
+        let mut args = LaunchArgs::default();
+        args.with_config.with_config = vec!["@{}".into()];
+
+        // `profiles` folds the overlay, so `--with-config` is allowed.
+        args.reject_launch_only_args("profiles", true)
+            .expect("profiles honors --with-config");
+
+        // `mcp` ignores it — reject so it isn't silently dropped.
+        let err = args
+            .reject_launch_only_args("mcp", false)
+            .expect_err("mcp must reject an unhonored --with-config");
+        assert!(err.to_string().contains("--with-config"), "{err}");
+    }
 }
