@@ -56,11 +56,14 @@ pub(super) fn exec(command: SpawnCommand) -> Result<ExitCode> {
     }
 
     // Secrets rule: argv values (codex `-c instructions=…`, claude
-    // `--append-system-prompt`, `--mcp-config`) and env values carry
-    // the system prompt + bearer tokens. `info` shows flag + env-key
-    // names only; `debug` shows argv with every value payload elided
-    // to a size; `trace` — and ONLY trace — dumps the raw argv + env
-    // values. Never enable trace where the log sink is shared.
+    // `--append-system-prompt`) and env values carry the system prompt
+    // + bearer tokens. Claude's `--mcp-config` carries only a path to a
+    // 0600 temp file (see `write_launch_temp_config`), so the MCP
+    // header secrets that file references never reach the
+    // world-readable argv. `info` shows flag + env-key names only;
+    // `debug` shows argv with every value payload elided to a size;
+    // `trace` — and ONLY trace — dumps the raw argv + env values. Never
+    // enable trace where the log sink is shared.
     tracing::info!(
         program = %command.program,
         cwd = ?command.cwd,
@@ -125,9 +128,14 @@ fn build_claude(
     }
     if !mcp_defs.is_empty() && !has_flag(&detect_args, "--mcp-config", None) {
         let config = claude_mcp_config(mcp_defs)?;
-        ensure_inline_size("claude --mcp-config", &config)?;
+        // Pass the resolved MCP config by PATH, never inline: the JSON
+        // carries expanded header secrets (bearer tokens) and argv is
+        // world-readable via `/proc/<pid>/cmdline`. `claude --help`
+        // documents `--mcp-config` as accepting "JSON files or
+        // strings"; the temp file is created 0600 and is launch-scoped.
+        let path = write_launch_temp_config("claude --mcp-config", &config)?;
         command.args.push("--mcp-config".into());
-        command.args.push(config);
+        command.args.push(path.to_string_lossy().into_owned());
     }
     let permission_tools = claude_mcp_permission_tools(mcp_defs);
     if !permission_tools.allow.is_empty() && !has_claude_allowed_tools_flag(&detect_args) {
@@ -1019,6 +1027,49 @@ fn elide_value(value: &str) -> String {
     format!("<{}{kind}>", bytesize::ByteSize(value.len() as u64))
 }
 
+/// Write a launch-scoped config to an owner-only (0600) temp file and
+/// return its path. Keeps expanded MCP header secrets (bearer tokens)
+/// out of the world-readable `/proc/<pid>/cmdline` argv that an inline
+/// `--mcp-config <json>` would expose. The file is created 0600 from
+/// the start via `OpenOptionsExt::mode` (not a chmod-after-write race),
+/// so it is never briefly world-readable. It is deliberately NOT
+/// deleted before the launcher `exec()`s: `exec()` replaces this
+/// process, so the vendor CLI must still be able to read the path
+/// afterwards — the file is a launch-scoped temp the OS reclaims on
+/// tmp cleanup, and its 0600 mode bounds the exposure.
+fn write_launch_temp_config(label: &str, config: &str) -> Result<PathBuf> {
+    use std::io::Write;
+
+    let path = launch_temp_path("mcp", "json");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("{label}: create owner-only temp config at {}", path.display()))?;
+    file.write_all(config.as_bytes())
+        .with_context(|| format!("{label}: write temp config at {}", path.display()))?;
+
+    Ok(path)
+}
+
+/// A per-launch unique temp path under the OS temp dir. The `(pid,
+/// nanos)` pair makes collisions between concurrent launches
+/// vanishingly unlikely, and `create_new` on the open turns any
+/// residual collision into a hard error rather than a clobber.
+fn launch_temp_path(kind: &str, ext: &str) -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    std::env::temp_dir().join(format!("hyprpilot-{kind}-{}-{nanos}.{ext}", std::process::id()))
+}
+
 fn ensure_inline_size(label: &str, value: &str) -> Result<()> {
     if value.len() > INLINE_CONFIG_LIMIT {
         bail!(
@@ -1349,12 +1400,13 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        let config = command
+        let path = command
             .args
             .windows(2)
             .find_map(|w| (w[0] == "--mcp-config").then_some(&w[1]))
-            .expect("claude mcp config injected");
-        let parsed: serde_json::Value = serde_json::from_str(config).unwrap();
+            .expect("claude mcp config path injected");
+        let body = std::fs::read_to_string(path).expect("temp mcp config readable");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
 
         assert_eq!(parsed["mcpServers"]["shell-env"]["command"], format!("{home}/bin/mcp"));
         assert_eq!(parsed["mcpServers"]["shell-env"]["args"][1], format!("{home}/state"));
@@ -1362,6 +1414,52 @@ mod tests {
             parsed["mcpServers"]["shell-env"]["env"]["TOKEN_FILE"],
             format!("{home}/token")
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// K-748: the resolved claude MCP config — carrying expanded header
+    /// secrets — must reach the vendor as a 0600 temp-file PATH, never
+    /// as inline argv JSON (argv is world-readable via
+    /// `/proc/<pid>/cmdline`).
+    #[test]
+    fn claude_mcp_config_written_to_owner_only_temp_file_not_argv() {
+        let command = build_command(
+            &resolved(AgentProvider::ClaudeCode),
+            None,
+            &[remote_mcp_def_with_headers()],
+            Vec::new(),
+        )
+        .unwrap();
+        let path = command
+            .args
+            .windows(2)
+            .find_map(|w| (w[0] == "--mcp-config").then_some(w[1].as_str()))
+            .expect("claude mcp config path injected");
+
+        // The argv token is a filesystem path — never the inline JSON
+        // or the header secret it references.
+        assert!(
+            !path.contains("mcpServers"),
+            "argv must not carry inline MCP JSON: {path}"
+        );
+        assert!(
+            !path.contains("Authorization") && !path.contains("Bearer"),
+            "argv must not carry the MCP header secret: {path}"
+        );
+
+        let body = std::fs::read_to_string(path).expect("temp mcp config readable");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["mcpServers"]["github"]["url"], "https://example.test/mcp");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "temp mcp config must be owner-only (0600)");
+        }
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
