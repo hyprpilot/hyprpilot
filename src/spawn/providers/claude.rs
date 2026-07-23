@@ -16,12 +16,14 @@ pub(super) fn build_claude(
     prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
-    // Headless: `claude -p/--print <prompt>` — one-shot non-interactive
-    // output. The prompt is ALWAYS the positional arg (a piped stdin is
-    // input DATA, not the prompt), so it rides after every generated
-    // flag as the final positional. `--print` is prepended so the whole
-    // model/effort/mode/system-prompt/MCP projection below is shared
-    // with the interactive path.
+    // Headless: `claude --print` reading the prompt from STDIN. `--print`
+    // is prepended so the whole model/effort/mode/system-prompt/MCP
+    // projection below is shared with the interactive path. The prompt is
+    // delivered on the child's stdin (see `stdin_prompt` below), NOT as a
+    // trailing positional: claude's `--allowedTools`/`--disallowedTools`
+    // are variadic (`<tools...>`) and would greedily swallow a trailing
+    // operand as a tool entry, so a positional prompt never reaches the
+    // model. stdin has no such ambiguity.
     if prompt.is_some() && !has_flag(&command.args, "--print", Some("-p")) {
         command.args.insert(0, "--print".into());
     }
@@ -74,9 +76,9 @@ pub(super) fn build_claude(
     }
 
     command.args.extend(provider_args);
-    if let Some(prompt) = prompt {
-        command.args.push(prompt.into());
-    }
+    // Deliver the headless prompt on stdin (see the `--print` comment
+    // above) — never as a positional the variadic tool flags would eat.
+    command.stdin_prompt = prompt.map(str::to_string);
 
     Ok(command)
 }
@@ -501,10 +503,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_headless_projects_print_and_prompt_positional() {
-        // `claude -p/--print <prompt>` — `--print` present, model/mode
-        // projection still applies, and the prompt is the final
-        // positional arg.
+    fn claude_headless_projects_print_and_prompt_on_stdin() {
+        // `claude --print` reading the prompt from STDIN — `--print`
+        // present, model/mode projection still applies, the prompt rides
+        // `stdin_prompt` (spawn path), and it is NEVER a trailing
+        // positional the variadic tool flags could swallow.
         let command = build_command(
             &resolved(AgentProvider::ClaudeCode),
             None,
@@ -517,19 +520,49 @@ mod tests {
         assert!(command.args.iter().any(|a| a == "--print"), "{:?}", command.args);
         assert!(command.args.iter().any(|a| a == "--model"), "model still projected");
         assert_eq!(
-            command.args.last().map(String::as_str),
+            command.stdin_prompt.as_deref(),
             Some("fix the bug"),
-            "prompt is the final positional"
+            "prompt is delivered on stdin"
+        );
+        assert!(
+            !command.args.iter().any(|a| a == "fix the bug"),
+            "prompt must NOT be a positional arg: {:?}",
+            command.args
         );
     }
 
     #[test]
-    fn claude_interactive_has_no_print_or_prompt() {
+    fn claude_headless_prompt_survives_variadic_tool_flags() {
+        // With tool policy present, `--allowedTools`/`--disallowedTools`
+        // are the last flags in argv — the prompt must still reach the
+        // model via stdin, not be appended where those variadic flags
+        // would eat it.
+        let command = build_command(
+            &resolved(AgentProvider::ClaudeCode),
+            None,
+            &[mcp_def_with_permissions()],
+            vec![],
+            Some("do the thing"),
+        )
+        .unwrap();
+
+        assert!(command.args.iter().any(|a| a == "--allowedTools"), "{:?}", command.args);
+        assert_eq!(command.stdin_prompt.as_deref(), Some("do the thing"));
+        assert!(
+            !command.args.iter().any(|a| a == "do the thing"),
+            "prompt must not trail the variadic tool flags: {:?}",
+            command.args
+        );
+    }
+
+    #[test]
+    fn claude_interactive_has_no_print_or_stdin_prompt() {
         // No prompt → interactive path is byte-for-byte unchanged (no
-        // `--print`, no trailing positional).
+        // `--print`, no stdin prompt, plain `exec()`).
         let command = build_command(&resolved(AgentProvider::ClaudeCode), None, &[], vec![], None).unwrap();
 
         assert!(!command.args.iter().any(|a| a == "--print"), "{:?}", command.args);
+        assert_eq!(command.stdin_prompt, None);
         assert_eq!(command.args.last().map(String::as_str), Some("plan")); // --permission-mode plan
     }
 }
