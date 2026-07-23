@@ -18,10 +18,8 @@ export default defineConfig({
     logo: '/icon.png',
     siteTitle: 'hyprpilot',
     nav: [
-      { text: 'Guide', link: '/guide/what-is' },
-      { text: 'Features', link: '/features/layering' },
-      { text: 'Configuration', link: '/configuration/' },
-      { text: 'CLI', link: '/cli/' },
+      { text: 'Config', link: '/config/' },
+      { text: 'Runtime', link: '/runtime/' },
       { text: 'Repository', link: '/repository/foreword' }
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/hyprpilot/hyprpilot' }],
@@ -45,20 +43,17 @@ export default defineConfig({
     },
     // Sidebar is generated from the directory tree: page order comes from
     // each page's frontmatter `order:`, section order from
-    // `manualSortFileNameByPriority`. The lone post-pass fixes the
-    // folder-derived "Cli" section label's casing.
-    sidebar: (
-      generateSidebar({
-        documentRootPath: '/',
-        useTitleFromFrontmatter: true,
-        sortMenusByFrontmatterOrder: true,
-        capitalizeFirst: true,
-        collapsed: true,
-        includeFolderIndexFile: true,
-        excludePattern: ['plans/**', 'node_modules/**', 'dist/**'],
-        manualSortFileNameByPriority: ['guide', 'features', 'configuration', 'cli', 'repository']
-      }) as any[]
-    ).map((section) => (section.text === 'Cli' ? { ...section, text: 'CLI' } : section))
+    // `manualSortFileNameByPriority`.
+    sidebar: generateSidebar({
+      documentRootPath: '/',
+      useTitleFromFrontmatter: true,
+      sortMenusByFrontmatterOrder: true,
+      capitalizeFirst: true,
+      collapsed: true,
+      includeFolderIndexFile: true,
+      excludePattern: ['plans/**', 'node_modules/**', 'dist/**'],
+      manualSortFileNameByPriority: ['config', 'runtime', 'repository']
+    }) as any[]
   },
   markdown: {
     theme: {

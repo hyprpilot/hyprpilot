@@ -25,4 +25,4 @@ If you are unsure whether an idea fits, open a [Discussion](https://github.com/h
 - [Development](./development) — toolchain, tasks, and the module map.
 - [Contributions](./contributions) — how to report, propose, and send changes.
 - [Release](./release) — how versions get cut and shipped to the AUR.
-- [Agents](./llms) — the LLM-friendly endpoints of this documentation.
+- [LLM Docs](./llms) — the LLM-friendly endpoints of this documentation.

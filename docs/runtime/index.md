@@ -14,7 +14,7 @@ Hyprpilot is a **config-driven, fire-and-exec launcher for terminal coding agent
 
 A launch is one straight line:
 
-1. **Resolve** — pick a profile (`--profile <id>`, the configured default, or the interactive picker) and fold config layers, `[[patches]]`, and `--with-config` overlays onto it.
+1. **Resolve** — pick a profile (`--profile <id>`, the configured default, or the interactive picker) and fold config layers, [`patches`](../config/patches), and [`--with-config`](./with-config) overlays onto it.
 2. **Project** — translate the resolved profile (model, mode, system prompt, MCP catalogue, tool policy) onto the vendor's own flags and environment variables.
 3. **Rename** — optionally retitle the current tmux window / zellij tab to `hyprpilot@<cwd>`.
 4. **`exec()`** — replace the hyprpilot process with the vendor CLI. On unix there is no child process left behind; the vendor TUI simply _is_ your terminal from that point on.
@@ -27,7 +27,7 @@ There is **no background daemon, no unix socket, and no window or desktop UI** a
 
 ## The one long-lived thing
 
-The single component that outlives the launch is the in-tree **MCP server** (`hyprpilot mcp serve`). When your resolved profile has a non-empty skills catalogue, the launcher auto-injects a stdio MCP entry named `hyprpilot` into the vendor's MCP config, and the vendor spawns that sidecar itself — so your `SKILL.md` catalogue reaches the agent over MCP. See [Skills & the hyprpilot MCP Server](../features/skills).
+The single component that outlives the launch is the in-tree **MCP server** (`hyprpilot mcp serve`). When your resolved profile has a non-empty skills catalogue, the launcher auto-injects a stdio MCP entry named `hyprpilot` into the vendor's MCP config, and the vendor spawns that sidecar itself — so your `SKILL.md` catalogue reaches the agent over MCP. See [Skills & the hyprpilot MCP Server](./skills).
 
 ## Why you would want it
 
@@ -43,5 +43,5 @@ If you switch between vendors, profiles keep each vendor's flag dialect out of y
 
 - [Installation](./installation) — AUR packages or a source build.
 - [Quickstart](./quickstart) — a minimal config and your first launch.
-- [Everyday Usage](./usage) — the launch flags and environment knobs.
-- [Features](../features/layering) — every subsystem in depth.
+- [Launching](./launch) — the launch flags, the picker, and the environment knobs.
+- [Config](../config/) — the full configuration reference.

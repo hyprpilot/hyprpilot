@@ -1,6 +1,7 @@
 ---
 title: Skills & the hyprpilot MCP Server
-order: 60
+order: 50
+next: false
 ---
 
 # {{ $frontmatter.title }}
@@ -9,25 +10,9 @@ Skills are `SKILL.md` bundles — reusable markdown instructions the agent can l
 
 <!-- more -->
 
-## The `[mcp]` block
+## Skill bundles
 
-Configure the skills catalogue under a `[mcp]` block:
-
-```toml
-[mcp]
-enabled = true # auto-inject the in-tree server (default true)
-autoAcceptTools = ["*"] # default approval for the server's tools
-autoRejectTools = []
-
-[[mcp.skills]]
-dir = "~/.config/hyprpilot/skills"
-
-[[mcp.skills]]
-dir = "~/.team/shared-skills"
-ignore = ["work-*", "*-experimental"]
-```
-
-Each `dir` is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's skill convention](https://github.com/anthropics/skills):
+The skills catalogue is configured under the [`mcp` block](../config/mcp#the-mcp-block); each configured root is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's skill convention](https://github.com/anthropics/skills):
 
 ```txt
 ~/.config/hyprpilot/skills/
@@ -40,19 +25,19 @@ Each `dir` is a flat directory of `<slug>/SKILL.md` bundles, compatible with [An
     └── SKILL.md
 ```
 
-`ignore` is the same glob shape as `mcps` — slugs matching any pattern are skipped at load. On a slug collision across roots, the first root wins. Missing roots warn and are skipped.
+Per-root `ignore` globs skip matching slugs at load. On a slug collision across roots, the first root wins. Missing roots warn and are skipped.
 
-The compiled defaults seed this block (via a root [`[[patches]]`](./patches) entry) with `enabled = true`, `autoAcceptTools = ["*"]`, and the single XDG skills root, so skills work out of the box once you drop a `SKILL.md` in. A profile's own `mcp` block wholesale-replaces the global one — point a profile at a different skills root, or disable the server entirely.
+The compiled defaults seed the `mcp` block (via a root [`patches`](../config/patches) entry) with `enabled: true`, `autoAcceptTools: ['*']`, and the single XDG skills root `~/.config/hyprpilot/skills` — so skills work out of the box once you drop a `SKILL.md` in. A profile's own `mcp` block wholesale-replaces the global one — point a profile at a different skills root, or disable the server entirely.
 
 ## Auto-injection
 
-When `[mcp].enabled` is `true` **and** the resolved skills catalogue is non-empty, hyprpilot prepends a stdio MCP server named **`hyprpilot`** to the catalogue it hands the vendor. That entry launches `hyprpilot mcp serve` as a child of the agent — the vendor owns its lifetime; you never run it by hand.
+When `mcp.enabled` is `true` **and** the resolved skills catalogue is non-empty, hyprpilot prepends a stdio MCP server named **`hyprpilot`** to the catalogue it hands the vendor. That entry launches `hyprpilot mcp serve` as a child of the agent — the vendor owns its lifetime; you never run it by hand.
 
 - The reserved name `hyprpilot` replaces any same-named server you configured.
-- Auto-inject is independent of `mcps` — `mcps = []` does not suppress it. Set `[mcp].enabled = false` (or leave the skills catalogue empty) to turn it off.
-- `autoAcceptTools` / `autoRejectTools` default the approval policy for the injected server; the default `["*"]` accept makes skill calls frictionless.
+- Auto-inject is independent of `mcps` — `mcps: []` does not suppress it. Set `mcp.enabled: false` (or leave the skills catalogue empty) to turn it off.
+- `autoAcceptTools` / `autoRejectTools` default the approval policy for the injected server; the default `['*']` accept makes skill calls frictionless.
 
-The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list as JSON — see the [CLI reference](../cli/mcp-serve) for the exact shape.
+The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list as JSON — see [the `mcp serve` reference](#hyprpilot-mcp-serve) below for the exact shape.
 
 ## What the server exposes
 
@@ -105,3 +90,25 @@ metadata:
 …reaches the agent with every one of those keys (`name`, `disable-model-invocation`, the nested `metadata` map) intact under `io.hyprpilot/frontmatter`.
 
 :::
+
+## `hyprpilot mcp serve`
+
+The subcommand that runs the server over stdio. **You don't run this by hand** — the agent vendor spawns it as a child via the auto-injected entry.
+
+```sh
+hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
+```
+
+| Flag                 | Purpose                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `--skill-dir <json>` | JSON-encoded skill root entry. Repeatable — roots are searched in declaration order. |
+
+Each `--skill-dir` value is one self-contained JSON object:
+
+```json
+{ "dir": "/abs/path", "ignore": ["glob1", "glob2"] }
+```
+
+The launcher passes one `--skill-dir` per resolved skills root, each carrying that root's own ignore-glob list, so the sidecar rebuilds exactly the registry the launcher resolved — first-slug-wins on collision, per-root ignores applied independently.
+
+The [global flags](./launch#global-flags) apply here too; the server owns stdin/stdout for the MCP protocol, so logs go to stderr as everywhere else.
