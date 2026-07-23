@@ -71,6 +71,7 @@ pub(crate) fn build_mcp_registry_with(
     // there's a non-empty skills registry to project. Source is a
     // synthetic path so the UI's "which file owns this server"
     // surfaces a recognisable label.
+    let mut auto_injected = false;
     if let Some(skills_arc) = skills {
         if mcp_cfg.enabled() {
             if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
@@ -79,12 +80,21 @@ pub(crate) fn build_mcp_registry_with(
                 std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
             ) {
                 prepend_auto_mcp_definition(&mut defs, auto);
+                auto_injected = true;
             }
         }
     }
 
     if defs.is_empty() {
         return None;
+    }
+    tracing::info!(
+        servers = ?defs.iter().map(|def| def.name.as_str()).collect::<Vec<_>>(),
+        auto_injected,
+        "resolve: mcp registry built"
+    );
+    for def in &defs {
+        tracing::debug!(server = %def.name, source = %def.source.display(), "resolve: mcp server source");
     }
     Some(Arc::new(crate::mcp::MCPsRegistry::new(defs)))
 }
@@ -97,7 +107,7 @@ pub(crate) fn prepend_auto_mcp_definition(defs: &mut Vec<crate::mcp::MCPDefiniti
     if defs.len() != before {
         tracing::warn!(
             server = %reserved_name,
-            "acp::adapter: replacing configured MCP server with reserved auto-injected server"
+            "resolve: replacing configured MCP server with reserved auto-injected server"
         );
     }
     defs.insert(0, auto);
@@ -133,11 +143,46 @@ fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::Resolved
 /// Build the per-instance skills registry from the patched profile.
 pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
     let entries = effective_skills_with(profile);
+    let dir_count = entries.len();
     let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
     if let Err(err) = registry.reload() {
-        tracing::warn!(%err, "acp::adapter: per-instance skills initial reload failed");
+        tracing::warn!(%err, "resolve: per-instance skills initial reload failed");
     }
+    let skills = registry.list();
+    tracing::info!(
+        skills = skills.len(),
+        dirs = dir_count,
+        "resolve: skills registry built"
+    );
+    tracing::debug!(
+        slugs = ?skills.iter().map(|skill| skill.slug.as_str()).collect::<Vec<_>>(),
+        "resolve: skills registry slugs"
+    );
     registry
+}
+
+/// Count the `patches` that fold onto `profile_id`, tracing each
+/// patch's `$match` decision at `debug`. Pure diagnostics for the
+/// "profile resolved" info line — the authoritative fold happens in
+/// [`resolve_effective_profile`]; `kind` labels the surface
+/// (`"root"` / `"external"`).
+pub(crate) fn count_matching_patches(profile_id: &str, patches: &[Value], kind: &str) -> usize {
+    let ctx = crate::config::patch::PatchMatchContext::new(profile_id);
+    let mut matched = 0;
+    for (index, patch) in patches.iter().enumerate() {
+        let applies = crate::config::patch::patch_applies(patch, ctx);
+        if applies {
+            matched += 1;
+        }
+        tracing::debug!(
+            kind,
+            index,
+            applies,
+            match_filter = ?patch.get("$match"),
+            "resolve: patch $match evaluated"
+        );
+    }
+    matched
 }
 
 /// Single source of truth for the captain-intended `ProfileConfig`

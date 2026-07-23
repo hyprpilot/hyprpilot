@@ -92,7 +92,11 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 #[merge(strategy = overwrite_some)]
 pub struct Logging {
-    /// Unknown levels reject at TOML parse (serde closed enum).
+    /// Tracing filter level. Applied only when neither `--log-level`
+    /// nor `RUST_LOG` is set — precedence is `--log-level` >
+    /// `RUST_LOG` > `[logging] level` > the `warn,hyprpilot=info`
+    /// default. Unknown levels reject at TOML parse (serde closed
+    /// enum). Wired in `main.rs` via `logging::apply_config_level`.
     #[garde(skip)]
     pub level: Option<crate::logging::LogLevel>,
 }
@@ -220,7 +224,7 @@ fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Res
 }
 
 pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
-    tracing::info!(cli_path = ?cli_path, profile = ?profile, "config::load: loading layers");
+    tracing::debug!(cli_path = ?cli_path, profile = ?profile, "config::load: loading layers");
 
     let mut cfg =
         parse_layer_body(DEFAULTS, ConfigFormat::Toml, None).context("failed to parse compiled defaults.toml")?;
@@ -280,7 +284,6 @@ impl Config {
             tracing::error!(%report, "config::validate: garde report");
             anyhow!("config is invalid:\n{report}")
         })?;
-        tracing::debug!("config::validate: config validated");
         Ok(())
     }
 }

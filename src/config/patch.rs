@@ -278,6 +278,18 @@ pub fn apply_root_patches_to_profile_with_context(
     apply_profile_patches_with_context(profile, patches, ctx)
 }
 
+/// Whether `patch` would fold onto the profile named by `ctx` — its
+/// optional `$match` directive applies (or is absent). Non-object
+/// patches are skipped at fold, so they never apply. Exposed so the
+/// resolver can count / trace which patches land on the picked
+/// profile without re-running the fold.
+pub fn patch_applies(patch: &Value, ctx: PatchMatchContext<'_>) -> bool {
+    let Some(obj) = patch.as_object() else {
+        return false;
+    };
+    obj.get("$match").map_or(true, |m| match_matches_context(m, ctx))
+}
+
 /// `true` when every present `$match` field matches `ctx`. Absent
 /// fields match every context; present-but-malformed fields fail
 /// closed so a typo cannot broaden a scoped patch.

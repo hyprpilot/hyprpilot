@@ -11,7 +11,8 @@ use serde_json::Value;
 use crate::adapters::ProfileSummary;
 use crate::config::Config;
 use crate::resolve::{
-    build_mcp_registry_with, build_skills_registry_with, resolve_effective_profile, resolve_into_instance_and_profile,
+    build_mcp_registry_with, build_skills_registry_with, count_matching_patches, resolve_effective_profile,
+    resolve_into_instance_and_profile,
 };
 
 #[derive(Debug)]
@@ -52,6 +53,21 @@ pub(crate) fn run(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
     if mode.is_some() {
         resolved.mode = mode;
     }
+
+    let root_patch_count = count_matching_patches(&profile_id, cfg.patches.as_deref().unwrap_or_default(), "root");
+    let external_patch_count = count_matching_patches(&profile_id, &config_patches, "external");
+    tracing::info!(
+        profile = %profile_id,
+        agent = %resolved.agent.id,
+        provider = resolved.agent.provider.wire_id(),
+        model = ?resolved.model,
+        mode = ?resolved.mode,
+        effort = ?resolved.effort,
+        cwd = ?resolved.agent.cwd,
+        root_patches = root_patch_count,
+        external_patches = external_patch_count,
+        "cli: profile resolved"
+    );
 
     let system_prompt = resolved.fresh_system_prompt();
 
