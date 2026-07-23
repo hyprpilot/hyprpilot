@@ -5,12 +5,9 @@
   "scripts": {
     "dev": "vitepress dev .",
     "build": "vitepress build .",
-    "preview": "vitepress preview .",
-    "screenshots": "tsx screenshots/run-all.ts"
+    "preview": "vitepress preview ."
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
-    "tsx": "^4.22.4",
     "vitepress": "^1.6.4",
     "vue": "^3.5.38"
   }

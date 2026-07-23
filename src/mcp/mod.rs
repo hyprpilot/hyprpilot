@@ -1,9 +1,9 @@
 //! MCP server registry — JSON-file based.
 //!
-//! Captain's MCP config lives in JSON files under top-level `mcps`
-//! (global, e.g. `mcps = ["~/.config/hyprpilot/mcps/base.json"]`) or
-//! per-profile `mcps` (wholesale-replaces global). Each file follows
-//! the standard `{ "mcpServers": { "name": { command, args, env, ... } } }`
+//! Captain's MCP config lives in JSON files listed under a profile's
+//! `mcps` (or shared across profiles via a root `[[patches]]` entry).
+//! Each file follows the standard
+//! `{ "mcpServers": { "name": { command, args, env, ... } } }`
 //! shape used by Claude Code / Codex / Cursor / every MCP client. Drop
 //! `~/.claude.json` straight in and it Just Works.
 //!
@@ -12,15 +12,15 @@
 //! auto-accept / auto-reject tool globs today; future fields slot in
 //! alongside without spec collision).
 //! Everything else in the entry stays as opaque `serde_json::Value` —
-//! daemon never inspects `command` / `args` / `env` / `url` / future
-//! spec additions; they ride through to the agent verbatim at
-//! `session/new` injection time.
+//! the launcher never inspects `command` / `args` / `env` / `url` /
+//! future spec additions; they ride through to the vendor verbatim
+//! when the catalog is projected onto the native CLI.
 //!
-//! Resolution: profile's `mcps` (when set) wholesale-replaces the
-//! global default. Within a file set, later files override same-name
-//! entries (`work.json` shipping a personal `github` token after
-//! `base.json`). One malformed file warns + skips — doesn't abort
-//! daemon boot.
+//! Resolution: a profile's `mcps` (when set) wholesale-replaces any
+//! patch-provided catalog. Within a file set, later files override
+//! same-name entries (`work.json` shipping a personal `github` token
+//! after `base.json`). One malformed file warns + skips — doesn't
+//! abort the launch.
 
 pub mod auto_inject;
 pub mod loader;
@@ -83,8 +83,7 @@ pub struct MCPDefinition {
     pub raw: Value,
     pub hyprpilot: HyprpilotExtension,
     /// Source file the entry came from. Retained for diagnostics; not
-    /// read on the launcher exec path (the daemon UI that surfaced it
-    /// is gone).
+    /// read on the launcher exec path.
     #[allow(dead_code)]
     pub source: PathBuf,
 }
@@ -159,9 +158,8 @@ where
 }
 
 /// Owned MCP catalog — the resolved set after merging every file.
-/// Constructed at daemon boot from the global `mcps` paths. Profiles
-/// with their own `mcps` field build per-profile registries on
-/// demand at instance spawn time (the resolver in `loader.rs`).
+/// Built per launch from the resolved profile's `mcps` files (the
+/// resolver in `loader.rs`).
 pub struct MCPsRegistry {
     /// Resolved name → definition map. Order tracked separately so
     /// `list()` is stable.
@@ -286,8 +284,7 @@ impl MCPsRegistry {
         order.iter().filter_map(|name| catalog.get(name).cloned()).collect()
     }
 
-    /// Per-name lookup. Stays for tests + future consumers (per-instance
-    /// MCP override planning).
+    /// Per-name lookup. Stays for tests + future consumers.
     #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<MCPDefinition> {

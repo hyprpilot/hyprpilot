@@ -1,16 +1,14 @@
 //! `[mcp]` config block — controls MCP defaults, the in-tree
-//! `hyprpilot` MCP server the daemon auto-injects into ACP bootstrap
-//! `mcp_servers`, and owns the **skills catalog** the server exposes.
+//! `hyprpilot` MCP server the launcher auto-injects into the vendor's
+//! MCP config, and owns the **skills catalog** that server exposes.
 //!
-//! Singleton block mirroring the config-wide singleton/list pattern:
-//! `[mcp]` is the global config for our in-tree MCP server; `[[mcps]]`
-//! is the captain-declared catalog of *external* MCP servers. Same
-//! TOML neighbourhood, distinct concerns.
+//! Two distinct concerns share the TOML neighbourhood: `[mcp]` is the
+//! config for our in-tree MCP server; a profile's `mcps` is the
+//! captain-declared catalog of *external* MCP servers.
 //!
-//! Skills live under `[[mcp.skills]]` (was top-level `[[skills]]`).
-//! They belong here because the hyprpilot MCP server is what exposes
-//! them to the agent; there is no consumer of skills outside the MCP
-//! server.
+//! Skills live under `[[mcp.skills]]`. They belong here because the
+//! hyprpilot MCP server is what exposes them to the agent; there is no
+//! consumer of skills outside the MCP server.
 //!
 //! Per-profile `ProfileConfig.mcp: Option<McpConfig>` is folded onto
 //! whichever profile is picked (root `[[patches]]` seed the default
@@ -27,22 +25,23 @@ use super::merge_strategies::overwrite_some;
 use super::SkillEntry;
 
 /// `[mcp]` block. Controls auto-injection of the in-tree
-/// `hyprpilot mcp serve` MCP server entry into ACP bootstrap
-/// `mcp_servers` arrays, owns the **skills catalog** that server
-/// exposes, and provides default tool glob policy for
-/// MCP servers that do not declare their own `hyprpilot` extension.
+/// `hyprpilot mcp serve` MCP server entry into the vendor's MCP
+/// catalog, owns the **skills catalog** that server exposes, and
+/// provides default tool glob policy for MCP servers that do not
+/// declare their own `hyprpilot` extension.
 ///
 /// `auto_accept_tools` / `auto_reject_tools` ride through to the
 /// auto-injected entry's `HyprpilotExtension` namespace key and are
 /// also copied onto user-declared MCP definitions with no per-server
-/// override. `PermissionController::decide` then sees one uniform
-/// per-server glob shape. The default `["*"]` accept makes MCP calls
+/// override, so every server carries one uniform per-server glob
+/// shape when the policy is projected onto the vendor's native
+/// approval flags. The default `["*"]` accept makes MCP calls
 /// frictionless; captains can tighten per-profile or per-server.
 ///
 /// `skills` is the **catalog of skill root directories** the server
 /// scans and exposes. Same `SkillEntry { dir, ignore }` shape that
 /// used to live at the top-level `[[skills]]`. `None` (default) →
-/// the daemon falls through to the seeded default
+/// falls through to the seeded default
 /// (`~/.config/hyprpilot/skills`). `Some([])` → no skills at all
 /// (suppresses auto-inject — nothing to serve). `Some([...])` →
 /// wholesale-replaces the default catalog.
@@ -50,11 +49,11 @@ use super::SkillEntry;
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 #[merge(strategy = overwrite_some)]
 pub struct McpConfig {
-    /// `true` (default — seeded by defaults.toml) → daemon auto-injects
-    /// the in-tree MCP server when `skills` resolves to a non-empty
-    /// catalog. `false` → skip auto-inject entirely; agent sees no
-    /// `hyprpilot` server. Profile-level `false` override lets the
-    /// captain run a vendor-only session.
+    /// `true` (default — seeded by defaults.toml) → the launcher
+    /// auto-injects the in-tree MCP server when `skills` resolves to a
+    /// non-empty catalog. `false` → skip auto-inject entirely; agent
+    /// sees no `hyprpilot` server. Profile-level `false` override lets
+    /// the captain run a vendor-only launch.
     #[garde(skip)]
     pub enabled: Option<bool>,
 
@@ -68,16 +67,16 @@ pub struct McpConfig {
 
     /// Default glob patterns matching MCP tool leaf names for
     /// auto-accept. Default `["*"]` (seeded by defaults.toml) → every
-    /// MCP `tools/call` on servers without a stricter per-server
-    /// extension short-circuits to `Decision::Allow` at
-    /// `PermissionController::decide` lane 2. Tighten by setting
+    /// MCP tool on servers without a stricter per-server extension is
+    /// projected as auto-approved onto the vendor's native approval
+    /// surface. Tighten by setting
     /// `auto_accept_tools = ["list_*", "read_*"]`.
     #[garde(skip)]
     pub auto_accept_tools: Option<Vec<String>>,
 
     /// Glob patterns for auto-reject. Default `[]` (seeded by
-    /// defaults.toml) — no rejects, every call falls through to the
-    /// accept lane. Reject beats accept on overlap inside the lane.
+    /// defaults.toml) — no rejects, every tool falls through to the
+    /// accept set. Reject beats accept on overlap.
     #[garde(skip)]
     pub auto_reject_tools: Option<Vec<String>>,
 }
@@ -85,7 +84,7 @@ pub struct McpConfig {
 impl Default for McpConfig {
     /// Mirror of the values seeded in `defaults.toml`. Lives here too
     /// so `Config::default()` (used by tests that bypass the loader)
-    /// gets the same shape the production daemon sees. The
+    /// gets the same shape the loaded config sees. The
     /// `defaults_seed_mcp_block` test in `config/mod.rs` and the
     /// `default_matches_defaults_toml_seeded_values` test below pin
     /// both representations together — a drift between them fails

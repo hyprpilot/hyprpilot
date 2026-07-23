@@ -42,15 +42,15 @@ pub struct SystemPromptEntry {
     pub inject: SystemPromptInject,
 }
 
-/// Per-bootstrap-path inject toggles. `on_create` gates injection
-/// when the daemon spawns a fresh session (`Bootstrap::Fresh`);
-/// `on_update` gates injection when resuming or forking a persisted
-/// session (`Bootstrap::Resume` / `Bootstrap::Fork`).
+/// Per-injection-path toggles. `on_create` gates injection on a fresh
+/// launch (the only path the launcher runs); `on_update` gates
+/// injection on a resume/fork path, retained for consumers that
+/// distinguish the two.
 ///
-/// Defaults: `on_create = true`, `on_update = false`. Update
-/// bootstraps already carry the session's transcript context;
-/// re-injecting the system prompt on top is usually redundant noise.
-/// Opt in explicitly when you want the prompt to ride on every spawn.
+/// Defaults: `on_create = true`, `on_update = false`. A resumed
+/// session already carries its transcript context; re-injecting the
+/// system prompt on top is usually redundant noise. Opt in explicitly
+/// when you want the prompt to ride on every launch.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SystemPromptInject {

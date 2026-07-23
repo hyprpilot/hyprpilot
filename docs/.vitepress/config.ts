@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'Hyprpilot',
-  description: 'An overlay daemon that runs coding agents at the edge of your screen.',
+  description: 'A config-driven launcher that resolves a profile and execs your coding agent’s native CLI.',
   cleanUrls: true,
   lastUpdated: true,
   head: [
@@ -15,7 +15,7 @@ export default defineConfig({
     nav: [
       { text: 'Guide', link: '/guide/installation' },
       { text: 'Configuration', link: '/configuration/' },
-      { text: 'Features', link: '/features/' },
+      { text: 'Reference', link: '/reference/cli' },
       { text: 'Repository', link: '/repository/contributions' }
     ],
     socialLinks: [
@@ -44,8 +44,7 @@ export default defineConfig({
         text: 'Guide',
         items: [
           { text: 'Installation', link: '/guide/installation' },
-          { text: 'Integration', link: '/guide/integration' },
-          { text: 'Waybar', link: '/guide/waybar' }
+          { text: 'Integration', link: '/guide/integration' }
         ]
       },
       {
@@ -54,20 +53,15 @@ export default defineConfig({
           { text: 'Overview', link: '/configuration/' },
           { text: 'Profiles', link: '/configuration/profiles' },
           { text: 'Agents', link: '/configuration/agents' },
-          { text: 'Window', link: '/configuration/window' },
-          { text: 'Theme', link: '/configuration/theme' },
-          { text: 'Remote bridge', link: '/configuration/remote' }
+          { text: 'MCP & skills', link: '/configuration/mcp-and-skills' },
+          { text: 'Patches & overlays', link: '/configuration/patches' }
         ]
       },
       {
-        text: 'Features',
+        text: 'Reference',
         items: [
-          { text: 'Overview', link: '/features/' },
-          { text: 'Command palette', link: '/features/command-palette' },
-          { text: 'Chat & tools', link: '/features/chat-and-tools' },
-          { text: 'Composer', link: '/features/composer' },
-          { text: 'Daemon & CLI', link: '/features/cli' },
-          { text: 'Remote bridge', link: '/features/remote' }
+          { text: 'CLI', link: '/reference/cli' },
+          { text: 'MCP server', link: '/reference/mcp-server' }
         ]
       },
       {

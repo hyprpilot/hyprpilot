@@ -1,11 +1,10 @@
 //! Pure config→resolution core: profile resolution, root/withConfig
-//! patch folding, and per-instance MCP/skills registry construction.
-//! No process spawning, no ACP wire types, no daemon/RPC state — just
-//! `Config` + `ProfileConfig` in, a resolved shape out.
+//! patch folding, and per-launch MCP/skills registry construction.
+//! No process spawning — just `Config` + `ProfileConfig` in, a
+//! resolved shape out.
 //!
-//! Consumed by the launcher (`spawn`); returns
-//! `anyhow::Error` so nothing here depends on a transport-specific
-//! error type.
+//! Consumed by the launcher (`spawn`); returns `anyhow::Error` so
+//! nothing here depends on a caller-specific error type.
 
 use std::sync::Arc;
 
@@ -16,7 +15,8 @@ use serde_json::Value;
 use crate::config::{Config, ProfileConfig};
 use crate::profile::ResolvedProfile;
 
-/// Wire shape for `profiles_list` / `config/profiles` entries.
+/// Summary row for one resolved profile — backs the `profiles`
+/// subcommand's table / JSON output and the interactive picker.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSummary {
@@ -24,13 +24,11 @@ pub struct ProfileSummary {
     pub agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Profile-scoped cwd hint — the daemon's resolved cwd for spawns
-    /// under this profile. Optional because not every profile sets
-    /// one; consumers (palette `instance · new`) use it to pre-seed
-    /// the chrome header's cwd pill so the captain sees the spawn
-    /// target before the actor's `session/new` lands. The header
-    /// later updates from `MetaSnapshot.cwd` (authoritative) when
-    /// the spawn completes.
+    /// Profile-scoped cwd hint — the resolved launch cwd for this
+    /// profile. Optional because not every profile sets one; the
+    /// interactive picker surfaces it so the captain sees the launch
+    /// target before committing. The actual launch cwd still follows
+    /// the `--cwd` > profile/agent > current-dir precedence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub is_default: bool,
@@ -48,14 +46,14 @@ pub(crate) fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::co
         .unwrap_or_default()
 }
 
-/// Build the per-instance MCP registry from the patched profile.
+/// Build the per-launch MCP registry from the patched profile.
 ///
 /// Prepends an **auto-injected** entry for the in-tree `hyprpilot mcp
 /// serve` server when the resolved `[mcp]` block has `enabled = true`
-/// AND the per-instance skills registry (after applying the optional
-/// slug whitelist) is non-empty. The daemon's resolved skill set
-/// rides through to the agent vendor as a stdio MCP server it spawns
-/// itself. Auto-inject is independent of user-declared `mcps` —
+/// AND the per-launch skills registry (after applying the optional
+/// slug whitelist) is non-empty. The resolved skill set rides through
+/// to the agent vendor as a stdio MCP server it spawns itself.
+/// Auto-inject is independent of user-declared `mcps` —
 /// `mcps = []` does not suppress the in-tree server (that's what
 /// `mcp.enabled = false` is for).
 pub(crate) fn build_mcp_registry_with(
@@ -125,7 +123,7 @@ pub(crate) fn apply_mcp_glob_defaults(defs: &mut [crate::mcp::MCPDefinition], cf
     }
 }
 
-/// Resolved `[mcp]` block for an instance — reads ONLY from the
+/// Resolved `[mcp]` block for a launch — reads ONLY from the
 /// patched profile. Falls back to the typed `Default::default()`
 /// when the profile has no `mcp` block (enabled=true,
 /// autoAcceptTools=["*"], no skills).
@@ -134,13 +132,13 @@ pub(crate) fn effective_mcp_with(profile: &ProfileConfig) -> crate::config::McpC
 }
 
 /// Skills slugs the auto-injected `hyprpilot` MCP server should
-/// expose for this instance. Reads from the patched profile's
+/// expose for this launch. Reads from the patched profile's
 /// `mcp.skills` (root `[[patches]]` already folded upstream).
 fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::ResolvedSkillEntry> {
     effective_mcp_with(profile).resolved_skills()
 }
 
-/// Build the per-instance skills registry from the patched profile.
+/// Build the per-launch skills registry from the patched profile.
 pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
     let entries = effective_skills_with(profile);
     let dir_count = entries.len();
@@ -240,7 +238,7 @@ pub(crate) fn resolve_effective_profile(
 /// neither addresses a real `[[profiles]]` entry — every spawn
 /// flows through a profile (no bare-agent fallback). Validation at
 /// config-load already rejects an empty `[[profiles]]` list, so the
-/// captain's setup mistake surfaces at daemon boot rather than per
+/// captain's setup mistake surfaces at config-load rather than per
 /// `--with-config` invocation.
 fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::Result<ProfileConfig> {
     if let Some(id) = profile_id {
@@ -261,12 +259,12 @@ fn base_profile_for_patches(cfg: &Config, profile_id: Option<&str>) -> anyhow::R
     )
 }
 
-/// One-stop spawn-time resolver: pick + patch the profile, project
+/// One-stop launch-time resolver: pick + patch the profile, project
 /// onto a `ResolvedProfile`, return both. The patched
 /// `ProfileConfig` is the single source the MCP registry, skills
-/// registry, and per-instance context downstream all read from.
+/// registry, and per-launch context downstream all read from.
 ///
-/// `external_patches` is empty for plain spawn paths; the
+/// `external_patches` is empty for plain launch paths; the
 /// `--with-config` path supplies non-empty patches that fold on top
 /// of root `[[patches]]`.
 ///

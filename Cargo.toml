@@ -5,7 +5,7 @@ version = "2.8.0"
 edition = "2021"
 license = "MIT"
 authors = ["Cenk Kılıç <cenk1cenk2cenk3@gmail.com>"]
-repository = "https://gitlab.kilic.dev/utils/hyprpilot"
+repository = "https://github.com/hyprpilot/hyprpilot"
 
 [[bin]]
 name = "hyprpilot"

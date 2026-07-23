@@ -5,94 +5,77 @@ order: 2
 
 # Integration
 
-Wire hyprpilot into your compositor: keybinds, autostart, the tray icon. Examples below cover Hyprland and Sway — both ride the same `hyprpilot ctl` surface.
+Hyprpilot is fire-and-exec: it runs in the foreground of a terminal,
+resolves a profile, and replaces itself with the vendor CLI. Integration
+is therefore about *how you open that terminal* — a keybind, an
+app-launcher entry, or the shipped `.desktop` file — plus the
+multiplexer niceties that make agent panes easy to spot.
 
-## Keybinds
+## Launch from a compositor keybind
 
-The recommended chord flips the overlay on and off:
+Bind a key to a terminal that runs hyprpilot. Bare `hyprpilot` opens the
+interactive picker; `hyprpilot -p <id>` skips straight to a profile.
 
 ```ini
 # Hyprland — ~/.config/hypr/hyprland.conf
-bind = SUPER, space, exec, hyprpilot ctl overlay toggle
+bind = SUPER, RETURN, exec, foot -e hyprpilot
+bind = SUPER SHIFT, RETURN, exec, foot -e hyprpilot -p engineer
 ```
 
 ```bash
 # Sway — ~/.config/sway/config
-bindsym $mod+space exec hyprpilot ctl overlay toggle
+bindsym $mod+Return exec foot -e hyprpilot
+bindsym $mod+Shift+Return exec foot -e hyprpilot -p engineer
 ```
 
-Mash the keybind as fast as you like — the overlay always lands in a sensible visible/hidden state.
+Swap `foot` for your terminal of choice (`kitty -e`, `alacritty -e`,
+`wezterm start --`, `gnome-terminal --`, …). The vendor TUI takes over
+that terminal until you exit it.
 
-## Subcommands worth binding
+## App launcher / desktop entry
+
+The AUR packages install a terminal-launcher `.desktop` at
+`/usr/share/applications/hyprpilot.desktop` (`Terminal=true`,
+`Exec=hyprpilot`). Any XDG app launcher (rofi, wofi, fuzzel, the GNOME
+grid) will list **hyprpilot**; selecting it opens a terminal, runs the
+interactive picker, and execs the chosen agent. Nothing extra to wire —
+installing the package is enough.
+
+## Multiplexer window titles
+
+When hyprpilot launches inside tmux or zellij, it renames the current
+window / tab to `hyprpilot@<cwd-basename>` right before `exec()` so you
+can tell agent panes apart at a glance. It is on by default:
+
+```toml
+[multiplexer]
+set_title = true          # default; set false to opt out
+```
+
+It is best-effort — outside a multiplexer it is a no-op, and any failure
+is logged at `debug` and never aborts the launch. The rename shells out
+to `tmux rename-window` / `zellij action rename-tab`, not raw OSC escape
+sequences, so it respects your multiplexer's own title settings.
+
+## Running a specific working directory
+
+`--cwd` sets where the vendor process starts:
 
 ```sh
-# Show + focus the overlay (no-op when already visible).
-hyprpilot ctl overlay present
-
-# Show + focus a specific instance in one chord.
-hyprpilot ctl overlay present --instance <uuid>
-
-# Hide. Webview stays warm; next show is instant.
-hyprpilot ctl overlay hide
-
-# Flip.
-hyprpilot ctl overlay toggle
+hyprpilot -p engineer --cwd ~/code/hyprpilot
 ```
 
-## Push-to-talk pattern
+cwd precedence is: explicit `--cwd` flag → the profile's (or agent's)
+configured `cwd` → the current directory. So a profile pinned to a repo
+launches there by default, and `--cwd` overrides it per invocation. See
+[Configuration → Profiles](../configuration/profiles).
 
-Pipe text into `hyprpilot ctl prompts send` from anywhere — voice transcription, clipboard, scratchpad — and the overlay fires the prompt:
+## Forwarding native arguments
 
-```ini
-# Hyprland — dump a voice transcription into the focused instance
-bind = SUPER, grave, exec, whisper-stream | hyprpilot ctl prompts send --stdin
-```
-
-The same shape works with `wl-paste`, `xsel`, `xdotool`, or any program that emits text on stdout. A simple "send my clipboard as a prompt":
-
-```bash
-bindsym $mod+v exec wl-paste | hyprpilot ctl prompts send --stdin
-```
-
-## Autostart
-
-The AUR package installs a systemd user unit at `/usr/lib/systemd/user/hyprpilot.service`. Enable it once:
+Everything after a `--` separator is forwarded verbatim to the vendor
+CLI — use it for provider-native flags and resume flows:
 
 ```sh
-systemctl --user enable --now hyprpilot.service
-```
-
-The shipped unit isn't bound to any session target — start condition is yours to compose. To tie it to your graphical session, see the [systemd note in the installation guide](./installation#as-a-systemd-user-service-recommended). Pairs with `[daemon.window] visible = false` (the default) so the daemon boots hidden and your keybind is the first user-visible map.
-
-If you'd rather start it inline in your compositor config, wrap it so env vars come in:
-
-```ini
-# Hyprland
-exec-once = bash -lc 'hyprpilot daemon'
-```
-
-```bash
-# Sway
-exec bash -lc 'hyprpilot daemon'
-```
-
-The cross-platform `[autostart] enabled = true` config knob registers an XDG autostart entry — that's the GNOME / KDE / macOS / Windows path. wlroots compositors (Hyprland, Sway) ignore XDG autostart, so use the systemd unit or `exec-once` there.
-
-## Tray icon
-
-The daemon installs a system tray icon at boot:
-
-- **Left-click** — toggle overlay.
-- **Right-click → Toggle / Show / Hide overlay** — same as the `ctl overlay` subcommands.
-- **Right-click → Shut down** — clean shutdown.
-
-If your compositor has no tray support, the daemon logs a warning and continues without one — the keybind and `ctl` paths still work.
-
-## CLI escape hatch
-
-Running `hyprpilot` (no subcommand) a second time, against a daemon that's already up, pops the overlay forward instead of starting a new daemon. Handy when nothing's bound yet:
-
-```sh
-hyprpilot       # first call — starts the daemon
-hyprpilot       # second call — toggles overlay
+hyprpilot -p engineer -- --resume
+hyprpilot -p review -- --model claude-opus-4-5
 ```

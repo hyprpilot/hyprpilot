@@ -5,18 +5,23 @@ order: 2
 
 # Profiles
 
-A profile is a preset that binds together everything an agent instance needs: which agent vendor, which model, where it runs, what system prompt it loads, which MCPs it has access to, what mode it starts in. Pick a profile from the palette and a fresh instance spawns ready to work.
+A profile is a preset that binds together everything a launch needs:
+which agent vendor, which model, where it runs, what system prompt it
+loads, which MCPs it has access to, what mode it starts in. Pick a
+profile — from the interactive picker or `--profile`/`-p` — and hyprpilot
+resolves it, projects it onto the vendor's native flags, and `exec()`s.
 
-This is the most important config you'll write. Everything else (themes, window mode) tunes the chrome — profiles tune the work.
+This is the most important config you'll write. Everything else tunes the
+launch chrome — profiles tune the work.
 
 ## Anatomy
 
 ```toml
 [[profiles]]
-id = "engineer"                          # palette label, also addressable via CLI
+id = "engineer"                          # picker label, also `-p engineer`
 agent = "claude-code"                    # must match an [[agents]].id
 model = "claude-sonnet-4-5"              # optional; overrides the agent's default
-cwd = "~/code/hyprpilot"                 # optional; falls back to where the daemon was started
+cwd = "~/code/hyprpilot"                 # optional; falls back to $PWD
 mode = "default"                         # optional; vendor-specific (e.g. plan / default)
 system_prompt = [
   { file = "~/.config/hyprpilot/prompts/base.md" },
@@ -28,47 +33,84 @@ mcps = [
 ]
 ```
 
-Spawn it from the palette: `Ctrl+K → profiles → engineer`. Or explicitly from the CLI:
+Launch it:
 
 ```sh
-hyprpilot profiles
-hyprpilot ctl prompts send --profile engineer "show me the failing tests"
-hyprpilot spawn              # pick a profile interactively
-hyprpilot spawn engineer
+hyprpilot profiles            # list configured profiles
+hyprpilot -p engineer         # resolve + exec directly
+hyprpilot                     # pick a profile interactively, then exec
 ```
-
-You can have multiple instances of the same profile running side-by-side — each gets its own UUID and its own session.
 
 ## Fields
 
 | Field | Type | What it does |
 | --- | --- | --- |
-| `id` | string | Unique within `[[profiles]]`. Shows up as the palette row. |
-| `agent` | string | Which `[[agents]]` entry to spawn. |
-| `model` | string (optional) | Overrides the agent's default model for this profile. |
-| `cwd` | path (optional) | Where the agent operates. `~`, `${VAR}` expansion supported. |
-| `mode` | string (optional) | Vendor-specific starting mode. claude-code: `plan` / `default`. Codex direct spawn maps approval policies (`untrusted`, `on-request`, `never`, deprecated `on-failure`) to `--ask-for-approval`, and sandbox modes (`read-only`, `workspace-write`, `danger-full-access`) to `--sandbox`. |
-| `system_prompt` | `{ file, inject? }[]` (optional) | Per-entry prompt files prepended to your first prompt. Each entry's `inject.on_create` / `inject.on_update` toggles which bootstrap paths it rides on. `[]` = no prompt. |
-| `mcps` | `{ file, ignore? }[]` (optional) | MCP catalog override for this profile. `[]` = no MCPs. |
+| `id` | string | Unique within `[[profiles]]`. The picker row + `-p <id>`. |
+| `agent` | string | Which `[[agents]]` entry to launch. |
+| `model` | string (optional) | Overrides the agent's default model. Precedence is profile > agent > vendor default. |
+| `effort` | string (optional) | Reasoning-effort knob, mapped to the vendor's config surface where supported. |
+| `cwd` | path (optional) | Where the agent runs. `~`, `${VAR}` expansion supported. |
+| `mode` | string (optional) | Vendor-specific starting mode. See [Agents](./agents). |
+| `system_prompt` | `{ file, inject? }[]` (optional) | Prompt files prepended to the first turn. `[]` = no prompt. |
+| `mcps` | `{ file, ignore? }[]` (optional) | Per-profile MCP catalog. `[]` = no MCPs. See [MCP & skills](./mcp-and-skills). |
+| `mcp` | `[mcp]` block (optional) | Per-profile override of the in-tree MCP / skills block. |
+| `command` | string (optional) | Replaces the base agent's `command` for this profile. |
+| `args` | string[] (optional) | Replaces the base agent's `args` for this profile. |
+| `env` | table (optional) | Overlays the base agent's `env` per-key. |
 
 ## Picking the default
 
 ```toml
 [profile]
-default = "engineer"         # which [[profiles]] new instances pick by default
+default = "engineer"          # which [[profiles]] bare `hyprpilot` picks
 ```
 
-Resolution when you submit a prompt:
+Resolution at launch time:
 
-1. The profile you picked from the palette (or `--profile <id>` from the CLI) wins.
+1. `--profile <id>` (`-p`) wins.
 2. Otherwise `[profile] default`.
-3. Otherwise spawn fails with a configuration error.
+3. Otherwise — if you didn't pass a profile and no default is set — the
+   interactive picker opens. If neither a picked nor a default profile
+   resolves to a real `[[profiles]]` entry, the launch errors. There is
+   no bare-agent fallback.
 
-`hyprpilot spawn` is a one-shot terminal launch rather than a daemon-managed default. Omit the profile id to pick one interactively. Direct spawn starts providers in the current shell directory by default; pass `--cwd <dir>` to launch somewhere else.
+## The flat `command` / `args` / `env` override
+
+Sometimes a profile needs to launch a *different* binary or extra flags
+than the base agent entry declares — a canary build, a wrapper script, a
+long flag list. Instead of a nested override block, a profile carries
+three flat top-level fields:
+
+```toml
+[[profiles]]
+id = "engineer-canary"
+agent = "claude-code"
+command = "claude-canary"                 # REPLACES the agent's command
+args = ["--dangerously-skip-permissions"] # REPLACES the agent's args
+[profiles.env]
+ANTHROPIC_LOG = "debug"                    # OVERLAYS the agent's env per-key
+```
+
+- **`command`** — when set, replaces the base agent's `command`
+  wholesale for this profile.
+- **`args`** — when set, replaces the base agent's `args` wholesale.
+  Flags have no stable key to merge by (`--flag value`, `-c k=v`,
+  positionals), so this is a swap, not an append: to add one flag to an
+  otherwise long agent-args list, restate the full list here.
+- **`env`** — overlays onto the base agent's `env` per key. The
+  profile's key wins on collision; keys the profile doesn't mention are
+  left untouched.
+
+The agent's `provider` still drives the native-flag projection (model,
+mode, MCP config); the flat override only swaps what binary is launched
+with what arguments and environment.
 
 ## System prompts
 
-`system_prompt` is an array of `{ file, inject? }` entries. The daemon reads each file, concatenates the surviving bodies with blank-line separators, and prepends the result to your first prompt. The agent treats it as context, then reads your message.
+`system_prompt` is an array of `{ file, inject? }` entries. Each file is
+read at **resolve** time (not ahead of time), the surviving bodies are
+concatenated with blank-line separators, and the result is prepended to
+your first turn so the agent reads it as context before your message.
 
 ```toml
 system_prompt = [
@@ -77,158 +119,35 @@ system_prompt = [
 ]
 ```
 
-Composition lets a base persona + per-profile addendum land without juggling templates. `system_prompt = []` is the explicit "no prompt" off-switch.
+Composition lets a base persona + per-profile addendum land without
+juggling templates. `system_prompt = []` is the explicit "no prompt"
+off-switch. Because files are read at resolve time, a missing file fails
+loudly on the next launch rather than silently.
 
-### Per-entry inject toggles
+### Per-entry inject toggle
 
-Each entry takes an optional `inject` object that gates which bootstrap paths the file rides on:
+Each entry takes an optional `inject` object. On the launcher path only
+the fresh-launch injection runs, so the relevant gate is `on_create`
+(default `true`):
 
 ```toml
 system_prompt = [
-  # Default: rides only on fresh sessions, not on resume/fork.
-  { file = "~/.config/hyprpilot/prompts/base.md" },
-
-  # Explicit: rides on fresh sessions and update bootstraps
-  # (resume or fork).
-  { file = "~/.config/hyprpilot/prompts/strict.md",
-    inject = { on_create = true, on_update = true } },
+  { file = "~/.config/hyprpilot/prompts/base.md" },                       # injects (on_create default true)
+  { file = "~/.config/hyprpilot/prompts/notes.md", inject = { on_create = false } },  # skipped
 ]
 ```
 
-| Field | Default | What it gates |
-| --- | --- | --- |
-| `inject.on_create` | `true` | Whether the file rides when the daemon spawns a fresh session. |
-| `inject.on_update` | `false` | Whether the file rides when resuming or forking a persisted session. Default off because the source session already carries its own transcript context — re-injecting the prompt on top is usually redundant noise. |
+## MCPs and skills
 
-When at least one entry actually injects, the chat shows a `system prompt · <files>` chapter-break banner so you can see what rode along.
+MCP servers extend an agent with tools; skills attach markdown context.
+Both are documented on their own page — see
+[MCP & skills](./mcp-and-skills). In short:
 
-Direct provider launches use the fresh-session gate: `hyprpilot spawn <profile>` injects `on_create` entries before handing the terminal to the native TUI. Hyprpilot does not inspect provider-native resume state in direct spawn; use the provider's own `/resume` flow when you want to continue a native session.
-
-## MCPs
-
-MCPs (Model Context Protocol servers) extend an agent with tools — filesystem, search, GitHub, custom services. Each `[[mcps]]` entry points at a JSON file using the standard `mcpServers` shape that Claude Code, Codex, and Cursor all read.
-
-**You can drop your existing `~/.claude.json` straight in.** It works.
-
-```toml
-[[mcps]]
-file = "~/.claude.json"
-
-[[mcps]]
-file = "~/.config/hyprpilot/mcps/team.json"
-ignore = ["scratch-*", "*-internal"]
-```
-
-Inside each file:
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_TOKEN}"
-      }
-    }
-  }
-}
-```
-
-Files iterate in order. Same-named servers in later files override earlier ones.
-
-### Ignoring servers
-
-`ignore` is an optional glob array per `[[mcps]]` entry. Server names matching any pattern are dropped before they reach the agent. Globs anchor against the full server name — `work-*` matches `work-foo` but not `pre-work-foo`. The same glob semantics apply to the per-server `hyprpilot` tool policy fields below.
-
-### MCP tool policy
-
-Each server entry takes an optional `hyprpilot` block for tool visibility and approval policy:
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "hyprpilot": {
-        "includeTools": ["read_*", "list_*"],
-        "excludeTools": ["delete_*"],
-        "autoAcceptTools": ["read_*"],
-        "autoRejectTools": ["delete_*"]
-      }
-    }
-  }
-}
-```
-
-Globs are server-relative — write `read_*`, not `mcp__filesystem__read_*`.
-`includeTools` unset means no allow-list; `includeTools = []` is an explicit deny-all allow-list.
-`excludeTools` wins over includes, and `autoRejectTools` wins over `autoAcceptTools` when both match.
-
-The overlay daemon applies this policy itself when an ACP permission request arrives. Direct provider spawn has no Hyprpilot permission controller in the loop, so Hyprpilot projects the policy into the native TUI where possible: Claude receives `--allowedTools` / `--disallowedTools` MCP tool patterns, OpenCode receives ordered `OPENCODE_PERMISSION` rules, and Codex receives exact-name `enabled_tools`, `disabled_tools`, and per-tool approval overrides. Codex does not support wildcard tool-policy patterns in those fields, so wildcard patterns are skipped for Codex with a warning.
-
-### Per-profile MCP override
-
-```toml
-[[profiles]]
-id = "engineer"
-agent = "claude-code"
-mcps = [
-  { file = "~/.config/hyprpilot/mcps/work.json" },
-  { file = "~/.claude.json", ignore = ["scratch-*"] },
-]
-```
-
-`[[profiles]] mcps` wholesale-replaces the global `[[mcps]]` set for that profile. `mcps = []` means "no MCPs at all" — handy for a sandboxed read-only profile.
-
-## Skills
-
-Skills aren't picked at config time — they live in their own catalog and ride along with prompts you specifically attach them to. Configure the catalog roots once:
-
-```toml
-[[skills]]
-dir = "~/.config/hyprpilot/skills"
-
-[[skills]]
-dir = "~/.team/shared-skills"
-ignore = ["work-*", "*-experimental"]
-```
-
-Each `dir` is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's claude-code skill convention](https://github.com/anthropics/claude-code/blob/main/skills/README.md):
-
-```
-~/.config/hyprpilot/skills/
-├── git-commit/
-│   └── SKILL.md
-├── linear-issue/
-│   ├── SKILL.md
-│   └── references/
-└── github-pr/
-    └── SKILL.md
-```
-
-`ignore` is the same glob shape as `[[mcps]]` — slugs matching any pattern are skipped at load time.
-
-In the composer, `Ctrl+K → skills → <slug>` (or type `#<slug>` directly) attaches a skill to your next prompt. The agent reads the skill body first, then your message. Reload after editing a `SKILL.md` via the palette's `skills → reload` action.
-
-### Per-profile skills override
-
-```toml
-[[profiles]]
-id = "engineer"
-agent = "claude-code"
-skills = [
-  { dir = "~/.config/hyprpilot/skills" },
-  { dir = "~/.engineering/skills", ignore = ["draft-*"] },
-]
-```
-
-Same shape as the root array; wholesale-replaces the global `[[skills]]` for that profile. `skills = []` disables skill loading for the profile.
+- `mcps = [ … ]` on a profile is a per-profile MCP catalog that
+  wholesale-replaces the shared set; `mcps = []` means "no MCPs".
+- The in-tree `hyprpilot` MCP server (which delivers your skills) is
+  configured under a `[mcp]` block, seeded globally via `[[patches]]`
+  and overridable per-profile with `[profiles.<id>.mcp]`.
 
 ## Examples
 
@@ -253,13 +172,12 @@ cwd = "~/code/hyprpilot"
 system_prompt = [{ file = "~/.config/hyprpilot/prompts/reviewer.md" }]
 ```
 
-### A read-only filesystem-only profile
+### A profile launching a wrapper binary
 
 ```toml
 [[profiles]]
-id = "browse"
+id = "sandboxed"
 agent = "claude-code"
-mcps = [{ file = "~/.config/hyprpilot/mcps/readonly-fs.json" }]
+command = "firejail"
+args = ["--net=none", "claude"]
 ```
-
-…where `readonly-fs.json` lists `filesystem` with `autoRejectTools = ["write_*", "delete_*", "edit_*"]`.

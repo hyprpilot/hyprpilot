@@ -1,15 +1,13 @@
 //! Skill loader — parses `<root>/<slug>/SKILL.md` bundles across
-//! every configured root and exposes them to the daemon via
-//! `SkillsRegistry`. Reload is captain-driven: the palette's
-//! "reload skills" entry calls `skills/reload` (mirrored as a Tauri
-//! command); fs-watching was dropped because edit-time noise from
+//! every configured root and exposes them via `SkillsRegistry`.
+//! Reload is explicit (the MCP server's `reload` tool rescans the
+//! roots); fs-watching was dropped because edit-time noise from
 //! editors / git ops burnt through the debouncer faster than skills
 //! changed.
 //!
-//! Skill delivery onto the wire flows exclusively through the
-//! palette-driven `Attachment` shape on `UserTurnInput::Prompt` — no
-//! inline-token expansion runs server-side; raw user text passes
-//! through the `session/submit` handler verbatim.
+//! Skills reach the agent only through the in-tree `hyprpilot` MCP
+//! server (`mcp/server`), which serves this registry's bundles as MCP
+//! resources and tools.
 
 mod loader;
 
@@ -132,8 +130,8 @@ pub struct SkillsRegistry {
 impl SkillsRegistry {
     /// Build a registry scanning every root in `entries`. Does *not*
     /// call `reload` — callers trigger the initial load explicitly so
-    /// boot-time failures surface in the daemon's logs next to the
-    /// other init steps. Roots are stored as-is; `reload` skips
+    /// load-time failures surface in the logs next to the other init
+    /// steps. Roots are stored as-is; `reload` skips
     /// missing ones with a warning. Per-entry `ignore` glob (when
     /// present) drops slugs matching any pattern post-load.
     #[must_use]
