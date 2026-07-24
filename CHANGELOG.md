@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.2](https://github.com/hyprpilot/hyprpilot/compare/v3.1.1...v3.1.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **mcp:** move skill references to hyprpilot://references/&lt;slug&gt; (autocomplete) ([#208](https://github.com/hyprpilot/hyprpilot/issues/208)) ([fe1f5df](https://github.com/hyprpilot/hyprpilot/commit/fe1f5df39d2edb022cb23aadd57b2327fddc2c7d))
+
 ## [3.1.1](https://github.com/hyprpilot/hyprpilot/compare/v3.1.0...v3.1.1) (2026-07-23)
 
 
