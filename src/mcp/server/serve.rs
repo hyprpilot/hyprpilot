@@ -11,7 +11,10 @@
 //! Current surface:
 //! - Resources
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
-//!   - `hyprpilot://skills/<slug>/references` — bundled references
+//!   - `hyprpilot://references/<slug>` — bundled references
+//!     (parallel top-level scheme, NOT a `/references` segment
+//!     nested under the slug — the nested form broke client URI
+//!     autocomplete)
 //!   - Both carry a namespaced `_meta`: `io.hyprpilot/frontmatter`
 //!     (the ENTIRE parsed frontmatter, verbatim keys) and
 //!     `io.hyprpilot/skill` (the curated `SkillMetadata` view). See
@@ -311,7 +314,7 @@ fn skill_uri(slug: &str) -> String {
 }
 
 fn skill_references_uri(slug: &str) -> String {
-    format!("hyprpilot://skills/{slug}/references")
+    format!("hyprpilot://references/{slug}")
 }
 
 fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
@@ -341,11 +344,14 @@ enum ParsedUri<'a> {
 
 fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
     let rest = uri.strip_prefix("hyprpilot://")?;
-    let after = rest.strip_prefix("skills/")?;
-    if let Some(slug) = after.strip_suffix("/references") {
-        Some(ParsedUri::SkillReferences(slug))
+    // Two parallel top-level forms — the slug is a single trailing
+    // segment in both, so the references scheme no longer nests a
+    // `/references` suffix under the slug (that nesting broke client
+    // URI autocomplete).
+    if let Some(slug) = rest.strip_prefix("skills/") {
+        Some(ParsedUri::Skill(slug))
     } else {
-        Some(ParsedUri::Skill(after))
+        rest.strip_prefix("references/").map(ParsedUri::SkillReferences)
     }
 }
 
@@ -518,7 +524,7 @@ impl ServerHandler for HyprpilotServer {
                     "Bundle every reference declared in a skill's frontmatter, \
                      resolved relative to the skill's bundle dir, and include the \
                      skill metadata. Equivalent to reading \
-                     `hyprpilot://skills/<slug>/references`."
+                     `hyprpilot://references/<slug>`."
                         .into(),
                 ),
                 slug_object_schema(),
@@ -656,7 +662,7 @@ impl ServerHandler for HyprpilotServer {
             // bundle. Same standard-field population as the body.
             if !skill.refs.references.is_empty() {
                 resources.push(
-                    rmcp::model::Resource::new(skill_references_uri(slug), format!("{}/references", skill.slug))
+                    rmcp::model::Resource::new(skill_references_uri(slug), format!("{} references", skill.slug))
                         .with_title(format!("{} — references", skill.title))
                         .with_description(format!(
                             "Bundled reference files for the `{slug}` skill ({} declared).",
@@ -679,7 +685,7 @@ impl ServerHandler for HyprpilotServer {
             rmcp::model::ResourceTemplate::new("hyprpilot://skills/{slug}", "skill")
                 .with_description("Full SKILL.md body for the addressed skill slug.")
                 .with_mime_type("text/markdown"),
-            rmcp::model::ResourceTemplate::new("hyprpilot://skills/{slug}/references", "skill-references")
+            rmcp::model::ResourceTemplate::new("hyprpilot://references/{slug}", "skill-references")
                 .with_description(
                     "Bundle of every reference declared in the skill's frontmatter, \
                      concatenated with `--- <basename> ---` delimiters.",
@@ -741,13 +747,24 @@ mod tests {
 
     #[test]
     fn parses_known_uris() {
+        // Body: the `skills/<slug>` top-level form.
         assert!(matches!(
             parse_uri("hyprpilot://skills/foo"),
             Some(ParsedUri::Skill("foo"))
         ));
+        // References: the parallel `references/<slug>` top-level form
+        // (NOT `skills/<slug>/references` — that nesting broke client
+        // autocomplete).
+        assert!(matches!(
+            parse_uri("hyprpilot://references/foo"),
+            Some(ParsedUri::SkillReferences("foo"))
+        ));
+        // The old nested form is no longer a references URI — it parses
+        // as a body slug that literally contains `foo/references`, which
+        // resolves to no known skill rather than the references bundle.
         assert!(matches!(
             parse_uri("hyprpilot://skills/foo/references"),
-            Some(ParsedUri::SkillReferences("foo"))
+            Some(ParsedUri::Skill("foo/references"))
         ));
         assert!(parse_uri("hyprpilot://unknown/x").is_none());
         assert!(parse_uri("not-our-scheme://x").is_none());

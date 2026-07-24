@@ -355,7 +355,9 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   it; `[mcp].enabled = false` does.
 - **`hyprpilot mcp serve`** (`mcp/server/serve.rs`): an `rmcp` stdio
   server. Resources: `hyprpilot://skills/<slug>` (body) and
-  `.../references` (bundled frontmatter references). Tools:
+  `hyprpilot://references/<slug>` (bundled frontmatter references — a
+  parallel top-level scheme, NOT a `/references` segment nested under
+  the slug; the nested form broke client URI autocomplete). Tools:
   `list_skills`, `read_skill`, `load_skill_references`, `reload`
   (rescan dirs), `open` (OS-default handler via the `open` crate).
   Skills are discovered by directory scan — the same
