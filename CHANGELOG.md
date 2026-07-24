@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.3](https://github.com/hyprpilot/hyprpilot/compare/v3.1.2...v3.1.3) (2026-07-24)
+
+
+### Refactor
+
+* **mcp:** single _meta block, drop fields duplicated by spec Resource ([#210](https://github.com/hyprpilot/hyprpilot/issues/210)) ([8e72c45](https://github.com/hyprpilot/hyprpilot/commit/8e72c451b9dda8ec3f0b7ff8e0b9c48f73327c09))
+
 ## [3.1.2](https://github.com/hyprpilot/hyprpilot/compare/v3.1.1...v3.1.2) (2026-07-24)
 
 
