@@ -371,6 +371,25 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   text instead of "Unknown"; structured-aware clients (Claude Code)
   still get the JSON. A structured-only result renders as "Unknown" in
   opencode — never return one.
+- **Skill metadata — ONE block, spec fields canonical**
+  (`mcp/server/skills/metadata.rs`): the MCP spec's `_meta` is a single
+  field keyed by reverse-DNS names, so every skill surface carries
+  exactly ONE namespaced key — **`io.hyprpilot/skill`** in resource
+  `_meta`, **`metadata`** in tool output (`list_skills` / `read_skill` /
+  `load_skill_references`) — and nothing in it repeats a spec-compliant
+  `Resource` field. The block = the WHOLE frontmatter map **verbatim**
+  (`skill_block`) **minus** `title` + `description` (byte-for-byte equal
+  to `Resource.title` / `Resource.description`) **plus** the
+  runtime-derived `path` + `bundleDir` (not in the frontmatter).
+  Frontmatter `name` is **kept** — `Resource.name` is the SLUG, an
+  author's frontmatter `name` may differ, so it's not a spec duplicate.
+  Only `title`/`description` are dropped. There is **no**
+  `io.hyprpilot/frontmatter` key and **no** curated camelCase
+  re-projection anymore — a new/custom frontmatter key rides through
+  the one block losslessly. `list_skills` keeps the headline
+  `slug`/`title`/`description`/`uri` scan view alongside the single
+  `metadata` block. Built ONCE per skill into `LoadedSkill.meta_block`,
+  not per request.
 
 ## Launch / exec (`spawn`)
 

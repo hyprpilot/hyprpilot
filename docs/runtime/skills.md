@@ -60,16 +60,18 @@ And as tools:
 
 Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session. Because each skill is exposed as a resource, `reload` also emits a **resource list-changed notification** so a connected client re-fetches the skill list instead of trusting a stale one. (The tool list is static, so no tool-list-changed fires.)
 
-Every tool result carries **both** a human-readable text block and the structured JSON payload. Clients that render only structured content (Claude Code) read the JSON; clients that render only text (opencode) get a legible summary — e.g. `list_skills` returns a one-line-per-skill catalogue as text alongside the full structured list, and `read_skill` returns the skill body as text alongside the structured `{ uri, body, metadata, frontmatter }`. A structured-only result would otherwise render as "Unknown" in text-only clients.
+Every tool result carries **both** a human-readable text block and the structured JSON payload. Clients that render only structured content (Claude Code) read the JSON; clients that render only text (opencode) get a legible summary — e.g. `list_skills` returns a one-line-per-skill catalogue as text alongside the full structured list, and `read_skill` returns the skill body as text alongside the structured `{ uri, body, metadata }`. A structured-only result would otherwise render as "Unknown" in text-only clients.
 
 ## Frontmatter passthrough
 
-A `SKILL.md` is markdown with an optional YAML frontmatter block. The loader keeps **every** frontmatter key losslessly, and the server passes the whole map through to the agent on the MCP wire under the resource's `_meta`, so a new frontmatter field reaches the agent with zero server changes:
+A `SKILL.md` is markdown with an optional YAML frontmatter block. The loader keeps **every** frontmatter key losslessly, and the server passes the map through to the agent on the MCP wire so a new frontmatter field reaches the agent with zero server changes.
 
-- `io.hyprpilot/frontmatter` — the entire frontmatter map, verbatim. Keys pass through unchanged (no camelCasing); nested maps, arrays, numbers, and booleans all convert. The consumer interprets — renaming is interpretation the server deliberately doesn't do.
-- `io.hyprpilot/skill` — a curated / derived view (name, interaction, argument hint, references, path, bundle dir) for consumers that want the pre-derived shape without re-deriving it themselves.
+Metadata is carried in **one** block — never duplicated across surfaces. Per the MCP spec, `_meta` is a single field keyed by reverse-DNS names; hyprpilot emits exactly one such key and never repeats anything the spec-compliant `Resource` fields already carry:
 
-Both keys are namespaced per the MCP spec's `_meta` reverse-DNS convention. Frontmatter that isn't map-shaped, or a `SKILL.md` with no frontmatter fence at all, is treated as an empty map — a malformed block never fails the request.
+- **Spec `Resource` fields** are canonical: `uri`, `name` (the slug), `title`, `description`, `mimeType`, `size`.
+- **`io.hyprpilot/skill`** (resource `_meta`) / **`metadata`** (tool output) — the same single block: the entire frontmatter map **verbatim** (keys pass through unchanged — no camelCasing; nested maps, arrays, numbers, and booleans all convert), **minus** `title` and `description` (those equal the canonical `Resource.title` / `Resource.description` byte-for-byte), **plus** the runtime-derived `path` and `bundleDir` (which are not in the frontmatter).
+
+Frontmatter `name` is **kept** in the block — `Resource.name` is the slug, while a frontmatter `name` is an author-supplied value that may differ, so it is not a spec duplicate. Frontmatter that isn't map-shaped, or a `SKILL.md` with no frontmatter fence at all, is treated as an empty map — a malformed block never fails the request.
 
 ::: details Example — every key reaches the agent
 
@@ -78,6 +80,8 @@ This `SKILL.md`:
 ```markdown
 ---
 name: plan-hard
+title: Plan hard
+description: Deep planning
 disable-model-invocation: true
 metadata:
   owner: captain
@@ -89,7 +93,7 @@ metadata:
 …skill body…
 ```
 
-…reaches the agent with every one of those keys (`name`, `disable-model-invocation`, the nested `metadata` map) intact under `io.hyprpilot/frontmatter`.
+…reaches the agent with `title` / `description` on the spec `Resource` fields, and every other key (`name`, `disable-model-invocation`, the nested `metadata` map) plus the runtime `path` / `bundleDir` intact under the single `io.hyprpilot/skill` block — `title` and `description` are **not** repeated inside it.
 
 :::
 

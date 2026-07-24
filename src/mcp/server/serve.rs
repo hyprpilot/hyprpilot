@@ -15,14 +15,15 @@
 //!     (parallel top-level scheme, NOT a `/references` segment
 //!     nested under the slug — the nested form broke client URI
 //!     autocomplete)
-//!   - Both carry a namespaced `_meta`: `io.hyprpilot/frontmatter`
-//!     (the ENTIRE parsed frontmatter, verbatim keys) and
-//!     `io.hyprpilot/skill` (the curated `SkillMetadata` view). See
-//!     `skills/metadata.rs`.
+//!   - Both carry ONE namespaced `_meta` key, `io.hyprpilot/skill`:
+//!     the verbatim frontmatter MINUS `title`/`description` (already
+//!     carried by the spec `Resource` fields) PLUS the runtime-derived
+//!     `path` + `bundleDir`. Nothing in that block repeats a
+//!     spec-compliant `Resource` field. See `skills/metadata.rs`.
 //! - Tools
-//!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata, frontmatter }] }`
-//!   - `read_skill { slug }` — `{ uri, body, metadata, frontmatter }`
-//!   - `load_skill_references { slug }` — `{ uri, body, metadata, frontmatter }`
+//!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata }] }`
+//!   - `read_skill { slug }` — `{ uri, body, metadata }`
+//!   - `load_skill_references { slug }` — `{ uri, body, metadata }`
 //!   - `reload` — rescan dirs, push a resource list-changed
 //!     notification (skills back the resource list; the tool list is
 //!     static, so no tool-list-changed fires)
@@ -30,15 +31,15 @@
 //!     OS-default handler (`xdg-open` / `open` / `start`) via the
 //!     cross-platform `open` crate.
 //!
-//! Frontmatter passthrough is generic: `metadata` stays the narrow,
-//! curated view (name / interaction / argument-hint /
-//! disable-model-invocation / references / path / bundleDir — unchanged
-//! shape, for backcompat); `frontmatter` is the WHOLE parsed YAML
-//! frontmatter projected losslessly to JSON, so an author can add any
-//! new frontmatter key and it reaches the agent with zero server
-//! changes. `skills/metadata.rs` owns the conversion + the `_meta`
-//! namespacing; this module just wires it into the cache + the wire
-//! shapes.
+//! Metadata is de-duplicated to a SINGLE block (`metadata` in tool
+//! output, `io.hyprpilot/skill` in resource `_meta`): the WHOLE parsed
+//! YAML frontmatter projected losslessly to JSON, minus the two keys
+//! (`title`/`description`) the spec fields already carry byte-for-byte,
+//! plus the runtime-derived `path` + `bundleDir`. An author can add any
+//! new frontmatter key and it reaches the agent verbatim with zero
+//! server changes. `skills/metadata.rs` owns the conversion + the
+//! merge + the `_meta` namespacing; this module wires it into the cache
+//! + the wire shapes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,14 +54,13 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
-use serde::Serialize;
 use tokio::sync::RwLock;
 
 use crate::config::ResolvedSkillEntry;
 use crate::mcp::auto_inject::SKILLS_SERVER_NAME;
 use crate::skills::SkillsRegistry;
 
-use super::skills::metadata::{frontmatter_json, skill_meta};
+use super::skills::metadata::{frontmatter_json, skill_block, skill_meta};
 use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
 
 /// Args for `hyprpilot mcp serve`. Skills are discovered by directory
@@ -136,12 +136,13 @@ pub(crate) struct LoadedSkill {
     path: PathBuf,
     title: String,
     description: String,
-    /// Curated/derived view — unchanged shape, kept for backcompat.
-    pub(crate) metadata: SkillMetadata,
-    /// The ENTIRE parsed frontmatter, losslessly projected to JSON
-    /// once here (not per request) via
-    /// `skills::metadata::frontmatter_json`.
-    pub(crate) frontmatter_json: serde_json::Map<String, serde_json::Value>,
+    /// The single de-duplicated metadata block, built once here (not
+    /// per request): verbatim frontmatter MINUS `title`/`description`
+    /// (carried by the spec `Resource` fields) PLUS runtime `path` +
+    /// `bundleDir`. Serves both the tool `metadata` field and the
+    /// resource `_meta` (`io.hyprpilot/skill`) — see
+    /// `skills::metadata::{skill_block, skill_meta}`.
+    pub(crate) meta_block: serde_json::Map<String, serde_json::Value>,
     body: String,
     refs: FrontmatterRefs,
 }
@@ -149,35 +150,6 @@ pub(crate) struct LoadedSkill {
 impl LoadedSkill {
     fn bundle_dir(&self) -> Option<&std::path::Path> {
         self.path.parent()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SkillMetadata {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    interaction: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    argument_hint: Option<String>,
-    disable_model_invocation: bool,
-    references: Vec<String>,
-    path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bundle_dir: Option<String>,
-}
-
-impl SkillMetadata {
-    fn from_skill(skill: &crate::skills::Skill, refs: &FrontmatterRefs) -> Self {
-        Self {
-            name: frontmatter_string(&skill.frontmatter, "name").unwrap_or_else(|| skill.slug.to_string()),
-            interaction: frontmatter_string(&skill.frontmatter, "interaction"),
-            argument_hint: frontmatter_string(&skill.frontmatter, "argument-hint"),
-            disable_model_invocation: frontmatter_bool(&skill.frontmatter, "disable-model-invocation").unwrap_or(false),
-            references: refs.references.clone(),
-            path: skill.path.display().to_string(),
-            bundle_dir: skill.path.parent().map(|p| p.display().to_string()),
-        }
     }
 }
 
@@ -266,13 +238,14 @@ fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
     for skill in skills {
         let slug = skill.slug.to_string();
         let refs = frontmatter_references(&skill.frontmatter);
-        let metadata = SkillMetadata::from_skill(&skill, &refs);
-        // Converted ONCE per skill here — not per request — so every
-        // `list_resources` / `read_resource` / tool call reuses the
-        // same lossless YAML→JSON projection.
-        let frontmatter_json_value = frontmatter_json(&skill.frontmatter);
+        // The single merged block, built ONCE per skill here — not per
+        // request — so every `list_resources` / `read_resource` / tool
+        // call reuses the same lossless YAML→JSON projection.
+        let meta_block = skill_block(&frontmatter_json(&skill.frontmatter), &skill.path);
+        // Title falls back to the frontmatter `name`, then the slug,
+        // when no frontmatter `title` was set.
         let title = if skill.title.trim().is_empty() {
-            metadata.name.clone()
+            frontmatter_string(&skill.frontmatter, "name").unwrap_or_else(|| slug.clone())
         } else {
             skill.title.clone()
         };
@@ -285,8 +258,7 @@ fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
                 path: skill.path,
                 title,
                 description,
-                metadata,
-                frontmatter_json: frontmatter_json_value,
+                meta_block,
                 body: skill.body,
                 refs,
             },
@@ -303,10 +275,6 @@ fn frontmatter_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
         .and_then(serde_yaml::Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
-}
-
-fn frontmatter_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
-    value.get(key).and_then(serde_yaml::Value::as_bool)
 }
 
 fn skill_uri(slug: &str) -> String {
@@ -328,8 +296,7 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
                 "title": s.title,
                 "description": s.description,
                 "uri": skill_uri(&s.slug),
-                "metadata": s.metadata,
-                "frontmatter": s.frontmatter_json,
+                "metadata": s.meta_block,
             })
         })
         .collect();
@@ -491,10 +458,11 @@ impl ServerHandler for HyprpilotServer {
                  to bundle the references a skill declares in its frontmatter \
                  (resolved relative to the skill's bundle dir). Use `open` to \
                  open a URL, file, or directory in the OS default handler. Every \
-                 resource and tool result carries the skill's ENTIRE frontmatter \
-                 verbatim (as `frontmatter` in tool output, and as \
-                 `io.hyprpilot/frontmatter` in resource `_meta`) alongside the \
-                 curated `metadata` view — read whichever shape fits.",
+                 resource and tool result carries the skill's frontmatter \
+                 verbatim in ONE block (as `metadata` in tool output, and as the \
+                 `io.hyprpilot/skill` key in resource `_meta`) — minus `title` / \
+                 `description` (already in the spec Resource fields) and plus the \
+                 runtime `path` + `bundleDir`.",
             )
     }
 
@@ -578,8 +546,7 @@ impl ServerHandler for HyprpilotServer {
                     serde_json::json!({
                         "uri": skill_uri(slug),
                         "body": skill.body,
-                        "metadata": skill.metadata,
-                        "frontmatter": skill.frontmatter_json,
+                        "metadata": skill.meta_block,
                     }),
                 ))
             }
@@ -598,8 +565,7 @@ impl ServerHandler for HyprpilotServer {
                     serde_json::json!({
                         "uri": skill_references_uri(slug),
                         "body": body,
-                        "metadata": skill.metadata,
-                        "frontmatter": skill.frontmatter_json,
+                        "metadata": skill.meta_block,
                     }),
                 ))
             }
@@ -655,7 +621,7 @@ impl ServerHandler for HyprpilotServer {
                     .with_description(skill.description.clone())
                     .with_mime_type("text/markdown")
                     .with_size(skill.body.len() as u64)
-                    .with_meta(skill_meta(skill)),
+                    .with_meta(skill_meta(&skill.meta_block)),
             );
             // References resource — only listed when the skill actually
             // declares references, so the list never advertises an empty
@@ -669,7 +635,7 @@ impl ServerHandler for HyprpilotServer {
                             skill.refs.references.len()
                         ))
                         .with_mime_type("text/markdown")
-                        .with_meta(skill_meta(skill)),
+                        .with_meta(skill_meta(&skill.meta_block)),
                 );
             }
         }
@@ -711,7 +677,7 @@ impl ServerHandler for HyprpilotServer {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
                     text: skill.body.clone(),
-                    meta: Some(skill_meta(skill)),
+                    meta: Some(skill_meta(&skill.meta_block)),
                 }]))
             }
             Some(ParsedUri::SkillReferences(slug)) => {
@@ -730,7 +696,7 @@ impl ServerHandler for HyprpilotServer {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
                     text: body,
-                    meta: Some(skill_meta(skill)),
+                    meta: Some(skill_meta(&skill.meta_block)),
                 }]))
             }
             None => Err(rmcp::ErrorData::invalid_params(
@@ -770,43 +736,18 @@ mod tests {
         assert!(parse_uri("not-our-scheme://x").is_none());
     }
 
-    #[test]
-    fn skill_metadata_reads_frontmatter() {
-        let frontmatter: serde_yaml::Value = serde_yaml::from_str(
-            r#"
-name: plan-hard
-interaction: chat
-argument-hint: "[goal]"
-disable-model-invocation: true
-references:
-  - ../references/plan-mode.md
-"#,
-        )
-        .unwrap();
-        let refs = frontmatter_references(&frontmatter);
-        let skill = crate::skills::Skill {
-            slug: crate::skills::SkillSlug::parse("plan-hard").unwrap(),
-            title: String::new(),
-            description: "Deep planning".to_string(),
-            body: "body".to_string(),
-            path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
-            frontmatter,
-        };
-
-        let metadata = SkillMetadata::from_skill(&skill, &refs);
-
-        assert_eq!(
-            metadata,
-            SkillMetadata {
-                name: "plan-hard".to_string(),
-                interaction: Some("chat".to_string()),
-                argument_hint: Some("[goal]".to_string()),
-                disable_model_invocation: true,
-                references: vec!["../references/plan-mode.md".to_string()],
-                path: "/tmp/plan-hard/SKILL.md".to_string(),
-                bundle_dir: Some("/tmp/plan-hard".to_string()),
-            }
-        );
+    fn loaded_skill(slug: &str, title: &str, description: &str, frontmatter_yaml: &str, path: &str) -> LoadedSkill {
+        let frontmatter: serde_yaml::Value = serde_yaml::from_str(frontmatter_yaml).unwrap();
+        let path = PathBuf::from(path);
+        LoadedSkill {
+            slug: slug.to_string(),
+            meta_block: skill_block(&frontmatter_json(&frontmatter), &path),
+            path,
+            title: title.to_string(),
+            description: description.to_string(),
+            body: String::new(),
+            refs: frontmatter_references(&frontmatter),
+        }
     }
 
     #[test]
@@ -828,8 +769,11 @@ references:
         assert_eq!(loaded.description, "desc");
     }
 
+    /// `build_cache` builds the single merged block once: verbatim
+    /// frontmatter keys survive, and the runtime `path` + `bundleDir`
+    /// are injected.
     #[test]
-    fn build_cache_populates_frontmatter_json_once() {
+    fn build_cache_builds_single_meta_block() {
         let frontmatter: serde_yaml::Value = serde_yaml::from_str(
             r#"
 name: myskill
@@ -843,52 +787,50 @@ license: MIT
             description: "desc".to_string(),
             body: "body".to_string(),
             path: PathBuf::from("/tmp/myskill/SKILL.md"),
-            frontmatter: frontmatter.clone(),
+            frontmatter,
         };
 
         let cache = build_cache(vec![skill]);
         let loaded = cache.skills.get("myskill").unwrap();
 
-        assert_eq!(loaded.frontmatter_json, frontmatter_json(&frontmatter));
         assert_eq!(
-            loaded
-                .frontmatter_json
-                .get("license")
-                .and_then(serde_json::Value::as_str),
+            loaded.meta_block.get("license").and_then(serde_json::Value::as_str),
             Some("MIT")
+        );
+        assert_eq!(
+            loaded.meta_block.get("path").and_then(serde_json::Value::as_str),
+            Some("/tmp/myskill/SKILL.md")
+        );
+        assert_eq!(
+            loaded.meta_block.get("bundleDir").and_then(serde_json::Value::as_str),
+            Some("/tmp/myskill")
         );
     }
 
-    /// Backcompat pin: today's `metadata` shape (and every other
-    /// existing field) must stay byte-for-byte identical after adding
-    /// the generic `frontmatter` passthrough field.
+    /// The `list_skills` entry keeps the headline `slug`/`title`/
+    /// `description`/`uri` scan view and a SINGLE `metadata` block —
+    /// no separate `frontmatter` field, and no `title`/`description`
+    /// repeated inside the block (they are the headline fields already).
     #[test]
-    fn list_skills_payload_is_record_rooted() {
+    fn list_skills_payload_single_block_no_spec_dupes() {
         let mut cache = SkillsCache::default();
-
         cache.order.push("plan-hard".to_string());
         cache.skills.insert(
             "plan-hard".to_string(),
-            LoadedSkill {
-                slug: "plan-hard".to_string(),
-                path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
-                title: "Plan hard".to_string(),
-                description: "Deep planning".to_string(),
-                metadata: SkillMetadata {
-                    name: "plan-hard".to_string(),
-                    interaction: Some("chat".to_string()),
-                    argument_hint: Some("[goal]".to_string()),
-                    disable_model_invocation: true,
-                    references: vec!["../references/plan-mode.md".to_string()],
-                    path: "/tmp/plan-hard/SKILL.md".to_string(),
-                    bundle_dir: Some("/tmp/plan-hard".to_string()),
-                },
-                frontmatter_json: serde_json::Map::new(),
-                body: String::new(),
-                refs: FrontmatterRefs {
-                    references: vec!["../references/plan-mode.md".to_string()],
-                },
-            },
+            loaded_skill(
+                "plan-hard",
+                "Plan hard",
+                "Deep planning",
+                r#"
+name: plan-hard
+title: Plan hard
+description: Deep planning
+argument-hint: "[goal]"
+references:
+  - ../references/plan-mode.md
+"#,
+                "/tmp/plan-hard/SKILL.md",
+            ),
         );
 
         let payload = list_skills_payload(&cache);
@@ -904,27 +846,36 @@ license: MIT
                     "uri": "hyprpilot://skills/plan-hard",
                     "metadata": {
                         "name": "plan-hard",
-                        "interaction": "chat",
-                        "argumentHint": "[goal]",
-                        "disableModelInvocation": true,
+                        "argument-hint": "[goal]",
                         "references": ["../references/plan-mode.md"],
                         "path": "/tmp/plan-hard/SKILL.md",
                         "bundleDir": "/tmp/plan-hard"
-                    },
-                    "frontmatter": {}
+                    }
                 }]
             })
         );
+        // No separate `frontmatter` field anymore.
+        assert!(payload["skills"][0].get("frontmatter").is_none());
+        // Spec-duplicated keys are NOT inside the block.
+        assert!(payload["skills"][0]["metadata"].get("title").is_none());
+        assert!(payload["skills"][0]["metadata"].get("description").is_none());
     }
 
     /// Forward-compat: an arbitrary/unknown frontmatter key (nested
-    /// map + array) rides through `list_skills`'s `frontmatter` field
-    /// verbatim — proving zero-server-change forward compat for any
-    /// new frontmatter field an author adds.
+    /// map + array) rides through the single `metadata` block verbatim
+    /// — proving zero-server-change forward compat for any new
+    /// frontmatter field an author adds.
     #[test]
-    fn list_skills_payload_frontmatter_carries_arbitrary_nested_key_verbatim() {
-        let frontmatter: serde_yaml::Value = serde_yaml::from_str(
-            r#"
+    fn list_skills_payload_carries_arbitrary_nested_key_verbatim() {
+        let mut cache = SkillsCache::default();
+        cache.order.push("plan-hard".to_string());
+        cache.skills.insert(
+            "plan-hard".to_string(),
+            loaded_skill(
+                "plan-hard",
+                "Plan hard",
+                "Deep planning",
+                r#"
 name: plan-hard
 x-vendor-extension:
   nested:
@@ -932,79 +883,34 @@ x-vendor-extension:
     - two
   flag: false
 "#,
-        )
-        .unwrap();
-        let mut cache = SkillsCache::default();
-        cache.order.push("plan-hard".to_string());
-        cache.skills.insert(
-            "plan-hard".to_string(),
-            LoadedSkill {
-                slug: "plan-hard".to_string(),
-                path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
-                title: "Plan hard".to_string(),
-                description: "Deep planning".to_string(),
-                metadata: SkillMetadata {
-                    name: "plan-hard".to_string(),
-                    interaction: None,
-                    argument_hint: None,
-                    disable_model_invocation: false,
-                    references: Vec::new(),
-                    path: "/tmp/plan-hard/SKILL.md".to_string(),
-                    bundle_dir: Some("/tmp/plan-hard".to_string()),
-                },
-                frontmatter_json: frontmatter_json(&frontmatter),
-                body: String::new(),
-                refs: FrontmatterRefs::default(),
-            },
+                "/tmp/plan-hard/SKILL.md",
+            ),
         );
 
         let payload = list_skills_payload(&cache);
 
-        let entry_frontmatter = &payload["skills"][0]["frontmatter"];
+        let block = &payload["skills"][0]["metadata"];
         assert_eq!(
-            entry_frontmatter["x-vendor-extension"],
+            block["x-vendor-extension"],
             serde_json::json!({ "nested": ["one", "two"], "flag": false })
         );
     }
 
+    /// The resource `_meta` carries ONE namespaced key
+    /// (`io.hyprpilot/skill`) — no `io.hyprpilot/frontmatter`, no bare
+    /// `skill` — and the block drops the spec-duplicated
+    /// `title`/`description` while keeping a custom frontmatter key +
+    /// the runtime `path`/`bundleDir`.
     #[test]
-    fn skill_meta_namespaces_curated_view_under_io_hyprpilot_skill() {
-        let skill = LoadedSkill {
-            slug: "plan-hard".to_string(),
-            path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
-            title: "Plan hard".to_string(),
-            description: "Deep planning".to_string(),
-            metadata: SkillMetadata {
-                name: "plan-hard".to_string(),
-                interaction: Some("chat".to_string()),
-                argument_hint: None,
-                disable_model_invocation: false,
-                references: Vec::new(),
-                path: "/tmp/plan-hard/SKILL.md".to_string(),
-                bundle_dir: Some("/tmp/plan-hard".to_string()),
-            },
-            frontmatter_json: serde_json::Map::new(),
-            body: String::new(),
-            refs: FrontmatterRefs::default(),
-        };
-
-        let meta = skill_meta(&skill);
-
-        // Legacy bare `skill` key is gone — namespaced only.
-        assert!(meta.get("skill").is_none());
-        assert_eq!(
-            meta.get("io.hyprpilot/skill")
-                .and_then(|v| v.get("name"))
-                .and_then(serde_json::Value::as_str),
-            Some("plan-hard")
-        );
-    }
-
-    #[test]
-    fn skill_meta_frontmatter_carries_arbitrary_nested_key_verbatim() {
-        let frontmatter: serde_yaml::Value = serde_yaml::from_str(
+    fn skill_meta_single_key_drops_spec_dupes_keeps_custom_and_runtime() {
+        let skill = loaded_skill(
+            "plan-hard",
+            "Plan hard",
+            "Deep planning",
             r#"
 name: plan-hard
+title: Plan hard
+description: Deep planning
 license: MIT
 metadata:
   owner: captain
@@ -1012,43 +918,38 @@ metadata:
     - alpha
     - beta
 "#,
-        )
-        .unwrap();
-        let refs = frontmatter_references(&frontmatter);
-        let metadata = SkillMetadata::from_skill(
-            &crate::skills::Skill {
-                slug: crate::skills::SkillSlug::parse("plan-hard").unwrap(),
-                title: String::new(),
-                description: "Deep planning".to_string(),
-                body: "body".to_string(),
-                path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
-                frontmatter: frontmatter.clone(),
-            },
-            &refs,
+            "/tmp/plan-hard/SKILL.md",
         );
-        let skill = LoadedSkill {
-            slug: "plan-hard".to_string(),
-            path: PathBuf::from("/tmp/plan-hard/SKILL.md"),
-            title: "Plan hard".to_string(),
-            description: "Deep planning".to_string(),
-            metadata,
-            frontmatter_json: frontmatter_json(&frontmatter),
-            body: String::new(),
-            refs,
-        };
 
-        let meta = skill_meta(&skill);
+        let meta = skill_meta(&skill.meta_block);
 
-        // `license` and the arbitrary nested `metadata` key are NOT
-        // part of the curated `SkillMetadata` shape — proving they
-        // only ride through via the raw frontmatter passthrough.
-        let raw = meta.get("io.hyprpilot/frontmatter").expect("frontmatter present");
-        assert_eq!(raw.get("license").and_then(serde_json::Value::as_str), Some("MIT"));
-        let nested = raw.get("metadata").and_then(serde_json::Value::as_object).unwrap();
+        // Exactly one namespaced key; the legacy keys are gone.
+        assert_eq!(meta.len(), 1);
+        assert!(meta.get("io.hyprpilot/frontmatter").is_none());
+        assert!(meta.get("skill").is_none());
+        let block = meta.get("io.hyprpilot/skill").expect("skill block present");
+
+        // Spec-duplicated keys dropped.
+        assert!(block.get("title").is_none());
+        assert!(block.get("description").is_none());
+        // Frontmatter `name` (NOT the same as Resource.name = slug) kept.
+        assert_eq!(block.get("name").and_then(serde_json::Value::as_str), Some("plan-hard"));
+        // Custom keys ride through verbatim.
+        assert_eq!(block.get("license").and_then(serde_json::Value::as_str), Some("MIT"));
+        let nested = block.get("metadata").and_then(serde_json::Value::as_object).unwrap();
         assert_eq!(nested.get("owner").and_then(serde_json::Value::as_str), Some("captain"));
         assert_eq!(
             nested.get("tags").and_then(serde_json::Value::as_array).map(Vec::len),
             Some(2)
+        );
+        // Runtime-derived keys present.
+        assert_eq!(
+            block.get("path").and_then(serde_json::Value::as_str),
+            Some("/tmp/plan-hard/SKILL.md")
+        );
+        assert_eq!(
+            block.get("bundleDir").and_then(serde_json::Value::as_str),
+            Some("/tmp/plan-hard")
         );
     }
 }
