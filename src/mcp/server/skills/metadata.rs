@@ -2,28 +2,32 @@
 //!
 //! `src/skills/loader.rs` already keeps every `SKILL.md` frontmatter
 //! key losslessly on `Skill.frontmatter` (a `serde_yaml::Value`). This
-//! module is the ONE place that projects the whole frontmatter onto
-//! the wire — resource `_meta` (`super::super::serve::skill_meta` call
-//! sites) and tool `frontmatter` output both read through
-//! [`frontmatter_json`] / [`skill_meta`], so a new frontmatter field
-//! reaches the agent with zero server changes. See the "Skills MCP
-//! metadata passthrough" design doc for the carrier decision.
+//! module is the ONE place that projects the frontmatter onto the wire.
+//!
+//! Per the MCP spec `_meta` is a single field keyed by reverse-DNS
+//! names; multiple keys are allowed but not required. We emit exactly
+//! ONE — [`META_KEY_SKILL`] — and never repeat anything already carried
+//! by the spec-compliant `Resource` fields (`title` / `description` /
+//! `mimeType` / `size` / `name`). The block is the verbatim frontmatter
+//! MINUS `title` + `description` (byte-for-byte equal to
+//! `Resource.title` / `Resource.description`) PLUS the runtime-derived
+//! `path` + `bundleDir` (which are NOT in the frontmatter). A new
+//! frontmatter key reaches the agent verbatim with zero server changes.
+//!
+//! `name` is deliberately KEPT: `Resource.name` is the SLUG, while a
+//! frontmatter `name` is an author-supplied value that may differ — so
+//! it is not a spec duplicate. Only fields that are byte-for-byte the
+//! spec value (`title`, `description`) are dropped.
+
+use std::path::Path;
 
 use rmcp::model::Meta;
 use serde_json::{Map, Value};
 
-use super::super::serve::LoadedSkill;
-
-/// Namespaced `_meta` key carrying the ENTIRE frontmatter map,
-/// verbatim keys — no camelCasing. The consumer interprets; renaming
-/// is interpretation we deliberately don't do server-side.
-pub const META_KEY_FRONTMATTER: &str = "io.hyprpilot/frontmatter";
-
-/// Namespaced `_meta` key carrying today's curated/derived skill view
-/// (name / interaction / argument-hint / disable-model-invocation /
-/// references / path / bundleDir). Kept alongside the raw frontmatter
-/// for consumers that want the pre-derived shape without re-deriving
-/// `references` / `path` / `bundleDir` themselves.
+/// The single namespaced `_meta` key. Carries the merged skill block —
+/// frontmatter-verbatim (minus `title`/`description`) plus runtime
+/// `path` + `bundleDir`. Reverse-DNS-namespaced per the MCP `_meta`
+/// convention.
 pub const META_KEY_SKILL: &str = "io.hyprpilot/skill";
 
 /// Losslessly convert parsed YAML frontmatter into a JSON object.
@@ -61,23 +65,33 @@ pub fn frontmatter_json(frontmatter: &serde_yaml::Value) -> Map<String, Value> {
     }
 }
 
-/// Build the `_meta` object for a loaded skill's MCP resource: the
-/// verbatim whole frontmatter under [`META_KEY_FRONTMATTER`] plus
-/// today's curated view under [`META_KEY_SKILL`]. Both keys are
-/// namespaced per the MCP spec's `_meta` convention (reverse-DNS
-/// prefix + `/name`) rather than riding as a bare `skill` key — see
-/// the design doc's carrier decision.
+/// Build the single merged skill block: the verbatim frontmatter map
+/// MINUS `title` + `description` (already carried byte-for-byte by
+/// `Resource.title` / `Resource.description`) PLUS the runtime-derived
+/// `path` + `bundleDir` (which are NOT in the frontmatter). Frontmatter
+/// `name` is KEPT — `Resource.name` is the SLUG, not the same value.
 #[must_use]
-pub fn skill_meta(skill: &LoadedSkill) -> Meta {
+pub fn skill_block(frontmatter: &Map<String, Value>, path: &Path) -> Map<String, Value> {
+    let mut block = frontmatter.clone();
+    // The ONLY spec-duplicated keys: dropped because they equal the
+    // canonical `Resource.title` / `Resource.description`.
+    block.remove("title");
+    block.remove("description");
+    // Runtime-derived, not present in frontmatter.
+    block.insert("path".to_string(), Value::String(path.display().to_string()));
+    if let Some(parent) = path.parent() {
+        block.insert("bundleDir".to_string(), Value::String(parent.display().to_string()));
+    }
+    block
+}
+
+/// Wrap the merged skill block under the single namespaced `_meta`
+/// key ([`META_KEY_SKILL`]). One key, per the MCP `_meta` convention —
+/// spec `Resource` fields are canonical and never repeated here.
+#[must_use]
+pub fn skill_meta(block: &Map<String, Value>) -> Meta {
     let mut meta = Map::new();
-    meta.insert(
-        META_KEY_FRONTMATTER.to_string(),
-        Value::Object(skill.frontmatter_json.clone()),
-    );
-    meta.insert(
-        META_KEY_SKILL.to_string(),
-        serde_json::to_value(&skill.metadata).expect("skill metadata serializes"),
-    );
+    meta.insert(META_KEY_SKILL.to_string(), Value::Object(block.clone()));
     Meta(meta)
 }
 
@@ -146,6 +160,62 @@ x-vendor-extension:
             ]))
         );
         assert_eq!(ext.get("flag"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn skill_block_drops_title_description_keeps_name_adds_path_and_bundle_dir() {
+        let value: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+name: plan-hard
+title: Plan hard
+description: Deep planning
+argument-hint: "[goal]"
+x-vendor-extension:
+  flag: true
+"#,
+        )
+        .unwrap();
+        let block = skill_block(&frontmatter_json(&value), Path::new("/tmp/plan-hard/SKILL.md"));
+
+        // Spec-duplicated keys are gone.
+        assert!(!block.contains_key("title"));
+        assert!(!block.contains_key("description"));
+        // Frontmatter `name` is NOT a spec duplicate (Resource.name is
+        // the slug) — it survives.
+        assert_eq!(block.get("name").and_then(Value::as_str), Some("plan-hard"));
+        // Any other verbatim frontmatter key survives.
+        assert_eq!(block.get("argument-hint").and_then(Value::as_str), Some("[goal]"));
+        assert_eq!(
+            block.get("x-vendor-extension"),
+            Some(&serde_json::json!({ "flag": true }))
+        );
+        // Runtime-derived keys added.
+        assert_eq!(
+            block.get("path").and_then(Value::as_str),
+            Some("/tmp/plan-hard/SKILL.md")
+        );
+        assert_eq!(block.get("bundleDir").and_then(Value::as_str), Some("/tmp/plan-hard"));
+    }
+
+    #[test]
+    fn skill_meta_has_single_namespaced_key_without_frontmatter_key() {
+        let block = skill_block(
+            &frontmatter_json(&serde_yaml::from_str("name: plan-hard\n").unwrap()),
+            Path::new("/tmp/plan-hard/SKILL.md"),
+        );
+        let meta = skill_meta(&block);
+
+        // Exactly one key — no legacy `io.hyprpilot/frontmatter`, no
+        // bare `skill`.
+        assert_eq!(meta.len(), 1);
+        assert!(meta.get("io.hyprpilot/frontmatter").is_none());
+        assert!(meta.get("skill").is_none());
+        assert_eq!(
+            meta.get("io.hyprpilot/skill")
+                .and_then(|v| v.get("name"))
+                .and_then(Value::as_str),
+            Some("plan-hard")
+        );
     }
 
     #[test]
