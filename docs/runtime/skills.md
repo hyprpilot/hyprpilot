@@ -46,7 +46,7 @@ The injected entry runs the current binary with one `--skill-dir` argument per c
 Skills are exposed as MCP resources:
 
 - `hyprpilot://skills/<slug>` — the skill body.
-- `hyprpilot://skills/<slug>/references` — the bundle's declared reference files, resolved relative to the skill directory.
+- `hyprpilot://references/<slug>` — the bundle's declared reference files, resolved relative to the skill directory. This is a parallel top-level scheme, not a `/references` segment nested under the slug — the nested form broke client URI autocomplete.
 
 And as tools:
 
