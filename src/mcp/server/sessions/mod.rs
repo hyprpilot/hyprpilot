@@ -24,9 +24,17 @@
 //! Layers 1 and 2 are userspace courtesy; layer 3 is why an orphaned
 //! agent cannot sit burning tokens with nobody holding a handle.
 //!
-//! Sessions run in **their own process group** so a kill reaches the
-//! vendor's own MCP sidecars and tool subprocesses, not just the direct
-//! child. PDEATHSIG alone would only reap the direct child.
+//! Sessions run in **their own process group** so a kill from layer 1
+//! reaches the vendor's own MCP sidecars and tool subprocesses, not just
+//! the direct child.
+//!
+//! **Layer 3 does not cover the group.** `PR_SET_PDEATHSIG` signals only
+//! the direct child and is cleared across that child's own forks — so in
+//! the very case it exists for (sidecar SIGKILLed, nothing able to run),
+//! the vendor dies but its grandchildren can survive until a later
+//! sidecar's [`sweep_stale_sessions`] reclaims them. That is the one
+//! real hole in the no-orphan story; say so rather than implying the
+//! kernel closes it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -440,6 +448,12 @@ fn write_breadcrumb(dir: &Path, handle: &str, pid: u32, pgid: i32) {
         "handle": handle,
         "pid": pid,
         "pgid": pgid,
+        // The OWNING sidecar's pid. Load-bearing for the sweep: two
+        // harness sidecars running at once is an ordinary setup (two
+        // clients, or a vendor restarting one while the old drains), and
+        // without this the newcomer cannot tell "a crashed predecessor's
+        // leftovers" from "a live sibling's working sessions".
+        "ownerPid": std::process::id(),
         "startedAt": SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
@@ -478,9 +492,41 @@ pub(crate) fn sweep_stale_sessions() {
         if !path.is_dir() {
             continue;
         }
-        if let Some(pgid) = read_breadcrumb_pgid(&path) {
-            // A pgid that is still alive belongs to a predecessor's
-            // agent — kill the whole group, not just the leader.
+        let crumb = read_breadcrumb(&path);
+
+        // ⛔ Only reclaim from a sidecar that is actually GONE. Two
+        // harness sidecars at once is an ordinary setup, and without this
+        // check a newcomer would SIGKILL a live sibling's agents and
+        // delete the transcripts they are still writing — the sweep
+        // advertised as crash recovery would be the thing eating live
+        // work. A breadcrumb we cannot read is left alone for the same
+        // reason: unknown is not the same as dead.
+        match crumb.as_ref().map(|crumb| crumb.owner_pid) {
+            Some(Some(owner)) if process_is_alive(owner) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    owner,
+                    "mcp harness: startup sweep: skipping — owning sidecar is still alive"
+                );
+                continue;
+            }
+            Some(Some(_)) => {}
+            // No `ownerPid`: written by an older build, or unreadable.
+            // Leaving it costs a stale directory; removing it could cost
+            // someone's running work.
+            _ => {
+                tracing::debug!(
+                    path = %path.display(),
+                    "mcp harness: startup sweep: skipping — no owner recorded, cannot prove it is stale"
+                );
+                continue;
+            }
+        }
+
+        if let Some(pgid) = crumb.as_ref().and_then(|crumb| crumb.pgid) {
+            // The owner is dead, so a still-live group is genuinely
+            // orphaned — kill the whole group, not just the leader, since
+            // the vendor spawns its own subprocesses.
             signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
         }
         match std::fs::remove_dir_all(&path) {
@@ -499,11 +545,32 @@ pub(crate) fn sweep_stale_sessions() {
     }
 }
 
-fn read_breadcrumb_pgid(dir: &Path) -> Option<i32> {
+struct Breadcrumb {
+    owner_pid: Option<u32>,
+    pgid: Option<i32>,
+}
+
+fn read_breadcrumb(dir: &Path) -> Option<Breadcrumb> {
     let body = std::fs::read_to_string(dir.join(BREADCRUMB_FILE)).ok()?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
 
-    value.get("pgid")?.as_i64().map(|pgid| pgid as i32)
+    Some(Breadcrumb {
+        owner_pid: value
+            .get("ownerPid")
+            .and_then(serde_json::Value::as_u64)
+            .map(|p| p as u32),
+        pgid: value.get("pgid").and_then(serde_json::Value::as_i64).map(|p| p as i32),
+    })
+}
+
+/// Whether a pid currently exists. `kill(pid, 0)` performs the
+/// permission and existence check without delivering a signal.
+///
+/// Only ever used to decide whether to LEAVE something alone, so a
+/// false "alive" is the safe direction: it means the sweep skips a
+/// directory it could have reclaimed, not that it kills something live.
+fn process_is_alive(pid: u32) -> bool {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
 }
 
 #[cfg(test)]
@@ -653,6 +720,52 @@ mod tests {
         );
 
         table.shutdown().await;
+    }
+
+    /// Two harness sidecars at once is an ordinary setup (two clients, or
+    /// a vendor restarting one while the old drains). Without an owner
+    /// check the newcomer's "crash recovery" sweep SIGKILLs the live
+    /// sibling's agents and deletes the transcripts they are still
+    /// writing — the mechanism advertised as a safety net becomes the
+    /// thing that eats working sessions.
+    #[test]
+    fn sweep_spares_a_live_sidecars_sessions_and_reclaims_a_dead_ones() {
+        let temp = std::env::temp_dir();
+
+        // Owned by US — we are obviously alive, standing in for a
+        // concurrently-running sibling sidecar.
+        let live = temp.join(format!("{SESSION_DIR_PREFIX}livetest-{}", std::process::id()));
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join(BREADCRUMB_FILE),
+            serde_json::json!({ "handle": "h", "pid": 1, "pgid": 0, "ownerPid": std::process::id() }).to_string(),
+        )
+        .unwrap();
+
+        // Owned by a pid that cannot exist — a genuinely dead predecessor.
+        let dead = temp.join(format!("{SESSION_DIR_PREFIX}deadtest-{}", std::process::id()));
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(
+            dead.join(BREADCRUMB_FILE),
+            // pgid 0 would signal OUR OWN group, so leave it out entirely.
+            serde_json::json!({ "handle": "h", "pid": 999, "ownerPid": 0x7FFF_FFFEu32 }).to_string(),
+        )
+        .unwrap();
+
+        // No owner recorded: unknown is not the same as dead, so it must
+        // be left alone rather than assumed reclaimable.
+        let unknown = temp.join(format!("{SESSION_DIR_PREFIX}unknowntest-{}", std::process::id()));
+        std::fs::create_dir_all(&unknown).unwrap();
+        std::fs::write(unknown.join(BREADCRUMB_FILE), "{\"handle\":\"h\"}").unwrap();
+
+        sweep_stale_sessions();
+
+        assert!(live.exists(), "a live sidecar's sessions must survive another's sweep");
+        assert!(!dead.exists(), "a dead sidecar's leftovers must be reclaimed");
+        assert!(unknown.exists(), "unprovable ownership must not be treated as stale");
+
+        let _ = std::fs::remove_dir_all(&live);
+        let _ = std::fs::remove_dir_all(&unknown);
     }
 
     #[test]

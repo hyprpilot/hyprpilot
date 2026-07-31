@@ -99,11 +99,15 @@ A crashed or forcibly-killed sidecar is a different story from a clean shutdown,
 2. **tokio's drop guard** (`kill_on_drop`) — without it, tokio's default behavior for a dropped, still-running child is to push it onto a global orphan queue rather than kill it, which is precisely the failure this exists to prevent. Still userspace.
 3. **`PR_SET_PDEATHSIG`** (Linux only) — the kernel kills the child when the sidecar dies, _however_ it dies. This is the only layer that survives a `SIGKILL` of the sidecar, or the release build's `panic = "abort"`, both of which run no destructor at all.
 
-Each session also runs in its **own process group**, so a kill — from `session_kill`, graceful shutdown, or PDEATHSIG — reaches everything the vendor itself spawned (its own MCP subprocesses, tool calls), not just the direct child.
+Each session also runs in its **own process group**, so a kill from `session_kill` or graceful shutdown signals the whole group — reaching everything the vendor itself spawned (its own MCP subprocesses, tool calls), not just the direct child.
+
+**PDEATHSIG is the exception, and it matters.** It signals only the *direct* child, and is cleared across that child's own forks. So in exactly the case layer 3 exists for — the sidecar `SIGKILL`ed or aborted, with no chance to signal anything — the vendor dies but **its grandchildren can survive** until the next `--with-harness` sidecar sweeps them. Layers 1 and 2 cover the group; layer 3 covers only the child.
 
 Because PDEATHSIG is Linux-only, the guarantee degrades elsewhere to the first two layers, both of which a `SIGKILL` of the sidecar defeats.
 
-A **startup sweep** (run once, only under `--with-harness`, before the server starts serving) covers what none of the three layers can: a machine crash, or a grandchild that outlived a parent whose PDEATHSIG-killed direct child already died. It scans the temp directory for leftover session directories, kills any process group still alive (recorded in a crash-recovery breadcrumb written at spawn time), and removes the directory — logging a warning whenever it reclaims something, since a non-empty sweep means a previous sidecar died badly.
+A **startup sweep** (run once, only under `--with-harness`, before the server starts serving) covers what none of the three layers can: a machine crash, or the surviving grandchildren described above. It scans the temp directory for leftover session directories, kills any process group still alive (recorded in a crash-recovery breadcrumb written at spawn time), and removes the directory — logging a warning whenever it reclaims something, since a non-empty sweep means a previous sidecar died badly.
+
+The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcrumb records the pid of the sidecar that created it, and the sweep skips any directory whose owner is still alive — or whose ownership it cannot establish. Running two harness sidecars at once is an ordinary setup, and without that check the newcomer's "recovery" would kill the other's live agents and delete transcripts still being written.
 
 ## Limits
 

@@ -136,6 +136,7 @@ impl Harness {
     /// starts a fresh conversation.
     async fn launch(&self, args: LaunchToolArgs, resume: Option<ResumeTarget>) -> Result<Value, String> {
         self.check_capacity()?;
+        reject_executable_overrides(&args.with_config)?;
 
         let cfg = self.config.load().map_err(|err| {
             format!(
@@ -347,11 +348,7 @@ impl Harness {
         match streamed {
             Some(streamed) => {
                 let truncated = streamed.len() > READ_CAP_BYTES;
-                let body = if truncated {
-                    streamed[streamed.len() - READ_CAP_BYTES..].to_string()
-                } else {
-                    streamed
-                };
+                let body = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
                 out["text"] = json!(body);
                 out["truncated"] = json!(truncated);
             }
@@ -389,6 +386,13 @@ impl Harness {
     /// conversation" and "the agent was still going" are materially
     /// different things to a caller deciding what to do next.
     pub(crate) async fn session_send(&self, handle: &str, args: LaunchToolArgs) -> Result<Value, String> {
+        // Harvest lazily. A `spawn { wait: false }` returns before the
+        // waiting path ever runs, so its session has no vendor id yet —
+        // without this it could never be resumed, and the "never
+        // reported a vendor session id" branch below would blame a
+        // failed first turn for a session that is perfectly healthy.
+        self.harvest(handle);
+
         let target = self
             .sessions
             .with(handle, |session| ResumeTarget {
@@ -538,11 +542,7 @@ impl Harness {
             // notifications agree.
             (true, _) => {
                 let truncated = streamed.len() > READ_CAP_BYTES;
-                let body = if truncated {
-                    streamed[streamed.len() - READ_CAP_BYTES..].to_string()
-                } else {
-                    streamed
-                };
+                let body = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
                 (body, truncated, cursor)
             }
             (false, Some(offset)) => read_from(&turns, offset),
@@ -629,6 +629,56 @@ impl LaunchToolArgs {
     }
 }
 
+/// Keys a caller-supplied `with_config` overlay may NOT set.
+///
+/// `ProfileConfig` carries flat `command` / `args` / `env` that
+/// wholesale-replace the agent's, so without this an overlay turns
+/// `spawn` from "launch one of the captain's configured profiles" into
+/// "run an arbitrary binary" — one prompt-injected tool call away from
+/// RCE on a chat-reachable gateway. The `--with-harness` gate is a
+/// deliberate grant of *the captain's profiles*, not of a shell.
+const FORBIDDEN_OVERLAY_KEYS: &[&str] = &["command", "args", "env"];
+
+/// Refuse an overlay that would replace what actually gets executed.
+///
+/// Checked at the top level only — that is where `ProfileConfig` reads
+/// them, so it is exactly the reachable surface.
+fn reject_executable_overrides(overlays: &[Value]) -> Result<(), String> {
+    for overlay in overlays {
+        let Some(map) = overlay.as_object() else { continue };
+        for key in FORBIDDEN_OVERLAY_KEYS {
+            if map.contains_key(*key) {
+                return Err(format!(
+                    "`with_config` may not set `{key}`: it would replace the binary this profile runs, \
+                     which turns `spawn` into arbitrary command execution. Use it for model, effort, mode, \
+                     or MCP settings. To run a different binary, add a profile for it in the hyprpilot config."
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Last `cap` bytes of `text`, backed off to a char boundary.
+///
+/// **Never byte-slice a transcript.** It is model output, so a multibyte
+/// codepoint straddling the cut is ordinary, and `&s[i..]` on a
+/// non-boundary panics — which under the release profile's
+/// `panic = "abort"` would abort the whole sidecar and take every live
+/// session with it, rather than failing one tool call.
+fn tail_bytes(text: &str, cap: usize) -> &str {
+    if text.len() <= cap {
+        return text;
+    }
+    let mut start = text.len() - cap;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+
+    &text[start..]
+}
+
 /// Scan a JSONL transcript for the vendor's own session id.
 fn vendor_session_id(body: &str) -> Option<String> {
     const KEYS: [&str; 3] = ["session_id", "thread_id", "sessionID"];
@@ -684,18 +734,32 @@ fn read_from(path: &std::path::Path, offset: u64) -> (String, bool, u64) {
     if file.seek(SeekFrom::Start(offset)).is_err() {
         return (String::new(), false, offset);
     }
-    let mut buf = String::new();
-    if file.take(READ_CAP_BYTES as u64).read_to_string(&mut buf).is_err() {
+    // Read BYTES, not a `String`. A cap that lands mid-codepoint makes
+    // `read_to_string` fail with `InvalidData` — and since the cut point
+    // is a pure function of `offset`, returning "nothing new" there would
+    // stall the transcript at that byte forever, every retry failing
+    // identically. The caller would see an agent that mysteriously went
+    // quiet. Splitting on the newline first sidesteps it: a line
+    // boundary is always a codepoint boundary.
+    let mut buf = Vec::new();
+    if file.take(READ_CAP_BYTES as u64).read_to_end(&mut buf).is_err() {
         return (String::new(), false, offset);
     }
-    let consumed = match buf.rfind('\n') {
+    let consumed = match buf.iter().rposition(|byte| *byte == b'\n') {
         Some(idx) => idx + 1,
-        // No newline yet: nothing complete to hand back.
+        // No complete line yet — either the session is mid-write, or a
+        // single line is longer than the cap. Advancing on the latter
+        // would cut mid-line; holding is correct and self-heals once the
+        // newline arrives.
         None => return (String::new(), false, offset),
     };
     let truncated = consumed == READ_CAP_BYTES;
+    // Lossy is right here, not paranoid: whole lines are valid UTF-8 in
+    // practice, and a corrupt transcript byte must not take the read
+    // path down with it.
+    let text = String::from_utf8_lossy(&buf[..consumed]).into_owned();
 
-    (buf[..consumed].to_string(), truncated, offset + consumed as u64)
+    (text, truncated, offset + consumed as u64)
 }
 
 fn unix_secs(t: std::time::SystemTime) -> u64 {
@@ -803,6 +867,76 @@ mod tests {
                 "follow stopped early — missing {expected:?} in {text:?}"
             );
         }
+    }
+
+    /// Transcripts are model output, so a multibyte codepoint straddling
+    /// the cap is ordinary. Byte-slicing there panics — and under the
+    /// release profile's `panic = "abort"` that aborts the whole sidecar
+    /// and kills every live session, rather than failing one tool call.
+    #[test]
+    fn tail_never_splits_a_codepoint() {
+        // Every offset into a 3-byte-per-char string, so the cut lands
+        // mid-codepoint at two of every three caps.
+        let text = "日本語".repeat(50);
+        for cap in 1..text.len() {
+            let tail = tail_bytes(&text, cap);
+            assert!(tail.len() <= cap, "tail must respect the cap");
+            assert!(text.ends_with(tail), "tail must be a suffix of the input");
+        }
+        assert_eq!(tail_bytes("short", 100), "short", "under the cap, unchanged");
+    }
+
+    /// The cut point is a pure function of `offset`, so a decode failure
+    /// there is not transient: every later call repeats it identically.
+    /// Returning "nothing new" with the cursor unmoved stalls the
+    /// transcript forever and the caller sees an agent that went silent.
+    #[test]
+    fn read_from_advances_past_a_cap_boundary_that_splits_a_codepoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        // Lines long enough that the read cap lands mid-line, made of
+        // multibyte characters so the byte cut splits a codepoint.
+        let line = format!("{}\n", "é".repeat(4000));
+        let body = line.repeat(20);
+        assert!(body.len() > READ_CAP_BYTES, "must exceed the cap to exercise it");
+        std::fs::write(&path, &body).unwrap();
+
+        let mut offset = 0u64;
+        let mut collected = String::new();
+        for _ in 0..40 {
+            let (chunk, _truncated, next) = read_from(&path, offset);
+            if chunk.is_empty() {
+                break;
+            }
+            assert!(next > offset, "cursor must advance or the read stalls forever");
+            collected.push_str(&chunk);
+            offset = next;
+        }
+
+        assert_eq!(
+            collected.len(),
+            body.len(),
+            "every byte must eventually be read back across the cap boundary"
+        );
+    }
+
+    /// `with_config` folds into `ProfileConfig`, which carries flat
+    /// `command` / `args` / `env` that wholesale-replace the agent's. Left
+    /// open, one prompt-injected tool call is arbitrary execution on
+    /// whatever host runs the sidecar.
+    #[test]
+    fn with_config_cannot_replace_the_binary_that_runs() {
+        for key in ["command", "args", "env"] {
+            let overlay = vec![json!({ key: "anything" })];
+            let err = reject_executable_overrides(&overlay)
+                .expect_err("{key} must be refused — it would make spawn arbitrary execution");
+            assert!(err.contains(key), "the error must name the offending key: {err}");
+        }
+
+        // The legitimate uses stay open.
+        let benign = vec![json!({ "model": "some-model", "effort": "high", "mode": "plan" })];
+        assert!(reject_executable_overrides(&benign).is_ok());
+        assert!(reject_executable_overrides(&[]).is_ok());
     }
 
     #[test]
