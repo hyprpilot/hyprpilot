@@ -58,6 +58,10 @@ nix = { version = "0.30", features = ["process", "signal"] }
 # unbounded `session_read` follow, so the agent decides when to stop
 # watching rather than the server imposing a timer.
 tokio-util = "0.7"
+# Session handles. A per-table counter made handles collide across
+# sidecars (two servers both mint `…-1`), which is harmless only while
+# the namespaces never meet — a v4 UUID is unique without coordination.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

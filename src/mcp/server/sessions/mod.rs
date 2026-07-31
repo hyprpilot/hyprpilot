@@ -183,9 +183,6 @@ fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
 #[derive(Debug, Default)]
 pub(crate) struct SessionTable {
     inner: Mutex<BTreeMap<String, Session>>,
-    /// Monotonic counter feeding handle minting, so two sessions spawned
-    /// in the same nanosecond still get distinct handles.
-    seq: Mutex<u64>,
 }
 
 impl SessionTable {
@@ -193,15 +190,22 @@ impl SessionTable {
         Arc::new(Self::default())
     }
 
-    fn mint_handle(&self, profile_id: &str, provider: AgentProvider) -> String {
-        let mut seq = self.seq.lock().unwrap_or_else(|p| p.into_inner());
-        *seq += 1;
-        let slug: String = profile_id
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-
-        format!("hp-{}-{}-{}", provider.wire_id(), slug, seq)
+    /// Mint a session handle.
+    ///
+    /// A v4 UUID, not a counter: two sidecars running at once would both
+    /// mint `…-1` from their own tables, which is harmless only while
+    /// their namespaces never meet. A UUID is unique without any
+    /// coordination between them, so a handle stays unambiguous wherever
+    /// it ends up — in a log, a transcript, or a caller that talks to
+    /// two servers.
+    ///
+    /// The handle is a bare UUID — no prefix, no provider, no profile.
+    /// It is resolved by table lookup, so it only has to be unique and
+    /// known to us; encoding anything else would just create a second
+    /// copy of facts already returned as fields on every result that
+    /// mentions a session (`session_list`, `sessionInfo`, `spawn`).
+    fn mint_handle(&self) -> String {
+        uuid::Uuid::new_v4().to_string()
     }
 
     /// Number of sessions whose child is still running. This — not
@@ -306,7 +310,7 @@ impl SessionTable {
         let stderr = std::fs::File::create(dir.path().join(STDERR_FILE))
             .with_context(|| format!("mcp harness: create {STDERR_FILE}"))?;
 
-        let handle = self.mint_handle(&profile_id, provider);
+        let handle = self.mint_handle();
         let cwd = command.cwd.clone();
         let stdin_prompt = command.stdin_prompt.clone();
 
@@ -678,13 +682,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handles_are_unique_per_session() {
+    async fn handles_are_unique_within_and_across_tables() {
         let table = table();
         let a = spawn(&table, sleeper("5"));
         let b = spawn(&table, sleeper("5"));
-
         assert_ne!(a, b, "two sessions on one profile must not collide");
+
+        // The reason handles are UUIDs rather than a counter: a second
+        // sidecar has its own table, and a per-table sequence would make
+        // both mint the same first handle. Harmless only while the two
+        // namespaces never meet — which is not a property worth relying
+        // on for an identifier that travels in logs and tool results.
+        let other = SessionTable::new();
+        let c = spawn(&other, sleeper("5"));
+        assert_ne!(a, c, "handles must not collide across independent sidecars");
+        assert_ne!(b, c, "handles must not collide across independent sidecars");
+
+        for handle in [&a, &b, &c] {
+            assert!(
+                uuid::Uuid::parse_str(handle).is_ok(),
+                "a handle is a bare UUID, resolved by table lookup: {handle}"
+            );
+        }
+
         table.shutdown().await;
+        other.shutdown().await;
     }
 
     /// Pins that `pre_exec` actually fires and the child leads its own
