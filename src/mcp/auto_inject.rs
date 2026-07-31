@@ -25,10 +25,52 @@ use crate::config::McpConfig;
 use crate::mcp::{HyprpilotExtension, MCPDefinition};
 use crate::skills::SkillsRegistry;
 
-/// The single server name the sidecar registers under. Load-bearing
-/// because downstream tool-name attribution
-/// (`mcp__hyprpilot__list_skills`) keys off the same constant.
-pub const SKILLS_SERVER_NAME: &str = "hyprpilot";
+/// Build the harness catalog entry.
+///
+/// Separate from the skills entry so the two servers get independent
+/// process lifetimes and independent tool policy — auto-accepting a
+/// skill read and auto-accepting `spawn` are not the same decision.
+///
+/// Unlike skills, this is NOT gated on having content to serve: the
+/// harness always has tools. It is gated purely on the captain enabling
+/// it, which is deliberate — see [`HarnessServerConfig`].
+#[must_use]
+pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDefinition> {
+    let harness = cfg.harness.clone().unwrap_or_default();
+    if !harness.is_enabled() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut args = vec!["mcp".to_string(), "harness".to_string()];
+    if let Some(max) = harness.max_sessions {
+        args.push("--max-sessions".to_string());
+        args.push(max.to_string());
+    }
+    let raw = serde_json::json!({
+        "command": exe.display().to_string(),
+        "args": args,
+        "env": serde_json::Map::<String, serde_json::Value>::new(),
+    });
+
+    Some(MCPDefinition {
+        name: harness.server_name().to_string(),
+        raw,
+        hyprpilot: HyprpilotExtension {
+            include_tools: None,
+            exclude_tools: Vec::new(),
+            // Per-server policy wins; otherwise the `[mcp]` default.
+            auto_accept_tools: harness
+                .auto_accept_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_accept_tools().to_vec()),
+            auto_reject_tools: harness
+                .auto_reject_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_reject_tools().to_vec()),
+        },
+        source,
+    })
+}
 
 /// Build the catalog entry the launcher prepends to the vendor's MCP
 /// config.
@@ -57,11 +99,12 @@ pub fn build_auto_inject_definition(
     // Gate on dirs having at least one loaded skill — if the
     // directories are empty or all skills match the ignore globs,
     // there's nothing to serve.
-    if skills.list().is_empty() {
+    let skills_cfg = cfg.skills.clone().unwrap_or_default();
+    if !skills_cfg.is_enabled() || skills.list().is_empty() {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
-    let mut args: Vec<String> = vec!["mcp".to_string(), "serve".to_string()];
+    let mut args: Vec<String> = vec!["mcp".to_string(), "skills".to_string()];
     // Pass directories + de-duplicated ignore globs instead of
     // enumerating individual `--skill slug=path` entries. The sidecar
     // scans dirs with the same `SkillsRegistry` discovery code the
@@ -87,13 +130,19 @@ pub fn build_auto_inject_definition(
         "env": serde_json::Map::<String, serde_json::Value>::new(),
     });
     Some(MCPDefinition {
-        name: SKILLS_SERVER_NAME.to_string(),
+        name: skills_cfg.server_name().to_string(),
         raw,
         hyprpilot: HyprpilotExtension {
             include_tools: None,
             exclude_tools: Vec::new(),
-            auto_accept_tools: cfg.auto_accept_tools().to_vec(),
-            auto_reject_tools: cfg.auto_reject_tools().to_vec(),
+            auto_accept_tools: skills_cfg
+                .auto_accept_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_accept_tools().to_vec()),
+            auto_reject_tools: skills_cfg
+                .auto_reject_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_reject_tools().to_vec()),
         },
         source,
     })

@@ -95,21 +95,28 @@ pub(crate) fn build_mcp_registry_with(
     let mut defs = crate::mcp::loader::load_files(&files);
     apply_mcp_glob_defaults(&mut defs, &mcp_cfg);
 
-    // Auto-inject only when the effective [mcp] block opts in AND
-    // there's a non-empty skills registry to project. Source is a
-    // synthetic path so the UI's "which file owns this server"
-    // surfaces a recognisable label.
-    let mut auto_injected = false;
-    if let Some(skills_arc) = skills {
-        if mcp_cfg.enabled() {
-            if let Some(auto) = crate::mcp::auto_inject::build_auto_inject_definition(
+    // `[mcp].enabled` is the master gate over every in-tree server;
+    // each server then decides for itself. Source is a synthetic path
+    // so the "which file owns this server" surface stays recognisable.
+    let mut auto_injected: Vec<&str> = Vec::new();
+    if mcp_cfg.enabled() {
+        if let Some(harness) = crate::mcp::auto_inject::build_harness_definition(
+            &mcp_cfg,
+            std::path::PathBuf::from("<auto-injected:hyprpilot mcp harness>"),
+        ) {
+            prepend_auto_mcp_definition(&mut defs, harness);
+            auto_injected.push("harness");
+        }
+        // Skills last so it lands first in the list.
+        if let Some(auto) = skills.and_then(|skills_arc| {
+            crate::mcp::auto_inject::build_auto_inject_definition(
                 skills_arc,
                 &mcp_cfg,
-                std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
-            ) {
-                prepend_auto_mcp_definition(&mut defs, auto);
-                auto_injected = true;
-            }
+                std::path::PathBuf::from("<auto-injected:hyprpilot mcp skills>"),
+            )
+        }) {
+            prepend_auto_mcp_definition(&mut defs, auto);
+            auto_injected.push("skills");
         }
     }
 
@@ -122,7 +129,7 @@ pub(crate) fn build_mcp_registry_with(
     // projects it onto the vendor CLI as-is.
     tracing::info!(
         servers = ?defs.iter().map(|def| def.name.as_str()).collect::<Vec<_>>(),
-        auto_injected,
+        ?auto_injected,
         "resolve: mcp registry built"
     );
     for def in &defs {
@@ -336,9 +343,9 @@ mod tests {
     fn cfg_with_globs(accept: &[&str], reject: &[&str]) -> McpConfig {
         McpConfig {
             enabled: Some(true),
-            skills: None,
             auto_accept_tools: Some(accept.iter().map(|s| s.to_string()).collect()),
             auto_reject_tools: Some(reject.iter().map(|s| s.to_string()).collect()),
+            ..McpConfig::default()
         }
     }
 

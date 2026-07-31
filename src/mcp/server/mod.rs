@@ -13,6 +13,7 @@
 use clap::{Args, Subcommand};
 
 pub mod harness;
+pub mod harness_server;
 pub mod serve;
 pub mod sessions;
 pub mod skills;
@@ -24,15 +25,27 @@ pub struct McpArgs {
     pub command: McpSubcommand,
 }
 
-/// Closed set of `hyprpilot mcp …` subcommands. Today: `serve` runs
-/// the in-tree MCP server over stdio.
+/// Closed set of `hyprpilot mcp …` subcommands — one per MCP **server**
+/// hyprpilot can run over stdio.
+///
+/// One subcommand per server rather than one server behind a flag, so
+/// the two surfaces stay independent: each gets its own process (a panic
+/// under the release profile's `panic = "abort"` takes down only its
+/// own), its own MCP catalog entry, and therefore its own tool-approval
+/// policy — auto-accepting a skill read is a very different decision
+/// from auto-accepting `spawn`.
 #[derive(Debug, Subcommand)]
 pub enum McpSubcommand {
-    /// Run the hyprpilot in-tree MCP server over stdio. The agent
-    /// vendor spawns this when the launcher auto-injects the
-    /// `hyprpilot` entry into its MCP catalog. Args (resolved skill
-    /// roots, …) are passed by the launcher at spawn time.
-    Serve(serve::ServeArgs),
+    /// Serve the skills catalog. Spawned by the agent vendor when the
+    /// launcher auto-injects the skills entry; resolved skill roots are
+    /// passed as `--skill-dir` args at spawn time.
+    Skills(serve::ServeArgs),
+
+    /// Serve the agent harness — `list_profiles` / `spawn` /
+    /// `session_send` / `session_list` / `session_read` / `session_kill`.
+    ///
+    /// Needs no skill roots: the harness tools do not read the catalog.
+    Harness(harness_server::HarnessArgs),
 }
 
 /// Where the harness tools should load their config from.
@@ -67,7 +80,8 @@ impl McpArgs {
     /// the foreground; exits when the vendor closes the pipe.
     pub async fn run(self, config: ConfigSource) -> anyhow::Result<()> {
         match self.command {
-            McpSubcommand::Serve(args) => serve::run(args, config).await,
+            McpSubcommand::Skills(args) => serve::run_skills(args, config).await,
+            McpSubcommand::Harness(args) => harness_server::run_harness(args, config).await,
         }
     }
 }

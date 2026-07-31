@@ -490,7 +490,7 @@ command = "claude-beta"
 args = ["--fallback-model", "x"]
 
 [profiles.mcp]
-skills = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
+skills.roots = [{ dir = "~/.claude/skills/rust" }, { dir = "~/.claude/skills/vue" }]
 
 [profiles.env]
 FOO = "bar"
@@ -515,7 +515,11 @@ BAZ = "qux"
         assert!(!prompts[1].inject, "explicit inject=false honoured");
         assert_eq!(full.mcps, None, "absent mcps parses as None");
         let mcp_block = full.mcp.as_ref().expect("[profiles.mcp] block parsed");
-        let skills = mcp_block.skills.as_deref().expect("[profiles.mcp].skills set");
+        let skills = mcp_block
+            .skills
+            .as_ref()
+            .and_then(|s| s.roots.as_deref())
+            .expect("[profiles.mcp.skills].roots set");
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0].dir, PathBuf::from("~/.claude/skills/rust"));
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/vue"));
@@ -669,7 +673,7 @@ id = "team"
 agent = "claude-code"
 
 [profiles.mcp]
-skills = [
+skills.roots = [
   { dir = "~/.claude/skills/rust" },
   { dir = "~/.claude/skills/all", ignore = ["work-*"] },
 ]
@@ -678,7 +682,7 @@ skills = [
         let cfg = load(Some(&p), None).expect("parses");
         let team = cfg.profiles.iter().find(|p| p.id == "team").expect("team entry");
         let mcp_block = team.mcp.as_ref().expect("[profiles.mcp] parsed");
-        let skills = mcp_block.skills.as_deref().expect("set");
+        let skills = mcp_block.skills.as_ref().and_then(|s| s.roots.as_deref()).expect("set");
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0].dir, PathBuf::from("~/.claude/skills/rust"));
         assert_eq!(skills[1].dir, PathBuf::from("~/.claude/skills/all"));
@@ -697,7 +701,7 @@ id = "busted"
 agent = "claude-code"
 
 [profiles.mcp]
-skills = [{ dir = "~/x", ignore = ["[unterminated"] }]
+skills.roots = [{ dir = "~/x", ignore = ["[unterminated"] }]
 "#,
         );
         let cfg = load(Some(&p), None).expect("parses");
@@ -716,13 +720,16 @@ id = "deny"
 agent = "claude-code"
 
 [profiles.mcp]
-skills = []
+skills.roots = []
 "#,
         );
         let cfg = load(Some(&p), None).expect("load");
         let deny = cfg.profiles.iter().find(|p| p.id == "deny").expect("deny entry");
         let mcp_block = deny.mcp.as_ref().expect("[profiles.mcp] block present");
-        assert_eq!(mcp_block.skills, Some(vec![]));
+        assert_eq!(
+            mcp_block.skills.as_ref().and_then(|s| s.roots.as_deref()),
+            Some(&[][..])
+        );
         cfg.validate().expect("empty list validates");
         fs::remove_file(&p).ok();
     }
