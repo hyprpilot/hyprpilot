@@ -1,7 +1,10 @@
 mod launch;
 mod multiplexer;
 mod picker;
-mod providers;
+// `pub(crate)` because the MCP harness builds its own child from a
+// `SpawnCommand` rather than going through `exec` — and a `pub(crate)`
+// item inside a PRIVATE module is not nameable from `src/mcp/`.
+pub(crate) mod providers;
 
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -34,7 +37,49 @@ pub(crate) struct SpawnRequest {
     pub stdin_consumed: bool,
 }
 
-pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
+/// Which front end is driving a launch. Closed set — the two differ in
+/// ways that are not expressible as a flag: the CLI owns a real
+/// stdin/TTY, may open the interactive picker, and owns the multiplexer
+/// pane; the harness has none of those and its fd0 is the MCP transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchOrigin {
+    /// `hyprpilot <profile>` — real stdin, picker allowed, renames the
+    /// current tmux window before handing off.
+    Cli,
+    /// An MCP `spawn` / `resume` tool call inside `hyprpilot mcp serve`.
+    ///
+    /// **Never reads real stdin.** The sidecar's fd0 IS the MCP
+    /// JSON-RPC request stream, so buffering it would drain the
+    /// transport and hang the protocol. Also never opens the picker
+    /// (no TTY) and never renames the multiplexer window (the pane
+    /// belongs to the human, not to the sidecar).
+    Harness,
+}
+
+/// Everything a launch needs to run, resolved but NOT executed.
+#[derive(Debug)]
+pub(crate) struct Prepared {
+    pub command: providers::SpawnCommand,
+    pub profile_id: String,
+    pub provider: crate::config::AgentProvider,
+    /// What the profile resolved to. Carried alongside the command so
+    /// the MCP harness can report a session's provenance without
+    /// re-resolving the config (which may since have changed on disk).
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub mode: Option<String>,
+}
+
+/// Resolve a profile + overrides into a ready-to-run command without
+/// executing it. The single path both front ends share, so prompt-source
+/// priority, the `-- <args>` escape hatch, and cwd precedence cannot
+/// fork between the CLI and the MCP harness.
+pub(crate) fn prepare(
+    cfg: &Config,
+    request: SpawnRequest,
+    origin: LaunchOrigin,
+    harness: Option<&providers::HarnessProjection>,
+) -> Result<Prepared> {
     let SpawnRequest {
         profile_id,
         prompt,
@@ -45,16 +90,32 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         stdin_consumed,
     } = request;
 
-    let stdin_is_tty = std::io::stdin().is_terminal();
+    // A harness launch has no real stdin to inspect: claiming "TTY" is
+    // what stops `headless_prompt` from ever reaching its
+    // buffer-all-of-fd0 branch.
+    let stdin_is_tty = match origin {
+        LaunchOrigin::Cli => std::io::stdin().is_terminal(),
+        LaunchOrigin::Harness => true,
+    };
     // `--prompt` / `--file` force headless, so a bare launch resolves the
     // default profile directly rather than opening the picker.
     let prompt_given = prompt.is_some();
 
     let profile_id = match profile_id {
         Some(id) => id,
-        None => select_profile_without_positional(&cfg, stdin_is_tty, prompt_given, cwd.as_deref(), &config_patches)?,
+        None => match origin {
+            LaunchOrigin::Cli => {
+                select_profile_without_positional(cfg, stdin_is_tty, prompt_given, cwd.as_deref(), &config_patches)?
+            }
+            // No picker without a TTY — resolve the default or fail
+            // loudly rather than blocking on an interactive prompt that
+            // can never be answered.
+            LaunchOrigin::Harness => cfg.profile.default.clone().ok_or_else(|| {
+                anyhow::anyhow!("no profile given and `[profile] default` is unset; pass an explicit profile id")
+            })?,
+        },
     };
-    let (mut resolved, profile) = resolve_into_instance_and_profile(&cfg, Some(profile_id.as_str()), &config_patches)?;
+    let (mut resolved, profile) = resolve_into_instance_and_profile(cfg, Some(profile_id.as_str()), &config_patches)?;
 
     resolved.agent.cwd = resolve_launch_cwd(cwd, resolved.agent.cwd.take());
     if mode.is_some() {
@@ -90,22 +151,52 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
         stdin_is_tty,
         !provider_args.is_empty(),
         stdin_consumed,
-        read_stdin_prompt,
+        // A harness launch has no stdin to fall back on — bail loudly
+        // rather than let anything reach the real fd0, which carries the
+        // MCP request stream.
+        || match origin {
+            LaunchOrigin::Cli => read_stdin_prompt(),
+            LaunchOrigin::Harness => bail!("an MCP-initiated launch has no stdin; pass `prompt` or `file`"),
+        },
     )?;
     if let Some(prompt) = prompt.as_deref() {
         tracing::info!(bytes = prompt.len(), "cli: headless launch — prompt resolved");
+    }
+    // A `None` prompt from the harness would build an INTERACTIVE vendor
+    // command (`stdin_prompt: None`), which then hangs forever against
+    // piped stdio with no TTY. Reject it here rather than deadlock.
+    if origin == LaunchOrigin::Harness && prompt.is_none() {
+        bail!("an MCP-initiated launch requires a prompt: pass `prompt` or `file`");
     }
 
     let skills = build_skills_registry_with(&profile);
     let mcp_defs = build_mcp_registry_with(&profile, Some(&skills));
 
+    let provider = resolved.agent.provider;
+    let model = resolved.model.clone();
+    let effort = resolved.effort.clone();
+    let mode = resolved.mode.clone();
     let command = providers::build_command(
         &resolved,
         system_prompt.as_deref(),
         &mcp_defs,
         provider_args,
         prompt.as_deref(),
+        harness,
     )?;
+
+    Ok(Prepared {
+        command,
+        profile_id,
+        provider,
+        model,
+        effort,
+        mode,
+    })
+}
+
+pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitCode> {
+    let Prepared { command, .. } = prepare(&cfg, request, LaunchOrigin::Cli, None)?;
 
     if cfg
         .multiplexer
@@ -291,10 +382,29 @@ pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[
                     (profile.clone(), Some(error))
                 }
             };
+            // Resolve the agent entry so the row can report the VENDOR,
+            // not just the agent id. A broken `agent` reference is
+            // already flagged via `error`, so fall back rather than
+            // failing the whole listing.
+            let provider = cfg
+                .agents
+                .agents
+                .iter()
+                .find(|agent| agent.id == resolved.agent)
+                .map_or("unknown", |agent| agent.provider.wire_id());
+            let skills = build_skills_registry_with(&resolved);
+            let mcp_count = build_mcp_registry_with(&resolved, Some(&skills)).len();
+
             ProfileSummary {
                 id: resolved.id.clone(),
                 agent: resolved.agent.clone(),
+                provider,
                 model: resolved.model.clone(),
+                effort: resolved.effort.clone(),
+                mode: resolved.mode.clone(),
+                headless: resolved.headless.unwrap_or(false),
+                mcp_count,
+                skills_count: skills.list().len(),
                 cwd: cwd
                     .map(|cwd| cwd.display().to_string())
                     .or_else(|| resolved.cwd.as_ref().map(|cwd| cwd.display().to_string())),

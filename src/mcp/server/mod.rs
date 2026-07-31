@@ -12,7 +12,9 @@
 
 use clap::{Args, Subcommand};
 
+pub mod harness;
 pub mod serve;
+pub mod sessions;
 pub mod skills;
 
 /// Top-level args for `hyprpilot mcp <subcommand>`.
@@ -33,12 +35,39 @@ pub enum McpSubcommand {
     Serve(serve::ServeArgs),
 }
 
+/// Where the harness tools should load their config from.
+///
+/// `--config` / `--config-profile` are `global = true`, so
+/// `hyprpilot mcp serve --config /x` parses — but the dispatch used to
+/// drop them, silently resolving the default XDG config instead. The
+/// config is NOT loaded here: the `mcp` branch deliberately skips
+/// `cfg.validate()` so an invalid `[[profiles]]` list cannot kill the
+/// skills sidecar the vendor respawns over stdio. Harness tools load it
+/// lazily and surface a failure as a tool error instead.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigSource {
+    pub path: Option<std::path::PathBuf>,
+    pub profile: Option<String>,
+}
+
+impl ConfigSource {
+    /// Load + validate on demand. Called per harness tool call, so a
+    /// config the captain fixes mid-session is picked up without
+    /// restarting the sidecar.
+    pub fn load(&self) -> anyhow::Result<crate::config::Config> {
+        let cfg = crate::config::load(self.path.as_deref(), self.profile.as_deref())?;
+        cfg.validate()?;
+
+        Ok(cfg)
+    }
+}
+
 impl McpArgs {
     /// Dispatch the requested subcommand. Runs the stdio MCP server in
     /// the foreground; exits when the vendor closes the pipe.
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, config: ConfigSource) -> anyhow::Result<()> {
         match self.command {
-            McpSubcommand::Serve(args) => serve::run(args).await,
+            McpSubcommand::Serve(args) => serve::run(args, config).await,
         }
     }
 }

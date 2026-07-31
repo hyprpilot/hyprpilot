@@ -1,7 +1,6 @@
 ---
 title: Skills & the hyprpilot MCP Server
 order: 50
-next: false
 ---
 
 # {{ $frontmatter.title }}
@@ -60,6 +59,8 @@ And as tools:
 
 Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session. Because each skill is exposed as a resource, `reload` also emits a **resource list-changed notification** so a connected client re-fetches the skill list instead of trusting a stale one. (The tool list is static, so no tool-list-changed fires.)
 
+This is the surface every launch gets. `hyprpilot mcp serve --with-harness` adds six more tools — `list_profiles`, `spawn`, `session_send`, `session_list`, `session_read`, `session_kill` — that let a connected agent launch and drive other hyprpilot sessions. It's off by default and documented separately: see [Agent Harness](./harness).
+
 Every tool result carries **both** a human-readable text block and the structured JSON payload. Clients that render only structured content (Claude Code) read the JSON; clients that render only text (opencode) get a legible summary — e.g. `list_skills` returns a one-line-per-skill catalogue as text alongside the full structured list, and `read_skill` returns the skill body as text alongside the structured `{ uri, body, metadata }`. A structured-only result would otherwise render as "Unknown" in text-only clients.
 
 ## Frontmatter passthrough
@@ -105,9 +106,10 @@ The subcommand that runs the server over stdio. **You don't run this by hand** �
 hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
 ```
 
-| Flag                 | Purpose                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| `--skill-dir <json>` | JSON-encoded skill root entry. Repeatable — roots are searched in declaration order. |
+| Flag                 | Purpose                                                                                   |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| `--skill-dir <json>` | JSON-encoded skill root entry. Repeatable — roots are searched in declaration order.      |
+| `--with-harness`     | Expose the [agent harness](./harness) tools alongside the skills surface. Off by default. |
 
 Each `--skill-dir` value is one self-contained JSON object:
 

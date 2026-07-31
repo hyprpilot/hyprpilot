@@ -18,13 +18,36 @@ use crate::profile::ResolvedProfile;
 
 /// Summary row for one resolved profile — backs the `profiles`
 /// subcommand's table / JSON output and the interactive picker.
-#[derive(Debug, Clone, Serialize)]
+/// `Default` exists for test fixtures: this struct is a display
+/// projection that grows fields as the listing surfaces more, and
+/// `..Default::default()` keeps each fixture asserting the one field it
+/// cares about instead of restating every sibling.
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSummary {
     pub id: String,
     pub agent: String,
+    /// The agent's vendor wire id (`claude-code` / `codex` /
+    /// `opencode`). Distinct from `agent`, which is the `[[agents]]`
+    /// entry id — an agent named `fast` says nothing about which CLI
+    /// it drives, and the MCP harness needs the vendor to know how to
+    /// read the session back.
+    pub provider: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Profile forces a non-interactive launch. Surfaced because such a
+    /// profile cannot be driven interactively, so a caller picking one
+    /// must supply a prompt.
+    pub headless: bool,
+    /// How many MCP servers and skills this profile resolves to — a
+    /// cheap "how equipped is this agent" signal for a caller choosing
+    /// between profiles.
+    pub mcp_count: usize,
+    pub skills_count: usize,
     /// Profile-scoped cwd hint — the resolved launch cwd for this
     /// profile. Optional because not every profile sets one; the
     /// interactive picker surfaces it so the captain sees the launch

@@ -143,6 +143,7 @@ mod tests {
                 cwd: Some("~/code/hyprpilot".into()),
                 is_default: true,
                 error: None,
+                ..Default::default()
             },
             ProfileSummary {
                 id: "review".into(),
@@ -151,6 +152,7 @@ mod tests {
                 cwd: None,
                 is_default: false,
                 error: None,
+                ..Default::default()
             },
         ]));
 
@@ -168,6 +170,7 @@ mod tests {
             cwd: None,
             is_default: true,
             error: Some("invalid shape after patches".into()),
+            ..Default::default()
         }]));
 
         // `!` marker wins over the `*` default marker, and the stale
@@ -189,6 +192,7 @@ mod tests {
             cwd: None,
             is_default: false,
             error: Some("boom".into()),
+            ..Default::default()
         }]);
         let json = serde_json::to_string(&ProfilesOutput { profiles }).unwrap();
 
@@ -204,6 +208,7 @@ mod tests {
             cwd: Some("/tmp/launch".into()),
             is_default: true,
             error: None,
+            ..Default::default()
         }]));
 
         assert!(!out.lines().next().unwrap().contains("cwd"));
@@ -219,6 +224,7 @@ mod tests {
             cwd: Some("/tmp/launch".into()),
             is_default: true,
             error: None,
+            ..Default::default()
         }]);
         let json = serde_json::to_string(&ProfilesOutput { profiles }).unwrap();
 

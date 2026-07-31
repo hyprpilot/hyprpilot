@@ -106,8 +106,17 @@ fn main() -> Result<ExitCode> {
             // `validate()` is skipped deliberately: an invalid launch
             // config (e.g. an empty `[[profiles]]` list) must NOT kill
             // the skills sidecar the vendor respawns over stdio.
+            // The harness tools DO need a validated config, so the
+            // config source rides through — they load it lazily and
+            // report a failure as a tool error, preserving the
+            // "invalid config must not kill the skills sidecar"
+            // invariant above.
+            let source = mcp::server::ConfigSource {
+                path: cli.config.clone(),
+                profile: cli.config_profile.clone(),
+            };
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(args.run())?;
+            runtime.block_on(args.run(source))?;
             Ok(ExitCode::SUCCESS)
         }
     }

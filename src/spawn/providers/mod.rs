@@ -38,12 +38,33 @@ mod temp;
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
 
+/// Harness-only projection knobs. `None` for CLI launches, which keep
+/// the vendor's human-readable output — a captain running
+/// `hyprpilot x -p "…"` wants prose, not an NDJSON event stream.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HarnessProjection {
+    /// Emit the vendor's structured JSON event stream. Load-bearing for
+    /// the harness: turn boundaries, usage, and the vendor session id
+    /// all arrive only through it.
+    pub structured_output: bool,
+    /// Vendor session id to continue. `None` starts a new conversation.
+    ///
+    /// All three vendors mint their own id and report it in the first
+    /// turn's event stream (`session_id` / `thread_id` / `sessionID` —
+    /// three different keys, all verified against the installed CLIs),
+    /// so the harness reads it back uniformly. claude would also accept
+    /// a caller-minted `--session-id <uuid>`, but taking that shortcut
+    /// for one vendor would mean two code paths and a UUID dependency
+    /// to save nothing.
+    pub resume: Option<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct SpawnCommand {
-    program: String,
-    pub(super) args: Vec<String>,
-    pub(super) env: BTreeMap<String, String>,
-    pub(super) cwd: Option<PathBuf>,
+    pub(crate) program: String,
+    pub(crate) args: Vec<String>,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) cwd: Option<PathBuf>,
     /// Headless prompt to write to the child's stdin. When `Some`, the
     /// launcher SPAWNS the vendor (not `exec()`) and pipes this prompt
     /// into its stdin, then waits — the delivery path claude/codex use
@@ -52,7 +73,7 @@ pub(crate) struct SpawnCommand {
     /// would swallow a trailing positional, and where a consumed pipe
     /// would leave codex reading EOF). `None` keeps the `exec()` handoff
     /// (interactive, and opencode's positional-prompt headless path).
-    pub(super) stdin_prompt: Option<String>,
+    pub(crate) stdin_prompt: Option<String>,
 }
 
 impl SpawnCommand {
@@ -72,12 +93,32 @@ pub(crate) fn build_command(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     match resolved.agent.provider {
-        AgentProvider::ClaudeCode => claude::build_claude(resolved, system_prompt, mcp_defs, provider_args, prompt),
-        AgentProvider::Codex => codex::build_codex(resolved, system_prompt, mcp_defs, provider_args, prompt),
-        AgentProvider::OpenCode => opencode::build_opencode(resolved, system_prompt, mcp_defs, provider_args, prompt),
+        AgentProvider::ClaudeCode => {
+            claude::build_claude(resolved, system_prompt, mcp_defs, provider_args, prompt, harness)
+        }
+        AgentProvider::Codex => codex::build_codex(resolved, system_prompt, mcp_defs, provider_args, prompt, harness),
+        AgentProvider::OpenCode => {
+            opencode::build_opencode(resolved, system_prompt, mcp_defs, provider_args, prompt, harness)
+        }
     }
+}
+
+/// Test shim for the CLI-shaped call — `build_command` with no harness
+/// projection. Keeps the vendor projection tests asserting what they
+/// actually care about (argv shape) instead of restating `None` for a
+/// knob none of them exercise.
+#[cfg(test)]
+pub(crate) fn build_command_cli(
+    resolved: &ResolvedProfile,
+    system_prompt: Option<&str>,
+    mcp_defs: &[MCPDefinition],
+    provider_args: Vec<String>,
+    prompt: Option<&str>,
+) -> Result<SpawnCommand> {
+    build_command(resolved, system_prompt, mcp_defs, provider_args, prompt, None)
 }
 
 pub(crate) fn exec(command: SpawnCommand) -> Result<ExitCode> {
@@ -258,7 +299,12 @@ fn arg_flag_names(args: &[String]) -> Vec<&str> {
 /// placeholder — the `debug`-level view. Flag tokens survive; value
 /// payloads never do, so bearer tokens / the system prompt stay out
 /// of `debug` logs while argv shape stays legible.
-fn redacted_argv(args: &[String]) -> Vec<String> {
+///
+/// Also the shape the MCP harness reports as session provenance: a
+/// calling agent gets to see exactly which flags a session was launched
+/// with, without the `--append-system-prompt` body or an MCP config's
+/// bearer tokens riding along in the tool result.
+pub(crate) fn redacted_argv(args: &[String]) -> Vec<String> {
     args.iter()
         .map(|arg| {
             if arg.starts_with('-') {
@@ -563,7 +609,7 @@ mod tests {
             "${HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR}".into(),
         );
 
-        let command = build_command(&resolved, None, &[], vec![], None).unwrap();
+        let command = build_command(&resolved, None, &[], vec![], None, None).unwrap();
 
         assert_eq!(
             command.env.get("OVERRIDE_OVERLAID").map(String::as_str),

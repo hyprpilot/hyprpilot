@@ -8,7 +8,7 @@ use crate::mcp::{project_transport, MCPDefinition, McpTransport};
 use crate::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_config_override, has_flag};
-use super::{base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, SpawnCommand};
+use super::{base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, HarnessProjection, SpawnCommand};
 
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
@@ -19,6 +19,7 @@ pub(super) fn build_codex(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
     // Headless: `codex exec [OPTIONS]` reading the prompt from STDIN —
@@ -33,7 +34,26 @@ pub(super) fn build_codex(
     if headless {
         command.args.insert(0, "exec".into());
     }
+    // `resume <SESSION_ID>` is a SUBCOMMAND of `exec`, not a flag, so it
+    // has to sit immediately after `exec` and before every generated
+    // option — unlike claude's `--resume`, which is order-free. Inserted
+    // in reverse so `exec resume <id>` lands in that order.
+    if let Some(id) = harness.and_then(|h| h.resume.as_deref()) {
+        if headless && !has_flag(&command.args, "resume", None) {
+            command.args.insert(1, "resume".into());
+            command.args.insert(2, id.into());
+        }
+    }
     let detect_args = combined_args(&command.args, &provider_args);
+
+    if let Some(harness) = harness {
+        // Codex names it `thread_id` on the `thread.started` event, not
+        // `session_id` — the harness parses that key back out. Verified
+        // against the installed CLI.
+        if harness.structured_output && !has_flag(&detect_args, "--json", None) {
+            command.args.push("--json".into());
+        }
+    }
 
     if let Some(cwd) = command.cwd.as_ref() {
         if !has_flag(&detect_args, "--cd", Some("-C")) {
@@ -436,7 +456,7 @@ fn toml_array(values: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::config::AgentProvider;
-    use crate::spawn::providers::build_command;
+    use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
 
     #[test]
