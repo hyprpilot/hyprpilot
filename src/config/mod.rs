@@ -403,9 +403,10 @@ mod tests {
         );
         let skills = m
             .get("skills")
+            .and_then(|s| s.get("roots"))
             .and_then(serde_json::Value::as_array)
-            .expect("default mcp.skills");
-        assert_eq!(skills.len(), 1, "default mcp.skills seeds exactly the XDG dir");
+            .expect("default mcp.skills.roots");
+        assert_eq!(skills.len(), 1, "default mcp.skills.roots seeds exactly the XDG dir");
         assert_eq!(
             skills[0].get("dir").and_then(serde_json::Value::as_str),
             Some("~/.config/hyprpilot/skills")
@@ -610,7 +611,11 @@ autoAcceptTools = ["read_*"]
         let mcp = patched.mcp.as_ref().expect("profile carries a folded mcp block");
 
         // Seed's skills dir survived the partial user patch (the footgun).
-        let skills = mcp.skills.as_deref().expect("seeded skills dir preserved");
+        let skills = mcp
+            .skills
+            .as_ref()
+            .and_then(|s| s.roots.as_deref())
+            .expect("seeded skills roots preserved");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
 

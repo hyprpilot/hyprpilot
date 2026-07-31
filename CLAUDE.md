@@ -15,18 +15,20 @@ is **no background daemon, no unix socket, no overlay window, no
 desktop UI, no in-process agent bridge**. Those were removed in the
 strip refactor (K-725→734); do not reintroduce that vocabulary.
 
-The one long-lived thing hyprpilot ships is an in-tree **MCP server**
-(`hyprpilot mcp serve`) the launcher auto-injects into the vendor's
-MCP config so the captain's *skills* catalogue reaches the agent over
-stdio. The vendor spawns and owns that sidecar's lifetime.
+The one long-lived thing hyprpilot ships is a set of in-tree **MCP
+servers** the launcher auto-injects into the vendor's MCP config —
+`mcp serve` (general tools), `mcp skills` (the captain's *skills*
+catalogue), `mcp harness` (agent sessions). One subcommand, one
+process, one catalogue entry each. The vendor spawns and owns those
+sidecars' lifetimes.
 
-**One deliberate exception to "no in-process bridge":** under the
-opt-in `--with-harness` flag that sidecar also owns agent sessions it
+**One deliberate exception to "no in-process bridge":** the opt-in
+`mcp harness` sidecar owns agent sessions it
 spawned, in an in-process table (see "The agent harness"). That is not
 the daemon the strip refactor removed — the vendor still owns the
 sidecar's lifetime, nothing survives it, and no socket or control plane
-exists. The launcher itself is unchanged: still fire-and-exec, and
-auto-inject never passes the flag.
+exists. The launcher itself is unchanged: still fire-and-exec, and the
+harness stays off unless `[mcp.harness].enabled` says otherwise.
 
 ## Toolchain (mise-pinned)
 
@@ -69,10 +71,13 @@ Key `src/` modules:
   (tmux/zellij rename).
 - `profile.rs` — `ResolvedProfile` (flat runtime view).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
-  (the in-tree `hyprpilot` server), `server/` (`mcp serve`:
-  `serve.rs` = protocol + tools, `harness.rs` = the `--with-harness`
-  agent surface, `sessions/` = the owned-session store, `skills/` =
-  metadata + references).
+  (one builder per in-tree server), `server/` = the three servers,
+  one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
+  stateless), `serve.rs` (`mcp skills` — protocol + skills tools;
+  also owns the shared schema/result helpers), `harness_server.rs`
+  (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
+  session-driving logic) and `sessions/` (the owned-session store).
+  `skills/` = metadata + references.
 - `skills/` — `SkillsRegistry` + `SKILL.md` loader.
 - `profiles.rs` — the `profiles` subcommand.
 - `logging.rs`, `paths.rs`.
@@ -111,8 +116,9 @@ hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 # Subcommands
 hyprpilot profiles              # table of configured profiles
 hyprpilot profiles --json       # machine-readable
-hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
-hyprpilot mcp serve --with-harness --skill-dir '{"dir":"…","ignore":[]}'
+hyprpilot mcp serve             # general tools (`open`)
+hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[]}'
+hyprpilot mcp harness --max-sessions 64
 ```
 
 - **Bare launch** picks the profile via the optional positional
@@ -135,8 +141,8 @@ hyprpilot mcp serve --with-harness --skill-dir '{"dir":"…","ignore":[]}'
   (`HYPRPILOT_CONFIG`), `--config-profile <name>`
   (`HYPRPILOT_CONFIG_PROFILE`), `--log-level`
   (`HYPRPILOT_LOG_LEVEL`).
-- **`mcp serve`** is spawned by the agent vendor over stdio (via the
-  auto-injected MCP entry), not run by hand.
+- **The `mcp` servers** are spawned by the agent vendor over stdio
+  (via the auto-injected MCP entries), not run by hand.
 
 ## Config layering
 
@@ -283,9 +289,9 @@ express replacement/deletion with `$patch: replace` (or
 clobbering the layer list. This closes the footgun where a partial
 `[patches.mcp]` in a user layer silently dropped the seeded skills dir.
 
-`defaults.toml` seeds one unscoped patch pointing the in-tree
-`hyprpilot` MCP server at the XDG skills dir. The seed carries **only**
-`mcp.skills` (the load-bearing value that must survive layer merge);
+`defaults.toml` seeds one unscoped patch pointing the skills server at
+the XDG skills dir. The seed carries **only** `mcp.skills.roots` (the
+load-bearing value that must survive layer merge);
 `enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
 are the typed `McpConfig::default()` the resolver backfills per-leaf in
 `resolve::effective_mcp_with`, so those values are single-sourced in
@@ -342,38 +348,63 @@ an optional `hyprpilot` namespace key:
   `OPENCODE_CONFIG_CONTENT` + `OPENCODE_PERMISSION` env. Transport is
   inferred by field presence (`command` → stdio, `url` → http/sse).
   Provider args the captain passed suppress the generated equivalents.
-  Reserved name `hyprpilot` — see auto-inject below.
+  Reserved names: each in-tree server's resolved name — see
+  auto-inject below.
 
-## Skills + the in-tree MCP server (the skills channel)
+## The three in-tree MCP servers
 
-Skills reach the agent **only** through the hyprpilot MCP server.
+One subcommand, one process, one `ServerHandler`, one catalogue entry
+each. The split is the GATE: the skills server cannot serve `spawn`
+because it does not implement it. An earlier design hung the harness
+off the skills server behind `--with-harness`, which meant gating both
+`list_tools` and `call_tool` by name — and a reviewer caught one half
+missing. Do not re-merge them.
 
-- **`[mcp]` block** (`McpConfig`): `enabled` (default `true`),
-  `skills` (`Vec<SkillEntry { dir, ignore }>`), `autoAcceptTools`
-  (`["*"]`), `autoRejectTools` (`[]`). Per-profile `[profiles.mcp]`
-  wholesale-replaces the global; folded via patches. `[mcp].skills`
-  default seed is `~/.config/hyprpilot/skills`.
+| Subcommand | Default name | Module | Serves | Default |
+| ---------- | ------------ | ------ | ------ | ------- |
+| `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
+| `mcp skills` | `hyprpilot-skills` | `server/serve.rs` | skills tools + resources | on |
+| `mcp harness` | `hyprpilot-harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
+
+`serve.rs` also owns the helpers the other two import
+(`object_schema`, `structured_with_text`, `tool_error`,
+`require_string`, `wait_for_shutdown`).
+
+Skills reach the agent **only** through the skills server.
+
+- **`[mcp]` block** (`McpConfig`): `enabled` (default `true` — the
+  MASTER gate over all three servers), `serve` / `skills` / `harness`
+  (per-server blocks), `autoAcceptTools` (`["*"]`), `autoRejectTools`
+  (`[]`). Per-profile `[profiles.mcp]` wholesale-replaces the global;
+  folded via patches.
+- **Per-server blocks** each carry `enabled`, `name`,
+  `autoAcceptTools`, `autoRejectTools`, plus their own fields:
+  `[mcp.skills].roots` (`Vec<SkillEntry { dir, ignore }>`, default
+  seed `~/.config/hyprpilot/skills`) and `[mcp.harness].maxSessions`.
+  A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
+  rather than merging. `[mcp.harness].enabled` defaults to **false**
+  and that is a security property, not a preference — a profile's
+  `command` is an arbitrary binary, so `spawn` executes as the user.
 - Each skill root is a flat directory of `<slug>/SKILL.md` bundles
   plus an optional per-root `ignore` glob list. `SkillsRegistry`
   scans + first-slug-wins on collision; missing roots warn + skip.
 - **Auto-inject** (`resolve::build_mcp_registry_with` +
-  `mcp::auto_inject`): when `[mcp].enabled` **and** the resolved
-  skills registry is non-empty, the launcher prepends a stdio MCP
-  entry named **`hyprpilot`** that spawns
-  `hyprpilot mcp serve --skill-dir <json> …` (one `--skill-dir` per
-  root, each carrying that root's ignore list as JSON). The reserved
-  `hyprpilot` name replaces any same-named configured server.
-  Auto-inject is independent of `mcps` — `mcps = []` does not suppress
-  it; `[mcp].enabled = false` does. Auto-inject **never** passes
-  `--with-harness`, so a launcher-injected sidecar is skills-only.
-- **`hyprpilot mcp serve`** (`mcp/server/serve.rs`): an `rmcp` stdio
+  `mcp::auto_inject`, one `build_*_definition` per server): under the
+  `[mcp].enabled` master gate, each server injects a stdio entry when
+  its own block is enabled. The reserved name replaces any same-named
+  configured server. Auto-inject is independent of `mcps` — `mcps = []`
+  does not suppress it. **Skills is the only one also gated on
+  content**: an empty registry means nothing to serve, so nothing is
+  injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
+  (one `--skill-dir` per root, each carrying that root's ignore list as
+  JSON).
+- **`hyprpilot mcp skills`** (`mcp/server/serve.rs`): an `rmcp` stdio
   server. Resources: `hyprpilot://skills/<slug>` (body) and
   `hyprpilot://references/<slug>` (bundled frontmatter references — a
   parallel top-level scheme, NOT a `/references` segment nested under
   the slug; the nested form broke client URI autocomplete). Tools:
   `list_skills`, `read_skill`, `load_skill_references`, `reload`
-  (rescan dirs), `open` (OS-default handler via the `open` crate).
-  Skills are discovered by directory scan — the same
+  (rescan dirs). Skills are discovered by directory scan — the same
   `SkillsRegistry` discovery the launcher uses — so editing a skill
   and calling `reload` refreshes without restarting the session.
   **Every tool result carries BOTH a `content` text block AND
@@ -385,19 +416,22 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   still get the JSON. A structured-only result renders as "Unknown" in
   opencode — never return one.
 
-## The agent harness (`--with-harness`)
+## The agent harness (`mcp harness`)
 
-`hyprpilot mcp serve --with-harness` adds six tools on top of the
-skills surface, letting a connected agent drive hyprpilot profiles:
-`list_profiles` (discovery), `spawn`, `session_send`, `session_list`,
-`session_read`, `session_kill`. Off by default.
+`hyprpilot mcp harness` serves six tools that let a connected agent
+drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
+`session_send`, `session_list`, `session_read`, `session_kill`.
+`[mcp.harness].enabled` defaults to false.
 
 - **The gate is a security boundary, not just recursion control.** A
   profile's `command` is an arbitrary binary, so anything that can call
-  `spawn` executes commands as this user. It gates **`call_tool` as
-  well as `list_tools`** — dispatch is by name, so gating only the
-  listing would leave every tool reachable. `HYPRPILOT_SPAWN_DEPTH`
-  bounds nesting; a session-count ceiling bounds breadth.
+  `spawn` executes commands as this user. The gate is **structural** —
+  disabled means no `mcp harness` process exists, and no other server
+  implements these tools. (It used to be a name check inside a shared
+  server, which had to cover `call_tool` as well as `list_tools`
+  because dispatch is by name; that is exactly the failure mode the
+  split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds nesting; a
+  session-count ceiling bounds breadth.
 - **The sidecar OWNS every session** (`mcp/server/sessions/`). Sessions
   are direct children waited on via `tokio::process::Child`, so exit
   codes are recoverable, no zombie defeats a liveness check, and no PID
@@ -668,8 +702,11 @@ its PR** — concrete commands + literal observed output.
 Baseline smokes:
 
 - `task build` produces `target/debug/hyprpilot`.
-- `hyprpilot --help`, `hyprpilot profiles --help`,
-  `hyprpilot mcp serve --help` render via clap.
+- `hyprpilot --help`, `hyprpilot profiles --help`, and
+  `hyprpilot mcp {serve,skills,harness} --help` render via clap.
+- Each `mcp` subcommand answers `initialize` + `tools/list` over stdio
+  and reports the right `serverInfo.name` (`hyprpilot` /
+  `hyprpilot-skills` / `hyprpilot-harness`) and tool set.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde

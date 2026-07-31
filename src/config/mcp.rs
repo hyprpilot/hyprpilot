@@ -25,6 +25,133 @@ use super::extensions::validate_globs;
 use super::merge_strategies::overwrite_some;
 use super::SkillEntry;
 
+/// Default MCP server name for the skills surface.
+///
+/// **Renaming changes tool attribution** — `mcp__hyprpilot-skills__read_skill`
+/// becomes `mcp__<name>__read_skill` — so any skill or instruction file
+/// that names a tool by its prefix breaks with it. The `hyprpilot://`
+/// resource URIs are a fixed scheme and are NOT affected.
+pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot-skills";
+
+/// Default MCP server name for the harness surface.
+pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot-harness";
+
+/// Default MCP server name for the general-tools surface. Keeps the
+/// bare `hyprpilot` name: this is the server that grows whatever
+/// doesn't belong to a dedicated surface, so it is the one a captain
+/// reaches for by the product's own name.
+pub const DEFAULT_TOOLS_SERVER_NAME: &str = "hyprpilot";
+
+/// `[mcp.serve]` — the auto-injected general-tools server.
+///
+/// Home for tools that are neither a skills read nor an agent launch:
+/// `open` today, whatever earns a place later. Kept off the skills
+/// server so a captain can run one without the other, and so the
+/// skills server's tool policy stays a statement about *skills*.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[merge(strategy = overwrite_some)]
+pub struct ToolsServerConfig {
+    /// Defaults to `true` — these tools are side-effect-light and were
+    /// previously always present on the skills server.
+    #[garde(skip)]
+    pub enabled: Option<bool>,
+
+    /// Server name in the vendor's MCP catalog. Reserved: a
+    /// user-declared server of the same name is replaced by this one.
+    #[garde(skip)]
+    pub name: Option<String>,
+
+    /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
+    #[garde(custom(validate_globs))]
+    pub auto_accept_tools: Option<Vec<String>>,
+    #[garde(custom(validate_globs))]
+    pub auto_reject_tools: Option<Vec<String>>,
+}
+
+impl ToolsServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn server_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_TOOLS_SERVER_NAME)
+    }
+}
+
+/// `[mcp.skills]` — the auto-injected skills server.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[merge(strategy = overwrite_some)]
+pub struct SkillsServerConfig {
+    /// Defaults to `true` — the historical behaviour, where configuring
+    /// any skill root was enough to get the server.
+    #[garde(skip)]
+    pub enabled: Option<bool>,
+
+    /// Server name in the vendor's MCP catalog. Reserved: a
+    /// user-declared server of the same name is replaced by this one.
+    #[garde(skip)]
+    pub name: Option<String>,
+
+    /// Skill catalog roots. Each is a directory of `<slug>/SKILL.md`
+    /// bundles plus an optional per-root glob `ignore` list applied only
+    /// to that root's discoveries.
+    #[garde(dive)]
+    pub roots: Option<Vec<SkillEntry>>,
+
+    /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
+    #[garde(custom(validate_globs))]
+    pub auto_accept_tools: Option<Vec<String>>,
+    #[garde(custom(validate_globs))]
+    pub auto_reject_tools: Option<Vec<String>>,
+}
+
+/// `[mcp.harness]` — the auto-injected agent-harness server.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[merge(strategy = overwrite_some)]
+pub struct HarnessServerConfig {
+    /// Defaults to `false`. See [`McpConfig::harness`] for why.
+    #[garde(skip)]
+    pub enabled: Option<bool>,
+
+    #[garde(skip)]
+    pub name: Option<String>,
+
+    /// Sessions retained before the oldest finished ones are evicted.
+    #[garde(skip)]
+    pub max_sessions: Option<usize>,
+
+    /// Per-server tool policy. Falls back to the `[mcp]`-level globs —
+    /// worth tightening here, since `spawn` is the tool that runs
+    /// arbitrary binaries.
+    #[garde(custom(validate_globs))]
+    pub auto_accept_tools: Option<Vec<String>>,
+    #[garde(custom(validate_globs))]
+    pub auto_reject_tools: Option<Vec<String>>,
+}
+
+impl SkillsServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn server_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_SKILLS_SERVER_NAME)
+    }
+}
+
+impl HarnessServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    pub fn server_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_HARNESS_SERVER_NAME)
+    }
+}
+
 /// `[mcp]` block. Controls auto-injection of the in-tree
 /// `hyprpilot mcp serve` MCP server entry into the vendor's MCP
 /// catalog, owns the **skills catalog** that server exposes, and
@@ -59,15 +186,24 @@ pub struct McpConfig {
     #[garde(skip)]
     pub enabled: Option<bool>,
 
-    /// Skill catalog roots. Each entry is a directory of
-    /// `<slug>/SKILL.md` bundles plus an optional per-entry glob
-    /// `ignore` array filtering slugs at load time. Mirrors the old
-    /// top-level `[[skills]]` shape verbatim — only the location
-    /// moved. The default `~/.config/hyprpilot/skills` root is seeded
-    /// by the default `[[patches]]` entry (a config layer, so it
-    /// survives additive layer merge), NOT by `McpConfig::default()`.
+    /// The general-tools server — `hyprpilot mcp serve`, exposing
+    /// `open`. On by default.
     #[garde(dive)]
-    pub skills: Option<Vec<SkillEntry>>,
+    pub serve: Option<ToolsServerConfig>,
+
+    /// The skills server — `hyprpilot mcp skills`, exposing the skill
+    /// catalog. On by default.
+    #[garde(dive)]
+    pub skills: Option<SkillsServerConfig>,
+
+    /// The agent harness — `hyprpilot mcp harness`, exposing
+    /// `list_profiles` / `spawn` / `session_*`.
+    ///
+    /// **Off by default, and that is a security property, not a
+    /// preference.** A profile's `command` is an arbitrary binary, so
+    /// anything that can call `spawn` executes commands as this user.
+    #[garde(dive)]
+    pub harness: Option<HarnessServerConfig>,
 
     /// Default glob patterns matching MCP tool leaf names for
     /// auto-accept. Default `["*"]` (`McpConfig::default()`) → every
@@ -106,7 +242,9 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: Some(true),
+            serve: None,
             skills: None,
+            harness: None,
             auto_accept_tools: Some(vec!["*".to_string()]),
             auto_reject_tools: Some(Vec::new()),
         }
@@ -149,7 +287,8 @@ impl McpConfig {
     #[must_use]
     pub fn resolved_skills(&self) -> Vec<super::ResolvedSkillEntry> {
         self.skills
-            .as_deref()
+            .as_ref()
+            .and_then(|skills| skills.roots.as_deref())
             .unwrap_or(&[])
             .iter()
             .map(|e| super::ResolvedSkillEntry {
@@ -199,19 +338,23 @@ mod tests {
             .expect("default patch carries an mcp field");
         let seed_mcp: McpConfig =
             serde_json::from_value(mcp_value.clone()).expect("patch's mcp deserializes as McpConfig");
-        let skills = seed_mcp.skills.as_deref().expect("seed patch carries the skills dir");
+        let skills = seed_mcp
+            .skills
+            .as_ref()
+            .and_then(|s| s.roots.as_deref())
+            .expect("seed patch carries the skills roots");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].dir, std::path::PathBuf::from("~/.config/hyprpilot/skills"));
-        assert_eq!(McpConfig::default().skills, None);
+        assert!(McpConfig::default().skills.is_none());
     }
 
     #[test]
     fn valid_tool_policy_globs_validate() {
         let cfg = McpConfig {
             enabled: Some(true),
-            skills: None,
             auto_accept_tools: Some(vec!["read_*".into(), "list_*".into()]),
             auto_reject_tools: Some(vec!["delete_*".into()]),
+            ..McpConfig::default()
         };
         cfg.validate().expect("well-formed tool-policy globs must validate");
     }
@@ -224,9 +367,9 @@ mod tests {
         // `mcps`/`skills` ignore globs.
         let cfg = McpConfig {
             enabled: Some(true),
-            skills: None,
             auto_accept_tools: Some(vec!["[unterminated".into()]),
             auto_reject_tools: None,
+            ..McpConfig::default()
         };
         let err = cfg.validate().expect_err("malformed accept glob must reject");
         assert!(err.to_string().contains("not a valid glob"), "got: {err}");
@@ -236,9 +379,9 @@ mod tests {
     fn malformed_auto_reject_glob_rejects_at_load() {
         let cfg = McpConfig {
             enabled: Some(true),
-            skills: None,
             auto_accept_tools: None,
             auto_reject_tools: Some(vec!["nuke[".into()]),
+            ..McpConfig::default()
         };
         let err = cfg.validate().expect_err("malformed reject glob must reject");
         assert!(err.to_string().contains("not a valid glob"), "got: {err}");

@@ -27,7 +27,7 @@ There is **no background daemon, no unix socket, and no window or desktop UI** a
 
 ## The one long-lived thing
 
-The single component that outlives the launch is the in-tree **MCP server** (`hyprpilot mcp serve`). When your resolved profile has a non-empty skills catalogue, the launcher auto-injects a stdio MCP entry named `hyprpilot` into the vendor's MCP config, and the vendor spawns that sidecar itself — so your `SKILL.md` catalogue reaches the agent over MCP. See [Skills & the hyprpilot MCP Server](./skills).
+The components that outlive the launch are the in-tree **MCP servers** — `hyprpilot mcp serve` (general tools), `mcp skills` (the skill catalogue), and `mcp harness` (driving other agent sessions). The launcher auto-injects a stdio entry for each one your `mcp` config enables, and the vendor spawns those sidecars itself — so your `SKILL.md` catalogue reaches the agent over MCP. See [Skills & the hyprpilot MCP Server](./skills) and [Agent Harness](./harness).
 
 ## Why you would want it
 

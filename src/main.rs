@@ -47,9 +47,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run an in-tree MCP server (e.g. `mcp serve`) for an agent vendor to
-    /// spawn via stdio. The launcher auto-injects entries when the resolved
-    /// skill registry for a spawn is non-empty.
+    /// Run one of the in-tree MCP servers for an agent vendor to spawn
+    /// via stdio. Each server is its own subcommand; the launcher
+    /// auto-injects the ones the resolved `[mcp]` block enables.
     Mcp(mcp::server::McpArgs),
 
     /// List configured session profiles.

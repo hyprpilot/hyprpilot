@@ -36,7 +36,7 @@ set_title = true
 # not duplicated in this file.
 [[patches]]
 [patches.mcp]
-[[patches.mcp.skills]]
+[[patches.mcp.skills.roots]]
 dir = "~/.config/hyprpilot/skills"
 
 # `[[agents]]` — vendor registry. `command` / `args` are the NATIVE
