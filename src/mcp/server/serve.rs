@@ -26,10 +26,24 @@
 //!   - `load_skill_references { slug }` — `{ uri, body, metadata }`
 //!   - `reload` — rescan dirs, push a resource list-changed
 //!     notification (skills back the resource list; the tool list is
-//!     static, so no tool-list-changed fires)
+//!     fixed for a given process, so no tool-list-changed fires)
 //!   - `open { path }` — open a URL, file, or directory in the
 //!     OS-default handler (`xdg-open` / `open` / `start`) via the
 //!     cross-platform `open` crate.
+//! - Tools, harness — present ONLY under `--with-harness` (see
+//!   `super::harness`). The gate covers `call_tool` as well as
+//!   `list_tools`: dispatch is by name, so gating the listing alone
+//!   would leave every one of these callable.
+//!   - `list_profiles` — the discovery entry point
+//!   - `spawn { profile, prompt|file, … }` — launch a profile as a
+//!     sidecar-owned agent session
+//!   - `session_send { session, prompt|file, … }` — continue a
+//!     conversation, resuming the vendor session first when needed
+//!   - `session_list` / `session_read` / `session_kill` — lifecycle
+//!
+//! The tool list is therefore fixed per process but NOT the same across
+//! configs, which is why `tools.list_changed` stays `false` rather than
+//! being advertised as dynamic.
 //!
 //! Metadata is de-duplicated to a SINGLE block (`metadata` in tool
 //! output, `io.hyprpilot/skill` in resource `_meta`): the WHOLE parsed
@@ -283,6 +297,50 @@ impl HyprpilotServer {
         })
     }
 
+    /// Server instructions — the one place a client learns the whole
+    /// workflow before it reads any individual tool schema. The harness
+    /// half only appears when the harness is actually enabled, so a
+    /// skills-only sidecar never advertises tools it will reject.
+    fn instructions(&self) -> String {
+        let mut out = String::from(
+            "Hyprpilot in-tree MCP server. Skills are exposed as \
+             `hyprpilot://skills/<slug>` resources. Call `list_skills` to \
+             enumerate; `read_skill` to fetch a body; `load_skill_references` \
+             to bundle the references a skill declares in its frontmatter \
+             (resolved relative to the skill's bundle dir). Use `open` to \
+             open a URL, file, or directory in the OS default handler. Every \
+             resource and tool result carries the skill's frontmatter \
+             verbatim in ONE block (as `metadata` in tool output, and as the \
+             `io.hyprpilot/skill` key in resource `_meta`) — minus `title` / \
+             `description` (already in the spec Resource fields) and plus the \
+             runtime `path` + `bundleDir`.",
+        );
+        if self.harness.is_some() {
+            out.push_str(
+                "\n\nAGENT HARNESS. You can launch and drive hyprpilot agent \
+                 profiles. Typical flow:\n\
+                 1. `list_profiles` — see what can be launched and with which model.\n\
+                 2. `spawn { profile, prompt }` — start an agent. It blocks and \
+                 returns the transcript.\n\
+                 3. If that result says status `running`, the turn outlived its \
+                 timeout and the agent is STILL WORKING. Poll \
+                 `session_read { session, offset }` — do NOT call `spawn` again.\n\
+                 4. `session_send { session, prompt }` — next turn in the same \
+                 conversation. It resumes a finished session and returns a NEW \
+                 handle; use that handle from then on.\n\
+                 5. `session_read` any time, including after the run finished. \
+                 Pass `watch: true` to follow live; pass a progressToken to \
+                 receive output as progress notifications as it arrives.\n\
+                 6. `session_kill { session }` — stop a runaway; `session_list` — \
+                 recover handles.\n\
+                 Sessions are children of THIS server and die with it: they do \
+                 not survive a restart, and their transcripts go too.",
+            );
+        }
+
+        out
+    }
+
     /// Dispatch one harness tool. Recoverable failures come back as
     /// `Ok(tool_error(..))` so the agent can read and act on them;
     /// `Err` stays reserved for protocol faults (bad params).
@@ -309,15 +367,15 @@ impl HyprpilotServer {
                     Err(msg) => Ok(tool_error(msg)),
                 }
             }
-            "resume" => {
+            "session_send" => {
                 let session = require_string(&args, "session")?.to_string();
                 // The profile is inherited from the original spawn; the
-                // placeholder is replaced inside `resume`.
+                // placeholder is replaced inside `session_send`.
                 let launch = match decode_launch_args(&args, String::new(), context) {
                     Ok(launch) => launch,
                     Err(msg) => return Ok(tool_error(msg)),
                 };
-                match harness.resume(&session, launch).await {
+                match harness.session_send(&session, launch).await {
                     Ok(payload) => Ok(structured_with_text(launch_summary(&payload), payload)),
                     Err(msg) => Ok(tool_error(msg)),
                 }
@@ -574,7 +632,7 @@ fn launch_props(extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
 fn is_harness_tool(name: &str) -> bool {
     matches!(
         name,
-        "list_profiles" | "spawn" | "resume" | "session_list" | "session_read" | "session_kill"
+        "list_profiles" | "spawn" | "session_send" | "session_list" | "session_read" | "session_kill"
     )
 }
 
@@ -618,13 +676,15 @@ fn harness_tools() -> Vec<Tool> {
             ),
         ),
         Tool::new_with_raw(
-            "resume",
+            "session_send",
             Some(
-                "Send another turn to an EXISTING session, continuing the same conversation via the vendor's \
-                 own session store. Takes the `session` handle returned by `spawn`. The session must have \
-                 finished its previous turn — resuming a `running` session is refused, because no vendor \
-                 supports two concurrent turns on one conversation. The profile is inherited from the \
-                 original `spawn`; you cannot switch profiles mid-conversation."
+                "Send another message to an existing session, continuing the same conversation via the vendor's \
+                 own session store. Takes the `session` handle from `spawn` or `session_list`. The result's \
+                 `delivery` field says what happened and `session` carries the handle to use from now on — a \
+                 resume starts a NEW process continuing the same conversation, so the old handle becomes stale. \
+                 The session must have finished its previous turn: sending to a `running` session is refused, \
+                 because no vendor supports two concurrent turns on one conversation — poll `session_read` or \
+                 `session_kill` it first. The profile is inherited; you cannot switch profiles mid-conversation."
                     .into(),
             ),
             object_schema(
@@ -968,6 +1028,18 @@ fn launch_summary(payload: &serde_json::Value) -> String {
         .unwrap_or(false);
 
     let mut out = String::new();
+    // Which path was taken comes FIRST: a resume mints a new handle
+    // continuing the same conversation, and a caller that keeps using
+    // the old one would be reading a dead session.
+    if payload.get("delivery").and_then(serde_json::Value::as_str) == Some("resumed") {
+        let from = payload
+            .get("resumedFrom")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?");
+        out.push_str(&format!(
+            "Resumed {from} as session {handle}, then sent. Use {handle} from now on.\n\n"
+        ));
+    }
     if !body.is_empty() {
         out.push_str(body);
         out.push_str("\n\n");
@@ -997,10 +1069,12 @@ fn launch_summary(payload: &serde_json::Value) -> String {
 impl ServerHandler for HyprpilotServer {
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
-        // The tool set is static (`list_tools` always returns the same
-        // five) — do NOT advertise tool-list-changed. Skills back the
-        // resource list, which `reload` can change, so resources DO
-        // advertise list-changed (and `reload` fires it).
+        // The tool set is fixed for the life of THIS process — five
+        // skills tools, plus the harness set when `--with-harness` was
+        // passed. It never changes after startup, so do NOT advertise
+        // tool-list-changed. Skills back the resource list, which
+        // `reload` can change, so resources DO advertise list-changed
+        // (and `reload` fires it).
         // rmcp 2 marks these `#[non_exhaustive]` — no struct literal
         // outside the crate — so mutate the owned `default()` instances'
         // public fields instead.
@@ -1016,19 +1090,7 @@ impl ServerHandler for HyprpilotServer {
                 SKILLS_SERVER_NAME.to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
             ))
-            .with_instructions(
-                "Hyprpilot in-tree MCP server. Skills are exposed as \
-                 `hyprpilot://skills/<slug>` resources. Call `list_skills` to \
-                 enumerate; `read_skill` to fetch a body; `load_skill_references` \
-                 to bundle the references a skill declares in its frontmatter \
-                 (resolved relative to the skill's bundle dir). Use `open` to \
-                 open a URL, file, or directory in the OS default handler. Every \
-                 resource and tool result carries the skill's frontmatter \
-                 verbatim in ONE block (as `metadata` in tool output, and as the \
-                 `io.hyprpilot/skill` key in resource `_meta`) — minus `title` / \
-                 `description` (already in the spec Resource fields) and plus the \
-                 runtime `path` + `bundleDir`.",
-            )
+            .with_instructions(self.instructions())
     }
 
     async fn list_tools(
@@ -1290,6 +1352,57 @@ impl ServerHandler for HyprpilotServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A harness tool's description is the ONLY guidance the calling
+    /// agent gets — there is no README in its context. Pin that each one
+    /// exists, is substantial, and names at least one sibling tool, so
+    /// the composition contract ("call this first", "poll that, don't
+    /// re-spawn") cannot silently rot into a bare one-liner.
+    #[test]
+    fn every_harness_tool_description_names_a_sibling() {
+        let names: Vec<&str> = vec![
+            "list_profiles",
+            "spawn",
+            "session_send",
+            "session_list",
+            "session_read",
+            "session_kill",
+        ];
+
+        for tool in harness_tools() {
+            let description = tool
+                .description
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} has no description", tool.name));
+            assert!(
+                description.len() > 80,
+                "{}'s description is too thin to guide a caller: {description}",
+                tool.name
+            );
+            let mentions_sibling = names
+                .iter()
+                .any(|sibling| *sibling != tool.name.as_ref() && description.contains(sibling));
+            assert!(
+                mentions_sibling,
+                "{}'s description names no sibling tool, so an agent cannot learn the workflow from it: {description}",
+                tool.name
+            );
+        }
+    }
+
+    /// The gate is only a boundary if it covers BOTH surfaces. Gating
+    /// `list_tools` alone would leave every harness tool callable by any
+    /// client that already knows the name.
+    #[test]
+    fn harness_names_and_tool_list_agree() {
+        for tool in harness_tools() {
+            assert!(
+                is_harness_tool(&tool.name),
+                "{} is listed but not gated by `is_harness_tool`, so `call_tool` would expose it ungated",
+                tool.name
+            );
+        }
+    }
 
     #[test]
     fn parses_known_uris() {

@@ -381,7 +381,14 @@ impl Harness {
         self.launch(args, None).await
     }
 
-    pub(crate) async fn resume(&self, handle: &str, args: LaunchToolArgs) -> Result<Value, String> {
+    /// Send another message to a session, resuming it first if its
+    /// process has already exited.
+    ///
+    /// The caller does not have to know which state the session is in.
+    /// The result says which path was taken, because "resumed a finished
+    /// conversation" and "the agent was still going" are materially
+    /// different things to a caller deciding what to do next.
+    pub(crate) async fn session_send(&self, handle: &str, args: LaunchToolArgs) -> Result<Value, String> {
         let target = self
             .sessions
             .with(handle, |session| ResumeTarget {
@@ -405,11 +412,20 @@ impl Harness {
             ));
         }
 
+        let previous = handle.to_string();
         let args = LaunchToolArgs {
             profile: target.profile_id.clone(),
             ..args
         };
-        self.launch(args, Some(target)).await
+        let mut out = self.launch(args, Some(target)).await?;
+        // Lead with the path taken. A resume starts a NEW process (and
+        // so a new handle) continuing the same vendor conversation —
+        // a caller that keeps using the old handle would be reading a
+        // dead session's transcript.
+        out["delivery"] = json!("resumed");
+        out["resumedFrom"] = json!(previous);
+
+        Ok(out)
     }
 
     /// What this session was launched with — the audit view. argv is

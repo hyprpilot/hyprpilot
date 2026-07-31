@@ -20,6 +20,14 @@ The one long-lived thing hyprpilot ships is an in-tree **MCP server**
 MCP config so the captain's *skills* catalogue reaches the agent over
 stdio. The vendor spawns and owns that sidecar's lifetime.
 
+**One deliberate exception to "no in-process bridge":** under the
+opt-in `--with-harness` flag that sidecar also owns agent sessions it
+spawned, in an in-process table (see "The agent harness"). That is not
+the daemon the strip refactor removed — the vendor still owns the
+sidecar's lifetime, nothing survives it, and no socket or control plane
+exists. The launcher itself is unchanged: still fire-and-exec, and
+auto-inject never passes the flag.
+
 ## Toolchain (mise-pinned)
 
 `mise install` at the repo root drops: `rust` (stable + `rustfmt` +
@@ -61,7 +69,10 @@ Key `src/` modules:
   (tmux/zellij rename).
 - `profile.rs` — `ResolvedProfile` (flat runtime view).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
-  (the in-tree `hyprpilot` server), `server/` (`mcp serve`).
+  (the in-tree `hyprpilot` server), `server/` (`mcp serve`:
+  `serve.rs` = protocol + tools, `harness.rs` = the `--with-harness`
+  agent surface, `sessions/` = the owned-session store, `skills/` =
+  metadata + references).
 - `skills/` — `SkillsRegistry` + `SKILL.md` loader.
 - `profiles.rs` — the `profiles` subcommand.
 - `logging.rs`, `paths.rs`.
@@ -101,6 +112,7 @@ hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 hyprpilot profiles              # table of configured profiles
 hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
+hyprpilot mcp serve --with-harness --skill-dir '{"dir":"…","ignore":[]}'
 ```
 
 - **Bare launch** picks the profile via the optional positional
@@ -352,7 +364,8 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   root, each carrying that root's ignore list as JSON). The reserved
   `hyprpilot` name replaces any same-named configured server.
   Auto-inject is independent of `mcps` — `mcps = []` does not suppress
-  it; `[mcp].enabled = false` does.
+  it; `[mcp].enabled = false` does. Auto-inject **never** passes
+  `--with-harness`, so a launcher-injected sidecar is skills-only.
 - **`hyprpilot mcp serve`** (`mcp/server/serve.rs`): an `rmcp` stdio
   server. Resources: `hyprpilot://skills/<slug>` (body) and
   `hyprpilot://references/<slug>` (bundled frontmatter references — a
@@ -371,6 +384,54 @@ Skills reach the agent **only** through the hyprpilot MCP server.
   text instead of "Unknown"; structured-aware clients (Claude Code)
   still get the JSON. A structured-only result renders as "Unknown" in
   opencode — never return one.
+
+## The agent harness (`--with-harness`)
+
+`hyprpilot mcp serve --with-harness` adds six tools on top of the
+skills surface, letting a connected agent drive hyprpilot profiles:
+`list_profiles` (discovery), `spawn`, `session_send`, `session_list`,
+`session_read`, `session_kill`. Off by default.
+
+- **The gate is a security boundary, not just recursion control.** A
+  profile's `command` is an arbitrary binary, so anything that can call
+  `spawn` executes commands as this user. It gates **`call_tool` as
+  well as `list_tools`** — dispatch is by name, so gating only the
+  listing would leave every tool reachable. `HYPRPILOT_SPAWN_DEPTH`
+  bounds nesting; a session-count ceiling bounds breadth.
+- **The sidecar OWNS every session** (`mcp/server/sessions/`). Sessions
+  are direct children waited on via `tokio::process::Child`, so exit
+  codes are recoverable, no zombie defeats a liveness check, and no PID
+  is reused underneath us. They **die with the sidecar** and do not
+  survive a restart — that trade buys the correctness above.
+- **Orphan prevention is layered; only the last layer is a guarantee.**
+  `async shutdown()` (SIGTERM → grace → SIGKILL, raced against
+  SIGTERM/SIGHUP handlers) and `kill_on_drop(true)` are userspace
+  courtesy — without `kill_on_drop` tokio *orphans* a live child on drop
+  rather than killing it. **`PR_SET_PDEATHSIG`** is the real guarantee:
+  the kernel kills the child even under `SIGKILL` or the release
+  profile's `panic = "abort"`, both of which run no destructor. Linux
+  only; elsewhere it degrades to the userspace paths. Sessions run in
+  their **own process group** so a kill reaches the vendor's own MCP
+  sidecars and tool subprocesses. A **startup sweep** reclaims what a
+  crashed predecessor left behind.
+- **One resolution path.** Every harness launch goes through
+  `spawn::prepare` — the same function `hyprpilot <profile>` uses — so
+  prompt-source priority, the `-- <args>` escape hatch, and cwd
+  precedence cannot drift between the CLI and MCP. `LaunchOrigin`
+  carries the differences: the harness never reads real stdin (the
+  sidecar's fd0 **is** the MCP transport), never opens the picker, and
+  never renames the multiplexer window.
+- **Harness-only JSON projection.** claude gets
+  `--output-format stream-json` plus a **mandatory** `--verbose` (claude
+  refuses the launch without it), codex `--json`, opencode
+  `--format json`. The CLI's `-p` output stays human-readable. Vendors
+  report their session id under three different keys — `session_id`,
+  `thread_id`, `sessionID` — all verified against the installed CLIs.
+- **Streaming** rides `notifications/progress` when the caller supplies
+  a progressToken; a follow ends on session exit, client cancellation,
+  or a caller-set limit. MCP tool results are single-shot, so the result
+  still carries everything the notifications streamed.
+
 - **Skill metadata — ONE block, spec fields canonical**
   (`mcp/server/skills/metadata.rs`): the MCP spec's `_meta` is a single
   field keyed by reverse-DNS names, so every skill surface carries
@@ -571,7 +632,10 @@ not YAML structure).
   Add servers you need during a task; remove non-load-bearing ones at
   merge.
 - Every issue is picked up on a dedicated branch — **never implement on
-  `main` or `beta` directly.** PRs target **`beta`**, never `main`.
+  `main` directly.** PRs target **`main`**. (`beta` went stale — it sat
+  ~10 commits behind `main` and lacked work `main` already carried — so
+  targeting it produced unusable diffs. Revive it as a release branch
+  before routing PRs there again.)
 - **Feature changes and feature additions MUST include documentation
   updates (`docs/` + `CLAUDE.md`) in the same PR.** A user-observable
   behavior change that ships without the matching docs edit is
