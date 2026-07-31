@@ -1,7 +1,7 @@
 [package]
 name = "hyprpilot"
 description = "Config-driven launcher that resolves a profile and execs the vendor's native agent CLI."
-version = "3.1.3"
+version = "3.2.0"
 edition = "2021"
 license = "MIT"
 authors = ["Cenk Kılıç <cenk1cenk2cenk3@gmail.com>"]
