@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.0](https://github.com/hyprpilot/hyprpilot/compare/v3.3.0...v3.4.0) (2026-07-31)
+
+
+### Features
+
+* **mcp:** underscore the default server names, rename `mcp.skills.roots` to `dirs`, correct the harness gate's claim ([#216](https://github.com/hyprpilot/hyprpilot/issues/216)) ([aaa2709](https://github.com/hyprpilot/hyprpilot/commit/aaa2709d2ad3825d7c67b882bde2726cbc118d51))
+
 ## [3.3.0](https://github.com/hyprpilot/hyprpilot/compare/v3.2.0...v3.3.0) (2026-07-31)
 
 
