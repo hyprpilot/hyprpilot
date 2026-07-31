@@ -423,15 +423,27 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
 `session_send`, `session_list`, `session_read`, `session_kill`.
 `[mcp.harness].enabled` defaults to false.
 
-- **The gate is a security boundary, not just recursion control.** A
-  profile's `command` is an arbitrary binary, so anything that can call
-  `spawn` executes commands as this user. The gate is **structural** —
-  disabled means no `mcp harness` process exists, and no other server
-  implements these tools. (It used to be a name check inside a shared
-  server, which had to cover `call_tool` as well as `list_tools`
-  because dispatch is by name; that is exactly the failure mode the
-  split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds nesting; a
-  session-count ceiling bounds breadth.
+- **The gate bounds DISCOVERY, not capability — do not overstate it.**
+  A profile's `command` is an arbitrary binary, so anything that
+  reaches `spawn` executes commands as this user. `[mcp.harness]
+  .enabled` decides only whether the launcher AUTO-INJECTS the entry:
+  `hyprpilot mcp harness` is an ordinary subcommand and serves `spawn`
+  whenever invoked, regardless of config (deliberate — a hand-written
+  MCP entry must work without a config to consult, and the `mcp` branch
+  skips validation so a broken config can't kill a respawned sidecar).
+  Against an agent with shell access it buys nothing; it is a real
+  boundary only for an MCP-only client. What the split DOES guarantee
+  is structural within the served surface: the skills server cannot
+  serve `spawn` because it does not implement it. (It used to be a name
+  check inside a shared server, which had to cover `call_tool` as well
+  as `list_tools` because dispatch is by name; that is exactly the
+  failure mode the split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds
+  nesting; a session-count ceiling bounds breadth.
+- **Enabling the harness inherits `autoAcceptTools = ["*"]`** from the
+  `[mcp]` level unless `[mcp.harness].autoAcceptTools` is set — so
+  `spawn` lands auto-approved. The per-server policy the split bought
+  is only worth something if it is actually used; a test pins this
+  default so tightening it stays a deliberate change.
 - **The sidecar OWNS every session** (`mcp/server/sessions/`). Sessions
   are direct children waited on via `tokio::process::Child`, so exit
   codes are recoverable, no zombie defeats a liveness check, and no PID

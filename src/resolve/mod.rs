@@ -347,6 +347,44 @@ mod tests {
     use crate::config::McpConfig;
     use crate::mcp::{HyprpilotExtension, MCPDefinition};
 
+    fn bare_profile() -> ProfileConfig {
+        serde_json::from_value(json!({ "id": "p", "agent": "a" })).expect("minimal profile deserializes")
+    }
+
+    /// `[mcp].enabled = false` is the one switch that must silence
+    /// every in-tree server at once — per-server `enabled` flags do not
+    /// get a vote above it.
+    #[test]
+    fn master_gate_off_injects_nothing() {
+        let mut profile = bare_profile();
+        profile.mcp = Some(McpConfig {
+            enabled: Some(false),
+            harness: Some(crate::config::mcp::HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            serve: Some(crate::config::mcp::ToolsServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        });
+
+        assert!(build_mcp_registry_with(&profile, None).is_empty());
+    }
+
+    /// With no `mcp` block at all the typed defaults apply: general
+    /// tools on, harness off.
+    #[test]
+    fn defaults_inject_tools_but_not_harness() {
+        let names: Vec<_> = build_mcp_registry_with(&bare_profile(), None)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+
+        assert_eq!(names, vec![crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME.to_string()]);
+    }
+
     fn cfg_with_globs(accept: &[&str], reject: &[&str]) -> McpConfig {
         McpConfig {
             enabled: Some(true),

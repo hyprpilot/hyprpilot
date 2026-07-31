@@ -152,10 +152,10 @@ pub(super) async fn wait_for_shutdown<H: ServerHandler>(running: rmcp::service::
         tokio::select! {
             _ = &mut transport => {}
             Some(()) = async { match term.as_mut() { Some(s) => s.recv().await, None => None } } => {
-                tracing::info!("mcp::server::serve: SIGTERM received; reaping sessions");
+                tracing::info!("mcp::server: SIGTERM received; shutting down");
             }
             Some(()) = async { match hup.as_mut() { Some(s) => s.recv().await, None => None } } => {
-                tracing::info!("mcp::server::serve: SIGHUP received; reaping sessions");
+                tracing::info!("mcp::server: SIGHUP received; shutting down");
             }
         }
     }
@@ -558,9 +558,8 @@ pub(super) fn optional_string_array(
 impl ServerHandler for SkillsServer {
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
-        // The tool set is fixed for the life of THIS process — five
-        // skills tools, plus the harness set when `--with-harness` was
-        // passed. It never changes after startup, so do NOT advertise
+        // The tool set is fixed for the life of THIS process — the
+        // four skills tools. It never changes, so do NOT advertise
         // tool-list-changed. Skills back the resource list, which
         // `reload` can change, so resources DO advertise list-changed
         // (and `reload` fires it).

@@ -1,22 +1,25 @@
-//! Auto-injection of the hyprpilot-hosted in-tree MCP server.
+//! Auto-injection of the in-tree MCP servers.
 //!
-//! When a launch's effective `[mcp]` config has `enabled = true` AND
-//! its `[[mcp.skills]]` catalog resolves to a non-empty
-//! `SkillsRegistry`, the launcher prepends a single stdio MCP entry to
-//! the catalog it hands the vendor. That entry spawns `hyprpilot mcp
-//! serve` as a sidecar; the sidecar reads the skills straight from
-//! disk via the `--skill-dir <json>` args the launcher passes.
+//! One `build_*_definition` per server. Under the `[mcp].enabled`
+//! master gate the launcher prepends a stdio entry for each server its
+//! own block enables, and the vendor spawns those sidecars itself.
+//! Skills is the only one ALSO gated on content — an empty
+//! `SkillsRegistry` means nothing to serve — and the only one that
+//! passes state on the command line (`--skill-dir <json>` per root).
 //!
 //! References declared in each skill's frontmatter resolve relative
 //! to the skill's own bundle directory at read time — the sidecar
 //! maintains no separate references-root concept.
 //!
-//! Server name is **`hyprpilot`** — the same name vendors prefix tool
-//! calls with (`mcp__hyprpilot__list_skills`, …). Auto-accept rides
-//! through `HyprpilotExtension.auto_accept_tools` from the resolved
-//! `McpConfig` (default `["*"]`), so every tool on this server is
-//! projected as auto-approved onto the vendor's approval surface
-//! unless the captain has tightened the globs.
+//! Each server's resolved name is what vendors prefix tool calls with
+//! (`mcp__hyprpilot-skills__list_skills`, …) and is RESERVED: a
+//! same-named configured server is replaced. Auto-accept rides through
+//! `HyprpilotExtension.auto_accept_tools` — the server's own globs when
+//! set, else the `[mcp]`-level ones (default `["*"]`), so by default
+//! every tool is projected as auto-approved unless the captain has
+//! tightened them. **That default applies to the harness too**: turning
+//! `[mcp.harness].enabled` on without per-server globs auto-approves
+//! `spawn`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,6 +193,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use crate::config::mcp::{HarnessServerConfig, ToolsServerConfig};
     use crate::skills::SkillsRegistry;
 
     use super::*;
@@ -205,5 +209,97 @@ mod tests {
     #[test]
     fn empty_registry_skips_injection() {
         assert!(build_auto_inject_definition(&empty_registry(), &default_cfg(), PathBuf::from("<test>")).is_none());
+    }
+
+    /// The security-relevant default. `spawn` runs a profile's
+    /// `command`, so a captain who never mentions the harness must not
+    /// get an entry for it.
+    #[test]
+    fn harness_is_not_injected_by_default() {
+        assert!(build_harness_definition(&default_cfg(), PathBuf::from("<test>")).is_none());
+    }
+
+    #[test]
+    fn harness_is_injected_once_enabled() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("enabled harness injects");
+        assert_eq!(def.name, crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME);
+    }
+
+    /// Enabling the harness without per-server globs inherits the
+    /// `[mcp]`-level `["*"]`, which auto-approves `spawn`. Pinned so
+    /// the consequence is a deliberate choice rather than a surprise —
+    /// flip this test if the default ever tightens.
+    #[test]
+    fn enabling_harness_inherits_the_permissive_accept_default() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        assert_eq!(def.hyprpilot.auto_accept_tools, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn per_server_globs_override_rather_than_merge() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                auto_accept_tools: Some(vec!["list_profiles".into()]),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        assert_eq!(
+            def.hyprpilot.auto_accept_tools,
+            vec!["list_profiles".to_string()],
+            "the `[mcp]`-level `*` must not survive alongside a per-server list"
+        );
+    }
+
+    #[test]
+    fn tools_server_is_injected_by_default() {
+        let def = build_tools_definition(&default_cfg(), PathBuf::from("<test>")).expect("serve defaults on");
+        assert_eq!(def.name, crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME);
+    }
+
+    #[test]
+    fn disabling_a_server_skips_only_that_one() {
+        let cfg = McpConfig {
+            serve: Some(ToolsServerConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        assert!(build_tools_definition(&cfg, PathBuf::from("<test>")).is_none());
+        assert!(build_harness_definition(&cfg, PathBuf::from("<test>")).is_some());
+    }
+
+    #[test]
+    fn a_renamed_server_reserves_its_new_name() {
+        let cfg = McpConfig {
+            serve: Some(ToolsServerConfig {
+                name: Some("mytools".into()),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_tools_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        assert_eq!(def.name, "mytools");
     }
 }
