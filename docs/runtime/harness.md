@@ -42,7 +42,7 @@ hyprpilot's own `[mcp]` config has no field for it — the launcher-built entry 
 ### Workflow
 
 1. **`list_profiles`** to find an `id` — a row marked `!` failed to resolve; don't launch it.
-2. **`spawn { profile, prompt }`** to start a session. With `wait` true (the default) it blocks and returns the transcript; if the turn outlives `timeout_seconds` the result comes back with status `running` and the agent **keeps working**.
+2. **`spawn { profile, prompt }`** to start a session. With `wait` true (the default) it blocks and returns the transcript; if the turn outlives `timeout_seconds` the result comes back with status `running`, a `nextOffset` to resume reading from, and the agent **keeps working**.
 3. If status is `running`, poll or follow **`session_read { session, wait: true }`** — do **not** call `spawn` again for the same conversation.
 4. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
 5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit.
@@ -58,12 +58,20 @@ The two tools share one parameter set:
 | `file`            | string           | —             | Path to a file whose contents become the prompt (`~` / `$VAR` expanded). Mutually exclusive with `prompt`.    |
 | `cwd`             | string           | profile's cwd | Working directory for the agent.                                                                              |
 | `mode`            | string           | —             | Vendor mode override (e.g. claude's `plan`). Overrides the profile.                                           |
-| `with_config`     | array of objects | `[]`          | Ad-hoc profile overlays — the same strategic-merge semantics as [`--with-config`](./with-config).             |
+| `with_config`     | array of objects | `[]`          | Ad-hoc profile overlays. **Restricted to `model`, `effort` and `mode`** — see below.                          |
 | `args`            | string[]         | `[]`          | Extra arguments forwarded verbatim to the vendor CLI — the tool equivalent of the CLI's trailing `-- <args>`. |
 | `wait`            | bool             | `true`        | Block until the turn finishes. When `false`, returns immediately with the handle — poll `session_read`.       |
 | `timeout_seconds` | integer          | `300`         | Seconds to wait when `wait` is true. On timeout the agent keeps running; the result reports status `running`. |
 
 Exactly one of `prompt` / `file` is required on both — the same mutual exclusion the CLI's `-p`/`-f` enforce. `spawn` additionally requires `profile` (an id from `list_profiles`). `session_send` additionally requires `session` (a handle from `spawn` or `session_list`) and has **no** `profile` parameter — the profile is inherited from the original spawn, so a conversation can't switch profiles mid-stream.
+
+`session_send` inherits only the **profile**. `cwd`, `mode`, `with_config` and `args` are not carried forward from the original `spawn` — pass them again on each turn if the conversation needs them.
+
+::: warning `with_config` is restricted to `model`, `effort` and `mode`
+Unlike the CLI's `--with-config`, the harness accepts only those three keys — an allow-list, not a block-list. A profile overlay can otherwise reach `command`, `args` and `env` (which replace the binary outright), `mcps` (whose inline `mcp_servers` entries carry their own `command`/`args`, which the vendor then spawns), `$deleteFromPrimitiveList/<field>` directives (which mutate a field without ever naming it, e.g. stripping a profile's `--sandbox`), and `system_prompt` (which reads an arbitrary file into the agent's context). Any of those turns `spawn` into arbitrary command execution as the sidecar's user.
+
+Enumerating the ways *in* is a losing game against a config tree that grows; enumerating what's allowed is not. To run something else, add a profile for it in the hyprpilot config — that is the captain's decision to make, not the calling agent's.
+:::
 
 ### `session_read` parameters
 
@@ -73,7 +81,7 @@ Exactly one of `prompt` / `file` is required on both — the same mutual exclusi
 | `tail`            | integer | `200`   | Trailing lines to return when `offset` is omitted.                                                                                  |
 | `offset`          | integer | —       | Byte offset to read forward from — pass a previous result's `nextOffset` to stream new output only.                                 |
 | `wait`            | bool    | `false` | Follow the session live from `offset` instead of returning immediately — the same knob, with the same meaning, as `spawn`'s `wait`. |
-| `timeout_seconds` | integer | —       | Optional cap on a `wait` follow, in seconds. Omit to follow until the agent finishes or you cancel.                                 |
+| `timeout_seconds` | integer | —       | Caps a `wait` follow, in seconds. Inert without `wait: true`. Omit to follow until the agent finishes or you cancel.                |
 
 A follow streams each new chunk as an MCP `notifications/progress` message when the caller's request carries a `progressToken`; without one it degrades to a plain long poll and the caller still gets everything in the final result. It ends on whichever comes first: the agent finishing, the caller cancelling the request, or `timeout_seconds` elapsing — there's no other server-side time limit.
 

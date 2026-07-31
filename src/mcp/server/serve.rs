@@ -393,9 +393,13 @@ impl HyprpilotServer {
                 // it. Cancelling the request also ends a follow, which is
                 // how an agent that has seen enough stops without waiting
                 // out a timer.
+                // `wait` alone decides whether this follows. Letting a
+                // bare `timeout_seconds` imply it turned a defensive
+                // timeout into a surprise blocking call — the schema
+                // presents it as a cap ON a follow, not a trigger for one.
                 let watch = optional_bool(&args, "wait")?.unwrap_or(false);
                 let watch_seconds = optional_u64(&args, "timeout_seconds")?;
-                let watch = (watch || watch_seconds.is_some()).then(|| {
+                let watch = watch.then(|| {
                     crate::mcp::server::harness::WatchOptions {
                         seconds: watch_seconds,
                         // Only stream when the caller actually asked for

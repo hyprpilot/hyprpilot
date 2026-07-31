@@ -476,8 +476,18 @@ fn write_breadcrumb(dir: &Path, handle: &str, pid: u32, pgid: i32) {
 /// group, remove the directory, and log loudly, because a non-empty
 /// sweep means something died badly.
 pub(crate) fn sweep_stale_sessions() {
-    let temp = std::env::temp_dir();
-    let entries = match std::fs::read_dir(&temp) {
+    sweep_stale_sessions_in(&std::env::temp_dir());
+}
+
+/// The sweep, scoped to a directory.
+///
+/// Takes the directory so tests can point it at their own `TempDir`:
+/// running the real sweep against the machine's `/tmp` would let
+/// `cargo test` `killpg` whatever pgid a developer's leftover breadcrumb
+/// happens to name. A unit test must not be able to kill the developer's
+/// processes.
+pub(crate) fn sweep_stale_sessions_in(temp: &Path) {
+    let entries = match std::fs::read_dir(temp) {
         Ok(entries) => entries,
         Err(err) => {
             tracing::debug!(%err, dir = %temp.display(), "mcp harness: startup sweep: read_dir failed");
@@ -752,42 +762,36 @@ mod tests {
     /// thing that eats working sessions.
     #[test]
     fn sweep_spares_a_live_sidecars_sessions_and_reclaims_a_dead_ones() {
-        let temp = std::env::temp_dir();
+        // Scoped to our own directory: pointing the real sweep at the
+        // machine's /tmp would let `cargo test` kill whatever pgid a
+        // developer's leftover breadcrumb names.
+        let root = tempfile::tempdir().unwrap();
+        let temp = root.path();
+
+        let write = |name: &str, crumb: serde_json::Value| {
+            let dir = temp.join(format!("{SESSION_DIR_PREFIX}{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(BREADCRUMB_FILE), crumb.to_string()).unwrap();
+            dir
+        };
 
         // Owned by US — we are obviously alive, standing in for a
         // concurrently-running sibling sidecar.
-        let live = temp.join(format!("{SESSION_DIR_PREFIX}livetest-{}", std::process::id()));
-        std::fs::create_dir_all(&live).unwrap();
-        std::fs::write(
-            live.join(BREADCRUMB_FILE),
-            serde_json::json!({ "handle": "h", "pid": 1, "pgid": 0, "ownerPid": std::process::id() }).to_string(),
-        )
-        .unwrap();
-
+        let live = write(
+            "live",
+            serde_json::json!({ "handle": "h", "pid": 1, "ownerPid": std::process::id() }),
+        );
         // Owned by a pid that cannot exist — a genuinely dead predecessor.
-        let dead = temp.join(format!("{SESSION_DIR_PREFIX}deadtest-{}", std::process::id()));
-        std::fs::create_dir_all(&dead).unwrap();
-        std::fs::write(
-            dead.join(BREADCRUMB_FILE),
-            // pgid 0 would signal OUR OWN group, so leave it out entirely.
-            serde_json::json!({ "handle": "h", "pid": 999, "ownerPid": 0x7FFF_FFFEu32 }).to_string(),
-        )
-        .unwrap();
+        // No pgid, so the sweep has nothing to signal.
+        let dead = write("dead", serde_json::json!({ "handle": "h", "ownerPid": 0x7FFF_FFFEu32 }));
+        // No owner recorded: unknown is not the same as dead.
+        let unknown = write("unknown", serde_json::json!({ "handle": "h" }));
 
-        // No owner recorded: unknown is not the same as dead, so it must
-        // be left alone rather than assumed reclaimable.
-        let unknown = temp.join(format!("{SESSION_DIR_PREFIX}unknowntest-{}", std::process::id()));
-        std::fs::create_dir_all(&unknown).unwrap();
-        std::fs::write(unknown.join(BREADCRUMB_FILE), "{\"handle\":\"h\"}").unwrap();
-
-        sweep_stale_sessions();
+        sweep_stale_sessions_in(temp);
 
         assert!(live.exists(), "a live sidecar's sessions must survive another's sweep");
         assert!(!dead.exists(), "a dead sidecar's leftovers must be reclaimed");
         assert!(unknown.exists(), "unprovable ownership must not be treated as stale");
-
-        let _ = std::fs::remove_dir_all(&live);
-        let _ = std::fs::remove_dir_all(&unknown);
     }
 
     #[test]

@@ -72,6 +72,20 @@ pub(crate) struct WatchOptions {
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
+/// What a follow saw.
+///
+/// `dropped_earlier` matters: the accumulator is bounded to
+/// [`READ_CAP_BYTES`], so a long run's early output is discarded as it
+/// goes. Saying so beats returning a silently-partial transcript.
+pub(crate) struct FollowResult {
+    pub text: String,
+    /// Byte offset to resume from — handed back as `nextOffset` so the
+    /// documented poll-after-timeout workflow actually has one.
+    pub cursor: u64,
+    pub finished: bool,
+    pub dropped_earlier: bool,
+}
+
 /// Streams transcript chunks to the caller as progress notifications.
 pub(crate) struct ProgressSink {
     pub peer: rmcp::service::Peer<rmcp::service::RoleServer>,
@@ -205,7 +219,7 @@ impl Harness {
         );
 
         if !args.wait {
-            return Ok(self.describe(&handle, None, None));
+            return Ok(self.describe(&handle, None, None, None));
         }
 
         // Waiting IS following: stream the transcript to the caller
@@ -217,7 +231,8 @@ impl Harness {
             sink: args.sink,
             cancel: args.cancel.unwrap_or_default(),
         };
-        let (streamed, _cursor, finished) = self.follow(&handle, 0, &watch).await;
+        let followed = self.follow(&handle, 0, &watch).await;
+        let finished = followed.finished;
 
         // Whether it finished or timed out, the transcript is on disk —
         // harvest the vendor session id either way so a follow-up
@@ -228,7 +243,7 @@ impl Harness {
             tracing::info!(%handle, secs = args.timeout_seconds, "mcp harness: turn outlived its timeout");
         }
 
-        Ok(self.describe(&handle, Some(finished), Some(streamed)))
+        Ok(self.describe(&handle, Some(finished), Some(followed.text), Some(followed.cursor)))
     }
 
     /// Follow a session's transcript from `from`, pushing each new chunk
@@ -237,12 +252,17 @@ impl Harness {
     /// Ends when the agent exits, when the caller cancels the request,
     /// or when `watch.seconds` elapses — whichever comes first. Returns
     /// what it saw, where it stopped, and whether the agent finished.
-    async fn follow(&self, handle: &str, from: u64, watch: &WatchOptions) -> (String, u64, bool) {
+    async fn follow(&self, handle: &str, from: u64, watch: &WatchOptions) -> FollowResult {
         let Some((turns, mut completion)) = self
             .sessions
             .with(handle, |session| (session.turns_path(), session.completion()))
         else {
-            return (String::new(), from, true);
+            return FollowResult {
+                text: String::new(),
+                cursor: from,
+                finished: true,
+                dropped_earlier: false,
+            };
         };
 
         let deadline = watch
@@ -250,6 +270,7 @@ impl Harness {
             .map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs(secs));
         let mut streamed = String::new();
         let mut cursor = from;
+        let mut dropped_earlier = false;
 
         loop {
             let (chunk, _truncated, next) = read_from(&turns, cursor);
@@ -258,26 +279,50 @@ impl Harness {
                     sink.push(&chunk, next).await;
                 }
                 streamed.push_str(&chunk);
+                // Keep only what we can actually return. A long run emits
+                // hundreds of MB of stream-json and every byte past the
+                // cap is discarded at the end anyway — accumulating it
+                // all drove the sidecar's RSS to match the transcript,
+                // and an OOM-kill takes every live session with it.
+                if streamed.len() > READ_CAP_BYTES {
+                    streamed = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
+                    dropped_earlier = true;
+                }
                 cursor = next;
                 // Keep draining while output flows; only park once the
                 // file has nothing new.
                 continue;
             }
             if completion.borrow().is_some() {
-                return (streamed, cursor, true);
+                return FollowResult {
+                    text: streamed,
+                    cursor,
+                    finished: true,
+                    dropped_earlier,
+                };
             }
             if watch.cancel.is_cancelled() {
                 tracing::debug!(%handle, "mcp harness: follow ended by client cancellation");
-                return (streamed, cursor, false);
+                return FollowResult {
+                    text: streamed,
+                    cursor,
+                    finished: false,
+                    dropped_earlier,
+                };
             }
             if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-                return (streamed, cursor, false);
+                return FollowResult {
+                    text: streamed,
+                    cursor,
+                    finished: false,
+                    dropped_earlier,
+                };
             }
 
             tokio::select! {
                 _ = watch.cancel.cancelled() => {
                     tracing::debug!(%handle, "mcp harness: follow ended by client cancellation");
-                    return (streamed, cursor, false);
+                    return FollowResult { text: streamed, cursor, finished: false, dropped_earlier };
                 }
                 // Either the child exited or the poll interval elapsed —
                 // loop round to drain whatever it wrote on the way out.
@@ -314,7 +359,13 @@ impl Harness {
     /// The result shape shared by `spawn` and `session_send`. `streamed` is
     /// what the follow already read, reused so the result and the
     /// progress notifications tell the same story.
-    fn describe(&self, handle: &str, finished: Option<bool>, streamed: Option<String>) -> Value {
+    fn describe(
+        &self,
+        handle: &str,
+        finished: Option<bool>,
+        streamed: Option<String>,
+        next_offset: Option<u64>,
+    ) -> Value {
         let Some(snapshot) = self.sessions.with(handle, |session| {
             (
                 session.profile_id.clone(),
@@ -345,6 +396,14 @@ impl Harness {
             out["timedOut"] = json!(true);
         }
         out["sessionInfo"] = self.provenance(handle);
+        // The offset a caller needs to poll from after a timed-out spawn.
+        // Its absence made the documented "poll `session_read { session,
+        // offset }`" workflow impossible to follow — there was no offset
+        // to pass, so a caller had to fall back to `tail` and re-read
+        // what it had already seen.
+        if let Some(next) = next_offset {
+            out["nextOffset"] = json!(next);
+        }
         match streamed {
             Some(streamed) => {
                 let truncated = streamed.len() > READ_CAP_BYTES;
@@ -529,10 +588,12 @@ impl Harness {
         let followed = watch.is_some();
         let mut streamed = String::new();
         let mut cursor = offset.unwrap_or(0);
+        let mut dropped_earlier = false;
         if let Some(watch) = watch {
-            let (text, next, _finished) = self.follow(handle, cursor, &watch).await;
-            streamed = text;
-            cursor = next;
+            let result = self.follow(handle, cursor, &watch).await;
+            streamed = result.text;
+            cursor = result.cursor;
+            dropped_earlier = result.dropped_earlier;
             status = self.sessions.with(handle, |s| s.status()).unwrap_or(status);
         }
 
@@ -541,7 +602,10 @@ impl Harness {
             // exactly what was streamed so the result and the
             // notifications agree.
             (true, _) => {
-                let truncated = streamed.len() > READ_CAP_BYTES;
+                // `dropped_earlier` is the honest half: a long follow
+                // discards output as it goes to stay bounded, so
+                // "truncated" is true even when what we return fits.
+                let truncated = dropped_earlier || streamed.len() > READ_CAP_BYTES;
                 let body = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
                 (body, truncated, cursor)
             }
@@ -559,7 +623,7 @@ impl Harness {
             "lines": text,
             "nextOffset": next_offset,
             "truncated": truncated,
-            "session_info": self.provenance(handle),
+            "sessionInfo": self.provenance(handle),
         });
         // Only surface stderr when it has something — an empty diagnostic
         // channel is noise in every successful result.
@@ -629,41 +693,58 @@ impl LaunchToolArgs {
     }
 }
 
-/// Keys a caller-supplied `with_config` overlay may NOT set.
+/// The ONLY keys a caller-supplied `with_config` overlay may set.
 ///
-/// `ProfileConfig` carries flat `command` / `args` / `env` that
-/// wholesale-replace the agent's, so without this an overlay turns
-/// `spawn` from "launch one of the captain's configured profiles" into
-/// "run an arbitrary binary" — one prompt-injected tool call away from
-/// RCE on a chat-reachable gateway. The `--with-harness` gate is a
-/// deliberate grant of *the captain's profiles*, not of a shell.
-const FORBIDDEN_OVERLAY_KEYS: &[&str] = &["command", "args", "env"];
+/// **Allow-list, not deny-list — deliberately.** A deny-list of
+/// `command`/`args`/`env` looked sufficient and was not: `mcps` accepts
+/// inline `mcp_servers` entries carrying their own `command`/`args`,
+/// which the launcher writes into the vendor's MCP config and the vendor
+/// then spawns — arbitrary execution through a field the deny-list never
+/// mentioned. `$deleteFromPrimitiveList/args` reaches `args` without
+/// ever using the literal key, too. Enumerating the ways *in* is a losing
+/// game against a config tree that grows; enumerating what is *allowed*
+/// is not.
+///
+/// These three are the "one-off swap" the parameter exists for. Anything
+/// else — including every `$`-directive, since a directive's whole job is
+/// to address some other field — is refused.
+const ALLOWED_OVERLAY_KEYS: &[&str] = &["model", "effort", "mode"];
 
-/// Refuse an overlay that would replace what actually gets executed.
+/// Restrict a caller-supplied overlay to settings that cannot change
+/// what gets executed.
 ///
-/// **Top level only, and that is provably the whole reachable surface.**
-/// `command` exists solely on `AgentConfig` and `ProfileConfig`
-/// (`config/agents.rs`), the overlay folds into `ProfileConfig`, and
-/// every config struct carries `deny_unknown_fields` — so the same key
-/// nested anywhere else is a parse error, not a quiet second path in.
-/// Verified against the running server: a plain override, one carrying a
-/// `$patch` directive, one nested under `mcp`, and a multi-overlay array
-/// with the key in a later element are all rejected.
+/// The `--with-harness` gate is a grant of *the captain's profiles*, not
+/// of a shell; without this a single prompt-injected tool call is RCE on
+/// a chat-reachable gateway.
 fn reject_executable_overrides(overlays: &[Value]) -> Result<(), String> {
     for overlay in overlays {
-        let Some(map) = overlay.as_object() else { continue };
-        for key in FORBIDDEN_OVERLAY_KEYS {
-            if map.contains_key(*key) {
+        let Some(map) = overlay.as_object() else {
+            return Err("`with_config` entries must be objects.".into());
+        };
+        for key in map.keys() {
+            if !ALLOWED_OVERLAY_KEYS.contains(&key.as_str()) {
                 return Err(format!(
-                    "`with_config` may not set `{key}`: it would replace the binary this profile runs, \
-                     which turns `spawn` into arbitrary command execution. Use it for model, effort, mode, \
-                     or MCP settings. To run a different binary, add a profile for it in the hyprpilot config."
+                    "`with_config` may only set {}. `{key}` is refused: overlays that reach the command, \
+                     its arguments, its environment, or the MCP servers the agent launches would turn \
+                     `spawn` into arbitrary command execution. To run something else, add a profile for \
+                     it in the hyprpilot config.",
+                    ALLOWED_OVERLAY_KEYS
+                        .iter()
+                        .map(|key| format!("`{key}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
             }
         }
     }
 
     Ok(())
+}
+
+/// Whether byte index `at` starts a UTF-8 codepoint. A continuation
+/// byte is `10xxxxxx`; everything else begins one.
+fn is_utf8_boundary(buf: &[u8], at: usize) -> bool {
+    at == 0 || at >= buf.len() || (buf[at] & 0b1100_0000) != 0b1000_0000
 }
 
 /// Last `cap` bytes of `text`, backed off to a char boundary.
@@ -715,12 +796,26 @@ fn tail_of(path: &std::path::Path, lines: usize) -> (String, bool) {
     let start = all.len().saturating_sub(lines);
     let mut truncated = start > 0;
 
-    let mut out = String::new();
-    for line in &all[start..] {
-        if out.len() + line.len() + 1 > READ_CAP_BYTES {
+    // Build from the END backwards. Taking lines front-to-back and
+    // stopping at the cap meant ONE oversized line — a `stream-json`
+    // event carrying a big tool result easily clears 60 kB — discarded
+    // every line after it, so `session_read` returned an empty tail for a
+    // session with plenty of readable output.
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    for line in all[start..].iter().rev() {
+        if used + line.len() + 1 > READ_CAP_BYTES {
             truncated = true;
-            break;
+            // One huge line must not swallow the newer, smaller ones
+            // after it — skip it and keep going.
+            continue;
         }
+        used += line.len() + 1;
+        kept.push(line);
+    }
+
+    let mut out = String::new();
+    for line in kept.iter().rev() {
         out.push_str(line);
         out.push('\n');
     }
@@ -751,13 +846,37 @@ fn read_from(path: &std::path::Path, offset: u64) -> (String, bool, u64) {
     if file.take(READ_CAP_BYTES as u64).read_to_end(&mut buf).is_err() {
         return (String::new(), false, offset);
     }
+    let filled = buf.len();
     let consumed = match buf.iter().rposition(|byte| *byte == b'\n') {
         Some(idx) => idx + 1,
-        // No complete line yet — either the session is mid-write, or a
-        // single line is longer than the cap. Advancing on the latter
-        // would cut mid-line; holding is correct and self-heals once the
-        // newline arrives.
-        None => return (String::new(), false, offset),
+        // No newline in the window. Two very different cases:
+        None if filled < READ_CAP_BYTES => {
+            // Short read: the session is mid-write and the newline is
+            // still coming. Holding is correct and self-heals.
+            return (String::new(), false, offset);
+        }
+        None => {
+            // The window is FULL with no newline, so this line is longer
+            // than the cap and the newline will never appear inside it.
+            // Holding here pinned the cursor forever — every retry read
+            // the identical bytes — and the caller saw an agent that
+            // silently stopped talking. Hand back the partial line and
+            // advance, on a char boundary so the split never lands
+            // mid-codepoint.
+            let mut cut = filled;
+            while cut > 0 && !is_utf8_boundary(&buf, cut) {
+                cut -= 1;
+            }
+            if cut == 0 {
+                // Pathological: no boundary in a whole window. Advance
+                // anyway rather than stall — lossy decoding below keeps
+                // it readable.
+                cut = filled;
+            }
+            let text = String::from_utf8_lossy(&buf[..cut]).into_owned();
+
+            return (text, true, offset + cut as u64);
+        }
     };
     let truncated = consumed == READ_CAP_BYTES;
     // Lossy is right here, not paranoid: whole lines are valid UTF-8 in
@@ -864,13 +983,15 @@ mod tests {
             sink: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         };
-        let (text, _cursor, finished) = harness.follow(&handle, 0, &watch).await;
+        let result = harness.follow(&handle, 0, &watch).await;
 
-        assert!(finished, "follow must report the session finished");
+        assert!(result.finished, "follow must report the session finished");
+        assert!(result.cursor > 0, "follow must report where to resume from");
         for expected in ["one", "two", "three"] {
             assert!(
-                text.contains(expected),
-                "follow stopped early — missing {expected:?} in {text:?}"
+                result.text.contains(expected),
+                "follow stopped early — missing {expected:?} in {:?}",
+                result.text
             );
         }
     }
@@ -926,27 +1047,100 @@ mod tests {
         );
     }
 
+    /// A single line longer than the read cap has its newline *outside*
+    /// every window, so holding for it pinned the cursor forever and the
+    /// caller saw an agent that silently stopped talking. claude's
+    /// `stream-json` puts one JSON object per line and a big tool result
+    /// clears 60 kB routinely, so this is normal use, not a corner case.
+    #[test]
+    fn read_from_advances_through_a_line_longer_than_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        let huge = format!("{}\n", "x".repeat(READ_CAP_BYTES * 2 + 17));
+        let body = format!("{huge}after\n");
+        std::fs::write(&path, &body).unwrap();
+
+        let mut offset = 0u64;
+        let mut collected = String::new();
+        for _ in 0..20 {
+            let (chunk, _truncated, next) = read_from(&path, offset);
+            if chunk.is_empty() {
+                break;
+            }
+            assert!(next > offset, "cursor must advance — a stall here is unrecoverable");
+            collected.push_str(&chunk);
+            offset = next;
+        }
+
+        assert_eq!(collected.len(), body.len(), "the oversized line must be readable");
+        assert!(
+            collected.ends_with("after\n"),
+            "lines after the oversized one must still arrive"
+        );
+    }
+
+    /// Building the tail front-to-back and stopping at the cap meant one
+    /// oversized line discarded every line after it — an empty tail for a
+    /// session with plenty of readable output, and the fallback a caller
+    /// reaches for when a follow returns nothing.
+    #[test]
+    fn tail_survives_an_oversized_line_and_keeps_the_newer_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        let huge = "x".repeat(READ_CAP_BYTES + 500);
+        std::fs::write(&path, format!("{huge}\nsecond\nthird\n")).unwrap();
+
+        let (text, truncated) = tail_of(&path, 200);
+
+        assert!(truncated, "dropping the oversized line must be reported");
+        assert!(text.contains("second"), "newer lines must survive: {text:?}");
+        assert!(text.contains("third"), "newer lines must survive: {text:?}");
+        assert!(!text.contains(&huge), "the oversized line itself is dropped");
+    }
+
     /// `with_config` folds into `ProfileConfig`, which carries flat
     /// `command` / `args` / `env` that wholesale-replace the agent's. Left
     /// open, one prompt-injected tool call is arbitrary execution on
     /// whatever host runs the sidecar.
     #[test]
-    fn with_config_cannot_replace_the_binary_that_runs() {
+    fn with_config_cannot_reach_anything_executable() {
+        // The direct route.
         for key in ["command", "args", "env"] {
-            let overlay = vec![json!({ key: "anything" })];
-            let err = reject_executable_overrides(&overlay)
-                .expect_err("{key} must be refused — it would make spawn arbitrary execution");
-            assert!(err.contains(key), "the error must name the offending key: {err}");
+            assert!(
+                reject_executable_overrides(&[json!({ key: "anything" })]).is_err(),
+                "`{key}` must be refused — it replaces what runs"
+            );
         }
 
-        // A `$patch` directive alongside the key must not smuggle it past
-        // the check, and neither must burying it in a later overlay.
+        // The two that defeated an earlier deny-list of exactly those
+        // three keys, and are the reason this is an allow-list now:
+        //
+        // `mcps` carries inline `mcp_servers` entries with their OWN
+        // command/args, which the launcher writes into the vendor's MCP
+        // config and the vendor then spawns. Verified reachable against a
+        // running server before this was tightened.
+        assert!(
+            reject_executable_overrides(&[json!({
+                "mcps": [{ "mcp_servers": { "x": { "command": "/bin/sh", "args": ["-c", "id"] } } }]
+            })])
+            .is_err(),
+            "an inline MCP server is arbitrary execution by another name"
+        );
+        // A `$` directive addresses a field without ever naming it, so
+        // key-matching alone never sees `args`.
+        assert!(
+            reject_executable_overrides(&[json!({ "$deleteFromPrimitiveList/args": ["--sandbox"] })]).is_err(),
+            "a directive must not strip a profile's safety flags"
+        );
+
+        // Neither may `$patch`, nor a key buried in a later overlay.
         assert!(reject_executable_overrides(&[json!({ "$patch": "replace", "command": "/bin/sh" })]).is_err());
         assert!(reject_executable_overrides(&[json!({ "model": "x" }), json!({ "args": ["-c"] })]).is_err());
+        // `system_prompt` reads a file from disk into the child's context.
+        assert!(reject_executable_overrides(&[json!({ "system_prompt": [{ "file": "~/.ssh/id_ed25519" }] })]).is_err());
 
-        // The legitimate uses stay open.
-        let benign = vec![json!({ "model": "some-model", "effort": "high", "mode": "plan" })];
-        assert!(reject_executable_overrides(&benign).is_ok());
+        // The one-off swap the parameter exists for stays open.
+        assert!(reject_executable_overrides(&[json!({ "model": "m", "effort": "high", "mode": "plan" })]).is_ok());
         assert!(reject_executable_overrides(&[]).is_ok());
     }
 
