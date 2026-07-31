@@ -575,6 +575,11 @@ fn write_breadcrumb(dir: &Path, handle: &str, pid: u32, pgid: i32) {
         // without this the newcomer cannot tell "a crashed predecessor's
         // leftovers" from "a live sibling's working sessions".
         "ownerPid": std::process::id(),
+        // The session leader's start time. Checked before the sweep ever
+        // signals, so a recycled pid is never mistaken for our process
+        // group. Without it the sweep would `killpg` a number, not an
+        // identity.
+        "startTicks": proc_start_ticks(pid),
         "startedAt": SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
@@ -654,11 +659,36 @@ pub(crate) fn sweep_stale_sessions_in(temp: &Path) {
             }
         }
 
-        if let Some(pgid) = crumb.as_ref().and_then(|crumb| crumb.pgid) {
+        if let Some(crumb) = crumb.as_ref() {
             // The owner is dead, so a still-live group is genuinely
             // orphaned — kill the whole group, not just the leader, since
             // the vendor spawns its own subprocesses.
-            signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
+            //
+            // But prove it is OUR group first. A breadcrumb can be days
+            // old, pids wrap around, and the group leader's pid == pgid,
+            // so signalling a bare recorded number could `SIGKILL` an
+            // unrelated process group of the same user. Comparing the
+            // leader's start time makes the pid an identity instead.
+            match (crumb.pgid, crumb.start_ticks) {
+                (Some(pgid), Some(recorded)) if proc_start_ticks(pgid as u32) == Some(recorded) => {
+                    signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
+                }
+                (Some(pgid), Some(_)) => {
+                    tracing::debug!(
+                        pgid,
+                        "mcp harness: startup sweep: not signalling — pid was recycled or the group is gone"
+                    );
+                }
+                // Written before start times were recorded, or on a
+                // platform without them. Removing the directory is safe;
+                // signalling an unverifiable pgid is not.
+                _ => {
+                    tracing::debug!(
+                        path = %path.display(),
+                        "mcp harness: startup sweep: no verifiable group; reclaiming the directory only"
+                    );
+                }
+            }
         }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => reclaimed += 1,
@@ -679,6 +709,7 @@ pub(crate) fn sweep_stale_sessions_in(temp: &Path) {
 struct Breadcrumb {
     owner_pid: Option<u32>,
     pgid: Option<i32>,
+    start_ticks: Option<u64>,
 }
 
 fn read_breadcrumb(dir: &Path) -> Option<Breadcrumb> {
@@ -691,6 +722,7 @@ fn read_breadcrumb(dir: &Path) -> Option<Breadcrumb> {
             .and_then(serde_json::Value::as_u64)
             .map(|p| p as u32),
         pgid: value.get("pgid").and_then(serde_json::Value::as_i64).map(|p| p as i32),
+        start_ticks: value.get("startTicks").and_then(serde_json::Value::as_u64),
     })
 }
 
@@ -702,6 +734,32 @@ fn read_breadcrumb(dir: &Path) -> Option<Breadcrumb> {
 /// directory it could have reclaimed, not that it kills something live.
 fn process_is_alive(pid: u32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+}
+
+/// A process's start time in clock ticks since boot — `/proc/<pid>/stat`
+/// field 22.
+///
+/// This is what makes a pid an IDENTITY rather than a number. Pids wrap
+/// around, and a breadcrumb can be days old by the time a sweep reads
+/// it; the start time distinguishes "the same process we spawned" from
+/// "some unrelated process that happens to hold that pid now".
+///
+/// `comm` (field 2) may itself contain spaces and parentheses, so the
+/// fields are counted from AFTER the final `)`, never by splitting the
+/// whole line.
+#[cfg(target_os = "linux")]
+fn proc_start_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let tail = stat.rsplit_once(')')?.1;
+
+    // After `)` the fields are state(3), ppid(4), … starttime(22), so
+    // starttime is the 19th token here.
+    tail.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn proc_start_ticks(_pid: u32) -> Option<u64> {
+    None
 }
 
 #[cfg(test)]
@@ -1003,6 +1061,105 @@ mod tests {
         assert!(remaining.contains(&live), "a running session is never evicted");
 
         table.shutdown().await;
+    }
+
+    /// The sweep must prove a recorded pgid is still OUR process group
+    /// before signalling it. Pids wrap around and a breadcrumb can be
+    /// days old, so a bare recorded number could name an unrelated
+    /// process group of the same user by the time a sweep reads it —
+    /// and the sweep sends `SIGKILL`.
+    ///
+    /// Uses OUR OWN pid as the "recycled" pgid with a deliberately wrong
+    /// start time: if the identity check regressed, this test would kill
+    /// the test runner, which is about as loud a failure signal as one
+    /// can arrange.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sweep_will_not_signal_a_recycled_pid() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = root.path();
+        let me = std::process::id();
+
+        assert!(
+            proc_start_ticks(me).is_some(),
+            "start ticks must be readable for the guard to mean anything"
+        );
+
+        let dir = temp.join(format!("{SESSION_DIR_PREFIX}recycled"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(BREADCRUMB_FILE),
+            serde_json::json!({
+                "handle": "h",
+                "pid": me,
+                "pgid": me,
+                // A dead owner, so the sweep proceeds to the kill step…
+                "ownerPid": 0x7FFF_FFFEu32,
+                // …but the start time does NOT match this pid, which is
+                // exactly the recycled-pid case.
+                "startTicks": 1u64,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        sweep_stale_sessions_in(temp);
+
+        // Surviving to here is the assertion: the sweep reclaimed the
+        // directory without signalling our own process group.
+        assert!(!dir.exists(), "the stale directory is still reclaimed");
+    }
+
+    /// The counterpart to the recycled-pid test: the identity check must
+    /// not be so strict that it stops reclaiming genuine orphans. A
+    /// breadcrumb naming a REAL live process group, with a matching
+    /// start time and a dead owner, must still be killed.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn sweep_kills_a_verified_orphan_group() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = root.path();
+
+        // A real process in its own group, standing in for an agent a
+        // crashed sidecar left behind.
+        let mut orphan = tokio::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("spawn orphan");
+        let pid = orphan.id().expect("orphan pid");
+        let ticks = proc_start_ticks(pid).expect("orphan start ticks");
+
+        let dir = temp.join(format!("{SESSION_DIR_PREFIX}orphan"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(BREADCRUMB_FILE),
+            serde_json::json!({
+                "handle": "h",
+                "pid": pid,
+                "pgid": pid,
+                "ownerPid": 0x7FFF_FFFEu32,
+                "startTicks": ticks,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        sweep_stale_sessions_in(temp);
+
+        // Assert on the WAIT STATUS, not `process_is_alive`: a killed
+        // child that nobody has reaped is a zombie, and `kill(pid, 0)`
+        // succeeds for a zombie — so a liveness probe would read a
+        // successfully-killed process as still alive.
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), orphan.wait())
+            .await
+            .expect("a verified orphan group must be killed — the identity check must not over-block")
+            .expect("wait on orphan");
+        assert!(
+            !status.success(),
+            "the orphan must have been signalled, not exited normally"
+        );
+        assert!(!dir.exists(), "and its directory removed");
     }
 
     #[test]
