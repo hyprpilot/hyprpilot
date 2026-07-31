@@ -136,7 +136,7 @@ mcp:
     enabled: true
 
   skills:
-    roots:
+    dirs:
       - dir: ~/.config/hyprpilot/skills
       - dir: ~/.team/shared-skills
         ignore:
@@ -167,13 +167,13 @@ The general-tools server — the surface for things that are neither a skills re
 
 ### `mcp.skills`
 
-| Field   | Type                 | Default  | What it does                                                 |
-| ------- | -------------------- | -------- | ------------------------------------------------------------ |
-| `roots` | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. |
+| Field  | Type                 | Default  | What it does                                                 |
+| ------ | -------------------- | -------- | ------------------------------------------------------------ |
+| `dirs` | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. |
 
-Unlike the other two, this server is also gated on having something to serve: if `roots` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
+Unlike the other two, this server is also gated on having something to serve: if `dirs` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
 
-#### `roots` entries
+#### `dirs` entries
 
 | Field    | Type             | Default | What it does                                                               |
 | -------- | ---------------- | ------- | -------------------------------------------------------------------------- |

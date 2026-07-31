@@ -290,7 +290,7 @@ clobbering the layer list. This closes the footgun where a partial
 `[patches.mcp]` in a user layer silently dropped the seeded skills dir.
 
 `defaults.toml` seeds one unscoped patch pointing the skills server at
-the XDG skills dir. The seed carries **only** `mcp.skills.roots` (the
+the XDG skills dir. The seed carries **only** `mcp.skills.dirs` (the
 load-bearing value that must survive layer merge);
 `enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
 are the typed `McpConfig::default()` the resolver backfills per-leaf in
@@ -379,7 +379,7 @@ Skills reach the agent **only** through the skills server.
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
-  `[mcp.skills].roots` (`Vec<SkillEntry { dir, ignore }>`, default
+  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore }>`, default
   seed `~/.config/hyprpilot/skills`) and `[mcp.harness].maxSessions`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
   rather than merging. `[mcp.harness].enabled` defaults to **false**

@@ -94,11 +94,11 @@ pub struct SkillsServerConfig {
     #[garde(skip)]
     pub name: Option<String>,
 
-    /// Skill catalog roots. Each is a directory of `<slug>/SKILL.md`
+    /// Skill catalog directories. Each is a directory of `<slug>/SKILL.md`
     /// bundles plus an optional per-root glob `ignore` list applied only
     /// to that root's discoveries.
     #[garde(dive)]
-    pub roots: Option<Vec<SkillEntry>>,
+    pub dirs: Option<Vec<SkillEntry>>,
 
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
     #[garde(custom(validate_globs))]
@@ -288,7 +288,7 @@ impl McpConfig {
     pub fn resolved_skills(&self) -> Vec<super::ResolvedSkillEntry> {
         self.skills
             .as_ref()
-            .and_then(|skills| skills.roots.as_deref())
+            .and_then(|skills| skills.dirs.as_deref())
             .unwrap_or(&[])
             .iter()
             .map(|e| super::ResolvedSkillEntry {
@@ -341,8 +341,8 @@ mod tests {
         let skills = seed_mcp
             .skills
             .as_ref()
-            .and_then(|s| s.roots.as_deref())
-            .expect("seed patch carries the skills roots");
+            .and_then(|s| s.dirs.as_deref())
+            .expect("seed patch carries the skills dirs");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].dir, std::path::PathBuf::from("~/.config/hyprpilot/skills"));
         assert!(McpConfig::default().skills.is_none());
