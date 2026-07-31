@@ -1,4 +1,4 @@
-//! The agent harness — `list_profiles` / `spawn` / `resume` /
+//! The agent harness — `list_profiles` / `spawn` / `session_send` /
 //! `session_list` / `session_read` / `session_kill`.
 //!
 //! Turns the captain's profile registry into something a connected

@@ -140,6 +140,8 @@ mcp:
 
 The skills root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry; `enabled` / `autoAcceptTools` / `autoRejectTools` fall back to the built-in defaults above without appearing in the seed. A profile's `mcp` field wholesale-replaces this block.
 
+This block has no field for it, but the same server binary can expose a second surface: `hyprpilot mcp serve --with-harness` adds tools that let a connected agent launch and drive other hyprpilot sessions. It's a `mcp serve` CLI flag, not something `[mcp]` turns on, and the auto-injected entry above never passes it — see [Runtime → Agent Harness](../runtime/harness).
+
 `autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
 ### `skills` entries
