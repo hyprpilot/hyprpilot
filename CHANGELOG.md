@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.0](https://github.com/hyprpilot/hyprpilot/compare/v3.2.0...v3.3.0) (2026-07-31)
+
+
+### Features
+
+* **mcp:** split the in-tree MCP surface into three servers ([#214](https://github.com/hyprpilot/hyprpilot/issues/214)) ([3f6ce6d](https://github.com/hyprpilot/hyprpilot/commit/3f6ce6d338ec307195031a74be991f2b5818870f))
+
 ## [3.2.0](https://github.com/hyprpilot/hyprpilot/compare/v3.1.3...v3.2.0) (2026-07-31)
 
 
