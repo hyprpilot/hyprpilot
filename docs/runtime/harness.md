@@ -85,7 +85,7 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 ### Workflow
 
 1. **`list_profiles`** to find an `id` — a row marked `!` failed to resolve; don't launch it.
-2. **`spawn { profile, prompt }`** to start a session. With `wait` true (the default) it blocks and returns the transcript; if the turn outlives `timeout_seconds` the result comes back with status `running`, a `nextOffset` to resume reading from, and the agent **keeps working**.
+2. **`spawn { profile, prompt }`** to start a session. With `wait` true (the default) it blocks and returns the transcript; if the turn outlives `timeout_seconds` the result comes back with status `running`, a `nextCursor` to resume reading from, and the agent **keeps working**.
 3. If status is `running`, poll or follow **`session_read { session, wait: true }`** — do **not** call `spawn` again for the same conversation.
 4. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
 5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
@@ -108,7 +108,9 @@ The two tools share one parameter set:
 
 Exactly one of `prompt` / `file` is required on both — the same mutual exclusion the CLI's `-p`/`-f` enforce. `spawn` additionally requires `profile` (an id from `list_profiles`). `session_send` additionally requires `session` (a handle from `spawn` or `session_list`) and has **no** `profile` parameter — the profile is inherited from the original spawn, so a conversation can't switch profiles mid-stream.
 
-`session_send` **replays the original launch**: profile, `cwd`, `mode`, `with_config` and `args` all carry forward from the `spawn` that started the conversation. Pass any of them explicitly on a turn to override it for that turn.
+`session_send` **replays the original launch** and does not let you change it. Only `prompt` / `file`, `mode`, `wait` and `timeout_seconds` are per-turn; `cwd`, `args` and `with_config` are inherited from the `spawn` and are **rejected** if passed — start a new session to launch differently.
+
+`mode` is the exception because a per-turn permission change is a real workflow (`mode: plan` for a read-only follow-up) and it does not affect how the vendor looks the conversation up.
 
 How a conversation was launched is part of its **identity**, not a per-turn option — re-deriving a follow-up turn from defaults launched it differently from the first, silently. The visible failure was `cwd`: claude keys its conversation store by project directory, so a resume from elsewhere came back with a bare `No conversation found with session ID: …` for a perfectly healthy session, because it was looked up in the wrong place. A dropped `mode` or `args` is quieter and worse — it changes the agent's permissions or flags mid-conversation without saying anything.
 
@@ -123,10 +125,12 @@ Enumerating the ways _in_ is a losing game against a config tree that grows; enu
 | Parameter         | Type    | Default | What it does                                                                                                                        |
 | ----------------- | ------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `session`         | string  | —       | Required. Handle from `spawn` or `session_list`.                                                                                    |
-| `tail`            | integer | `200`   | Trailing lines to return when `offset` is omitted.                                                                                  |
-| `offset`          | integer | —       | Byte offset to read forward from — pass a previous result's `nextOffset` to stream new output only.                                 |
-| `wait`            | bool    | `false` | Follow the session live from `offset` instead of returning immediately — the same knob, with the same meaning, as `spawn`'s `wait`. |
+| `tail`            | integer | `200`   | Trailing lines to return when `cursor` is omitted.                                                                                  |
+| `cursor`          | string  | —       | Opaque pagination cursor — pass a previous result's `nextCursor` verbatim to continue where it stopped.                             |
+| `wait`            | bool    | `false` | Follow the session live from `cursor` instead of returning immediately — the same knob, with the same meaning, as `spawn`'s `wait`. |
 | `timeout_seconds` | integer | —       | Caps a `wait` follow, in seconds. Inert without `wait: true`. Omit to follow until the agent finishes or you cancel.                |
+
+**Pagination follows the MCP idiom.** `cursor` in, `nextCursor` out, opaque both ways — pass one back verbatim, never parse or construct one. **An absent `nextCursor` means the session is finished and you have all of it**; a running session always returns one, so a poller never loses its place. An unrecognised cursor is an error rather than a silent reset. There is no `truncated` flag: the cursor's presence is the signal.
 
 A follow streams each new chunk as an MCP `notifications/progress` message when the caller's request carries a `progressToken`; without one it degrades to a plain long poll and the caller still gets everything in the final result. It ends on whichever comes first: the agent finishing, the caller cancelling the request, or `timeout_seconds` elapsing — there's no other server-side time limit.
 
@@ -169,7 +173,7 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Concurrent running sessions | 8                     | `spawn` refused past the ceiling; `session_kill` a finished or runaway one to free a slot.                                       |
 | Spawn nesting depth         | 2                     | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; `spawn` refused past it.                              |
 | Transcript read per call    | 60,000 bytes          | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                 |
-| Default tail                | 200 lines             | `session_read`'s default when `offset` is omitted.                                                                               |
+| Default tail                | 200 lines             | `session_read`'s default when `cursor` is omitted.                                                                               |
 | Default turn timeout        | 300 seconds           | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.                                        |
 | Retained sessions           | 64 (`--max-sessions`) | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
 
@@ -181,10 +185,14 @@ The depth ceiling exists because a session started through the harness could its
 
 ## Example config
 
-Scope the harness to the profiles that should orchestrate, using a `$match`ed [patch](../config/patches) rather than turning it on globally:
+Two independent switches, and you need **both**:
+
+1. `mcp.harness.enabled` — whether the _server_ is injected at all, for the profile doing the orchestrating.
+2. `profiles.harness.enabled` — which profiles that server is allowed to _drive_.
 
 ```yaml
 patches:
+  # The gateway profile gets the harness server injected.
   - $match:
       profile: gateway
     mcp:
@@ -192,14 +200,22 @@ patches:
         enabled: true
         maxSessions: 128
 
+  # …and these are the profiles it may launch.
+  - $match:
+      profile: 'worker/*'
+    harness:
+      enabled: true
+
 profiles:
   - id: gateway
     agent: claude-code
-  - id: engineer # no harness — the default
+  - id: worker/engineer
+    agent: claude-code
+  - id: deploy # neither switch — invisible to the harness
     agent: claude-code
 ```
 
-A profile's own `mcp` block works too, but it wholesale-replaces the global one, so you would have to restate `skills` alongside it. Only give a profile the harness when you actually want it driving other hyprpilot sessions — see [gating the harness](#gating-the-harness) above for why.
+Setting only the first gives an agent the tools and an **empty** `list_profiles`; setting only the second nominates profiles nothing can reach. A profile's own `mcp` block works in place of the first patch, but it wholesale-replaces the global one, so you would have to restate `skills` alongside it.
 
 To run it by hand (debugging, or a gateway that manages its own MCP config), the subcommand takes no catalogue:
 

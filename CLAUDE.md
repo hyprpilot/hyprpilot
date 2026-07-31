@@ -462,18 +462,28 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   crashed predecessor left behind, skipping any directory whose owning
   sidecar is still alive (two sidecars at once is ordinary).
 - **A conversation REPLAYS its launch.** `session_send` carries the
-  original `cwd` / `mode` / `with_config` / `args` forward from the
-  spawn (recorded as `sessions::LaunchShape`); an explicit per-turn
-  value overrides. How a conversation was launched is part of its
-  IDENTITY, not a per-turn option — claude keys its conversation store
-  by project directory, so a resume from a different cwd failed with a
-  bare "No conversation found with session ID" for a healthy session.
+  spawn's `cwd` / `mode` / `with_config` / `args` forward (recorded as
+  `sessions::LaunchShape`) and its tool schema does NOT accept
+  `cwd`/`args`/`with_config` — passing one is an error, not a silent
+  drop. Only `prompt`/`file`, `mode`, `wait`, `timeout_seconds` are
+  per-turn. How a conversation was launched is part of its IDENTITY:
+  claude keys its conversation store by project directory, so a resume
+  from a different cwd failed with a bare "No conversation found with
+  session ID" for a healthy session.
+- **Reads paginate the MCP way.** `cursor` in, `nextCursor` out, opaque
+  (hex-encoded byte offset) so a caller cannot synthesise a position it
+  never read. **Absent `nextCursor` = finished AND fully read**; a
+  running session always gets one. There is no `truncated` flag — the
+  cursor's presence is the signal. An unrecognised cursor errors.
 - **cwd reaches each vendor differently.** claude inherits the process
-  cwd; codex takes `--cd`; opencode takes `--dir`. hyprpilot sets
-  `current_dir` AND emits the flag for the two that need one —
-  opencode does not derive its tool sandbox from the process cwd, so
-  without `--dir` the agent silently worked in the wrong tree while
-  every surface reported the requested path.
+  cwd; codex takes a global `--cd`; opencode takes `--dir` **on `run`
+  only**. hyprpilot sets `current_dir` AND emits the flag for the two
+  that need one — opencode does not derive its tool sandbox from the
+  process cwd, so without `--dir` the agent silently worked in the
+  wrong tree while every surface reported the requested path. `--dir`
+  is gated on the headless path: the bare TUI command takes a
+  positional `project` and parses strictly, so passing it there exits 1
+  with a usage dump and no session at all.
 - **`[profiles.harness]` is OPT-IN.** A profile with no block is not
   available: absent from `list_profiles` AND refused by
   `spawn`/`session_send`. Within a declared block `enabled` defaults

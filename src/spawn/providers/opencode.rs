@@ -57,17 +57,21 @@ pub(super) fn build_opencode(
         command.args.push(agent_name.clone());
     }
 
-    // opencode does NOT derive its tool sandbox from the process working
-    // directory — it takes an explicit `--dir`. `current_dir` alone left
-    // the agent operating in `$HOME` while every surface (the harness's
-    // `sessionInfo.cwd`, the resolved profile) reported the requested
-    // path, so a delegated prompt using relative paths silently read and
-    // wrote the wrong tree and still reported success. codex needs the
-    // same treatment via `--cd`; claude is the only one that inherits.
-    if let Some(cwd) = command.cwd.as_ref() {
-        if !has_flag(&detect_args, "--dir", None) {
-            command.args.push("--dir".into());
-            command.args.push(cwd.display().to_string());
+    // opencode does not derive its tool sandbox from the process working
+    // directory — it takes an explicit `--dir`, so without this a
+    // delegated prompt using relative paths read and wrote the wrong
+    // tree while every surface reported the requested path.
+    //
+    // ONLY on `run`. Unlike codex's global `--cd`, `--dir` is a `run`
+    // option: the bare TUI command takes a positional `project` and its
+    // parser is strict, so passing `--dir` there exits 1 with a usage
+    // dump and no session at all.
+    if prompt.is_some() {
+        if let Some(cwd) = command.cwd.as_ref() {
+            if !has_flag(&detect_args, "--dir", None) {
+                command.args.push("--dir".into());
+                command.args.push(cwd.display().to_string());
+            }
         }
     }
 
@@ -332,7 +336,25 @@ mod tests {
     /// delegated prompt using relative paths silently hit the wrong
     /// tree and still reported success.
     #[test]
-    fn opencode_passes_resolved_cwd_to_native_dir_flag() {
+    fn opencode_headless_passes_resolved_cwd_to_native_dir_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            Vec::new(),
+            Some("do the thing"),
+        )
+        .unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--dir", "/tmp/hyprpilot-work"]));
+        assert_eq!(command.cwd(), Some(std::path::Path::new("/tmp/hyprpilot-work")));
+    }
+
+    /// `--dir` is a `run` option. The bare TUI command takes a positional
+    /// `project` and parses strictly, so emitting `--dir` there exits 1
+    /// with a usage dump — no TUI, no session.
+    #[test]
+    fn opencode_interactive_never_gets_the_dir_flag() {
         let command = build_command(
             &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
             None,
@@ -342,8 +364,17 @@ mod tests {
         )
         .unwrap();
 
-        assert!(command.args.windows(2).any(|w| w == ["--dir", "/tmp/hyprpilot-work"]));
-        assert_eq!(command.cwd(), Some(std::path::Path::new("/tmp/hyprpilot-work")));
+        assert!(
+            !command.args.iter().any(|arg| arg == "--dir"),
+            "got: {:?}",
+            command.args
+        );
+        assert!(!command.args.iter().any(|arg| arg == "run"));
+        assert_eq!(
+            command.cwd(),
+            Some(std::path::Path::new("/tmp/hyprpilot-work")),
+            "the process cwd still carries it"
+        );
     }
 
     #[test]
@@ -353,7 +384,7 @@ mod tests {
             None,
             &[],
             vec!["--dir".into(), "/tmp/other".into()],
-            None,
+            Some("do the thing"),
         )
         .unwrap();
 

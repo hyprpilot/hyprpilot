@@ -210,8 +210,9 @@ pub struct ProfileConfig {
     /// launch errors.
     #[garde(skip)]
     pub headless: Option<bool>,
-    /// Per-profile harness policy. Absent (the default) means the
-    /// profile is fully available to `mcp harness`.
+    /// Per-profile harness policy. **Absence means unavailable** — the
+    /// harness is opt-in, so declaring the block is what nominates a
+    /// profile.
     #[garde(dive)]
     pub harness: Option<ProfileHarnessConfig>,
     /// When `Some`, REPLACES the base `[[agents]]` entry's `command`

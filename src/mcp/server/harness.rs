@@ -48,7 +48,6 @@ pub const DEFAULT_MAX_SESSIONS: usize = 64;
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
 /// transcript never blows the caller's own budget.
 const READ_CAP_BYTES: usize = 60_000;
-const DEFAULT_TAIL_LINES: usize = 200;
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 /// How often a follow re-checks the transcript for new bytes. The file
@@ -432,24 +431,18 @@ impl Harness {
             out["timedOut"] = json!(true);
         }
         out["sessionInfo"] = self.provenance(handle);
-        match turn_start {
-            // Read forward from where this turn began. `nextOffset` is
-            // the first byte NOT returned, so the documented "poll
-            // `session_read { session, offset }`" loop reconstructs the
-            // transcript with no gap — however far the turn overran the
-            // cap.
-            Some(start) => {
-                let (text, truncated, next) = read_from(&turns, start);
-                out["text"] = json!(text);
-                out["truncated"] = json!(truncated);
-                out["nextOffset"] = json!(next);
+        // Read forward from where this turn began, so the documented
+        // "poll `session_read { session, cursor }`" loop reconstructs the
+        // transcript with no gap — however far the turn overran the cap.
+        if let Some(start) = turn_start {
+            let (text, truncated, next) = read_from(&turns, start);
+            out["text"] = json!(text);
+            // Absent `nextCursor` means "finished AND fully read". A
+            // running session always gets one: without a resume point a
+            // poller would fall back to `tail` and lose its place.
+            if truncated || status != SessionStatus::Exited {
+                out["nextCursor"] = json!(encode_cursor(next));
             }
-            None if status == SessionStatus::Exited => {
-                let (text, truncated) = tail_of(&turns, DEFAULT_TAIL_LINES);
-                out["text"] = json!(text);
-                out["truncated"] = json!(truncated);
-            }
-            None => {}
         }
 
         out
@@ -464,9 +457,14 @@ impl Harness {
         // refused by `launch` — the listing is the discoverability half,
         // not the gate. `hyprpilot profiles` still shows it: this is a
         // harness policy, not a "hide it from the captain" one.
+        // A profile whose patches fail to resolve falls back to its
+        // UNPATCHED base, so `harness_enabled` reads false even when the
+        // patch that opts it in is the thing that broke. Keep those rows:
+        // they carry the error, and a silently-missing profile is the
+        // worst way to report a broken config.
         let profiles: Vec<_> = crate::spawn::list_profiles(&cfg, None, &[])
             .into_iter()
-            .filter(|profile| profile.harness_enabled)
+            .filter(|profile| profile.harness_enabled || profile.error.is_some())
             .collect();
         let summary = profiles_table(&profiles);
 
@@ -629,7 +627,7 @@ impl Harness {
         &self,
         handle: &str,
         tail: usize,
-        offset: Option<u64>,
+        cursor: Option<String>,
         watch: Option<WatchOptions>,
     ) -> Result<Value, String> {
         let paths = self
@@ -639,6 +637,7 @@ impl Harness {
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
         let (turns, stderr_path, mut status) = paths;
+        let offset = cursor.as_deref().map(decode_cursor).transpose()?;
 
         // Following streams from `offset` forward; a tail-follow would
         // have no stable resume point. The follow's own text/cursor are
@@ -655,14 +654,18 @@ impl Harness {
             // handing back its buffer. That buffer keeps its NEWEST
             // bytes while the cursor advances past the discarded ones,
             // so anything trimmed became unreachable — offsets only move
-            // forward. Reading from the file keeps `nextOffset` the
+            // forward. Reading from the file keeps the cursor at the
             // first byte NOT returned, so paging never skips.
             (true, _) => read_from(&turns, offset.unwrap_or(0)),
             (false, Some(offset)) => read_from(&turns, offset),
             (false, None) => {
-                let (text, truncated) = tail_of(&turns, tail);
+                // A tail read is at EOF by definition. `tail_of`'s own
+                // "truncated" means lines were dropped BEHIND the window,
+                // which is not what a forward cursor signals — so it is
+                // deliberately not fed into one.
+                let (text, _dropped_before_the_tail) = tail_of(&turns, tail);
                 let end = std::fs::metadata(&turns).map(|m| m.len()).unwrap_or(0);
-                (text, truncated, end)
+                (text, false, end)
             }
         };
 
@@ -670,10 +673,15 @@ impl Harness {
             "session": handle,
             "status": status.as_str(),
             "lines": text,
-            "nextOffset": next_offset,
-            "truncated": truncated,
             "sessionInfo": self.provenance(handle),
         });
+        // MCP pagination: `nextCursor` present means there is more to
+        // read, absent means the session is finished AND fully read. A
+        // running session always gets one — without a resume point a
+        // poller would fall back to `tail` and lose its place.
+        if truncated || status != SessionStatus::Exited {
+            out["nextCursor"] = json!(encode_cursor(next_offset));
+        }
         // Only surface stderr when it has something — an empty diagnostic
         // channel is noise in every successful result.
         if let Ok(errors) = std::fs::read_to_string(&stderr_path) {
@@ -797,12 +805,17 @@ fn harness_allows(cfg: &crate::config::Config, profile_id: &str) -> bool {
     // Resolve first: reading the raw entry made a `$match`ed patch — the
     // natural way to opt a family in — a silent no-op. `with_config` is
     // withheld so the gate reads nothing the caller controls.
-    crate::resolve::resolve_effective_profile(cfg, Some(profile_id), &[]).is_ok_and(|profile| {
-        profile
+    match crate::resolve::resolve_effective_profile(cfg, Some(profile_id), &[]) {
+        Ok(profile) => profile
             .harness
             .as_ref()
-            .is_some_and(crate::config::ProfileHarnessConfig::is_enabled)
-    })
+            .is_some_and(crate::config::ProfileHarnessConfig::is_enabled),
+        // Let the launch proceed and fail with the resolver's real error.
+        // Reporting "not available to the harness" for a broken patch
+        // would send the captain hunting for a gate that is not the
+        // problem.
+        Err(_) => true,
+    }
 }
 
 /// Restrict a caller-supplied overlay to settings that cannot change
@@ -902,6 +915,24 @@ fn tail_of(path: &std::path::Path, lines: usize) -> (String, bool) {
 /// Read forward from a byte offset, returning whole lines and the offset
 /// to resume from. Trailing partial lines are held back — a session
 /// still being written to will complete them on the next call.
+/// Encode a transcript position as an MCP pagination cursor.
+///
+/// MCP cursors are opaque by contract — a client must pass one back
+/// verbatim, never parse or synthesise it. Hex keeps that honest: there
+/// is no arithmetic to do on `"1a2b"`, whereas a raw byte offset invites
+/// a caller to compute a position and skip bytes it never read.
+fn encode_cursor(offset: u64) -> String {
+    format!("{offset:x}")
+}
+
+fn decode_cursor(raw: &str) -> Result<u64, String> {
+    u64::from_str_radix(raw, 16).map_err(|_| {
+        format!(
+            "invalid cursor `{raw}`. Pass a `nextCursor` from a previous result verbatim, or omit it to read the tail."
+        )
+    })
+}
+
 fn read_from(path: &std::path::Path, offset: u64) -> (String, bool, u64) {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -972,7 +1003,11 @@ fn unix_secs(t: std::time::SystemTime) -> u64 {
 /// class of clients — not a debug convenience.
 fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
     if profiles.is_empty() {
-        return "No profiles configured. Add `[[profiles]]` entries to the hyprpilot config.".into();
+        return "No profiles are available to the harness. It is opt-in per profile: add \
+                `[profiles.harness] enabled = true` to the ones an agent may drive (a `$match`ed \
+                `[[patches]]` entry opts a whole family in at once). `hyprpilot profiles` lists \
+                every configured profile, including the ones not nominated."
+            .into();
     }
     let id_width = profiles.iter().map(|p| p.id.len()).max().unwrap_or(2).max(2);
     let provider_width = profiles.iter().map(|p| p.provider.len()).max().unwrap_or(8).max(8);
@@ -1363,6 +1398,6 @@ mod tests {
 
     #[test]
     fn empty_profile_list_says_so_rather_than_rendering_an_empty_table() {
-        assert!(profiles_table(&[]).contains("No profiles configured"));
+        assert!(profiles_table(&[]).contains("opt-in per profile"));
     }
 }
