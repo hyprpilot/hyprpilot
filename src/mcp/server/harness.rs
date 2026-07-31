@@ -641,8 +641,14 @@ const FORBIDDEN_OVERLAY_KEYS: &[&str] = &["command", "args", "env"];
 
 /// Refuse an overlay that would replace what actually gets executed.
 ///
-/// Checked at the top level only — that is where `ProfileConfig` reads
-/// them, so it is exactly the reachable surface.
+/// **Top level only, and that is provably the whole reachable surface.**
+/// `command` exists solely on `AgentConfig` and `ProfileConfig`
+/// (`config/agents.rs`), the overlay folds into `ProfileConfig`, and
+/// every config struct carries `deny_unknown_fields` — so the same key
+/// nested anywhere else is a parse error, not a quiet second path in.
+/// Verified against the running server: a plain override, one carrying a
+/// `$patch` directive, one nested under `mcp`, and a multi-overlay array
+/// with the key in a later element are all rejected.
 fn reject_executable_overrides(overlays: &[Value]) -> Result<(), String> {
     for overlay in overlays {
         let Some(map) = overlay.as_object() else { continue };
@@ -932,6 +938,11 @@ mod tests {
                 .expect_err("{key} must be refused — it would make spawn arbitrary execution");
             assert!(err.contains(key), "the error must name the offending key: {err}");
         }
+
+        // A `$patch` directive alongside the key must not smuggle it past
+        // the check, and neither must burying it in a later overlay.
+        assert!(reject_executable_overrides(&[json!({ "$patch": "replace", "command": "/bin/sh" })]).is_err());
+        assert!(reject_executable_overrides(&[json!({ "model": "x" }), json!({ "args": ["-c"] })]).is_err());
 
         // The legitimate uses stay open.
         let benign = vec![json!({ "model": "some-model", "effort": "high", "mode": "plan" })];
