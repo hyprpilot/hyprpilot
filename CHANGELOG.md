@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/hyprpilot/hyprpilot/compare/v3.1.3...v3.2.0) (2026-07-31)
+
+
+### Features
+
+* **mcp:** agent harness — spawn and drive hyprpilot profiles from the MCP server ([#212](https://github.com/hyprpilot/hyprpilot/issues/212)) ([dc7740d](https://github.com/hyprpilot/hyprpilot/commit/dc7740d65b66a9e1854c5e16a1802a5f37459e20))
+
 ## [3.1.3](https://github.com/hyprpilot/hyprpilot/compare/v3.1.2...v3.1.3) (2026-07-24)
 
 
