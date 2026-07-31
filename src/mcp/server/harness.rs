@@ -85,16 +85,15 @@ pub(crate) struct WatchOptions {
 
 /// What a follow saw.
 ///
-/// `dropped_earlier` matters: the accumulator is bounded to
-/// [`READ_CAP_BYTES`], so a long run's early output is discarded as it
-/// goes. Saying so beats returning a silently-partial transcript.
+/// Only whether the session ended. A follow used to also accumulate the
+/// text it streamed, so the result could hand that buffer back — but
+/// the buffer was capped by keeping its NEWEST bytes while the cursor
+/// advanced past the discarded ones, which made the dropped prefix
+/// unreachable. Results now re-read the transcript from disk instead,
+/// so there is nothing to accumulate and nothing to drop: the
+/// notifications stream every chunk, and the result pages losslessly.
 pub(crate) struct FollowResult {
-    pub text: String,
-    /// Byte offset to resume from — handed back as `nextOffset` so the
-    /// documented poll-after-timeout workflow actually has one.
-    pub cursor: u64,
     pub finished: bool,
-    pub dropped_earlier: bool,
 }
 
 /// Streams transcript chunks to the caller as progress notifications.
@@ -172,6 +171,17 @@ impl Harness {
                 "could not load hyprpilot config: {err:#}. The skills surface is unaffected; fix the config and retry."
             )
         })?;
+        // Both `spawn` and `session_send` land here — `session_send`
+        // fills `args.profile` from its session first — so one check
+        // covers the whole surface. Gating only `list_profiles` would
+        // leave a hidden profile reachable by anyone holding its id.
+        if !harness_allows(&cfg, &args.profile) {
+            return Err(format!(
+                "profile `{}` is not available to the harness \
+                 (`[profiles.harness].enabled = false`). Call `list_profiles` for the ones that are.",
+                args.profile
+            ));
+        }
 
         let projection = HarnessProjection {
             structured_output: true,
@@ -248,6 +258,15 @@ impl Harness {
                         prepared.profile_id.clone(),
                         prepared.provider,
                         provenance,
+                        super::sessions::LaunchShape {
+                            // `cwd` is overwritten with the RESOLVED one
+                            // inside `spawn`; the rest are the caller's
+                            // inputs, replayed verbatim on later turns.
+                            cwd: None,
+                            mode: args.mode.clone(),
+                            with_config: args.with_config.clone(),
+                            args: args.args.clone(),
+                        },
                     )
                     .map_err(|err| format!("could not spawn session: {err:#}"))?;
                 // Bound the table now that it just grew.
@@ -266,7 +285,7 @@ impl Harness {
         );
 
         if !args.wait {
-            return Ok(self.describe(&handle, None, None, Some(resume_from)));
+            return Ok(self.describe(&handle, None, Some(resume_from)));
         }
 
         // Waiting IS following: stream the transcript to the caller
@@ -290,7 +309,7 @@ impl Harness {
             tracing::info!(%handle, secs = args.timeout_seconds, "mcp harness: turn outlived its timeout");
         }
 
-        Ok(self.describe(&handle, Some(finished), Some(followed.text), Some(followed.cursor)))
+        Ok(self.describe(&handle, Some(finished), Some(resume_from)))
     }
 
     /// Follow a session's transcript from `from`, pushing each new chunk
@@ -304,20 +323,13 @@ impl Harness {
             .sessions
             .with(handle, |session| (session.turns_path(), session.completion()))
         else {
-            return FollowResult {
-                text: String::new(),
-                cursor: from,
-                finished: true,
-                dropped_earlier: false,
-            };
+            return FollowResult { finished: true };
         };
 
         let deadline = watch
             .seconds
             .map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs(secs));
-        let mut streamed = String::new();
         let mut cursor = from;
-        let mut dropped_earlier = false;
 
         loop {
             let (chunk, _truncated, next) = read_from(&turns, cursor);
@@ -325,51 +337,26 @@ impl Harness {
                 if let Some(sink) = watch.sink.as_ref() {
                     sink.push(&chunk, next).await;
                 }
-                streamed.push_str(&chunk);
-                // Keep only what we can actually return. A long run emits
-                // hundreds of MB of stream-json and every byte past the
-                // cap is discarded at the end anyway — accumulating it
-                // all drove the sidecar's RSS to match the transcript,
-                // and an OOM-kill takes every live session with it.
-                if streamed.len() > READ_CAP_BYTES {
-                    streamed = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
-                    dropped_earlier = true;
-                }
                 cursor = next;
                 // Keep draining while output flows; only park once the
                 // file has nothing new.
                 continue;
             }
             if completion.borrow().is_some() {
-                return FollowResult {
-                    text: streamed,
-                    cursor,
-                    finished: true,
-                    dropped_earlier,
-                };
+                return FollowResult { finished: true };
             }
             if watch.cancel.is_cancelled() {
                 tracing::debug!(%handle, "mcp harness: follow ended by client cancellation");
-                return FollowResult {
-                    text: streamed,
-                    cursor,
-                    finished: false,
-                    dropped_earlier,
-                };
+                return FollowResult { finished: false };
             }
             if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-                return FollowResult {
-                    text: streamed,
-                    cursor,
-                    finished: false,
-                    dropped_earlier,
-                };
+                return FollowResult { finished: false };
             }
 
             tokio::select! {
                 _ = watch.cancel.cancelled() => {
                     tracing::debug!(%handle, "mcp harness: follow ended by client cancellation");
-                    return FollowResult { text: streamed, cursor, finished: false, dropped_earlier };
+                    return FollowResult { finished: false };
                 }
                 // Either the child exited or the poll interval elapsed —
                 // loop round to drain whatever it wrote on the way out.
@@ -403,16 +390,17 @@ impl Harness {
         });
     }
 
-    /// The result shape shared by `spawn` and `session_send`. `streamed` is
-    /// what the follow already read, reused so the result and the
-    /// progress notifications tell the same story.
-    fn describe(
-        &self,
-        handle: &str,
-        finished: Option<bool>,
-        streamed: Option<String>,
-        next_offset: Option<u64>,
-    ) -> Value {
+    /// The result shape shared by `spawn` and `session_send`.
+    ///
+    /// `turn_start` is the START of this turn, not the end. The result
+    /// re-reads the transcript forward from there rather than handing
+    /// back the follow's in-memory buffer: that buffer is trimmed to
+    /// [`READ_CAP_BYTES`] by keeping its NEWEST bytes, while the cursor
+    /// advances past the discarded ones — so anything dropped became
+    /// unreachable, offsets only moving forward. Reading from the file
+    /// makes `nextOffset` the first byte NOT returned, so a caller that
+    /// keeps paging reconstructs the whole transcript.
+    fn describe(&self, handle: &str, finished: Option<bool>, turn_start: Option<u64>) -> Value {
         let Some(snapshot) = self.sessions.with(handle, |session| {
             (
                 session.profile_id.clone(),
@@ -443,20 +431,17 @@ impl Harness {
             out["timedOut"] = json!(true);
         }
         out["sessionInfo"] = self.provenance(handle);
-        // The offset a caller needs to poll from after a timed-out spawn.
-        // Its absence made the documented "poll `session_read { session,
-        // offset }`" workflow impossible to follow — there was no offset
-        // to pass, so a caller had to fall back to `tail` and re-read
-        // what it had already seen.
-        if let Some(next) = next_offset {
-            out["nextOffset"] = json!(next);
-        }
-        match streamed {
-            Some(streamed) => {
-                let truncated = streamed.len() > READ_CAP_BYTES;
-                let body = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
-                out["text"] = json!(body);
+        match turn_start {
+            // Read forward from where this turn began. `nextOffset` is
+            // the first byte NOT returned, so the documented "poll
+            // `session_read { session, offset }`" loop reconstructs the
+            // transcript with no gap — however far the turn overran the
+            // cap.
+            Some(start) => {
+                let (text, truncated, next) = read_from(&turns, start);
+                out["text"] = json!(text);
                 out["truncated"] = json!(truncated);
+                out["nextOffset"] = json!(next);
             }
             None if status == SessionStatus::Exited => {
                 let (text, truncated) = tail_of(&turns, DEFAULT_TAIL_LINES);
@@ -474,7 +459,14 @@ impl Harness {
             .config
             .load()
             .map_err(|err| format!("could not load hyprpilot config: {err:#}"))?;
-        let profiles = crate::spawn::list_profiles(&cfg, None, &[]);
+        // A profile the captain took off the harness is absent here AND
+        // refused by `launch` — the listing is the discoverability half,
+        // not the gate. `hyprpilot profiles` still shows it: this is a
+        // harness policy, not a "hide it from the captain" one.
+        let profiles: Vec<_> = crate::spawn::list_profiles(&cfg, None, &[])
+            .into_iter()
+            .filter(|profile| harness_allows(&cfg, &profile.id))
+            .collect();
         let summary = profiles_table(&profiles);
 
         Ok((summary, json!({ "profiles": profiles })))
@@ -499,13 +491,18 @@ impl Harness {
         // failed first turn for a session that is perfectly healthy.
         self.harvest(handle);
 
-        let target = self
+        let (target, shape) = self
             .sessions
-            .with(handle, |session| ResumeTarget {
-                handle: session.handle.clone(),
-                profile_id: session.profile_id.clone(),
-                vendor_session_id: session.vendor_session_id.clone().unwrap_or_default(),
-                has_vendor_id: session.vendor_session_id.is_some(),
+            .with(handle, |session| {
+                (
+                    ResumeTarget {
+                        handle: session.handle.clone(),
+                        profile_id: session.profile_id.clone(),
+                        vendor_session_id: session.vendor_session_id.clone().unwrap_or_default(),
+                        has_vendor_id: session.vendor_session_id.is_some(),
+                    },
+                    session.launch.clone(),
+                )
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
 
@@ -520,8 +517,28 @@ impl Harness {
         // under the table lock. Checking it here as well would only be a
         // second chance to lose the race — the lock is what actually
         // guarantees one turn at a time.
+        // A conversation's working directory is part of its IDENTITY,
+        // not per-turn options. Every one of them is replayed from the
+        // session unless this turn overrides it explicitly. Dropping any
+        // of them relaunched turn 2 differently from turn 1 in silence —
+        // most visibly `cwd`, which claude keys its conversation store
+        // by, so a resume from elsewhere failed with a bare "No
+        // conversation found with session ID" for a perfectly healthy
+        // session.
         let args = LaunchToolArgs {
             profile: target.profile_id.clone(),
+            cwd: args.cwd.clone().or(shape.cwd),
+            mode: args.mode.clone().or(shape.mode),
+            with_config: if args.with_config.is_empty() {
+                shape.with_config
+            } else {
+                args.with_config.clone()
+            },
+            args: if args.args.is_empty() {
+                shape.args
+            } else {
+                args.args.clone()
+            },
             ..args
         };
         let mut out = self.launch(args, Some(target)).await?;
@@ -543,7 +560,7 @@ impl Harness {
                     "model": session.provenance.model,
                     "effort": session.provenance.effort,
                     "mode": session.provenance.mode,
-                    "cwd": session.cwd.as_ref().map(|c| c.display().to_string()),
+                    "cwd": session.launch.cwd.as_ref().map(|c| c.display().to_string()),
                     "startedAt": unix_secs(session.created_at),
                     "lastTurnAt": unix_secs(session.last_turn_at),
                     "vendorSessionId": session.vendor_session_id,
@@ -570,7 +587,7 @@ impl Harness {
             if let Some(code) = session.exit_code() {
                 row["exitCode"] = json!(code);
             }
-            if let Some(cwd) = session.cwd.as_ref() {
+            if let Some(cwd) = session.launch.cwd.as_ref() {
                 row["cwd"] = json!(cwd.display().to_string());
             }
             if let Some(vendor) = session.vendor_session_id.as_ref() {
@@ -623,31 +640,23 @@ impl Harness {
         let (turns, stderr_path, mut status) = paths;
 
         // Following streams from `offset` forward; a tail-follow would
-        // have no stable resume point.
+        // have no stable resume point. The follow's own text/cursor are
+        // deliberately NOT reused for the result — see the match below.
         let followed = watch.is_some();
-        let mut streamed = String::new();
-        let mut cursor = offset.unwrap_or(0);
-        let mut dropped_earlier = false;
         if let Some(watch) = watch {
-            let result = self.follow(handle, cursor, &watch).await;
-            streamed = result.text;
-            cursor = result.cursor;
-            dropped_earlier = result.dropped_earlier;
+            self.follow(handle, offset.unwrap_or(0), &watch).await;
             status = self.sessions.with(handle, |s| s.status()).unwrap_or(status);
         }
 
         let (text, truncated, next_offset) = match (followed, offset) {
-            // A follow already consumed forward from `offset`; hand back
-            // exactly what was streamed so the result and the
-            // notifications agree.
-            (true, _) => {
-                // `dropped_earlier` is the honest half: a long follow
-                // discards output as it goes to stay bounded, so
-                // "truncated" is true even when what we return fits.
-                let truncated = dropped_earlier || streamed.len() > READ_CAP_BYTES;
-                let body = tail_bytes(&streamed, READ_CAP_BYTES).to_string();
-                (body, truncated, cursor)
-            }
+            // A follow streamed live via progress notifications; the
+            // RESULT re-reads from where the follow started rather than
+            // handing back its buffer. That buffer keeps its NEWEST
+            // bytes while the cursor advances past the discarded ones,
+            // so anything trimmed became unreachable — offsets only move
+            // forward. Reading from the file keeps `nextOffset` the
+            // first byte NOT returned, so paging never skips.
+            (true, _) => read_from(&turns, offset.unwrap_or(0)),
             (false, Some(offset)) => read_from(&turns, offset),
             (false, None) => {
                 let (text, truncated) = tail_of(&turns, tail);
@@ -770,6 +779,20 @@ impl LaunchToolArgs {
 /// to address some other field — is refused.
 const ALLOWED_OVERLAY_KEYS: &[&str] = &["model", "effort", "mode"];
 
+/// Whether a profile is exposed to the harness at all.
+///
+/// Default-open: a profile with no `[profiles.harness]` block is
+/// allowed, and so is an id matching nothing — the latter so the
+/// resolver keeps owning "unknown profile" errors rather than this
+/// returning a misleading "not available to the harness".
+fn harness_allows(cfg: &crate::config::Config, profile_id: &str) -> bool {
+    cfg.profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .and_then(|profile| profile.harness.as_ref())
+        .map_or(true, crate::config::ProfileHarnessConfig::is_enabled)
+}
+
 /// Restrict a caller-supplied overlay to settings that cannot change
 /// what gets executed.
 ///
@@ -805,25 +828,6 @@ fn reject_executable_overrides(overlays: &[Value]) -> Result<(), String> {
 /// byte is `10xxxxxx`; everything else begins one.
 fn is_utf8_boundary(buf: &[u8], at: usize) -> bool {
     at == 0 || at >= buf.len() || (buf[at] & 0b1100_0000) != 0b1000_0000
-}
-
-/// Last `cap` bytes of `text`, backed off to a char boundary.
-///
-/// **Never byte-slice a transcript.** It is model output, so a multibyte
-/// codepoint straddling the cut is ordinary, and `&s[i..]` on a
-/// non-boundary panics — which under the release profile's
-/// `panic = "abort"` would abort the whole sidecar and take every live
-/// session with it, rather than failing one tool call.
-fn tail_bytes(text: &str, cap: usize) -> &str {
-    if text.len() <= cap {
-        return text;
-    }
-    let mut start = text.len() - cap;
-    while start < text.len() && !text.is_char_boundary(start) {
-        start += 1;
-    }
-
-    &text[start..]
 }
 
 /// Scan a JSONL transcript for the vendor's own session id.
@@ -994,6 +998,29 @@ fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
 mod tests {
     use super::*;
 
+    /// The gate must cover BOTH halves. `list_profiles` hiding a
+    /// profile is discoverability; `launch` refusing it is the gate.
+    /// Gating only the listing leaves it reachable by anyone holding
+    /// the id — the exact bug the skills/harness server split removed.
+    #[test]
+    fn harness_allows_is_default_open_and_honours_the_off_switch() {
+        let mut cfg = crate::config::Config::default();
+        let mut open: crate::config::ProfileConfig =
+            serde_json::from_value(json!({ "id": "open", "agent": "a" })).unwrap();
+        open.harness = None;
+        let mut closed: crate::config::ProfileConfig =
+            serde_json::from_value(json!({ "id": "closed", "agent": "a" })).unwrap();
+        closed.harness = Some(crate::config::ProfileHarnessConfig { enabled: Some(false) });
+        cfg.profiles = vec![open, closed];
+
+        assert!(harness_allows(&cfg, "open"), "no block means available");
+        assert!(!harness_allows(&cfg, "closed"), "an explicit false must be refused");
+        assert!(
+            harness_allows(&cfg, "nonexistent"),
+            "an unknown id stays the resolver's error to report, not ours"
+        );
+    }
+
     /// A follow must keep collecting until the session actually exits,
     /// not stop at the first chunk. Pins the whole loop against a child
     /// that writes in bursts with gaps — the shape a real agent has.
@@ -1035,6 +1062,7 @@ mod tests {
                     mode: None,
                     prompt_bytes: 0,
                 },
+                super::super::sessions::LaunchShape::default(),
             )
             .unwrap();
 
@@ -1046,31 +1074,18 @@ mod tests {
         let result = harness.follow(&handle, 0, &watch).await;
 
         assert!(result.finished, "follow must report the session finished");
-        assert!(result.cursor > 0, "follow must report where to resume from");
+        // The follow no longer carries the text — it drains the file and
+        // streams chunks. Assert on the transcript it drained to, which
+        // is what a caller reads afterwards.
+        let turns = harness.sessions.with(&handle, |s| s.turns_path()).expect("session");
+        let (text, _truncated, next) = read_from(&turns, 0);
+        assert!(next > 0, "the follow must have advanced the transcript");
         for expected in ["one", "two", "three"] {
             assert!(
-                result.text.contains(expected),
-                "follow stopped early — missing {expected:?} in {:?}",
-                result.text
+                text.contains(expected),
+                "follow stopped early — missing {expected:?} in {text:?}"
             );
         }
-    }
-
-    /// Transcripts are model output, so a multibyte codepoint straddling
-    /// the cap is ordinary. Byte-slicing there panics — and under the
-    /// release profile's `panic = "abort"` that aborts the whole sidecar
-    /// and kills every live session, rather than failing one tool call.
-    #[test]
-    fn tail_never_splits_a_codepoint() {
-        // Every offset into a 3-byte-per-char string, so the cut lands
-        // mid-codepoint at two of every three caps.
-        let text = "日本語".repeat(50);
-        for cap in 1..text.len() {
-            let tail = tail_bytes(&text, cap);
-            assert!(tail.len() <= cap, "tail must respect the cap");
-            assert!(text.ends_with(tail), "tail must be a suffix of the input");
-        }
-        assert_eq!(tail_bytes("short", 100), "short", "under the cap, unchanged");
     }
 
     /// The cut point is a pure function of `offset`, so a decode failure
@@ -1112,6 +1127,46 @@ mod tests {
     /// caller saw an agent that silently stopped talking. claude's
     /// `stream-json` puts one JSON object per line and a big tool result
     /// clears 60 kB routinely, so this is normal use, not a corner case.
+    /// The regression this PR exists for: a transcript larger than the
+    /// cap, paged by `nextOffset`, must reconstruct byte-for-byte.
+    ///
+    /// The old follow/spawn result kept the NEWEST `READ_CAP_BYTES`
+    /// while `nextOffset` advanced past everything consumed, so the
+    /// dropped prefix could never be fetched again — offsets only move
+    /// forward. Paging then silently skipped the middle of a long run.
+    #[test]
+    fn paging_a_transcript_larger_than_the_cap_loses_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        // Comfortably past the cap, in realistic JSONL-ish lines.
+        let body: String = (0..4000)
+            .map(|i| format!("{{\"seq\":{i},\"text\":\"{}\"}}\n", "y".repeat(40)))
+            .collect();
+        assert!(
+            body.len() > READ_CAP_BYTES * 2,
+            "must exceed the cap several times over"
+        );
+        std::fs::write(&path, &body).unwrap();
+
+        let mut offset = 0u64;
+        let mut collected = String::new();
+        for _ in 0..200 {
+            let (chunk, _truncated, next) = read_from(&path, offset);
+            if chunk.is_empty() {
+                break;
+            }
+            assert!(
+                chunk.ends_with('\n'),
+                "every page must end on a line boundary, never mid-line"
+            );
+            collected.push_str(&chunk);
+            offset = next;
+        }
+
+        assert_eq!(collected, body, "paging must reconstruct the transcript with no gap");
+        assert_eq!(offset, body.len() as u64, "the final cursor must be EOF");
+    }
+
     #[test]
     fn read_from_advances_through_a_line_longer_than_the_cap() {
         let dir = tempfile::tempdir().unwrap();

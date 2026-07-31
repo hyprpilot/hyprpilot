@@ -57,6 +57,20 @@ pub(super) fn build_opencode(
         command.args.push(agent_name.clone());
     }
 
+    // opencode does NOT derive its tool sandbox from the process working
+    // directory — it takes an explicit `--dir`. `current_dir` alone left
+    // the agent operating in `$HOME` while every surface (the harness's
+    // `sessionInfo.cwd`, the resolved profile) reported the requested
+    // path, so a delegated prompt using relative paths silently read and
+    // wrote the wrong tree and still reported success. codex needs the
+    // same treatment via `--cd`; claude is the only one that inherits.
+    if let Some(cwd) = command.cwd.as_ref() {
+        if !has_flag(&detect_args, "--dir", None) {
+            command.args.push("--dir".into());
+            command.args.push(cwd.display().to_string());
+        }
+    }
+
     if !command.env.contains_key("OPENCODE_CONFIG_CONTENT") {
         if let Some(config) = opencode_config_content(
             &agent_name,
@@ -311,6 +325,43 @@ mod tests {
     use crate::config::AgentProvider;
     use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
+
+    /// opencode does not take its tool sandbox from the process
+    /// working directory — without `--dir` the agent ran in `$HOME`
+    /// while every hyprpilot surface reported the requested path, so a
+    /// delegated prompt using relative paths silently hit the wrong
+    /// tree and still reported success.
+    #[test]
+    fn opencode_passes_resolved_cwd_to_native_dir_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--dir", "/tmp/hyprpilot-work"]));
+        assert_eq!(command.cwd(), Some(std::path::Path::new("/tmp/hyprpilot-work")));
+    }
+
+    #[test]
+    fn opencode_provider_args_suppress_generated_dir_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            vec!["--dir".into(), "/tmp/other".into()],
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !command.args.windows(2).any(|w| w == ["--dir", "/tmp/hyprpilot-work"]),
+            "an explicit --dir in provider args must win"
+        );
+    }
 
     #[test]
     fn opencode_puts_prompt_mcp_and_variant_in_inline_config() {

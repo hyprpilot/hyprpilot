@@ -76,6 +76,7 @@ The `profiles` list must be **non-empty** — the compiled defaults seed zero pr
 | `command`       | string (optional)                | unset   | Replaces the base agent's `command` wholesale for this profile.                                                |
 | `args`          | string[] (optional)              | unset   | Replaces the base agent's `args` wholesale for this profile.                                                   |
 | `env`           | map (optional)                   | `{}`    | Overlays the base agent's `env` per key; the profile's key wins on collision.                                  |
+| `harness`       | `{ enabled? }` (optional)        | unset   | Per-profile [agent-harness](../runtime/harness) policy. `enabled: false` takes the profile off the harness.    |
 
 ## What a profile overrides
 
@@ -129,6 +130,24 @@ system_prompt:
 | -------- | --------------- | ------- | --------------------------------------------------------------------- |
 | `file`   | path            | —       | Prompt file, read at resolve time — a missing file fails the launch.  |
 | `inject` | bool (optional) | `true`  | Whether this entry's body rides the launch's system-prompt injection. |
+
+## Taking a profile off the harness
+
+`mcp harness` lets a connected agent launch your profiles. `harness.enabled: false` removes one from that surface:
+
+```yaml
+profiles:
+  - id: personal/deploy
+    agent: claude-code
+    harness:
+      enabled: false
+```
+
+The profile disappears from `list_profiles` **and** `spawn` / `session_send` refuse it by id. Both halves matter: `spawn` dispatches on whatever id it is handed, so hiding a profile from the listing alone would leave it reachable by anyone who already knew the name.
+
+This is a _harness_ policy, not a hidden flag — `hyprpilot profiles` still lists it and `hyprpilot personal/deploy` still launches it. It says "an agent may not drive this one", not "nobody may".
+
+It is a block rather than a bare `harness: false` so later per-profile harness policy lands as a sibling field instead of a second top-level flag.
 
 ## Headless
 

@@ -451,6 +451,7 @@ mod tests {
                 mode: None,
                 cwd: Some(PathBuf::from("/configured")),
                 headless: None,
+                harness: None,
                 command: None,
                 args: None,
                 env: Default::default(),

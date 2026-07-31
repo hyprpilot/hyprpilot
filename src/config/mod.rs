@@ -16,7 +16,7 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults};
+pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults, ProfileHarnessConfig};
 pub use extensions::{McpFile, SkillEntry};
 pub use mcp::McpConfig;
 use merge_strategies::{append_layers, merge_profiles_by_id, overwrite_some};
@@ -325,6 +325,7 @@ mod tests {
                 mode: None,
                 cwd: None,
                 headless: None,
+                harness: None,
                 command: None,
                 args: None,
                 env: Default::default(),

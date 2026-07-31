@@ -461,6 +461,24 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   sidecars and tool subprocesses. A **startup sweep** reclaims what a
   crashed predecessor left behind, skipping any directory whose owning
   sidecar is still alive (two sidecars at once is ordinary).
+- **A conversation REPLAYS its launch.** `session_send` carries the
+  original `cwd` / `mode` / `with_config` / `args` forward from the
+  spawn (recorded as `sessions::LaunchShape`); an explicit per-turn
+  value overrides. How a conversation was launched is part of its
+  IDENTITY, not a per-turn option — claude keys its conversation store
+  by project directory, so a resume from a different cwd failed with a
+  bare "No conversation found with session ID" for a healthy session.
+- **cwd reaches each vendor differently.** claude inherits the process
+  cwd; codex takes `--cd`; opencode takes `--dir`. hyprpilot sets
+  `current_dir` AND emits the flag for the two that need one —
+  opencode does not derive its tool sandbox from the process cwd, so
+  without `--dir` the agent silently worked in the wrong tree while
+  every surface reported the requested path.
+- **`[profiles.harness].enabled`** (default true) takes a profile off
+  the harness: absent from `list_profiles` AND refused by
+  `spawn`/`session_send`. Both halves — `launch` is the shared body of
+  both tools, so one check covers them; gating only the listing would
+  leave it reachable by id.
 - **A conversation is ONE session.** `session_send` reuses its handle and
   appends to the same transcript, so an N-turn conversation costs one
   table entry, not N. Its check-and-spawn happens under the table lock —

@@ -84,7 +84,9 @@ The two tools share one parameter set:
 
 Exactly one of `prompt` / `file` is required on both — the same mutual exclusion the CLI's `-p`/`-f` enforce. `spawn` additionally requires `profile` (an id from `list_profiles`). `session_send` additionally requires `session` (a handle from `spawn` or `session_list`) and has **no** `profile` parameter — the profile is inherited from the original spawn, so a conversation can't switch profiles mid-stream.
 
-`session_send` inherits only the **profile**. `cwd`, `mode`, `with_config` and `args` are not carried forward from the original `spawn` — pass them again on each turn if the conversation needs them.
+`session_send` **replays the original launch**: profile, `cwd`, `mode`, `with_config` and `args` all carry forward from the `spawn` that started the conversation. Pass any of them explicitly on a turn to override it for that turn.
+
+How a conversation was launched is part of its **identity**, not a per-turn option — re-deriving a follow-up turn from defaults launched it differently from the first, silently. The visible failure was `cwd`: claude keys its conversation store by project directory, so a resume from elsewhere came back with a bare `No conversation found with session ID: …` for a perfectly healthy session, because it was looked up in the wrong place. A dropped `mode` or `args` is quieter and worse — it changes the agent's permissions or flags mid-conversation without saying anything.
 
 ::: warning `with_config` is restricted to `model`, `effort` and `mode`
 Unlike the CLI's `--with-config`, the harness accepts only those three keys — an allow-list, not a block-list. A profile overlay can otherwise reach `command`, `args` and `env` (which replace the binary outright), `mcps` (whose inline `mcp_servers` entries carry their own `command`/`args`, which the vendor then spawns), `$deleteFromPrimitiveList/<field>` directives (which mutate a field without ever naming it, e.g. stripping a profile's `--sandbox`), and `system_prompt` (which reads an arbitrary file into the agent's context). Any of those turns `spawn` into arbitrary command execution as the sidecar's user.
