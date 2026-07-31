@@ -284,6 +284,22 @@ impl SessionTable {
         Ok(())
     }
 
+    /// Drop a session from the table, removing its transcript directory.
+    ///
+    /// Returns whether it was there. Only meaningful for a FINISHED
+    /// session — [`kill`] refuses to forget a live one, since dropping
+    /// the entry would strand the process with nobody holding its
+    /// handle.
+    pub(crate) fn forget(&self, handle: &str) -> bool {
+        // Removing the `Session` drops its `TempDir`, which removes the
+        // transcript from disk.
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(handle)
+            .is_some()
+    }
+
     /// Drop the oldest finished sessions once the table grows past `cap`.
     ///
     /// Exited sessions cost a table entry and a transcript directory

@@ -37,7 +37,7 @@ hyprpilot's own `[mcp]` config has no field for it — the launcher-built entry 
 | `session_send`  | Send another message to an existing session, resuming it first if it's finished.                       |
 | `session_list`  | List this server's sessions — handle, profile, status, exit code, timestamps.                          |
 | `session_read`  | Read, and optionally follow live, a session's transcript.                                              |
-| `session_kill`  | Terminate a running session and everything it started.                                                 |
+| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished.               |
 
 ### Workflow
 
@@ -45,7 +45,7 @@ hyprpilot's own `[mcp]` config has no field for it — the launcher-built entry 
 2. **`spawn { profile, prompt }`** to start a session. With `wait` true (the default) it blocks and returns the transcript; if the turn outlives `timeout_seconds` the result comes back with status `running`, a `nextOffset` to resume reading from, and the agent **keeps working**.
 3. If status is `running`, poll or follow **`session_read { session, wait: true }`** — do **not** call `spawn` again for the same conversation.
 4. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
-5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit.
+5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
 6. **`session_list`** any time you need to recover a handle you lost.
 
 ### `spawn` / `session_send` parameters
@@ -126,9 +126,11 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Transcript read per call    | 60,000 bytes | Caps `session_read` and an inline `spawn`/`session_send` result.                                    |
 | Default tail                | 200 lines    | `session_read`'s default when `offset` is omitted.                                                  |
 | Default turn timeout        | 300 seconds  | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.           |
-| Retained sessions           | 64           | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
+| Retained sessions           | 64 (`--max-sessions`) | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
 
-Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call.
+Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call. Raise `--max-sessions` on a busy gateway that wants deeper history; lower it where temp space is tight.
+
+To free a session earlier than the limit would, call `session_kill` on it: on a finished session that reaps it and its transcript immediately.
 
 The depth ceiling exists because a session started through the harness could itself be another `hyprpilot mcp serve --with-harness` sidecar — the env stamp bounds that chain regardless of how deep the concurrency ceiling alone would otherwise allow it to go. The concurrency ceiling bounds breadth at any single depth: since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
 

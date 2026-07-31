@@ -111,6 +111,21 @@ pub struct ServeArgs {
     /// e.g. a gateway host whose MCP config opts in explicitly.
     #[arg(long = "with-harness", default_value_t = false)]
     pub with_harness: bool,
+
+    /// How many agent sessions the harness retains before evicting the
+    /// oldest FINISHED ones (with their transcripts).
+    ///
+    /// A conversation reuses its session however many turns it runs, so
+    /// only distinct `spawn`s grow the table — this bounds a long-lived
+    /// server's memory and temp directories. A running session is never
+    /// evicted. Raise it on a busy gateway that wants deeper history;
+    /// lower it where temp space is tight.
+    #[arg(
+        long = "max-sessions",
+        default_value_t = super::harness::DEFAULT_MAX_SESSIONS,
+        value_name = "N"
+    )]
+    pub max_sessions: usize,
 }
 
 /// One decoded `--skill-dir` entry. The launcher serializes
@@ -248,9 +263,10 @@ struct HyprpilotServer {
 
 impl HyprpilotServer {
     fn new(args: ServeArgs, config: super::ConfigSource) -> anyhow::Result<Self> {
+        let max_sessions = args.max_sessions;
         let harness = args
             .with_harness
-            .then(|| Arc::new(crate::mcp::server::harness::Harness::new(config)));
+            .then(|| Arc::new(crate::mcp::server::harness::Harness::new(config, max_sessions)));
         // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
         // JSON entry. Each entry carries its OWN ignore list so the
         // sidecar replicates the launcher's per-dir suppression exactly —
@@ -433,14 +449,15 @@ impl HyprpilotServer {
                 let session = require_string(&args, "session")?;
                 match harness.session_kill(session).await {
                     Ok(payload) => {
-                        let was_running = payload
-                            .get("wasRunning")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        let summary = if was_running {
-                            format!("Terminated session {session}.")
-                        } else {
-                            format!("Session {session} had already finished; nothing to terminate.")
+                        let summary = match payload.get("action").and_then(serde_json::Value::as_str) {
+                            Some("terminated") => format!(
+                                "Terminated session {session}. Its transcript is still readable — \
+                                 call `session_kill` again to reap it."
+                            ),
+                            Some("reaped") => {
+                                format!("Session {session} had already finished; reaped it and its transcript.")
+                            }
+                            _ => format!("Session {session} is gone."),
                         };
                         Ok(structured_with_text(summary, payload))
                     }
@@ -754,10 +771,12 @@ fn harness_tools() -> Vec<Tool> {
         Tool::new_with_raw(
             "session_kill",
             Some(
-                "Terminate a running session and everything it started (SIGTERM, then SIGKILL after a grace \
-                 period). Use it to stop a runaway agent or to free a slot when `spawn` reports the \
-                 concurrency limit. Killing an already-finished session is harmless — it reports \
-                 `wasRunning: false`. The transcript stays readable via `session_read` afterwards."
+                "Stop a session, or forget one that has already stopped. On a RUNNING session it terminates \
+                 the agent and everything it started (SIGTERM, then SIGKILL after a grace period) and KEEPS \
+                 the transcript, so you can still `session_read` why it was killed. On an already-FINISHED \
+                 session it reaps it — the transcript and the handle both go. So calling it twice is the \
+                 natural stop-then-clean-up, and calling it on a finished session is how you free memory \
+                 early instead of waiting for the retention limit. The result's `action` says which happened."
                     .into(),
             ),
             object_schema(

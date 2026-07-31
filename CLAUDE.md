@@ -413,7 +413,21 @@ skills surface, letting a connected agent drive hyprpilot profiles:
   only; elsewhere it degrades to the userspace paths. Sessions run in
   their **own process group** so a kill reaches the vendor's own MCP
   sidecars and tool subprocesses. A **startup sweep** reclaims what a
-  crashed predecessor left behind.
+  crashed predecessor left behind, skipping any directory whose owning
+  sidecar is still alive (two sidecars at once is ordinary).
+- **A conversation is ONE session.** `session_send` reuses its handle and
+  appends to the same transcript, so an N-turn conversation costs one
+  table entry, not N. Its check-and-spawn happens under the table lock —
+  `Command::spawn` is synchronous, so "one turn at a time" is an
+  invariant, not a racy check.
+- **Bounded retention.** `--max-sessions` (default 64) evicts the oldest
+  *finished* sessions; a running one is never touched. `session_kill` is
+  state-aware — it terminates a running session (keeping the transcript)
+  and reaps an already-finished one.
+- **`with_config` is an ALLOW-list** (`model` / `effort` / `mode`). A
+  deny-list of `command`/`args`/`env` was not the reachable surface:
+  `mcps` carries inline `mcp_servers` with their own `command`, and
+  `$deleteFromPrimitiveList/<field>` reaches a field without naming it.
 - **One resolution path.** Every harness launch goes through
   `spawn::prepare` — the same function `hyprpilot <profile>` uses — so
   prompt-source priority, the `-- <args>` escape hatch, and cwd

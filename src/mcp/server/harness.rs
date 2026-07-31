@@ -33,15 +33,16 @@ const MAX_SPAWN_DEPTH: usize = 2;
 /// agent that can exhaust the host.
 const MAX_LIVE_SESSIONS: usize = 8;
 
-/// How many sessions the table retains before evicting the oldest
-/// FINISHED ones.
+/// Default for `--max-sessions`: how many sessions the table retains
+/// before evicting the oldest FINISHED ones.
 ///
 /// A conversation no longer grows this — `session_send` reuses its
 /// session — so the only thing that does is distinct `spawn`s, which the
 /// caller controls. This bounds a long-lived sidecar's memory and its
 /// transcript directories without an API the caller has to remember to
-/// call.
-const MAX_RETAINED_SESSIONS: usize = 64;
+/// call; `session_kill` on a finished session reaps it immediately for
+/// callers that would rather be explicit.
+pub const DEFAULT_MAX_SESSIONS: usize = 64;
 
 /// Cap on bytes returned by a single `session_read` / inline `spawn`
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
@@ -120,10 +121,11 @@ pub(crate) struct Harness {
     config: ConfigSource,
     pub(crate) sessions: Arc<SessionTable>,
     depth: usize,
+    max_sessions: usize,
 }
 
 impl Harness {
-    pub(crate) fn new(config: ConfigSource) -> Self {
+    pub(crate) fn new(config: ConfigSource, max_sessions: usize) -> Self {
         let depth = std::env::var(DEPTH_ENV)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
@@ -133,6 +135,9 @@ impl Harness {
             config,
             sessions: SessionTable::new(),
             depth,
+            // A zero would evict every finished session the moment it
+            // finished, making `session_read` useless on a completed run.
+            max_sessions: max_sessions.max(1),
         }
     }
 
@@ -246,7 +251,7 @@ impl Harness {
                     )
                     .map_err(|err| format!("could not spawn session: {err:#}"))?;
                 // Bound the table now that it just grew.
-                self.sessions.evict_exited_over(MAX_RETAINED_SESSIONS);
+                self.sessions.evict_exited_over(self.max_sessions);
 
                 (handle, 0)
             }
@@ -679,6 +684,14 @@ impl Harness {
         Ok(out)
     }
 
+    /// Stop a session, or forget one that has already stopped.
+    ///
+    /// State-aware, like `session_send`: killing a RUNNING session
+    /// terminates it and keeps the transcript, so the caller can still
+    /// read why it was killed. Killing an already-FINISHED session
+    /// reaps it — table entry and transcript both go. So "kill twice"
+    /// is the natural way to stop and then clean up, and the second
+    /// call does something useful instead of nothing.
     pub(crate) async fn session_kill(&self, handle: &str) -> Result<Value, String> {
         let was_running = self
             .sessions
@@ -686,10 +699,23 @@ impl Harness {
             .await
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
 
+        if was_running {
+            return Ok(json!({
+                "session": handle,
+                "action": "terminated",
+                "wasRunning": true,
+                "reaped": false,
+            }));
+        }
+
+        // Already finished — this call is the cleanup.
+        let reaped = self.sessions.forget(handle);
+
         Ok(json!({
             "session": handle,
-            "signalled": was_running,
-            "wasRunning": was_running,
+            "action": if reaped { "reaped" } else { "gone" },
+            "wasRunning": false,
+            "reaped": reaped,
         }))
     }
 }
@@ -973,7 +999,7 @@ mod tests {
     /// that writes in bursts with gaps — the shape a real agent has.
     #[tokio::test]
     async fn follow_collects_every_chunk_until_the_session_exits() {
-        let harness = Harness::new(super::super::ConfigSource::default());
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("burst.sh");
         std::fs::write(
