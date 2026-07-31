@@ -33,6 +33,16 @@ const MAX_SPAWN_DEPTH: usize = 2;
 /// agent that can exhaust the host.
 const MAX_LIVE_SESSIONS: usize = 8;
 
+/// How many sessions the table retains before evicting the oldest
+/// FINISHED ones.
+///
+/// A conversation no longer grows this — `session_send` reuses its
+/// session — so the only thing that does is distinct `spawn`s, which the
+/// caller controls. This bounds a long-lived sidecar's memory and its
+/// transcript directories without an API the caller has to remember to
+/// call.
+const MAX_RETAINED_SESSIONS: usize = 64;
+
 /// Cap on bytes returned by a single `session_read` / inline `spawn`
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
 /// transcript never blows the caller's own budget.
@@ -191,35 +201,67 @@ impl Harness {
             prompt_bytes: args.prompt.len(),
         };
 
-        let handle = self
-            .sessions
-            .spawn(
-                prepared.command,
-                prepared.profile_id.clone(),
-                prepared.provider,
-                provenance,
-            )
-            .map_err(|err| format!("could not spawn session: {err:#}"))?;
+        // A resume KEEPS the caller's handle. The conversation is the
+        // same one, so its id should be too — a caller that spawned once
+        // never has to notice that a later turn is a different process,
+        // and an N-turn conversation costs one table entry and one
+        // transcript rather than N.
+        let (handle, resume_from) = match resume.as_ref() {
+            Some(target) => {
+                let handle = target.handle.clone();
+                self.sessions
+                    .respawn(&handle, prepared.command, provenance)
+                    .map_err(|err| match err {
+                        super::sessions::RespawnError::Unknown => {
+                            format!("unknown session `{handle}`. Call `session_list` for live handles.")
+                        }
+                        super::sessions::RespawnError::Busy => format!(
+                            "session `{handle}` already has a turn in flight. Wait for it (poll \
+                             `session_read`) or `session_kill` it — no vendor supports two \
+                             concurrent turns on one conversation."
+                        ),
+                        super::sessions::RespawnError::Spawn(err) => {
+                            format!("could not start the next turn: {err:#}")
+                        }
+                    })?;
+                // Resume the transcript where the last turn stopped, so a
+                // follow returns only the NEW output.
+                let from = self
+                    .sessions
+                    .with(&handle, |session| {
+                        std::fs::metadata(session.turns_path()).map(|m| m.len()).unwrap_or(0)
+                    })
+                    .unwrap_or(0);
 
-        // A resume continues an existing conversation, so the new
-        // session inherits the vendor id rather than discovering it.
-        if let Some(target) = resume.as_ref() {
-            self.sessions.with_mut(&handle, |session| {
-                session.vendor_session_id = Some(target.vendor_session_id.clone());
-                session.last_turn_at = std::time::SystemTime::now();
-            });
-        }
+                (handle, from)
+            }
+            None => {
+                let handle = self
+                    .sessions
+                    .spawn(
+                        prepared.command,
+                        prepared.profile_id.clone(),
+                        prepared.provider,
+                        provenance,
+                    )
+                    .map_err(|err| format!("could not spawn session: {err:#}"))?;
+                // Bound the table now that it just grew.
+                self.sessions.evict_exited_over(MAX_RETAINED_SESSIONS);
+
+                (handle, 0)
+            }
+        };
 
         tracing::info!(
             %handle,
             profile = %prepared.profile_id,
             provider = prepared.provider.wire_id(),
             resumed = resume.is_some(),
-            "mcp harness: session spawned"
+            "mcp harness: turn started"
         );
 
         if !args.wait {
-            return Ok(self.describe(&handle, None, None, None));
+            return Ok(self.describe(&handle, None, None, Some(resume_from)));
         }
 
         // Waiting IS following: stream the transcript to the caller
@@ -231,7 +273,7 @@ impl Harness {
             sink: args.sink,
             cancel: args.cancel.unwrap_or_default(),
         };
-        let followed = self.follow(&handle, 0, &watch).await;
+        let followed = self.follow(&handle, resume_from, &watch).await;
         let finished = followed.finished;
 
         // Whether it finished or timed out, the transcript is on disk —
@@ -455,19 +497,13 @@ impl Harness {
         let target = self
             .sessions
             .with(handle, |session| ResumeTarget {
-                status: session.status(),
+                handle: session.handle.clone(),
                 profile_id: session.profile_id.clone(),
                 vendor_session_id: session.vendor_session_id.clone().unwrap_or_default(),
                 has_vendor_id: session.vendor_session_id.is_some(),
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
 
-        if target.status == SessionStatus::Running {
-            return Err(format!(
-                "session `{handle}` is still running. Wait for it (poll `session_read`) or `session_kill` it — \
-                 the vendors do not support two concurrent turns on one conversation."
-            ));
-        }
         if !target.has_vendor_id {
             return Err(format!(
                 "session `{handle}` never reported a vendor session id, so it cannot be resumed. \
@@ -475,18 +511,16 @@ impl Harness {
             ));
         }
 
-        let previous = handle.to_string();
+        // The "still running" refusal lives in `SessionTable::respawn`,
+        // under the table lock. Checking it here as well would only be a
+        // second chance to lose the race — the lock is what actually
+        // guarantees one turn at a time.
         let args = LaunchToolArgs {
             profile: target.profile_id.clone(),
             ..args
         };
         let mut out = self.launch(args, Some(target)).await?;
-        // Lead with the path taken. A resume starts a NEW process (and
-        // so a new handle) continuing the same vendor conversation —
-        // a caller that keeps using the old handle would be reading a
-        // dead session's transcript.
         out["delivery"] = json!("resumed");
-        out["resumedFrom"] = json!(previous);
 
         Ok(out)
     }
@@ -661,7 +695,7 @@ impl Harness {
 }
 
 struct ResumeTarget {
-    status: SessionStatus,
+    handle: String,
     profile_id: String,
     vendor_session_id: String,
     has_vendor_id: bool,

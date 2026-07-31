@@ -685,8 +685,8 @@ fn harness_tools() -> Vec<Tool> {
             Some(
                 "Send another message to an existing session, continuing the same conversation via the vendor's \
                  own session store. Takes the `session` handle from `spawn` or `session_list`. The result's \
-                 `delivery` field says what happened and `session` carries the handle to use from now on — a \
-                 resume starts a NEW process continuing the same conversation, so the old handle becomes stale. \
+                 `delivery` field says what happened. The handle does NOT change — it stays valid for the whole \
+                 conversation, however many turns you send, and the transcript keeps accumulating under it. \
                  The session must have finished its previous turn: sending to a `running` session is refused, \
                  because no vendor supports two concurrent turns on one conversation — poll `session_read` or \
                  `session_kill` it first. The profile is inherited; you cannot switch profiles mid-conversation."
@@ -1035,17 +1035,11 @@ fn launch_summary(payload: &serde_json::Value) -> String {
         .unwrap_or(false);
 
     let mut out = String::new();
-    // Which path was taken comes FIRST: a resume mints a new handle
-    // continuing the same conversation, and a caller that keeps using
-    // the old one would be reading a dead session.
+    // Which path was taken comes first: "resumed a finished conversation"
+    // and "the agent was already going" are different situations, and a
+    // caller deciding what to do next needs to know which it got.
     if payload.get("delivery").and_then(serde_json::Value::as_str) == Some("resumed") {
-        let from = payload
-            .get("resumedFrom")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("?");
-        out.push_str(&format!(
-            "Resumed {from} as session {handle}, then sent. Use {handle} from now on.\n\n"
-        ));
+        out.push_str(&format!("Resumed session {handle} and sent.\n\n"));
     }
     if !body.is_empty() {
         out.push_str(body);

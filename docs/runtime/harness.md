@@ -91,7 +91,7 @@ A follow streams each new chunk as an MCP `notifications/progress` message when 
 
 - **Refused** if the session is still `running` — no vendor supports two concurrent turns on one conversation. Wait for it (poll `session_read`) or `session_kill` it first.
 - **Refused** if the session never reported a vendor session id — its first turn likely failed before the agent even started; check `session_read`.
-- Otherwise it **resumes**: the vendor's own session store continues the conversation, but in a **new process**, which means a **new handle**. The result's `delivery` field reports `"resumed"`, `resumedFrom` carries the old handle, and `session` carries the one to use from now on — the old handle's process has already exited, so continuing to address it just reads a dead session's transcript.
+- Otherwise it **resumes**: the vendor's own session store continues the conversation in a new process, and the result's `delivery` field reports `"resumed"`. **The handle does not change.** It stays valid for the whole conversation however many turns you send, and each turn appends to the same transcript — so `session_read` offsets stay meaningful across turns, and an N-turn conversation costs one session, not N.
 
 ## Session lifetime
 
@@ -126,6 +126,9 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Transcript read per call    | 60,000 bytes | Caps `session_read` and an inline `spawn`/`session_send` result.                                    |
 | Default tail                | 200 lines    | `session_read`'s default when `offset` is omitted.                                                  |
 | Default turn timeout        | 300 seconds  | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.           |
+| Retained sessions           | 64           | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
+
+Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call.
 
 The depth ceiling exists because a session started through the harness could itself be another `hyprpilot mcp serve --with-harness` sidecar — the env stamp bounds that chain regardless of how deep the concurrency ceiling alone would otherwise allow it to go. The concurrency ceiling bounds breadth at any single depth: since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
 

@@ -245,6 +245,72 @@ impl SessionTable {
             .collect()
     }
 
+    /// Start another turn on an EXISTING session, keeping its handle.
+    ///
+    /// The handle is stable for the life of a conversation: a caller that
+    /// spawned once can keep using the id it was given, and an N-turn
+    /// conversation costs one table entry and one transcript, not N.
+    ///
+    /// **The whole check-and-replace happens under the table lock**, and
+    /// that is the point. `tokio::process::Command::spawn` is synchronous,
+    /// so there is no await to hold the lock across — which makes the
+    /// "one turn at a time" rule an actual invariant rather than a
+    /// check that a second caller can slip past. Two concurrent sends on
+    /// one handle: the first wins, the second gets
+    /// [`RespawnError::Busy`].
+    pub(crate) fn respawn(
+        self: &Arc<Self>,
+        handle: &str,
+        command: SpawnCommand,
+        provenance: Provenance,
+    ) -> std::result::Result<(), RespawnError> {
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let session = guard.get_mut(handle).ok_or(RespawnError::Unknown)?;
+        if session.status() == SessionStatus::Running {
+            return Err(RespawnError::Busy);
+        }
+
+        // Append, so the conversation stays ONE transcript and the byte
+        // offsets a caller is paging through remain valid across turns.
+        let launched = launch_child(&command, session.dir.path(), handle, true).map_err(RespawnError::Spawn)?;
+
+        session.cwd = command.cwd.clone();
+        session.provenance = provenance;
+        session.pid = launched.pid;
+        session.pgid = launched.pgid;
+        session.done = launched.done;
+        session.last_turn_at = SystemTime::now();
+
+        Ok(())
+    }
+
+    /// Drop the oldest finished sessions once the table grows past `cap`.
+    ///
+    /// Exited sessions cost a table entry and a transcript directory
+    /// each. Without a bound, a caller that spawns steadily accumulates
+    /// both for the sidecar's whole life. Only FINISHED sessions are
+    /// evicted, oldest-by-last-turn first, so a live agent is never
+    /// touched — and it is logged, because a caller whose transcript
+    /// vanished deserves to find out why.
+    pub(crate) fn evict_exited_over(&self, cap: usize) {
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.len() <= cap {
+            return;
+        }
+        let mut finished: Vec<(SystemTime, String)> = guard
+            .values()
+            .filter(|session| session.status() == SessionStatus::Exited)
+            .map(|session| (session.last_turn_at, session.handle.clone()))
+            .collect();
+        finished.sort_by_key(|(at, _)| *at);
+
+        let excess = guard.len() - cap;
+        for (_, handle) in finished.into_iter().take(excess) {
+            guard.remove(&handle);
+            tracing::info!(%handle, cap, "mcp harness: evicted a finished session to bound the table");
+        }
+    }
+
     /// Terminate one session's process group. Returns `None` for an
     /// unknown handle, `Some(was_running)` otherwise — killing an
     /// already-exited session is a no-op, not an error.
@@ -305,77 +371,9 @@ impl SessionTable {
             .tempdir()
             .context("mcp harness: create session directory")?;
 
-        let stdout = std::fs::File::create(dir.path().join(TURNS_FILE))
-            .with_context(|| format!("mcp harness: create {TURNS_FILE}"))?;
-        let stderr = std::fs::File::create(dir.path().join(STDERR_FILE))
-            .with_context(|| format!("mcp harness: create {STDERR_FILE}"))?;
-
         let handle = self.mint_handle();
         let cwd = command.cwd.clone();
-        let stdin_prompt = command.stdin_prompt.clone();
-
-        let mut cmd = tokio::process::Command::new(&command.program);
-        cmd.args(&command.args)
-            .envs(&command.env)
-            // Every one of the three is set explicitly. tokio defaults to
-            // INHERIT: an unset stdin would steal the sidecar's MCP
-            // request stream, an unset stdout would corrupt the
-            // JSON-RPC framing with a single vendor log line.
-            .stdin(if stdin_prompt.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            // Backstop only — see the module docs. Without this tokio
-            // ORPHANS a live child on drop rather than killing it.
-            .kill_on_drop(true);
-        if let Some(cwd) = command.cwd.as_ref() {
-            cmd.current_dir(cwd);
-        }
-        harden_child(&mut cmd);
-
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("mcp harness: spawning {}", command.program))?;
-        let pid = child.id().context("mcp harness: child pid missing after spawn")?;
-        // `setpgid(0, 0)` in pre_exec makes the child its own group
-        // leader, so pgid == pid.
-        let pgid = pid as i32;
-
-        if let Some(prompt) = stdin_prompt {
-            // Write the prompt and CLOSE the pipe. The EOF is
-            // load-bearing: it is what stops `codex exec` hanging on an
-            // idle pipe. Must complete before any `wait`, since
-            // `Child::wait` drops stdin itself.
-            if let Some(mut sink) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let bytes = prompt.into_bytes();
-                tokio::spawn(async move {
-                    if let Err(err) = sink.write_all(&bytes).await {
-                        tracing::warn!(%err, "mcp harness: writing prompt to child stdin failed");
-                    }
-                    // `sink` drops here, closing the pipe.
-                });
-            }
-        }
-
-        write_breadcrumb(dir.path(), &handle, pid, pgid);
-
-        let (tx, done) = watch::channel(None);
-        let waiter_handle = handle.clone();
-        tokio::spawn(async move {
-            let code = match child.wait().await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(err) => {
-                    tracing::warn!(handle = %waiter_handle, %err, "mcp harness: waiting on session failed");
-                    -1
-                }
-            };
-            tracing::info!(handle = %waiter_handle, exit_code = code, "mcp harness: session exited");
-            let _ = tx.send(Some(code));
-        });
+        let Launched { pid, pgid, done } = launch_child(&command, dir.path(), &handle, false)?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -399,6 +397,109 @@ impl SessionTable {
 
         Ok(handle)
     }
+}
+
+/// Why a [`SessionTable::respawn`] could not start a turn.
+#[derive(Debug)]
+pub(crate) enum RespawnError {
+    Unknown,
+    /// Another turn is already in flight on this session. No vendor
+    /// supports two concurrent turns on one conversation, so the loser of
+    /// the race is told rather than quietly starting a second one.
+    Busy,
+    Spawn(anyhow::Error),
+}
+
+struct Launched {
+    pid: u32,
+    pgid: i32,
+    done: watch::Receiver<Option<i32>>,
+}
+
+/// Start one vendor process against a session directory.
+///
+/// Shared by the first turn and every later one. `append` keeps a resumed
+/// turn writing into the SAME `turns.jsonl`, so a conversation reads back
+/// as one continuous transcript and byte offsets stay meaningful across
+/// turns.
+fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) -> Result<Launched> {
+    let open = |name: &str| -> Result<std::fs::File> {
+        let path = dir.join(name);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(append)
+            .truncate(!append)
+            .open(&path)
+            .with_context(|| format!("mcp harness: open {}", path.display()))
+    };
+    let stdout = open(TURNS_FILE)?;
+    let stderr = open(STDERR_FILE)?;
+    let stdin_prompt = command.stdin_prompt.clone();
+
+    let mut cmd = tokio::process::Command::new(&command.program);
+    cmd.args(&command.args)
+        .envs(&command.env)
+        // Every one of the three is set explicitly. tokio defaults to
+        // INHERIT: an unset stdin would steal the sidecar's MCP request
+        // stream, an unset stdout would corrupt the JSON-RPC framing with
+        // a single vendor log line.
+        .stdin(if stdin_prompt.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        // Backstop only — see the module docs. Without this tokio ORPHANS
+        // a live child on drop rather than killing it.
+        .kill_on_drop(true);
+    if let Some(cwd) = command.cwd.as_ref() {
+        cmd.current_dir(cwd);
+    }
+    harden_child(&mut cmd);
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("mcp harness: spawning {}", command.program))?;
+    let pid = child.id().context("mcp harness: child pid missing after spawn")?;
+    // `setpgid(0, 0)` in pre_exec makes the child its own group leader,
+    // so pgid == pid.
+    let pgid = pid as i32;
+
+    if let Some(prompt) = stdin_prompt {
+        // Write the prompt and CLOSE the pipe. The EOF is load-bearing:
+        // it is what stops `codex exec` hanging on an idle pipe. Must
+        // complete before any `wait`, since `Child::wait` drops stdin.
+        if let Some(mut sink) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let bytes = prompt.into_bytes();
+            tokio::spawn(async move {
+                if let Err(err) = sink.write_all(&bytes).await {
+                    tracing::warn!(%err, "mcp harness: writing prompt to child stdin failed");
+                }
+                // `sink` drops here, closing the pipe.
+            });
+        }
+    }
+
+    write_breadcrumb(dir, handle, pid, pgid);
+
+    let (tx, done) = watch::channel(None);
+    let waiter_handle = handle.to_string();
+    tokio::spawn(async move {
+        let code = match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(err) => {
+                tracing::warn!(handle = %waiter_handle, %err, "mcp harness: waiting on session failed");
+                -1
+            }
+        };
+        tracing::info!(handle = %waiter_handle, exit_code = code, "mcp harness: session exited");
+        let _ = tx.send(Some(code));
+    });
+
+    Ok(Launched { pid, pgid, done })
 }
 
 #[cfg(unix)]
@@ -792,6 +893,100 @@ mod tests {
         assert!(live.exists(), "a live sidecar's sessions must survive another's sweep");
         assert!(!dead.exists(), "a dead sidecar's leftovers must be reclaimed");
         assert!(unknown.exists(), "unprovable ownership must not be treated as stale");
+    }
+
+    /// A resume keeps the caller's handle and appends to the SAME
+    /// transcript, so a conversation is one entry and one file however
+    /// many turns it runs.
+    #[tokio::test]
+    async fn respawn_keeps_the_handle_and_appends_to_one_transcript() {
+        let table = table();
+        let mut first = sleeper("0");
+        first.program = "echo".into();
+        first.args = vec!["turn-one".into()];
+        let handle = spawn(&table, first);
+
+        // Let the first turn finish before resuming it.
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+
+        let mut second = sleeper("0");
+        second.program = "echo".into();
+        second.args = vec!["turn-two".into()];
+        table.respawn(&handle, second, provenance()).expect("resume succeeds");
+
+        assert_eq!(
+            table.map_all(|s| s.handle.clone()).len(),
+            1,
+            "a resume must not add a row"
+        );
+
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+        let transcript = std::fs::read_to_string(table.with(&handle, |s| s.turns_path()).unwrap()).unwrap();
+        assert!(
+            transcript.contains("turn-one"),
+            "the earlier turn survives: {transcript:?}"
+        );
+        assert!(
+            transcript.contains("turn-two"),
+            "the new turn is appended: {transcript:?}"
+        );
+    }
+
+    /// Two concurrent sends on one session must not both start a turn —
+    /// no vendor supports two at once. The check and the spawn happen
+    /// under one lock, so the loser is told rather than quietly starting
+    /// a second conversation.
+    #[tokio::test]
+    async fn respawn_refuses_while_a_turn_is_in_flight() {
+        let table = table();
+        let handle = spawn(&table, sleeper("30"));
+
+        let err = table
+            .respawn(&handle, sleeper("1"), provenance())
+            .expect_err("a running session must refuse a second turn");
+        assert!(matches!(err, RespawnError::Busy), "expected Busy, got {err:?}");
+
+        assert!(matches!(
+            table.respawn("nope", sleeper("1"), provenance()),
+            Err(RespawnError::Unknown)
+        ));
+
+        table.shutdown().await;
+    }
+
+    /// Finished sessions are evicted oldest-first once the table grows
+    /// past the cap; a live one is never touched.
+    #[tokio::test]
+    async fn eviction_bounds_the_table_without_touching_live_sessions() {
+        let table = table();
+        let live = spawn(&table, sleeper("30"));
+
+        let mut finished = Vec::new();
+        for _ in 0..4 {
+            let mut cmd = sleeper("0");
+            cmd.program = "true".into();
+            cmd.args.clear();
+            let handle = spawn(&table, cmd);
+            let mut done = table.with(&handle, |s| s.completion()).unwrap();
+            while done.borrow().is_none() {
+                done.changed().await.unwrap();
+            }
+            finished.push(handle);
+        }
+
+        table.evict_exited_over(2);
+
+        let remaining = table.map_all(|s| s.handle.clone());
+        assert_eq!(remaining.len(), 2, "the table must be bounded: {remaining:?}");
+        assert!(remaining.contains(&live), "a running session is never evicted");
+
+        table.shutdown().await;
     }
 
     #[test]
