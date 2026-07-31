@@ -113,6 +113,7 @@ mod tests {
             cwd: None,
             is_default,
             error: None,
+            ..Default::default()
         }
     }
 

@@ -84,6 +84,19 @@ pub struct ServeArgs {
     /// applies each root's ignore list independently.
     #[arg(long = "skill-dir", value_parser = parse_skill_dir_arg)]
     pub skill_dirs: Vec<SkillDirEntry>,
+
+    /// Expose the agent harness (`list_profiles`, `spawn`, `resume`,
+    /// `session_*`) alongside the skills surface.
+    ///
+    /// **Off by default, deliberately.** `mcp::auto_inject` puts this
+    /// sidecar inside EVERY launch, so an ungated spawn surface would
+    /// let a claude session spawn nested claude sessions without bound.
+    /// It is also a security boundary: a profile's `command` is an
+    /// arbitrary binary, so anything that can call `spawn` can execute
+    /// commands as this user. Enable it only where that is intended —
+    /// e.g. a gateway host whose MCP config opts in explicitly.
+    #[arg(long = "with-harness", default_value_t = false)]
+    pub with_harness: bool,
 }
 
 /// One decoded `--skill-dir` entry. The launcher serializes
@@ -102,22 +115,75 @@ fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
 
 /// Run the rmcp stdio server in the foreground. Returns when the
 /// vendor closes the pipe (or on init error).
-pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
+pub async fn run(args: ServeArgs, config: super::ConfigSource) -> anyhow::Result<()> {
     tracing::info!(
         dirs = args.skill_dirs.len(),
+        harness = args.with_harness,
         "mcp::server::serve: starting hyprpilot MCP server"
     );
 
-    let handler = HyprpilotServer::new(args)?;
+    if args.with_harness {
+        // Reclaim anything a crashed predecessor left behind before
+        // starting our own. A non-empty sweep logs at `warn`.
+        super::sessions::sweep_stale_sessions();
+    }
+
+    let handler = HyprpilotServer::new(args, config)?;
     handler.reload_skills().await;
+
+    // Clone the session table BEFORE `serve()` — it consumes the
+    // handler, and `waiting()` consumes the `RunningService`, so this is
+    // the only chance to keep a handle for the shutdown reap.
+    let sessions = handler.harness.as_ref().map(|harness| Arc::clone(&harness.sessions));
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = handler
         .serve((stdin, stdout))
         .await
         .context("mcp::server::serve: serve failed at init")?;
-    running.waiting().await.ok();
+
+    // Race the transport against SIGTERM/SIGHUP. Without this a
+    // supervisor stopping the sidecar would skip every destructor and
+    // strand live sessions — `PR_SET_PDEATHSIG` still covers the
+    // SIGKILL case, but only after the kernel notices, and it cannot
+    // remove the session directories.
+    wait_for_shutdown(running).await;
+
+    if let Some(sessions) = sessions {
+        sessions.shutdown().await;
+    }
+
     Ok(())
+}
+
+/// Return once the MCP transport closes or a termination signal
+/// arrives, whichever comes first.
+async fn wait_for_shutdown(running: rmcp::service::RunningService<RoleServer, HyprpilotServer>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut term = signal(SignalKind::terminate()).ok();
+        let mut hup = signal(SignalKind::hangup()).ok();
+        let transport = running.waiting();
+        tokio::pin!(transport);
+
+        // Every arm is terminal — the first of transport-close, SIGTERM,
+        // or SIGHUP wins and the caller reaps.
+        tokio::select! {
+            _ = &mut transport => {}
+            Some(()) = async { match term.as_mut() { Some(s) => s.recv().await, None => None } } => {
+                tracing::info!("mcp::server::serve: SIGTERM received; reaping sessions");
+            }
+            Some(()) = async { match hup.as_mut() { Some(s) => s.recv().await, None => None } } => {
+                tracing::info!("mcp::server::serve: SIGHUP received; reaping sessions");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        running.waiting().await.ok();
+    }
 }
 
 // ── In-memory cache ───────────────────────────────────────────────────
@@ -159,10 +225,18 @@ impl LoadedSkill {
 struct HyprpilotServer {
     registry: Arc<SkillsRegistry>,
     skills_cache: Arc<RwLock<SkillsCache>>,
+    /// `Some` only under `--with-harness`. `None` keeps the historical
+    /// skills-only surface — and gates `call_tool` too, not just
+    /// `list_tools`, since `call_tool` dispatches on name alone and
+    /// would otherwise stay reachable by any client that knows one.
+    harness: Option<Arc<crate::mcp::server::harness::Harness>>,
 }
 
 impl HyprpilotServer {
-    fn new(args: ServeArgs) -> anyhow::Result<Self> {
+    fn new(args: ServeArgs, config: super::ConfigSource) -> anyhow::Result<Self> {
+        let harness = args
+            .with_harness
+            .then(|| Arc::new(crate::mcp::server::harness::Harness::new(config)));
         // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
         // JSON entry. Each entry carries its OWN ignore list so the
         // sidecar replicates the launcher's per-dir suppression exactly —
@@ -205,7 +279,117 @@ impl HyprpilotServer {
         Ok(Self {
             registry: Arc::new(SkillsRegistry::new(entries)),
             skills_cache: Arc::new(RwLock::new(SkillsCache::default())),
+            harness,
         })
+    }
+
+    /// Dispatch one harness tool. Recoverable failures come back as
+    /// `Ok(tool_error(..))` so the agent can read and act on them;
+    /// `Err` stays reserved for protocol faults (bad params).
+    async fn call_harness_tool(
+        &self,
+        harness: &crate::mcp::server::harness::Harness,
+        name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match name {
+            "list_profiles" => match harness.list_profiles() {
+                Ok((summary, payload)) => Ok(structured_with_text(summary, payload)),
+                Err(msg) => Ok(tool_error(msg)),
+            },
+            "spawn" => {
+                let profile = require_string(&args, "profile")?.to_string();
+                let launch = match decode_launch_args(&args, profile, context) {
+                    Ok(launch) => launch,
+                    Err(msg) => return Ok(tool_error(msg)),
+                };
+                match harness.spawn(launch).await {
+                    Ok(payload) => Ok(structured_with_text(launch_summary(&payload), payload)),
+                    Err(msg) => Ok(tool_error(msg)),
+                }
+            }
+            "resume" => {
+                let session = require_string(&args, "session")?.to_string();
+                // The profile is inherited from the original spawn; the
+                // placeholder is replaced inside `resume`.
+                let launch = match decode_launch_args(&args, String::new(), context) {
+                    Ok(launch) => launch,
+                    Err(msg) => return Ok(tool_error(msg)),
+                };
+                match harness.resume(&session, launch).await {
+                    Ok(payload) => Ok(structured_with_text(launch_summary(&payload), payload)),
+                    Err(msg) => Ok(tool_error(msg)),
+                }
+            }
+            "session_list" => {
+                let (summary, payload) = harness.session_list();
+                Ok(structured_with_text(summary, payload))
+            }
+            "session_read" => {
+                let session = require_string(&args, "session")?;
+                let tail = optional_usize(&args, "tail")?.unwrap_or(200);
+                let offset = optional_u64(&args, "offset")?;
+                // `watch` opts into following; `watch_seconds` is an
+                // optional self-imposed cap on top of it. Cancelling the
+                // request also ends a follow, which is how an agent that
+                // has seen enough stops without waiting out a timer.
+                let watch = optional_bool(&args, "watch")?.unwrap_or(false);
+                let watch_seconds = optional_u64(&args, "watch_seconds")?;
+                let watch = (watch || watch_seconds.is_some()).then(|| {
+                    crate::mcp::server::harness::WatchOptions {
+                        seconds: watch_seconds,
+                        // Only stream when the caller actually asked for
+                        // progress — an unsolicited notification stream
+                        // is noise to a client that cannot render it.
+                        sink: context.meta.get_progress_token().map(|token| {
+                            crate::mcp::server::harness::ProgressSink {
+                                peer: context.peer.clone(),
+                                token,
+                            }
+                        }),
+                        cancel: context.ct.clone(),
+                    }
+                });
+                match harness.session_read(session, tail, offset, watch).await {
+                    Ok(payload) => {
+                        let summary = payload
+                            .get("lines")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|lines| !lines.is_empty())
+                            .map_or_else(
+                                || format!("Session {session} has produced no output yet."),
+                                str::to_string,
+                            );
+                        Ok(structured_with_text(summary, payload))
+                    }
+                    Err(msg) => Ok(tool_error(msg)),
+                }
+            }
+            "session_kill" => {
+                let session = require_string(&args, "session")?;
+                match harness.session_kill(session).await {
+                    Ok(payload) => {
+                        let was_running = payload
+                            .get("wasRunning")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let summary = if was_running {
+                            format!("Terminated session {session}.")
+                        } else {
+                            format!("Session {session} had already finished; nothing to terminate.")
+                        };
+                        Ok(structured_with_text(summary, payload))
+                    }
+                    Err(msg) => Ok(tool_error(msg)),
+                }
+            }
+            other => Err(rmcp::ErrorData::new(
+                ErrorCode::METHOD_NOT_FOUND,
+                format!("unknown tool: {other}"),
+                None,
+            )),
+        }
     }
 
     async fn reload_skills(&self) {
@@ -322,6 +506,206 @@ fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
     }
 }
 
+/// Compact builder emitting the same shape the hand-rolled schemas
+/// above produce — `type` / `properties` / `required` (omitted when
+/// empty, matching `empty_object_schema`) / `additionalProperties:
+/// false`. Worth the helper once a tool has more than a field or two.
+fn object_schema(props: serde_json::Value, required: &[&str]) -> Arc<serde_json::Map<String, serde_json::Value>> {
+    let mut map = serde_json::Map::new();
+    map.insert("type".into(), serde_json::json!("object"));
+    map.insert("properties".into(), props);
+    if !required.is_empty() {
+        map.insert("required".into(), serde_json::json!(required));
+    }
+    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
+    Arc::new(map)
+}
+
+/// Shared `spawn` / `resume` parameters. Every one mirrors a CLI flag
+/// so the two surfaces cannot drift, and every one carries its unit and
+/// default — the calling agent has no other documentation.
+fn launch_props(extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
+    let mut props = serde_json::json!({
+        "prompt": {
+            "type": "string",
+            "description": "The instruction to send. Mutually exclusive with `file`.",
+        },
+        "file": {
+            "type": "string",
+            "description": "Path to a file whose contents become the prompt (`~` and `$VAR` expanded). Mutually exclusive with `prompt`.",
+        },
+        "cwd": {
+            "type": "string",
+            "description": "Working directory for the agent. Defaults to the profile's own cwd.",
+        },
+        "mode": {
+            "type": "string",
+            "description": "Vendor mode override (e.g. claude's `plan`). Overrides the profile.",
+        },
+        "with_config": {
+            "type": "array",
+            "items": { "type": "object" },
+            "description": "Ad-hoc profile overlays, same strategic-merge semantics as the CLI's `--with-config`. Use for a one-off model or setting swap.",
+        },
+        "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Extra arguments forwarded verbatim to the vendor CLI — the equivalent of the CLI's trailing `-- <args>`.",
+        },
+        "wait": {
+            "type": "boolean",
+            "description": "Block until the turn finishes (default true). When false, returns immediately with the handle; poll `session_read`.",
+        },
+        "timeout_seconds": {
+            "type": "integer",
+            "description": "Seconds to wait when `wait` is true (default 300). On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_read`, do not spawn again.",
+        },
+    });
+    let map = props.as_object_mut().expect("literal is an object");
+    for (key, value) in extra {
+        map.insert((*key).to_string(), value.clone());
+    }
+
+    props
+}
+
+/// Names owned by the harness. Kept next to [`harness_tools`] so the
+/// gate and the listing cannot fall out of step.
+fn is_harness_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "list_profiles" | "spawn" | "resume" | "session_list" | "session_read" | "session_kill"
+    )
+}
+
+/// The harness tool set. Every description states how the tool
+/// COMPOSES with its siblings, not just what it does — these strings
+/// are the only documentation the calling agent ever sees.
+fn harness_tools() -> Vec<Tool> {
+    vec![
+        Tool::new_with_raw(
+            "list_profiles",
+            Some(
+                "START HERE. List the agent profiles you can launch, with the vendor, model, effort, mode, \
+                 cwd, and how many MCP servers and skills each one resolves to. Pass a profile's `id` as \
+                 `spawn`'s `profile`. A profile already carries its agent/model/effort/mode/MCP/skills, so every \
+                 other `spawn` argument is an override, not a requirement. Rows marked `!` failed to resolve — \
+                 do not launch those."
+                    .into(),
+            ),
+            empty_object_schema(),
+        ),
+        Tool::new_with_raw(
+            "spawn",
+            Some(
+                "Start a NEW agent session from a profile and send it a prompt. Returns a `session` handle. \
+                 With `wait` true (the default) it blocks and returns the transcript; if the turn outlives \
+                 `timeout_seconds` the result comes back with status `running` and the agent KEEPS WORKING — \
+                 poll `session_read` with the handle, do NOT call `spawn` again. Use `resume` (not `spawn`) for \
+                 every follow-up turn on the same conversation. Sessions live only as long as this MCP server: \
+                 if it restarts, running agents are killed and transcripts are lost."
+                    .into(),
+            ),
+            object_schema(
+                launch_props(&[(
+                    "profile",
+                    serde_json::json!({
+                        "type": "string",
+                        "description": "Profile id from `list_profiles`.",
+                    }),
+                )]),
+                &["profile"],
+            ),
+        ),
+        Tool::new_with_raw(
+            "resume",
+            Some(
+                "Send another turn to an EXISTING session, continuing the same conversation via the vendor's \
+                 own session store. Takes the `session` handle returned by `spawn`. The session must have \
+                 finished its previous turn — resuming a `running` session is refused, because no vendor \
+                 supports two concurrent turns on one conversation. The profile is inherited from the \
+                 original `spawn`; you cannot switch profiles mid-conversation."
+                    .into(),
+            ),
+            object_schema(
+                launch_props(&[(
+                    "session",
+                    serde_json::json!({
+                        "type": "string",
+                        "description": "Session handle from `spawn` or `session_list`.",
+                    }),
+                )]),
+                &["session"],
+            ),
+        ),
+        Tool::new_with_raw(
+            "session_list",
+            Some(
+                "List this server's agent sessions — handle, profile, vendor, status (`running` / `exited`), \
+                 exit code, and timestamps. Use it to recover a handle you lost, or to find what is still \
+                 running before spawning more. Only sessions started by THIS server appear; it holds no state \
+                 across restarts."
+                    .into(),
+            ),
+            empty_object_schema(),
+        ),
+        Tool::new_with_raw(
+            "session_read",
+            Some(
+                "Read a session's transcript — the vendor's structured JSON event stream, whole lines only. \
+                 Works while the agent is still running (poll this after a `spawn` that returned status \
+                 `running`) and afterwards, for as long as this server lives. Pass `offset` from a previous \
+                 result's `nextOffset` to page forward without re-reading; omit it to get the tail."
+                    .into(),
+            ),
+            object_schema(
+                serde_json::json!({
+                    "session": {
+                        "type": "string",
+                        "description": "Session handle from `spawn` or `session_list`.",
+                    },
+                    "tail": {
+                        "type": "integer",
+                        "description": "Number of trailing lines to return when `offset` is omitted (default 200).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Byte offset to read forward from — pass the `nextOffset` of a previous call to stream new output only.",
+                    },
+                    "watch": {
+                        "type": "boolean",
+                        "description": "Follow the session live from `offset` instead of returning immediately. Streams each new chunk as a progress notification (when you pass a progressToken) and returns everything it saw. Ends when the agent finishes, when you cancel the request, or after `watch_seconds`.",
+                    },
+                    "watch_seconds": {
+                        "type": "integer",
+                        "description": "Optional cap on a `watch` follow, in seconds. Omit to follow until the agent finishes or you cancel — there is no server-side limit.",
+                    },
+                }),
+                &["session"],
+            ),
+        ),
+        Tool::new_with_raw(
+            "session_kill",
+            Some(
+                "Terminate a running session and everything it started (SIGTERM, then SIGKILL after a grace \
+                 period). Use it to stop a runaway agent or to free a slot when `spawn` reports the \
+                 concurrency limit. Killing an already-finished session is harmless — it reports \
+                 `wasRunning: false`. The transcript stays readable via `session_read` afterwards."
+                    .into(),
+            ),
+            object_schema(
+                serde_json::json!({
+                    "session": {
+                        "type": "string",
+                        "description": "Session handle from `spawn` or `session_list`.",
+                    },
+                }),
+                &["session"],
+            ),
+        ),
+    ]
+}
+
 fn empty_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     let mut map = serde_json::Map::new();
     map.insert("type".into(), serde_json::Value::String("object".into()));
@@ -427,6 +811,187 @@ fn require_string<'a>(
         .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("missing string argument `{key}`"), None))
 }
 
+/// Optional-argument siblings of [`require_string`]. A present-but-wrong
+/// type is a protocol fault (`invalid_params`), not a recoverable tool
+/// error — the caller sent something the schema forbids.
+fn optional_string(
+    args: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>, rmcp::ErrorData> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(rmcp::ErrorData::invalid_params(
+            format!("argument `{key}` must be a string"),
+            None,
+        )),
+    }
+}
+
+fn optional_bool(
+    args: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<bool>, rmcp::ErrorData> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(rmcp::ErrorData::invalid_params(
+            format!("argument `{key}` must be a boolean"),
+            None,
+        )),
+    }
+}
+
+fn optional_u64(args: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<Option<u64>, rmcp::ErrorData> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(format!("argument `{key}` must be a non-negative integer"), None)
+        }),
+    }
+}
+
+fn optional_usize(
+    args: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<usize>, rmcp::ErrorData> {
+    Ok(optional_u64(args, key)?.map(|n| n as usize))
+}
+
+fn optional_string_array(
+    args: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Vec<String>, rmcp::ErrorData> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str().map(str::to_string).ok_or_else(|| {
+                    rmcp::ErrorData::invalid_params(format!("every entry in `{key}` must be a string"), None)
+                })
+            })
+            .collect(),
+        Some(_) => Err(rmcp::ErrorData::invalid_params(
+            format!("argument `{key}` must be an array of strings"),
+            None,
+        )),
+    }
+}
+
+/// Decode the shared `spawn` / `resume` argument set.
+///
+/// Returns `Err(String)` for things the caller can fix and retry (an
+/// unreadable prompt file, `prompt` and `file` together) — those come
+/// back as tool errors, not protocol faults.
+fn decode_launch_args(
+    args: &serde_json::Map<String, serde_json::Value>,
+    profile: String,
+    context: &RequestContext<RoleServer>,
+) -> Result<crate::mcp::server::harness::LaunchToolArgs, String> {
+    let inline = optional_string(args, "prompt").map_err(|err| err.to_string())?;
+    let file = optional_string(args, "file").map_err(|err| err.to_string())?;
+
+    // Mirrors clap's `conflicts_with` on the CLI's `-p` / `-f`.
+    let prompt = match (inline, file) {
+        (Some(_), Some(_)) => {
+            return Err("`prompt` and `file` are mutually exclusive — pass exactly one.".into());
+        }
+        (Some(inline), None) => inline,
+        (None, Some(file)) => {
+            let path = crate::paths::resolve_user(&file);
+            std::fs::read_to_string(&path).map_err(|err| format!("could not read `file` {}: {err}", path.display()))?
+        }
+        (None, None) => {
+            return Err("a prompt is required: pass `prompt` or `file`.".into());
+        }
+    };
+    if prompt.trim().is_empty() {
+        return Err("the prompt is empty.".into());
+    }
+
+    let with_config = match args.get("with_config") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => items.clone(),
+        Some(_) => return Err("`with_config` must be an array of overlay objects.".into()),
+    };
+
+    Ok(crate::mcp::server::harness::LaunchToolArgs {
+        profile,
+        prompt,
+        cwd: optional_string(args, "cwd")
+            .map_err(|err| err.to_string())?
+            .map(|cwd| crate::paths::resolve_user(&cwd)),
+        mode: optional_string(args, "mode").map_err(|err| err.to_string())?,
+        with_config,
+        args: optional_string_array(args, "args").map_err(|err| err.to_string())?,
+        wait: optional_bool(args, "wait")
+            .map_err(|err| err.to_string())?
+            .unwrap_or(true),
+        timeout_seconds: optional_u64(args, "timeout_seconds")
+            .map_err(|err| err.to_string())?
+            .unwrap_or_else(crate::mcp::server::harness::LaunchToolArgs::default_timeout),
+        // A waiting spawn streams the transcript when the caller asked
+        // for progress, so a long turn is visible as it happens rather
+        // than arriving all at once at the end.
+        sink: context
+            .meta
+            .get_progress_token()
+            .map(|token| crate::mcp::server::harness::ProgressSink {
+                peer: context.peer.clone(),
+                token,
+            }),
+        cancel: Some(context.ct.clone()),
+    })
+}
+
+/// Human-readable summary for a `spawn` / `resume` result.
+///
+/// The agent's own output comes FIRST and the session's terminal state
+/// LAST, so a reader (human or model) hits the answer immediately and
+/// finds the exit status where a terminal would put it. A `running`
+/// result says plainly to poll rather than re-spawn — the single most
+/// expensive mistake a calling agent can make here.
+fn launch_summary(payload: &serde_json::Value) -> String {
+    let handle = payload
+        .get("session")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?");
+    let body = payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim_end();
+    let timed_out = payload
+        .get("timedOut")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let mut out = String::new();
+    if !body.is_empty() {
+        out.push_str(body);
+        out.push_str("\n\n");
+    }
+    if timed_out {
+        out.push_str(&format!(
+            "── session {handle} — STILL RUNNING (turn outlived its timeout). \
+             Poll `session_read` with this handle; do NOT spawn again."
+        ));
+
+        return out;
+    }
+    match payload.get("exitCode").and_then(serde_json::Value::as_i64) {
+        Some(0) => out.push_str(&format!("── session {handle} — exited (exit 0)")),
+        Some(code) => out.push_str(&format!("── session {handle} — exited (exit {code}) — check `stderr`")),
+        None => out.push_str(&format!(
+            "── session {handle} — {} (no exit code yet)",
+            payload.get("status").and_then(serde_json::Value::as_str).unwrap_or("?")
+        )),
+    }
+
+    out
+}
+
 // ── MCP protocol impl ─────────────────────────────────────────────────
 
 impl ServerHandler for HyprpilotServer {
@@ -471,7 +1036,7 @@ impl ServerHandler for HyprpilotServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        let tools = vec![
+        let mut tools = vec![
             Tool::new_with_raw(
                 "list_skills",
                 Some("List every skill resolved for this session, including frontmatter metadata.".into()),
@@ -518,6 +1083,9 @@ impl ServerHandler for HyprpilotServer {
                 open_object_schema(),
             ),
         ];
+        if self.harness.is_some() {
+            tools.extend(harness_tools());
+        }
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -595,6 +1163,18 @@ impl ServerHandler for HyprpilotServer {
                     Err(err) => Ok(tool_error(format!("open failed: {err}"))),
                 }
             }
+            // The harness arms are reached ONLY through this guard.
+            // Gating `list_tools` alone would be cosmetic: `call_tool`
+            // dispatches on the name, so an unlisted tool would still be
+            // callable by any client that knows it exists.
+            name if is_harness_tool(name) => match self.harness.as_ref() {
+                Some(harness) => self.call_harness_tool(harness, name, args, &context).await,
+                None => Err(rmcp::ErrorData::new(
+                    ErrorCode::METHOD_NOT_FOUND,
+                    format!("unknown tool: {name}"),
+                    None,
+                )),
+            },
             other => Err(rmcp::ErrorData::new(
                 ErrorCode::METHOD_NOT_FOUND,
                 format!("unknown tool: {other}"),

@@ -6,7 +6,7 @@ use crate::mcp::{expanded_raw, project_transport, MCPDefinition};
 use crate::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_flag};
-use super::{base_command, ensure_inline_size, SpawnCommand};
+use super::{base_command, ensure_inline_size, HarnessProjection, SpawnCommand};
 
 pub(super) fn build_claude(
     resolved: &ResolvedProfile,
@@ -14,6 +14,7 @@ pub(super) fn build_claude(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
     // Headless: `claude --print` reading the prompt from STDIN. `--print`
@@ -28,6 +29,26 @@ pub(super) fn build_claude(
         command.args.insert(0, "--print".into());
     }
     let detect_args = combined_args(&command.args, &provider_args);
+
+    if let Some(harness) = harness {
+        if harness.structured_output && !has_flag(&detect_args, "--output-format", None) {
+            command.args.push("--output-format".into());
+            command.args.push("stream-json".into());
+            // `--verbose` is MANDATORY here, not cosmetic: claude rejects
+            // the launch outright with "When using --print,
+            // --output-format=stream-json requires --verbose". Verified
+            // against the installed CLI.
+            if !has_flag(&detect_args, "--verbose", None) {
+                command.args.push("--verbose".into());
+            }
+        }
+        if let Some(id) = harness.resume.as_deref() {
+            if !has_flag(&detect_args, "--resume", Some("-r")) {
+                command.args.push("--resume".into());
+                command.args.push(id.into());
+            }
+        }
+    }
 
     if let Some(model) = resolved.model.as_deref() {
         if !has_flag(&detect_args, "--model", None) {
@@ -180,7 +201,7 @@ fn claude_mcp_tool_pattern(server: &str, pattern: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::AgentProvider;
-    use crate::spawn::providers::build_command;
+    use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
 
     #[test]

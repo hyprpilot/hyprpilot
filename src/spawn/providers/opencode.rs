@@ -6,7 +6,7 @@ use crate::mcp::{project_transport, MCPDefinition, McpTransport};
 use crate::profile::ResolvedProfile;
 
 use super::argv::{combined_args, flag_value, has_flag};
-use super::{base_command, ensure_inline_size, mcp_leaf_pattern, SpawnCommand};
+use super::{base_command, ensure_inline_size, mcp_leaf_pattern, HarnessProjection, SpawnCommand};
 
 pub(super) fn build_opencode(
     resolved: &ResolvedProfile,
@@ -14,6 +14,7 @@ pub(super) fn build_opencode(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
     // Headless: `opencode run [OPTIONS] <prompt>` — the one-shot
@@ -25,6 +26,22 @@ pub(super) fn build_opencode(
         command.args.insert(0, "run".into());
     }
     let detect_args = combined_args(&command.args, &provider_args);
+
+    if let Some(harness) = harness {
+        // opencode spells it `sessionID` (camelCase) on every event —
+        // a third distinct key across the three vendors. Verified
+        // against the installed CLI.
+        if harness.structured_output && !has_flag(&detect_args, "--format", None) {
+            command.args.push("--format".into());
+            command.args.push("json".into());
+        }
+        if let Some(id) = harness.resume.as_deref() {
+            if !has_flag(&detect_args, "--session", Some("-s")) {
+                command.args.push("--session".into());
+                command.args.push(id.into());
+            }
+        }
+    }
     let agent_name = flag_value(&detect_args, "--agent", None)
         .or_else(|| resolved.mode.clone())
         .unwrap_or_else(|| "hyprpilot".into());
@@ -292,7 +309,7 @@ fn opencode_remote_mcp(url: String, headers: Vec<(String, String)>) -> serde_jso
 mod tests {
     use super::*;
     use crate::config::AgentProvider;
-    use crate::spawn::providers::build_command;
+    use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
 
     #[test]

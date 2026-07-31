@@ -43,6 +43,21 @@ rmcp = { version = "2", features = ["transport-io"] }
 # The MCP server runs as a stdio sidecar — this crate wraps `xdg-open`
 # on Linux, `open` on macOS, `start` on Windows.
 open = "5"
+# Per-session scratch dirs for the MCP agent harness. `TempDir` removes
+# the tree on `Drop`, so dropping the session table IS the cleanup — no
+# bespoke reaper, no TTL sweep. Also a dev-dependency (test fixtures).
+tempfile = "3"
+# Process control for harness sessions: `setpgid` (so a kill reaches the
+# vendor's own subprocesses, not just the direct child), `SIGTERM` (tokio
+# only offers SIGKILL), and `PR_SET_PDEATHSIG` — the kernel-level
+# guarantee that a session dies with the sidecar even under SIGKILL or
+# the release profile's `panic = "abort"`.
+nix = { version = "0.30", features = ["process", "signal"] }
+# `CancellationToken` — the type rmcp hands us on `RequestContext.ct`,
+# tripped when the client cancels a request. It is what ends an
+# unbounded `session_read` follow, so the agent decides when to stop
+# watching rather than the server imposing a timer.
+tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
