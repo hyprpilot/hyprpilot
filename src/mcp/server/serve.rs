@@ -329,7 +329,7 @@ impl HyprpilotServer {
                  conversation. It resumes a finished session and returns a NEW \
                  handle; use that handle from then on.\n\
                  5. `session_read` any time, including after the run finished. \
-                 Pass `watch: true` to follow live; pass a progressToken to \
+                 Pass `wait: true` to follow live; pass a progressToken to \
                  receive output as progress notifications as it arrives.\n\
                  6. `session_kill { session }` — stop a runaway; `session_list` — \
                  recover handles.\n\
@@ -388,12 +388,13 @@ impl HyprpilotServer {
                 let session = require_string(&args, "session")?;
                 let tail = optional_usize(&args, "tail")?.unwrap_or(200);
                 let offset = optional_u64(&args, "offset")?;
-                // `watch` opts into following; `watch_seconds` is an
-                // optional self-imposed cap on top of it. Cancelling the
-                // request also ends a follow, which is how an agent that
-                // has seen enough stops without waiting out a timer.
-                let watch = optional_bool(&args, "watch")?.unwrap_or(false);
-                let watch_seconds = optional_u64(&args, "watch_seconds")?;
+                // Deliberately the same two knobs `spawn` takes, meaning
+                // the same thing: `wait` follows, `timeout_seconds` caps
+                // it. Cancelling the request also ends a follow, which is
+                // how an agent that has seen enough stops without waiting
+                // out a timer.
+                let watch = optional_bool(&args, "wait")?.unwrap_or(false);
+                let watch_seconds = optional_u64(&args, "timeout_seconds")?;
                 let watch = (watch || watch_seconds.is_some()).then(|| {
                     crate::mcp::server::harness::WatchOptions {
                         seconds: watch_seconds,
@@ -715,7 +716,9 @@ fn harness_tools() -> Vec<Tool> {
                 "Read a session's transcript — the vendor's structured JSON event stream, whole lines only. \
                  Works while the agent is still running (poll this after a `spawn` that returned status \
                  `running`) and afterwards, for as long as this server lives. Pass `offset` from a previous \
-                 result's `nextOffset` to page forward without re-reading; omit it to get the tail."
+                 result's `nextOffset` to page forward without re-reading; omit it to get the tail. \
+                 Pass `wait: true` to follow the session live instead of returning immediately — the same \
+                 knob, with the same meaning, as on `spawn`."
                     .into(),
             ),
             object_schema(
@@ -732,13 +735,13 @@ fn harness_tools() -> Vec<Tool> {
                         "type": "integer",
                         "description": "Byte offset to read forward from — pass the `nextOffset` of a previous call to stream new output only.",
                     },
-                    "watch": {
+                    "wait": {
                         "type": "boolean",
-                        "description": "Follow the session live from `offset` instead of returning immediately. Streams each new chunk as a progress notification (when you pass a progressToken) and returns everything it saw. Ends when the agent finishes, when you cancel the request, or after `watch_seconds`.",
+                        "description": "Follow the session live from `offset` instead of returning immediately (default false). Same semantics as `spawn`'s `wait`: it streams each new chunk as a progress notification when you pass a progressToken, and returns everything it saw. Ends when the agent finishes, when you cancel the request, or after `timeout_seconds`.",
                     },
-                    "watch_seconds": {
+                    "timeout_seconds": {
                         "type": "integer",
-                        "description": "Optional cap on a `watch` follow, in seconds. Omit to follow until the agent finishes or you cancel — there is no server-side limit.",
+                        "description": "Optional cap on a `wait` follow, in seconds. Omit to follow until the agent finishes or you cancel — there is no server-side limit.",
                     },
                 }),
                 &["session"],

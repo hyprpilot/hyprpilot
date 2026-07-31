@@ -745,6 +745,66 @@ fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
 mod tests {
     use super::*;
 
+    /// A follow must keep collecting until the session actually exits,
+    /// not stop at the first chunk. Pins the whole loop against a child
+    /// that writes in bursts with gaps — the shape a real agent has.
+    #[tokio::test]
+    async fn follow_collects_every_chunk_until_the_session_exits() {
+        let harness = Harness::new(super::super::ConfigSource::default());
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("burst.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'one\\n'\nsleep 0.4\nprintf 'two\\n'\nsleep 0.4\nprintf 'three\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let command = crate::spawn::providers::SpawnCommand {
+            program: script.display().to_string(),
+            args: Vec::new(),
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let handle = harness
+            .sessions
+            .spawn(
+                command,
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "burst".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+            )
+            .unwrap();
+
+        let watch = WatchOptions {
+            seconds: Some(20),
+            sink: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+        let (text, _cursor, finished) = harness.follow(&handle, 0, &watch).await;
+
+        assert!(finished, "follow must report the session finished");
+        for expected in ["one", "two", "three"] {
+            assert!(
+                text.contains(expected),
+                "follow stopped early — missing {expected:?} in {text:?}"
+            );
+        }
+    }
+
     #[test]
     fn vendor_session_id_reads_all_three_vendor_keys() {
         // Each key was observed on the real CLI; they are genuinely
