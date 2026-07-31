@@ -99,7 +99,7 @@ pub struct ServeArgs {
     #[arg(long = "skill-dir", value_parser = parse_skill_dir_arg)]
     pub skill_dirs: Vec<SkillDirEntry>,
 
-    /// Expose the agent harness (`list_profiles`, `spawn`, `resume`,
+    /// Expose the agent harness (`list_profiles`, `spawn`, `session_send`,
     /// `session_*`) alongside the skills surface.
     ///
     /// **Off by default, deliberately.** `mcp::auto_inject` puts this
@@ -580,7 +580,7 @@ fn object_schema(props: serde_json::Value, required: &[&str]) -> Arc<serde_json:
     Arc::new(map)
 }
 
-/// Shared `spawn` / `resume` parameters. Every one mirrors a CLI flag
+/// Shared `spawn` / `session_send` parameters. Every one mirrors a CLI flag
 /// so the two surfaces cannot drift, and every one carries its unit and
 /// default — the calling agent has no other documentation.
 fn launch_props(extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
@@ -660,7 +660,7 @@ fn harness_tools() -> Vec<Tool> {
                 "Start a NEW agent session from a profile and send it a prompt. Returns a `session` handle. \
                  With `wait` true (the default) it blocks and returns the transcript; if the turn outlives \
                  `timeout_seconds` the result comes back with status `running` and the agent KEEPS WORKING — \
-                 poll `session_read` with the handle, do NOT call `spawn` again. Use `resume` (not `spawn`) for \
+                 poll `session_read` with the handle, do NOT call `spawn` again. Use `session_send` (not `spawn`) for \
                  every follow-up turn on the same conversation. Sessions live only as long as this MCP server: \
                  if it restarts, running agents are killed and transcripts are lost."
                     .into(),
@@ -942,7 +942,7 @@ fn optional_string_array(
     }
 }
 
-/// Decode the shared `spawn` / `resume` argument set.
+/// Decode the shared `spawn` / `session_send` argument set.
 ///
 /// Returns `Err(String)` for things the caller can fix and retry (an
 /// unreadable prompt file, `prompt` and `file` together) — those come
@@ -1008,7 +1008,7 @@ fn decode_launch_args(
     })
 }
 
-/// Human-readable summary for a `spawn` / `resume` result.
+/// Human-readable summary for a `spawn` / `session_send` result.
 ///
 /// The agent's own output comes FIRST and the session's terminal state
 /// LAST, so a reader (human or model) hits the answer immediately and
@@ -1390,6 +1390,30 @@ mod tests {
                 "{}'s description names no sibling tool, so an agent cannot learn the workflow from it: {description}",
                 tool.name
             );
+        }
+    }
+
+    /// A description that names a tool which no longer exists sends the
+    /// calling agent after nothing. This caught a real one: `spawn` kept
+    /// saying "use `resume` for every follow-up turn" after `resume`
+    /// became `session_send`. The sibling-naming test above missed it
+    /// precisely because a retired name is not a sibling.
+    #[test]
+    fn no_description_names_a_retired_tool() {
+        // Names this server used to expose. Add to this list on every
+        // rename — it is the cheap half of not stranding callers.
+        const RETIRED: &[&str] = &["resume"];
+
+        for tool in harness_tools() {
+            let description = tool.description.as_deref().unwrap_or_default();
+            for retired in RETIRED {
+                let mention = format!("`{retired}`");
+                assert!(
+                    !description.contains(&mention),
+                    "{}'s description points at retired tool `{retired}` — a caller following it would call nothing",
+                    tool.name
+                );
+            }
         }
     }
 

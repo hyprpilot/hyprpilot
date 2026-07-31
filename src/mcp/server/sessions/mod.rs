@@ -104,7 +104,7 @@ pub(crate) struct Session {
     pub provenance: Provenance,
     /// The vendor's own session id, parsed out of the first turn's event
     /// stream. `None` until the vendor emits it (or forever, if the turn
-    /// failed before it did) — which is why `resume` reports a clean
+    /// failed before it did) — which is why `session_send` reports a clean
     /// error instead of assuming one exists.
     pub vendor_session_id: Option<String>,
     pub created_at: SystemTime,

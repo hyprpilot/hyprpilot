@@ -58,9 +58,9 @@ const WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 ///
 /// **There is deliberately no server-side time limit.** The caller ends
 /// a follow by cancelling the request (`notifications/cancelled`),
-/// which trips [`WatchOptions::cancel`], or by passing `watch_seconds`.
-/// The agent decides how long to watch; the server does not
-/// second-guess it.
+/// which trips [`WatchOptions::cancel`], or by passing its own
+/// `timeout_seconds`. The agent decides how long to watch; the server
+/// does not second-guess it.
 pub(crate) struct WatchOptions {
     /// Optional self-imposed limit. `None` follows until the session
     /// exits or the caller cancels.
@@ -131,7 +131,7 @@ impl Harness {
         Ok(())
     }
 
-    /// Shared body of `spawn` and `resume`: resolve, launch, optionally
+    /// Shared body of `spawn` and `session_send`: resolve, launch, optionally
     /// wait, and report. `resume_id` distinguishes the two — `None`
     /// starts a fresh conversation.
     async fn launch(&self, args: LaunchToolArgs, resume: Option<ResumeTarget>) -> Result<Value, String> {
@@ -220,7 +220,7 @@ impl Harness {
 
         // Whether it finished or timed out, the transcript is on disk —
         // harvest the vendor session id either way so a follow-up
-        // `resume` works even for a turn that outran its timeout.
+        // `session_send` works even for a turn that outran its timeout.
         self.harvest(&handle);
 
         if !finished {
@@ -310,7 +310,7 @@ impl Harness {
         });
     }
 
-    /// The result shape shared by `spawn` and `resume`. `streamed` is
+    /// The result shape shared by `spawn` and `session_send`. `streamed` is
     /// what the follow already read, reused so the result and the
     /// progress notifications tell the same story.
     fn describe(&self, handle: &str, finished: Option<bool>, streamed: Option<String>) -> Value {
@@ -603,7 +603,7 @@ struct ResumeTarget {
     has_vendor_id: bool,
 }
 
-/// Decoded arguments shared by `spawn` and `resume`.
+/// Decoded arguments shared by `spawn` and `session_send`.
 pub(crate) struct LaunchToolArgs {
     pub profile: String,
     pub prompt: String,
