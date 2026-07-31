@@ -1,10 +1,16 @@
 //! `hyprpilot mcp …` — in-tree MCP server subcommands.
 //!
-//! Today only `serve` is wired; future subcommands (e.g. `inspect`,
-//! `validate`) slot in alongside under the same `mcp` parent. The
-//! single server (`HyprpilotServer`) ships skills today and grows new
-//! features (workspace introspection, codebase tooling, …) alongside
-//! without minting another subcommand.
+//! One subcommand per server: `serve` (general tools), `skills` (the
+//! skill catalog), `harness` (agent sessions). Splitting them makes
+//! the harness gate structural — the skills server cannot serve
+//! `spawn` because it does not implement it — instead of a name check
+//! that had to be applied in both `list_tools` and `call_tool`.
+//!
+//! **The gate bounds DISCOVERY, not capability.** Each subcommand runs
+//! whenever invoked; `[mcp.harness].enabled` decides only whether the
+//! launcher auto-injects the entry. An agent that can run arbitrary
+//! commands can start `hyprpilot mcp harness` itself — or skip it and
+//! run `hyprpilot <profile>` directly.
 //!
 //! Spawned by the agent vendor as a stdio child via the MCP catalog
 //! entry the launcher auto-injects. Lifetime is owned by the vendor —

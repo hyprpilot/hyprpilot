@@ -403,10 +403,10 @@ mod tests {
         );
         let skills = m
             .get("skills")
-            .and_then(|s| s.get("roots"))
+            .and_then(|s| s.get("dirs"))
             .and_then(serde_json::Value::as_array)
-            .expect("default mcp.skills.roots");
-        assert_eq!(skills.len(), 1, "default mcp.skills.roots seeds exactly the XDG dir");
+            .expect("default mcp.skills.dirs");
+        assert_eq!(skills.len(), 1, "default mcp.skills.dirs seeds exactly the XDG dir");
         assert_eq!(
             skills[0].get("dir").and_then(serde_json::Value::as_str),
             Some("~/.config/hyprpilot/skills")
@@ -614,8 +614,8 @@ autoAcceptTools = ["read_*"]
         let skills = mcp
             .skills
             .as_ref()
-            .and_then(|s| s.roots.as_deref())
-            .expect("seeded skills roots preserved");
+            .and_then(|s| s.dirs.as_deref())
+            .expect("seeded skills dirs preserved");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
 

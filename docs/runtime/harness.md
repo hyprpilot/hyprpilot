@@ -22,9 +22,17 @@ mcp:
     enabled: true
 ```
 
-**Off by default, deliberately.** hyprpilot auto-injects its in-tree servers into **every** launch (see [Skills → Auto-injection](./skills#auto-injection)), so an ungated spawn surface would let any agent session spawn nested sessions with no bound. It is also, independently, a **security boundary**: a profile's `command` is an arbitrary binary — its `provider` only picks which native-flag projection applies, not a sandbox — so anything that can call `spawn` can execute commands as whoever is running the sidecar. Enable it only where that's intended, e.g. a gateway host that opts in explicitly.
+**Off by default, deliberately.** hyprpilot auto-injects its in-tree servers into **every** launch (see [Skills → Auto-injection](./skills#auto-injection)), so an ungated spawn surface would let any agent session spawn nested sessions with no bound. A profile's `command` is an arbitrary binary — its `provider` only picks which native-flag projection applies, not a sandbox — so anything that reaches `spawn` executes commands as whoever runs the sidecar. Enable it only where that's intended, e.g. a gateway host that opts in explicitly.
 
-The gate is **structural**, not a name check. The harness is its own binary subcommand and its own `ServerHandler`: with `mcp.harness.enabled` unset, no `hyprpilot mcp harness` process is ever spawned, and the skills server has no `spawn` implementation to reach even if a client guessed the name. (An earlier design put these tools on the skills server behind a `--with-harness` flag, which meant remembering to gate both `list_tools` and `call_tool` — dispatch is by name, so gating only the listing would have left every tool callable.)
+The gate is **structural** within the served surface. The harness is its own subcommand and its own `ServerHandler`, so the skills server has no `spawn` implementation to reach even if a client guesses the name. (An earlier design put these tools on the skills server behind a `--with-harness` flag, which meant remembering to gate both `list_tools` and `call_tool` — dispatch is by name, so gating only the listing would have left every tool callable. A reviewer caught exactly that half-missing gate.)
+
+::: warning What the gate is not
+
+`mcp.harness.enabled` controls whether **hyprpilot** injects the entry — it bounds what a connected agent can _discover_, not what it can _do_. `hyprpilot mcp harness` is an ordinary subcommand: run it and it serves `spawn`, whatever your config says. That is deliberate — a hand-configured MCP entry (a gateway managing its own catalogue) must work without a hyprpilot config to consult, and `mcp` deliberately skips config validation so a broken config can't kill a sidecar the vendor keeps respawning.
+
+So this is **exposure reduction, not a capability boundary**. Against an agent that can run shell commands it buys nothing: such an agent can start the harness itself, or skip it entirely and run `hyprpilot <profile>`. It is a real boundary only against a client whose sole reach is MCP — which is the case worth protecting, since that is what an MCP-only gateway looks like.
+
+:::
 
 Because it is a separate catalogue entry, it also gets its own tool policy — worth tightening, since `spawn` is the tool that runs arbitrary binaries:
 

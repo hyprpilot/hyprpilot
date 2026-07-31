@@ -290,7 +290,7 @@ clobbering the layer list. This closes the footgun where a partial
 `[patches.mcp]` in a user layer silently dropped the seeded skills dir.
 
 `defaults.toml` seeds one unscoped patch pointing the skills server at
-the XDG skills dir. The seed carries **only** `mcp.skills.roots` (the
+the XDG skills dir. The seed carries **only** `mcp.skills.dirs` (the
 load-bearing value that must survive layer merge);
 `enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
 are the typed `McpConfig::default()` the resolver backfills per-leaf in
@@ -363,8 +363,8 @@ missing. Do not re-merge them.
 | Subcommand | Default name | Module | Serves | Default |
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
-| `mcp skills` | `hyprpilot-skills` | `server/serve.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot-harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
+| `mcp skills` | `hyprpilot_skills` | `server/serve.rs` | skills tools + resources | on |
+| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
 
 `serve.rs` also owns the helpers the other two import
 (`object_schema`, `structured_with_text`, `tool_error`,
@@ -379,7 +379,7 @@ Skills reach the agent **only** through the skills server.
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
-  `[mcp.skills].roots` (`Vec<SkillEntry { dir, ignore }>`, default
+  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore }>`, default
   seed `~/.config/hyprpilot/skills`) and `[mcp.harness].maxSessions`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
   rather than merging. `[mcp.harness].enabled` defaults to **false**
@@ -423,15 +423,27 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
 `session_send`, `session_list`, `session_read`, `session_kill`.
 `[mcp.harness].enabled` defaults to false.
 
-- **The gate is a security boundary, not just recursion control.** A
-  profile's `command` is an arbitrary binary, so anything that can call
-  `spawn` executes commands as this user. The gate is **structural** —
-  disabled means no `mcp harness` process exists, and no other server
-  implements these tools. (It used to be a name check inside a shared
-  server, which had to cover `call_tool` as well as `list_tools`
-  because dispatch is by name; that is exactly the failure mode the
-  split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds nesting; a
-  session-count ceiling bounds breadth.
+- **The gate bounds DISCOVERY, not capability — do not overstate it.**
+  A profile's `command` is an arbitrary binary, so anything that
+  reaches `spawn` executes commands as this user. `[mcp.harness]
+  .enabled` decides only whether the launcher AUTO-INJECTS the entry:
+  `hyprpilot mcp harness` is an ordinary subcommand and serves `spawn`
+  whenever invoked, regardless of config (deliberate — a hand-written
+  MCP entry must work without a config to consult, and the `mcp` branch
+  skips validation so a broken config can't kill a respawned sidecar).
+  Against an agent with shell access it buys nothing; it is a real
+  boundary only for an MCP-only client. What the split DOES guarantee
+  is structural within the served surface: the skills server cannot
+  serve `spawn` because it does not implement it. (It used to be a name
+  check inside a shared server, which had to cover `call_tool` as well
+  as `list_tools` because dispatch is by name; that is exactly the
+  failure mode the split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds
+  nesting; a session-count ceiling bounds breadth.
+- **Enabling the harness inherits `autoAcceptTools = ["*"]`** from the
+  `[mcp]` level unless `[mcp.harness].autoAcceptTools` is set — so
+  `spawn` lands auto-approved. The per-server policy the split bought
+  is only worth something if it is actually used; a test pins this
+  default so tightening it stays a deliberate change.
 - **The sidecar OWNS every session** (`mcp/server/sessions/`). Sessions
   are direct children waited on via `tokio::process::Child`, so exit
   codes are recoverable, no zombie defeats a liveness check, and no PID
@@ -680,10 +692,11 @@ not YAML structure).
   Add servers you need during a task; remove non-load-bearing ones at
   merge.
 - Every issue is picked up on a dedicated branch — **never implement on
-  `main` directly.** PRs target **`main`**. (`beta` went stale — it sat
-  ~10 commits behind `main` and lacked work `main` already carried — so
-  targeting it produced unusable diffs. Revive it as a release branch
-  before routing PRs there again.)
+  `main` directly.** PRs target **`main`**. `beta` was the 3.0 staging
+  branch; it merged into `main` (squashed, #192) and has had no commits
+  since 2026-07-23. It is retired — do NOT target it. The 29 commits it
+  carries that `main` lacks are the pre-squash originals of that merge,
+  not unmerged work.
 - **Feature changes and feature additions MUST include documentation
   updates (`docs/` + `CLAUDE.md`) in the same PR.** A user-observable
   behavior change that ships without the matching docs edit is
@@ -706,7 +719,7 @@ Baseline smokes:
   `hyprpilot mcp {serve,skills,harness} --help` render via clap.
 - Each `mcp` subcommand answers `initialize` + `tools/list` over stdio
   and reports the right `serverInfo.name` (`hyprpilot` /
-  `hyprpilot-skills` / `hyprpilot-harness`) and tool set.
+  `hyprpilot_skills` / `hyprpilot_harness`) and tool set.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde

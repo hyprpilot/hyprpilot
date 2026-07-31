@@ -76,7 +76,7 @@ mcps:
 
 ::: info Reserved names
 
-Each in-tree server's resolved name is reserved — by default `hyprpilot`, `hyprpilot-skills`, and `hyprpilot-harness` (see [the `mcp` block](#the-mcp-block)). A configured server of that name is replaced by the injected entry, and renaming a server via `mcp.<server>.name` moves which name is reserved.
+Each in-tree server's resolved name is reserved — by default `hyprpilot`, `hyprpilot_skills`, and `hyprpilot_harness` (see [the `mcp` block](#the-mcp-block)). A configured server of that name is replaced by the injected entry, and renaming a server via `mcp.<server>.name` moves which name is reserved.
 
 :::
 
@@ -120,8 +120,8 @@ hyprpilot ships **three** in-tree MCP servers. Each is its own subcommand, its o
 | Server        | Subcommand              | Default name        | Serves                                                            | Default    |
 | ------------- | ----------------------- | ------------------- | ----------------------------------------------------------------- | ---------- |
 | General tools | `hyprpilot mcp serve`   | `hyprpilot`         | `open`                                                            | enabled    |
-| Skills        | `hyprpilot mcp skills`  | `hyprpilot-skills`  | `list_skills` / `read_skill` / `load_skill_references` / `reload` | enabled    |
-| Agent harness | `hyprpilot mcp harness` | `hyprpilot-harness` | `list_profiles` / `spawn` / `session_*`                           | _disabled_ |
+| Skills        | `hyprpilot mcp skills`  | `hyprpilot_skills`  | `list_skills` / `read_skill` / `load_skill_references` / `reload` | enabled    |
+| Agent harness | `hyprpilot mcp harness` | `hyprpilot_harness` | `list_profiles` / `spawn` / `session_*`                           | _disabled_ |
 
 The `mcp` block gates and configures all three:
 
@@ -136,7 +136,7 @@ mcp:
     enabled: true
 
   skills:
-    roots:
+    dirs:
       - dir: ~/.config/hyprpilot/skills
       - dir: ~/.team/shared-skills
         ignore:
@@ -159,7 +159,7 @@ mcp:
 
 A profile's `mcp` field wholesale-replaces this block. `autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
-Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
+Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot_skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
 
 ### `mcp.serve`
 
@@ -167,13 +167,13 @@ The general-tools server — the surface for things that are neither a skills re
 
 ### `mcp.skills`
 
-| Field   | Type                 | Default  | What it does                                                 |
-| ------- | -------------------- | -------- | ------------------------------------------------------------ |
-| `roots` | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. |
+| Field  | Type                 | Default  | What it does                                                 |
+| ------ | -------------------- | -------- | ------------------------------------------------------------ |
+| `dirs` | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. |
 
-Unlike the other two, this server is also gated on having something to serve: if `roots` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
+Unlike the other two, this server is also gated on having something to serve: if `dirs` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
 
-#### `roots` entries
+#### `dirs` entries
 
 | Field    | Type             | Default | What it does                                                               |
 | -------- | ---------------- | ------- | -------------------------------------------------------------------------- |

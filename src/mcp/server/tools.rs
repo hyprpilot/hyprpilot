@@ -100,8 +100,8 @@ impl ToolsServer {
         String::from(
             "Hyprpilot general-tools MCP server. Use `open` to open a URL, \
              file, or directory in the OS default handler. Skills live on the \
-             separate `hyprpilot-skills` server (`list_skills` / `read_skill`); \
-             agent sessions on `hyprpilot-harness` (`spawn` / `session_*`).",
+             separate `hyprpilot_skills` server (`list_skills` / `read_skill`); \
+             agent sessions on `hyprpilot_harness` (`spawn` / `session_*`).",
         )
     }
 }
