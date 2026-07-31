@@ -363,8 +363,8 @@ missing. Do not re-merge them.
 | Subcommand | Default name | Module | Serves | Default |
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
-| `mcp skills` | `hyprpilot-skills` | `server/serve.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot-harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
+| `mcp skills` | `hyprpilot_skills` | `server/serve.rs` | skills tools + resources | on |
+| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
 
 `serve.rs` also owns the helpers the other two import
 (`object_schema`, `structured_with_text`, `tool_error`,
@@ -718,7 +718,7 @@ Baseline smokes:
   `hyprpilot mcp {serve,skills,harness} --help` render via clap.
 - Each `mcp` subcommand answers `initialize` + `tools/list` over stdio
   and reports the right `serverInfo.name` (`hyprpilot` /
-  `hyprpilot-skills` / `hyprpilot-harness`) and tool set.
+  `hyprpilot_skills` / `hyprpilot_harness`) and tool set.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde

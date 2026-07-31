@@ -1,7 +1,7 @@
 //! `hyprpilot mcp skills` — the rmcp-backed skills MCP server.
 //!
 //! Spawned by the agent vendor (via stdio) when the launcher
-//! auto-injects the `hyprpilot-skills` server entry into the vendor's
+//! auto-injects the `hyprpilot_skills` server entry into the vendor's
 //! MCP catalog. The sidecar reads skills by SCANNING DIRECTORIES directly
 //! — the same discovery logic the launcher's `SkillsRegistry` uses —
 //! so adding a new skill to a configured directory is immediately

@@ -30,7 +30,7 @@ The compiled defaults seed the XDG skills root `~/.config/hyprpilot/skills` (via
 
 ## Auto-injection
 
-When `mcp.enabled` is `true`, `mcp.skills.enabled` is `true` (the default), **and** the resolved skills catalogue is non-empty, hyprpilot prepends a stdio MCP server named **`hyprpilot-skills`** to the catalogue it hands the vendor. That entry launches `hyprpilot mcp skills` as a child of the agent — the vendor owns its lifetime; you never run it by hand.
+When `mcp.enabled` is `true`, `mcp.skills.enabled` is `true` (the default), **and** the resolved skills catalogue is non-empty, hyprpilot prepends a stdio MCP server named **`hyprpilot_skills`** to the catalogue it hands the vendor. That entry launches `hyprpilot mcp skills` as a child of the agent — the vendor owns its lifetime; you never run it by hand.
 
 - The reserved name replaces any same-named server you configured. Rename it with `mcp.skills.name`.
 - Auto-inject is independent of `mcps` — `mcps: []` does not suppress it. Set `mcp.skills.enabled: false` (this server only), `mcp.enabled: false` (all three in-tree servers), or leave the skills catalogue empty to turn it off.

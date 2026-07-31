@@ -27,14 +27,14 @@ use super::SkillEntry;
 
 /// Default MCP server name for the skills surface.
 ///
-/// **Renaming changes tool attribution** — `mcp__hyprpilot-skills__read_skill`
+/// **Renaming changes tool attribution** — `mcp__hyprpilot_skills__read_skill`
 /// becomes `mcp__<name>__read_skill` — so any skill or instruction file
 /// that names a tool by its prefix breaks with it. The `hyprpilot://`
 /// resource URIs are a fixed scheme and are NOT affected.
-pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot-skills";
+pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot_skills";
 
 /// Default MCP server name for the harness surface.
-pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot-harness";
+pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot_harness";
 
 /// Default MCP server name for the general-tools surface. Keeps the
 /// bare `hyprpilot` name: this is the server that grows whatever
