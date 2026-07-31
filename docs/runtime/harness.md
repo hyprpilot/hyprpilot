@@ -6,27 +6,38 @@ next: false
 
 # {{ $frontmatter.title }}
 
-`hyprpilot mcp serve --with-harness` turns the in-tree MCP server into a control plane for hyprpilot itself: a connected agent can list your configured profiles, launch one as its own agent session, talk to it across turns, watch it work, and kill it. It's the same sidecar process and stdio transport [Skills](./skills) uses — the harness is six extra tools on top, gated separately.
+`hyprpilot mcp harness` is a control plane for hyprpilot itself: a connected agent can list your configured profiles, launch one as its own agent session, talk to it across turns, watch it work, and kill it. It is its own stdio server, alongside [Skills](./skills) and the general-tools server — separate process, separate catalogue entry, separate tool policy.
 
 <!-- more -->
 
 ## What it solves
 
-Without the harness, an agent connected to hyprpilot's MCP server can only read skills — it has no way to act as an orchestrator that spins up other hyprpilot sessions. `--with-harness` adds that: discover profiles, start one, send it follow-up turns, follow its output live, stop it. Every launch flows through the same `spawn::prepare` path `hyprpilot <profile>` itself uses, so profile resolution, the `-- <args>` escape hatch, and cwd precedence can't drift between a CLI launch and a harness-driven one — see [Launching](./launch).
+Without the harness, an agent connected to hyprpilot's MCP servers can only read skills — it has no way to act as an orchestrator that spins up other hyprpilot sessions. The harness adds that: discover profiles, start one, send it follow-up turns, follow its output live, stop it. Every launch flows through the same `spawn::prepare` path `hyprpilot <profile>` itself uses, so profile resolution, the `-- <args>` escape hatch, and cwd precedence can't drift between a CLI launch and a harness-driven one — see [Launching](./launch).
 
 ## Gating the harness
 
-```sh
-hyprpilot mcp serve --with-harness --skill-dir '{"dir":"/abs/path","ignore":[]}'
+```yaml
+mcp:
+  harness:
+    enabled: true
 ```
 
-Off by default, deliberately. `mcp.enabled` auto-injects this same sidecar into **every** launch (see [Skills → Auto-injection](./skills#auto-injection)), so an ungated spawn surface would let any claude session spawn nested claude sessions with no bound. It's also, independently, a **security boundary**: a profile's `command` is an arbitrary binary — its `provider` only picks which native-flag projection applies, not a sandbox — so anything that can call `spawn` can execute commands as whoever is running the sidecar. Enable it only where that's intended, e.g. a gateway host whose MCP config opts in explicitly.
+**Off by default, deliberately.** hyprpilot auto-injects its in-tree servers into **every** launch (see [Skills → Auto-injection](./skills#auto-injection)), so an ungated spawn surface would let any agent session spawn nested sessions with no bound. It is also, independently, a **security boundary**: a profile's `command` is an arbitrary binary — its `provider` only picks which native-flag projection applies, not a sandbox — so anything that can call `spawn` can execute commands as whoever is running the sidecar. Enable it only where that's intended, e.g. a gateway host that opts in explicitly.
 
-The gate covers both halves of the surface: `list_tools` omits the six harness tools when the flag is off, **and** `call_tool` refuses them too. That second half matters on its own — `call_tool` dispatches on the tool name alone, so a client that already knew a harness tool's name (a stale listing, this very page) would otherwise still be able to call it even with an unlisted tool.
+The gate is **structural**, not a name check. The harness is its own binary subcommand and its own `ServerHandler`: with `mcp.harness.enabled` unset, no `hyprpilot mcp harness` process is ever spawned, and the skills server has no `spawn` implementation to reach even if a client guessed the name. (An earlier design put these tools on the skills server behind a `--with-harness` flag, which meant remembering to gate both `list_tools` and `call_tool` — dispatch is by name, so gating only the listing would have left every tool callable.)
 
-::: warning The auto-injected `hyprpilot` entry never carries `--with-harness`
-hyprpilot's own `[mcp]` config has no field for it — the launcher-built entry (see [Skills → Auto-injection](./skills#auto-injection)) always omits the flag, however you configure `mcp`. To expose the harness, configure your **own** MCP server entry that runs `hyprpilot mcp serve --with-harness …`, under a name other than the reserved `hyprpilot` — otherwise the auto-injected entry (without the flag, whenever skills resolve) replaces it. See [Example config](#example-config).
-:::
+Because it is a separate catalogue entry, it also gets its own tool policy — worth tightening, since `spawn` is the tool that runs arbitrary binaries:
+
+```yaml
+mcp:
+  harness:
+    enabled: true
+    autoAcceptTools:
+      - list_profiles
+      - session_read
+    autoRejectTools:
+      - spawn
+```
 
 ## The tools
 
@@ -95,7 +106,7 @@ A follow streams each new chunk as an MCP `notifications/progress` message when 
 
 ## Session lifetime
 
-Every session is a **direct child** of `hyprpilot mcp serve`, not a daemon of its own: a `tokio::process::Child` waited on in-process, with its transcript streamed into a per-session, owner-only (`0700`) temp directory. That has one hard consequence — **sessions die with the server, and their transcripts die with them.** Restarting the sidecar, for any reason (the vendor restarting it, the host process exiting, a crash), doesn't preserve a single running or finished session: there's no persistence and no state across launches. Treat a `spawn`/`session_send` chain as living only as long as the MCP connection that started it; if a result needs to survive that boundary, capture it before the connection ends.
+Every session is a **direct child** of `hyprpilot mcp harness`, not a daemon of its own: a `tokio::process::Child` waited on in-process, with its transcript streamed into a per-session, owner-only (`0700`) temp directory. That has one hard consequence — **sessions die with the server, and their transcripts die with them.** Restarting the sidecar, for any reason (the vendor restarting it, the host process exiting, a crash), doesn't preserve a single running or finished session: there's no persistence and no state across launches. Treat a `spawn`/`session_send` chain as living only as long as the MCP connection that started it; if a result needs to survive that boundary, capture it before the connection ends.
 
 On a graceful transport close, or on `SIGTERM`/`SIGHUP`, the server kills every live session (SIGTERM the process group, a grace period, then SIGKILL if it didn't listen) and removes its temp directory before exiting — a clean shutdown never leaves an orphan behind.
 
@@ -109,11 +120,11 @@ A crashed or forcibly-killed sidecar is a different story from a clean shutdown,
 
 Each session also runs in its **own process group**, so a kill from `session_kill` or graceful shutdown signals the whole group — reaching everything the vendor itself spawned (its own MCP subprocesses, tool calls), not just the direct child.
 
-**PDEATHSIG is the exception, and it matters.** It signals only the _direct_ child, and is cleared across that child's own forks. So in exactly the case layer 3 exists for — the sidecar `SIGKILL`ed or aborted, with no chance to signal anything — the vendor dies but **its grandchildren can survive** until the next `--with-harness` sidecar sweeps them. Layers 1 and 2 cover the group; layer 3 covers only the child.
+**PDEATHSIG is the exception, and it matters.** It signals only the _direct_ child, and is cleared across that child's own forks. So in exactly the case layer 3 exists for — the sidecar `SIGKILL`ed or aborted, with no chance to signal anything — the vendor dies but **its grandchildren can survive** until the next harness sidecar sweeps them. Layers 1 and 2 cover the group; layer 3 covers only the child.
 
 Because PDEATHSIG is Linux-only, the guarantee degrades elsewhere to the first two layers, both of which a `SIGKILL` of the sidecar defeats.
 
-A **startup sweep** (run once, only under `--with-harness`, before the server starts serving) covers what none of the three layers can: a machine crash, or the surviving grandchildren described above. It scans the temp directory for leftover session directories, kills any process group still alive (recorded in a crash-recovery breadcrumb written at spawn time), and removes the directory — logging a warning whenever it reclaims something, since a non-empty sweep means a previous sidecar died badly.
+A **startup sweep** (run once by `mcp harness` before it starts serving) covers what none of the three layers can: a machine crash, or the surviving grandchildren described above. It scans the temp directory for leftover session directories, kills any process group still alive (recorded in a crash-recovery breadcrumb written at spawn time), and removes the directory — logging a warning whenever it reclaims something, since a non-empty sweep means a previous sidecar died badly.
 
 The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcrumb records the pid of the sidecar that created it, and the sweep skips any directory whose owner is still alive — or whose ownership it cannot establish. Running two harness sidecars at once is an ordinary setup, and without that check the newcomer's "recovery" would kill the other's live agents and delete transcripts still being written.
 
@@ -132,29 +143,32 @@ Only distinct `spawn`s grow the table — a conversation reuses its session howe
 
 To free a session earlier than the limit would, call `session_kill` on it: on a finished session that reaps it and its transcript immediately.
 
-The depth ceiling exists because a session started through the harness could itself be another `hyprpilot mcp serve --with-harness` sidecar — the env stamp bounds that chain regardless of how deep the concurrency ceiling alone would otherwise allow it to go. The concurrency ceiling bounds breadth at any single depth: since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
+The depth ceiling exists because a session started through the harness could itself be another `hyprpilot mcp harness` sidecar — the env stamp bounds that chain regardless of how deep the concurrency ceiling alone would otherwise allow it to go. The concurrency ceiling bounds breadth at any single depth: since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
 
 ## Example config
 
-Because the auto-injected `hyprpilot` entry never carries `--with-harness`, enable it through your own `mcps` entry, under a different server name:
-
-```json
-{
-  "mcpServers": {
-    "hyprpilot-harness": {
-      "command": "hyprpilot",
-      "args": ["mcp", "serve", "--with-harness", "--skill-dir", "{\"dir\":\"/home/you/.config/hyprpilot/skills\",\"ignore\":[]}"]
-    }
-  }
-}
-```
+Scope the harness to the profiles that should orchestrate, using a `$match`ed [patch](../config/patches) rather than turning it on globally:
 
 ```yaml
+patches:
+  - $match:
+      profile: gateway
+    mcp:
+      harness:
+        enabled: true
+        maxSessions: 128
+
 profiles:
   - id: gateway
     agent: claude-code
-    mcps:
-      - file: ~/.config/hyprpilot/mcps/harness.json
+  - id: engineer # no harness — the default
+    agent: claude-code
 ```
 
-Only give a profile this MCP entry when you actually want it driving other hyprpilot sessions — see [gating the harness](#gating-the-harness) above for why.
+A profile's own `mcp` block works too, but it wholesale-replaces the global one, so you would have to restate `skills` alongside it. Only give a profile the harness when you actually want it driving other hyprpilot sessions — see [gating the harness](#gating-the-harness) above for why.
+
+To run it by hand (debugging, or a gateway that manages its own MCP config), the subcommand takes no catalogue:
+
+```sh
+hyprpilot mcp harness --max-sessions 64
+```

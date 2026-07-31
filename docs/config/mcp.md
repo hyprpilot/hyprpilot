@@ -5,7 +5,7 @@ order: 50
 
 # {{ $frontmatter.title }}
 
-Two related surfaces share this page: the **`mcps` catalogue** declares the external Model Context Protocol servers an agent can call (plus a per-server tool policy), and the **`mcp` block** configures the in-tree skills server. At launch, hyprpilot merges the catalogue and projects it onto the vendor's native MCP surface — you keep one catalogue, every vendor reads it.
+Two related surfaces share this page: the **`mcps` catalogue** declares the external Model Context Protocol servers an agent can call (plus a per-server tool policy), and the **`mcp` block** configures hyprpilot's three in-tree servers. At launch, hyprpilot merges the catalogue and projects it onto the vendor's native MCP surface — you keep one catalogue, every vendor reads it.
 
 <!-- more -->
 
@@ -74,9 +74,9 @@ mcps:
 
 `mcps` on a profile wholesale-replaces the shared catalogue for that profile. `mcps: []` means "no MCPs at all" — handy for a sandboxed read-only profile. To share one catalogue across every profile, put it in a [`patches`](./patches) entry instead of repeating it.
 
-::: info Reserved name
+::: info Reserved names
 
-The server name `hyprpilot` is reserved for the auto-injected in-tree server — see [Runtime → Skills](../runtime/skills). A configured server of that name is replaced by the injected entry.
+Each in-tree server's resolved name is reserved — by default `hyprpilot`, `hyprpilot-skills`, and `hyprpilot-harness` (see [the `mcp` block](#the-mcp-block)). A configured server of that name is replaced by the injected entry, and renaming a server via `mcp.<server>.name` moves which name is reserved.
 
 :::
 
@@ -115,41 +115,78 @@ Each server entry takes an optional `hyprpilot` block for tool visibility and ap
 
 ## The `mcp` block
 
-The `mcp` block configures the in-tree skills server — what [Runtime → Skills](../runtime/skills) delivers:
+hyprpilot ships **three** in-tree MCP servers. Each is its own subcommand, its own process, and its own catalogue entry, so each can be enabled, renamed, and given a tool policy independently:
+
+| Server        | Subcommand              | Default name        | Serves                                                            | Default    |
+| ------------- | ----------------------- | ------------------- | ----------------------------------------------------------------- | ---------- |
+| General tools | `hyprpilot mcp serve`   | `hyprpilot`         | `open`                                                            | enabled    |
+| Skills        | `hyprpilot mcp skills`  | `hyprpilot-skills`  | `list_skills` / `read_skill` / `load_skill_references` / `reload` | enabled    |
+| Agent harness | `hyprpilot mcp harness` | `hyprpilot-harness` | `list_profiles` / `spawn` / `session_*`                           | _disabled_ |
+
+The `mcp` block gates and configures all three:
 
 ```yaml
 mcp:
-  enabled: true
+  enabled: true # master gate over every in-tree server
   autoAcceptTools:
     - '*'
   autoRejectTools: []
+
+  serve:
+    enabled: true
+
   skills:
-    - dir: ~/.config/hyprpilot/skills
-    - dir: ~/.team/shared-skills
-      ignore:
-        - work-*
-        - '*-experimental'
+    roots:
+      - dir: ~/.config/hyprpilot/skills
+      - dir: ~/.team/shared-skills
+        ignore:
+          - work-*
+          - '*-experimental'
+
+  harness:
+    enabled: true
+    maxSessions: 64
 ```
 
-| Field             | Type                 | Default  | What it does                                                                       |
-| ----------------- | -------------------- | -------- | ---------------------------------------------------------------------------------- |
-| `enabled`         | bool                 | `true`   | Auto-inject the in-tree `hyprpilot` server when the skills catalogue is non-empty. |
-| `skills`          | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles.                       |
-| `autoAcceptTools` | string[] (globs)     | `['*']`  | Default tool-approval accept list, copied onto servers with no per-server policy.  |
-| `autoRejectTools` | string[] (globs)     | `[]`     | Default tool-approval reject list. Reject beats accept.                            |
+| Field             | Type             | Default | What it does                                                                       |
+| ----------------- | ---------------- | ------- | ---------------------------------------------------------------------------------- |
+| `enabled`         | bool             | `true`  | Master gate. `false` auto-injects **nothing**, whatever the per-server blocks say. |
+| `serve`           | object           | —       | The general-tools server. See below.                                               |
+| `skills`          | object           | —       | The skills server. See below.                                                      |
+| `harness`         | object           | —       | The agent-harness server. See below.                                               |
+| `autoAcceptTools` | string[] (globs) | `['*']` | Default tool-approval accept list, copied onto servers with no per-server policy.  |
+| `autoRejectTools` | string[] (globs) | `[]`    | Default tool-approval reject list. Reject beats accept.                            |
 
-The skills root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry; `enabled` / `autoAcceptTools` / `autoRejectTools` fall back to the built-in defaults above without appearing in the seed. A profile's `mcp` field wholesale-replaces this block.
+A profile's `mcp` field wholesale-replaces this block. `autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
-This block has no field for it, but the same server binary can expose a second surface: `hyprpilot mcp serve --with-harness` adds tools that let a connected agent launch and drive other hyprpilot sessions. It's a `mcp serve` CLI flag, not something `[mcp]` turns on, and the auto-injected entry above never passes it — see [Runtime → Agent Harness](../runtime/harness).
+Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
 
-`autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
+### `mcp.serve`
 
-### `skills` entries
+The general-tools server — the surface for things that are neither a skills read nor an agent launch. `open` today. Stateless, so nothing to reload or reap.
+
+### `mcp.skills`
+
+| Field   | Type                 | Default  | What it does                                                 |
+| ------- | -------------------- | -------- | ------------------------------------------------------------ |
+| `roots` | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. |
+
+Unlike the other two, this server is also gated on having something to serve: if `roots` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
+
+#### `roots` entries
 
 | Field    | Type             | Default | What it does                                                               |
 | -------- | ---------------- | ------- | -------------------------------------------------------------------------- |
 | `dir`    | path             | —       | Skill root to scan. Missing roots warn and are skipped.                    |
 | `ignore` | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. First root wins on slug collision. |
+
+### `mcp.harness`
+
+| Field         | Type | Default | What it does                                                       |
+| ------------- | ---- | ------- | ------------------------------------------------------------------ |
+| `maxSessions` | int  | `64`    | Sessions retained before the oldest **finished** ones are evicted. |
+
+**Off by default, and that is a security property rather than a preference.** A profile's `command` is an arbitrary binary, so anything that can call `spawn` executes commands as you. Turn it on deliberately — see [Runtime → Agent Harness](../runtime/harness).
 
 ## Vendor projection
 

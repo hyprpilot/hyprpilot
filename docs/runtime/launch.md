@@ -5,12 +5,14 @@ order: 30
 
 # {{ $frontmatter.title }}
 
-The bare invocation **is** the launch — hyprpilot is one binary, there is no `run` subcommand, and two subcommands (`profiles`, `mcp serve`) round out the surface:
+The bare invocation **is** the launch — hyprpilot is one binary, there is no `run` subcommand, and the `profiles` and `mcp` subcommands round out the surface:
 
 ```sh
 hyprpilot [PROFILE] [flags] [-- <provider args>]
 hyprpilot profiles [--json]
-hyprpilot mcp serve [--skill-dir <json>]…
+hyprpilot mcp serve                          # general tools (`open`)
+hyprpilot mcp skills [--skill-dir <json>]…   # the skill catalogue
+hyprpilot mcp harness [--max-sessions <n>]   # spawn/drive agent sessions
 ```
 
 <!-- more -->
@@ -141,7 +143,7 @@ Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → th
 
 1. Load + validate layered config ([Config → Layering](../config/layering)).
 2. Pick the profile (positional `[PROFILE]` → `profile.default` → picker) and fold [`patches`](../config/patches) + [`--with-config`](./with-config) overlays.
-3. Build the per-launch MCP + skills registries, auto-injecting the `hyprpilot` server when skills resolve ([Skills](./skills)).
+3. Build the per-launch MCP + skills registries, auto-injecting each in-tree server your `mcp` config enables ([Skills](./skills), [Agent Harness](./harness)).
 4. Project everything onto the vendor's native flags/env ([Config → Agents](../config/agents)).
 5. Optionally rename the tmux window / zellij tab ([Config → Multiplexer](../config/multiplexer)).
 6. `exec()` — the vendor CLI replaces the hyprpilot process.
@@ -166,14 +168,14 @@ An empty `profiles` list is a validation error, not an empty table — fresh ins
 
 ### Subcommands are not launches
 
-`profiles` and `mcp serve` are subcommands, not launches, so **launch-only arguments do not apply to them** — the positional `[PROFILE]`, `--cwd`, `--mode`, and a trailing `-- <provider args>` are all rejected with a clear error rather than silently dropped:
+`profiles` and the `mcp` servers are subcommands, not launches, so **launch-only arguments do not apply to them** — the positional `[PROFILE]`, `--cwd`, `--mode`, and a trailing `-- <provider args>` are all rejected with a clear error rather than silently dropped:
 
 ```sh
 hyprpilot engineer profiles     # error: positional <PROFILE> does not apply to `profiles`
 hyprpilot --cwd /tmp profiles   # error: --cwd does not apply to `profiles`
 ```
 
-The one exception is `--with-config`: `profiles` honors it (the overlay preview above), while `mcp serve` — which reads none of the launch config — rejects it too. Run the launch and the subcommand as separate invocations.
+The one exception is `--with-config`: `profiles` honors it (the overlay preview above), while the `mcp` servers — which read none of the launch config — reject it too. Run the launch and the subcommand as separate invocations.
 
 ## Exit behavior
 

@@ -30,17 +30,18 @@ The compiled defaults seed the XDG skills root `~/.config/hyprpilot/skills` (via
 
 ## Auto-injection
 
-When `mcp.enabled` is `true` **and** the resolved skills catalogue is non-empty, hyprpilot prepends a stdio MCP server named **`hyprpilot`** to the catalogue it hands the vendor. That entry launches `hyprpilot mcp serve` as a child of the agent — the vendor owns its lifetime; you never run it by hand.
+When `mcp.enabled` is `true`, `mcp.skills.enabled` is `true` (the default), **and** the resolved skills catalogue is non-empty, hyprpilot prepends a stdio MCP server named **`hyprpilot-skills`** to the catalogue it hands the vendor. That entry launches `hyprpilot mcp skills` as a child of the agent — the vendor owns its lifetime; you never run it by hand.
 
-- The reserved name `hyprpilot` replaces any same-named server you configured.
-- Auto-inject is independent of `mcps` — `mcps: []` does not suppress it. Set `mcp.enabled: false` (or leave the skills catalogue empty) to turn it off.
+- The reserved name replaces any same-named server you configured. Rename it with `mcp.skills.name`.
+- Auto-inject is independent of `mcps` — `mcps: []` does not suppress it. Set `mcp.skills.enabled: false` (this server only), `mcp.enabled: false` (all three in-tree servers), or leave the skills catalogue empty to turn it off.
+- This is the one server also gated on **content**: no discovered skills means nothing is injected, since there would be nothing to serve.
 - `autoAcceptTools` / `autoRejectTools` default the approval policy for the injected server; the default `['*']` accept makes skill calls frictionless.
 
-The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list as JSON — see [the `mcp serve` reference](#hyprpilot-mcp-serve) below for the exact shape.
+The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list as JSON — see [the `mcp skills` reference](#hyprpilot-mcp-skills) below for the exact shape.
 
 ## What the server exposes
 
-`hyprpilot mcp serve` is a small [rmcp](https://github.com/modelcontextprotocol/rust-sdk) stdio server.
+`hyprpilot mcp skills` is a small [rmcp](https://github.com/modelcontextprotocol/rust-sdk) stdio server.
 
 Skills are exposed as MCP resources:
 
@@ -49,17 +50,16 @@ Skills are exposed as MCP resources:
 
 And as tools:
 
-| Tool                    | Purpose                                                   |
-| ----------------------- | --------------------------------------------------------- |
-| `list_skills`           | Enumerate discovered skills with their metadata.          |
-| `read_skill`            | Fetch a skill body by slug.                               |
-| `load_skill_references` | Bundle the reference files a skill declares.              |
-| `reload`                | Rescan the skill roots (picks up edits / new bundles).    |
-| `open`                  | Open a URL, file, or directory in the OS default handler. |
+| Tool                    | Purpose                                                |
+| ----------------------- | ------------------------------------------------------ |
+| `list_skills`           | Enumerate discovered skills with their metadata.       |
+| `read_skill`            | Fetch a skill body by slug.                            |
+| `load_skill_references` | Bundle the reference files a skill declares.           |
+| `reload`                | Rescan the skill roots (picks up edits / new bundles). |
 
 Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session. Because each skill is exposed as a resource, `reload` also emits a **resource list-changed notification** so a connected client re-fetches the skill list instead of trusting a stale one. (The tool list is static, so no tool-list-changed fires.)
 
-This is the surface every launch gets. `hyprpilot mcp serve --with-harness` adds six more tools — `list_profiles`, `spawn`, `session_send`, `session_list`, `session_read`, `session_kill` — that let a connected agent launch and drive other hyprpilot sessions. It's off by default and documented separately: see [Agent Harness](./harness).
+That is the whole skills surface. The other two in-tree servers are separate processes with separate catalogue entries: `hyprpilot mcp serve` carries `open` (see [the `mcp` block](../config/mcp#mcp-serve)), and `hyprpilot mcp harness` carries `list_profiles` / `spawn` / `session_*` for launching and driving other hyprpilot sessions — off by default, documented in [Agent Harness](./harness).
 
 Every tool result carries **both** a human-readable text block and the structured JSON payload. Clients that render only structured content (Claude Code) read the JSON; clients that render only text (opencode) get a legible summary — e.g. `list_skills` returns a one-line-per-skill catalogue as text alongside the full structured list, and `read_skill` returns the skill body as text alongside the structured `{ uri, body, metadata }`. A structured-only result would otherwise render as "Unknown" in text-only clients.
 
@@ -98,18 +98,17 @@ metadata:
 
 :::
 
-## `hyprpilot mcp serve`
+## `hyprpilot mcp skills`
 
 The subcommand that runs the server over stdio. **You don't run this by hand** — the agent vendor spawns it as a child via the auto-injected entry.
 
 ```sh
-hyprpilot mcp serve --skill-dir '{"dir":"/abs/path","ignore":[]}'
+hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[]}'
 ```
 
-| Flag                 | Purpose                                                                                   |
-| -------------------- | ----------------------------------------------------------------------------------------- |
-| `--skill-dir <json>` | JSON-encoded skill root entry. Repeatable — roots are searched in declaration order.      |
-| `--with-harness`     | Expose the [agent harness](./harness) tools alongside the skills surface. Off by default. |
+| Flag                 | Purpose                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `--skill-dir <json>` | JSON-encoded skill root entry. Repeatable — roots are searched in declaration order. |
 
 Each `--skill-dir` value is one self-contained JSON object:
 
