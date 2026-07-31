@@ -109,15 +109,23 @@ impl AgentProvider {
 
 /// `[profiles.harness]` — how a profile relates to `mcp harness`.
 ///
-/// A block rather than a bare `harness = false` so later policy
+/// **Opt-in.** Declaring the block is what puts a profile on the
+/// harness; absence means unavailable. `spawn` runs a profile's
+/// `command` as this user, so the set an agent may drive is a list the
+/// captain writes, not everything that happens to be configured.
+///
+/// A block rather than a bare `harness = true` so later policy
 /// (per-profile session ceilings, a narrower tool set, a depth cap)
 /// lands as a sibling field instead of a second top-level flag.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 #[merge(strategy = overwrite_some)]
 pub struct ProfileHarnessConfig {
-    /// `true` (default) — the profile can be listed and spawned by the
-    /// harness. `false` hides it from `list_profiles` **and** refuses
+    /// Whether the harness may drive this profile. Defaults to `true`
+    /// **within a declared block** — but a profile with no
+    /// `[profiles.harness]` block at all is NOT available: the surface
+    /// is opt-in per profile, so `spawn` runs only what the captain
+    /// nominated. `false` hides it from `list_profiles` **and** refuses
     /// `spawn`/`session_send` against it.
     ///
     /// Both halves are required: `spawn` dispatches on the id it is
@@ -762,14 +770,17 @@ harness = { enabled = false }
         let open = cfg.profiles.iter().find(|p| p.id == "open").expect("open");
         let closed = cfg.profiles.iter().find(|p| p.id == "closed").expect("closed");
 
-        assert!(open.harness.is_none(), "no block means no opinion");
+        assert!(open.harness.is_none(), "no block at all — not on the harness");
         assert!(
             closed.harness.as_ref().is_some_and(|h| !h.is_enabled()),
             "an explicit `enabled = false` must survive to the resolved profile"
         );
-        // The block shape is what lets policy grow here later; a bare
-        // `harness = false` would have to be replaced to add a sibling.
-        assert!(ProfileHarnessConfig::default().is_enabled(), "default-open");
+        // Within a DECLARED block `enabled` defaults true; it is the
+        // block's absence, not this flag, that keeps a profile off.
+        assert!(
+            ProfileHarnessConfig::default().is_enabled(),
+            "declared but unset means on"
+        );
         cfg.validate().expect("valid");
         fs::remove_file(&p).ok();
     }

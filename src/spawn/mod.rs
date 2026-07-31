@@ -396,6 +396,10 @@ pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[
             let mcp_count = build_mcp_registry_with(&resolved, Some(&skills)).len();
 
             ProfileSummary {
+                harness_enabled: resolved
+                    .harness
+                    .as_ref()
+                    .is_some_and(crate::config::ProfileHarnessConfig::is_enabled),
                 id: resolved.id.clone(),
                 agent: resolved.agent.clone(),
                 provider,

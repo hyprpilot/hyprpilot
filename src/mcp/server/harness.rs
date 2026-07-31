@@ -177,8 +177,9 @@ impl Harness {
         // leave a hidden profile reachable by anyone holding its id.
         if !harness_allows(&cfg, &args.profile) {
             return Err(format!(
-                "profile `{}` is not available to the harness \
-                 (`[profiles.harness].enabled = false`). Call `list_profiles` for the ones that are.",
+                "profile `{}` is not available to the harness. Declare `[profiles.harness]` on it to \
+                 opt in — the harness runs only the profiles the captain nominated. \
+                 Call `list_profiles` for the ones that are available.",
                 args.profile
             ));
         }
@@ -465,7 +466,7 @@ impl Harness {
         // harness policy, not a "hide it from the captain" one.
         let profiles: Vec<_> = crate::spawn::list_profiles(&cfg, None, &[])
             .into_iter()
-            .filter(|profile| harness_allows(&cfg, &profile.id))
+            .filter(|profile| profile.harness_enabled)
             .collect();
         let summary = profiles_table(&profiles);
 
@@ -781,16 +782,27 @@ const ALLOWED_OVERLAY_KEYS: &[&str] = &["model", "effort", "mode"];
 
 /// Whether a profile is exposed to the harness at all.
 ///
-/// Default-open: a profile with no `[profiles.harness]` block is
-/// allowed, and so is an id matching nothing — the latter so the
-/// resolver keeps owning "unknown profile" errors rather than this
-/// returning a misleading "not available to the harness".
+/// **Opt-in**: a profile with no `[profiles.harness]` block is NOT
+/// available. `spawn` runs a profile's `command` as this user, so what
+/// an agent may drive is a list the captain wrote, not the whole
+/// registry.
+///
+/// An id matching nothing stays allowed, so the resolver keeps owning
+/// "unknown profile" errors instead of this reporting a misleading
+/// "not available to the harness" for a typo.
 fn harness_allows(cfg: &crate::config::Config, profile_id: &str) -> bool {
-    cfg.profiles
-        .iter()
-        .find(|profile| profile.id == profile_id)
-        .and_then(|profile| profile.harness.as_ref())
-        .map_or(true, crate::config::ProfileHarnessConfig::is_enabled)
+    if !cfg.profiles.iter().any(|profile| profile.id == profile_id) {
+        return true;
+    }
+    // Resolve first: reading the raw entry made a `$match`ed patch — the
+    // natural way to opt a family in — a silent no-op. `with_config` is
+    // withheld so the gate reads nothing the caller controls.
+    crate::resolve::resolve_effective_profile(cfg, Some(profile_id), &[]).is_ok_and(|profile| {
+        profile
+            .harness
+            .as_ref()
+            .is_some_and(crate::config::ProfileHarnessConfig::is_enabled)
+    })
 }
 
 /// Restrict a caller-supplied overlay to settings that cannot change
@@ -1013,8 +1025,15 @@ mod tests {
         closed.harness = Some(crate::config::ProfileHarnessConfig { enabled: Some(false) });
         cfg.profiles = vec![open, closed];
 
-        assert!(harness_allows(&cfg, "open"), "no block means available");
+        assert!(
+            !harness_allows(&cfg, "open"),
+            "no block means NOT available — the surface is opt-in"
+        );
         assert!(!harness_allows(&cfg, "closed"), "an explicit false must be refused");
+        let mut on: crate::config::ProfileConfig = serde_json::from_value(json!({ "id": "on", "agent": "a" })).unwrap();
+        on.harness = Some(crate::config::ProfileHarnessConfig { enabled: Some(true) });
+        cfg.profiles.push(on);
+        assert!(harness_allows(&cfg, "on"), "an explicit opt-in must be available");
         assert!(
             harness_allows(&cfg, "nonexistent"),
             "an unknown id stays the resolver's error to report, not ours"

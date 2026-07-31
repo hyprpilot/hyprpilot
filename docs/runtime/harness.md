@@ -47,6 +47,30 @@ mcp:
       - spawn
 ```
 
+## Which profiles it can drive
+
+The harness runs **only the profiles you nominate.** A profile is available when it declares a `harness` block; without one it is absent from `list_profiles` and refused by `spawn` / `session_send`:
+
+```yaml
+profiles:
+  - id: personal/engineer
+    agent: claude-code
+    harness:
+      enabled: true
+```
+
+Opt in a whole family with a `$match`ed [patch](../config/patches) rather than repeating it:
+
+```yaml
+patches:
+  - $match:
+      profile: 'personal/*'
+    harness:
+      enabled: true
+```
+
+Default-deny because `spawn` runs a profile's `command` as you. See [Profiles → Putting a profile on the harness](../config/profiles#putting-a-profile-on-the-harness).
+
 ## The tools
 
 | Tool            | Purpose                                                                                                |

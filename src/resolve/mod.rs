@@ -43,6 +43,10 @@ pub struct ProfileSummary {
     /// profile cannot be driven interactively, so a caller picking one
     /// must supply a prompt.
     pub headless: bool,
+    /// Whether `mcp harness` may drive this profile. Read from the
+    /// PATCHED profile — a `$match`ed patch is how a family opts in.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub harness_enabled: bool,
     /// How many MCP servers and skills this profile resolves to — a
     /// cheap "how equipped is this agent" signal for a caller choosing
     /// between profiles.

@@ -474,11 +474,13 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   opencode does not derive its tool sandbox from the process cwd, so
   without `--dir` the agent silently worked in the wrong tree while
   every surface reported the requested path.
-- **`[profiles.harness].enabled`** (default true) takes a profile off
-  the harness: absent from `list_profiles` AND refused by
-  `spawn`/`session_send`. Both halves — `launch` is the shared body of
-  both tools, so one check covers them; gating only the listing would
-  leave it reachable by id.
+- **`[profiles.harness]` is OPT-IN.** A profile with no block is not
+  available: absent from `list_profiles` AND refused by
+  `spawn`/`session_send`. Within a declared block `enabled` defaults
+  true; it is the block's ABSENCE that keeps a profile off. Both halves
+  matter — `launch` is the shared body of both tools, so one check
+  covers them; gating only the listing would leave it reachable by id.
+  An unknown id stays "allowed" so the resolver keeps owning that error.
 - **A conversation is ONE session.** `session_send` reuses its handle and
   appends to the same transcript, so an N-turn conversation costs one
   table entry, not N. Its check-and-spawn happens under the table lock —
