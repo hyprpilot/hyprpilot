@@ -37,7 +37,7 @@ hyprpilot's own `[mcp]` config has no field for it — the launcher-built entry 
 | `session_send`  | Send another message to an existing session, resuming it first if it's finished.                       |
 | `session_list`  | List this server's sessions — handle, profile, status, exit code, timestamps.                          |
 | `session_read`  | Read, and optionally follow live, a session's transcript.                                              |
-| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished.               |
+| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished.              |
 
 ### Workflow
 
@@ -70,7 +70,7 @@ Exactly one of `prompt` / `file` is required on both — the same mutual exclusi
 ::: warning `with_config` is restricted to `model`, `effort` and `mode`
 Unlike the CLI's `--with-config`, the harness accepts only those three keys — an allow-list, not a block-list. A profile overlay can otherwise reach `command`, `args` and `env` (which replace the binary outright), `mcps` (whose inline `mcp_servers` entries carry their own `command`/`args`, which the vendor then spawns), `$deleteFromPrimitiveList/<field>` directives (which mutate a field without ever naming it, e.g. stripping a profile's `--sandbox`), and `system_prompt` (which reads an arbitrary file into the agent's context). Any of those turns `spawn` into arbitrary command execution as the sidecar's user.
 
-Enumerating the ways *in* is a losing game against a config tree that grows; enumerating what's allowed is not. To run something else, add a profile for it in the hyprpilot config — that is the captain's decision to make, not the calling agent's.
+Enumerating the ways _in_ is a losing game against a config tree that grows; enumerating what's allowed is not. To run something else, add a profile for it in the hyprpilot config — that is the captain's decision to make, not the calling agent's.
 :::
 
 ### `session_read` parameters
@@ -109,7 +109,7 @@ A crashed or forcibly-killed sidecar is a different story from a clean shutdown,
 
 Each session also runs in its **own process group**, so a kill from `session_kill` or graceful shutdown signals the whole group — reaching everything the vendor itself spawned (its own MCP subprocesses, tool calls), not just the direct child.
 
-**PDEATHSIG is the exception, and it matters.** It signals only the *direct* child, and is cleared across that child's own forks. So in exactly the case layer 3 exists for — the sidecar `SIGKILL`ed or aborted, with no chance to signal anything — the vendor dies but **its grandchildren can survive** until the next `--with-harness` sidecar sweeps them. Layers 1 and 2 cover the group; layer 3 covers only the child.
+**PDEATHSIG is the exception, and it matters.** It signals only the _direct_ child, and is cleared across that child's own forks. So in exactly the case layer 3 exists for — the sidecar `SIGKILL`ed or aborted, with no chance to signal anything — the vendor dies but **its grandchildren can survive** until the next `--with-harness` sidecar sweeps them. Layers 1 and 2 cover the group; layer 3 covers only the child.
 
 Because PDEATHSIG is Linux-only, the guarantee degrades elsewhere to the first two layers, both of which a `SIGKILL` of the sidecar defeats.
 
@@ -119,13 +119,13 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 
 ## Limits
 
-| Limit                       | Value        | Enforced by                                                                                         |
-| --------------------------- | ------------ | --------------------------------------------------------------------------------------------------- |
-| Concurrent running sessions | 8            | `spawn` refused past the ceiling; `session_kill` a finished or runaway one to free a slot.          |
-| Spawn nesting depth         | 2            | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; `spawn` refused past it. |
-| Transcript read per call    | 60,000 bytes | Caps `session_read` and an inline `spawn`/`session_send` result.                                    |
-| Default tail                | 200 lines    | `session_read`'s default when `offset` is omitted.                                                  |
-| Default turn timeout        | 300 seconds  | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.           |
+| Limit                       | Value                 | Enforced by                                                                                                                      |
+| --------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Concurrent running sessions | 8                     | `spawn` refused past the ceiling; `session_kill` a finished or runaway one to free a slot.                                       |
+| Spawn nesting depth         | 2                     | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; `spawn` refused past it.                              |
+| Transcript read per call    | 60,000 bytes          | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                 |
+| Default tail                | 200 lines             | `session_read`'s default when `offset` is omitted.                                                                               |
+| Default turn timeout        | 300 seconds           | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.                                        |
 | Retained sessions           | 64 (`--max-sessions`) | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
 
 Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call. Raise `--max-sessions` on a busy gateway that wants deeper history; lower it where temp space is tight.
