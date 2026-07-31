@@ -100,6 +100,13 @@ pub(crate) fn build_mcp_registry_with(
     // so the "which file owns this server" surface stays recognisable.
     let mut auto_injected: Vec<&str> = Vec::new();
     if mcp_cfg.enabled() {
+        if let Some(tools) = crate::mcp::auto_inject::build_tools_definition(
+            &mcp_cfg,
+            std::path::PathBuf::from("<auto-injected:hyprpilot mcp serve>"),
+        ) {
+            prepend_auto_mcp_definition(&mut defs, tools);
+            auto_injected.push("serve");
+        }
         if let Some(harness) = crate::mcp::auto_inject::build_harness_definition(
             &mcp_cfg,
             std::path::PathBuf::from("<auto-injected:hyprpilot mcp harness>"),

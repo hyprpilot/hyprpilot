@@ -27,9 +27,6 @@
 //!   - `reload` — rescan dirs, push a resource list-changed
 //!     notification (skills back the resource list; the tool list is
 //!     fixed for a given process, so no tool-list-changed fires)
-//!   - `open { path }` — open a URL, file, or directory in the
-//!     OS-default handler (`xdg-open` / `open` / `start`) via the
-//!     cross-platform `open` crate.
 //!
 //! The harness tools (`spawn` / `session_*`) live on a SEPARATE server
 //! — `hyprpilot mcp harness`, see `super::harness_server`. They were
@@ -75,7 +72,7 @@ use crate::skills::SkillsRegistry;
 use super::skills::metadata::{frontmatter_json, skill_block, skill_meta};
 use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
 
-/// Args for `hyprpilot mcp serve`. Skills are discovered by directory
+/// Args for `hyprpilot mcp skills`. Skills are discovered by directory
 /// scan — the launcher passes `--skill-dir <json>` once per configured
 /// root, each carrying that root's ignore globs. This mirrors how the
 /// launcher's own `SkillsRegistry` works and preserves each
@@ -264,8 +261,7 @@ impl SkillsServer {
              `hyprpilot://skills/<slug>` resources. Call `list_skills` to \
              enumerate; `read_skill` to fetch a body; `load_skill_references` \
              to bundle the references a skill declares in its frontmatter \
-             (resolved relative to the skill's bundle dir). Use `open` to \
-             open a URL, file, or directory in the OS default handler. Every \
+             (resolved relative to the skill's bundle dir). Every \
              resource and tool result carries the skill's frontmatter \
              verbatim in ONE block (as `metadata` in tool output, and as the \
              `io.hyprpilot/skill` key in resource `_meta`) — minus `title` / \
@@ -429,31 +425,6 @@ fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     map.insert(
         "required".into(),
         serde_json::Value::Array(vec![serde_json::Value::String("slug".into())]),
-    );
-    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
-    Arc::new(map)
-}
-
-fn open_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
-    let mut map = serde_json::Map::new();
-    map.insert("type".into(), serde_json::Value::String("object".into()));
-    let mut props = serde_json::Map::new();
-    let mut path_prop = serde_json::Map::new();
-    path_prop.insert("type".into(), serde_json::Value::String("string".into()));
-    path_prop.insert(
-        "description".into(),
-        serde_json::Value::String(
-            "URL, file path, or directory path to open in the OS default handler. \
-             Accepts `https://`, `file://`, absolute paths, and relative paths — \
-             the same shapes `xdg-open` / `open` / `start` accept natively."
-                .into(),
-        ),
-    );
-    props.insert("path".into(), serde_json::Value::Object(path_prop));
-    map.insert("properties".into(), serde_json::Value::Object(props));
-    map.insert(
-        "required".into(),
-        serde_json::Value::Array(vec![serde_json::Value::String("path".into())]),
     );
     map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
     Arc::new(map)
@@ -651,17 +622,6 @@ impl ServerHandler for SkillsServer {
                 ),
                 empty_object_schema(),
             ),
-            Tool::new_with_raw(
-                "open",
-                Some(
-                    "Open a URL, file path, or directory in the OS default handler. \
-                     Uses `xdg-open` on Linux, `open` on macOS, `start` on Windows. \
-                     The MCP sidecar is a plain stdio process — this is a native OS \
-                     call."
-                        .into(),
-                ),
-                open_object_schema(),
-            ),
         ];
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -729,16 +689,6 @@ impl ServerHandler for SkillsServer {
                     format!("Reloaded {count} skill(s)."),
                     serde_json::json!({ "reloaded": count }),
                 ))
-            }
-            "open" => {
-                let path = require_string(&args, "path")?;
-                match open::that_detached(path) {
-                    Ok(()) => Ok(structured_with_text(
-                        format!("Opened {path}"),
-                        serde_json::json!({ "opened": path }),
-                    )),
-                    Err(err) => Ok(tool_error(format!("open failed: {err}"))),
-                }
             }
             other => Err(rmcp::ErrorData::new(
                 ErrorCode::METHOD_NOT_FOUND,

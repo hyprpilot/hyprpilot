@@ -17,6 +17,7 @@ pub mod harness_server;
 pub mod serve;
 pub mod sessions;
 pub mod skills;
+pub mod tools;
 
 /// Top-level args for `hyprpilot mcp <subcommand>`.
 #[derive(Debug, Args)]
@@ -36,6 +37,9 @@ pub struct McpArgs {
 /// from auto-accepting `spawn`.
 #[derive(Debug, Subcommand)]
 pub enum McpSubcommand {
+    /// Serve the general tools — `open`. Stateless; takes no catalog.
+    Serve(tools::ToolsArgs),
+
     /// Serve the skills catalog. Spawned by the agent vendor when the
     /// launcher auto-injects the skills entry; resolved skill roots are
     /// passed as `--skill-dir` args at spawn time.
@@ -80,6 +84,7 @@ impl McpArgs {
     /// the foreground; exits when the vendor closes the pipe.
     pub async fn run(self, config: ConfigSource) -> anyhow::Result<()> {
         match self.command {
+            McpSubcommand::Serve(args) => tools::run_tools(args, config).await,
             McpSubcommand::Skills(args) => serve::run_skills(args, config).await,
             McpSubcommand::Harness(args) => harness_server::run_harness(args, config).await,
         }

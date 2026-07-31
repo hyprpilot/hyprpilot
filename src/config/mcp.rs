@@ -36,6 +36,49 @@ pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot-skills";
 /// Default MCP server name for the harness surface.
 pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot-harness";
 
+/// Default MCP server name for the general-tools surface. Keeps the
+/// bare `hyprpilot` name: this is the server that grows whatever
+/// doesn't belong to a dedicated surface, so it is the one a captain
+/// reaches for by the product's own name.
+pub const DEFAULT_TOOLS_SERVER_NAME: &str = "hyprpilot";
+
+/// `[mcp.serve]` — the auto-injected general-tools server.
+///
+/// Home for tools that are neither a skills read nor an agent launch:
+/// `open` today, whatever earns a place later. Kept off the skills
+/// server so a captain can run one without the other, and so the
+/// skills server's tool policy stays a statement about *skills*.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[merge(strategy = overwrite_some)]
+pub struct ToolsServerConfig {
+    /// Defaults to `true` — these tools are side-effect-light and were
+    /// previously always present on the skills server.
+    #[garde(skip)]
+    pub enabled: Option<bool>,
+
+    /// Server name in the vendor's MCP catalog. Reserved: a
+    /// user-declared server of the same name is replaced by this one.
+    #[garde(skip)]
+    pub name: Option<String>,
+
+    /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
+    #[garde(custom(validate_globs))]
+    pub auto_accept_tools: Option<Vec<String>>,
+    #[garde(custom(validate_globs))]
+    pub auto_reject_tools: Option<Vec<String>>,
+}
+
+impl ToolsServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn server_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_TOOLS_SERVER_NAME)
+    }
+}
+
 /// `[mcp.skills]` — the auto-injected skills server.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -143,6 +186,11 @@ pub struct McpConfig {
     #[garde(skip)]
     pub enabled: Option<bool>,
 
+    /// The general-tools server — `hyprpilot mcp serve`, exposing
+    /// `open`. On by default.
+    #[garde(dive)]
+    pub serve: Option<ToolsServerConfig>,
+
     /// The skills server — `hyprpilot mcp skills`, exposing the skill
     /// catalog. On by default.
     #[garde(dive)]
@@ -194,6 +242,7 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: Some(true),
+            serve: None,
             skills: None,
             harness: None,
             auto_accept_tools: Some(vec!["*".to_string()]),

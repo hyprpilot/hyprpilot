@@ -25,6 +25,43 @@ use crate::config::McpConfig;
 use crate::mcp::{HyprpilotExtension, MCPDefinition};
 use crate::skills::SkillsRegistry;
 
+/// Build the general-tools catalog entry.
+///
+/// Like the harness and unlike skills, this is not gated on having
+/// content to serve — the tool list is fixed, so the captain's
+/// `enabled` flag is the whole gate.
+#[must_use]
+pub fn build_tools_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDefinition> {
+    let tools = cfg.serve.clone().unwrap_or_default();
+    if !tools.is_enabled() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let raw = serde_json::json!({
+        "command": exe.display().to_string(),
+        "args": ["mcp", "serve"],
+        "env": serde_json::Map::<String, serde_json::Value>::new(),
+    });
+
+    Some(MCPDefinition {
+        name: tools.server_name().to_string(),
+        raw,
+        hyprpilot: HyprpilotExtension {
+            include_tools: None,
+            exclude_tools: Vec::new(),
+            auto_accept_tools: tools
+                .auto_accept_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_accept_tools().to_vec()),
+            auto_reject_tools: tools
+                .auto_reject_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_reject_tools().to_vec()),
+        },
+        source,
+    })
+}
+
 /// Build the harness catalog entry.
 ///
 /// Separate from the skills entry so the two servers get independent
