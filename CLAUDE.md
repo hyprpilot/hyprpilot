@@ -692,10 +692,11 @@ not YAML structure).
   Add servers you need during a task; remove non-load-bearing ones at
   merge.
 - Every issue is picked up on a dedicated branch — **never implement on
-  `main` directly.** PRs target **`main`**. (`beta` went stale — it sat
-  ~10 commits behind `main` and lacked work `main` already carried — so
-  targeting it produced unusable diffs. Revive it as a release branch
-  before routing PRs there again.)
+  `main` directly.** PRs target **`main`**. `beta` was the 3.0 staging
+  branch; it merged into `main` (squashed, #192) and has had no commits
+  since 2026-07-23. It is retired — do NOT target it. The 29 commits it
+  carries that `main` lacks are the pre-squash originals of that merge,
+  not unmerged work.
 - **Feature changes and feature additions MUST include documentation
   updates (`docs/` + `CLAUDE.md`) in the same PR.** A user-observable
   behavior change that ships without the matching docs edit is
