@@ -14,7 +14,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::{Config, ProfileConfig};
-use crate::profile::ResolvedProfile;
+pub(crate) mod profile;
+
+pub(crate) use profile::ResolvedProfile;
 
 /// Summary row for one resolved profile — backs the `profiles`
 /// subcommand's table / JSON output and the interactive picker.

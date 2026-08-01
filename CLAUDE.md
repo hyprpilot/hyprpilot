@@ -59,8 +59,9 @@ Key `src/` modules:
   (`McpFile` / `SkillEntry`), `patch.rs` (strategic merge),
   `with_config.rs` (`--with-config`), `system_prompt.rs`,
   `defaults.toml` (compiled defaults).
-- `resolve/mod.rs` — pure `Config` → resolution core: profile pick,
-  patch folding, per-launch MCP + skills registry construction.
+- `resolve/` — pure `Config` → resolution core: `mod.rs` (profile
+  pick, patch folding, per-launch MCP + skills registry construction),
+  `profile.rs` (`ResolvedProfile`, the flat runtime view it produces).
 - `spawn/` — `launch.rs` (`LaunchArgs` + the bare-launch entry
   `run`), `mod.rs` (orchestration), `providers/` (per-vendor
   native-flag projection + `exec`: `mod.rs` = dispatch / `exec` /
@@ -69,7 +70,6 @@ Key `src/` modules:
   three vendor builders, `temp.rs` = the 0600 temp-config lifecycle +
   reaper), `picker.rs` (interactive profile picker), `multiplexer.rs`
   (tmux/zellij rename).
-- `profile.rs` — `ResolvedProfile` (flat runtime view).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
   (one builder per in-tree server), `server/` = the three servers,
   one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
