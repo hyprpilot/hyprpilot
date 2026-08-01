@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.0](https://github.com/hyprpilot/hyprpilot/compare/v3.6.0...v3.7.0) (2026-08-01)
+
+
+### Features
+
+* **harness:** report which turn a session is on ([#229](https://github.com/hyprpilot/hyprpilot/issues/229)) ([89a3af0](https://github.com/hyprpilot/hyprpilot/commit/89a3af035056b73dac8e06f570c480e88b687d02))
+
 ## [3.6.0](https://github.com/hyprpilot/hyprpilot/compare/v3.5.1...v3.6.0) (2026-08-01)
 
 
