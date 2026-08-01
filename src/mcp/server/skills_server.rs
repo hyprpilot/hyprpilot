@@ -60,8 +60,7 @@ use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, ResourceContents,
-    ServerCapabilities, ServerInfo, Tool,
+    ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
