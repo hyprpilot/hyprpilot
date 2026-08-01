@@ -338,6 +338,10 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
 }
 
 enum ParsedUri<'a> {
+    /// The bare `hyprpilot://skills` index. Cannot collide with a slug:
+    /// every skill URI carries a `skills/` prefix, and `strip_prefix`
+    /// requires the separator.
+    Catalogue,
     Skill(&'a str),
     SkillReferences(&'a str),
 }
@@ -348,7 +352,9 @@ fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
     // segment in both, so the references scheme no longer nests a
     // `/references` suffix under the slug (that nesting broke client
     // URI autocomplete).
-    if let Some(slug) = rest.strip_prefix("skills/") {
+    if rest == "skills" {
+        Some(ParsedUri::Catalogue)
+    } else if let Some(slug) = rest.strip_prefix("skills/") {
         Some(ParsedUri::Skill(slug))
     } else {
         rest.strip_prefix("references/").map(ParsedUri::SkillReferences)
@@ -376,6 +382,55 @@ fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
 }
 
 /// A one-line-per-skill catalogue for the `list_skills` text block.
+/// The `hyprpilot://skills` index — the whole catalogue as one
+/// markdown document.
+///
+/// Exists so a client can ATTACH the catalogue instead of the model
+/// spending a tool call on `list_skills`. It leads with how to chain
+/// the other two schemes, because an index whose entries the reader
+/// cannot then load is only half an answer.
+fn catalogue_markdown(cache: &SkillsCache) -> String {
+    let mut out = String::from(
+        "# hyprpilot skills\n\n\
+         Each entry below is loadable by URI — no tool call required:\n\n\
+         - `hyprpilot://skills/<slug>` — the skill's full `SKILL.md` body. Read this first; it is the \
+         instruction set.\n\
+         - `hyprpilot://references/<slug>` — the reference files that skill declares in its frontmatter, \
+         bundled into one response. Only some skills have them, and only read them when the body tells \
+         you to.\n\n\
+         So the chain is: pick a slug here → read `skills/<slug>` → follow its reference directives into \
+         `references/<slug>`. The `reload` tool rescans the roots if this index looks stale.\n\n",
+    );
+    if cache.order.is_empty() {
+        out.push_str("_No skills available._\n");
+        return out;
+    }
+    out.push_str(&format!("## {} available\n\n", cache.order.len()));
+    for slug in &cache.order {
+        let Some(skill) = cache.skills.get(slug) else {
+            continue;
+        };
+        out.push_str(&format!("### `{}`\n\n", skill.slug));
+        if !skill.title.is_empty() && skill.title != skill.slug.as_str() {
+            out.push_str(&format!("**{}**\n\n", skill.title));
+        }
+        if !skill.description.is_empty() {
+            out.push_str(&format!("{}\n\n", skill.description));
+        }
+        out.push_str(&format!("`{}`", skill_uri(slug)));
+        if !skill.refs.references.is_empty() {
+            out.push_str(&format!(
+                " · {} reference(s) at `{}`",
+                skill.refs.references.len(),
+                skill_references_uri(slug)
+            ));
+        }
+        out.push_str("\n\n");
+    }
+
+    out
+}
+
 fn list_skills_summary(cache: &SkillsCache) -> String {
     if cache.order.is_empty() {
         return "No skills available.".into();
@@ -545,7 +600,22 @@ impl ServerHandler for SkillsServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
         let cache = self.skills_cache.read().await;
-        let mut resources = Vec::with_capacity(cache.skills.len());
+        let mut resources = Vec::with_capacity(cache.skills.len() + 1);
+        // The index goes FIRST — it is the entry point, and it explains
+        // how to load everything under it.
+        let catalogue = catalogue_markdown(&cache);
+        resources.push(
+            rmcp::model::Resource::new("hyprpilot://skills", "skills")
+                .with_title("hyprpilot skills — catalogue")
+                .with_description(format!(
+                    "Every available skill with its description, and how to load one: read \
+                     `hyprpilot://skills/<slug>` for the body, then `hyprpilot://references/<slug>` for \
+                     the files it declares. {} skill(s).",
+                    cache.order.len()
+                ))
+                .with_mime_type("text/markdown")
+                .with_size(catalogue.len() as u64),
+        );
         for slug in &cache.order {
             let Some(skill) = cache.skills.get(slug) else { continue };
             // Body resource. `name` is the always-present slug; `title`
@@ -604,6 +674,15 @@ impl ServerHandler for SkillsServer {
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
         let uri = &request.uri;
         match parse_uri(uri) {
+            Some(ParsedUri::Catalogue) => {
+                let cache = self.skills_cache.read().await;
+                Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("text/markdown".into()),
+                    text: catalogue_markdown(&cache),
+                    meta: None,
+                }]))
+            }
             Some(ParsedUri::Skill(slug)) => {
                 let cache = self.skills_cache.read().await;
                 let Some(skill) = cache.skills.get(slug) else {

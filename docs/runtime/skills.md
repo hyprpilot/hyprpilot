@@ -45,6 +45,7 @@ The injected entry runs the current binary with one `--skill-dir` argument per c
 
 Skills are exposed as MCP resources:
 
+- `hyprpilot://skills` — the **catalogue index**: every skill with its description, as one markdown document, and a header explaining how to load them. Attach this instead of spending a tool call on `list_skills`. It is a resource, so a _client_ can pull it; `list_skills` stays the tool the _model_ calls mid-flow.
 - `hyprpilot://skills/<slug>` — the skill body.
 - `hyprpilot://references/<slug>` — the bundle's declared reference files, resolved relative to the skill directory. This is a parallel top-level scheme, not a `/references` segment nested under the slug — the nested form broke client URI autocomplete.
 

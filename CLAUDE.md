@@ -406,7 +406,10 @@ Skills reach the agent **only** through the skills server.
   (one `--skill-dir` per root, each carrying that root's ignore list as
   JSON).
 - **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
-  server. Resources: `hyprpilot://skills/<slug>` (body) and
+  server. Resources: `hyprpilot://skills` (the catalogue index —
+  markdown, leads with how to chain the two schemes below; the bare
+  form cannot collide with a slug because every slug URI carries a
+  `skills/` prefix), `hyprpilot://skills/<slug>` (body) and
   `hyprpilot://references/<slug>` (bundled frontmatter references — a
   parallel top-level scheme, NOT a `/references` segment nested under
   the slug; the nested form broke client URI autocomplete). Tools:
