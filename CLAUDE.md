@@ -557,6 +557,26 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   `--format json`. The CLI's `-p` output stays human-readable. Vendors
   report their session id under three different keys — `session_id`,
   `thread_id`, `sessionID` — all verified against the installed CLIs.
+- **One id, minted by us.** The `session` handle exists from `spawn`,
+  never changes, and is the only identifier any tool accepts. The
+  harvested vendor id is stored as `Session.resume_token` and is
+  strictly the argument `session_send` hands back to the vendor — it is
+  NOT on the wire anywhere (`describe` / `sessionInfo` / `session_status`
+  / `session_list`). Exposing it published a second id for the same
+  thing that behaved worse: `None` for the whole first turn, and
+  addressing nothing. A test pins it out of every metadata payload —
+  but NOT out of `describe`'s `text`, which is the vendor's own event
+  stream verbatim and must stay unedited.
+- **Launches are DETACHED by default.** `wait` defaults to **false** on
+  `spawn` / `session_send` (`wait_flag`), so both return as soon as the
+  turn starts. Waiting never guaranteed a finished answer — a turn past
+  `timeout_seconds` comes back `running` regardless — so it only cost
+  the caller its ability to do anything meanwhile; `session_status` is
+  the cheap poll that replaces it. `timeout_seconds` is inert unless
+  `wait: true`. Consequence: `session_send`'s lazy `harvest` is
+  load-bearing on the DEFAULT path now, not just an opt-in one — a
+  detached first turn never runs the waiting path, so without it no
+  session could ever be resumed.
 - **Streaming** rides `notifications/progress` when the caller supplies
   a progressToken; a follow ends on session exit, client cancellation,
   or a caller-set limit. MCP tool results are single-shot, so the result
