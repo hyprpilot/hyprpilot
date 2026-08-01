@@ -44,6 +44,10 @@ impl HarnessServer {
 }
 
 impl ServerHandler for HarnessServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        super::rpc::supported_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.

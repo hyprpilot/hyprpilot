@@ -373,9 +373,26 @@ missing. Do not re-merge them.
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
-`optional_*`, `wait_for_shutdown`). It used to live in the skills server
-purely because that server was written first — five of the helpers had
-no caller there at all.
+`optional_*`, `wait_for_shutdown`, `supported_protocol_versions`). It
+used to live in the skills server purely because that server was written
+first — five of the helpers had no caller there at all.
+
+**The negotiable protocol set is CAPPED at `2025-11-25`**
+(`rpc::supported_protocol_versions`, overridden on all three
+`ServerHandler`s). rmcp's default is `KNOWN_VERSIONS` and negotiation
+echoes back whatever the client asks within it, so the default would let
+a vendor CLI's own release change our wire shape: `2026-07-28` adds
+`resultType` to every tool result (SEP-2322) and answers `ping` with
+`-32601` (SEP-2260) — both verified over stdio. The cap makes the
+supported set a declaration rather than an emergent property; raising it
+is a deliberate change with its own verification. Clients below it are
+unaffected (codex negotiates 2025-06-18, claude 2025-11-25), and a
+client asking higher negotiates down. A test pins the exclusion.
+
+`tool_error` / `structured_with_text` return rmcp 3's `CallToolResponse`
+envelope, converting at that single point so no `call_tool` body deals
+with the `Complete` / `InputRequired` / `Task` distinction — every
+result these servers produce is `Complete`.
 
 Skills reach the agent **only** through the skills server.
 

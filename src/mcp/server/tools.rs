@@ -36,6 +36,10 @@ pub struct ToolsArgs {}
 pub struct ToolsServer;
 
 impl ServerHandler for ToolsServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        super::rpc::supported_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.

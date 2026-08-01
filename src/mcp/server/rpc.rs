@@ -5,11 +5,37 @@
 //! server — for the historical reason that it was the first server
 //! written; five of them had no caller there at all.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
-use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
+use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock, ProtocolVersion};
 use rmcp::service::RoleServer;
 use rmcp::ServerHandler;
+
+/// The protocol versions all three servers will negotiate — everything
+/// rmcp knows EXCEPT `2026-07-28`.
+///
+/// rmcp's default is `KNOWN_VERSIONS`, and negotiation echoes back
+/// whatever the client asks for within that set. So leaving the default
+/// means the day any vendor CLI bumps its client, our wire shape changes
+/// with it: `2026-07-28` adds `resultType` to every tool result and turns
+/// `ping` into `-32601` (SEP-2322 / SEP-2260). Both verified against the
+/// real servers over stdio.
+///
+/// Neither is necessarily wrong — but it would be someone else's release
+/// deciding, on a shape nothing here has tested. The cap makes the
+/// supported set a declaration instead of an emergent property; raising
+/// it is then a deliberate change with its own verification. Clients
+/// below the cap are unaffected: codex negotiates 2025-06-18 today,
+/// claude 2025-11-25.
+pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
+    Cow::Borrowed(&[
+        ProtocolVersion::V_2024_11_05,
+        ProtocolVersion::V_2025_03_26,
+        ProtocolVersion::V_2025_06_18,
+        ProtocolVersion::V_2025_11_25,
+    ])
+}
 
 /// Return once the MCP transport closes or a termination signal
 /// arrives, whichever comes first.
@@ -172,5 +198,32 @@ pub(super) fn optional_string_array(
             format!("argument `{key}` must be an array of strings"),
             None,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cap is the point. rmcp's default set grows with the SDK, and
+    /// `2026-07-28` changes what our servers put on the wire — verified
+    /// over stdio: `resultType` appears on every tool result and `ping`
+    /// answers `-32601`. Pin the exclusion so a version bump has to
+    /// break this test rather than a user's client.
+    #[test]
+    fn the_negotiable_set_excludes_the_untested_revision() {
+        let supported = supported_protocol_versions();
+        assert!(
+            supported.contains(&ProtocolVersion::V_2025_11_25),
+            "the newest version we have actually tested must stay negotiable"
+        );
+        assert!(
+            !supported.contains(&ProtocolVersion::V_2026_07_28),
+            "2026-07-28 changes the wire shape — adopt it deliberately, with its own verification"
+        );
+        assert!(
+            supported.len() < ProtocolVersion::KNOWN_VERSIONS.len(),
+            "capping means a strict subset of what rmcp offers; this test is inert otherwise"
+        );
     }
 }

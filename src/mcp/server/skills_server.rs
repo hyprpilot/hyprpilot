@@ -457,6 +457,10 @@ fn list_skills_summary(cache: &SkillsCache) -> String {
 // ── MCP protocol impl ─────────────────────────────────────────────────
 
 impl ServerHandler for SkillsServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        super::rpc::supported_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
         // The tool set is fixed for the life of THIS process — the
