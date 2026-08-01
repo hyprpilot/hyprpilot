@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.1](https://github.com/hyprpilot/hyprpilot/compare/v3.4.0...v3.4.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **harness:** cwd, launch replay, MCP cursor pagination, and a per-profile gate ([#218](https://github.com/hyprpilot/hyprpilot/issues/218)) ([2cbe039](https://github.com/hyprpilot/hyprpilot/commit/2cbe039d0885fa35aa85e0c8e5108ff17a466557))
+
 ## [3.4.0](https://github.com/hyprpilot/hyprpilot/compare/v3.3.0...v3.4.0) (2026-07-31)
 
 
