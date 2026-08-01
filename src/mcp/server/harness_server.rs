@@ -45,7 +45,7 @@ impl HarnessServer {
 
 impl ServerHandler for HarnessServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
-        super::rpc::supported_protocol_versions()
+        super::rpc::harness_protocol_versions()
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -116,18 +116,23 @@ impl ServerHandler for HarnessServer {
             .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))
     }
 
-    /// Cancellation is cooperative per the spec, but ours is real: it
-    /// terminates the session's process group, exactly as `session_kill`
-    /// does — they are the same operation reached by two protocols.
+    /// Cancels the addressed TURN, not the session.
+    ///
+    /// Terminal tasks are immutable, so cancelling one is a no-op rather
+    /// than an error — and crucially it must not reach the session, whose
+    /// next turn may be running. An unknown handle is `-32602`, matching
+    /// `tasks/get` and SEP-2663's "SHOULD" for cancel.
     async fn cancel_task(
         &self,
         request: rmcp::model::CancelTaskParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<(), rmcp::ErrorData> {
-        let (handle, _) = crate::mcp::server::harness::parse_task_id(&request.task_id)
+        let (handle, turn) = crate::mcp::server::harness::parse_task_id(&request.task_id)
             .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("`{}` is not a task id.", request.task_id), None))?;
-        let _ = self.harness.session_kill(handle).await;
-        Ok(())
+        self.harness
+            .cancel_turn(handle, turn)
+            .await
+            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))
     }
 
     /// Dispatch one harness tool. Recoverable failures come back as

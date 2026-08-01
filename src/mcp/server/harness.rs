@@ -1894,6 +1894,32 @@ impl Harness {
         self.sessions.with(handle, |session| session.turn)
     }
 
+    /// Cancel ONE turn, addressed by task id.
+    ///
+    /// Deliberately NOT `session_kill`. That tool is state-aware and
+    /// reaps an already-finished session — which for a protocol cancel is
+    /// data loss: `tasks/cancel` on a *completed* task would delete the
+    /// whole conversation, its transcript, and every other turn's record,
+    /// and the completed task would stop reporting `completed`. A
+    /// spec-legal call must never destroy a conversation.
+    ///
+    /// Cancelling a task that already reached a terminal state is a
+    /// no-op, per SEP-2663: terminal states do not change. So only the
+    /// turn actually in flight can be cancelled, and addressing an older
+    /// turn acknowledges without touching the running one.
+    pub(crate) async fn cancel_turn(&self, handle: &str, turn: u32) -> Result<(), String> {
+        let current = self
+            .sessions
+            .with(handle, |session| session.turn)
+            .ok_or_else(|| format!("session `{handle}` is gone — evicted, reaped, or never existed."))?;
+        if current != turn {
+            return Ok(());
+        }
+        // `kill` alone: terminate the process group, keep the transcript.
+        self.sessions.kill(handle).await;
+        Ok(())
+    }
+
     /// Record that this turn handed out a task handle.
     ///
     /// The exit hook gates the completion push on this rather than on the
@@ -1978,6 +2004,71 @@ mod task_tests {
         let (parsed, turn) = parse_task_id(&id).expect("round trip");
         assert_eq!(parsed, handle);
         assert_eq!(turn, 12);
+    }
+
+    /// Cancelling a TERMINAL task must not touch the conversation.
+    ///
+    /// The bug this pins was live: `tasks/cancel` routed through
+    /// `session_kill`, which reaps an already-finished session — so a
+    /// spec-legal cancel of a completed turn-1 task killed turn 2 and
+    /// deleted the transcript, and the completed task stopped reporting
+    /// `completed`. Terminal states are immutable; cancelling one is a
+    /// no-op, not a licence to destroy data.
+    #[tokio::test]
+    async fn cancelling_a_finished_turn_leaves_the_session_intact() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let handle = harness
+            .sessions
+            .spawn(
+                crate::spawn::providers::SpawnCommand {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 0".into()],
+                    env: Default::default(),
+                    cwd: None,
+                    stdin_prompt: None,
+                },
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+        let mut done = harness.sessions.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+
+        // Turn 1 is finished. Cancelling it addresses a terminal task.
+        harness
+            .cancel_turn(&handle, 1)
+            .await
+            .expect("a terminal cancel is a no-op");
+        assert!(
+            harness.sessions.with(&handle, |s| s.turn).is_some(),
+            "the session must survive — reaping it here destroyed the whole conversation"
+        );
+        assert!(
+            harness.task_view(&task_id(&handle, 1)).is_ok(),
+            "a completed task must keep reporting after a cancel it should have ignored"
+        );
+
+        // An older turn's id must never reach a later turn.
+        harness
+            .cancel_turn(&handle, 99)
+            .await
+            .expect("an unknown turn is a no-op");
+        assert!(harness.sessions.with(&handle, |s| s.turn).is_some());
+
+        // An unresolvable handle is an error, matching `tasks/get`.
+        assert!(harness.cancel_turn("nope", 1).await.is_err());
     }
 
     /// The completion push is gated on this flag, so a mint that fails

@@ -12,27 +12,40 @@ use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock, ProtocolVersio
 use rmcp::service::RoleServer;
 use rmcp::ServerHandler;
 
-/// The protocol versions all three servers will negotiate — every
-/// revision rmcp knows, stated explicitly rather than inherited.
+/// The protocol versions the general-tools and skills servers negotiate.
 ///
-/// This is a DECLARATION, not `KNOWN_VERSIONS` by default. rmcp echoes
-/// back whatever the client asks within the supported set, so inheriting
-/// the default would let an SDK upgrade silently widen what we speak.
-/// Listing the versions means adding one is a commit here, with its own
-/// verification, and a test pins the set.
+/// A DECLARATION, not `KNOWN_VERSIONS` by default. rmcp echoes back
+/// whatever the client asks within the supported set, so inheriting the
+/// default would let an SDK upgrade silently widen what we speak.
 ///
-/// `2026-07-28` is included deliberately. It changes the wire for peers
-/// that negotiate it — `resultType` on every result (SEP-2322) and
+/// `2026-07-28` is deliberately absent here. It changes the wire for a
+/// peer that negotiates it — `resultType` on every result (SEP-2322) and
 /// `ping` answering `-32601` (SEP-2260), both measured over stdio — and
-/// it is what makes a SEP-2663 task result legitimate rather than
-/// dependent on an unenforced gap in rmcp (`ServerResult::
-/// strip_result_type_for_legacy_peer`'s doc claims `"task"` is already
-/// restricted to this revision; the code does not restrict it).
+/// these two servers gain nothing in return: neither serves tasks. Only
+/// the harness opts in, and only for spec legitimacy; the task path was
+/// measured working at 2025-11-25 too, so even there the revision is not
+/// load-bearing.
 ///
-/// No consumer reaches that revision today — measured against a real
+/// No consumer reaches it regardless — measured against a real
 /// handshake: claude 2.1.220 and opencode 1.18.11 negotiate `2025-11-25`,
-/// codex 0.146.0 `2025-06-18`. Each keeps the version it asks for.
+/// codex 0.146.0 `2025-06-18`.
 pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
+    Cow::Borrowed(&[
+        ProtocolVersion::V_2024_11_05,
+        ProtocolVersion::V_2025_03_26,
+        ProtocolVersion::V_2025_06_18,
+        ProtocolVersion::V_2025_11_25,
+    ])
+}
+
+/// The harness server's set — the above plus `2026-07-28`.
+///
+/// SEP-2663 is negotiated per-request via the extension mechanism, not by
+/// protocol version, so a task result is reachable at `2025-11-25` and
+/// this is not required to make the feature work. It is included so a
+/// client that speaks the revision Tasks was published alongside gets a
+/// server that speaks it too, rather than being silently downgraded.
+pub(super) fn harness_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
     Cow::Borrowed(&[
         ProtocolVersion::V_2024_11_05,
         ProtocolVersion::V_2025_03_26,
@@ -214,28 +227,43 @@ mod tests {
     /// an SDK upgrade that adds a revision has to break this test rather
     /// than silently widen what our servers speak.
     #[test]
-    fn the_negotiable_set_is_declared_not_inherited() {
-        let supported = supported_protocol_versions();
-        for expected in [
-            ProtocolVersion::V_2024_11_05,
-            ProtocolVersion::V_2025_03_26,
-            ProtocolVersion::V_2025_06_18,
-            ProtocolVersion::V_2025_11_25,
-        ] {
-            assert!(
-                supported.contains(&expected),
-                "dropping {expected:?} would cut off a client that negotiates it — codex is on 2025-06-18"
-            );
+    fn the_negotiable_sets_are_declared_not_inherited() {
+        for set in [supported_protocol_versions(), harness_protocol_versions()] {
+            for expected in [
+                ProtocolVersion::V_2024_11_05,
+                ProtocolVersion::V_2025_03_26,
+                ProtocolVersion::V_2025_06_18,
+                ProtocolVersion::V_2025_11_25,
+            ] {
+                assert!(
+                    supported_contains(&set, &expected),
+                    "dropping {expected:?} would cut off a client that negotiates it — codex is on 2025-06-18"
+                );
+            }
         }
-        assert!(
-            supported.contains(&ProtocolVersion::V_2026_07_28),
-            "2026-07-28 is what makes a SEP-2663 task result legitimate rather than reliant on an \
-             unenforced gap in rmcp"
-        );
         assert_eq!(
-            supported.len(),
+            harness_protocol_versions().len(),
             ProtocolVersion::KNOWN_VERSIONS.len(),
             "a revision rmcp added is not automatically one we speak — add it here deliberately"
         );
+    }
+
+    /// `2026-07-28` belongs to the harness ALONE. `mcp serve` and
+    /// `mcp skills` serve no tasks, so adopting it there would buy them
+    /// `resultType` on every result and a broken `ping` for nothing.
+    #[test]
+    fn only_the_harness_speaks_the_tasks_revision() {
+        assert!(
+            supported_contains(&harness_protocol_versions(), &ProtocolVersion::V_2026_07_28),
+            "the harness opts in"
+        );
+        assert!(
+            !supported_contains(&supported_protocol_versions(), &ProtocolVersion::V_2026_07_28),
+            "the task-free servers must not inherit a wire change they gain nothing from"
+        );
+    }
+
+    fn supported_contains(set: &[ProtocolVersion], want: &ProtocolVersion) -> bool {
+        set.iter().any(|v| v == want)
     }
 }
