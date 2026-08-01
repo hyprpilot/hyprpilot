@@ -10,6 +10,8 @@
 //!
 //! Current surface:
 //! - Resources
+//!   - `hyprpilot://skills` — the catalogue index (markdown), which
+//!     also documents the two schemes below
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
 //!   - `hyprpilot://references/<slug>` — bundled references
 //!     (parallel top-level scheme, NOT a `/references` segment
@@ -19,7 +21,7 @@
 //!     the verbatim frontmatter MINUS `title`/`description` (already
 //!     carried by the spec `Resource` fields) PLUS the runtime-derived
 //!     `path` + `bundleDir`. Nothing in that block repeats a
-//!     spec-compliant `Resource` field. See `skills/metadata.rs`.
+//!     spec-compliant `Resource` field. See `skills/wire_metadata.rs`.
 //! - Tools
 //!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata }] }`
 //!   - `read_skill { slug }` — `{ uri, body, metadata }`
@@ -46,7 +48,7 @@
 //! (`title`/`description`) the spec fields already carry byte-for-byte,
 //! plus the runtime-derived `path` + `bundleDir`. An author can add any
 //! new frontmatter key and it reaches the agent verbatim with zero
-//! server changes. `skills/metadata.rs` owns the conversion + the
+//! server changes. `skills/wire_metadata.rs` owns the conversion + the
 //! merge + the `_meta` namespacing; this module wires it into the cache
 //! + the wire shapes.
 
@@ -381,14 +383,16 @@ fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     Arc::new(map)
 }
 
-/// A one-line-per-skill catalogue for the `list_skills` text block.
 /// The `hyprpilot://skills` index — the whole catalogue as one
 /// markdown document.
 ///
-/// Exists so a client can ATTACH the catalogue instead of the model
-/// spending a tool call on `list_skills`. It leads with how to chain
-/// the other two schemes, because an index whose entries the reader
-/// cannot then load is only half an answer.
+/// Exists for the ATTACHMENT path: a client injecting this costs no
+/// tool call at all. A model reading it still spends one (a generic
+/// resource read), so `list_skills` stays the better route for the
+/// model — same cost, but named and described.
+///
+/// It leads with how to chain the other two schemes, because an index
+/// whose entries the reader cannot then load is only half an answer.
 fn catalogue_markdown(cache: &SkillsCache) -> String {
     let mut out = String::from(
         "# hyprpilot skills\n\n\
@@ -725,6 +729,38 @@ impl ServerHandler for SkillsServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bare index URI must not shadow a skill. Every skill URI
+    /// carries a `skills/` prefix, so the equality check has to come
+    /// first and `skillsfoo` must still be nothing.
+    #[test]
+    fn the_catalogue_uri_cannot_shadow_a_slug() {
+        assert!(matches!(parse_uri("hyprpilot://skills"), Some(ParsedUri::Catalogue)));
+        assert!(matches!(
+            parse_uri("hyprpilot://skills/git-commit"),
+            Some(ParsedUri::Skill("git-commit"))
+        ));
+        assert!(matches!(
+            parse_uri("hyprpilot://references/git-commit"),
+            Some(ParsedUri::SkillReferences("git-commit"))
+        ));
+        assert!(parse_uri("hyprpilot://skillsfoo").is_none());
+        assert!(parse_uri("hyprpilot://nope").is_none());
+    }
+
+    /// The index leads with how to chain the other two schemes — an
+    /// index whose entries the reader cannot then load is half an answer.
+    #[test]
+    fn the_catalogue_explains_how_to_load_what_it_lists() {
+        let empty = SkillsCache::default();
+        let out = catalogue_markdown(&empty);
+        assert!(out.contains("hyprpilot://skills/<slug>"), "must name the body scheme");
+        assert!(
+            out.contains("hyprpilot://references/<slug>"),
+            "must name the references scheme"
+        );
+        assert!(out.contains("No skills available"), "an empty catalogue still renders");
+    }
 
     #[test]
     fn parses_known_uris() {

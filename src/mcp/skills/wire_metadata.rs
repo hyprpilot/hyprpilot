@@ -1,6 +1,6 @@
 //! Generic YAML-frontmatter → MCP `_meta` passthrough.
 //!
-//! `the sibling `loader.rs`` already keeps every `SKILL.md` frontmatter
+//! the sibling `loader.rs` already keeps every `SKILL.md` frontmatter
 //! key losslessly on `Skill.frontmatter` (a `serde_yaml::Value`). This
 //! module is the ONE place that projects the frontmatter onto the wire.
 //!
@@ -35,7 +35,7 @@ pub const META_KEY_SKILL: &str = "io.hyprpilot/skill";
 /// names pass through VERBATIM — no camelCasing. Absent frontmatter
 /// (`Value::Null`, e.g. a `SKILL.md` with no `---` fence, or a fence
 /// that failed to parse and fell back to `Null` per
-/// ``loader.rs::split_frontmatter``) converts to an empty object.
+/// `loader.rs::split_frontmatter`) converts to an empty object.
 ///
 /// A conversion failure — frontmatter that parsed as YAML but isn't
 /// map-shaped at the top level, or a mapping key JSON can't represent

@@ -86,6 +86,13 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
         args.push("--max-sessions".to_string());
         args.push(max.to_string());
     }
+    // Same shape as `--max-sessions`: the sidecar is spawned by the
+    // launcher, which already resolved the PICKED profile's `[mcp]`
+    // block. Re-reading config inside the sidecar cannot recover which
+    // profile that was.
+    if !harness.notifies_on_complete() {
+        args.push("--no-notify-on-complete".to_string());
+    }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),
         "args": args,
@@ -247,6 +254,43 @@ mod tests {
         };
         let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
         assert_eq!(def.hyprpilot.auto_accept_tools, vec!["*".to_string()]);
+    }
+
+    /// Default ON — and the flag only appears when the captain turns it
+    /// OFF, so the sidecar's own default and the config agree.
+    #[test]
+    fn completion_notification_is_on_by_default() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let args = def.raw["args"].as_array().expect("args");
+        assert!(
+            !args.iter().any(|a| a == "--no-notify-on-complete"),
+            "the opt-out flag must be absent by default, got: {args:?}"
+        );
+    }
+
+    /// The knob has to ride the ARGV. A sidecar cannot re-read config to
+    /// find it — `[mcp.harness]` is per-profile, and only the launcher
+    /// knows which profile was picked.
+    #[test]
+    fn disabling_completion_notification_passes_the_flag() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                notify_on_complete: Some(false),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let args = def.raw["args"].as_array().expect("args");
+        assert!(args.iter().any(|a| a == "--no-notify-on-complete"), "got: {args:?}");
     }
 
     #[test]

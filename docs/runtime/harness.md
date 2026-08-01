@@ -73,14 +73,15 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 
 ## The tools
 
-| Tool            | Purpose                                                                                   |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| `list_profiles` | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.      |
-| `spawn`         | Start a new session from a profile and send it a prompt.                                  |
-| `session_send`  | Send another message to an existing session, resuming it first if it's finished.          |
-| `session_list`  | List this server's sessions — handle, profile, status, exit code, timestamps.             |
-| `session_read`  | Read, and optionally follow live, a session's transcript.                                 |
-| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished. |
+| Tool             | Purpose                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| `list_profiles`  | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.      |
+| `spawn`          | Start a new session from a profile and send it a prompt.                                  |
+| `session_send`   | Send another message to an existing session, resuming it first if it's finished.          |
+| `session_list`   | List this server's sessions — handle, profile, status, exit code, timestamps.             |
+| `session_status` | One session's state without its transcript — the cheap poll.                              |
+| `session_read`   | Read, and optionally follow live, a session's transcript.                                 |
+| `session_kill`   | Stop a running session and everything it started — or reap one that has already finished. |
 
 ### Workflow
 
@@ -102,7 +103,12 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 | `hasResult`       | bool   | always         | Whether the agent's final answer has landed — see below.                                |
 | `vendorSessionId` | string | once harvested | Omitted until the vendor emits it.                                                      |
 
-`hasResult` is per-vendor, because the three mark completion differently — all verified against the installed CLIs:
+`hasResult` is `false` for any running session, and only then scanned per vendor. Both halves matter:
+
+- opencode emits a `text` part for **every** completed sentence, not just the final answer, so content alone cannot say "done".
+- `session_send` **appends** to one transcript, so a scan from the start keeps finding the first turn's marker and every later turn would read as finished the moment it began. The scan reads the tail, scoping it to the latest turn.
+
+The three vendors mark completion differently — all verified against the installed CLIs:
 
 - **claude** — a terminal `{"type":"result"}` carrying the answer.
 - **codex** — `{"type":"turn.completed"}` closes the turn; the text rode the `item.completed` before it, whose `item.type` is `agent_message`.
@@ -110,7 +116,7 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 
 ### Watching from a shell
 
-Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on every result as `sessionInfo.donePath`.
+Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.donePath`.
 
 This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
 
@@ -140,6 +146,8 @@ mcp:
   harness:
     notifyOnComplete: false
 ```
+
+Resolved by the **launcher**, from the profile it picked, and passed to the sidecar as a flag — the same way `maxSessions` arrives. A sidecar cannot work out which profile spawned it, so it cannot read this from config itself.
 
 Two things worth knowing:
 

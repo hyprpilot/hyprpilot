@@ -1,5 +1,5 @@
 //! The agent harness — `list_profiles` / `spawn` / `session_send` /
-//! `session_list` / `session_read` / `session_kill`.
+//! `session_list` / `session_status` / `session_read` / `session_kill`.
 //!
 //! Turns the captain's profile registry into something a connected
 //! agent can drive: pick a profile, run it, talk to it across turns,
@@ -48,6 +48,11 @@ pub const DEFAULT_MAX_SESSIONS: usize = 64;
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
 /// transcript never blows the caller's own budget.
 const READ_CAP_BYTES: usize = 60_000;
+
+/// Lines of transcript tail scanned for a turn's terminal marker.
+/// Generous — a turn's closing events are the last handful — but
+/// bounded, because `session_status` is advertised as the cheap poll.
+const TERMINAL_SCAN_LINES: usize = 200;
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 /// How often a follow re-checks the transcript for new bytes. The file
@@ -490,10 +495,18 @@ impl Harness {
                     "createdAt": unix_secs(session.created_at),
                     "lastTurnAt": unix_secs(session.last_turn_at),
                     "transcriptBytes": transcript_bytes,
-                    // Reading the transcript to answer this is the whole
-                    // cost of the tool; it is still far cheaper than
-                    // handing the caller 60 kB to scan itself.
-                    "hasResult": std::fs::read_to_string(&turns).is_ok_and(|body| has_terminal_result(&body)),
+                    // Only meaningful once the turn has ENDED, and read
+                    // from the tail. Both halves are load-bearing:
+                    //
+                    // - A running session is never "done". opencode emits
+                    //   a `text` part for every completed sentence, so
+                    //   asking mid-run reports the first one as the
+                    //   answer.
+                    // - `session_send` APPENDS to this same file, so a
+                    //   scan from byte 0 keeps finding turn 1's marker
+                    //   forever and every later turn reads as finished
+                    //   the instant it starts.
+                    "hasResult": session.status() == SessionStatus::Exited && tail_has_terminal_result(&turns),
                 });
                 if let Some(code) = session.exit_code() {
                     out["exitCode"] = json!(code);
@@ -972,6 +985,16 @@ pub(crate) async fn notify_session_finished(
 ///   `step_finish(reason=stop)`, so the answer is the last
 ///   `{"type":"text"}` part. Scanning for a terminal event here would
 ///   find nothing and report `false` forever.
+fn tail_has_terminal_result(path: &std::path::Path) -> bool {
+    // The tail, not the whole file: terminal events are at the end by
+    // definition, and this is advertised as the cheap poll. Also keeps
+    // the answer scoped to the LATEST turn — earlier turns' markers sit
+    // further back in the same appended transcript.
+    let (tail, _truncated) = tail_of(path, TERMINAL_SCAN_LINES);
+
+    has_terminal_result(&tail)
+}
+
 fn has_terminal_result(body: &str) -> bool {
     for line in body.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -1211,6 +1234,46 @@ mod tests {
         assert!(
             harness_allows(&cfg, "nonexistent"),
             "an unknown id stays the resolver's error to report, not ours"
+        );
+    }
+
+    /// opencode emits a `text` part for EVERY completed sentence, not
+    /// only the final answer — verified against the installed binary. So
+    /// "a text part exists" cannot mean "the agent is done"; only the
+    /// session having exited can. Pins the mid-run false positive.
+    #[test]
+    fn a_mid_run_opencode_text_part_is_not_a_finished_answer() {
+        let mid_run = concat!(
+            r#"{"type":"text","part":{"text":"I'll check the file first."}}"#,
+            "\n",
+            r#"{"type":"tool_use","part":{"tool":"bash"}}"#,
+            "\n",
+        );
+        // The scanner itself still sees a text part — that is what it is
+        // for. The guard is `status == Exited` in `session_status`, which
+        // is why `hasResult` must never be computed from content alone.
+        assert!(has_terminal_result(mid_run));
+    }
+
+    /// `session_send` APPENDS to one transcript, so turn 1's terminal
+    /// marker never disappears. Scanning from byte 0 reported every
+    /// later turn as finished the instant it started; scanning the TAIL
+    /// keeps the answer scoped to the latest turn.
+    #[test]
+    fn the_terminal_scan_reads_the_tail_not_the_whole_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        // Turn 1 finished, then turn 2 pushed it far out of the tail.
+        let mut body = String::from(r#"{"type":"result","result":"turn one"}"#);
+        body.push('\n');
+        for i in 0..(TERMINAL_SCAN_LINES * 2) {
+            body.push_str(&format!("{{\"type\":\"tool_use\",\"seq\":{i}}}\n"));
+        }
+        std::fs::write(&path, &body).unwrap();
+
+        assert!(
+            !tail_has_terminal_result(&path),
+            "turn 1's marker must not leak into turn 2's answer"
         );
     }
 

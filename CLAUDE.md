@@ -516,7 +516,9 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   `[ ! -d "$DIR" ] || [ -f "$DIR/done.json" ]`. Never panic in that
   task — `panic = "abort"` would take every running agent down with it.
 - **Completion fires a Claude channel.** `[mcp.harness].notifyOnComplete`
-  (default TRUE) pushes `notifications/claude/channel` when a turn's
+  (default TRUE, resolved by the LAUNCHER and passed down as
+  `--no-notify-on-complete` — a sidecar cannot know which profile
+  spawned it, so it cannot read a per-profile key itself) pushes `notifications/claude/channel` when a turn's
   process exits — Claude Code renders it as a `<channel>` block in the
   lead's next turn. Safe on by default: an unregistered channel is
   dropped silently and unknown capabilities are ignored per spec, so
@@ -553,7 +555,7 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   still carries everything the notifications streamed.
 
 - **Skill metadata — ONE block, spec fields canonical**
-  (`mcp/server/skills/metadata.rs`): the MCP spec's `_meta` is a single
+  (`mcp/skills/wire_metadata.rs`): the MCP spec's `_meta` is a single
   field keyed by reverse-DNS names, so every skill surface carries
   exactly ONE namespaced key — **`io.hyprpilot/skill`** in resource
   `_meta`, **`metadata`** in tool output (`list_skills` / `read_skill` /

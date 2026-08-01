@@ -41,8 +41,8 @@ pub(super) async fn wait_for_shutdown<H: ServerHandler>(running: rmcp::service::
     }
 }
 
-/// Compact builder emitting the same shape the hand-rolled schemas
-/// above produce — `type` / `properties` / `required` (omitted when
+/// Compact builder emitting the shape every hand-rolled schema in the
+/// servers produces — `type` / `properties` / `required` (omitted when
 /// empty, matching `empty_object_schema`) / `additionalProperties:
 /// false`. Worth the helper once a tool has more than a field or two.
 pub(super) fn object_schema(

@@ -224,6 +224,15 @@ pub struct HarnessArgs {
         value_name = "N"
     )]
     pub max_sessions: usize,
+
+    /// Suppress the per-turn completion channel.
+    ///
+    /// A flag rather than a config read: the launcher resolved the
+    /// PICKED profile's `[mcp.harness]` block and passes the answer
+    /// down, the same way `--max-sessions` arrives. A sidecar cannot
+    /// work out which profile spawned it.
+    #[arg(long = "no-notify-on-complete")]
+    pub no_notify_on_complete: bool,
 }
 
 /// Shared `spawn` / `session_send` parameters. Every one mirrors a CLI flag
@@ -621,22 +630,6 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // our own. A non-empty sweep logs at `warn`.
     super::sessions::sweep_stale_sessions();
 
-    // Read the config ONCE at startup for the notification decision.
-    // The harness otherwise loads config per tool call, but a hook
-    // installed once cannot be re-decided per turn.
-    let (notify_on_complete, server_name) = config.load().map_or_else(
-        |_| (true, DEFAULT_HARNESS_SERVER_NAME.to_string()),
-        |cfg| {
-            let harness = cfg
-                .profiles
-                .first()
-                .and_then(|p| p.mcp.as_ref())
-                .and_then(|mcp| mcp.harness.clone())
-                .unwrap_or_default();
-            (harness.notifies_on_complete(), harness.server_name().to_string())
-        },
-    );
-
     let handler = HarnessServer::new(config, args.max_sessions);
     // Clone the table BEFORE `serve()` — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
@@ -652,9 +645,9 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // The peer exists only once `serve()` has returned, which is also
     // the earliest a session can exist — so installing the hook here is
     // ordered correctly, not merely convenient.
-    if notify_on_complete {
+    if !args.no_notify_on_complete {
         let peer = running.peer().clone();
-        let name = server_name.clone();
+        let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
         sessions.set_exit_hook(Arc::new(move |handle: String, code: i32| {
             let peer = peer.clone();
             let name = name.clone();

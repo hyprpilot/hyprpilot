@@ -52,7 +52,8 @@ pub enum McpSubcommand {
     Skills(skills_server::SkillsArgs),
 
     /// Serve the agent harness — `list_profiles` / `spawn` /
-    /// `session_send` / `session_list` / `session_read` / `session_kill`.
+    /// `session_send` / `session_list` / `session_status` / `session_read` /
+    /// `session_kill`.
     ///
     /// Needs no skill roots: the harness tools do not read the catalog.
     Harness(harness_server::HarnessArgs),
