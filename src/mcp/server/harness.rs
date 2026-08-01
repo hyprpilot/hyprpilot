@@ -911,6 +911,52 @@ fn vendor_session_id(body: &str) -> Option<String> {
     None
 }
 
+/// Push a completion event into the lead agent's context.
+///
+/// Claude Code calls this a *channel*: a notification whose `content`
+/// becomes a `<channel source="…">` block in the agent's next turn,
+/// with each `meta` entry as an attribute. A client that never
+/// registered the channel drops it silently and returns no error, so
+/// the server cannot detect non-delivery and must not try.
+///
+/// **The content is a fixed template and must stay that way.** Never
+/// interpolate transcript bytes or agent output into it: that would let
+/// a spawned agent write into its parent's context through a path the
+/// parent never called. Everything variable rides `meta`, whose keys
+/// must be `[A-Za-z0-9_]` — a hyphen is silently dropped.
+pub(crate) async fn notify_session_finished(
+    peer: &rmcp::service::Peer<rmcp::service::RoleServer>,
+    server_name: &str,
+    handle: &str,
+    exit_code: i32,
+) {
+    let mut meta = serde_json::Map::new();
+    meta.insert("session".into(), json!(handle));
+    meta.insert("exit_code".into(), json!(exit_code.to_string()));
+
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "content".into(),
+        json!(format!(
+            "hyprpilot harness session {handle} finished (exit {exit_code}). \
+             Read its output with session_read."
+        )),
+    );
+    params.insert("meta".into(), serde_json::Value::Object(meta));
+
+    let notification = rmcp::model::CustomNotification {
+        method: "notifications/claude/channel".into(),
+        params: Some(serde_json::Value::Object(params)),
+        extensions: rmcp::model::Extensions::default(),
+    };
+    if let Err(err) = peer
+        .send_notification(rmcp::model::ServerNotification::CustomNotification(notification))
+        .await
+    {
+        tracing::debug!(%handle, %server_name, %err, "mcp harness: completion channel push failed");
+    }
+}
+
 /// Whether the transcript carries the agent's final answer yet.
 ///
 /// Each vendor marks completion differently — the same three-way split

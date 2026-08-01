@@ -50,6 +50,18 @@ impl ServerHandler for HarnessServer {
         let mut tools = rmcp::model::ToolsCapability::default();
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
+        // Claude Code registers a channel listener only when it sees
+        // this key. Declaring it costs nothing elsewhere: the spec says
+        // unknown capabilities are ignored, and a client that never
+        // registers simply drops whatever we push.
+        //
+        // `ServerCapabilities` is `#[non_exhaustive]`, so this is field
+        // assignment on the owned `default()`, not a struct literal.
+        caps.experimental = Some(
+            [("claude/channel".to_string(), serde_json::Map::new())]
+                .into_iter()
+                .collect(),
+        );
 
         ServerInfo::new(caps)
             .with_server_info(Implementation::new(
@@ -609,6 +621,22 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // our own. A non-empty sweep logs at `warn`.
     super::sessions::sweep_stale_sessions();
 
+    // Read the config ONCE at startup for the notification decision.
+    // The harness otherwise loads config per tool call, but a hook
+    // installed once cannot be re-decided per turn.
+    let (notify_on_complete, server_name) = config.load().map_or_else(
+        |_| (true, DEFAULT_HARNESS_SERVER_NAME.to_string()),
+        |cfg| {
+            let harness = cfg
+                .profiles
+                .first()
+                .and_then(|p| p.mcp.as_ref())
+                .and_then(|mcp| mcp.harness.clone())
+                .unwrap_or_default();
+            (harness.notifies_on_complete(), harness.server_name().to_string())
+        },
+    );
+
     let handler = HarnessServer::new(config, args.max_sessions);
     // Clone the table BEFORE `serve()` — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
@@ -620,6 +648,21 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
         .serve((stdin, stdout))
         .await
         .map_err(|err| anyhow::anyhow!("mcp harness: serve failed at init: {err}"))?;
+
+    // The peer exists only once `serve()` has returned, which is also
+    // the earliest a session can exist — so installing the hook here is
+    // ordered correctly, not merely convenient.
+    if notify_on_complete {
+        let peer = running.peer().clone();
+        let name = server_name.clone();
+        sessions.set_exit_hook(Arc::new(move |handle: String, code: i32| {
+            let peer = peer.clone();
+            let name = name.clone();
+            tokio::spawn(async move {
+                super::harness::notify_session_finished(&peer, &name, &handle, code).await;
+            });
+        }));
+    }
 
     wait_for_shutdown(running).await;
     sessions.shutdown().await;
@@ -643,8 +686,14 @@ fn instructions() -> String {
      5. `session_read` any time, including after the run finished. Pass \
      `wait: true` to follow live; pass a progressToken to receive output \
      as progress notifications as it arrives.\n\
-     6. `session_kill { session }` — stops a running session; on an \
+     6. `session_status { session }` — the cheap poll: state and whether \
+     the answer has landed, without reading the transcript.\n\
+     7. `session_kill { session }` — stops a running session; on an \
      already-finished one it reaps it.\n\
+     If your client supports channels, a `<channel \
+     source=\"hyprpilot_harness\">` block appears in your context when a \
+     session finishes — read that session with `session_read`. It fires \
+     per TURN, not only when a conversation ends.\n\
      Sessions are children of THIS server and die with it: they do not \
      survive a restart, and their transcripts go too."
         .to_string()

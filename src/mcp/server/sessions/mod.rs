@@ -215,16 +215,34 @@ fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
     }
 }
 
+/// Called once per turn, when its process exits.
+///
+/// Deliberately a bare closure rather than anything MCP-shaped: this
+/// module owns processes and has **zero** rmcp dependencies, and that
+/// separation is worth more than the indirection costs. The channel
+/// notification is built in `harness.rs`, where the protocol types
+/// already live.
+pub(crate) type ExitHook = Arc<dyn Fn(String, i32) + Send + Sync>;
+
 /// The in-process session table. Bounded by the sidecar's own lifetime —
 /// there is no persistence and no cross-launch state.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct SessionTable {
     inner: Mutex<BTreeMap<String, Session>>,
+    /// Set once, after the server starts serving — a `Peer` does not
+    /// exist before that, and sessions cannot exist before it either.
+    on_exit: std::sync::OnceLock<ExitHook>,
 }
 
 impl SessionTable {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Install the per-turn completion hook. Idempotent; a second call
+    /// is ignored rather than replacing the first.
+    pub(crate) fn set_exit_hook(&self, hook: ExitHook) {
+        let _ = self.on_exit.set(hook);
     }
 
     /// Mint a session handle.
@@ -309,7 +327,8 @@ impl SessionTable {
 
         // Append, so the conversation stays ONE transcript and the byte
         // offsets a caller is paging through remain valid across turns.
-        let launched = launch_child(&command, session.dir.path(), handle, true).map_err(RespawnError::Spawn)?;
+        let launched = launch_child(&command, session.dir.path(), handle, true, self.on_exit.get().cloned())
+            .map_err(RespawnError::Spawn)?;
 
         session.launch.cwd = command.cwd.clone();
         session.provenance = provenance;
@@ -429,7 +448,8 @@ impl SessionTable {
         // The resolved cwd, so a follow-up turn replays to the same
         // directory even when this one fell back to `$PWD`.
         launch.cwd = command.cwd.clone();
-        let Launched { pid, pgid, done } = launch_child(&command, dir.path(), &handle, false)?;
+        let Launched { pid, pgid, done } =
+            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned())?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -478,7 +498,13 @@ struct Launched {
 /// turn writing into the SAME `turns.jsonl`, so a conversation reads back
 /// as one continuous transcript and byte offsets stay meaningful across
 /// turns.
-fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) -> Result<Launched> {
+fn launch_child(
+    command: &SpawnCommand,
+    dir: &Path,
+    handle: &str,
+    append: bool,
+    on_exit: Option<ExitHook>,
+) -> Result<Launched> {
     let open = |name: &str| -> Result<std::fs::File> {
         let path = dir.join(name);
         std::fs::OpenOptions::new()
@@ -577,6 +603,9 @@ fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) 
             tracing::warn!(handle = %waiter_handle, %err, "mcp harness: could not write the done marker");
         }
         let _ = tx.send(Some(code));
+        if let Some(hook) = on_exit {
+            hook(waiter_handle, code);
+        }
     });
 
     Ok(Launched { pid, pgid, done })
@@ -1119,7 +1148,10 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             done.exists()
         };
-        assert!(cleared_or_rewritten, "the marker must not survive untouched into turn 2");
+        assert!(
+            cleared_or_rewritten,
+            "the marker must not survive untouched into turn 2"
+        );
     }
 
     #[tokio::test]

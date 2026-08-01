@@ -125,6 +125,17 @@ pub struct HarnessServerConfig {
     #[garde(skip)]
     pub max_sessions: Option<usize>,
 
+    /// Push a completion event into the lead agent's context when a
+    /// turn finishes. Defaults to `true`.
+    ///
+    /// Safe to leave on: a client that has not registered the channel
+    /// drops the notification silently, and unknown capabilities are
+    /// ignored per the MCP spec. The knob exists for NOISE — a session
+    /// is `exited` after every turn, so a ten-turn conversation emits
+    /// ten events.
+    #[garde(skip)]
+    pub notify_on_complete: Option<bool>,
+
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs —
     /// worth tightening here, since `spawn` is the tool that runs
     /// arbitrary binaries.
@@ -151,6 +162,11 @@ impl HarnessServerConfig {
 
     pub fn server_name(&self) -> &str {
         self.name.as_deref().unwrap_or(DEFAULT_HARNESS_SERVER_NAME)
+    }
+
+    #[must_use]
+    pub fn notifies_on_complete(&self) -> bool {
+        self.notify_on_complete.unwrap_or(true)
     }
 }
 

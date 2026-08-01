@@ -124,6 +124,28 @@ Both halves are required. The marker is advisory: reaping, eviction and shutdown
 
 It is **cleared when a turn starts**, not only written when one ends — `session_send` reuses the handle and directory, so a watcher armed for the next turn would otherwise fire instantly on the previous turn's leftover.
 
+### Completion notifications (Claude Code channels)
+
+When a turn's process exits the harness pushes a `notifications/claude/channel` event, which Claude Code turns into a `<channel source="hyprpilot_harness">` block in the lead agent's next turn:
+
+```txt
+content: hyprpilot harness session 4670d5aa… finished (exit 0). Read its output with session_read.
+meta:    { session: "4670d5aa…", exit_code: "0" }
+```
+
+On by default. It is safe to leave on — a client that has not registered the channel drops the notification silently, and unknown capabilities are ignored per the MCP spec, so nothing errors anywhere. The knob exists for **noise**: a session is `exited` after every _turn_, so a ten-turn conversation emits ten events.
+
+```yaml
+mcp:
+  harness:
+    notifyOnComplete: false
+```
+
+Two things worth knowing:
+
+- **Registering the channel is the client's job, not hyprpilot's.** Claude Code only listens for channels it was launched with; that is your own launch configuration. hyprpilot declares the capability and pushes the event — where channels are unavailable, the push is dropped.
+- **The content is a fixed template.** Transcript bytes and agent output are never interpolated into it — that would let a spawned agent write into its parent's context through a path the parent never called. Everything variable rides `meta`, whose keys must be `[A-Za-z0-9_]` (a hyphen is silently dropped, which is why it is `exit_code`).
+
 ### `spawn` / `session_send` parameters
 
 The two tools share one parameter set:

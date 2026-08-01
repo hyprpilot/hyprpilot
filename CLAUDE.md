@@ -512,6 +512,17 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   reap/evict/shutdown remove the directory, so the watcher contract is
   `[ ! -d "$DIR" ] || [ -f "$DIR/done.json" ]`. Never panic in that
   task — `panic = "abort"` would take every running agent down with it.
+- **Completion fires a Claude channel.** `[mcp.harness].notifyOnComplete`
+  (default TRUE) pushes `notifications/claude/channel` when a turn's
+  process exits — Claude Code renders it as a `<channel>` block in the
+  lead's next turn. Safe on by default: an unregistered channel is
+  dropped silently and unknown capabilities are ignored per spec, so
+  the knob is for NOISE (a session is `exited` every turn). The peer
+  only exists after `serve()` returns, so the hook is installed there,
+  and `sessions/` stays rmcp-free — it takes a bare `ExitHook` closure
+  built in `harness.rs`. **The content is a fixed template**: never
+  interpolate agent output, or a spawned agent writes into its parent's
+  context through a path the parent never called.
 - **Bounded retention.** `--max-sessions` (default 64) evicts the oldest
   *finished* sessions; a running one is never touched. `session_kill` is
   state-aware — it terminates a running session (keeping the transcript)
