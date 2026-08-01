@@ -1,6 +1,6 @@
 //! Harness session store — the sidecar owns every agent it spawns.
 //!
-//! A session is a **direct child** of `hyprpilot mcp serve`, waited on
+//! A session is a **direct child** of `hyprpilot mcp harness`, waited on
 //! via `tokio::process::Child`, with its transcript streaming into a
 //! per-session [`TempDir`]. Nothing here outlives the sidecar, and that
 //! is the point: the vendor owns the sidecar's lifetime, so an

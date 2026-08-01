@@ -3,10 +3,10 @@
 //!
 //! Turns the captain's profile registry into something a connected
 //! agent can drive: pick a profile, run it, talk to it across turns,
-//! read its transcript, kill it. Gated behind `--with-harness` because
-//! `auto_inject` puts this sidecar inside *every* launch, and an
-//! ungated spawn surface would let a claude session spawn nested claude
-//! sessions without bound.
+//! read its transcript, kill it. Its own subcommand and its own
+//! `ServerHandler`, so the skills server cannot serve `spawn` — the
+//! gate is structural rather than a name check. Off by default because
+//! a profile's `command` is an arbitrary binary.
 //!
 //! Every launch flows through `spawn::prepare`, the same path
 //! `hyprpilot <profile>` uses, so prompt-source priority, the
@@ -821,7 +821,7 @@ fn harness_allows(cfg: &crate::config::Config, profile_id: &str) -> bool {
 /// Restrict a caller-supplied overlay to settings that cannot change
 /// what gets executed.
 ///
-/// The `--with-harness` gate is a grant of *the captain's profiles*, not
+/// Enabling the harness is a grant of *the captain's profiles*, not
 /// of a shell; without this a single prompt-injected tool call is RCE on
 /// a chat-reachable gateway.
 fn reject_executable_overrides(overlays: &[Value]) -> Result<(), String> {

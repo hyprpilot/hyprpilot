@@ -232,7 +232,7 @@ impl SkillsServer {
                                     %err,
                                     pattern = %pat,
                                     dir = %entry.dir.display(),
-                                    "mcp::server: bad skill-ignore glob — skipping"
+                                    "mcp::server: bad skill ignore glob — skipping"
                                 );
                             }
                         }

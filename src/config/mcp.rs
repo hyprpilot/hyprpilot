@@ -6,9 +6,11 @@
 //! config for our in-tree MCP server; a profile's `mcps` is the
 //! captain-declared catalog of *external* MCP servers.
 //!
-//! Skills live under `[[mcp.skills]]`. They belong here because the
-//! hyprpilot MCP server is what exposes them to the agent; there is no
-//! consumer of skills outside the MCP server.
+//! Skill roots live under `[[mcp.skills.dirs]]`. They belong here
+//! because the skills server is what exposes them to the agent. The
+//! launcher's `resolve` also builds a registry, but only to decide
+//! whether that server is worth injecting — it is the one in-tree
+//! server also gated on content.
 //!
 //! Per-profile `ProfileConfig.mcp: Option<McpConfig>` is folded onto
 //! whichever profile is picked (root `[[patches]]` seed the default
@@ -167,8 +169,8 @@ impl HarnessServerConfig {
 /// frictionless; captains can tighten per-profile or per-server.
 ///
 /// `skills` is the **catalog of skill root directories** the server
-/// scans and exposes. Same `SkillEntry { dir, ignore }` shape that
-/// used to live at the top-level `[[skills]]`. `None` (default) →
+/// scans and exposes, as `SkillEntry { dir, ignore }`. `None`
+/// (default) →
 /// falls through to the seeded default
 /// (`~/.config/hyprpilot/skills`). `Some([])` → no skills at all
 /// (suppresses auto-inject — nothing to serve). `Some([...])` →

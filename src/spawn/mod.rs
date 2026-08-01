@@ -46,7 +46,7 @@ pub(crate) enum LaunchOrigin {
     /// `hyprpilot <profile>` — real stdin, picker allowed, renames the
     /// current tmux window before handing off.
     Cli,
-    /// An MCP `spawn` / `resume` tool call inside `hyprpilot mcp serve`.
+    /// An MCP `spawn` / `session_send` tool call inside `hyprpilot mcp harness`.
     ///
     /// **Never reads real stdin.** The sidecar's fd0 IS the MCP
     /// JSON-RPC request stream, so buffering it would drain the

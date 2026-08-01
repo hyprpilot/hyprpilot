@@ -198,7 +198,7 @@ impl SkillsRegistry {
 
     /// The configured directory entries this registry scans. Consumed
     /// by the auto-inject builder to forward `--skill-dir` /
-    /// `--skill-ignore` CLI args to the sidecar without re-deriving
+    /// `--skill-dir` CLI args to the sidecar without re-deriving
     /// them from the loaded skills list.
     #[must_use]
     pub fn dirs(&self) -> &[crate::config::ResolvedSkillEntry] {

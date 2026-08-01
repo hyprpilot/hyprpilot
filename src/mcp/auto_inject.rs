@@ -131,7 +131,7 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
 /// re-projects from the user shape so it expects `command: <string>`
 /// and `env: { K: V }`.
 #[must_use]
-pub fn build_auto_inject_definition(
+pub fn build_skills_definition(
     skills: &Arc<SkillsRegistry>,
     cfg: &McpConfig,
     source: PathBuf,
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn empty_registry_skips_injection() {
-        assert!(build_auto_inject_definition(&empty_registry(), &default_cfg(), PathBuf::from("<test>")).is_none());
+        assert!(build_skills_definition(&empty_registry(), &default_cfg(), PathBuf::from("<test>")).is_none());
     }
 
     /// The security-relevant default. `spawn` runs a profile's

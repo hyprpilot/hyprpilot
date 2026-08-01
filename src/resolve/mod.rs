@@ -115,7 +115,7 @@ pub(crate) fn build_mcp_registry_with(
         }
         // Skills last so it lands first in the list.
         if let Some(auto) = skills.and_then(|skills_arc| {
-            crate::mcp::auto_inject::build_auto_inject_definition(
+            crate::mcp::auto_inject::build_skills_definition(
                 skills_arc,
                 &mcp_cfg,
                 std::path::PathBuf::from("<auto-injected:hyprpilot mcp skills>"),
