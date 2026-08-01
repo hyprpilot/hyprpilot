@@ -12,28 +12,33 @@ use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock, ProtocolVersio
 use rmcp::service::RoleServer;
 use rmcp::ServerHandler;
 
-/// The protocol versions all three servers will negotiate — everything
-/// rmcp knows EXCEPT `2026-07-28`.
+/// The protocol versions all three servers will negotiate — every
+/// revision rmcp knows, stated explicitly rather than inherited.
 ///
-/// rmcp's default is `KNOWN_VERSIONS`, and negotiation echoes back
-/// whatever the client asks for within that set. So leaving the default
-/// means the day any vendor CLI bumps its client, our wire shape changes
-/// with it: `2026-07-28` adds `resultType` to every tool result and turns
-/// `ping` into `-32601` (SEP-2322 / SEP-2260). Both verified against the
-/// real servers over stdio.
+/// This is a DECLARATION, not `KNOWN_VERSIONS` by default. rmcp echoes
+/// back whatever the client asks within the supported set, so inheriting
+/// the default would let an SDK upgrade silently widen what we speak.
+/// Listing the versions means adding one is a commit here, with its own
+/// verification, and a test pins the set.
 ///
-/// Neither is necessarily wrong — but it would be someone else's release
-/// deciding, on a shape nothing here has tested. The cap makes the
-/// supported set a declaration instead of an emergent property; raising
-/// it is then a deliberate change with its own verification. Clients
-/// below the cap are unaffected: codex negotiates 2025-06-18 today,
-/// claude 2025-11-25.
+/// `2026-07-28` is included deliberately. It changes the wire for peers
+/// that negotiate it — `resultType` on every result (SEP-2322) and
+/// `ping` answering `-32601` (SEP-2260), both measured over stdio — and
+/// it is what makes a SEP-2663 task result legitimate rather than
+/// dependent on an unenforced gap in rmcp (`ServerResult::
+/// strip_result_type_for_legacy_peer`'s doc claims `"task"` is already
+/// restricted to this revision; the code does not restrict it).
+///
+/// No consumer reaches that revision today — measured against a real
+/// handshake: claude 2.1.220 and opencode 1.18.11 negotiate `2025-11-25`,
+/// codex 0.146.0 `2025-06-18`. Each keeps the version it asks for.
 pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
     Cow::Borrowed(&[
         ProtocolVersion::V_2024_11_05,
         ProtocolVersion::V_2025_03_26,
         ProtocolVersion::V_2025_06_18,
         ProtocolVersion::V_2025_11_25,
+        ProtocolVersion::V_2026_07_28,
     ])
 }
 
@@ -205,25 +210,32 @@ pub(super) fn optional_string_array(
 mod tests {
     use super::*;
 
-    /// The cap is the point. rmcp's default set grows with the SDK, and
-    /// `2026-07-28` changes what our servers put on the wire — verified
-    /// over stdio: `resultType` appears on every tool result and `ping`
-    /// answers `-32601`. Pin the exclusion so a version bump has to
-    /// break this test rather than a user's client.
+    /// The set is a declaration, not an inheritance. Pin every member so
+    /// an SDK upgrade that adds a revision has to break this test rather
+    /// than silently widen what our servers speak.
     #[test]
-    fn the_negotiable_set_excludes_the_untested_revision() {
+    fn the_negotiable_set_is_declared_not_inherited() {
         let supported = supported_protocol_versions();
+        for expected in [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ] {
+            assert!(
+                supported.contains(&expected),
+                "dropping {expected:?} would cut off a client that negotiates it — codex is on 2025-06-18"
+            );
+        }
         assert!(
-            supported.contains(&ProtocolVersion::V_2025_11_25),
-            "the newest version we have actually tested must stay negotiable"
+            supported.contains(&ProtocolVersion::V_2026_07_28),
+            "2026-07-28 is what makes a SEP-2663 task result legitimate rather than reliant on an \
+             unenforced gap in rmcp"
         );
-        assert!(
-            !supported.contains(&ProtocolVersion::V_2026_07_28),
-            "2026-07-28 changes the wire shape — adopt it deliberately, with its own verification"
-        );
-        assert!(
-            supported.len() < ProtocolVersion::KNOWN_VERSIONS.len(),
-            "capping means a strict subset of what rmcp offers; this test is inert otherwise"
+        assert_eq!(
+            supported.len(),
+            ProtocolVersion::KNOWN_VERSIONS.len(),
+            "a revision rmcp added is not automatically one we speak — add it here deliberately"
         );
     }
 }

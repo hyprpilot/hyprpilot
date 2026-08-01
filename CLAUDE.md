@@ -584,6 +584,36 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   addressing nothing. A test pins it out of every metadata payload —
   but NOT out of `describe`'s `text`, which is the vendor's own event
   stream verbatim and must stay unedited.
+- **SEP-2663 Tasks ride alongside, never instead.** `spawn` /
+  `session_send` return a `CallToolResponse::Task` **only** when the peer
+  declared `io.modelcontextprotocol/tasks`; every other client gets the
+  exact result it got before, and rmcp independently rejects a task sent
+  to a non-declaring peer. Only the `Ok` arm can become a task — a
+  refused launch stays a `tool_error`, because a task id for work that
+  never started can never resolve. The one ungated part is the
+  `extensions` key in `initialize`, which is required for `tasks/*` to
+  route at all and is ignored by clients that do not know it.
+- **A task names a TURN, not a session** (`task_id` = `<handle>:<turn>`).
+  The spec makes `completed`/`failed`/`cancelled` terminal, while a
+  session handle is reused across turns and cycles `exited → running →
+  exited` — keyed by handle alone, turn 2 starting would mutate turn 1's
+  finished task. That forces `Session.turns: Vec<TurnRecord>`: `respawn`
+  replaces the `done` watch wholesale, so a previous turn's exit code is
+  otherwise unreachable. The session handle rides `CreateTaskResult._meta`
+  (`io.hyprpilot/session`) so a caller never has to PARSE the task id.
+- **`TurnOutcome::Killed` is stamped in `SessionTable::kill`, not
+  derived.** The waiter stores `status.code().unwrap_or(-1)` and `code()`
+  is `None` for signal death, so a kill, an external signal and a wait
+  error are indistinguishable after the fact. Stamped only past the
+  already-exited early return — reaping a session that finished normally
+  must not report its turn cancelled.
+- **`notifications/tasks` is DOUBLE-GATED**: the peer declared tasks AND
+  a task exists for that turn. The exit hook fires for every turn of
+  every session, so an ungated push would reach a client that opted into
+  nothing. It rides `Peer::send_notification` directly because rmcp
+  refuses to route task notifications through `subscriptions/listen`
+  (`SubscriptionFilter` has no `taskIds` field) — only
+  `resources/list_changed` and `resources/updated` are routable there.
 - **Launches are DETACHED by default.** `wait` defaults to **false** on
   `spawn` / `session_send` (`wait_flag`), so both return as soon as the
   turn starts. Waiting never guaranteed a finished answer — a turn past
