@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.0](https://github.com/hyprpilot/hyprpilot/compare/v3.4.2...v3.5.0) (2026-08-01)
+
+
+### Features
+
+* **harness:** name every file a session owns ([#222](https://github.com/hyprpilot/hyprpilot/issues/222)) ([60eead7](https://github.com/hyprpilot/hyprpilot/commit/60eead720f4e8722c3fb0263758c468717199023))
+
 ## [3.4.2](https://github.com/hyprpilot/hyprpilot/compare/v3.4.1...v3.4.2) (2026-08-01)
 
 
