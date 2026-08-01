@@ -23,7 +23,6 @@ pub mod harness_server;
 pub mod rpc;
 pub mod serve;
 pub mod sessions;
-pub mod skills;
 pub mod tools;
 
 /// Top-level args for `hyprpilot mcp <subcommand>`.

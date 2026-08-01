@@ -78,8 +78,9 @@ Key `src/` modules:
   result wrappers, argument decoders), `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
-  `server/skills/` = the wire-shape helpers (metadata + references).
-  `skills/` = `SkillsRegistry` + the `SKILL.md` loader — under `mcp/`
+  `skills/` = `SkillsRegistry` + the `SKILL.md` loader, plus
+  `wire_metadata.rs` / `wire_references.rs` (the MCP wire-shape
+  projection, beside the loader whose frontmatter they read) — under `mcp/`
   because everything it feeds exists for the skills server. `resolve`
   builds one per launch solely to gate that server's injection (skills
   is the only server also gated on content).

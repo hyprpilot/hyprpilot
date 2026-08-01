@@ -13,6 +13,12 @@
 //! serve before injecting it.
 
 mod loader;
+/// Wire-shape projection for the MCP skills server — kept beside the
+/// loader because it reads the frontmatter the loader parsed, and
+/// named `wire_*` so the MCP-facing half stays visibly distinct from
+/// the launcher-facing registry.
+pub mod wire_metadata;
+pub mod wire_references;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

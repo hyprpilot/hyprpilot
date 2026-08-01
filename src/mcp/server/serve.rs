@@ -70,8 +70,8 @@ use crate::config::ResolvedSkillEntry;
 use crate::mcp::skills::SkillsRegistry;
 
 use super::rpc::{empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
-use super::skills::metadata::{frontmatter_json, skill_block, skill_meta};
-use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
+use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
+use crate::mcp::skills::wire_references::{bundle_references, frontmatter_references, FrontmatterRefs};
 
 /// Args for `hyprpilot mcp skills`. Skills are discovered by directory
 /// scan — the launcher passes `--skill-dir <json>` once per configured
@@ -157,7 +157,7 @@ pub(crate) struct LoadedSkill {
     /// (carried by the spec `Resource` fields) PLUS runtime `path` +
     /// `bundleDir`. Serves both the tool `metadata` field and the
     /// resource `_meta` (`io.hyprpilot/skill`) — see
-    /// `skills::metadata::{skill_block, skill_meta}`.
+    /// `skills::wire_metadata::{skill_block, skill_meta}`.
     pub(crate) meta_block: serde_json::Map<String, serde_json::Value>,
     body: String,
     refs: FrontmatterRefs,
