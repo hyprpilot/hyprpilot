@@ -118,7 +118,9 @@ The harness speaks the MCP Tasks extension **alongside** its own tools, never in
 
 The session handle rides `_meta` rather than being parsed out of the task id: every other tool here takes the handle, and an id you have to take apart is not opaque.
 
-`tasks/cancel` terminates the session's process group — the same operation `session_kill` performs, reached by a different protocol.
+`tasks/cancel` cancels **that turn**, not the session. Terminal states are immutable, so cancelling a task that already finished is a no-op — deliberately, because routing it through `session_kill` (which reaps an already-finished session) meant a spec-legal cancel of a completed task killed the running turn and deleted the transcript. An unknown handle is `-32602`, matching `tasks/get`.
+
+**Task ids do not outlive the sidecar.** SEP-2663 presents a task id as a durable handle you can resume polling after a client restart; that assumption does not hold here. Sessions die with `hyprpilot mcp harness`, and finished ones are also dropped by `--max-sessions` eviction and by `session_kill`. `ttl_ms` is `null` because retention is bounded by count and by process lifetime, not by a duration — any number would be a stronger promise than we can keep. `tasks/update` is unimplemented (`-32601`): the harness never emits `input_required`, so no task can have outstanding `inputRequests`.
 
 **What this does not give you.** `notifications/tasks` is pushed when a turn ends, but rmcp will not route task notifications through `subscriptions/listen` (`SubscriptionFilter` has no `taskIds` field yet), so a client that does not handle the method drops it silently — the same contract as the Claude channel. Polling `tasks/get` is the supported path today.
 
