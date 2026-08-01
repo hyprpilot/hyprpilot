@@ -23,7 +23,7 @@ use rmcp::ServiceExt;
 
 use crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME;
 
-use super::serve::{object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
+use super::rpc::{object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
 
 /// Args for `hyprpilot mcp serve`. None today — the server is
 /// stateless and takes no catalog. The struct exists so the subcommand

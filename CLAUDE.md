@@ -73,8 +73,9 @@ Key `src/` modules:
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
   (one builder per in-tree server), `server/` = the three servers,
   one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
-  stateless), `serve.rs` (`mcp skills` — protocol + skills tools;
-  also owns the shared schema/result helpers), `harness_server.rs`
+  stateless), `serve.rs` (`mcp skills` — protocol + skills tools),
+  `rpc.rs` (the JSON-RPC plumbing all three share — schema builders,
+  result wrappers, argument decoders), `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
   `server/skills/` = the wire-shape helpers (metadata + references).
@@ -369,9 +370,11 @@ missing. Do not re-merge them.
 | `mcp skills` | `hyprpilot_skills` | `server/serve.rs` | skills tools + resources | on |
 | `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
 
-`serve.rs` also owns the helpers the other two import
-(`object_schema`, `structured_with_text`, `tool_error`,
-`require_string`, `wait_for_shutdown`).
+`server/rpc.rs` owns the plumbing all three import (`object_schema`,
+`structured_with_text`, `tool_error`, `require_string`,
+`optional_*`, `wait_for_shutdown`). It used to live in `serve.rs`
+purely because that server was written first — five of the helpers had
+no caller there at all.
 
 Skills reach the agent **only** through the skills server.
 

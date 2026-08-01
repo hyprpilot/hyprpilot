@@ -73,14 +73,14 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 
 ## The tools
 
-| Tool            | Purpose                                                                                                |
-| --------------- | ------------------------------------------------------------------------------------------------------ |
-| `list_profiles` | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here. |
-| `spawn`         | Start a new session from a profile and send it a prompt.                                               |
-| `session_send`  | Send another message to an existing session, resuming it first if it's finished.                       |
-| `session_list`  | List this server's sessions — handle, profile, status, exit code, timestamps.                          |
-| `session_read`  | Read, and optionally follow live, a session's transcript.                                              |
-| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished.              |
+| Tool            | Purpose                                                                                   |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| `list_profiles` | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.      |
+| `spawn`         | Start a new session from a profile and send it a prompt.                                  |
+| `session_send`  | Send another message to an existing session, resuming it first if it's finished.          |
+| `session_list`  | List this server's sessions — handle, profile, status, exit code, timestamps.             |
+| `session_read`  | Read, and optionally follow live, a session's transcript.                                 |
+| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished. |
 
 ### Workflow
 

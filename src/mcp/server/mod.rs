@@ -20,6 +20,7 @@ use clap::{Args, Subcommand};
 
 pub mod harness;
 pub mod harness_server;
+pub mod rpc;
 pub mod serve;
 pub mod sessions;
 pub mod skills;

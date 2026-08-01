@@ -24,7 +24,7 @@ use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 
 use super::harness::Harness;
-use super::serve::{
+use super::rpc::{
     empty_object_schema, object_schema, optional_bool, optional_string, optional_string_array, optional_u64,
     optional_usize, require_string, structured_with_text, tool_error, wait_for_shutdown,
 };
