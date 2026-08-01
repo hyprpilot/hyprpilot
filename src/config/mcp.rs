@@ -6,9 +6,11 @@
 //! config for our in-tree MCP server; a profile's `mcps` is the
 //! captain-declared catalog of *external* MCP servers.
 //!
-//! Skills live under `[[mcp.skills]]`. They belong here because the
-//! hyprpilot MCP server is what exposes them to the agent; there is no
-//! consumer of skills outside the MCP server.
+//! Skill roots live under `[[mcp.skills.dirs]]`. They belong here
+//! because the skills server is what exposes them to the agent. The
+//! launcher's `resolve` also builds a registry, but only to decide
+//! whether that server is worth injecting — it is the one in-tree
+//! server also gated on content.
 //!
 //! Per-profile `ProfileConfig.mcp: Option<McpConfig>` is folded onto
 //! whichever profile is picked (root `[[patches]]` seed the default
@@ -123,6 +125,17 @@ pub struct HarnessServerConfig {
     #[garde(skip)]
     pub max_sessions: Option<usize>,
 
+    /// Push a completion event into the lead agent's context when a
+    /// turn finishes. Defaults to `true`.
+    ///
+    /// Safe to leave on: a client that has not registered the channel
+    /// drops the notification silently, and unknown capabilities are
+    /// ignored per the MCP spec. The knob exists for NOISE — a session
+    /// is `exited` after every turn, so a ten-turn conversation emits
+    /// ten events.
+    #[garde(skip)]
+    pub notify_on_complete: Option<bool>,
+
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs —
     /// worth tightening here, since `spawn` is the tool that runs
     /// arbitrary binaries.
@@ -150,6 +163,11 @@ impl HarnessServerConfig {
     pub fn server_name(&self) -> &str {
         self.name.as_deref().unwrap_or(DEFAULT_HARNESS_SERVER_NAME)
     }
+
+    #[must_use]
+    pub fn notifies_on_complete(&self) -> bool {
+        self.notify_on_complete.unwrap_or(true)
+    }
 }
 
 /// `[mcp]` block. Controls auto-injection of the in-tree
@@ -167,8 +185,8 @@ impl HarnessServerConfig {
 /// frictionless; captains can tighten per-profile or per-server.
 ///
 /// `skills` is the **catalog of skill root directories** the server
-/// scans and exposes. Same `SkillEntry { dir, ignore }` shape that
-/// used to live at the top-level `[[skills]]`. `None` (default) →
+/// scans and exposes, as `SkillEntry { dir, ignore }`. `None`
+/// (default) →
 /// falls through to the seeded default
 /// (`~/.config/hyprpilot/skills`). `Some([])` → no skills at all
 /// (suppresses auto-inject — nothing to serve). `Some([...])` →

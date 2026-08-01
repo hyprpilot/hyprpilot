@@ -28,7 +28,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::config::AgentProvider;
 use crate::mcp::MCPDefinition;
-use crate::profile::ResolvedProfile;
+use crate::resolve::profile::ResolvedProfile;
 
 mod argv;
 mod claude;
@@ -347,7 +347,7 @@ pub(super) mod fixtures {
 
     use crate::config::{AgentConfig, AgentProvider};
     use crate::mcp::{HyprpilotExtension, MCPDefinition};
-    use crate::profile::ResolvedProfile;
+    use crate::resolve::profile::ResolvedProfile;
 
     /// Serialises the two tests that touch the real process env
     /// (`set_var` / `${HOME}` expansion) so a mutation in one can't

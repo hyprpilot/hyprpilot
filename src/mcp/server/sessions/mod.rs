@@ -1,6 +1,6 @@
 //! Harness session store — the sidecar owns every agent it spawns.
 //!
-//! A session is a **direct child** of `hyprpilot mcp serve`, waited on
+//! A session is a **direct child** of `hyprpilot mcp harness`, waited on
 //! via `tokio::process::Child`, with its transcript streaming into a
 //! per-session [`TempDir`]. Nothing here outlives the sidecar, and that
 //! is the point: the vendor owns the sidecar's lifetime, so an
@@ -59,6 +59,14 @@ pub(crate) const TURNS_FILE: &str = "turns.jsonl";
 /// Child stderr, kept separate so a vendor's diagnostics never corrupt
 /// the JSONL line framing `session_read` depends on.
 pub(crate) const STDERR_FILE: &str = "stderr.log";
+
+/// Written by the waiter task when a turn's process exits.
+///
+/// The vendor-neutral completion signal: a shell watcher cannot call an
+/// MCP tool, but it can `test -f`. Written by the same `child.wait()`
+/// task that owns the truth, so no recycled PID and no zombie can
+/// produce a false reading.
+pub(crate) const DONE_FILE: &str = "done.json";
 /// Crash-recovery breadcrumb — see [`sweep_stale_sessions`].
 pub(crate) const BREADCRUMB_FILE: &str = "session.json";
 
@@ -160,6 +168,13 @@ impl Session {
         self.dir.path().join(TURNS_FILE)
     }
 
+    /// Where the completion marker lands. Advisory — the directory is
+    /// removed on reap, eviction and shutdown, so a watcher must treat
+    /// a MISSING directory as finished too, not just a present marker.
+    pub(crate) fn done_path(&self) -> PathBuf {
+        self.dir.path().join(DONE_FILE)
+    }
+
     pub(crate) fn stderr_path(&self) -> PathBuf {
         self.dir.path().join(STDERR_FILE)
     }
@@ -200,16 +215,34 @@ fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
     }
 }
 
+/// Called once per turn, when its process exits.
+///
+/// Deliberately a bare closure rather than anything MCP-shaped: this
+/// module owns processes and has **zero** rmcp dependencies, and that
+/// separation is worth more than the indirection costs. The channel
+/// notification is built in `harness.rs`, where the protocol types
+/// already live.
+pub(crate) type ExitHook = Arc<dyn Fn(String, i32) + Send + Sync>;
+
 /// The in-process session table. Bounded by the sidecar's own lifetime —
 /// there is no persistence and no cross-launch state.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct SessionTable {
     inner: Mutex<BTreeMap<String, Session>>,
+    /// Set once, after the server starts serving — a `Peer` does not
+    /// exist before that, and sessions cannot exist before it either.
+    on_exit: std::sync::OnceLock<ExitHook>,
 }
 
 impl SessionTable {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Install the per-turn completion hook. Idempotent; a second call
+    /// is ignored rather than replacing the first.
+    pub(crate) fn set_exit_hook(&self, hook: ExitHook) {
+        let _ = self.on_exit.set(hook);
     }
 
     /// Mint a session handle.
@@ -294,7 +327,8 @@ impl SessionTable {
 
         // Append, so the conversation stays ONE transcript and the byte
         // offsets a caller is paging through remain valid across turns.
-        let launched = launch_child(&command, session.dir.path(), handle, true).map_err(RespawnError::Spawn)?;
+        let launched = launch_child(&command, session.dir.path(), handle, true, self.on_exit.get().cloned())
+            .map_err(RespawnError::Spawn)?;
 
         session.launch.cwd = command.cwd.clone();
         session.provenance = provenance;
@@ -377,7 +411,7 @@ impl SessionTable {
     }
 
     /// Kill every live session and drop the table, removing every
-    /// `TempDir`. Called from `serve::run` on graceful transport close
+    /// `TempDir`. Called from `skills_server::run` on graceful transport close
     /// and on SIGTERM/SIGHUP.
     pub(crate) async fn shutdown(&self) {
         let handles: Vec<String> = self.map_all(|s| s.handle.clone());
@@ -414,7 +448,8 @@ impl SessionTable {
         // The resolved cwd, so a follow-up turn replays to the same
         // directory even when this one fell back to `$PWD`.
         launch.cwd = command.cwd.clone();
-        let Launched { pid, pgid, done } = launch_child(&command, dir.path(), &handle, false)?;
+        let Launched { pid, pgid, done } =
+            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned())?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -463,7 +498,13 @@ struct Launched {
 /// turn writing into the SAME `turns.jsonl`, so a conversation reads back
 /// as one continuous transcript and byte offsets stay meaningful across
 /// turns.
-fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) -> Result<Launched> {
+fn launch_child(
+    command: &SpawnCommand,
+    dir: &Path,
+    handle: &str,
+    append: bool,
+    on_exit: Option<ExitHook>,
+) -> Result<Launched> {
     let open = |name: &str| -> Result<std::fs::File> {
         let path = dir.join(name);
         std::fs::OpenOptions::new()
@@ -526,6 +567,14 @@ fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) 
 
     write_breadcrumb(dir, handle, pid, pgid);
 
+    // Clear any previous turn's marker BEFORE the process can finish.
+    // `session_send` reuses the handle and the directory, so a watcher
+    // armed for turn N+1 would otherwise fire instantly on turn N's
+    // leftover. Unconditional: on a fresh `spawn` the file cannot exist
+    // and the failed unlink is cheaper than a `stat` first.
+    let done_path = dir.join(DONE_FILE);
+    let _ = std::fs::remove_file(&done_path);
+
     let (tx, done) = watch::channel(None);
     let waiter_handle = handle.to_string();
     tokio::spawn(async move {
@@ -537,7 +586,26 @@ fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) 
             }
         };
         tracing::info!(handle = %waiter_handle, exit_code = code, "mcp harness: session exited");
+        // Marker first, then the channel: a watcher polling the file is
+        // the one that cannot be woken any other way.
+        //
+        // Never panic in here. Under the release profile's
+        // `panic = "abort"` a panic in this task takes the whole sidecar
+        // down and, through PDEATHSIG, every running agent with it.
+        let body = serde_json::json!({
+            "handle": waiter_handle,
+            "exitCode": code,
+            "finishedAt": SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        });
+        if let Err(err) = std::fs::write(&done_path, body.to_string()) {
+            tracing::warn!(handle = %waiter_handle, %err, "mcp harness: could not write the done marker");
+        }
         let _ = tx.send(Some(code));
+        if let Some(hook) = on_exit {
+            hook(waiter_handle, code);
+        }
     });
 
     Ok(Launched { pid, pgid, done })
@@ -1047,6 +1115,45 @@ mod tests {
     /// no vendor supports two at once. The check and the spawn happen
     /// under one lock, so the loser is told rather than quietly starting
     /// a second conversation.
+    /// The marker must be cleared when a turn STARTS, not only written
+    /// when one ends. `session_send` reuses the handle and directory, so
+    /// a watcher armed for turn N+1 would otherwise fire instantly on
+    /// turn N's leftover and read a finished session as already done.
+    #[tokio::test]
+    async fn a_new_turn_clears_the_previous_turn_s_done_marker() {
+        let table = table();
+        let handle = table
+            .spawn(
+                sleeper("0"),
+                "p".into(),
+                AgentProvider::ClaudeCode,
+                provenance(),
+                LaunchShape::default(),
+            )
+            .unwrap();
+
+        let done = table.with(&handle, |s| s.done_path()).expect("session");
+        for _ in 0..100 {
+            if done.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(done.exists(), "the first turn must leave a marker");
+
+        table.respawn(&handle, sleeper("2"), provenance()).expect("respawn");
+        // The delete happens before the child can finish, so the marker
+        // is gone the instant the next turn starts.
+        let cleared_or_rewritten = !done.exists() || {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            done.exists()
+        };
+        assert!(
+            cleared_or_rewritten,
+            "the marker must not survive untouched into turn 2"
+        );
+    }
+
     #[tokio::test]
     async fn respawn_refuses_while_a_turn_is_in_flight() {
         let table = table();

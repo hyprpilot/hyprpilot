@@ -1,15 +1,13 @@
-//! Profile vocabulary — re-exports the config-side `AgentConfig` /
-//! `ProfileConfig` / `AgentProvider` types the launcher consumes,
-//! plus the flat `ResolvedProfile` view built by resolving a
-//! `(Config, profile_id?)` pair.
+//! `ResolvedProfile` — the flat runtime view built by resolving a
+//! `(Config, profile_id?)` pair, after patches are folded.
 //!
-//! The types themselves stay declared in `config::` because the TOML
-//! deserialize + garde-validate wiring belongs with the rest of the
-//! config tree. Re-exports here keep the launch surface symmetric —
-//! callers reach for `profile::ProfileConfig`, never
-//! `config::ProfileConfig`, when operating on a resolved launch.
+//! The config types stay declared in `config::`, where the TOML
+//! deserialize + garde-validate wiring lives, and callers import them
+//! from there directly. This module used to re-export them "so the
+//! launch surface stays symmetric"; nothing ever consumed the
+//! re-export.
 
-pub use crate::config::{AgentConfig, ProfileConfig};
+use crate::config::{AgentConfig, ProfileConfig};
 
 use anyhow::{Context, Result};
 

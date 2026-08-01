@@ -5,11 +5,20 @@
 //! editors / git ops burnt through the debouncer faster than skills
 //! changed.
 //!
-//! Skills reach the agent only through the in-tree `hyprpilot` MCP
-//! server (`mcp/server`), which serves this registry's bundles as MCP
-//! resources and tools.
+//! Lives under `mcp/` because everything it feeds exists for the
+//! skills server, which serves these bundles as MCP resources and
+//! tools. `resolve` builds a registry per launch for exactly one
+//! reason: the skills server is the only in-tree server also gated on
+//! CONTENT, so the launcher has to know whether there is anything to
+//! serve before injecting it.
 
 mod loader;
+/// Wire-shape projection for the MCP skills server — kept beside the
+/// loader because it reads the frontmatter the loader parsed, and
+/// named `wire_*` so the MCP-facing half stays visibly distinct from
+/// the launcher-facing registry.
+pub mod wire_metadata;
+pub mod wire_references;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -195,7 +204,7 @@ impl SkillsRegistry {
 
     /// The configured directory entries this registry scans. Consumed
     /// by the auto-inject builder to forward `--skill-dir` /
-    /// `--skill-ignore` CLI args to the sidecar without re-deriving
+    /// `--skill-dir` CLI args to the sidecar without re-deriving
     /// them from the loaded skills list.
     #[must_use]
     pub fn dirs(&self) -> &[crate::config::ResolvedSkillEntry] {

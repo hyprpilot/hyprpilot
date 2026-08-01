@@ -182,9 +182,10 @@ Unlike the other two, this server is also gated on having something to serve: if
 
 ### `mcp.harness`
 
-| Field         | Type | Default | What it does                                                       |
-| ------------- | ---- | ------- | ------------------------------------------------------------------ |
-| `maxSessions` | int  | `64`    | Sessions retained before the oldest **finished** ones are evicted. |
+| Field              | Type | Default | What it does                                                                                                   |
+| ------------------ | ---- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `maxSessions`      | int  | `64`    | Sessions retained before the oldest **finished** ones are evicted.                                             |
+| `notifyOnComplete` | bool | `true`  | Push a completion event into the lead's context when a turn finishes. See [Agent Harness](../runtime/harness). |
 
 **Off by default, and that is a security property rather than a preference.** A profile's `command` is an arbitrary binary, so anything that can call `spawn` executes commands as you. Turn it on deliberately — see [Runtime → Agent Harness](../runtime/harness).
 

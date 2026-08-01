@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use anyhow::{bail, Result};
 
 use crate::mcp::{project_transport, MCPDefinition, McpTransport};
-use crate::profile::ResolvedProfile;
+use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_config_override, has_flag};
 use super::{base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, HarnessProjection, SpawnCommand};

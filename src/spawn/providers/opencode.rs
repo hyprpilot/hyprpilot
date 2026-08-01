@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use crate::mcp::{project_transport, MCPDefinition, McpTransport};
-use crate::profile::ResolvedProfile;
+use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, flag_value, has_flag};
 use super::{base_command, ensure_inline_size, mcp_leaf_pattern, HarnessProjection, SpawnCommand};

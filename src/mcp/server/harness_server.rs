@@ -24,7 +24,7 @@ use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 
 use super::harness::Harness;
-use super::serve::{
+use super::rpc::{
     empty_object_schema, object_schema, optional_bool, optional_string, optional_string_array, optional_u64,
     optional_usize, require_string, structured_with_text, tool_error, wait_for_shutdown,
 };
@@ -50,6 +50,18 @@ impl ServerHandler for HarnessServer {
         let mut tools = rmcp::model::ToolsCapability::default();
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
+        // Claude Code registers a channel listener only when it sees
+        // this key. Declaring it costs nothing elsewhere: the spec says
+        // unknown capabilities are ignored, and a client that never
+        // registers simply drops whatever we push.
+        //
+        // `ServerCapabilities` is `#[non_exhaustive]`, so this is field
+        // assignment on the owned `default()`, not a struct literal.
+        caps.experimental = Some(
+            [("claude/channel".to_string(), serde_json::Map::new())]
+                .into_iter()
+                .collect(),
+        );
 
         ServerInfo::new(caps)
             .with_server_info(Implementation::new(
@@ -104,6 +116,13 @@ impl ServerHandler for HarnessServer {
                 };
                 match harness.session_send(&session, launch).await {
                     Ok(payload) => Ok(structured_with_text(launch_summary(&payload), payload)),
+                    Err(msg) => Ok(tool_error(msg)),
+                }
+            }
+            "session_status" => {
+                let session = require_string(&args, "session")?;
+                match harness.session_status(session) {
+                    Ok((summary, payload)) => Ok(structured_with_text(summary, payload)),
                     Err(msg) => Ok(tool_error(msg)),
                 }
             }
@@ -205,6 +224,15 @@ pub struct HarnessArgs {
         value_name = "N"
     )]
     pub max_sessions: usize,
+
+    /// Suppress the per-turn completion channel.
+    ///
+    /// A flag rather than a config read: the launcher resolved the
+    /// PICKED profile's `[mcp.harness]` block and passes the answer
+    /// down, the same way `--max-sessions` arrives. A sidecar cannot
+    /// work out which profile spawned it.
+    #[arg(long = "no-notify-on-complete")]
+    pub no_notify_on_complete: bool,
 }
 
 /// Shared `spawn` / `session_send` parameters. Every one mirrors a CLI flag
@@ -309,8 +337,7 @@ fn harness_tools() -> Vec<Tool> {
             "list_profiles",
             Some(
                 "START HERE. List the agent profiles you can launch, with the vendor, model, effort, mode, \
-                 cwd, and how many MCP servers and skills each one resolves to. Pass a profile's `id` as \
-                 `spawn`'s `profile`. A profile already carries its agent/model/effort/mode/MCP/skills, so every \
+                 and cwd. Pass a profile's `id` as `spawn`'s `profile`. A profile already carries its agent/model/effort/mode/MCP/skills, so every \
                  other `spawn` argument is an override, not a requirement. Rows marked `!` failed to resolve — \
                  do not launch those."
                     .into(),
@@ -398,6 +425,28 @@ fn harness_tools() -> Vec<Tool> {
                     "timeout_seconds": {
                         "type": "integer",
                         "description": "Optional cap on a `wait` follow, in seconds. Omit to follow until the agent finishes or you cancel — there is no server-side limit.",
+                    },
+                }),
+                &["session"],
+            ),
+        ),
+        Tool::new_with_raw(
+            "session_status",
+            Some(
+                "Check ONE session's state without reading its transcript — status (`running` / `exited`), \
+                 exit code, how many bytes it has written, and whether the agent's final answer has landed \
+                 (`hasResult`). This is the cheap poll: `session_list` returns every session and \
+                 `session_read` returns the transcript itself, which runs to tens of kilobytes. Use it after \
+                 a `spawn` or `session_send` that came back `running`, then call `session_read` once it \
+                 reports `exited`. Note a session is `exited` after every TURN, not only when the \
+                 conversation is over."
+                    .into(),
+            ),
+            object_schema(
+                serde_json::json!({
+                    "session": {
+                        "type": "string",
+                        "description": "Session handle from `spawn` or `session_list`.",
                     },
                 }),
                 &["session"],
@@ -593,6 +642,21 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
         .await
         .map_err(|err| anyhow::anyhow!("mcp harness: serve failed at init: {err}"))?;
 
+    // The peer exists only once `serve()` has returned, which is also
+    // the earliest a session can exist — so installing the hook here is
+    // ordered correctly, not merely convenient.
+    if !args.no_notify_on_complete {
+        let peer = running.peer().clone();
+        let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
+        sessions.set_exit_hook(Arc::new(move |handle: String, code: i32| {
+            let peer = peer.clone();
+            let name = name.clone();
+            tokio::spawn(async move {
+                super::harness::notify_session_finished(&peer, &name, &handle, code).await;
+            });
+        }));
+    }
+
     wait_for_shutdown(running).await;
     sessions.shutdown().await;
 
@@ -615,8 +679,14 @@ fn instructions() -> String {
      5. `session_read` any time, including after the run finished. Pass \
      `wait: true` to follow live; pass a progressToken to receive output \
      as progress notifications as it arrives.\n\
-     6. `session_kill { session }` — stops a running session; on an \
+     6. `session_status { session }` — the cheap poll: state and whether \
+     the answer has landed, without reading the transcript.\n\
+     7. `session_kill { session }` — stops a running session; on an \
      already-finished one it reaps it.\n\
+     If your client supports channels, a `<channel \
+     source=\"hyprpilot_harness\">` block appears in your context when a \
+     session finishes — read that session with `session_read`. It fires \
+     per TURN, not only when a conversation ends.\n\
      Sessions are children of THIS server and die with it: they do not \
      survive a restart, and their transcripts go too."
         .to_string()
@@ -638,6 +708,7 @@ mod tests {
             "spawn",
             "session_send",
             "session_list",
+            "session_status",
             "session_read",
             "session_kill",
         ];

@@ -59,8 +59,9 @@ Key `src/` modules:
   (`McpFile` / `SkillEntry`), `patch.rs` (strategic merge),
   `with_config.rs` (`--with-config`), `system_prompt.rs`,
   `defaults.toml` (compiled defaults).
-- `resolve/mod.rs` — pure `Config` → resolution core: profile pick,
-  patch folding, per-launch MCP + skills registry construction.
+- `resolve/` — pure `Config` → resolution core: `mod.rs` (profile
+  pick, patch folding, per-launch MCP + skills registry construction),
+  `profile.rs` (`ResolvedProfile`, the flat runtime view it produces).
 - `spawn/` — `launch.rs` (`LaunchArgs` + the bare-launch entry
   `run`), `mod.rs` (orchestration), `providers/` (per-vendor
   native-flag projection + `exec`: `mod.rs` = dispatch / `exec` /
@@ -69,16 +70,20 @@ Key `src/` modules:
   three vendor builders, `temp.rs` = the 0600 temp-config lifecycle +
   reaper), `picker.rs` (interactive profile picker), `multiplexer.rs`
   (tmux/zellij rename).
-- `profile.rs` — `ResolvedProfile` (flat runtime view).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
   (one builder per in-tree server), `server/` = the three servers,
   one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
-  stateless), `serve.rs` (`mcp skills` — protocol + skills tools;
-  also owns the shared schema/result helpers), `harness_server.rs`
+  stateless), `skills_server.rs` (`mcp skills` — protocol + tools),
+  `rpc.rs` (the JSON-RPC plumbing all three share — schema builders,
+  result wrappers, argument decoders), `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
-  `skills/` = metadata + references.
-- `skills/` — `SkillsRegistry` + `SKILL.md` loader.
+  `skills/` = `SkillsRegistry` + the `SKILL.md` loader, plus
+  `wire_metadata.rs` / `wire_references.rs` (the MCP wire-shape
+  projection, beside the loader whose frontmatter they read) — under `mcp/`
+  because everything it feeds exists for the skills server. `resolve`
+  builds one per launch solely to gate that server's injection (skills
+  is the only server also gated on content).
 - `profiles.rs` — the `profiles` subcommand.
 - `logging.rs`, `paths.rs`.
 
@@ -363,12 +368,14 @@ missing. Do not re-merge them.
 | Subcommand | Default name | Module | Serves | Default |
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
-| `mcp skills` | `hyprpilot_skills` | `server/serve.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
+| `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
+| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) | **off** |
 
-`serve.rs` also owns the helpers the other two import
-(`object_schema`, `structured_with_text`, `tool_error`,
-`require_string`, `wait_for_shutdown`).
+`server/rpc.rs` owns the plumbing all three import (`object_schema`,
+`structured_with_text`, `tool_error`, `require_string`,
+`optional_*`, `wait_for_shutdown`). It used to live in the skills server
+purely because that server was written first — five of the helpers had
+no caller there at all.
 
 Skills reach the agent **only** through the skills server.
 
@@ -398,8 +405,11 @@ Skills reach the agent **only** through the skills server.
   injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
   (one `--skill-dir` per root, each carrying that root's ignore list as
   JSON).
-- **`hyprpilot mcp skills`** (`mcp/server/serve.rs`): an `rmcp` stdio
-  server. Resources: `hyprpilot://skills/<slug>` (body) and
+- **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
+  server. Resources: `hyprpilot://skills` (the catalogue index —
+  markdown, leads with how to chain the two schemes below; the bare
+  form cannot collide with a slug because every slug URI carries a
+  `skills/` prefix), `hyprpilot://skills/<slug>` (body) and
   `hyprpilot://references/<slug>` (bundled frontmatter references — a
   parallel top-level scheme, NOT a `/references` segment nested under
   the slug; the nested form broke client URI autocomplete). Tools:
@@ -418,9 +428,10 @@ Skills reach the agent **only** through the skills server.
 
 ## The agent harness (`mcp harness`)
 
-`hyprpilot mcp harness` serves six tools that let a connected agent
+`hyprpilot mcp harness` serves seven tools that let a connected agent
 drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
-`session_send`, `session_list`, `session_read`, `session_kill`.
+`session_send`, `session_list`, `session_status`, `session_read`,
+`session_kill`.
 `[mcp.harness].enabled` defaults to false.
 
 - **The gate bounds DISCOVERY, not capability — do not overstate it.**
@@ -496,6 +507,27 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   table entry, not N. Its check-and-spawn happens under the table lock —
   `Command::spawn` is synchronous, so "one turn at a time" is an
   invariant, not a racy check.
+- **`done.json` is the vendor-neutral completion signal.** The waiter
+  task writes it beside `turns.jsonl` after `child.wait()` returns, and
+  `launch_child` DELETES it before every turn — `session_send` reuses
+  the directory, so a watcher armed for turn N+1 would otherwise fire
+  on turn N's leftover. Surfaced as `sessionInfo.donePath`. Advisory:
+  reap/evict/shutdown remove the directory, so the watcher contract is
+  `[ ! -d "$DIR" ] || [ -f "$DIR/done.json" ]`. Never panic in that
+  task — `panic = "abort"` would take every running agent down with it.
+- **Completion fires a Claude channel.** `[mcp.harness].notifyOnComplete`
+  (default TRUE, resolved by the LAUNCHER and passed down as
+  `--no-notify-on-complete` — a sidecar cannot know which profile
+  spawned it, so it cannot read a per-profile key itself) pushes `notifications/claude/channel` when a turn's
+  process exits — Claude Code renders it as a `<channel>` block in the
+  lead's next turn. Safe on by default: an unregistered channel is
+  dropped silently and unknown capabilities are ignored per spec, so
+  the knob is for NOISE (a session is `exited` every turn). The peer
+  only exists after `serve()` returns, so the hook is installed there,
+  and `sessions/` stays rmcp-free — it takes a bare `ExitHook` closure
+  built in `harness.rs`. **The content is a fixed template**: never
+  interpolate agent output, or a spawned agent writes into its parent's
+  context through a path the parent never called.
 - **Bounded retention.** `--max-sessions` (default 64) evicts the oldest
   *finished* sessions; a running one is never touched. `session_kill` is
   state-aware — it terminates a running session (keeping the transcript)
@@ -523,7 +555,7 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   still carries everything the notifications streamed.
 
 - **Skill metadata — ONE block, spec fields canonical**
-  (`mcp/server/skills/metadata.rs`): the MCP spec's `_meta` is a single
+  (`mcp/skills/wire_metadata.rs`): the MCP spec's `_meta` is a single
   field keyed by reverse-DNS names, so every skill surface carries
   exactly ONE namespaced key — **`io.hyprpilot/skill`** in resource
   `_meta`, **`metadata`** in tool output (`list_skills` / `read_skill` /

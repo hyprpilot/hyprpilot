@@ -10,6 +10,8 @@
 //!
 //! Current surface:
 //! - Resources
+//!   - `hyprpilot://skills` — the catalogue index (markdown), which
+//!     also documents the two schemes below
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
 //!   - `hyprpilot://references/<slug>` — bundled references
 //!     (parallel top-level scheme, NOT a `/references` segment
@@ -19,7 +21,7 @@
 //!     the verbatim frontmatter MINUS `title`/`description` (already
 //!     carried by the spec `Resource` fields) PLUS the runtime-derived
 //!     `path` + `bundleDir`. Nothing in that block repeats a
-//!     spec-compliant `Resource` field. See `skills/metadata.rs`.
+//!     spec-compliant `Resource` field. See `skills/wire_metadata.rs`.
 //! - Tools
 //!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata }] }`
 //!   - `read_skill { slug }` — `{ uri, body, metadata }`
@@ -46,7 +48,7 @@
 //! (`title`/`description`) the spec fields already carry byte-for-byte,
 //! plus the runtime-derived `path` + `bundleDir`. An author can add any
 //! new frontmatter key and it reaches the agent verbatim with zero
-//! server changes. `skills/metadata.rs` owns the conversion + the
+//! server changes. `skills/wire_metadata.rs` owns the conversion + the
 //! merge + the `_meta` namespacing; this module wires it into the cache
 //! + the wire shapes.
 
@@ -56,9 +58,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-    ResourceContents, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
@@ -67,10 +69,11 @@ use tokio::sync::RwLock;
 
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
-use crate::skills::SkillsRegistry;
+use crate::mcp::skills::SkillsRegistry;
 
-use super::skills::metadata::{frontmatter_json, skill_block, skill_meta};
-use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
+use super::rpc::{empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
+use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
+use crate::mcp::skills::wire_references::{bundle_references, frontmatter_references, FrontmatterRefs};
 
 /// Args for `hyprpilot mcp skills`. Skills are discovered by directory
 /// scan — the launcher passes `--skill-dir <json>` once per configured
@@ -80,7 +83,7 @@ use super::skills::references::{bundle_references, frontmatter_references, Front
 /// is still visible when it appears in another root with no ignore for
 /// that pattern.
 #[derive(Debug, Args, Clone)]
-pub struct ServeArgs {
+pub struct SkillsArgs {
     /// JSON-encoded skill root entry. Repeatable — directories are
     /// searched in declaration order; first-slug-wins on collision.
     ///
@@ -111,7 +114,7 @@ fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
 
 /// Run the rmcp stdio server in the foreground. Returns when the
 /// vendor closes the pipe (or on init error).
-pub async fn run_skills(args: ServeArgs, config: super::ConfigSource) -> anyhow::Result<()> {
+pub async fn run_skills(args: SkillsArgs, config: super::ConfigSource) -> anyhow::Result<()> {
     tracing::info!(dirs = args.skill_dirs.len(), "mcp: starting the skills server");
     run(SkillsServer::new(args, config)?).await
 }
@@ -123,7 +126,7 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
     let running = handler
         .serve((stdin, stdout))
         .await
-        .context("mcp::server::serve: serve failed at init")?;
+        .context("mcp::server::skills_server: serve failed at init")?;
 
     // Race the transport against SIGTERM/SIGHUP. Without this a
     // supervisor stopping the sidecar would skip every destructor and
@@ -133,36 +136,6 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
     wait_for_shutdown(running).await;
 
     Ok(())
-}
-
-/// Return once the MCP transport closes or a termination signal
-/// arrives, whichever comes first.
-pub(super) async fn wait_for_shutdown<H: ServerHandler>(running: rmcp::service::RunningService<RoleServer, H>) {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-
-        let mut term = signal(SignalKind::terminate()).ok();
-        let mut hup = signal(SignalKind::hangup()).ok();
-        let transport = running.waiting();
-        tokio::pin!(transport);
-
-        // Every arm is terminal — the first of transport-close, SIGTERM,
-        // or SIGHUP wins and the caller reaps.
-        tokio::select! {
-            _ = &mut transport => {}
-            Some(()) = async { match term.as_mut() { Some(s) => s.recv().await, None => None } } => {
-                tracing::info!("mcp::server: SIGTERM received; shutting down");
-            }
-            Some(()) = async { match hup.as_mut() { Some(s) => s.recv().await, None => None } } => {
-                tracing::info!("mcp::server: SIGHUP received; shutting down");
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        running.waiting().await.ok();
-    }
 }
 
 // ── In-memory cache ───────────────────────────────────────────────────
@@ -186,7 +159,7 @@ pub(crate) struct LoadedSkill {
     /// (carried by the spec `Resource` fields) PLUS runtime `path` +
     /// `bundleDir`. Serves both the tool `metadata` field and the
     /// resource `_meta` (`io.hyprpilot/skill`) — see
-    /// `skills::metadata::{skill_block, skill_meta}`.
+    /// `skills::wire_metadata::{skill_block, skill_meta}`.
     pub(crate) meta_block: serde_json::Map<String, serde_json::Value>,
     body: String,
     refs: FrontmatterRefs,
@@ -207,7 +180,7 @@ struct SkillsServer {
 }
 
 impl SkillsServer {
-    fn new(args: ServeArgs, _config: super::ConfigSource) -> anyhow::Result<Self> {
+    fn new(args: SkillsArgs, _config: super::ConfigSource) -> anyhow::Result<Self> {
         // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
         // JSON entry. Each entry carries its OWN ignore list so the
         // sidecar replicates the launcher's per-dir suppression exactly —
@@ -232,7 +205,7 @@ impl SkillsServer {
                                     %err,
                                     pattern = %pat,
                                     dir = %entry.dir.display(),
-                                    "mcp::server: bad skill-ignore glob — skipping"
+                                    "mcp::server: bad skill ignore glob — skipping"
                                 );
                             }
                         }
@@ -274,7 +247,7 @@ impl SkillsServer {
         let registry = self.registry.clone();
         let result = tokio::task::spawn_blocking(move || {
             registry.reload().map_err(|e| e.to_string())?;
-            Ok::<Vec<crate::skills::Skill>, String>(registry.list())
+            Ok::<Vec<crate::mcp::skills::Skill>, String>(registry.list())
         })
         .await;
 
@@ -295,7 +268,7 @@ impl SkillsServer {
     }
 }
 
-fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
+fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
     let mut cache = SkillsCache::default();
     for skill in skills {
         let slug = skill.slug.to_string();
@@ -367,6 +340,10 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
 }
 
 enum ParsedUri<'a> {
+    /// The bare `hyprpilot://skills` index. Cannot collide with a slug:
+    /// every skill URI carries a `skills/` prefix, and `strip_prefix`
+    /// requires the separator.
+    Catalogue,
     Skill(&'a str),
     SkillReferences(&'a str),
 }
@@ -377,37 +354,13 @@ fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
     // segment in both, so the references scheme no longer nests a
     // `/references` suffix under the slug (that nesting broke client
     // URI autocomplete).
-    if let Some(slug) = rest.strip_prefix("skills/") {
+    if rest == "skills" {
+        Some(ParsedUri::Catalogue)
+    } else if let Some(slug) = rest.strip_prefix("skills/") {
         Some(ParsedUri::Skill(slug))
     } else {
         rest.strip_prefix("references/").map(ParsedUri::SkillReferences)
     }
-}
-
-/// Compact builder emitting the same shape the hand-rolled schemas
-/// above produce — `type` / `properties` / `required` (omitted when
-/// empty, matching `empty_object_schema`) / `additionalProperties:
-/// false`. Worth the helper once a tool has more than a field or two.
-pub(super) fn object_schema(
-    props: serde_json::Value,
-    required: &[&str],
-) -> Arc<serde_json::Map<String, serde_json::Value>> {
-    let mut map = serde_json::Map::new();
-    map.insert("type".into(), serde_json::json!("object"));
-    map.insert("properties".into(), props);
-    if !required.is_empty() {
-        map.insert("required".into(), serde_json::json!(required));
-    }
-    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
-    Arc::new(map)
-}
-
-pub(super) fn empty_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
-    let mut map = serde_json::Map::new();
-    map.insert("type".into(), serde_json::Value::String("object".into()));
-    map.insert("properties".into(), serde_json::Value::Object(serde_json::Map::new()));
-    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
-    Arc::new(map)
 }
 
 fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
@@ -430,30 +383,58 @@ fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     Arc::new(map)
 }
 
-/// Return a `CallToolResult` with `is_error: true` and a human-readable
-/// message. Uses `CallToolResult::error` so the struct's `#[non_exhaustive]`
-/// guard is respected — direct construction is rejected by the compiler.
-pub(super) fn tool_error(msg: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(msg)])
+/// The `hyprpilot://skills` index — the whole catalogue as one
+/// markdown document.
+///
+/// Exists for the ATTACHMENT path: a client injecting this costs no
+/// tool call at all. A model reading it still spends one (a generic
+/// resource read), so `list_skills` stays the better route for the
+/// model — same cost, but named and described.
+///
+/// It leads with how to chain the other two schemes, because an index
+/// whose entries the reader cannot then load is only half an answer.
+fn catalogue_markdown(cache: &SkillsCache) -> String {
+    let mut out = String::from(
+        "# hyprpilot skills\n\n\
+         Each entry below is loadable by URI — no tool call required:\n\n\
+         - `hyprpilot://skills/<slug>` — the skill's full `SKILL.md` body. Read this first; it is the \
+         instruction set.\n\
+         - `hyprpilot://references/<slug>` — the reference files that skill declares in its frontmatter, \
+         bundled into one response. Only some skills have them, and only read them when the body tells \
+         you to.\n\n\
+         So the chain is: pick a slug here → read `skills/<slug>` → follow its reference directives into \
+         `references/<slug>`. The `reload` tool rescans the roots if this index looks stale.\n\n",
+    );
+    if cache.order.is_empty() {
+        out.push_str("_No skills available._\n");
+        return out;
+    }
+    out.push_str(&format!("## {} available\n\n", cache.order.len()));
+    for slug in &cache.order {
+        let Some(skill) = cache.skills.get(slug) else {
+            continue;
+        };
+        out.push_str(&format!("### `{}`\n\n", skill.slug));
+        if !skill.title.is_empty() && skill.title != skill.slug.as_str() {
+            out.push_str(&format!("**{}**\n\n", skill.title));
+        }
+        if !skill.description.is_empty() {
+            out.push_str(&format!("{}\n\n", skill.description));
+        }
+        out.push_str(&format!("`{}`", skill_uri(slug)));
+        if !skill.refs.references.is_empty() {
+            out.push_str(&format!(
+                " · {} reference(s) at `{}`",
+                skill.refs.references.len(),
+                skill_references_uri(slug)
+            ));
+        }
+        out.push_str("\n\n");
+    }
+
+    out
 }
 
-/// A successful tool result carrying BOTH a human-readable `content`
-/// text block AND the structured JSON payload. Clients that render only
-/// `structuredContent` (Claude Code) read the JSON; clients that render
-/// only `content` (opencode) read the text — a structured-only result
-/// shows there as "Unknown". `CallToolResult::structured` sets
-/// `structured_content` and a raw-JSON text block whose exact shape is
-/// an rmcp-version detail, so we overwrite `content` with an explicit,
-/// legible summary to guarantee the text block regardless of client or
-/// rmcp version. `#[non_exhaustive]` forbids the struct literal but not
-/// mutating the owned instance's public fields.
-pub(super) fn structured_with_text(summary: impl Into<String>, value: serde_json::Value) -> CallToolResult {
-    let mut result = CallToolResult::structured(value);
-    result.content = vec![ContentBlock::text(summary)];
-    result
-}
-
-/// A one-line-per-skill catalogue for the `list_skills` text block.
 fn list_skills_summary(cache: &SkillsCache) -> String {
     if cache.order.is_empty() {
         return "No skills available.".into();
@@ -471,86 +452,6 @@ fn list_skills_summary(cache: &SkillsCache) -> String {
     }
     out.push_str("Call `read_skill` with a slug to fetch the full SKILL.md body.");
     out
-}
-
-pub(super) fn require_string<'a>(
-    args: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<&'a str, rmcp::ErrorData> {
-    args.get(key)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("missing string argument `{key}`"), None))
-}
-
-/// Optional-argument siblings of [`require_string`]. A present-but-wrong
-/// type is a protocol fault (`invalid_params`), not a recoverable tool
-/// error — the caller sent something the schema forbids.
-pub(super) fn optional_string(
-    args: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<String>, rmcp::ErrorData> {
-    match args.get(key) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(rmcp::ErrorData::invalid_params(
-            format!("argument `{key}` must be a string"),
-            None,
-        )),
-    }
-}
-
-pub(super) fn optional_bool(
-    args: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<bool>, rmcp::ErrorData> {
-    match args.get(key) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
-        Some(_) => Err(rmcp::ErrorData::invalid_params(
-            format!("argument `{key}` must be a boolean"),
-            None,
-        )),
-    }
-}
-
-pub(super) fn optional_u64(
-    args: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<u64>, rmcp::ErrorData> {
-    match args.get(key) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(format!("argument `{key}` must be a non-negative integer"), None)
-        }),
-    }
-}
-
-pub(super) fn optional_usize(
-    args: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<usize>, rmcp::ErrorData> {
-    Ok(optional_u64(args, key)?.map(|n| n as usize))
-}
-
-pub(super) fn optional_string_array(
-    args: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Result<Vec<String>, rmcp::ErrorData> {
-    match args.get(key) {
-        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .map(|item| {
-                item.as_str().map(str::to_string).ok_or_else(|| {
-                    rmcp::ErrorData::invalid_params(format!("every entry in `{key}` must be a string"), None)
-                })
-            })
-            .collect(),
-        Some(_) => Err(rmcp::ErrorData::invalid_params(
-            format!("argument `{key}` must be an array of strings"),
-            None,
-        )),
-    }
 }
 
 // ── MCP protocol impl ─────────────────────────────────────────────────
@@ -703,7 +604,22 @@ impl ServerHandler for SkillsServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
         let cache = self.skills_cache.read().await;
-        let mut resources = Vec::with_capacity(cache.skills.len());
+        let mut resources = Vec::with_capacity(cache.skills.len() + 1);
+        // The index goes FIRST — it is the entry point, and it explains
+        // how to load everything under it.
+        let catalogue = catalogue_markdown(&cache);
+        resources.push(
+            rmcp::model::Resource::new("hyprpilot://skills", "skills")
+                .with_title("hyprpilot skills — catalogue")
+                .with_description(format!(
+                    "Every available skill with its description, and how to load one: read \
+                     `hyprpilot://skills/<slug>` for the body, then `hyprpilot://references/<slug>` for \
+                     the files it declares. {} skill(s).",
+                    cache.order.len()
+                ))
+                .with_mime_type("text/markdown")
+                .with_size(catalogue.len() as u64),
+        );
         for slug in &cache.order {
             let Some(skill) = cache.skills.get(slug) else { continue };
             // Body resource. `name` is the always-present slug; `title`
@@ -762,6 +678,15 @@ impl ServerHandler for SkillsServer {
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
         let uri = &request.uri;
         match parse_uri(uri) {
+            Some(ParsedUri::Catalogue) => {
+                let cache = self.skills_cache.read().await;
+                Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("text/markdown".into()),
+                    text: catalogue_markdown(&cache),
+                    meta: None,
+                }]))
+            }
             Some(ParsedUri::Skill(slug)) => {
                 let cache = self.skills_cache.read().await;
                 let Some(skill) = cache.skills.get(slug) else {
@@ -805,6 +730,38 @@ impl ServerHandler for SkillsServer {
 mod tests {
     use super::*;
 
+    /// The bare index URI must not shadow a skill. Every skill URI
+    /// carries a `skills/` prefix, so the equality check has to come
+    /// first and `skillsfoo` must still be nothing.
+    #[test]
+    fn the_catalogue_uri_cannot_shadow_a_slug() {
+        assert!(matches!(parse_uri("hyprpilot://skills"), Some(ParsedUri::Catalogue)));
+        assert!(matches!(
+            parse_uri("hyprpilot://skills/git-commit"),
+            Some(ParsedUri::Skill("git-commit"))
+        ));
+        assert!(matches!(
+            parse_uri("hyprpilot://references/git-commit"),
+            Some(ParsedUri::SkillReferences("git-commit"))
+        ));
+        assert!(parse_uri("hyprpilot://skillsfoo").is_none());
+        assert!(parse_uri("hyprpilot://nope").is_none());
+    }
+
+    /// The index leads with how to chain the other two schemes — an
+    /// index whose entries the reader cannot then load is half an answer.
+    #[test]
+    fn the_catalogue_explains_how_to_load_what_it_lists() {
+        let empty = SkillsCache::default();
+        let out = catalogue_markdown(&empty);
+        assert!(out.contains("hyprpilot://skills/<slug>"), "must name the body scheme");
+        assert!(
+            out.contains("hyprpilot://references/<slug>"),
+            "must name the references scheme"
+        );
+        assert!(out.contains("No skills available"), "an empty catalogue still renders");
+    }
+
     #[test]
     fn parses_known_uris() {
         // Body: the `skills/<slug>` top-level form.
@@ -847,8 +804,8 @@ mod tests {
     #[test]
     fn build_cache_falls_back_to_frontmatter_name_for_title() {
         let frontmatter: serde_yaml::Value = serde_yaml::from_str("name: myskill\n").unwrap();
-        let skill = crate::skills::Skill {
-            slug: crate::skills::SkillSlug::parse("myskill").unwrap(),
+        let skill = crate::mcp::skills::Skill {
+            slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),
             description: "desc".to_string(),
             body: "body".to_string(),
@@ -875,8 +832,8 @@ license: MIT
 "#,
         )
         .unwrap();
-        let skill = crate::skills::Skill {
-            slug: crate::skills::SkillSlug::parse("myskill").unwrap(),
+        let skill = crate::mcp::skills::Skill {
+            slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),
             description: "desc".to_string(),
             body: "body".to_string(),

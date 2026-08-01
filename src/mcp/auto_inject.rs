@@ -25,8 +25,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::McpConfig;
+use crate::mcp::skills::SkillsRegistry;
 use crate::mcp::{HyprpilotExtension, MCPDefinition};
-use crate::skills::SkillsRegistry;
 
 /// Build the general-tools catalog entry.
 ///
@@ -86,6 +86,13 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
         args.push("--max-sessions".to_string());
         args.push(max.to_string());
     }
+    // Same shape as `--max-sessions`: the sidecar is spawned by the
+    // launcher, which already resolved the PICKED profile's `[mcp]`
+    // block. Re-reading config inside the sidecar cannot recover which
+    // profile that was.
+    if !harness.notifies_on_complete() {
+        args.push("--no-notify-on-complete".to_string());
+    }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),
         "args": args,
@@ -131,7 +138,7 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
 /// re-projects from the user shape so it expects `command: <string>`
 /// and `env: { K: V }`.
 #[must_use]
-pub fn build_auto_inject_definition(
+pub fn build_skills_definition(
     skills: &Arc<SkillsRegistry>,
     cfg: &McpConfig,
     source: PathBuf,
@@ -194,7 +201,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::config::mcp::{HarnessServerConfig, ToolsServerConfig};
-    use crate::skills::SkillsRegistry;
+    use crate::mcp::skills::SkillsRegistry;
 
     use super::*;
 
@@ -208,7 +215,7 @@ mod tests {
 
     #[test]
     fn empty_registry_skips_injection() {
-        assert!(build_auto_inject_definition(&empty_registry(), &default_cfg(), PathBuf::from("<test>")).is_none());
+        assert!(build_skills_definition(&empty_registry(), &default_cfg(), PathBuf::from("<test>")).is_none());
     }
 
     /// The security-relevant default. `spawn` runs a profile's
@@ -247,6 +254,43 @@ mod tests {
         };
         let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
         assert_eq!(def.hyprpilot.auto_accept_tools, vec!["*".to_string()]);
+    }
+
+    /// Default ON — and the flag only appears when the captain turns it
+    /// OFF, so the sidecar's own default and the config agree.
+    #[test]
+    fn completion_notification_is_on_by_default() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let args = def.raw["args"].as_array().expect("args");
+        assert!(
+            !args.iter().any(|a| a == "--no-notify-on-complete"),
+            "the opt-out flag must be absent by default, got: {args:?}"
+        );
+    }
+
+    /// The knob has to ride the ARGV. A sidecar cannot re-read config to
+    /// find it — `[mcp.harness]` is per-profile, and only the launcher
+    /// knows which profile was picked.
+    #[test]
+    fn disabling_completion_notification_passes_the_flag() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                notify_on_complete: Some(false),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let args = def.raw["args"].as_array().expect("args");
+        assert!(args.iter().any(|a| a == "--no-notify-on-complete"), "got: {args:?}");
     }
 
     #[test]

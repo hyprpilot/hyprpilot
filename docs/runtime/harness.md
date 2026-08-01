@@ -73,14 +73,15 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 
 ## The tools
 
-| Tool            | Purpose                                                                                                |
-| --------------- | ------------------------------------------------------------------------------------------------------ |
-| `list_profiles` | Discover the profiles you can launch — vendor, model, effort, mode, cwd, MCP/skill counts. Start here. |
-| `spawn`         | Start a new session from a profile and send it a prompt.                                               |
-| `session_send`  | Send another message to an existing session, resuming it first if it's finished.                       |
-| `session_list`  | List this server's sessions — handle, profile, status, exit code, timestamps.                          |
-| `session_read`  | Read, and optionally follow live, a session's transcript.                                              |
-| `session_kill`  | Stop a running session and everything it started — or reap one that has already finished.              |
+| Tool             | Purpose                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| `list_profiles`  | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.      |
+| `spawn`          | Start a new session from a profile and send it a prompt.                                  |
+| `session_send`   | Send another message to an existing session, resuming it first if it's finished.          |
+| `session_list`   | List this server's sessions — handle, profile, status, exit code, timestamps.             |
+| `session_status` | One session's state without its transcript — the cheap poll.                              |
+| `session_read`   | Read, and optionally follow live, a session's transcript.                                 |
+| `session_kill`   | Stop a running session and everything it started — or reap one that has already finished. |
 
 ### Workflow
 
@@ -89,7 +90,69 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 3. If status is `running`, poll or follow **`session_read { session, wait: true }`** — do **not** call `spawn` again for the same conversation.
 4. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
 5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
-6. **`session_list`** any time you need to recover a handle you lost.
+6. **`session_status { session }`** is the cheap way to answer "is it done yet" — it reads no transcript, and `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot.
+7. **`session_list`** any time you need to recover a handle you lost.
+
+### `session_status`
+
+| Field             | Type   | When           | What it means                                                                           |
+| ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------- |
+| `status`          | string | always         | `running` or `exited`. A session is `exited` after every **turn**, not only at the end. |
+| `exitCode`        | int    | once exited    | Omitted while running.                                                                  |
+| `transcriptBytes` | int    | always         | Bytes written so far. A number that stops moving is a wedged agent.                     |
+| `hasResult`       | bool   | always         | Whether the agent's final answer has landed — see below.                                |
+| `vendorSessionId` | string | once harvested | Omitted until the vendor emits it.                                                      |
+
+`hasResult` is `false` for any running session, and only then scanned per vendor. Both halves matter:
+
+- opencode emits a `text` part for **every** completed sentence, not just the final answer, so content alone cannot say "done".
+- `session_send` **appends** to one transcript, so a scan from the start keeps finding the first turn's marker and every later turn would read as finished the moment it began. The scan reads the tail, scoping it to the latest turn.
+
+The three vendors mark completion differently — all verified against the installed CLIs:
+
+- **claude** — a terminal `{"type":"result"}` carrying the answer.
+- **codex** — `{"type":"turn.completed"}` closes the turn; the text rode the `item.completed` before it, whose `item.type` is `agent_message`.
+- **opencode** — emits **no** terminal marker at all. Its stream ends `step_finish(reason=stop)`, so the last `{"type":"text"}` part is the signal.
+
+### Watching from a shell
+
+Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.donePath`.
+
+This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
+
+```bash
+[ ! -d "$SESSION_DIR" ] || [ -f "$SESSION_DIR/done.json" ]
+```
+
+Both halves are required. The marker is advisory: reaping, eviction and shutdown all remove the directory, so a watcher that only tests for the file waits forever on a session that was cleaned up.
+
+`{"handle": "…", "exitCode": 0, "finishedAt": 1785584247}`
+
+It is **cleared when a turn starts**, not only written when one ends — `session_send` reuses the handle and directory, so a watcher armed for the next turn would otherwise fire instantly on the previous turn's leftover.
+
+### Completion notifications (Claude Code channels)
+
+When a turn's process exits the harness pushes a `notifications/claude/channel` event, which Claude Code turns into a `<channel source="hyprpilot_harness">` block in the lead agent's next turn:
+
+```txt
+content: hyprpilot harness session 4670d5aa… finished (exit 0). Read its output with session_read.
+meta:    { session: "4670d5aa…", exit_code: "0" }
+```
+
+On by default. It is safe to leave on — a client that has not registered the channel drops the notification silently, and unknown capabilities are ignored per the MCP spec, so nothing errors anywhere. The knob exists for **noise**: a session is `exited` after every _turn_, so a ten-turn conversation emits ten events.
+
+```yaml
+mcp:
+  harness:
+    notifyOnComplete: false
+```
+
+Resolved by the **launcher**, from the profile it picked, and passed to the sidecar as a flag — the same way `maxSessions` arrives. A sidecar cannot work out which profile spawned it, so it cannot read this from config itself.
+
+Two things worth knowing:
+
+- **Registering the channel is the client's job, not hyprpilot's.** Claude Code only listens for channels it was launched with; that is your own launch configuration. hyprpilot declares the capability and pushes the event — where channels are unavailable, the push is dropped.
+- **The content is a fixed template.** Transcript bytes and agent output are never interpolated into it — that would let a spawned agent write into its parent's context through a path the parent never called. Everything variable rides `meta`, whose keys must be `[A-Za-z0-9_]` (a hyphen is silently dropped, which is why it is `exit_code`).
 
 ### `spawn` / `session_send` parameters
 

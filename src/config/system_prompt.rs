@@ -1,6 +1,6 @@
 //! `system_prompt` array-of-tables — the captain-supplied list of
 //! prompt files plus a per-entry inject toggle. Mirrors the
-//! `[[mcps]]` / `[[skills]]` shape so all three "list of files +
+//! `[[mcps]]` / `[[mcp.skills.dirs]]` shape so all three "list of files +
 //! per-entry config" surfaces read identically.
 //!
 //! ```toml

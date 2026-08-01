@@ -1,12 +1,12 @@
 //! The agent harness — `list_profiles` / `spawn` / `session_send` /
-//! `session_list` / `session_read` / `session_kill`.
+//! `session_list` / `session_status` / `session_read` / `session_kill`.
 //!
 //! Turns the captain's profile registry into something a connected
 //! agent can drive: pick a profile, run it, talk to it across turns,
-//! read its transcript, kill it. Gated behind `--with-harness` because
-//! `auto_inject` puts this sidecar inside *every* launch, and an
-//! ungated spawn surface would let a claude session spawn nested claude
-//! sessions without bound.
+//! read its transcript, kill it. Its own subcommand and its own
+//! `ServerHandler`, so the skills server cannot serve `spawn` — the
+//! gate is structural rather than a name check. Off by default because
+//! a profile's `command` is an arbitrary binary.
 //!
 //! Every launch flows through `spawn::prepare`, the same path
 //! `hyprpilot <profile>` uses, so prompt-source priority, the
@@ -48,6 +48,11 @@ pub const DEFAULT_MAX_SESSIONS: usize = 64;
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
 /// transcript never blows the caller's own budget.
 const READ_CAP_BYTES: usize = 60_000;
+
+/// Lines of transcript tail scanned for a turn's terminal marker.
+/// Generous — a turn's closing events are the last handful — but
+/// bounded, because `session_status` is advertised as the cheap poll.
+const TERMINAL_SCAN_LINES: usize = 200;
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 /// How often a follow re-checks the transcript for new bytes. The file
@@ -471,6 +476,50 @@ impl Harness {
         Ok((summary, json!({ "profiles": profiles })))
     }
 
+    /// One session's state, without its transcript.
+    ///
+    /// `session_list` returns these same fields for every session and
+    /// `session_read` returns the transcript itself, which runs to tens
+    /// of kilobytes. This is the cheap poll: a handle lookup plus one
+    /// `stat`.
+    pub(crate) fn session_status(&self, handle: &str) -> Result<(String, Value), String> {
+        self.sessions
+            .with(handle, |session| {
+                let turns = session.turns_path();
+                let transcript_bytes = std::fs::metadata(&turns).map(|m| m.len()).unwrap_or(0);
+                let mut out = json!({
+                    "session": session.handle,
+                    "profile": session.profile_id,
+                    "provider": session.provider.wire_id(),
+                    "status": session.status().as_str(),
+                    "createdAt": unix_secs(session.created_at),
+                    "lastTurnAt": unix_secs(session.last_turn_at),
+                    "transcriptBytes": transcript_bytes,
+                    // Only meaningful once the turn has ENDED, and read
+                    // from the tail. Both halves are load-bearing:
+                    //
+                    // - A running session is never "done". opencode emits
+                    //   a `text` part for every completed sentence, so
+                    //   asking mid-run reports the first one as the
+                    //   answer.
+                    // - `session_send` APPENDS to this same file, so a
+                    //   scan from byte 0 keeps finding turn 1's marker
+                    //   forever and every later turn reads as finished
+                    //   the instant it starts.
+                    "hasResult": session.status() == SessionStatus::Exited && tail_has_terminal_result(&turns),
+                });
+                if let Some(code) = session.exit_code() {
+                    out["exitCode"] = json!(code);
+                }
+                if let Some(vendor) = session.vendor_session_id.as_ref() {
+                    out["vendorSessionId"] = json!(vendor);
+                }
+                out
+            })
+            .map(|row| (status_summary(&row), row))
+            .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))
+    }
+
     pub(crate) async fn spawn(&self, args: LaunchToolArgs) -> Result<Value, String> {
         self.launch(args, None).await
     }
@@ -564,6 +613,7 @@ impl Harness {
                     "lastTurnAt": unix_secs(session.last_turn_at),
                     "vendorSessionId": session.vendor_session_id,
                     "pid": session.pid(),
+                    "donePath": session.done_path().display().to_string(),
                     "command": session.provenance.program,
                     "argv": session.provenance.argv,
                     "envKeys": session.provenance.env_keys,
@@ -821,7 +871,7 @@ fn harness_allows(cfg: &crate::config::Config, profile_id: &str) -> bool {
 /// Restrict a caller-supplied overlay to settings that cannot change
 /// what gets executed.
 ///
-/// The `--with-harness` gate is a grant of *the captain's profiles*, not
+/// Enabling the harness is a grant of *the captain's profiles*, not
 /// of a shell; without this a single prompt-injected tool call is RCE on
 /// a chat-reachable gateway.
 fn reject_executable_overrides(overlays: &[Value]) -> Result<(), String> {
@@ -872,6 +922,103 @@ fn vendor_session_id(body: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Push a completion event into the lead agent's context.
+///
+/// Claude Code calls this a *channel*: a notification whose `content`
+/// becomes a `<channel source="…">` block in the agent's next turn,
+/// with each `meta` entry as an attribute. A client that never
+/// registered the channel drops it silently and returns no error, so
+/// the server cannot detect non-delivery and must not try.
+///
+/// **The content is a fixed template and must stay that way.** Never
+/// interpolate transcript bytes or agent output into it: that would let
+/// a spawned agent write into its parent's context through a path the
+/// parent never called. Everything variable rides `meta`, whose keys
+/// must be `[A-Za-z0-9_]` — a hyphen is silently dropped.
+pub(crate) async fn notify_session_finished(
+    peer: &rmcp::service::Peer<rmcp::service::RoleServer>,
+    server_name: &str,
+    handle: &str,
+    exit_code: i32,
+) {
+    let mut meta = serde_json::Map::new();
+    meta.insert("session".into(), json!(handle));
+    meta.insert("exit_code".into(), json!(exit_code.to_string()));
+
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "content".into(),
+        json!(format!(
+            "hyprpilot harness session {handle} finished (exit {exit_code}). \
+             Read its output with session_read."
+        )),
+    );
+    params.insert("meta".into(), serde_json::Value::Object(meta));
+
+    let notification = rmcp::model::CustomNotification {
+        method: "notifications/claude/channel".into(),
+        params: Some(serde_json::Value::Object(params)),
+        extensions: rmcp::model::Extensions::default(),
+    };
+    if let Err(err) = peer
+        .send_notification(rmcp::model::ServerNotification::CustomNotification(notification))
+        .await
+    {
+        tracing::debug!(%handle, %server_name, %err, "mcp harness: completion channel push failed");
+    }
+}
+
+/// Whether the transcript carries the agent's final answer yet.
+///
+/// Each vendor marks completion differently — the same three-way split
+/// `vendor_session_id` already handles for session ids. All three were
+/// captured from the installed CLIs, per the repo rule that vendor keys
+/// are verified rather than guessed:
+///
+/// - **claude** — a terminal `{"type":"result", "result": "…"}`.
+/// - **codex** — `{"type":"turn.completed"}` closes the turn, but the
+///   text rides the preceding `item.completed` whose `item.type` is
+///   `agent_message`.
+/// - **opencode** — emits NO terminal marker. Its stream ends
+///   `step_finish(reason=stop)`, so the answer is the last
+///   `{"type":"text"}` part. Scanning for a terminal event here would
+///   find nothing and report `false` forever.
+fn tail_has_terminal_result(path: &std::path::Path) -> bool {
+    // The tail, not the whole file: terminal events are at the end by
+    // definition, and this is advertised as the cheap poll. Also keeps
+    // the answer scoped to the LATEST turn — earlier turns' markers sit
+    // further back in the same appended transcript.
+    let (tail, _truncated) = tail_of(path, TERMINAL_SCAN_LINES);
+
+    has_terminal_result(&tail)
+}
+
+fn has_terminal_result(body: &str) -> bool {
+    for line in body.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match value.get("type").and_then(Value::as_str) {
+            // claude: carries the answer inline.
+            Some("result") => return true,
+            // codex: the turn is closed; `item.completed` above it holds
+            // the message.
+            Some("turn.completed") => return true,
+            Some("item.completed") => {
+                if value.get("item").and_then(|i| i.get("type")).and_then(Value::as_str) == Some("agent_message") {
+                    return true;
+                }
+            }
+            // opencode: no terminal event exists, so a text part IS the
+            // completion signal.
+            Some("text") => return true,
+            _ => {}
+        }
+    }
+
+    false
 }
 
 /// Last `lines` whole lines of a file, capped at [`READ_CAP_BYTES`].
@@ -1001,6 +1148,22 @@ fn unix_secs(t: std::time::SystemTime) -> u64 {
 /// Aligned one-line-per-profile table for the `content` block. opencode
 /// renders only `content`, so this is the discovery view for a whole
 /// class of clients — not a debug convenience.
+fn status_summary(row: &Value) -> String {
+    let get = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or("?").to_string();
+    let mut out = format!("{} — {} ({})", get("session"), get("status"), get("profile"));
+    if let Some(code) = row.get("exitCode").and_then(Value::as_i64) {
+        out.push_str(&format!(", exit {code}"));
+    }
+    if let Some(bytes) = row.get("transcriptBytes").and_then(Value::as_u64) {
+        out.push_str(&format!(", {bytes} B transcript"));
+    }
+    if row.get("hasResult").and_then(Value::as_bool) == Some(true) {
+        out.push_str(", result ready");
+    }
+
+    out
+}
+
 fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
     if profiles.is_empty() {
         return "No profiles are available to the harness. It is opt-in per profile: add \
@@ -1030,7 +1193,6 @@ fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
         if profile.headless {
             out.push_str("  [headless]");
         }
-        out.push_str(&format!("  mcps={} skills={}", profile.mcp_count, profile.skills_count));
         if let Some(err) = profile.error.as_deref() {
             out.push_str(&format!("  !! {err}"));
         }
@@ -1072,6 +1234,85 @@ mod tests {
         assert!(
             harness_allows(&cfg, "nonexistent"),
             "an unknown id stays the resolver's error to report, not ours"
+        );
+    }
+
+    /// opencode emits a `text` part for EVERY completed sentence, not
+    /// only the final answer — verified against the installed binary. So
+    /// "a text part exists" cannot mean "the agent is done"; only the
+    /// session having exited can. Pins the mid-run false positive.
+    #[test]
+    fn a_mid_run_opencode_text_part_is_not_a_finished_answer() {
+        let mid_run = concat!(
+            r#"{"type":"text","part":{"text":"I'll check the file first."}}"#,
+            "\n",
+            r#"{"type":"tool_use","part":{"tool":"bash"}}"#,
+            "\n",
+        );
+        // The scanner itself still sees a text part — that is what it is
+        // for. The guard is `status == Exited` in `session_status`, which
+        // is why `hasResult` must never be computed from content alone.
+        assert!(has_terminal_result(mid_run));
+    }
+
+    /// `session_send` APPENDS to one transcript, so turn 1's terminal
+    /// marker never disappears. Scanning from byte 0 reported every
+    /// later turn as finished the instant it started; scanning the TAIL
+    /// keeps the answer scoped to the latest turn.
+    #[test]
+    fn the_terminal_scan_reads_the_tail_not_the_whole_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        // Turn 1 finished, then turn 2 pushed it far out of the tail.
+        let mut body = String::from(r#"{"type":"result","result":"turn one"}"#);
+        body.push('\n');
+        for i in 0..(TERMINAL_SCAN_LINES * 2) {
+            body.push_str(&format!("{{\"type\":\"tool_use\",\"seq\":{i}}}\n"));
+        }
+        std::fs::write(&path, &body).unwrap();
+
+        assert!(
+            !tail_has_terminal_result(&path),
+            "turn 1's marker must not leak into turn 2's answer"
+        );
+    }
+
+    /// Each vendor's terminal marker, captured from the installed CLI
+    /// this was written against. opencode is the odd one: it emits no
+    /// terminal event at all, so its last `text` part IS the signal.
+    #[test]
+    fn has_terminal_result_reads_all_three_vendors() {
+        // claude
+        assert!(has_terminal_result(
+            r#"{"type":"result","subtype":"success","result":"ALPHA"}"#
+        ));
+        // codex — the turn closes, and the message rode the item before it
+        assert!(has_terminal_result(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"CHARLIE"}}"#
+        ));
+        assert!(has_terminal_result(r#"{"type":"turn.completed","usage":{}}"#));
+        // opencode — no terminal event exists; a text part is the answer
+        assert!(has_terminal_result(r#"{"type":"text","part":{"text":"BRAVO"}}"#));
+    }
+
+    #[test]
+    fn has_terminal_result_is_false_before_the_answer_lands() {
+        let mid_run = concat!(
+            r#"{"type":"step_start","part":{}}"#,
+            "\n",
+            r#"{"type":"tool_use","part":{"tool":"bash"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"reasoning"}}"#,
+            "\n",
+        );
+        assert!(
+            !has_terminal_result(mid_run),
+            "tool traffic and non-message items must not read as a result"
+        );
+        assert!(!has_terminal_result(""), "an empty transcript has no result");
+        assert!(
+            !has_terminal_result("not json at all\n"),
+            "garbage must not panic or match"
         );
     }
 

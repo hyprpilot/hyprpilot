@@ -1,4 +1,4 @@
-//! `[[mcps]]` / `[[skills]]` array-of-tables — one extension entry +
+//! `[[mcps]]` / `[[mcp.skills.dirs]]` array-of-tables — one extension entry +
 //! optional per-entry glob ignore. Both fields use the same matcher
 //! the existing MCP tool-name globs (`autoAcceptTools` /
 //! `autoRejectTools`) use, so captains have one mental model for
@@ -86,7 +86,7 @@ fn validate_mcp_source<'a>(
     }
 }
 
-/// One skills catalog root entry. Matches both the global `[[skills]]`
+/// One skills catalog root entry. Matches both the global `[[mcp.skills.dirs]]`
 /// array and the per-profile override.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
@@ -125,7 +125,7 @@ fn compile_ignore(patterns: Option<&[String]>) -> Option<GlobSet> {
 }
 
 /// Reject any pattern that isn't a valid `globset::Glob`. Shared by
-/// the `[[mcps]]` / `[[skills]]` `ignore` arrays and the `[mcp]`
+/// the `[[mcps]]` / `[[mcp.skills.dirs]]` `ignore` arrays and the `[mcp]`
 /// `autoAcceptTools` / `autoRejectTools` tool-name glob arrays so a
 /// malformed glob fails at config-load, not at match time.
 pub(crate) fn validate_globs(patterns: &Option<Vec<String>>, _: &()) -> garde::Result {

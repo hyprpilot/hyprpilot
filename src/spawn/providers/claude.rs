@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::mcp::{expanded_raw, project_transport, MCPDefinition};
-use crate::profile::ResolvedProfile;
+use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_flag};
 use super::{base_command, ensure_inline_size, HarnessProjection, SpawnCommand};

@@ -14,7 +14,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::{Config, ProfileConfig};
-use crate::profile::ResolvedProfile;
+pub(crate) mod profile;
+
+pub(crate) use profile::ResolvedProfile;
 
 /// Summary row for one resolved profile — backs the `profiles`
 /// subcommand's table / JSON output and the interactive picker.
@@ -47,11 +49,6 @@ pub struct ProfileSummary {
     /// PATCHED profile — a `$match`ed patch is how a family opts in.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub harness_enabled: bool,
-    /// How many MCP servers and skills this profile resolves to — a
-    /// cheap "how equipped is this agent" signal for a caller choosing
-    /// between profiles.
-    pub mcp_count: usize,
-    pub skills_count: usize,
     /// Profile-scoped cwd hint — the resolved launch cwd for this
     /// profile. Optional because not every profile sets one; the
     /// interactive picker surfaces it so the captain sees the launch
@@ -92,7 +89,7 @@ pub(crate) fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::co
 /// `mcp.enabled = false` is for).
 pub(crate) fn build_mcp_registry_with(
     profile: &ProfileConfig,
-    skills: Option<&Arc<crate::skills::SkillsRegistry>>,
+    skills: Option<&Arc<crate::mcp::skills::SkillsRegistry>>,
 ) -> Vec<crate::mcp::MCPDefinition> {
     let mcp_cfg = effective_mcp_with(profile);
     let files = effective_mcp_files_with(profile);
@@ -120,7 +117,7 @@ pub(crate) fn build_mcp_registry_with(
         }
         // Skills last so it lands first in the list.
         if let Some(auto) = skills.and_then(|skills_arc| {
-            crate::mcp::auto_inject::build_auto_inject_definition(
+            crate::mcp::auto_inject::build_skills_definition(
                 skills_arc,
                 &mcp_cfg,
                 std::path::PathBuf::from("<auto-injected:hyprpilot mcp skills>"),
@@ -203,10 +200,10 @@ fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::Resolved
 }
 
 /// Build the per-launch skills registry from the patched profile.
-pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
+pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::mcp::skills::SkillsRegistry> {
     let entries = effective_skills_with(profile);
     let dir_count = entries.len();
-    let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
+    let registry = Arc::new(crate::mcp::skills::SkillsRegistry::new(entries));
     if let Err(err) = registry.reload() {
         tracing::warn!(%err, "resolve: skills initial reload failed");
     }
