@@ -38,7 +38,7 @@ path-absolutize = "4.0.1"
 merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp serve`.
-rmcp = { version = "2", features = ["transport-io"] }
+rmcp = { version = "3", features = ["transport-io"] }
 # Cross-platform OS-level URL / path opener for the `open_url` MCP tool.
 # The MCP server runs as a stdio sidecar — this crate wraps `xdg-open`
 # on Linux, `open` on macOS, `start` on Windows.

@@ -58,8 +58,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, ResourceContents,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -530,7 +531,7 @@ impl ServerHandler for SkillsServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let args = request.arguments.unwrap_or_default();
         match request.name.as_ref() {
             "list_skills" => {
@@ -675,7 +676,7 @@ impl ServerHandler for SkillsServer {
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         let uri = &request.uri;
         match parse_uri(uri) {
             Some(ParsedUri::Catalogue) => {
@@ -685,7 +686,8 @@ impl ServerHandler for SkillsServer {
                     mime_type: Some("text/markdown".into()),
                     text: catalogue_markdown(&cache),
                     meta: None,
-                }]))
+                }])
+                .into())
             }
             Some(ParsedUri::Skill(slug)) => {
                 let cache = self.skills_cache.read().await;
@@ -697,7 +699,8 @@ impl ServerHandler for SkillsServer {
                     mime_type: Some("text/markdown".into()),
                     text: skill.body.clone(),
                     meta: Some(skill_meta(&skill.meta_block)),
-                }]))
+                }])
+                .into())
             }
             Some(ParsedUri::SkillReferences(slug)) => {
                 let cache = self.skills_cache.read().await;
@@ -716,7 +719,8 @@ impl ServerHandler for SkillsServer {
                     mime_type: Some("text/markdown".into()),
                     text: body,
                     meta: Some(skill_meta(&skill.meta_block)),
-                }]))
+                }])
+                .into())
             }
             None => Err(rmcp::ErrorData::invalid_params(
                 format!("unrecognised uri: {uri}"),

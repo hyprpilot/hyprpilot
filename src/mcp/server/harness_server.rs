@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -86,7 +86,7 @@ impl ServerHandler for HarnessServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let harness = self.harness.as_ref();
         let context = &context;
         let args = request.arguments.unwrap_or_default();

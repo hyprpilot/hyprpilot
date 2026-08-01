@@ -14,7 +14,7 @@
 
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -73,7 +73,7 @@ impl ServerHandler for ToolsServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let args = request.arguments.unwrap_or_default();
         match request.name.as_ref() {
             "open" => {

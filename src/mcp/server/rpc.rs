@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
 use rmcp::service::RoleServer;
 use rmcp::ServerHandler;
 
@@ -67,11 +67,16 @@ pub(super) fn empty_object_schema() -> Arc<serde_json::Map<String, serde_json::V
     Arc::new(map)
 }
 
-/// Return a `CallToolResult` with `is_error: true` and a human-readable
+/// Return a tool result with `is_error: true` and a human-readable
 /// message. Uses `CallToolResult::error` so the struct's `#[non_exhaustive]`
 /// guard is respected — direct construction is rejected by the compiler.
-pub(super) fn tool_error(msg: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(msg)])
+///
+/// Returns the `CallToolResponse` envelope rmcp 3 wraps every tool result
+/// in. Converting HERE rather than at each handler is what keeps the
+/// three servers' `call_tool` bodies free of the distinction: they are
+/// only ever `Complete`, never a task handle or an input request.
+pub(super) fn tool_error(msg: impl Into<String>) -> CallToolResponse {
+    CallToolResult::error(vec![ContentBlock::text(msg)]).into()
 }
 
 /// A successful tool result carrying BOTH a human-readable `content`
@@ -84,10 +89,10 @@ pub(super) fn tool_error(msg: impl Into<String>) -> CallToolResult {
 /// legible summary to guarantee the text block regardless of client or
 /// rmcp version. `#[non_exhaustive]` forbids the struct literal but not
 /// mutating the owned instance's public fields.
-pub(super) fn structured_with_text(summary: impl Into<String>, value: serde_json::Value) -> CallToolResult {
+pub(super) fn structured_with_text(summary: impl Into<String>, value: serde_json::Value) -> CallToolResponse {
     let mut result = CallToolResult::structured(value);
     result.content = vec![ContentBlock::text(summary)];
-    result
+    result.into()
 }
 
 pub(super) fn require_string<'a>(

@@ -21,7 +21,7 @@
 
 use std::path::Path;
 
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use serde_json::{Map, Value};
 
 /// The single namespaced `_meta` key. Carries the merged skill block —
@@ -89,10 +89,10 @@ pub fn skill_block(frontmatter: &Map<String, Value>, path: &Path) -> Map<String,
 /// key ([`META_KEY_SKILL`]). One key, per the MCP `_meta` convention —
 /// spec `Resource` fields are canonical and never repeated here.
 #[must_use]
-pub fn skill_meta(block: &Map<String, Value>) -> Meta {
+pub fn skill_meta(block: &Map<String, Value>) -> MetaObject {
     let mut meta = Map::new();
     meta.insert(META_KEY_SKILL.to_string(), Value::Object(block.clone()));
-    Meta(meta)
+    MetaObject(meta)
 }
 
 #[cfg(test)]
