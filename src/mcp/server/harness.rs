@@ -23,9 +23,15 @@ use crate::spawn::providers::HarnessProjection;
 use crate::spawn::{LaunchOrigin, SpawnRequest};
 
 /// Env stamp bounding recursive spawning. A spawned agent gets
-/// `depth + 1`; past [`MAX_SPAWN_DEPTH`] a spawn is refused.
+/// `depth + 1`; at [`MAX_SPAWN_DEPTH`] a spawn is refused.
+///
+/// One means a spawned agent cannot spawn its own: the lead delegates,
+/// the delegate works. A tree costs whatever its widest level costs,
+/// and only the root can see it — [`MAX_LIVE_SESSIONS`] bounds each
+/// sidecar separately, so N delegates each spawning N is N² processes
+/// no single ceiling catches.
 pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
-const MAX_SPAWN_DEPTH: usize = 2;
+const MAX_SPAWN_DEPTH: usize = 1;
 
 /// Ceiling on concurrently *running* sessions. Depth bounds recursion;
 /// this bounds breadth. Both matter: a profile's `command` is an
@@ -147,8 +153,8 @@ impl Harness {
     fn check_capacity(&self) -> Result<(), String> {
         if self.depth >= MAX_SPAWN_DEPTH {
             return Err(format!(
-                "spawn refused: nesting depth {} has reached the limit of {MAX_SPAWN_DEPTH}. \
-                 This session was itself spawned by a hyprpilot harness.",
+                "spawn refused: this session was itself spawned by a hyprpilot harness \
+                 (depth {}, limit {MAX_SPAWN_DEPTH}). A delegated agent does not spawn its own.",
                 self.depth
             ));
         }
@@ -1245,6 +1251,25 @@ mod tests {
         assert!(
             harness_allows(&cfg, "nonexistent"),
             "an unknown id stays the resolver's error to report, not ours"
+        );
+    }
+
+    /// A delegate does not delegate. The stamp is what carries this
+    /// across the process boundary — the sidecar a spawned agent talks
+    /// to is a fresh process that only learns its depth from the env.
+    #[test]
+    fn a_spawned_session_cannot_spawn_its_own() {
+        let mut harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        // Not whatever `new` read: these tests can themselves run inside
+        // a spawned session, where the stamp is already set.
+        harness.depth = 0;
+        assert!(harness.check_capacity().is_ok(), "the lead spawns freely");
+
+        harness.depth = 1;
+        let refusal = harness.check_capacity().expect_err("a delegate must be refused");
+        assert!(
+            refusal.contains("spawned by a hyprpilot harness"),
+            "the refusal must say WHY, not just cite a number: {refusal}"
         );
     }
 

@@ -449,7 +449,12 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   check inside a shared server, which had to cover `call_tool` as well
   as `list_tools` because dispatch is by name; that is exactly the
   failure mode the split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds
-  nesting; a session-count ceiling bounds breadth.
+  nesting at **1** — a spawned agent's own `spawn` is refused, so the
+  lead delegates and the delegate works. Resource shape, not security:
+  each sidecar's concurrency ceiling covers only its own table, so a
+  second level would make N delegates × N sessions a fan-out no single
+  ceiling catches and the lead cannot see. A session-count ceiling
+  bounds breadth.
 - **Enabling the harness inherits `autoAcceptTools = ["*"]`** from the
   `[mcp]` level unless `[mcp.harness].autoAcceptTools` is set — so
   `spawn` lands auto-approved. The per-server policy the split bought
