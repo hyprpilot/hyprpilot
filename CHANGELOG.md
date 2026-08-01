@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.0](https://github.com/hyprpilot/hyprpilot/compare/v3.5.1...v3.6.0) (2026-08-01)
+
+
+### Features
+
+* **harness:** detach launches by default and mint the only session id ([#226](https://github.com/hyprpilot/hyprpilot/issues/226)) ([81e7f53](https://github.com/hyprpilot/hyprpilot/commit/81e7f53179294d703e421cf23b36c24640246426))
+
 ## [3.5.1](https://github.com/hyprpilot/hyprpilot/compare/v3.5.0...v3.5.1) (2026-08-01)
 
 
