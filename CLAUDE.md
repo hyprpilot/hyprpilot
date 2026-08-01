@@ -369,7 +369,7 @@ missing. Do not re-merge them.
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
 | `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
+| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) | **off** |
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
@@ -425,9 +425,10 @@ Skills reach the agent **only** through the skills server.
 
 ## The agent harness (`mcp harness`)
 
-`hyprpilot mcp harness` serves six tools that let a connected agent
+`hyprpilot mcp harness` serves seven tools that let a connected agent
 drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
-`session_send`, `session_list`, `session_read`, `session_kill`.
+`session_send`, `session_list`, `session_status`, `session_read`,
+`session_kill`.
 `[mcp.harness].enabled` defaults to false.
 
 - **The gate bounds DISCOVERY, not capability — do not overstate it.**

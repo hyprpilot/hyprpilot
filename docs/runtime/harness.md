@@ -89,7 +89,24 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 3. If status is `running`, poll or follow **`session_read { session, wait: true }`** — do **not** call `spawn` again for the same conversation.
 4. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
 5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
-6. **`session_list`** any time you need to recover a handle you lost.
+6. **`session_status { session }`** is the cheap way to answer "is it done yet" — it reads no transcript, and `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot.
+7. **`session_list`** any time you need to recover a handle you lost.
+
+### `session_status`
+
+| Field             | Type   | When           | What it means                                                                           |
+| ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------- |
+| `status`          | string | always         | `running` or `exited`. A session is `exited` after every **turn**, not only at the end. |
+| `exitCode`        | int    | once exited    | Omitted while running.                                                                  |
+| `transcriptBytes` | int    | always         | Bytes written so far. A number that stops moving is a wedged agent.                     |
+| `hasResult`       | bool   | always         | Whether the agent's final answer has landed — see below.                                |
+| `vendorSessionId` | string | once harvested | Omitted until the vendor emits it.                                                      |
+
+`hasResult` is per-vendor, because the three mark completion differently — all verified against the installed CLIs:
+
+- **claude** — a terminal `{"type":"result"}` carrying the answer.
+- **codex** — `{"type":"turn.completed"}` closes the turn; the text rode the `item.completed` before it, whose `item.type` is `agent_message`.
+- **opencode** — emits **no** terminal marker at all. Its stream ends `step_finish(reason=stop)`, so the last `{"type":"text"}` part is the signal.
 
 ### `spawn` / `session_send` parameters
 

@@ -107,6 +107,13 @@ impl ServerHandler for HarnessServer {
                     Err(msg) => Ok(tool_error(msg)),
                 }
             }
+            "session_status" => {
+                let session = require_string(&args, "session")?;
+                match harness.session_status(session) {
+                    Ok((summary, payload)) => Ok(structured_with_text(summary, payload)),
+                    Err(msg) => Ok(tool_error(msg)),
+                }
+            }
             "session_list" => {
                 let (summary, payload) = harness.session_list();
                 Ok(structured_with_text(summary, payload))
@@ -403,6 +410,28 @@ fn harness_tools() -> Vec<Tool> {
             ),
         ),
         Tool::new_with_raw(
+            "session_status",
+            Some(
+                "Check ONE session's state without reading its transcript — status (`running` / `exited`), \
+                 exit code, how many bytes it has written, and whether the agent's final answer has landed \
+                 (`hasResult`). This is the cheap poll: `session_list` returns every session and \
+                 `session_read` returns the transcript itself, which runs to tens of kilobytes. Use it after \
+                 a `spawn` or `session_send` that came back `running`, then call `session_read` once it \
+                 reports `exited`. Note a session is `exited` after every TURN, not only when the \
+                 conversation is over."
+                    .into(),
+            ),
+            object_schema(
+                serde_json::json!({
+                    "session": {
+                        "type": "string",
+                        "description": "Session handle from `spawn` or `session_list`.",
+                    },
+                }),
+                &["session"],
+            ),
+        ),
+        Tool::new_with_raw(
             "session_kill",
             Some(
                 "Stop a session, or forget one that has already stopped. On a RUNNING session it terminates \
@@ -637,6 +666,7 @@ mod tests {
             "spawn",
             "session_send",
             "session_list",
+            "session_status",
             "session_read",
             "session_kill",
         ];
