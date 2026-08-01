@@ -511,7 +511,10 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   task writes it beside `turns.jsonl` after `child.wait()` returns, and
   `launch_child` DELETES it before every turn — `session_send` reuses
   the directory, so a watcher armed for turn N+1 would otherwise fire
-  on turn N's leftover. Surfaced as `sessionInfo.donePath`. Advisory:
+  on turn N's leftover. Surfaced as `sessionInfo.files.done`; `files` names every
+  file the session owns (`dir` / `transcript` / `stderr` / `done` /
+  `breadcrumb`) so a caller can `jq` the transcript instead of paging
+  it. Advisory:
   reap/evict/shutdown remove the directory, so the watcher contract is
   `[ ! -d "$DIR" ] || [ -f "$DIR/done.json" ]`. Never panic in that
   task — `panic = "abort"` would take every running agent down with it.
