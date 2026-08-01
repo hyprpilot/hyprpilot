@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.2](https://github.com/hyprpilot/hyprpilot/compare/v3.4.1...v3.4.2) (2026-08-01)
+
+
+### Refactor
+
+* **mcp:** straighten the module structure, and add session_status, done.json and completion channels ([#220](https://github.com/hyprpilot/hyprpilot/issues/220)) ([aaa7350](https://github.com/hyprpilot/hyprpilot/commit/aaa73509b152d218cf430cec25031490923cc87d))
+
 ## [3.4.1](https://github.com/hyprpilot/hyprpilot/compare/v3.4.0...v3.4.1) (2026-08-01)
 
 
