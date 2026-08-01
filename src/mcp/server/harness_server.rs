@@ -268,11 +268,11 @@ fn launch_props(extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
         },
         "wait": {
             "type": "boolean",
-            "description": "Block until the turn finishes (default true). When false, returns immediately with the handle; poll `session_read`.",
+            "description": "Block until the turn finishes (default FALSE). Left off, this returns as soon as the agent starts — poll `session_status`, then `session_read` once it reports `exited`. Turn it on only to hold the call open for a turn you expect to be short.",
         },
         "timeout_seconds": {
             "type": "integer",
-            "description": "Seconds to wait when `wait` is true (default 300). On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_read`, do not spawn again.",
+            "description": "Seconds to wait when `wait` is true (default 300). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not spawn again.",
         },
     });
     let map = props.as_object_mut().expect("literal is an object");
@@ -319,11 +319,11 @@ fn session_send_props() -> serde_json::Value {
         },
         "wait": {
             "type": "boolean",
-            "description": "Block until the turn finishes (default true). When false, returns immediately; poll `session_read`.",
+            "description": "Block until the turn finishes (default FALSE). Left off, this returns as soon as the turn starts — poll `session_status`, then `session_read` once it reports `exited`. Turn it on only to hold the call open for a turn you expect to be short.",
         },
         "timeout_seconds": {
             "type": "integer",
-            "description": "Seconds to wait when `wait` is true (default 300). On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_read`, do not send again.",
+            "description": "Seconds to wait when `wait` is true (default 300). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not send again.",
         },
     })
 }
@@ -347,12 +347,13 @@ fn harness_tools() -> Vec<Tool> {
         Tool::new_with_raw(
             "spawn",
             Some(
-                "Start a NEW agent session from a profile and send it a prompt. Returns a `session` handle. \
-                 With `wait` true (the default) it blocks and returns the transcript; if the turn outlives \
-                 `timeout_seconds` the result comes back with status `running` and the agent KEEPS WORKING — \
-                 poll `session_read` with the handle, do NOT call `spawn` again. Use `session_send` (not `spawn`) for \
-                 every follow-up turn on the same conversation. Sessions live only as long as this MCP server: \
-                 if it restarts, running agents are killed and transcripts are lost."
+                "Start a NEW agent session from a profile and send it a prompt. Returns a `session` handle \
+                 immediately, while the agent works — that handle is how you address it from here on, and it \
+                 stays the same for the life of the conversation. Poll `session_status { session }` until it \
+                 reports `exited`, then `session_read` for the transcript. Pass `wait: true` to block instead, \
+                 for a turn you expect to be short. Use `session_send` (not `spawn`) for every follow-up turn on \
+                 the same conversation. Sessions live only as long as this MCP server: if it restarts, running \
+                 agents are killed and transcripts are lost."
                     .into(),
             ),
             object_schema(
@@ -373,8 +374,9 @@ fn harness_tools() -> Vec<Tool> {
                  own session store. Takes the `session` handle from `spawn` or `session_list`. The result's \
                  `delivery` field says what happened. The handle does NOT change — it stays valid for the whole \
                  conversation, however many turns you send, and the transcript keeps accumulating under it. \
+                 Like `spawn`, it returns as soon as the turn starts unless you pass `wait: true`. \
                  The session must have finished its previous turn: sending to a `running` session is refused, \
-                 because no vendor supports two concurrent turns on one conversation — poll `session_read` or \
+                 because no vendor supports two concurrent turns on one conversation — poll `session_status` or \
                  `session_kill` it first. The whole launch — profile, working directory, arguments, config \
                  overlays — is inherited from the `spawn` and cannot be changed here; only the prompt, the \
                  `mode`, and how long you wait are per-turn."
@@ -476,6 +478,19 @@ fn harness_tools() -> Vec<Tool> {
     ]
 }
 
+/// Whether the caller wants the tool call held open until the turn ends.
+///
+/// **Detached by default.** A turn runs for minutes, and a blocking call
+/// that outlives `timeout_seconds` comes back `running` regardless — so
+/// waiting never guaranteed a finished answer, it only cost the caller
+/// the ability to do anything else meanwhile. `session_status` reports
+/// the same thing for the price of one `stat`.
+fn wait_flag(args: &serde_json::Map<String, serde_json::Value>) -> Result<bool, String> {
+    Ok(optional_bool(args, "wait")
+        .map_err(|err| err.to_string())?
+        .unwrap_or(false))
+}
+
 /// Decode the shared `spawn` / `session_send` argument set.
 ///
 /// Returns `Err(String)` for things the caller can fix and retry (an
@@ -550,9 +565,7 @@ fn decode_launch_args(
         } else {
             Vec::new()
         },
-        wait: optional_bool(args, "wait")
-            .map_err(|err| err.to_string())?
-            .unwrap_or(true),
+        wait: wait_flag(args)?,
         timeout_seconds: optional_u64(args, "timeout_seconds")
             .map_err(|err| err.to_string())?
             .unwrap_or_else(crate::mcp::server::harness::LaunchToolArgs::default_timeout),
@@ -669,20 +682,24 @@ fn instructions() -> String {
     "Hyprpilot agent harness. You can launch and drive hyprpilot agent \
      profiles. Typical flow:\n\
      1. `list_profiles` — see what can be launched and with which model.\n\
-     2. `spawn { profile, prompt }` — start an agent. It blocks and \
-     returns the transcript.\n\
-     3. If that result says status `running`, the turn outlived its \
-     timeout and the agent is STILL WORKING. Poll \
-     `session_read { session, offset }` — do NOT call `spawn` again.\n\
-     4. `session_send { session, prompt }` — next turn in the same \
+     2. `spawn { profile, prompt }` — start an agent. It returns a \
+     `session` handle right away and the agent keeps working. That handle \
+     is the session's id: use it for every later call, and do NOT call \
+     `spawn` again for the same conversation.\n\
+     3. `session_status { session }` — the cheap poll: state, and whether \
+     the answer has landed, without reading the transcript. Repeat until \
+     it reports `exited`.\n\
+     4. `session_read { session }` — the transcript, any time, including \
+     after the run finished. Pass `wait: true` to follow live; pass a \
+     progressToken to receive output as progress notifications as it \
+     arrives.\n\
+     5. `session_send { session, prompt }` — next turn in the same \
      conversation. The handle does not change.\n\
-     5. `session_read` any time, including after the run finished. Pass \
-     `wait: true` to follow live; pass a progressToken to receive output \
-     as progress notifications as it arrives.\n\
-     6. `session_status { session }` — the cheap poll: state and whether \
-     the answer has landed, without reading the transcript.\n\
-     7. `session_kill { session }` — stops a running session; on an \
+     6. `session_kill { session }` — stops a running session; on an \
      already-finished one it reaps it.\n\
+     `spawn` and `session_send` take `wait: true` to block until the turn \
+     ends instead — worth it only for a turn you expect to be short, since \
+     a turn that outlives `timeout_seconds` comes back `running` anyway.\n\
      If your client supports channels, a `<channel \
      source=\"hyprpilot_harness\">` block appears in your context when a \
      session finishes — read that session with `session_read`. It fires \
@@ -730,6 +747,26 @@ mod tests {
                 mentions_sibling,
                 "{}'s description names no sibling tool, so an agent cannot learn the workflow from it: {description}",
                 tool.name
+            );
+        }
+    }
+
+    /// Detached is the default, and both launch schemas must SAY so —
+    /// the description is the only place a caller learns it, and one
+    /// left claiming `default true` is worse than none at all.
+    #[test]
+    fn a_launch_is_detached_unless_the_caller_asks_to_wait() {
+        assert!(!wait_flag(&serde_json::Map::new()).expect("an absent flag is not an error"));
+
+        let mut asked = serde_json::Map::new();
+        asked.insert("wait".into(), serde_json::json!(true));
+        assert!(wait_flag(&asked).expect("an explicit true still waits"));
+
+        for props in [launch_props(&[]), session_send_props()] {
+            let described = props["wait"]["description"].as_str().expect("wait is documented");
+            assert!(
+                described.contains("default FALSE"),
+                "the schema must state the default a caller gets: {described}"
             );
         }
     }

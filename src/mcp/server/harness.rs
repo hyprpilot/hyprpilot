@@ -196,7 +196,7 @@ impl Harness {
 
         let projection = HarnessProjection {
             structured_output: true,
-            resume: resume.as_ref().map(|target| target.vendor_session_id.clone()),
+            resume: resume.as_ref().map(|target| target.resume_token.clone()),
         };
         let request = SpawnRequest {
             profile_id: Some(args.profile.clone()),
@@ -394,8 +394,8 @@ impl Harness {
             return;
         };
         self.sessions.with_mut(handle, |session| {
-            if session.vendor_session_id.is_none() {
-                session.vendor_session_id = Some(id.clone());
+            if session.resume_token.is_none() {
+                session.resume_token = Some(id.clone());
             }
             session.last_turn_at = std::time::SystemTime::now();
         });
@@ -418,13 +418,12 @@ impl Harness {
                 session.provider.wire_id(),
                 session.status(),
                 session.exit_code(),
-                session.vendor_session_id.clone(),
                 session.turns_path(),
             )
         }) else {
             return json!({ "session": handle, "status": "exited" });
         };
-        let (profile, provider, status, exit_code, vendor, turns) = snapshot;
+        let (profile, provider, status, exit_code, turns) = snapshot;
 
         let mut out = json!({
             "session": handle,
@@ -434,9 +433,6 @@ impl Harness {
         });
         if let Some(code) = exit_code {
             out["exitCode"] = json!(code);
-        }
-        if let Some(vendor) = vendor {
-            out["vendorSessionId"] = json!(vendor);
         }
         if finished == Some(false) {
             out["timedOut"] = json!(true);
@@ -517,9 +513,6 @@ impl Harness {
                 if let Some(code) = session.exit_code() {
                     out["exitCode"] = json!(code);
                 }
-                if let Some(vendor) = session.vendor_session_id.as_ref() {
-                    out["vendorSessionId"] = json!(vendor);
-                }
                 out
             })
             .map(|row| (status_summary(&row), row))
@@ -538,11 +531,11 @@ impl Harness {
     /// conversation" and "the agent was still going" are materially
     /// different things to a caller deciding what to do next.
     pub(crate) async fn session_send(&self, handle: &str, args: LaunchToolArgs) -> Result<Value, String> {
-        // Harvest lazily. A `spawn { wait: false }` returns before the
-        // waiting path ever runs, so its session has no vendor id yet —
-        // without this it could never be resumed, and the "never
-        // reported a vendor session id" branch below would blame a
-        // failed first turn for a session that is perfectly healthy.
+        // Harvest lazily. A detached launch — now the default — returns
+        // before the waiting path ever runs, so its session has no resume
+        // token yet; without this it could never be resumed, and the
+        // branch below would blame a failed first turn for a session that
+        // is perfectly healthy.
         self.harvest(handle);
 
         let (target, shape) = self
@@ -552,17 +545,17 @@ impl Harness {
                     ResumeTarget {
                         handle: session.handle.clone(),
                         profile_id: session.profile_id.clone(),
-                        vendor_session_id: session.vendor_session_id.clone().unwrap_or_default(),
-                        has_vendor_id: session.vendor_session_id.is_some(),
+                        resume_token: session.resume_token.clone().unwrap_or_default(),
+                        has_resume_token: session.resume_token.is_some(),
                     },
                     session.launch.clone(),
                 )
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
 
-        if !target.has_vendor_id {
+        if !target.has_resume_token {
             return Err(format!(
-                "session `{handle}` never reported a vendor session id, so it cannot be resumed. \
+                "session `{handle}` cannot be resumed — the vendor never reported a session id for it. \
                  Its first turn probably failed before the agent started — check `session_read`."
             ));
         }
@@ -617,7 +610,6 @@ impl Harness {
                     "cwd": session.launch.cwd.as_ref().map(|c| c.display().to_string()),
                     "startedAt": unix_secs(session.created_at),
                     "lastTurnAt": unix_secs(session.last_turn_at),
-                    "vendorSessionId": session.vendor_session_id,
                     "pid": session.pid(),
                     // Every file the session owns, named once. A caller
                     // with shell access can `jq` the transcript directly
@@ -655,9 +647,6 @@ impl Harness {
             }
             if let Some(cwd) = session.launch.cwd.as_ref() {
                 row["cwd"] = json!(cwd.display().to_string());
-            }
-            if let Some(vendor) = session.vendor_session_id.as_ref() {
-                row["vendorSessionId"] = json!(vendor);
             }
             row
         });
@@ -808,8 +797,8 @@ impl Harness {
 struct ResumeTarget {
     handle: String,
     profile_id: String,
-    vendor_session_id: String,
-    has_vendor_id: bool,
+    resume_token: String,
+    has_resume_token: bool,
 }
 
 /// Decoded arguments shared by `spawn` and `session_send`.
@@ -1415,6 +1404,91 @@ mod tests {
             assert!(
                 text.contains(expected),
                 "follow stopped early — missing {expected:?} in {text:?}"
+            );
+        }
+    }
+
+    /// The vendor's session id is a resume token, not an identity. It is
+    /// absent for the whole first turn and appears later, so a caller
+    /// that saw it could not rely on it; and it addresses nothing —
+    /// every tool here takes the handle. Pin that no payload carries it,
+    /// while `session_send` can still resume.
+    #[tokio::test]
+    async fn the_vendor_id_stays_internal_to_resume() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("emit.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '{\"type\":\"system\",\"session_id\":\"VENDOR-ID-9\"}\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let command = crate::spawn::providers::SpawnCommand {
+            program: script.display().to_string(),
+            args: Vec::new(),
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let handle = harness
+            .sessions
+            .spawn(
+                command,
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "emit".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+
+        let watch = WatchOptions {
+            seconds: Some(20),
+            sink: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+        harness.follow(&handle, 0, &watch).await;
+        harness.harvest(&handle);
+
+        assert_eq!(
+            harness.sessions.with(&handle, |s| s.resume_token.clone()).flatten(),
+            Some("VENDOR-ID-9".into()),
+            "the token must still be captured — `session_send` cannot resume without it"
+        );
+
+        let (_, status) = harness.session_status(&handle).expect("status");
+        let (_, list) = harness.session_list();
+        let described = harness.describe(&handle, Some(true), Some(0));
+
+        for payload in [&described, &harness.provenance(&handle), &status, &list] {
+            let rendered = serde_json::to_string(payload).unwrap();
+            assert!(
+                !rendered.contains("vendorSessionId"),
+                "the field is back on the wire: {rendered}"
+            );
+        }
+        // Everything but `describe`, whose `text` is the vendor's own
+        // event stream verbatim — the id is IN there because the vendor
+        // printed it, and scrubbing a transcript would be lying about
+        // what the agent emitted.
+        for payload in [harness.provenance(&handle), status, list] {
+            let rendered = serde_json::to_string(&payload).unwrap();
+            assert!(
+                !rendered.contains("VENDOR-ID-9"),
+                "a vendor id reached a metadata payload: {rendered}"
             );
         }
     }

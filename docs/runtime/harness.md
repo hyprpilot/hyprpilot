@@ -86,22 +86,27 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 ### Workflow
 
 1. **`list_profiles`** to find an `id` — a row marked `!` failed to resolve; don't launch it.
-2. **`spawn { profile, prompt }`** to start a session. With `wait` true (the default) it blocks and returns the transcript; if the turn outlives `timeout_seconds` the result comes back with status `running`, a `nextCursor` to resume reading from, and the agent **keeps working**.
-3. If status is `running`, poll or follow **`session_read { session, wait: true }`** — do **not** call `spawn` again for the same conversation.
-4. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
-5. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
-6. **`session_status { session }`** is the cheap way to answer "is it done yet" — it reads no transcript, and `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot.
+2. **`spawn { profile, prompt }`** to start a session. It returns a `session` handle straight away and the agent keeps working — that handle is the session's identity for every later call. Pass `wait: true` to block instead, worth it only for a turn you expect to be short: past `timeout_seconds` the result comes back with status `running`, a `nextCursor` to resume reading from, and the agent still working.
+3. **`session_status { session }`** until it reports `exited` — do **not** call `spawn` again for the same conversation. It reads no transcript, and its `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot. To watch the output as it arrives instead, follow with `session_read { session, wait: true }`.
+4. **`session_read { session }`** for the transcript once it has finished.
+5. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
+6. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
 7. **`session_list`** any time you need to recover a handle you lost.
+
+### The handle is the session's id
+
+`spawn` mints the `session` handle itself, before the vendor has produced a byte, and it is the only identifier any tool here accepts. It does not change across turns.
+
+Vendors mint their own session ids too — and hyprpilot captures one, because it is what `session_send` hands back to the vendor to continue the conversation. It is deliberately **not** on the wire. It would be a second id that identifies the same thing while behaving worse: absent for the whole first turn, appearing only once the vendor emits it, and addressing nothing, since no tool takes it. A caller that saw both would have to learn which one to use and when the other becomes available. There is one id, and you have it from the first result.
 
 ### `session_status`
 
-| Field             | Type   | When           | What it means                                                                           |
-| ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------- |
-| `status`          | string | always         | `running` or `exited`. A session is `exited` after every **turn**, not only at the end. |
-| `exitCode`        | int    | once exited    | Omitted while running.                                                                  |
-| `transcriptBytes` | int    | always         | Bytes written so far. A number that stops moving is a wedged agent.                     |
-| `hasResult`       | bool   | always         | Whether the agent's final answer has landed — see below.                                |
-| `vendorSessionId` | string | once harvested | Omitted until the vendor emits it.                                                      |
+| Field             | Type   | When        | What it means                                                                           |
+| ----------------- | ------ | ----------- | --------------------------------------------------------------------------------------- |
+| `status`          | string | always      | `running` or `exited`. A session is `exited` after every **turn**, not only at the end. |
+| `exitCode`        | int    | once exited | Omitted while running.                                                                  |
+| `transcriptBytes` | int    | always      | Bytes written so far. A number that stops moving is a wedged agent.                     |
+| `hasResult`       | bool   | always      | Whether the agent's final answer has landed — see below.                                |
 
 `hasResult` is `false` for any running session, and only then scanned per vendor. Both halves matter:
 
@@ -189,7 +194,7 @@ The two tools share one parameter set:
 | `mode`            | string           | —             | Vendor mode override (e.g. claude's `plan`). Overrides the profile.                                           |
 | `with_config`     | array of objects | `[]`          | Ad-hoc profile overlays. **Restricted to `model`, `effort` and `mode`** — see below.                          |
 | `args`            | string[]         | `[]`          | Extra arguments forwarded verbatim to the vendor CLI — the tool equivalent of the CLI's trailing `-- <args>`. |
-| `wait`            | bool             | `true`        | Block until the turn finishes. When `false`, returns immediately with the handle — poll `session_read`.       |
+| `wait`            | bool             | `false`       | Block until the turn finishes. Left off, the call returns as soon as the turn starts — poll `session_status`. |
 | `timeout_seconds` | integer          | `300`         | Seconds to wait when `wait` is true. On timeout the agent keeps running; the result reports status `running`. |
 
 Exactly one of `prompt` / `file` is required on both — the same mutual exclusion the CLI's `-p`/`-f` enforce. `spawn` additionally requires `profile` (an id from `list_profiles`). `session_send` additionally requires `session` (a handle from `spawn` or `session_list`) and has **no** `profile` parameter — the profile is inherited from the original spawn, so a conversation can't switch profiles mid-stream.
@@ -224,8 +229,8 @@ A follow streams each new chunk as an MCP `notifications/progress` message when 
 
 `session_send` doesn't require the target session to still be alive — it inspects the handle's status and does whatever's needed:
 
-- **Refused** if the session is still `running` — no vendor supports two concurrent turns on one conversation. Wait for it (poll `session_read`) or `session_kill` it first.
-- **Refused** if the session never reported a vendor session id — its first turn likely failed before the agent even started; check `session_read`.
+- **Refused** if the session is still `running` — no vendor supports two concurrent turns on one conversation. Wait for it (poll `session_status`) or `session_kill` it first.
+- **Refused** if it cannot be resumed, because the vendor never reported a session id for it — its first turn likely failed before the agent even started; check `session_read`.
 - Otherwise it **resumes**: the vendor's own session store continues the conversation in a new process, and the result's `delivery` field reports `"resumed"`. **The handle does not change.** It stays valid for the whole conversation however many turns you send, and each turn appends to the same transcript — so `session_read` offsets stay meaningful across turns, and an N-turn conversation costs one session, not N.
 
 ## Session lifetime
@@ -260,7 +265,7 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Spawn nesting depth         | 1                     | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; a spawned agent's own `spawn` is refused.             |
 | Transcript read per call    | 60,000 bytes          | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                 |
 | Default tail                | 200 lines             | `session_read`'s default when `cursor` is omitted.                                                                               |
-| Default turn timeout        | 300 seconds           | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.                                        |
+| Default turn timeout        | 300 seconds           | How long `spawn`/`session_send` block when asked to `wait: true`, before reporting status `running`. Inert by default.           |
 | Retained sessions           | 64 (`--max-sessions`) | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
 
 Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call. Raise `--max-sessions` on a busy gateway that wants deeper history; lower it where temp space is tight.

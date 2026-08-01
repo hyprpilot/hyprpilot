@@ -140,11 +140,14 @@ pub(crate) struct Session {
     pub provider: AgentProvider,
     pub launch: LaunchShape,
     pub provenance: Provenance,
-    /// The vendor's own session id, parsed out of the first turn's event
-    /// stream. `None` until the vendor emits it (or forever, if the turn
-    /// failed before it did) — which is why `session_send` reports a clean
-    /// error instead of assuming one exists.
-    pub vendor_session_id: Option<String>,
+    /// What `session_send` hands the vendor to continue this
+    /// conversation — the vendor's own session id, parsed out of the
+    /// first turn's event stream. Purely internal: a caller addresses a
+    /// session by its `handle`, which exists from the moment of `spawn`,
+    /// whereas this is `None` until the vendor emits it (or forever, if
+    /// the turn failed before it did) — which is why `session_send`
+    /// reports a clean error instead of assuming one exists.
+    pub resume_token: Option<String>,
     pub created_at: SystemTime,
     pub last_turn_at: SystemTime,
     /// Removed from disk when this struct drops.
@@ -471,7 +474,7 @@ impl SessionTable {
             provider,
             launch,
             provenance,
-            vendor_session_id: None,
+            resume_token: None,
             created_at: now,
             last_turn_at: now,
             dir,
