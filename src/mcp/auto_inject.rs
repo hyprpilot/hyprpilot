@@ -25,8 +25,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::McpConfig;
+use crate::mcp::skills::SkillsRegistry;
 use crate::mcp::{HyprpilotExtension, MCPDefinition};
-use crate::skills::SkillsRegistry;
 
 /// Build the general-tools catalog entry.
 ///
@@ -194,7 +194,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::config::mcp::{HarnessServerConfig, ToolsServerConfig};
-    use crate::skills::SkillsRegistry;
+    use crate::mcp::skills::SkillsRegistry;
 
     use super::*;
 

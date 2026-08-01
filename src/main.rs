@@ -5,7 +5,6 @@ mod paths;
 mod profile;
 mod profiles;
 mod resolve;
-mod skills;
 mod spawn;
 
 use std::path::PathBuf;

@@ -5,9 +5,11 @@
 //! editors / git ops burnt through the debouncer faster than skills
 //! changed.
 //!
-//! Skills reach the agent only through the in-tree `hyprpilot` MCP
-//! server (`mcp/server`), which serves this registry's bundles as MCP
-//! resources and tools.
+//! Lives under `mcp/` because everything it feeds exists for the
+//! `mcp skills` server (`mcp/server/serve.rs`), which serves these
+//! bundles as MCP resources and tools. `resolve` also builds a
+//! registry per launch, but only to decide whether that server is
+//! worth injecting and to count skills for the profile listing.
 
 mod loader;
 

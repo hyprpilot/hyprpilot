@@ -67,7 +67,7 @@ use tokio::sync::RwLock;
 
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
-use crate::skills::SkillsRegistry;
+use crate::mcp::skills::SkillsRegistry;
 
 use super::skills::metadata::{frontmatter_json, skill_block, skill_meta};
 use super::skills::references::{bundle_references, frontmatter_references, FrontmatterRefs};
@@ -274,7 +274,7 @@ impl SkillsServer {
         let registry = self.registry.clone();
         let result = tokio::task::spawn_blocking(move || {
             registry.reload().map_err(|e| e.to_string())?;
-            Ok::<Vec<crate::skills::Skill>, String>(registry.list())
+            Ok::<Vec<crate::mcp::skills::Skill>, String>(registry.list())
         })
         .await;
 
@@ -295,7 +295,7 @@ impl SkillsServer {
     }
 }
 
-fn build_cache(skills: Vec<crate::skills::Skill>) -> SkillsCache {
+fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
     let mut cache = SkillsCache::default();
     for skill in skills {
         let slug = skill.slug.to_string();
@@ -847,8 +847,8 @@ mod tests {
     #[test]
     fn build_cache_falls_back_to_frontmatter_name_for_title() {
         let frontmatter: serde_yaml::Value = serde_yaml::from_str("name: myskill\n").unwrap();
-        let skill = crate::skills::Skill {
-            slug: crate::skills::SkillSlug::parse("myskill").unwrap(),
+        let skill = crate::mcp::skills::Skill {
+            slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),
             description: "desc".to_string(),
             body: "body".to_string(),
@@ -875,8 +875,8 @@ license: MIT
 "#,
         )
         .unwrap();
-        let skill = crate::skills::Skill {
-            slug: crate::skills::SkillSlug::parse("myskill").unwrap(),
+        let skill = crate::mcp::skills::Skill {
+            slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),
             description: "desc".to_string(),
             body: "body".to_string(),

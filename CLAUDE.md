@@ -77,8 +77,11 @@ Key `src/` modules:
   also owns the shared schema/result helpers), `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
-  `skills/` = metadata + references.
-- `skills/` — `SkillsRegistry` + `SKILL.md` loader.
+  `server/skills/` = the wire-shape helpers (metadata + references).
+  `skills/` = `SkillsRegistry` + the `SKILL.md` loader — under `mcp/`
+  because everything it feeds exists for the skills server; `resolve`
+  builds one per launch only to gate that server's injection and to
+  count skills for the listing.
 - `profiles.rs` — the `profiles` subcommand.
 - `logging.rs`, `paths.rs`.
 

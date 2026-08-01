@@ -92,7 +92,7 @@ pub(crate) fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::co
 /// `mcp.enabled = false` is for).
 pub(crate) fn build_mcp_registry_with(
     profile: &ProfileConfig,
-    skills: Option<&Arc<crate::skills::SkillsRegistry>>,
+    skills: Option<&Arc<crate::mcp::skills::SkillsRegistry>>,
 ) -> Vec<crate::mcp::MCPDefinition> {
     let mcp_cfg = effective_mcp_with(profile);
     let files = effective_mcp_files_with(profile);
@@ -203,10 +203,10 @@ fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::Resolved
 }
 
 /// Build the per-launch skills registry from the patched profile.
-pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::skills::SkillsRegistry> {
+pub(crate) fn build_skills_registry_with(profile: &ProfileConfig) -> Arc<crate::mcp::skills::SkillsRegistry> {
     let entries = effective_skills_with(profile);
     let dir_count = entries.len();
-    let registry = Arc::new(crate::skills::SkillsRegistry::new(entries));
+    let registry = Arc::new(crate::mcp::skills::SkillsRegistry::new(entries));
     if let Err(err) = registry.reload() {
         tracing::warn!(%err, "resolve: skills initial reload failed");
     }

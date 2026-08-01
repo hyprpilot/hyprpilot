@@ -25,6 +25,7 @@
 pub mod auto_inject;
 pub mod loader;
 pub mod server;
+pub mod skills;
 pub mod transport;
 
 use std::path::PathBuf;
