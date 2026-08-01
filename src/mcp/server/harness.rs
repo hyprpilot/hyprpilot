@@ -1030,7 +1030,6 @@ fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
         if profile.headless {
             out.push_str("  [headless]");
         }
-        out.push_str(&format!("  mcps={} skills={}", profile.mcp_count, profile.skills_count));
         if let Some(err) = profile.error.as_deref() {
             out.push_str(&format!("  !! {err}"));
         }

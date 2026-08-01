@@ -79,9 +79,9 @@ Key `src/` modules:
   session-driving logic) and `sessions/` (the owned-session store).
   `server/skills/` = the wire-shape helpers (metadata + references).
   `skills/` = `SkillsRegistry` + the `SKILL.md` loader — under `mcp/`
-  because everything it feeds exists for the skills server; `resolve`
-  builds one per launch only to gate that server's injection and to
-  count skills for the listing.
+  because everything it feeds exists for the skills server. `resolve`
+  builds one per launch solely to gate that server's injection (skills
+  is the only server also gated on content).
 - `profiles.rs` — the `profiles` subcommand.
 - `logging.rs`, `paths.rs`.
 

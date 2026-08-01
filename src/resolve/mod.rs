@@ -47,11 +47,6 @@ pub struct ProfileSummary {
     /// PATCHED profile — a `$match`ed patch is how a family opts in.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub harness_enabled: bool,
-    /// How many MCP servers and skills this profile resolves to — a
-    /// cheap "how equipped is this agent" signal for a caller choosing
-    /// between profiles.
-    pub mcp_count: usize,
-    pub skills_count: usize,
     /// Profile-scoped cwd hint — the resolved launch cwd for this
     /// profile. Optional because not every profile sets one; the
     /// interactive picker surfaces it so the captain sees the launch

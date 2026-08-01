@@ -309,8 +309,7 @@ fn harness_tools() -> Vec<Tool> {
             "list_profiles",
             Some(
                 "START HERE. List the agent profiles you can launch, with the vendor, model, effort, mode, \
-                 cwd, and how many MCP servers and skills each one resolves to. Pass a profile's `id` as \
-                 `spawn`'s `profile`. A profile already carries its agent/model/effort/mode/MCP/skills, so every \
+                 and cwd. Pass a profile's `id` as `spawn`'s `profile`. A profile already carries its agent/model/effort/mode/MCP/skills, so every \
                  other `spawn` argument is an override, not a requirement. Rows marked `!` failed to resolve — \
                  do not launch those."
                     .into(),

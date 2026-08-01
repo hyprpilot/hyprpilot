@@ -392,9 +392,6 @@ pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[
                 .iter()
                 .find(|agent| agent.id == resolved.agent)
                 .map_or("unknown", |agent| agent.provider.wire_id());
-            let skills = build_skills_registry_with(&resolved);
-            let mcp_count = build_mcp_registry_with(&resolved, Some(&skills)).len();
-
             ProfileSummary {
                 harness_enabled: resolved
                     .harness
@@ -407,8 +404,6 @@ pub(crate) fn list_profiles(cfg: &Config, cwd: Option<&Path>, config_patches: &[
                 effort: resolved.effort.clone(),
                 mode: resolved.mode.clone(),
                 headless: resolved.headless.unwrap_or(false),
-                mcp_count,
-                skills_count: skills.list().len(),
                 cwd: cwd
                     .map(|cwd| cwd.display().to_string())
                     .or_else(|| resolved.cwd.as_ref().map(|cwd| cwd.display().to_string())),
