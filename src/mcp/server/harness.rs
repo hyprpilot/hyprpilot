@@ -1845,6 +1845,19 @@ impl Harness {
         let payload = match record.outcome {
             TurnOutcome::Running => TaskPayload::Working,
             TurnOutcome::Killed => TaskPayload::Cancelled,
+            // EVERY exit is `Completed`, including a non-zero one.
+            //
+            // SEP-2663 reserves `failed` for "a JSON-RPC error occurred
+            // during execution" — the request itself could not be
+            // fulfilled. A vendor CLI exiting 1 is not that: the harness
+            // ran the agent successfully and the agent reported a normal
+            // failure, which is why the non-task path already returns
+            // `is_error: false` for exactly this case. Mapping it to
+            // `failed` would mean inventing a JSON-RPC error, discarding
+            // the transcript that explains what went wrong, and handing a
+            // task-mode caller something different from what every other
+            // caller gets. The exit code and the transcript are both in
+            // the result; the caller can tell.
             TurnOutcome::Exited(_) => {
                 // The result the same call would have returned
                 // synchronously — the whole `CallToolResult`, content
