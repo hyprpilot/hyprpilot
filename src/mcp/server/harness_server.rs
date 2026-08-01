@@ -110,10 +110,20 @@ impl ServerHandler for HarnessServer {
         request: rmcp::model::GetTaskParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::GetTaskResult, rmcp::ErrorData> {
-        self.harness
+        let (handle, _) = crate::mcp::server::harness::parse_task_id(&request.task_id)
+            .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("`{}` is not a task id.", request.task_id), None))?;
+        let task = self
+            .harness
             .task_view(&request.task_id)
-            .map(rmcp::model::GetTaskResult::new)
-            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))
+            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+        let mut result = rmcp::model::GetTaskResult::new(task);
+        // Also on the poll result, not just the mint: a client that
+        // persisted only the task id can recover the session handle
+        // without taking the id apart.
+        let mut meta = serde_json::Map::new();
+        meta.insert("io.hyprpilot/session".into(), serde_json::json!(handle));
+        result.meta = Some(rmcp::model::MetaObject(meta));
+        Ok(result)
     }
 
     /// Cancels the addressed TURN, not the session.
@@ -755,10 +765,16 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
         let peer = running.peer().clone();
         let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
         let harness = Arc::clone(&harness_for_hook);
-        sessions.set_exit_hook(Arc::new(move |handle: String, code: i32| {
+        let table = Arc::clone(&sessions);
+        sessions.set_exit_hook(Arc::new(move |handle: String, turn: u32, code: i32| {
             let peer = peer.clone();
             let name = name.clone();
             let harness = Arc::clone(&harness);
+            // Seal SYNCHRONOUSLY, before the spawned notifier runs: this
+            // is the only moment the real finish time is known, and a
+            // `session_send` can start the next turn while the notifier
+            // is still queued.
+            table.seal_turn(&handle, turn, code);
             tokio::spawn(async move {
                 super::harness::notify_session_finished(&peer, &name, &handle, code).await;
 
@@ -777,9 +793,10 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
                 // Re-deriving from `peer_info()` would silently skip the
                 // push for a client that declared tasks the way the spec
                 // documents: per request.
-                let Some(turn) = harness.current_turn(&handle) else {
-                    return;
-                };
+                // The turn that EXITED, not whatever is current now — a
+                // `session_send` landing first would otherwise make this
+                // announce turn N+1 as `working` in place of turn N's
+                // completion.
                 if !harness.turn_minted_task(&handle, turn) {
                     return;
                 }

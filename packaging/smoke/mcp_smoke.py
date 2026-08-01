@@ -21,12 +21,38 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "./target/debug/hyprpilot"
 SKILLS_DIR = os.path.expanduser("~/.config/nvim/utils/agents/skills")
 TASKS_EXT = "io.modelcontextprotocol/tasks"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def stub_config():
+    """Write a config whose 'vendor CLI' is the stub script.
+
+    Generated rather than checked in because `command` is resolved
+    against the SESSION's cwd, not the repo — a relative path here fails
+    with a bare "No such file or directory" that looks like a spawn bug.
+    """
+    path = os.path.join(tempfile.mkdtemp(prefix="hyprpilot-smoke-"), "config.toml")
+    with open(path, "w") as fh:
+        fh.write(
+            "[[agents]]\n"
+            'id = "stub"\n'
+            'provider = "claude-code"\n'
+            f'command = "{os.path.join(HERE, "stub-agent.sh")}"\n'
+            "args = []\n\n"
+            "[[profiles]]\n"
+            'id = "smoke"\n'
+            'agent = "stub"\n'
+            "harness = { enabled = true }\n"
+            "mcp = { enabled = false }\n"
+        )
+    return path
 
 failures = []
 
@@ -138,20 +164,74 @@ check("no task minted without declaring", profiles.get("resultType") != "task")
 s.stop()
 
 # ── 4. mcp harness — the DECLARING client (task path) ─────────────────
-print("=== hyprpilot mcp harness — client WITH tasks ===")
-s = Server(["mcp", "harness"])
-info = s.initialize(version="2026-07-28",
-                    capabilities={"extensions": {TASKS_EXT: {}}})
+#
+# Uses a stub vendor CLI (packaging/smoke/stub-agent.sh) so this needs no
+# model, network or credentials. Everything below was a real bug at some
+# point: cancelling a finished task used to kill the running turn and
+# delete the transcript, and a terminal task's lastUpdatedAt used to move
+# on every poll. Assertions that cannot fail are worse than none.
+print("=== hyprpilot mcp harness — client WITH tasks (task path) ===")
+s = Server(["mcp", "harness"], config=stub_config())
+info = s.initialize(version="2026-07-28", capabilities={"extensions": {TASKS_EXT: {}}})
 check("negotiated 2026-07-28", info.get("protocolVersion") == "2026-07-28",
       info.get("protocolVersion"))
 
-profiles = tool_result(s.call("tools/call",
-                              {"name": "list_profiles", "arguments": {}}))
-check("an instant tool is NOT a task", profiles.get("resultType") != "task",
-      str(profiles.get("resultType")))
+spawned = tool_result(s.call("tools/call", {
+    "name": "spawn",
+    "arguments": {"profile": "smoke", "prompt": "go", "cwd": "/tmp"}}))
+check("spawn returns a task", spawned.get("resultType") == "task",
+      str(spawned.get("resultType")))
+task_id = spawned.get("taskId", "")
+handle = (spawned.get("_meta") or {}).get("io.hyprpilot/session", "")
+check("handle reachable without parsing the id", bool(handle) and handle in task_id,
+      f"{handle!r} in {task_id!r}")
 
-print()
-if failures:
-    print(f"FAILED: {len(failures)} check(s): {', '.join(failures)}")
-    sys.exit(1)
-print("ALL PASS")
+# Poll to a terminal state.
+status, got = None, {}
+for _ in range(40):
+    got = tool_result(s.call("tasks/get", {"taskId": task_id}))
+    status = got.get("status")
+    if status != "working":
+        break
+    time.sleep(0.5)
+check("tasks/get reaches a terminal state", status == "completed", str(status))
+inner = got.get("result") or {}
+check("completed result has content text",
+      bool(inner.get("content")) and inner["content"][0].get("type") == "text")
+check("completed result has structuredContent", "structuredContent" in inner)
+check("tasks/get carries the session handle",
+      (got.get("_meta") or {}).get("io.hyprpilot/session") == handle)
+
+# A terminal task must not change — SEP-2663 says terminal states are
+# immutable, so `lastUpdatedAt` may not track the observation.
+first = got.get("lastUpdatedAt")
+time.sleep(1.1)
+again = tool_result(s.call("tasks/get", {"taskId": task_id}))
+check("terminal task does not change on re-poll",
+      again.get("status") == "completed" and again.get("lastUpdatedAt") == first,
+      f"{first} -> {again.get('lastUpdatedAt')}")
+check("createdAt agrees between mint and poll",
+      again.get("createdAt") == spawned.get("createdAt"),
+      f"{spawned.get('createdAt')} vs {again.get('createdAt')}")
+
+# Turn 2, then turn 1 must still be terminal.
+sent = tool_result(s.call("tools/call", {
+    "name": "session_send", "arguments": {"session": handle, "prompt": "again"}}))
+turn2 = sent.get("taskId", "")
+check("session_send returns its own task", sent.get("resultType") == "task" and turn2 != task_id,
+      f"{task_id} -> {turn2}")
+check("turn 1 stays terminal after turn 2 starts",
+      tool_result(s.call("tasks/get", {"taskId": task_id})).get("status") == "completed")
+
+# Cancelling a FINISHED task must be a no-op — it must not touch the
+# conversation, and must not reap the transcript.
+s.call("tasks/cancel", {"taskId": task_id})
+check("cancelling a finished task leaves it completed",
+      tool_result(s.call("tasks/get", {"taskId": task_id})).get("status") == "completed")
+check("cancelling a finished task does not destroy the session",
+      "error" not in s.call("tasks/get", {"taskId": turn2}))
+check("the session is still addressable by its own tools",
+      "error" not in s.call("tools/call",
+                            {"name": "session_status", "arguments": {"session": handle}}))
+s.stop()
+

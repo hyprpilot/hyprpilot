@@ -284,10 +284,13 @@ impl Session {
         if record.outcome != TurnOutcome::Running || turn != self.turn {
             return Some(record.clone());
         }
+        // The watch is the fallback for a turn the exit hook has not
+        // sealed yet (or when no hook is installed at all). It does NOT
+        // invent a finish time — an unsealed record reports none rather
+        // than reporting the moment it was asked.
         let mut live = record.clone();
         if let Some(code) = self.exit_code() {
             live.outcome = TurnOutcome::Exited(code);
-            live.finished_at = Some(rmcp::task_manager::current_timestamp());
         }
         Some(live)
     }
@@ -328,7 +331,13 @@ fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
 /// separation is worth more than the indirection costs. The channel
 /// notification is built in `harness.rs`, where the protocol types
 /// already live.
-pub(crate) type ExitHook = Arc<dyn Fn(String, i32) + Send + Sync>;
+/// Called when a turn's process exits: `(handle, turn, exit_code)`.
+///
+/// The TURN is part of the signature because the hook fires
+/// asynchronously — by the time it runs, a `session_send` may already
+/// have started the next turn. Re-reading "the current turn" from the
+/// table would then attribute turn N's completion to turn N+1.
+pub(crate) type ExitHook = Arc<dyn Fn(String, u32, i32) + Send + Sync>;
 
 /// The in-process session table. Bounded by the sidecar's own lifetime —
 /// there is no persistence and no cross-launch state.
@@ -443,8 +452,15 @@ impl SessionTable {
 
         // Append, so the conversation stays ONE transcript and the byte
         // offsets a caller is paging through remain valid across turns.
-        let launched = launch_child(&command, session.dir.path(), handle, true, self.on_exit.get().cloned())
-            .map_err(RespawnError::Spawn)?;
+        let launched = launch_child(
+            &command,
+            session.dir.path(),
+            handle,
+            true,
+            self.on_exit.get().cloned(),
+            session.turn + 1,
+        )
+        .map_err(RespawnError::Spawn)?;
 
         // Only now — a launch that failed must not consume a turn number.
         session.turn += 1;
@@ -510,6 +526,29 @@ impl SessionTable {
         }
     }
 
+    /// Record how a turn ended, at the moment it ends.
+    ///
+    /// Called from the exit hook rather than derived when a task is
+    /// polled, because "when did this turn finish" is knowable only here.
+    /// Deriving it at query time made `lastUpdatedAt` report the time of
+    /// the *observation*, so a terminal task appeared to change on every
+    /// poll — which SEP-2663 forbids.
+    ///
+    /// A `Killed` stamp wins: the exit code a signalled child produces is
+    /// `-1`, which says nothing, and we already know why it died.
+    pub(crate) fn seal_turn(&self, handle: &str, turn: u32, code: i32) {
+        self.with_mut(handle, |session| {
+            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == turn) {
+                if record.outcome != TurnOutcome::Killed {
+                    record.outcome = TurnOutcome::Exited(code);
+                }
+                if record.finished_at.is_none() {
+                    record.finished_at = Some(rmcp::task_manager::current_timestamp());
+                }
+            }
+        });
+    }
+
     /// Terminate one session's process group. Returns `None` for an
     /// unknown handle, `Some(was_running)` otherwise — killing an
     /// already-exited session is a no-op, not an error.
@@ -520,16 +559,19 @@ impl SessionTable {
         if done.borrow().is_some() {
             return Some(false);
         }
-        // Stamp before signalling, and ONLY past the already-exited
-        // return above: a session that finished on its own and is being
-        // reaped must not report its turn as cancelled. The waiter cannot
-        // record this itself — a signalled child yields `-1`, which is
-        // indistinguishable from a wait error.
+        // Stamp only a turn that is still Running, in ONE lock
+        // acquisition. Checking `done` and stamping under two separate
+        // locks let a session that exited naturally in between get marked
+        // `Killed` anyway — its task would then report `cancelled` for a
+        // turn that completed normally. Re-reading the outcome here, under
+        // the same lock that writes it, closes that window.
         self.with_mut(&handle, |session| {
             let current = session.turn;
             if let Some(record) = session.turns.iter_mut().find(|r| r.turn == current) {
-                record.outcome = TurnOutcome::Killed;
-                record.finished_at = Some(rmcp::task_manager::current_timestamp());
+                if record.outcome == TurnOutcome::Running && session.done.borrow().is_none() {
+                    record.outcome = TurnOutcome::Killed;
+                    record.finished_at = Some(rmcp::task_manager::current_timestamp());
+                }
             }
         });
         signal_group(pgid, nix::sys::signal::Signal::SIGTERM);
@@ -588,7 +630,7 @@ impl SessionTable {
         // directory even when this one fell back to `$PWD`.
         launch.cwd = command.cwd.clone();
         let Launched { pid, pgid, done } =
-            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned())?;
+            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned(), 1)?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -652,6 +694,7 @@ fn launch_child(
     handle: &str,
     append: bool,
     on_exit: Option<ExitHook>,
+    turn: u32,
 ) -> Result<Launched> {
     let open = |name: &str| -> Result<std::fs::File> {
         let path = dir.join(name);
@@ -752,7 +795,7 @@ fn launch_child(
         }
         let _ = tx.send(Some(code));
         if let Some(hook) = on_exit {
-            hook(waiter_handle, code);
+            hook(waiter_handle, turn, code);
         }
     });
 

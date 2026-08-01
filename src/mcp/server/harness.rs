@@ -1952,8 +1952,21 @@ impl Harness {
         self.mark_task_minted(handle, turn);
 
         let id = task_id(handle, turn);
-        let now = rmcp::task_manager::current_timestamp();
-        let mut task = Task::new(id, TaskStatus::Working, now.clone(), now);
+        // Seeded from the turn record, not a fresh clock: minting and the
+        // first `tasks/get` otherwise report the same task with two
+        // different creation times.
+        let started = self
+            .sessions
+            .with(handle, |session| {
+                session
+                    .turns
+                    .iter()
+                    .find(|r| r.turn == turn)
+                    .map(|r| r.started_at.clone())
+            })
+            .flatten()
+            .unwrap_or_else(rmcp::task_manager::current_timestamp);
+        let mut task = Task::new(id, TaskStatus::Working, started.clone(), started);
         task.ttl_ms = None;
         task.poll_interval_ms = Some(TASK_POLL_INTERVAL_MS);
 
