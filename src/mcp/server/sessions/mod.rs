@@ -377,7 +377,7 @@ impl SessionTable {
     }
 
     /// Kill every live session and drop the table, removing every
-    /// `TempDir`. Called from `serve::run` on graceful transport close
+    /// `TempDir`. Called from `skills_server::run` on graceful transport close
     /// and on SIGTERM/SIGHUP.
     pub(crate) async fn shutdown(&self) {
         let handles: Vec<String> = self.map_all(|s| s.handle.clone());

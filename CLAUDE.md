@@ -73,7 +73,7 @@ Key `src/` modules:
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
   (one builder per in-tree server), `server/` = the three servers,
   one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
-  stateless), `serve.rs` (`mcp skills` — protocol + skills tools),
+  stateless), `skills_server.rs` (`mcp skills` — protocol + tools),
   `rpc.rs` (the JSON-RPC plumbing all three share — schema builders,
   result wrappers, argument decoders), `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
@@ -368,12 +368,12 @@ missing. Do not re-merge them.
 | Subcommand | Default name | Module | Serves | Default |
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
-| `mcp skills` | `hyprpilot_skills` | `server/serve.rs` | skills tools + resources | on |
+| `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
 | `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` | **off** |
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
-`optional_*`, `wait_for_shutdown`). It used to live in `serve.rs`
+`optional_*`, `wait_for_shutdown`). It used to live in the skills server
 purely because that server was written first — five of the helpers had
 no caller there at all.
 
@@ -405,7 +405,7 @@ Skills reach the agent **only** through the skills server.
   injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
   (one `--skill-dir` per root, each carrying that root's ignore list as
   JSON).
-- **`hyprpilot mcp skills`** (`mcp/server/serve.rs`): an `rmcp` stdio
+- **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
   server. Resources: `hyprpilot://skills/<slug>` (body) and
   `hyprpilot://references/<slug>` (bundled frontmatter references — a
   parallel top-level scheme, NOT a `/references` segment nested under

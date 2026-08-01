@@ -21,8 +21,8 @@ use clap::{Args, Subcommand};
 pub mod harness;
 pub mod harness_server;
 pub mod rpc;
-pub mod serve;
 pub mod sessions;
+pub mod skills_server;
 pub mod tools;
 
 /// Top-level args for `hyprpilot mcp <subcommand>`.
@@ -49,7 +49,7 @@ pub enum McpSubcommand {
     /// Serve the skills catalog. Spawned by the agent vendor when the
     /// launcher auto-injects the skills entry; resolved skill roots are
     /// passed as `--skill-dir` args at spawn time.
-    Skills(serve::ServeArgs),
+    Skills(skills_server::SkillsArgs),
 
     /// Serve the agent harness — `list_profiles` / `spawn` /
     /// `session_send` / `session_list` / `session_read` / `session_kill`.
@@ -91,7 +91,7 @@ impl McpArgs {
     pub async fn run(self, config: ConfigSource) -> anyhow::Result<()> {
         match self.command {
             McpSubcommand::Serve(args) => tools::run_tools(args, config).await,
-            McpSubcommand::Skills(args) => serve::run_skills(args, config).await,
+            McpSubcommand::Skills(args) => skills_server::run_skills(args, config).await,
             McpSubcommand::Harness(args) => harness_server::run_harness(args, config).await,
         }
     }

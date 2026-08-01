@@ -81,7 +81,7 @@ use crate::mcp::skills::wire_references::{bundle_references, frontmatter_referen
 /// is still visible when it appears in another root with no ignore for
 /// that pattern.
 #[derive(Debug, Args, Clone)]
-pub struct ServeArgs {
+pub struct SkillsArgs {
     /// JSON-encoded skill root entry. Repeatable — directories are
     /// searched in declaration order; first-slug-wins on collision.
     ///
@@ -112,7 +112,7 @@ fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
 
 /// Run the rmcp stdio server in the foreground. Returns when the
 /// vendor closes the pipe (or on init error).
-pub async fn run_skills(args: ServeArgs, config: super::ConfigSource) -> anyhow::Result<()> {
+pub async fn run_skills(args: SkillsArgs, config: super::ConfigSource) -> anyhow::Result<()> {
     tracing::info!(dirs = args.skill_dirs.len(), "mcp: starting the skills server");
     run(SkillsServer::new(args, config)?).await
 }
@@ -124,7 +124,7 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
     let running = handler
         .serve((stdin, stdout))
         .await
-        .context("mcp::server::serve: serve failed at init")?;
+        .context("mcp::server::skills_server: serve failed at init")?;
 
     // Race the transport against SIGTERM/SIGHUP. Without this a
     // supervisor stopping the sidecar would skip every destructor and
@@ -178,7 +178,7 @@ struct SkillsServer {
 }
 
 impl SkillsServer {
-    fn new(args: ServeArgs, _config: super::ConfigSource) -> anyhow::Result<Self> {
+    fn new(args: SkillsArgs, _config: super::ConfigSource) -> anyhow::Result<Self> {
         // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
         // JSON entry. Each entry carries its OWN ignore list so the
         // sidecar replicates the launcher's per-dir suppression exactly —
