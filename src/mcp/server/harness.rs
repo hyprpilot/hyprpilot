@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use super::sessions::{SessionStatus, SessionTable};
+use super::sessions::{SessionStatus, SessionTable, TurnOutcome};
 use super::ConfigSource;
 use crate::spawn::providers::HarnessProjection;
 use crate::spawn::{LaunchOrigin, SpawnRequest};
@@ -976,6 +976,34 @@ pub(crate) async fn notify_session_finished(
     }
 }
 
+/// Push the SEP-2663 status event for a turn that just ended.
+///
+/// **Double-gated by the caller**, and both halves matter. A client that
+/// never declared the extension must not receive `notifications/tasks`
+/// for an ordinary `spawn` — that would be a behaviour change visible to
+/// a caller who opted into nothing, which is exactly what this feature
+/// promises not to do. And a turn that never minted a task has no task
+/// to report on.
+///
+/// Note this rides `Peer::send_notification` directly rather than
+/// `subscriptions/listen`: rmcp explicitly refuses to route task
+/// notifications through a subscription today (`SubscriptionFilter` has
+/// no `taskIds` field), so the subscription path is not available to us.
+/// A client that does not handle the method drops it silently — the same
+/// contract as the Claude channel above.
+pub(crate) async fn notify_task_finished(
+    peer: &rmcp::service::Peer<rmcp::service::RoleServer>,
+    task: rmcp::model::DetailedTask,
+) {
+    let notification = rmcp::model::TaskStatusNotification::new(rmcp::model::TaskStatusNotificationParams::from(task));
+    if let Err(err) = peer
+        .send_notification(rmcp::model::ServerNotification::TaskStatusNotification(notification))
+        .await
+    {
+        tracing::debug!(%err, "mcp harness: task status push failed");
+    }
+}
+
 /// Whether the transcript carries the agent's final answer yet.
 ///
 /// Each vendor marks completion differently — the same three-way split
@@ -1750,5 +1778,377 @@ mod tests {
     #[test]
     fn empty_profile_list_says_so_rather_than_rendering_an_empty_table() {
         assert!(profiles_table(&[]).contains("opt-in per profile"));
+    }
+}
+
+// ── SEP-2663 tasks ────────────────────────────────────────────────────
+
+/// Separator between the session handle and the turn index in a task id.
+///
+/// Safe because a handle is a bare v4 UUID — hex and `-` only — so
+/// `rsplit_once` is unambiguous.
+const TASK_ID_SEP: char = ':';
+
+/// Suggested poll interval handed to the client, in ms. A turn runs for
+/// minutes; polling faster than this buys nothing but load.
+const TASK_POLL_INTERVAL_MS: u64 = 2_000;
+
+/// A task id names ONE TURN of one session, not the session.
+///
+/// The session handle alone cannot be the task id. SEP-2663 makes
+/// `completed` / `failed` / `cancelled` terminal — "once reached, the
+/// task's state does not change" — while a session handle is reused
+/// across turns and cycles `exited → running → exited`. Keyed by handle
+/// alone, turn 2 starting would mutate turn 1's finished task.
+pub(crate) fn task_id(handle: &str, turn: u32) -> String {
+    format!("{handle}{TASK_ID_SEP}{turn}")
+}
+
+pub(crate) fn parse_task_id(raw: &str) -> Option<(&str, u32)> {
+    let (handle, turn) = raw.rsplit_once(TASK_ID_SEP)?;
+    if handle.is_empty() {
+        return None;
+    }
+    Some((handle, turn.parse().ok()?))
+}
+
+impl Harness {
+    /// Current state of one task, or an error naming why it is gone.
+    ///
+    /// Deliberately does NOT fabricate a terminal state for a session
+    /// that was evicted or reaped. A caller polling a task it can no
+    /// longer resolve needs to know the record is gone, not be handed a
+    /// `failed` we cannot substantiate.
+    pub(crate) fn task_view(&self, raw: &str) -> Result<rmcp::model::DetailedTask, String> {
+        use rmcp::model::{DetailedTask, Task, TaskPayload, TaskStatus};
+
+        let (handle, turn) = parse_task_id(raw).ok_or_else(|| {
+            format!("`{raw}` is not a task id. Task ids come from a `spawn` or `session_send` result.")
+        })?;
+
+        // Lazily, for the same reason `session_send` does it: a detached
+        // turn never runs the waiting path, so nothing else would fold
+        // the vendor's own id into the session.
+        self.harvest(handle);
+
+        let record = self
+            .sessions
+            .with(handle, |session| session.turn_record(turn))
+            .ok_or_else(|| {
+                format!(
+                    "session `{handle}` is gone — evicted, reaped, or never existed. \
+                     Its task records went with it."
+                )
+            })?;
+        let record = record.ok_or_else(|| format!("session `{handle}` has no turn {turn}."))?;
+
+        let payload = match record.outcome {
+            TurnOutcome::Running => TaskPayload::Working,
+            TurnOutcome::Killed => TaskPayload::Cancelled,
+            // EVERY exit is `Completed`, including a non-zero one.
+            //
+            // SEP-2663 reserves `failed` for "a JSON-RPC error occurred
+            // during execution" — the request itself could not be
+            // fulfilled. A vendor CLI exiting 1 is not that: the harness
+            // ran the agent successfully and the agent reported a normal
+            // failure, which is why the non-task path already returns
+            // `is_error: false` for exactly this case. Mapping it to
+            // `failed` would mean inventing a JSON-RPC error, discarding
+            // the transcript that explains what went wrong, and handing a
+            // task-mode caller something different from what every other
+            // caller gets. The exit code and the transcript are both in
+            // the result; the caller can tell.
+            TurnOutcome::Exited(_) => {
+                // The result the same call would have returned
+                // synchronously — the whole `CallToolResult`, content
+                // block included, so a task-mode caller and a normal one
+                // read the same bytes. A structured-only payload renders
+                // as "Unknown" in opencode.
+                let payload = self.describe(handle, Some(true), Some(record.transcript_from));
+                let summary = super::harness_server::launch_summary(&payload);
+                let mut result = rmcp::model::CallToolResult::structured(payload);
+                result.content = vec![rmcp::model::ContentBlock::text(summary)];
+                let serialized = serde_json::to_value(&result)
+                    .ok()
+                    .and_then(|v| v.as_object().cloned())
+                    .unwrap_or_default();
+                TaskPayload::Completed { result: serialized }
+            }
+        };
+
+        let updated = record.finished_at.clone().unwrap_or_else(|| record.started_at.clone());
+        let mut task = Task::new(raw.to_string(), TaskStatus::Working, record.started_at.clone(), updated);
+        // Unlimited would be a lie in the other direction, but so would a
+        // number: retention is bounded by `--max-sessions` eviction, by
+        // `session_kill` reaping a finished session, and by the sidecar's
+        // own lifetime. None of those is a duration. `None` at least does
+        // not promise a window we cannot honour.
+        task.ttl_ms = None;
+        task.poll_interval_ms = Some(TASK_POLL_INTERVAL_MS);
+
+        Ok(DetailedTask::new(task, payload))
+    }
+
+    /// Which turn is currently in flight for a session, if it exists.
+    pub(crate) fn current_turn(&self, handle: &str) -> Option<u32> {
+        self.sessions.with(handle, |session| session.turn)
+    }
+
+    /// Cancel ONE turn, addressed by task id.
+    ///
+    /// Deliberately NOT `session_kill`. That tool is state-aware and
+    /// reaps an already-finished session — which for a protocol cancel is
+    /// data loss: `tasks/cancel` on a *completed* task would delete the
+    /// whole conversation, its transcript, and every other turn's record,
+    /// and the completed task would stop reporting `completed`. A
+    /// spec-legal call must never destroy a conversation.
+    ///
+    /// Cancelling a task that already reached a terminal state is a
+    /// no-op, per SEP-2663: terminal states do not change. So only the
+    /// turn actually in flight can be cancelled, and addressing an older
+    /// turn acknowledges without touching the running one.
+    pub(crate) async fn cancel_turn(&self, handle: &str, turn: u32) -> Result<(), String> {
+        let current = self
+            .sessions
+            .with(handle, |session| session.turn)
+            .ok_or_else(|| format!("session `{handle}` is gone — evicted, reaped, or never existed."))?;
+        if current != turn {
+            return Ok(());
+        }
+        // `kill` alone: terminate the process group, keep the transcript.
+        self.sessions.kill(handle).await;
+        Ok(())
+    }
+
+    /// Record that this turn handed out a task handle.
+    ///
+    /// The exit hook gates the completion push on this rather than on the
+    /// peer's capabilities — see `TurnRecord::task_minted`. One recorded
+    /// fact answers both questions the push has to ask: did the caller
+    /// opt in, and is there a task to report on.
+    fn mark_task_minted(&self, handle: &str, turn: u32) {
+        self.sessions.with_mut(handle, |session| {
+            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == turn) {
+                record.task_minted = true;
+            }
+        });
+    }
+
+    /// Whether this turn handed out a task handle.
+    pub(crate) fn turn_minted_task(&self, handle: &str, turn: u32) -> bool {
+        self.sessions
+            .with(handle, |session| {
+                session.turns.iter().any(|r| r.turn == turn && r.task_minted)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Seed state for a task the caller just created.
+    pub(crate) fn new_task(&self, handle: &str, turn: u32) -> rmcp::model::CreateTaskResult {
+        use rmcp::model::{CreateTaskResult, MetaObject, Task, TaskStatus};
+
+        // Record it here, at the one moment a task handle actually
+        // reaches a caller. The exit hook has no other way to know.
+        self.mark_task_minted(handle, turn);
+
+        let id = task_id(handle, turn);
+        // Seeded from the turn record, not a fresh clock: minting and the
+        // first `tasks/get` otherwise report the same task with two
+        // different creation times.
+        let started = self
+            .sessions
+            .with(handle, |session| {
+                session
+                    .turns
+                    .iter()
+                    .find(|r| r.turn == turn)
+                    .map(|r| r.started_at.clone())
+            })
+            .flatten()
+            .unwrap_or_else(rmcp::task_manager::current_timestamp);
+        let mut task = Task::new(id, TaskStatus::Working, started.clone(), started);
+        task.ttl_ms = None;
+        task.poll_interval_ms = Some(TASK_POLL_INTERVAL_MS);
+
+        let mut result = CreateTaskResult::new(task);
+        // The handle rides `_meta` so a task-mode caller never has to
+        // PARSE the task id to get it. Every other tool here takes the
+        // handle, and an id a caller must take apart is not opaque.
+        let mut meta = serde_json::Map::new();
+        meta.insert("io.hyprpilot/session".into(), json!(handle));
+        result.meta = Some(MetaObject(meta));
+        result
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+
+    /// A task names a TURN, not a session — the whole reason the id is
+    /// not just the handle.
+    #[test]
+    fn task_ids_round_trip_and_reject_bare_handles() {
+        let handle = "3b5ce010-1f61-4a8a-8fa7-086d4b5d43c0";
+        let id = task_id(handle, 7);
+        assert_eq!(id, format!("{handle}:7"));
+        assert_eq!(parse_task_id(&id), Some((handle, 7)));
+
+        // A bare handle is not a task id. It must not silently resolve to
+        // turn 1, or a caller passing the wrong identifier gets a
+        // plausible answer about the wrong thing.
+        assert_eq!(parse_task_id(handle), None);
+        assert_eq!(parse_task_id(""), None);
+        assert_eq!(parse_task_id(":3"), None, "an empty handle is not addressable");
+        assert_eq!(parse_task_id(&format!("{handle}:x")), None);
+    }
+
+    /// The separator has to survive the handle's own alphabet. A v4 UUID
+    /// is hex and `-` only, so `rsplit_once(':')` cannot be fooled by the
+    /// handle — this pins that assumption rather than trusting it.
+    #[test]
+    fn the_separator_cannot_collide_with_a_handle() {
+        let handle = uuid::Uuid::new_v4().to_string();
+        assert!(
+            !handle.contains(':'),
+            "handles must not contain the task-id separator: {handle}"
+        );
+        let id = task_id(&handle, 12);
+        let (parsed, turn) = parse_task_id(&id).expect("round trip");
+        assert_eq!(parsed, handle);
+        assert_eq!(turn, 12);
+    }
+
+    /// Cancelling a TERMINAL task must not touch the conversation.
+    ///
+    /// The bug this pins was live: `tasks/cancel` routed through
+    /// `session_kill`, which reaps an already-finished session — so a
+    /// spec-legal cancel of a completed turn-1 task killed turn 2 and
+    /// deleted the transcript, and the completed task stopped reporting
+    /// `completed`. Terminal states are immutable; cancelling one is a
+    /// no-op, not a licence to destroy data.
+    #[tokio::test]
+    async fn cancelling_a_finished_turn_leaves_the_session_intact() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let handle = harness
+            .sessions
+            .spawn(
+                crate::spawn::providers::SpawnCommand {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 0".into()],
+                    env: Default::default(),
+                    cwd: None,
+                    stdin_prompt: None,
+                },
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+        let mut done = harness.sessions.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+
+        // Turn 1 is finished. Cancelling it addresses a terminal task.
+        harness
+            .cancel_turn(&handle, 1)
+            .await
+            .expect("a terminal cancel is a no-op");
+        assert!(
+            harness.sessions.with(&handle, |s| s.turn).is_some(),
+            "the session must survive — reaping it here destroyed the whole conversation"
+        );
+        assert!(
+            harness.task_view(&task_id(&handle, 1)).is_ok(),
+            "a completed task must keep reporting after a cancel it should have ignored"
+        );
+
+        // An older turn's id must never reach a later turn.
+        harness
+            .cancel_turn(&handle, 99)
+            .await
+            .expect("an unknown turn is a no-op");
+        assert!(harness.sessions.with(&handle, |s| s.turn).is_some());
+
+        // An unresolvable handle is an error, matching `tasks/get`.
+        assert!(harness.cancel_turn("nope", 1).await.is_err());
+    }
+
+    /// The completion push is gated on this flag, so a mint that fails
+    /// to record it means a task-mode caller polls forever and is never
+    /// told its turn ended. Nothing else in the suite covers it — the
+    /// gap was caught by clippy noticing the setter had no caller, which
+    /// is not a guarantee that survives a refactor.
+    #[tokio::test]
+    async fn minting_a_task_records_it_on_the_turn() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let command = crate::spawn::providers::SpawnCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 0".into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let handle = harness
+            .sessions
+            .spawn(
+                command,
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+
+        assert!(
+            !harness.turn_minted_task(&handle, 1),
+            "a launch that never handed out a task must not look like one that did"
+        );
+        let created = harness.new_task(&handle, 1);
+        assert_eq!(created.task.task_id, task_id(&handle, 1));
+        assert!(
+            harness.turn_minted_task(&handle, 1),
+            "minting must record on the turn, or the completion push never fires"
+        );
+        // The handle must be reachable WITHOUT parsing the task id.
+        let meta = created.meta.expect("_meta carries the session handle");
+        assert_eq!(
+            meta.0.get("io.hyprpilot/session").and_then(|v| v.as_str()),
+            Some(handle.as_str())
+        );
+    }
+
+    /// An unknown or evicted session must produce an ERROR, never a
+    /// fabricated terminal state. A caller polling a task it can no
+    /// longer resolve needs to know the record is gone — reporting
+    /// `failed` would be a status we cannot substantiate.
+    #[test]
+    fn an_unresolvable_task_errors_rather_than_inventing_a_status() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let err = harness
+            .task_view("3b5ce010-1f61-4a8a-8fa7-086d4b5d43c0:1")
+            .expect_err("an unknown session cannot resolve");
+        assert!(err.contains("gone"), "the error must say the record is gone: {err}");
+
+        let err = harness.task_view("not-a-task-id").expect_err("garbage cannot resolve");
+        assert!(err.contains("not a task id"), "got: {err}");
     }
 }

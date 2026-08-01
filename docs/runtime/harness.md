@@ -99,6 +99,33 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 
 Vendors mint their own session ids too — and hyprpilot captures one, because it is what `session_send` hands back to the vendor to continue the conversation. It is deliberately **not** on the wire. It would be a second id that identifies the same thing while behaving worse: absent for the whole first turn, appearing only once the vendor emits it, and addressing nothing, since no tool takes it. A caller that saw both would have to learn which one to use and when the other becomes available. There is one id, and you have it from the first result.
 
+### Tasks (SEP-2663) — the opt-in parallel path
+
+The harness speaks the MCP Tasks extension **alongside** its own tools, never instead of them. A client that declares `io.modelcontextprotocol/tasks` gets a task handle from `spawn` / `session_send` and polls `tasks/get`; every other client gets exactly the result it always got. There is no config switch — the client's own declaration is the entire gate, and rmcp independently refuses to send a task to a peer that did not declare one.
+
+```jsonc
+// spawn, from a declaring client
+{
+  "resultType": "task",
+  "taskId": "1a3615c8-5dfa-4613-892b-fe27f25e0f9d:1",
+  "status": "working",
+  "pollIntervalMs": 2000,
+  "_meta": { "io.hyprpilot/session": "1a3615c8-5dfa-4613-892b-fe27f25e0f9d" }
+}
+```
+
+**A task names one TURN, not the session.** The spec makes `completed` / `failed` / `cancelled` terminal — once reached, a task's state never changes — while a session handle is reused across turns and cycles `exited → running → exited`. Keyed by the handle alone, starting turn 2 would rewrite turn 1's finished task. So the id is `<session-handle>:<turn>`, and a completed turn keeps reporting `completed` however far the conversation moves on.
+
+The session handle rides `_meta` rather than being parsed out of the task id: every other tool here takes the handle, and an id you have to take apart is not opaque.
+
+`tasks/cancel` cancels **that turn**, not the session. Terminal states are immutable, so cancelling a task that already finished is a no-op — deliberately, because routing it through `session_kill` (which reaps an already-finished session) meant a spec-legal cancel of a completed task killed the running turn and deleted the transcript. An unknown handle is `-32602`, matching `tasks/get`.
+
+**Task ids do not outlive the sidecar.** SEP-2663 presents a task id as a durable handle you can resume polling after a client restart; that assumption does not hold here. Sessions die with `hyprpilot mcp harness`, and finished ones are also dropped by `--max-sessions` eviction and by `session_kill`. `ttl_ms` is `null` because retention is bounded by count and by process lifetime, not by a duration — any number would be a stronger promise than we can keep. `tasks/update` is unimplemented (`-32601`): the harness never emits `input_required`, so no task can have outstanding `inputRequests`.
+
+**What this does not give you.** `notifications/tasks` is pushed when a turn ends, but rmcp will not route task notifications through `subscriptions/listen` (`SubscriptionFilter` has no `taskIds` field yet), so a client that does not handle the method drops it silently — the same contract as the Claude channel. Polling `tasks/get` is the supported path today.
+
+**Which clients?** None of the three vendor CLIs declares the extension as of claude 2.1.220, codex 0.146.0 and opencode 1.18.11 — measured against a real handshake. This exists so that the day one does, hyprpilot already speaks the standard protocol.
+
 ### `session_status`
 
 | Field             | Type   | When        | What it means                                                                           |

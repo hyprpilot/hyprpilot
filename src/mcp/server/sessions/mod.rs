@@ -150,6 +150,20 @@ pub(crate) struct Session {
     pub resume_token: Option<String>,
     pub created_at: SystemTime,
     pub last_turn_at: SystemTime,
+    /// 1-based index of the turn currently running (or the last one that
+    /// ran). Incremented by `respawn` only after the child actually
+    /// started, so a failed resume does not consume a number.
+    pub turn: u32,
+    /// One record per turn, oldest first.
+    ///
+    /// The session's own state cannot answer "how did turn N end?" —
+    /// `respawn` replaces `done` wholesale, so the previous turn's exit
+    /// code is unreachable the moment the next turn starts. That is fine
+    /// for the session tools, which only ever ask about *now*, but a
+    /// SEP-2663 task is per-turn and its terminal states are immutable:
+    /// once `completed`, a task must keep reporting `completed` forever.
+    /// This is where that history lives.
+    pub turns: Vec<TurnRecord>,
     /// Removed from disk when this struct drops.
     dir: TempDir,
     pid: u32,
@@ -158,6 +172,53 @@ pub(crate) struct Session {
     /// plain field so `wait: true` can await completion without holding
     /// the table lock across an await.
     done: watch::Receiver<Option<i32>>,
+}
+
+/// How one turn ended.
+///
+/// A closed set, so it is an enum rather than a `killed: bool` beside an
+/// exit code. The distinction is not derivable after the fact: the waiter
+/// stores `status.code().unwrap_or(-1)`, and `code()` is `None` for
+/// signal death — so a session we killed, one killed by something else,
+/// and a `child.wait()` error all land on `-1`, indistinguishable from
+/// each other and adjacent to a genuine crash's own exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnOutcome {
+    Running,
+    Exited(i32),
+    /// We terminated it — `session_kill`, or a task cancellation.
+    Killed,
+}
+
+/// What one turn did, retained after the next turn overwrites the live
+/// session state.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnRecord {
+    pub turn: u32,
+    pub outcome: TurnOutcome,
+    /// Byte offset into the transcript where this turn's output begins.
+    /// The transcript is append-only across turns, so this is what makes
+    /// a finished turn's output still addressable later.
+    pub transcript_from: u64,
+    /// Whether a SEP-2663 task handle was actually handed to the caller
+    /// for this turn.
+    ///
+    /// Recorded at mint time rather than re-derived when the turn ends,
+    /// because the two moments see different things: a request carries
+    /// per-request `_meta` capabilities, while the exit hook has only the
+    /// peer's `initialize` info. Deriving it late would silently skip the
+    /// completion push for a client that declared tasks the way the spec
+    /// actually documents — per request.
+    pub task_minted: bool,
+    /// ISO 8601, captured when the turn started.
+    ///
+    /// Stored as the wire string rather than a `SystemTime` because that
+    /// is the only form SEP-2663 accepts, and the repo carries no date
+    /// crate to convert one later. Capturing it here also keeps a task's
+    /// `createdAt` honest: derived at poll time it would report the
+    /// moment of the poll, moving on every request.
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 
 impl Session {
@@ -210,6 +271,38 @@ impl Session {
         self.pid
     }
 
+    /// Fold the live `done` watch into the current turn's record.
+    ///
+    /// The record is written at turn START, when the outcome is unknown,
+    /// and `Killed` is stamped by [`SessionTable::kill`]. Everything else
+    /// has to be read from the watch at query time — the waiter task
+    /// cannot reach the table to write it back without a lock it must not
+    /// hold. A `Killed` stamp always wins: the exit code it produced is
+    /// `-1`, which says nothing.
+    pub(crate) fn turn_record(&self, turn: u32) -> Option<TurnRecord> {
+        let record = self.turns.iter().find(|r| r.turn == turn)?;
+        if record.outcome != TurnOutcome::Running || turn != self.turn {
+            return Some(record.clone());
+        }
+        // The watch is the fallback for a turn the exit hook has not
+        // sealed yet (or when no hook is installed at all). It does NOT
+        // invent a finish time — an unsealed record reports none rather
+        // than reporting the moment it was asked.
+        let mut live = record.clone();
+        if let Some(code) = self.exit_code() {
+            live.outcome = TurnOutcome::Exited(code);
+        }
+        Some(live)
+    }
+
+    /// Byte length of the transcript, used as the start offset of the
+    /// turn about to begin. Zero for a fresh session or an unreadable
+    /// file — a start offset that reads from the beginning is wrong only
+    /// cosmetically, whereas failing a launch over it would not be.
+    fn transcript_len(&self) -> u64 {
+        std::fs::metadata(self.turns_path()).map(|m| m.len()).unwrap_or(0)
+    }
+
     /// A receiver that resolves once the child exits. Cloned out so the
     /// caller can await it *after* releasing the table lock — holding a
     /// `std::sync::Mutex` across an await would stall every concurrent
@@ -238,7 +331,13 @@ fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
 /// separation is worth more than the indirection costs. The channel
 /// notification is built in `harness.rs`, where the protocol types
 /// already live.
-pub(crate) type ExitHook = Arc<dyn Fn(String, i32) + Send + Sync>;
+/// Called when a turn's process exits: `(handle, turn, exit_code)`.
+///
+/// The TURN is part of the signature because the hook fires
+/// asynchronously — by the time it runs, a `session_send` may already
+/// have started the next turn. Re-reading "the current turn" from the
+/// table would then attribute turn N's completion to turn N+1.
+pub(crate) type ExitHook = Arc<dyn Fn(String, u32, i32) + Send + Sync>;
 
 /// The in-process session table. Bounded by the sidecar's own lifetime —
 /// there is no persistence and no cross-launch state.
@@ -341,10 +440,38 @@ impl SessionTable {
             return Err(RespawnError::Busy);
         }
 
+        // Seal the outgoing turn BEFORE the watch is replaced — after
+        // the swap its exit code is unreachable.
+        let ending = session.turn;
+        if let Some(sealed) = session.turn_record(ending) {
+            if let Some(slot) = session.turns.iter_mut().find(|r| r.turn == ending) {
+                *slot = sealed;
+            }
+        }
+        let transcript_from = session.transcript_len();
+
         // Append, so the conversation stays ONE transcript and the byte
         // offsets a caller is paging through remain valid across turns.
-        let launched = launch_child(&command, session.dir.path(), handle, true, self.on_exit.get().cloned())
-            .map_err(RespawnError::Spawn)?;
+        let launched = launch_child(
+            &command,
+            session.dir.path(),
+            handle,
+            true,
+            self.on_exit.get().cloned(),
+            session.turn + 1,
+        )
+        .map_err(RespawnError::Spawn)?;
+
+        // Only now — a launch that failed must not consume a turn number.
+        session.turn += 1;
+        session.turns.push(TurnRecord {
+            turn: session.turn,
+            outcome: TurnOutcome::Running,
+            transcript_from,
+            task_minted: false,
+            started_at: rmcp::task_manager::current_timestamp(),
+            finished_at: None,
+        });
 
         session.launch.cwd = command.cwd.clone();
         session.provenance = provenance;
@@ -399,6 +526,29 @@ impl SessionTable {
         }
     }
 
+    /// Record how a turn ended, at the moment it ends.
+    ///
+    /// Called from the exit hook rather than derived when a task is
+    /// polled, because "when did this turn finish" is knowable only here.
+    /// Deriving it at query time made `lastUpdatedAt` report the time of
+    /// the *observation*, so a terminal task appeared to change on every
+    /// poll — which SEP-2663 forbids.
+    ///
+    /// A `Killed` stamp wins: the exit code a signalled child produces is
+    /// `-1`, which says nothing, and we already know why it died.
+    pub(crate) fn seal_turn(&self, handle: &str, turn: u32, code: i32) {
+        self.with_mut(handle, |session| {
+            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == turn) {
+                if record.outcome != TurnOutcome::Killed {
+                    record.outcome = TurnOutcome::Exited(code);
+                }
+                if record.finished_at.is_none() {
+                    record.finished_at = Some(rmcp::task_manager::current_timestamp());
+                }
+            }
+        });
+    }
+
     /// Terminate one session's process group. Returns `None` for an
     /// unknown handle, `Some(was_running)` otherwise — killing an
     /// already-exited session is a no-op, not an error.
@@ -409,6 +559,21 @@ impl SessionTable {
         if done.borrow().is_some() {
             return Some(false);
         }
+        // Stamp only a turn that is still Running, in ONE lock
+        // acquisition. Checking `done` and stamping under two separate
+        // locks let a session that exited naturally in between get marked
+        // `Killed` anyway — its task would then report `cancelled` for a
+        // turn that completed normally. Re-reading the outcome here, under
+        // the same lock that writes it, closes that window.
+        self.with_mut(&handle, |session| {
+            let current = session.turn;
+            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == current) {
+                if record.outcome == TurnOutcome::Running && session.done.borrow().is_none() {
+                    record.outcome = TurnOutcome::Killed;
+                    record.finished_at = Some(rmcp::task_manager::current_timestamp());
+                }
+            }
+        });
         signal_group(pgid, nix::sys::signal::Signal::SIGTERM);
         let graceful = tokio::time::timeout(KILL_GRACE, async {
             while done.borrow().is_none() {
@@ -465,7 +630,7 @@ impl SessionTable {
         // directory even when this one fell back to `$PWD`.
         launch.cwd = command.cwd.clone();
         let Launched { pid, pgid, done } =
-            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned())?;
+            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned(), 1)?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -477,6 +642,15 @@ impl SessionTable {
             resume_token: None,
             created_at: now,
             last_turn_at: now,
+            turn: 1,
+            turns: vec![TurnRecord {
+                turn: 1,
+                outcome: TurnOutcome::Running,
+                transcript_from: 0,
+                task_minted: false,
+                started_at: rmcp::task_manager::current_timestamp(),
+                finished_at: None,
+            }],
             dir,
             pid,
             pgid,
@@ -520,6 +694,7 @@ fn launch_child(
     handle: &str,
     append: bool,
     on_exit: Option<ExitHook>,
+    turn: u32,
 ) -> Result<Launched> {
     let open = |name: &str| -> Result<std::fs::File> {
         let path = dir.join(name);
@@ -620,7 +795,7 @@ fn launch_child(
         }
         let _ = tx.send(Some(code));
         if let Some(hook) = on_exit {
-            hook(waiter_handle, code);
+            hook(waiter_handle, turn, code);
         }
     });
 
@@ -944,6 +1119,153 @@ mod tests {
         // The process group is gone: signalling it now fails.
         let alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
         assert!(!alive, "shutdown must leave no live vendor process");
+    }
+
+    /// The defect this whole per-turn record exists to prevent.
+    ///
+    /// `respawn` replaces `done` wholesale, so without a per-turn record
+    /// turn 1's exit code is unreachable the moment turn 2 starts — and
+    /// `tasks/get` for turn 1 would report `Working` for a task that
+    /// already completed. SEP-2663 makes terminal states immutable, so
+    /// that is not a cosmetic bug.
+    #[tokio::test]
+    async fn a_finished_turn_stays_finished_after_the_next_one_starts() {
+        let table = SessionTable::new();
+        let command = SpawnCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 3".into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let handle = table
+            .spawn(
+                command,
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                LaunchShape::default(),
+            )
+            .unwrap();
+
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+        assert_eq!(
+            table.with(&handle, |s| s.turn_record(1).unwrap().outcome).unwrap(),
+            TurnOutcome::Exited(3)
+        );
+
+        // Turn 2 replaces the live watch.
+        table
+            .respawn(
+                &handle,
+                SpawnCommand {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "sleep 5".into()],
+                    env: Default::default(),
+                    cwd: None,
+                    stdin_prompt: None,
+                },
+                Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(table.with(&handle, |s| s.turn).unwrap(), 2, "the counter must advance");
+        assert_eq!(
+            table.with(&handle, |s| s.turn_record(1).unwrap().outcome).unwrap(),
+            TurnOutcome::Exited(3),
+            "turn 1 is terminal — turn 2 starting must not rewrite it"
+        );
+        assert_eq!(
+            table.with(&handle, |s| s.turn_record(2).unwrap().outcome).unwrap(),
+            TurnOutcome::Running,
+            "turn 2 is the one in flight"
+        );
+    }
+
+    /// A kill and a crash both surface as an exit code, and for a signal
+    /// death that code is `-1` — indistinguishable. Only an explicit
+    /// stamp can tell them apart, and it must be set ONLY when we really
+    /// killed something: reaping an already-finished session must not
+    /// retroactively mark its turn cancelled.
+    #[tokio::test]
+    async fn killing_marks_the_turn_but_reaping_a_finished_one_does_not() {
+        let table = SessionTable::new();
+        let live = SpawnCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let prov = || Provenance {
+            program: "sh".into(),
+            argv: Vec::new(),
+            env_keys: Vec::new(),
+            model: None,
+            effort: None,
+            mode: None,
+            prompt_bytes: 0,
+        };
+
+        let killed = table
+            .spawn(
+                live,
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                prov(),
+                LaunchShape::default(),
+            )
+            .unwrap();
+        assert_eq!(table.kill(&killed).await, Some(true));
+        assert_eq!(
+            table.with(&killed, |s| s.turn_record(1).unwrap().outcome).unwrap(),
+            TurnOutcome::Killed
+        );
+
+        let finished = table
+            .spawn(
+                SpawnCommand {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 0".into()],
+                    env: Default::default(),
+                    cwd: None,
+                    stdin_prompt: None,
+                },
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                prov(),
+                LaunchShape::default(),
+            )
+            .unwrap();
+        let mut done = table.with(&finished, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+        assert_eq!(table.kill(&finished).await, Some(false), "already exited");
+        assert_eq!(
+            table.with(&finished, |s| s.turn_record(1).unwrap().outcome).unwrap(),
+            TurnOutcome::Exited(0),
+            "reaping a session that finished normally must not report it cancelled"
+        );
     }
 
     #[tokio::test]

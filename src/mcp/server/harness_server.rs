@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -44,6 +44,10 @@ impl HarnessServer {
 }
 
 impl ServerHandler for HarnessServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        super::rpc::harness_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
@@ -59,6 +63,23 @@ impl ServerHandler for HarnessServer {
         // assignment on the owned `default()`, not a struct literal.
         caps.experimental = Some(
             [("claude/channel".to_string(), serde_json::Map::new())]
+                .into_iter()
+                .collect(),
+        );
+        // SEP-2663. Advertising is REQUIRED for `tasks/*` to route at
+        // all: `validate_tasks_capability` answers `method_not_found`
+        // unless the server declares it. Field assignment rather than
+        // `ServerCapabilities::builder().enable_tasks()` — the builder
+        // cannot express `tools.list_changed = Some(false)` above
+        // (`enable_tool_list_changed` only sets `Some(true)`), so
+        // migrating would quietly change an advertised capability.
+        //
+        // This is the one part of the feature NOT gated on the client:
+        // the key appears for every peer. Harmless by construction —
+        // unknown capabilities are ignored per spec — and verified
+        // against all three vendor CLIs.
+        caps.extensions = Some(
+            [(rmcp::model::TASKS_EXTENSION_ID.to_string(), serde_json::Map::new())]
                 .into_iter()
                 .collect(),
         );
@@ -79,6 +100,51 @@ impl ServerHandler for HarnessServer {
         Ok(ListToolsResult::with_all_items(harness_tools()))
     }
 
+    /// SEP-2663 poll. The task id names one TURN of one session, so a
+    /// finished turn keeps reporting its terminal state even after the
+    /// conversation moves on — which is what the spec requires and what
+    /// `session_status` (deliberately) does not do, since it answers
+    /// about *now*.
+    async fn get_task(
+        &self,
+        request: rmcp::model::GetTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetTaskResult, rmcp::ErrorData> {
+        let (handle, _) = crate::mcp::server::harness::parse_task_id(&request.task_id)
+            .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("`{}` is not a task id.", request.task_id), None))?;
+        let task = self
+            .harness
+            .task_view(&request.task_id)
+            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+        let mut result = rmcp::model::GetTaskResult::new(task);
+        // Also on the poll result, not just the mint: a client that
+        // persisted only the task id can recover the session handle
+        // without taking the id apart.
+        let mut meta = serde_json::Map::new();
+        meta.insert("io.hyprpilot/session".into(), serde_json::json!(handle));
+        result.meta = Some(rmcp::model::MetaObject(meta));
+        Ok(result)
+    }
+
+    /// Cancels the addressed TURN, not the session.
+    ///
+    /// Terminal tasks are immutable, so cancelling one is a no-op rather
+    /// than an error — and crucially it must not reach the session, whose
+    /// next turn may be running. An unknown handle is `-32602`, matching
+    /// `tasks/get` and SEP-2663's "SHOULD" for cancel.
+    async fn cancel_task(
+        &self,
+        request: rmcp::model::CancelTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        let (handle, turn) = crate::mcp::server::harness::parse_task_id(&request.task_id)
+            .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("`{}` is not a task id.", request.task_id), None))?;
+        self.harness
+            .cancel_turn(handle, turn)
+            .await
+            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))
+    }
+
     /// Dispatch one harness tool. Recoverable failures come back as
     /// `Ok(tool_error(..))` so the agent can read and act on them;
     /// `Err` stays reserved for protocol faults (bad params).
@@ -86,7 +152,7 @@ impl ServerHandler for HarnessServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let harness = self.harness.as_ref();
         let context = &context;
         let args = request.arguments.unwrap_or_default();
@@ -102,7 +168,11 @@ impl ServerHandler for HarnessServer {
                     Err(msg) => return Ok(tool_error(msg)),
                 };
                 match harness.spawn(launch).await {
-                    Ok(payload) => Ok(structured_with_text(launch_summary(&payload), payload)),
+                    // Only the Ok arm can become a task. A refused launch
+                    // must stay a tool error — minting a task id for work
+                    // that never started hands the caller a handle that
+                    // can never resolve.
+                    Ok(payload) => Ok(as_task_or_result(harness, context, payload)),
                     Err(msg) => Ok(tool_error(msg)),
                 }
             }
@@ -115,7 +185,7 @@ impl ServerHandler for HarnessServer {
                     Err(msg) => return Ok(tool_error(msg)),
                 };
                 match harness.session_send(&session, launch).await {
-                    Ok(payload) => Ok(structured_with_text(launch_summary(&payload), payload)),
+                    Ok(payload) => Ok(as_task_or_result(harness, context, payload)),
                     Err(msg) => Ok(tool_error(msg)),
                 }
             }
@@ -590,7 +660,39 @@ fn decode_launch_args(
 /// finds the exit status where a terminal would put it. A `running`
 /// result says plainly to poll rather than re-spawn — the single most
 /// expensive mistake a calling agent can make here.
-fn launch_summary(payload: &serde_json::Value) -> String {
+/// The fork between the two launch paths.
+///
+/// A client that declared SEP-2663 gets a task handle; everyone else
+/// gets exactly what they got before this existed. There is no third
+/// behaviour and no config switch — the client's own declaration is the
+/// whole gate, which is why an ordinary `spawn` cannot change shape
+/// underneath a caller that never asked.
+///
+/// `client_capabilities()` is `None` for a peer that has not finished
+/// `initialize` (`service.rs:1242-1249`); `None` means *not declared*,
+/// never "probably supported".
+fn as_task_or_result(
+    harness: &Harness,
+    context: &RequestContext<RoleServer>,
+    payload: serde_json::Value,
+) -> CallToolResponse {
+    let declared = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
+    if !declared {
+        return structured_with_text(launch_summary(&payload), payload);
+    }
+    let Some((handle, turn)) = payload
+        .get("session")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|handle| harness.current_turn(handle).map(|turn| (handle, turn)))
+    else {
+        // The launch succeeded but the session is already gone. Fall back
+        // rather than mint a task id nothing can resolve.
+        return structured_with_text(launch_summary(&payload), payload);
+    };
+    CallToolResponse::Task(harness.new_task(handle, turn))
+}
+
+pub(super) fn launch_summary(payload: &serde_json::Value) -> String {
     let handle = payload
         .get("session")
         .and_then(serde_json::Value::as_str)
@@ -648,6 +750,7 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // `waiting()` consumes the `RunningService`, so this is the only
     // chance to keep a handle for the shutdown reap.
     let sessions = Arc::clone(&handler.harness.sessions);
+    let harness_for_hook = Arc::clone(&handler.harness);
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = handler
@@ -661,11 +764,45 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     if !args.no_notify_on_complete {
         let peer = running.peer().clone();
         let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
-        sessions.set_exit_hook(Arc::new(move |handle: String, code: i32| {
+        let harness = Arc::clone(&harness_for_hook);
+        let table = Arc::clone(&sessions);
+        sessions.set_exit_hook(Arc::new(move |handle: String, turn: u32, code: i32| {
             let peer = peer.clone();
             let name = name.clone();
+            let harness = Arc::clone(&harness);
+            // Seal SYNCHRONOUSLY, before the spawned notifier runs: this
+            // is the only moment the real finish time is known, and a
+            // `session_send` can start the next turn while the notifier
+            // is still queued.
+            table.seal_turn(&handle, turn, code);
             tokio::spawn(async move {
                 super::harness::notify_session_finished(&peer, &name, &handle, code).await;
+
+                // SEP-2663 status push — GATED, and it has to be. The
+                // hook fires for every turn of every session, so an
+                // ungated push here would send `notifications/tasks` to a
+                // client that never declared the extension, for an
+                // ordinary `spawn`. That is the one behaviour change this
+                // feature must not make.
+                //
+                // Gated on ONE recorded fact: did this turn actually hand
+                // the caller a task handle. That already implies the
+                // caller opted in, and it is the only form available here
+                // — a request sees per-request `_meta` capabilities, while
+                // this hook has nothing but the peer's `initialize` info.
+                // Re-deriving from `peer_info()` would silently skip the
+                // push for a client that declared tasks the way the spec
+                // documents: per request.
+                // The turn that EXITED, not whatever is current now — a
+                // `session_send` landing first would otherwise make this
+                // announce turn N+1 as `working` in place of turn N's
+                // completion.
+                if !harness.turn_minted_task(&handle, turn) {
+                    return;
+                }
+                if let Ok(task) = harness.task_view(&super::harness::task_id(&handle, turn)) {
+                    super::harness::notify_task_finished(&peer, task).await;
+                }
             });
         }));
     }

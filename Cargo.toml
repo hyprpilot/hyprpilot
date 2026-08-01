@@ -38,7 +38,7 @@ path-absolutize = "4.0.1"
 merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp serve`.
-rmcp = { version = "2", features = ["transport-io"] }
+rmcp = { version = "3", features = ["transport-io"] }
 # Cross-platform OS-level URL / path opener for the `open_url` MCP tool.
 # The MCP server runs as a stdio sidecar — this crate wraps `xdg-open`
 # on Linux, `open` on macOS, `start` on Windows.
@@ -52,7 +52,7 @@ tempfile = "3"
 # only offers SIGKILL), and `PR_SET_PDEATHSIG` — the kernel-level
 # guarantee that a session dies with the sidecar even under SIGKILL or
 # the release profile's `panic = "abort"`.
-nix = { version = "0.30", features = ["process", "signal"] }
+nix = { version = "0.31", features = ["process", "signal"] }
 # `CancellationToken` — the type rmcp hands us on `RequestContext.ct`,
 # tripped when the client cancels a request. It is what ends an
 # unbounded `session_read` follow, so the agent decides when to stop

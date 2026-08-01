@@ -14,7 +14,7 @@
 
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -36,6 +36,10 @@ pub struct ToolsArgs {}
 pub struct ToolsServer;
 
 impl ServerHandler for ToolsServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        super::rpc::supported_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
@@ -73,7 +77,7 @@ impl ServerHandler for ToolsServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let args = request.arguments.unwrap_or_default();
         match request.name.as_ref() {
             "open" => {
