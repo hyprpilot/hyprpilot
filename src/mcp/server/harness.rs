@@ -600,6 +600,7 @@ impl Harness {
                     "lastTurnAt": unix_secs(session.last_turn_at),
                     "vendorSessionId": session.vendor_session_id,
                     "pid": session.pid(),
+                    "donePath": session.done_path().display().to_string(),
                     "command": session.provenance.program,
                     "argv": session.provenance.argv,
                     "envKeys": session.provenance.env_keys,

@@ -59,6 +59,14 @@ pub(crate) const TURNS_FILE: &str = "turns.jsonl";
 /// Child stderr, kept separate so a vendor's diagnostics never corrupt
 /// the JSONL line framing `session_read` depends on.
 pub(crate) const STDERR_FILE: &str = "stderr.log";
+
+/// Written by the waiter task when a turn's process exits.
+///
+/// The vendor-neutral completion signal: a shell watcher cannot call an
+/// MCP tool, but it can `test -f`. Written by the same `child.wait()`
+/// task that owns the truth, so no recycled PID and no zombie can
+/// produce a false reading.
+pub(crate) const DONE_FILE: &str = "done.json";
 /// Crash-recovery breadcrumb — see [`sweep_stale_sessions`].
 pub(crate) const BREADCRUMB_FILE: &str = "session.json";
 
@@ -158,6 +166,13 @@ impl Session {
 
     pub(crate) fn turns_path(&self) -> PathBuf {
         self.dir.path().join(TURNS_FILE)
+    }
+
+    /// Where the completion marker lands. Advisory — the directory is
+    /// removed on reap, eviction and shutdown, so a watcher must treat
+    /// a MISSING directory as finished too, not just a present marker.
+    pub(crate) fn done_path(&self) -> PathBuf {
+        self.dir.path().join(DONE_FILE)
     }
 
     pub(crate) fn stderr_path(&self) -> PathBuf {
@@ -526,6 +541,14 @@ fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) 
 
     write_breadcrumb(dir, handle, pid, pgid);
 
+    // Clear any previous turn's marker BEFORE the process can finish.
+    // `session_send` reuses the handle and the directory, so a watcher
+    // armed for turn N+1 would otherwise fire instantly on turn N's
+    // leftover. Unconditional: on a fresh `spawn` the file cannot exist
+    // and the failed unlink is cheaper than a `stat` first.
+    let done_path = dir.join(DONE_FILE);
+    let _ = std::fs::remove_file(&done_path);
+
     let (tx, done) = watch::channel(None);
     let waiter_handle = handle.to_string();
     tokio::spawn(async move {
@@ -537,6 +560,22 @@ fn launch_child(command: &SpawnCommand, dir: &Path, handle: &str, append: bool) 
             }
         };
         tracing::info!(handle = %waiter_handle, exit_code = code, "mcp harness: session exited");
+        // Marker first, then the channel: a watcher polling the file is
+        // the one that cannot be woken any other way.
+        //
+        // Never panic in here. Under the release profile's
+        // `panic = "abort"` a panic in this task takes the whole sidecar
+        // down and, through PDEATHSIG, every running agent with it.
+        let body = serde_json::json!({
+            "handle": waiter_handle,
+            "exitCode": code,
+            "finishedAt": SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        });
+        if let Err(err) = std::fs::write(&done_path, body.to_string()) {
+            tracing::warn!(handle = %waiter_handle, %err, "mcp harness: could not write the done marker");
+        }
         let _ = tx.send(Some(code));
     });
 
@@ -1047,6 +1086,42 @@ mod tests {
     /// no vendor supports two at once. The check and the spawn happen
     /// under one lock, so the loser is told rather than quietly starting
     /// a second conversation.
+    /// The marker must be cleared when a turn STARTS, not only written
+    /// when one ends. `session_send` reuses the handle and directory, so
+    /// a watcher armed for turn N+1 would otherwise fire instantly on
+    /// turn N's leftover and read a finished session as already done.
+    #[tokio::test]
+    async fn a_new_turn_clears_the_previous_turn_s_done_marker() {
+        let table = table();
+        let handle = table
+            .spawn(
+                sleeper("0"),
+                "p".into(),
+                AgentProvider::ClaudeCode,
+                provenance(),
+                LaunchShape::default(),
+            )
+            .unwrap();
+
+        let done = table.with(&handle, |s| s.done_path()).expect("session");
+        for _ in 0..100 {
+            if done.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(done.exists(), "the first turn must leave a marker");
+
+        table.respawn(&handle, sleeper("2"), provenance()).expect("respawn");
+        // The delete happens before the child can finish, so the marker
+        // is gone the instant the next turn starts.
+        let cleared_or_rewritten = !done.exists() || {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            done.exists()
+        };
+        assert!(cleared_or_rewritten, "the marker must not survive untouched into turn 2");
+    }
+
     #[tokio::test]
     async fn respawn_refuses_while_a_turn_is_in_flight() {
         let table = table();

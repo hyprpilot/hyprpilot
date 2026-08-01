@@ -108,6 +108,22 @@ Default-deny because `spawn` runs a profile's `command` as you. See [Profiles �
 - **codex** — `{"type":"turn.completed"}` closes the turn; the text rode the `item.completed` before it, whose `item.type` is `agent_message`.
 - **opencode** — emits **no** terminal marker at all. Its stream ends `step_finish(reason=stop)`, so the last `{"type":"text"}` part is the signal.
 
+### Watching from a shell
+
+Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on every result as `sessionInfo.donePath`.
+
+This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
+
+```bash
+[ ! -d "$SESSION_DIR" ] || [ -f "$SESSION_DIR/done.json" ]
+```
+
+Both halves are required. The marker is advisory: reaping, eviction and shutdown all remove the directory, so a watcher that only tests for the file waits forever on a session that was cleaned up.
+
+`{"handle": "…", "exitCode": 0, "finishedAt": 1785584247}`
+
+It is **cleared when a turn starts**, not only written when one ends — `session_send` reuses the handle and directory, so a watcher armed for the next turn would otherwise fire instantly on the previous turn's leftover.
+
 ### `spawn` / `session_send` parameters
 
 The two tools share one parameter set:

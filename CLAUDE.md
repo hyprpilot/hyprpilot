@@ -504,6 +504,14 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   table entry, not N. Its check-and-spawn happens under the table lock —
   `Command::spawn` is synchronous, so "one turn at a time" is an
   invariant, not a racy check.
+- **`done.json` is the vendor-neutral completion signal.** The waiter
+  task writes it beside `turns.jsonl` after `child.wait()` returns, and
+  `launch_child` DELETES it before every turn — `session_send` reuses
+  the directory, so a watcher armed for turn N+1 would otherwise fire
+  on turn N's leftover. Surfaced as `sessionInfo.donePath`. Advisory:
+  reap/evict/shutdown remove the directory, so the watcher contract is
+  `[ ! -d "$DIR" ] || [ -f "$DIR/done.json" ]`. Never panic in that
+  task — `panic = "abort"` would take every running agent down with it.
 - **Bounded retention.** `--max-sessions` (default 64) evicts the oldest
   *finished* sessions; a running one is never touched. `session_kill` is
   state-aware — it terminates a running session (keeping the transcript)
