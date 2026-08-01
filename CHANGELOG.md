@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.1](https://github.com/hyprpilot/hyprpilot/compare/v3.5.0...v3.5.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **harness:** bound spawn nesting to one level ([#224](https://github.com/hyprpilot/hyprpilot/issues/224)) ([977845f](https://github.com/hyprpilot/hyprpilot/commit/977845f19cec78b59b00261c2354290123b93421))
+
 ## [3.5.0](https://github.com/hyprpilot/hyprpilot/compare/v3.4.2...v3.5.0) (2026-08-01)
 
 
