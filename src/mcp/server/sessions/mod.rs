@@ -200,6 +200,16 @@ pub(crate) struct TurnRecord {
     /// The transcript is append-only across turns, so this is what makes
     /// a finished turn's output still addressable later.
     pub transcript_from: u64,
+    /// Whether a SEP-2663 task handle was actually handed to the caller
+    /// for this turn.
+    ///
+    /// Recorded at mint time rather than re-derived when the turn ends,
+    /// because the two moments see different things: a request carries
+    /// per-request `_meta` capabilities, while the exit hook has only the
+    /// peer's `initialize` info. Deriving it late would silently skip the
+    /// completion push for a client that declared tasks the way the spec
+    /// actually documents — per request.
+    pub task_minted: bool,
     /// ISO 8601, captured when the turn started.
     ///
     /// Stored as the wire string rather than a `SystemTime` because that
@@ -442,6 +452,7 @@ impl SessionTable {
             turn: session.turn,
             outcome: TurnOutcome::Running,
             transcript_from,
+            task_minted: false,
             started_at: rmcp::task_manager::current_timestamp(),
             finished_at: None,
         });
@@ -594,6 +605,7 @@ impl SessionTable {
                 turn: 1,
                 outcome: TurnOutcome::Running,
                 transcript_from: 0,
+                task_minted: false,
                 started_at: rmcp::task_manager::current_timestamp(),
                 finished_at: None,
             }],

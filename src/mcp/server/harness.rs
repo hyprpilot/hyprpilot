@@ -1881,9 +1881,36 @@ impl Harness {
         self.sessions.with(handle, |session| session.turn)
     }
 
+    /// Record that this turn handed out a task handle.
+    ///
+    /// The exit hook gates the completion push on this rather than on the
+    /// peer's capabilities — see `TurnRecord::task_minted`. One recorded
+    /// fact answers both questions the push has to ask: did the caller
+    /// opt in, and is there a task to report on.
+    fn mark_task_minted(&self, handle: &str, turn: u32) {
+        self.sessions.with_mut(handle, |session| {
+            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == turn) {
+                record.task_minted = true;
+            }
+        });
+    }
+
+    /// Whether this turn handed out a task handle.
+    pub(crate) fn turn_minted_task(&self, handle: &str, turn: u32) -> bool {
+        self.sessions
+            .with(handle, |session| {
+                session.turns.iter().any(|r| r.turn == turn && r.task_minted)
+            })
+            .unwrap_or(false)
+    }
+
     /// Seed state for a task the caller just created.
     pub(crate) fn new_task(&self, handle: &str, turn: u32) -> rmcp::model::CreateTaskResult {
         use rmcp::model::{CreateTaskResult, MetaObject, Task, TaskStatus};
+
+        // Record it here, at the one moment a task handle actually
+        // reaches a caller. The exit hook has no other way to know.
+        self.mark_task_minted(handle, turn);
 
         let id = task_id(handle, turn);
         let now = rmcp::task_manager::current_timestamp();
@@ -1938,6 +1965,58 @@ mod task_tests {
         let (parsed, turn) = parse_task_id(&id).expect("round trip");
         assert_eq!(parsed, handle);
         assert_eq!(turn, 12);
+    }
+
+    /// The completion push is gated on this flag, so a mint that fails
+    /// to record it means a task-mode caller polls forever and is never
+    /// told its turn ended. Nothing else in the suite covers it — the
+    /// gap was caught by clippy noticing the setter had no caller, which
+    /// is not a guarantee that survives a refactor.
+    #[tokio::test]
+    async fn minting_a_task_records_it_on_the_turn() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let command = crate::spawn::providers::SpawnCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 0".into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let handle = harness
+            .sessions
+            .spawn(
+                command,
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+
+        assert!(
+            !harness.turn_minted_task(&handle, 1),
+            "a launch that never handed out a task must not look like one that did"
+        );
+        let created = harness.new_task(&handle, 1);
+        assert_eq!(created.task.task_id, task_id(&handle, 1));
+        assert!(
+            harness.turn_minted_task(&handle, 1),
+            "minting must record on the turn, or the completion push never fires"
+        );
+        // The handle must be reachable WITHOUT parsing the task id.
+        let meta = created.meta.expect("_meta carries the session handle");
+        assert_eq!(
+            meta.0.get("io.hyprpilot/session").and_then(|v| v.as_str()),
+            Some(handle.as_str())
+        );
     }
 
     /// An unknown or evicted session must produce an ERROR, never a

@@ -757,26 +757,29 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
             tokio::spawn(async move {
                 super::harness::notify_session_finished(&peer, &name, &handle, code).await;
 
-                // SEP-2663 status push — DOUBLE-GATED, and it has to be.
-                // The hook fires for every turn of every session, so an
+                // SEP-2663 status push — GATED, and it has to be. The
+                // hook fires for every turn of every session, so an
                 // ungated push here would send `notifications/tasks` to a
                 // client that never declared the extension, for an
                 // ordinary `spawn`. That is the one behaviour change this
                 // feature must not make.
                 //
-                // Gate 1: the peer declared tasks. Gate 2: a task was
-                // actually minted for this turn — `task_view` resolves
-                // only turns the table still holds, so an evicted or
-                // reaped session pushes nothing rather than inventing a
-                // terminal state.
-                let declared = peer.peer_info().is_some_and(|info| info.capabilities.supports_tasks());
-                if !declared {
+                // Gated on ONE recorded fact: did this turn actually hand
+                // the caller a task handle. That already implies the
+                // caller opted in, and it is the only form available here
+                // — a request sees per-request `_meta` capabilities, while
+                // this hook has nothing but the peer's `initialize` info.
+                // Re-deriving from `peer_info()` would silently skip the
+                // push for a client that declared tasks the way the spec
+                // documents: per request.
+                let Some(turn) = harness.current_turn(&handle) else {
+                    return;
+                };
+                if !harness.turn_minted_task(&handle, turn) {
                     return;
                 }
-                if let Some(turn) = harness.current_turn(&handle) {
-                    if let Ok(task) = harness.task_view(&super::harness::task_id(&handle, turn)) {
-                        super::harness::notify_task_finished(&peer, task).await;
-                    }
+                if let Ok(task) = harness.task_view(&super::harness::task_id(&handle, turn)) {
+                    super::harness::notify_task_finished(&peer, task).await;
                 }
             });
         }));
