@@ -257,7 +257,7 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Limit                       | Value                 | Enforced by                                                                                                                      |
 | --------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | Concurrent running sessions | 8                     | `spawn` refused past the ceiling; `session_kill` a finished or runaway one to free a slot.                                       |
-| Spawn nesting depth         | 2                     | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; `spawn` refused past it.                              |
+| Spawn nesting depth         | 1                     | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; a spawned agent's own `spawn` is refused.             |
 | Transcript read per call    | 60,000 bytes          | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                 |
 | Default tail                | 200 lines             | `session_read`'s default when `cursor` is omitted.                                                                               |
 | Default turn timeout        | 300 seconds           | `spawn`/`session_send`'s `wait: true` default before the result reports status `running`.                                        |
@@ -267,7 +267,9 @@ Only distinct `spawn`s grow the table — a conversation reuses its session howe
 
 To free a session earlier than the limit would, call `session_kill` on it: on a finished session that reaps it and its transcript immediately.
 
-The depth ceiling exists because a session started through the harness could itself be another `hyprpilot mcp harness` sidecar — the env stamp bounds that chain regardless of how deep the concurrency ceiling alone would otherwise allow it to go. The concurrency ceiling bounds breadth at any single depth: since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
+The depth ceiling of 1 means **the lead delegates and the delegate works** — a spawned agent's own `spawn` is refused, with a message saying why. A session started through the harness gets the full MCP projection, including its own `hyprpilot mcp harness` sidecar, so without the stamp it would spawn as freely as the lead did.
+
+That is a resource decision, not a security one. Each sidecar enforces the concurrency ceiling over _its own_ table and cannot see any other's, so allowing one more level lets N delegates each run N sessions — N² processes no single ceiling catches, none of them visible to the lead that started the tree. Bounding depth at 1 keeps every session a direct child of the caller who can list and kill it, and leaves the concurrency ceiling as the one number that describes the whole fan-out. Since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
 
 ## Example config
 
