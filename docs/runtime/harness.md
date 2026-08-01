@@ -128,12 +128,13 @@ The session handle rides `_meta` rather than being parsed out of the task id: ev
 
 ### `session_status`
 
-| Field             | Type   | When        | What it means                                                                           |
-| ----------------- | ------ | ----------- | --------------------------------------------------------------------------------------- |
-| `status`          | string | always      | `running` or `exited`. A session is `exited` after every **turn**, not only at the end. |
-| `exitCode`        | int    | once exited | Omitted while running.                                                                  |
-| `transcriptBytes` | int    | always      | Bytes written so far. A number that stops moving is a wedged agent.                     |
-| `hasResult`       | bool   | always      | Whether the agent's final answer has landed — see below.                                |
+| Field             | Type   | When        | What it means                                                                            |
+| ----------------- | ------ | ----------- | ---------------------------------------------------------------------------------------- |
+| `status`          | string | always      | `running` or `exited`. A session is `exited` after every **turn**, not only at the end.  |
+| `exitCode`        | int    | once exited | Omitted while running.                                                                   |
+| `turn`            | int    | always      | Which turn of the conversation this is, 1-based. Also the suffix of that turn's task id. |
+| `transcriptBytes` | int    | always      | Bytes written so far. A number that stops moving is a wedged agent.                      |
+| `hasResult`       | bool   | always      | Whether the agent's final answer has landed — see below.                                 |
 
 `hasResult` is `false` for any running session, and only then scanned per vendor. Both halves matter:
 

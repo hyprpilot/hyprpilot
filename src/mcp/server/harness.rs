@@ -496,6 +496,11 @@ impl Harness {
                     "status": session.status().as_str(),
                     "createdAt": unix_secs(session.created_at),
                     "lastTurnAt": unix_secs(session.last_turn_at),
+                    // Which turn of the conversation this is. A caller
+                    // polling across several turns cannot otherwise tell
+                    // whether the `exited` it sees is the turn it sent or
+                    // the previous one still being reported.
+                    "turn": session.turn,
                     "transcriptBytes": transcript_bytes,
                     // Only meaningful once the turn has ENDED, and read
                     // from the tail. Both halves are load-bearing:
@@ -2017,6 +2022,41 @@ mod task_tests {
         let (parsed, turn) = parse_task_id(&id).expect("round trip");
         assert_eq!(parsed, handle);
         assert_eq!(turn, 12);
+    }
+
+    /// `session_status` reports the turn, so a caller polling across a
+    /// `session_send` can tell which turn it is looking at. Without it,
+    /// turn 2 starting and turn 1 finishing both read as `exited` on a
+    /// handle whose other fields are identical.
+    #[tokio::test]
+    async fn session_status_reports_the_turn() {
+        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let handle = harness
+            .sessions
+            .spawn(
+                crate::spawn::providers::SpawnCommand {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 0".into()],
+                    env: Default::default(),
+                    cwd: None,
+                    stdin_prompt: None,
+                },
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                super::super::sessions::Provenance {
+                    program: "sh".into(),
+                    argv: Vec::new(),
+                    env_keys: Vec::new(),
+                    model: None,
+                    effort: None,
+                    mode: None,
+                    prompt_bytes: 0,
+                },
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+        let (_, payload) = harness.session_status(&handle).expect("status");
+        assert_eq!(payload.get("turn").and_then(serde_json::Value::as_u64), Some(1));
     }
 
     /// Cancelling a TERMINAL task must not touch the conversation.
