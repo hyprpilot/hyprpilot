@@ -61,21 +61,22 @@ The `profiles` list must be **non-empty** — the compiled defaults seed zero pr
 
 ### `profiles` entries
 
-| Field           | Type                             | Default | What it does                                                                                                   |
-| --------------- | -------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
-| `id`            | string                           | —       | Unique within `profiles`. The picker row + the positional `hyprpilot <id>`.                                    |
-| `agent`         | string                           | —       | Which `agents` entry to launch. Must reference a real `agents[].id`.                                           |
-| `model`         | string (optional)                | unset   | Overrides the agent's default model. Precedence: profile > agent > vendor default.                             |
-| `effort`        | string (optional)                | unset   | Reasoning-effort knob, mapped to the vendor's config surface where supported.                                  |
-| `cwd`           | path (optional)                  | unset   | Where the agent runs. `~`, `${VAR}` expansion supported; falls back to the agent `cwd`, then `$PWD`.           |
-| `mode`          | string (optional)                | unset   | Vendor-specific starting mode. See [Agents → Modes](./agents#modes).                                           |
-| `headless`      | bool (optional)                  | `false` | Force a non-interactive one-shot launch (requires a piped prompt). See [Headless](#headless).                  |
-| `system_prompt` | `{ file, inject? }[]` (optional) | unset   | Prompt files read at resolve time and prepended to the first turn. `[]` = no prompt. `inject` defaults `true`. |
-| `mcps`          | `{ file … }[]` (optional)        | unset   | Per-profile MCP catalogue — wholesale-replaces the shared set. `[]` = no MCPs. See [MCP](./mcp).               |
-| `mcp`           | `mcp` block (optional)           | unset   | Per-profile override of the in-tree MCP / skills block — wholesale-replaces the global.                        |
-| `command`       | string (optional)                | unset   | Replaces the base agent's `command` wholesale for this profile.                                                |
-| `args`          | string[] (optional)              | unset   | Replaces the base agent's `args` wholesale for this profile.                                                   |
-| `env`           | map (optional)                   | `{}`    | Overlays the base agent's `env` per key; the profile's key wins on collision.                                  |
+| Field           | Type                             | Default | What it does                                                                                                                  |
+| --------------- | -------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | string                           | —       | Unique within `profiles`. The picker row + the positional `hyprpilot <id>`.                                                   |
+| `agent`         | string                           | —       | Which `agents` entry to launch. Must reference a real `agents[].id`.                                                          |
+| `model`         | string (optional)                | unset   | Overrides the agent's default model. Precedence: profile > agent > vendor default.                                            |
+| `effort`        | string (optional)                | unset   | Reasoning-effort knob, mapped to the vendor's config surface where supported.                                                 |
+| `cwd`           | path (optional)                  | unset   | Where the agent runs. `~`, `${VAR}` expansion supported; falls back to the agent `cwd`, then `$PWD`.                          |
+| `mode`          | string (optional)                | unset   | Vendor-specific starting mode. See [Agents → Modes](./agents#modes).                                                          |
+| `headless`      | bool (optional)                  | `false` | Force a non-interactive one-shot launch (requires a piped prompt). See [Headless](#headless).                                 |
+| `system_prompt` | `{ file, inject? }[]` (optional) | unset   | Prompt files read at resolve time and prepended to the first turn. `[]` = no prompt. `inject` defaults `true`.                |
+| `mcps`          | `{ file … }[]` (optional)        | unset   | Per-profile MCP catalogue — wholesale-replaces the shared set. `[]` = no MCPs. See [MCP](./mcp).                              |
+| `mcp`           | `mcp` block (optional)           | unset   | Per-profile override of the in-tree MCP / skills block — wholesale-replaces the global.                                       |
+| `command`       | string (optional)                | unset   | Replaces the base agent's `command` wholesale for this profile.                                                               |
+| `args`          | string[] (optional)              | unset   | Replaces the base agent's `args` wholesale for this profile.                                                                  |
+| `env`           | map (optional)                   | `{}`    | Overlays the base agent's `env` per key; the profile's key wins on collision.                                                 |
+| `harness`       | `{ enabled? }` (optional)        | unset   | Per-profile [agent-harness](../runtime/harness) policy. **Opt-in** — without this block the harness cannot drive the profile. |
 
 ## What a profile overrides
 
@@ -129,6 +130,39 @@ system_prompt:
 | -------- | --------------- | ------- | --------------------------------------------------------------------- |
 | `file`   | path            | —       | Prompt file, read at resolve time — a missing file fails the launch.  |
 | `inject` | bool (optional) | `true`  | Whether this entry's body rides the launch's system-prompt injection. |
+
+## Putting a profile on the harness
+
+`mcp harness` lets a connected agent launch your profiles. **It is opt-in per profile** — declaring a `harness` block is what makes one available:
+
+```yaml
+profiles:
+  - id: personal/engineer
+    agent: claude-code
+    harness:
+      enabled: true # an agent may drive this one
+
+  - id: personal/deploy
+    agent: claude-code # no block — the harness cannot touch it
+```
+
+A profile without the block, or with `enabled: false`, disappears from `list_profiles` **and** is refused by `spawn` / `session_send` by id. Both halves matter: `spawn` dispatches on whatever id it is handed, so hiding a profile from the listing alone would leave it reachable by anyone who already knew the name.
+
+Default-deny because `spawn` runs a profile's `command` as you — the set an agent may drive should be a list you wrote, not everything that happens to be configured.
+
+To opt a whole family in at once, use a `$match`ed [patch](./patches) instead of repeating the block:
+
+```yaml
+patches:
+  - $match:
+      profile: 'personal/*'
+    harness:
+      enabled: true
+```
+
+This is a _harness_ policy, not a hidden flag — `hyprpilot profiles` still lists every profile and `hyprpilot personal/deploy` still launches it. It says "an agent may not drive this one", not "nobody may".
+
+It is a block rather than a bare `harness: true` so later per-profile harness policy lands as a sibling field instead of a second top-level flag.
 
 ## Headless
 

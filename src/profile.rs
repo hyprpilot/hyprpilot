@@ -237,6 +237,7 @@ mod tests {
             mode: None,
             cwd: None,
             headless: None,
+            harness: None,
             command: None,
             args: None,
             env: Default::default(),

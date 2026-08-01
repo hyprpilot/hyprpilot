@@ -85,7 +85,7 @@ impl ServerHandler for HarnessServer {
             },
             "spawn" => {
                 let profile = require_string(&args, "profile")?.to_string();
-                let launch = match decode_launch_args(&args, profile, context) {
+                let launch = match decode_launch_args(&args, profile, context, true) {
                     Ok(launch) => launch,
                     Err(msg) => return Ok(tool_error(msg)),
                 };
@@ -98,7 +98,7 @@ impl ServerHandler for HarnessServer {
                 let session = require_string(&args, "session")?.to_string();
                 // The profile is inherited from the original spawn; the
                 // placeholder is replaced inside `session_send`.
-                let launch = match decode_launch_args(&args, String::new(), context) {
+                let launch = match decode_launch_args(&args, String::new(), context, false) {
                     Ok(launch) => launch,
                     Err(msg) => return Ok(tool_error(msg)),
                 };
@@ -114,7 +114,7 @@ impl ServerHandler for HarnessServer {
             "session_read" => {
                 let session = require_string(&args, "session")?;
                 let tail = optional_usize(&args, "tail")?.unwrap_or(200);
-                let offset = optional_u64(&args, "offset")?;
+                let cursor = optional_string(&args, "cursor")?;
                 // Deliberately the same two knobs `spawn` takes, meaning
                 // the same thing: `wait` follows, `timeout_seconds` caps
                 // it. Cancelling the request also ends a follow, which is
@@ -141,7 +141,7 @@ impl ServerHandler for HarnessServer {
                         cancel: context.ct.clone(),
                     }
                 });
-                match harness.session_read(session, tail, offset, watch).await {
+                match harness.session_read(session, tail, cursor, watch).await {
                     Ok(payload) => {
                         let summary = payload
                             .get("lines")
@@ -255,6 +255,51 @@ fn launch_props(extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
     props
 }
 
+/// The `session_send` parameter set: only what can meaningfully differ
+/// between turns of ONE conversation.
+///
+/// `cwd` / `args` / `with_config` are deliberately absent. They are the
+/// session's launch shape, replayed from the `spawn`, and offering them
+/// per turn is how the conversation gets corrupted: claude keys its
+/// conversation store by project directory, so a different `cwd` on a
+/// follow-up made `--resume` fail with a bare "No conversation found"
+/// for a healthy session. `args` / `with_config` are quieter — they
+/// change the agent's model or flags mid-conversation while the result
+/// keeps reporting the profile, so nobody reading back can tell.
+///
+/// `mode` stays because a per-turn permission change is a real workflow
+/// ("now go read-only") and it does not touch session lookup. `wait` /
+/// `timeout_seconds` are about how the CALLER waits, not about the
+/// session at all.
+fn session_send_props() -> serde_json::Value {
+    serde_json::json!({
+        "session": {
+            "type": "string",
+            "description": "Session handle from `spawn` or `session_list`.",
+        },
+        "prompt": {
+            "type": "string",
+            "description": "The instruction to send. Mutually exclusive with `file`.",
+        },
+        "file": {
+            "type": "string",
+            "description": "Path to a file whose contents become the prompt (`~` and `$VAR` expanded). Mutually exclusive with `prompt`.",
+        },
+        "mode": {
+            "type": "string",
+            "description": "Vendor mode override for THIS turn (e.g. claude's `plan` for a read-only follow-up). Otherwise the session's own mode carries over.",
+        },
+        "wait": {
+            "type": "boolean",
+            "description": "Block until the turn finishes (default true). When false, returns immediately; poll `session_read`.",
+        },
+        "timeout_seconds": {
+            "type": "integer",
+            "description": "Seconds to wait when `wait` is true (default 300). On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_read`, do not send again.",
+        },
+    })
+}
+
 /// The harness tool set. Every description states how the tool
 /// COMPOSES with its siblings, not just what it does — these strings
 /// are the only documentation the calling agent ever sees.
@@ -303,19 +348,12 @@ fn harness_tools() -> Vec<Tool> {
                  conversation, however many turns you send, and the transcript keeps accumulating under it. \
                  The session must have finished its previous turn: sending to a `running` session is refused, \
                  because no vendor supports two concurrent turns on one conversation — poll `session_read` or \
-                 `session_kill` it first. The profile is inherited; you cannot switch profiles mid-conversation."
+                 `session_kill` it first. The whole launch — profile, working directory, arguments, config \
+                 overlays — is inherited from the `spawn` and cannot be changed here; only the prompt, the \
+                 `mode`, and how long you wait are per-turn."
                     .into(),
             ),
-            object_schema(
-                launch_props(&[(
-                    "session",
-                    serde_json::json!({
-                        "type": "string",
-                        "description": "Session handle from `spawn` or `session_list`.",
-                    }),
-                )]),
-                &["session"],
-            ),
+            object_schema(session_send_props(), &["session"]),
         ),
         Tool::new_with_raw(
             "session_list",
@@ -347,15 +385,15 @@ fn harness_tools() -> Vec<Tool> {
                     },
                     "tail": {
                         "type": "integer",
-                        "description": "Number of trailing lines to return when `offset` is omitted (default 200).",
+                        "description": "Number of trailing lines to return when `cursor` is omitted (default 200).",
                     },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Byte offset to read forward from — pass the `nextOffset` of a previous call to stream new output only.",
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor. Pass the `nextCursor` from a previous result VERBATIM to continue exactly where that read stopped; omit it to read the tail. Opaque — do not parse or construct one. A result with no `nextCursor` means the session is finished and you have all of it.",
                     },
                     "wait": {
                         "type": "boolean",
-                        "description": "Follow the session live from `offset` instead of returning immediately (default false). Same semantics as `spawn`'s `wait`: it streams each new chunk as a progress notification when you pass a progressToken, and returns everything it saw. Ends when the agent finishes, when you cancel the request, or after `timeout_seconds`.",
+                        "description": "Follow the session live from `cursor` instead of returning immediately (default false). Same semantics as `spawn`'s `wait`: it streams each new chunk as a progress notification when you pass a progressToken, and returns everything it saw. Ends when the agent finishes, when you cancel the request, or after `timeout_seconds`.",
                     },
                     "timeout_seconds": {
                         "type": "integer",
@@ -394,10 +432,16 @@ fn harness_tools() -> Vec<Tool> {
 /// Returns `Err(String)` for things the caller can fix and retry (an
 /// unreadable prompt file, `prompt` and `file` together) — those come
 /// back as tool errors, not protocol faults.
+/// Decode a launch. `accept_launch_shape` is false for `session_send`,
+/// which does not advertise `cwd` / `args` / `with_config` — those are
+/// replayed from the session, and reading them here would let a stale
+/// or hand-written caller corrupt a conversation the schema already
+/// refuses to let it touch.
 fn decode_launch_args(
     args: &serde_json::Map<String, serde_json::Value>,
     profile: String,
     context: &RequestContext<RoleServer>,
+    accept_launch_shape: bool,
 ) -> Result<crate::mcp::server::harness::LaunchToolArgs, String> {
     let inline = optional_string(args, "prompt").map_err(|err| err.to_string())?;
     let file = optional_string(args, "file").map_err(|err| err.to_string())?;
@@ -420,7 +464,21 @@ fn decode_launch_args(
         return Err("the prompt is empty.".into());
     }
 
-    let with_config = match args.get("with_config") {
+    // Reject rather than ignore. A caller that passes `cwd` believes it
+    // took effect; silently dropping it is the same silent-wrong-result
+    // class as the bug that made these inherit in the first place.
+    if !accept_launch_shape {
+        for key in ["cwd", "args", "with_config"] {
+            if args.get(key).is_some_and(|value| !value.is_null()) {
+                return Err(format!(
+                    "`{key}` is not accepted on `session_send` — it is inherited from the `spawn` that started \
+                     this conversation and cannot change mid-stream. Start a new session to launch differently."
+                ));
+            }
+        }
+    }
+
+    let with_config = match args.get("with_config").filter(|_| accept_launch_shape) {
         None | Some(serde_json::Value::Null) => Vec::new(),
         Some(serde_json::Value::Array(items)) => items.clone(),
         Some(_) => return Err("`with_config` must be an array of overlay objects.".into()),
@@ -429,12 +487,20 @@ fn decode_launch_args(
     Ok(crate::mcp::server::harness::LaunchToolArgs {
         profile,
         prompt,
-        cwd: optional_string(args, "cwd")
-            .map_err(|err| err.to_string())?
-            .map(|cwd| crate::paths::resolve_user(&cwd)),
+        cwd: if accept_launch_shape {
+            optional_string(args, "cwd")
+                .map_err(|err| err.to_string())?
+                .map(|cwd| crate::paths::resolve_user(&cwd))
+        } else {
+            None
+        },
         mode: optional_string(args, "mode").map_err(|err| err.to_string())?,
         with_config,
-        args: optional_string_array(args, "args").map_err(|err| err.to_string())?,
+        args: if accept_launch_shape {
+            optional_string_array(args, "args").map_err(|err| err.to_string())?
+        } else {
+            Vec::new()
+        },
         wait: optional_bool(args, "wait")
             .map_err(|err| err.to_string())?
             .unwrap_or(true),

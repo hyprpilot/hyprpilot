@@ -139,6 +139,8 @@ HYPRPILOT_CONFIG_PROFILE=work hyprpilot engineer
 
 Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → the built-in `error` default (a fresh run is quiet — errors only — unless a level is explicitly requested); tracing always writes to stderr. See [Config → Logging](../config/logging).
 
+**cwd reaches each vendor differently.** claude inherits the process working directory; codex takes `--cd`; opencode takes `--dir`. hyprpilot sets the process cwd _and_ emits the flag for the two vendors that need one — opencode does not derive its tool sandbox from the process cwd, so without `--dir` an agent given a `cwd` silently worked in the wrong tree while every surface reported the requested path. A `--dir` / `--cd` you pass yourself after `--` suppresses the generated one.
+
 ## What a launch does
 
 1. Load + validate layered config ([Config → Layering](../config/layering)).

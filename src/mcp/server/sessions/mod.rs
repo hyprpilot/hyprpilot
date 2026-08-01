@@ -102,13 +102,35 @@ pub(crate) struct Provenance {
     pub prompt_bytes: usize,
 }
 
+/// The caller-supplied launch inputs a follow-up turn REUSES.
+///
+/// A conversation is one session, so how it was launched is part of
+/// its identity rather than a per-turn option. Re-deriving turn 2 from
+/// defaults launched it differently from turn 1, silently: a dropped
+/// `cwd` made claude's `--resume` fail with a bare "No conversation
+/// found with session ID" (it keys its conversation store by project
+/// directory, so the session was fine — it was looked up in the wrong
+/// place), and a dropped `mode` / `args` / `with_config` would change
+/// the agent's permissions or flags mid-conversation without saying so.
+///
+/// An explicit per-turn value still overrides its counterpart here.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LaunchShape {
+    /// The RESOLVED cwd, not the caller's raw input — so a turn that
+    /// fell back to `$PWD` still replays to the same directory.
+    pub cwd: Option<PathBuf>,
+    pub mode: Option<String>,
+    pub with_config: Vec<serde_json::Value>,
+    pub args: Vec<String>,
+}
+
 /// One live or finished agent session.
 #[derive(Debug)]
 pub(crate) struct Session {
     pub handle: String,
     pub profile_id: String,
     pub provider: AgentProvider,
-    pub cwd: Option<PathBuf>,
+    pub launch: LaunchShape,
     pub provenance: Provenance,
     /// The vendor's own session id, parsed out of the first turn's event
     /// stream. `None` until the vendor emits it (or forever, if the turn
@@ -274,7 +296,7 @@ impl SessionTable {
         // offsets a caller is paging through remain valid across turns.
         let launched = launch_child(&command, session.dir.path(), handle, true).map_err(RespawnError::Spawn)?;
 
-        session.cwd = command.cwd.clone();
+        session.launch.cwd = command.cwd.clone();
         session.provenance = provenance;
         session.pid = launched.pid;
         session.pgid = launched.pgid;
@@ -377,6 +399,7 @@ impl SessionTable {
         profile_id: String,
         provider: AgentProvider,
         provenance: Provenance,
+        mut launch: LaunchShape,
     ) -> Result<String> {
         let dir = tempfile::Builder::new()
             .prefix(SESSION_DIR_PREFIX)
@@ -388,7 +411,9 @@ impl SessionTable {
             .context("mcp harness: create session directory")?;
 
         let handle = self.mint_handle();
-        let cwd = command.cwd.clone();
+        // The resolved cwd, so a follow-up turn replays to the same
+        // directory even when this one fell back to `$PWD`.
+        launch.cwd = command.cwd.clone();
         let Launched { pid, pgid, done } = launch_child(&command, dir.path(), &handle, false)?;
 
         let now = SystemTime::now();
@@ -396,7 +421,7 @@ impl SessionTable {
             handle: handle.clone(),
             profile_id,
             provider,
-            cwd,
+            launch,
             provenance,
             vendor_session_id: None,
             created_at: now,
@@ -796,7 +821,13 @@ mod tests {
     /// not the audit view.
     fn spawn(table: &Arc<SessionTable>, command: SpawnCommand) -> String {
         table
-            .spawn(command, "p".into(), AgentProvider::ClaudeCode, provenance())
+            .spawn(
+                command,
+                "p".into(),
+                AgentProvider::ClaudeCode,
+                provenance(),
+                LaunchShape::default(),
+            )
             .unwrap()
     }
 

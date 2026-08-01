@@ -57,6 +57,24 @@ pub(super) fn build_opencode(
         command.args.push(agent_name.clone());
     }
 
+    // opencode does not derive its tool sandbox from the process working
+    // directory — it takes an explicit `--dir`, so without this a
+    // delegated prompt using relative paths read and wrote the wrong
+    // tree while every surface reported the requested path.
+    //
+    // ONLY on `run`. Unlike codex's global `--cd`, `--dir` is a `run`
+    // option: the bare TUI command takes a positional `project` and its
+    // parser is strict, so passing `--dir` there exits 1 with a usage
+    // dump and no session at all.
+    if prompt.is_some() {
+        if let Some(cwd) = command.cwd.as_ref() {
+            if !has_flag(&detect_args, "--dir", None) {
+                command.args.push("--dir".into());
+                command.args.push(cwd.display().to_string());
+            }
+        }
+    }
+
     if !command.env.contains_key("OPENCODE_CONFIG_CONTENT") {
         if let Some(config) = opencode_config_content(
             &agent_name,
@@ -311,6 +329,70 @@ mod tests {
     use crate::config::AgentProvider;
     use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
+
+    /// opencode does not take its tool sandbox from the process
+    /// working directory — without `--dir` the agent ran in `$HOME`
+    /// while every hyprpilot surface reported the requested path, so a
+    /// delegated prompt using relative paths silently hit the wrong
+    /// tree and still reported success.
+    #[test]
+    fn opencode_headless_passes_resolved_cwd_to_native_dir_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            Vec::new(),
+            Some("do the thing"),
+        )
+        .unwrap();
+
+        assert!(command.args.windows(2).any(|w| w == ["--dir", "/tmp/hyprpilot-work"]));
+        assert_eq!(command.cwd(), Some(std::path::Path::new("/tmp/hyprpilot-work")));
+    }
+
+    /// `--dir` is a `run` option. The bare TUI command takes a positional
+    /// `project` and parses strictly, so emitting `--dir` there exits 1
+    /// with a usage dump — no TUI, no session.
+    #[test]
+    fn opencode_interactive_never_gets_the_dir_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !command.args.iter().any(|arg| arg == "--dir"),
+            "got: {:?}",
+            command.args
+        );
+        assert!(!command.args.iter().any(|arg| arg == "run"));
+        assert_eq!(
+            command.cwd(),
+            Some(std::path::Path::new("/tmp/hyprpilot-work")),
+            "the process cwd still carries it"
+        );
+    }
+
+    #[test]
+    fn opencode_provider_args_suppress_generated_dir_flag() {
+        let command = build_command(
+            &resolved_with_cwd(AgentProvider::OpenCode, "/tmp/hyprpilot-work"),
+            None,
+            &[],
+            vec!["--dir".into(), "/tmp/other".into()],
+            Some("do the thing"),
+        )
+        .unwrap();
+
+        assert!(
+            !command.args.windows(2).any(|w| w == ["--dir", "/tmp/hyprpilot-work"]),
+            "an explicit --dir in provider args must win"
+        );
+    }
 
     #[test]
     fn opencode_puts_prompt_mcp_and_variant_in_inline_config() {

@@ -107,6 +107,43 @@ impl AgentProvider {
     }
 }
 
+/// `[profiles.harness]` — how a profile relates to `mcp harness`.
+///
+/// **Opt-in.** Declaring the block is what puts a profile on the
+/// harness; absence means unavailable. `spawn` runs a profile's
+/// `command` as this user, so the set an agent may drive is a list the
+/// captain writes, not everything that happens to be configured.
+///
+/// A block rather than a bare `harness = true` so later policy
+/// (per-profile session ceilings, a narrower tool set, a depth cap)
+/// lands as a sibling field instead of a second top-level flag.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[merge(strategy = overwrite_some)]
+pub struct ProfileHarnessConfig {
+    /// Whether the harness may drive this profile. Defaults to `true`
+    /// **within a declared block** — but a profile with no
+    /// `[profiles.harness]` block at all is NOT available: the surface
+    /// is opt-in per profile, so `spawn` runs only what the captain
+    /// nominated. `false` hides it from `list_profiles` **and** refuses
+    /// `spawn`/`session_send` against it.
+    ///
+    /// Both halves are required: `spawn` dispatches on the id it is
+    /// given, so hiding a profile from the listing alone would leave it
+    /// reachable by anyone who already knew the id. That is the same
+    /// gate-only-the-listing bug the skills/harness server split was
+    /// made to eliminate — do not reintroduce it here.
+    #[garde(skip)]
+    pub enabled: Option<bool>,
+}
+
+impl ProfileHarnessConfig {
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+}
+
 /// One `[[profiles]]` entry. Binds an agent id to an optional model
 /// override + optional system prompt file. `system_prompt` is a path
 /// only — there's exactly one mechanism. The file is read at resolve
@@ -173,6 +210,11 @@ pub struct ProfileConfig {
     /// launch errors.
     #[garde(skip)]
     pub headless: Option<bool>,
+    /// Per-profile harness policy. **Absence means unavailable** — the
+    /// harness is opt-in, so declaring the block is what nominates a
+    /// profile.
+    #[garde(dive)]
+    pub harness: Option<ProfileHarnessConfig>,
     /// When `Some`, REPLACES the base `[[agents]]` entry's `command`
     /// wholesale for this profile only.
     #[garde(inner(length(min = 1)))]
@@ -707,6 +749,40 @@ skills.dirs = [{ dir = "~/x", ignore = ["[unterminated"] }]
         let cfg = load(Some(&p), None).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         assert!(err.to_string().contains("not a valid glob"), "{err}");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn profile_harness_defaults_to_enabled_and_parses_the_off_switch() {
+        let p = write_tmp(
+            "profile-harness.toml",
+            r#"
+[[profiles]]
+id = "open"
+agent = "claude-code"
+
+[[profiles]]
+id = "closed"
+agent = "claude-code"
+harness = { enabled = false }
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("parses");
+        let open = cfg.profiles.iter().find(|p| p.id == "open").expect("open");
+        let closed = cfg.profiles.iter().find(|p| p.id == "closed").expect("closed");
+
+        assert!(open.harness.is_none(), "no block at all — not on the harness");
+        assert!(
+            closed.harness.as_ref().is_some_and(|h| !h.is_enabled()),
+            "an explicit `enabled = false` must survive to the resolved profile"
+        );
+        // Within a DECLARED block `enabled` defaults true; it is the
+        // block's absence, not this flag, that keeps a profile off.
+        assert!(
+            ProfileHarnessConfig::default().is_enabled(),
+            "declared but unset means on"
+        );
+        cfg.validate().expect("valid");
         fs::remove_file(&p).ok();
     }
 
