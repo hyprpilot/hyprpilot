@@ -114,9 +114,32 @@ The three vendors mark completion differently — all verified against the insta
 - **codex** — `{"type":"turn.completed"}` closes the turn; the text rode the `item.completed` before it, whose `item.type` is `agent_message`.
 - **opencode** — emits **no** terminal marker at all. Its stream ends `step_finish(reason=stop)`, so the last `{"type":"text"}` part is the signal.
 
+### The session directory
+
+Each session owns a 0700 temp directory. Every file in it is named on `spawn` / `session_send` / `session_read` results under `sessionInfo.files`, so nothing has to be derived from a sibling path:
+
+| Key          | File           | What it is                                                                               |
+| ------------ | -------------- | ---------------------------------------------------------------------------------------- |
+| `dir`        | —              | The directory itself. Gone once the session is reaped, evicted, or the sidecar exits.    |
+| `transcript` | `turns.jsonl`  | The vendor's raw JSON event stream, appended across every turn of the conversation.      |
+| `stderr`     | `stderr.log`   | The vendor's stderr. Surfaced in results only when non-empty.                            |
+| `done`       | `done.json`    | The completion marker — see below.                                                       |
+| `breadcrumb` | `session.json` | Crash-recovery state (pid, pgid, owning sidecar, start ticks) read by the startup sweep. |
+
+**`transcript` is there so you can read it directly.** `session_read` pages it for you, but an agent with shell access is often better off with `jq` — the answer sits in a different event per vendor, and the `tool_use` events in between can be enormous:
+
+```sh
+T=$(…sessionInfo.files.transcript…)
+jq -r 'select(.type=="result")     | .result'    "$T"   # claude
+jq -r 'select(.type=="item.completed") | select(.item.type=="agent_message") | .item.text' "$T"   # codex
+jq -r 'select(.type=="text")       | .part.text' "$T"   # opencode
+```
+
+Everything under `files` is a path into a directory that can disappear — treat a missing file as "the session was cleaned up", never as an error.
+
 ### Watching from a shell
 
-Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.donePath`.
+Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.files.done`.
 
 This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
 

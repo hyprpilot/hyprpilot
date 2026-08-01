@@ -175,6 +175,19 @@ impl Session {
         self.dir.path().join(DONE_FILE)
     }
 
+    /// The session's own directory. 0700, removed when the session is
+    /// reaped, evicted, or the sidecar exits.
+    pub(crate) fn dir_path(&self) -> PathBuf {
+        self.dir.path().to_path_buf()
+    }
+
+    /// Crash-recovery breadcrumb — pid/pgid/ownerPid/startTicks, read by
+    /// the startup sweep. Internal, but surfaced because a caller
+    /// debugging an orphan wants it and it costs nothing to name.
+    pub(crate) fn breadcrumb_path(&self) -> PathBuf {
+        self.dir.path().join(BREADCRUMB_FILE)
+    }
+
     pub(crate) fn stderr_path(&self) -> PathBuf {
         self.dir.path().join(STDERR_FILE)
     }

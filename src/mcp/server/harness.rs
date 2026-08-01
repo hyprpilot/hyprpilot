@@ -613,7 +613,18 @@ impl Harness {
                     "lastTurnAt": unix_secs(session.last_turn_at),
                     "vendorSessionId": session.vendor_session_id,
                     "pid": session.pid(),
-                    "donePath": session.done_path().display().to_string(),
+                    // Every file the session owns, named once. A caller
+                    // with shell access can `jq` the transcript directly
+                    // rather than paging it through `session_read` — that
+                    // is a feature, so the paths are first-class rather
+                    // than derivable from a sibling.
+                    "files": {
+                        "dir": session.dir_path().display().to_string(),
+                        "transcript": session.turns_path().display().to_string(),
+                        "stderr": session.stderr_path().display().to_string(),
+                        "done": session.done_path().display().to_string(),
+                        "breadcrumb": session.breadcrumb_path().display().to_string(),
+                    },
                     "command": session.provenance.program,
                     "argv": session.provenance.argv,
                     "envKeys": session.provenance.env_keys,
