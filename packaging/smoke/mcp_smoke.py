@@ -13,7 +13,7 @@ the serialized wire rather than of any function:
    is reachable from `_meta` without parsing the task id.
 
 Usage:  python3 packaging/smoke/mcp_smoke.py [path-to-hyprpilot]
-Exits non-zero on the first failed expectation.
+Runs every check, then exits non-zero if any of them failed.
 """
 
 import json
@@ -234,4 +234,17 @@ check("the session is still addressable by its own tools",
       "error" not in s.call("tools/call",
                             {"name": "session_status", "arguments": {"session": handle}}))
 s.stop()
+
+# ── verdict ───────────────────────────────────────────────────────────
+#
+# Without this the script printed FAIL and exited 0, so every assertion
+# above was advisory — the same "a test that cannot fail" trap the task
+# section was written to close.
+print()
+if failures:
+    print(f"FAILED ({len(failures)}):")
+    for label in failures:
+        print(f"  - {label}")
+    sys.exit(1)
+print("all checks passed")
 
