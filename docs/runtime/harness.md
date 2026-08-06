@@ -97,6 +97,8 @@ A session launched as `personal/kilic/glm-5.2` now sees and can drive only `pers
 
 Like `enabled`, this bounds **discovery, not capability**: it decides what the auto-injected sidecar exposes. An agent that can run commands can start `hyprpilot mcp harness` itself, or skip it and run `hyprpilot <profile>` directly. It is a real boundary for an MCP-only client, and a guard against a work session reaching personal profiles by accident — not containment.
 
+One corollary worth stating: a scoped-out id that **is** configured refuses differently from one that isn't (the latter falls through to the resolver's "unknown profile"), so an agent can probe which ids exist even when they are absent from `list_profiles`. That is the price of leaving "unknown profile" to the resolver instead of reporting a misleading scope refusal for a typo — the scope hides profiles from view, it does not make them unguessable.
+
 ## The tools
 
 | Tool             | Purpose                                                                                   |

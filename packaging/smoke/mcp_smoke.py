@@ -277,6 +277,31 @@ check("the refusal names the knob that widens it", "includeProfiles" in text, te
 
 refused, _ = refusal(s, "personal/two")
 check("exclude beats include on a launch too", refused)
+
+# `launch` is the shared body of spawn AND session_send, and the scope
+# check sits at the top of it — so a resume must still clear the gate
+# without the gate breaking resumes. There is no way to hold a session
+# for an out-of-scope profile (spawn refuses first), which is the point:
+# the only reachable case is the in-scope one, and it has to keep working.
+started = tool_result(s.call("tools/call", {
+    "name": "spawn",
+    "arguments": {"profile": "personal/one", "prompt": "go", "cwd": "/tmp"}}))
+in_scope = (started.get("structuredContent") or {}).get("session", "")
+check("an in-scope profile still launches", bool(in_scope), str(started.get("isError")))
+# The vendor's own id is harvested lazily, from the transcript, so a
+# resume needs turn 1 to have finished — otherwise the refusal is
+# "the vendor never emitted a session id" and says nothing about scope.
+for _ in range(40):
+    st = tool_result(s.call("tools/call",
+                            {"name": "session_status", "arguments": {"session": in_scope}}))
+    if (st.get("structuredContent") or {}).get("status") == "exited":
+        break
+    time.sleep(0.5)
+resumed = tool_result(s.call("tools/call", {
+    "name": "session_send", "arguments": {"session": in_scope, "prompt": "again"}}))
+check("the scope does not break resuming an in-scope session",
+      resumed.get("isError") is not True,
+      " ".join(c.get("text", "") for c in (resumed.get("content") or []))[:80])
 s.stop()
 
 # `--no-delegates` is the empty include list. The server is still there —

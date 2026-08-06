@@ -101,19 +101,22 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
     // `--include-profile` occurrences, which is indistinguishable from
     // "unset" on the wire — and would silently mean *unrestricted*, the
     // exact opposite of what the captain wrote.
+    //
+    // `--flag=<glob>` rather than two argv items: `Glob::new("-foo")` is
+    // valid and passes config validation, but as a separate item clap
+    // reads it as flags and the sidecar dies on an error naming neither
+    // the pattern nor the field it came from.
     match harness.include_profiles.as_deref() {
         Some([]) => args.push("--no-delegates".to_string()),
         Some(globs) => {
             for glob in globs {
-                args.push("--include-profile".to_string());
-                args.push(glob.clone());
+                args.push(format!("--include-profile={glob}"));
             }
         }
         None => {}
     }
     for glob in harness.exclude_profiles.as_deref().unwrap_or_default() {
-        args.push("--exclude-profile".to_string());
-        args.push(glob.clone());
+        args.push(format!("--exclude-profile={glob}"));
     }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),
@@ -347,14 +350,36 @@ mod tests {
         ));
 
         assert_eq!(
-            args.iter().filter(|a| *a == "--include-profile").count(),
+            args.iter().filter(|a| a.starts_with("--include-profile")).count(),
             2,
             "got: {args:?}"
         );
-        assert!(args.windows(2).any(|w| w == ["--include-profile", "personal/*"]));
-        assert!(args.windows(2).any(|w| w == ["--include-profile", "scratch/*"]));
-        assert!(args.windows(2).any(|w| w == ["--exclude-profile", "personal/codex/*"]));
+        assert!(
+            args.iter().any(|a| a == "--include-profile=personal/*"),
+            "got: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "--include-profile=scratch/*"), "got: {args:?}");
+        assert!(
+            args.iter().any(|a| a == "--exclude-profile=personal/codex/*"),
+            "got: {args:?}"
+        );
         assert!(!args.iter().any(|a| a == "--no-delegates"), "got: {args:?}");
+    }
+
+    /// `Glob::new("-foo")` is valid, so config validation accepts it and
+    /// it reaches argv. As a separate item clap reads it as flags and the
+    /// sidecar dies with an error naming neither the pattern nor the
+    /// field it came from.
+    #[test]
+    fn a_pattern_starting_with_a_dash_still_round_trips() {
+        let args = harness_args(&scoped(Some(vec!["-dash/*"]), Some(vec!["-other"])));
+
+        assert!(args.iter().any(|a| a == "--include-profile=-dash/*"), "got: {args:?}");
+        assert!(args.iter().any(|a| a == "--exclude-profile=-other"), "got: {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "-dash/*" || a == "-other"),
+            "a pattern must never be its own argv item: {args:?}"
+        );
     }
 
     /// The wire cannot tell zero `--include-profile` occurrences from an
