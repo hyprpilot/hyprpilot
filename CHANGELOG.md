@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.8.0](https://github.com/hyprpilot/hyprpilot/compare/v3.7.0...v3.8.0) (2026-08-06)
+
+
+### Features
+
+* **harness:** scope delegation to the launching profile's own set ([#231](https://github.com/hyprpilot/hyprpilot/issues/231)) ([98cbd2d](https://github.com/hyprpilot/hyprpilot/commit/98cbd2dbecfbc96ad5c64d2b5761bcc48b5c1b2d))
+
 ## [3.7.0](https://github.com/hyprpilot/hyprpilot/compare/v3.6.0...v3.7.0) (2026-08-01)
 
 
