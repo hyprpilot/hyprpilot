@@ -71,6 +71,34 @@ patches:
 
 Default-deny because `spawn` runs a profile's `command` as you. See [Profiles → Putting a profile on the harness](../config/profiles#putting-a-profile-on-the-harness).
 
+### Scoping delegation per launch
+
+Nomination above is **global** — it says a profile may be driven, not by whom. To narrow that per launch, scope the harness on the profile doing the orchestrating:
+
+```yaml
+patches:
+  - $match:
+      profile: 'personal/*'
+    mcp:
+      harness:
+        enabled: true
+        includeProfiles:
+          - 'personal/*'
+        excludeProfiles:
+          - 'personal/codex/*'
+```
+
+A session launched as `personal/kilic/glm-5.2` now sees and can drive only `personal/*`, minus anything `excludeProfiles` catches — `work/*` is absent from `list_profiles` and refused by `spawn` / `session_send`.
+
+- Both lists are globs over profile ids, matched with `globset`, so `*` **crosses `/`** exactly as `$match.profile` does — `personal/*` reaches `personal/kilic/glm-5.2`.
+- `excludeProfiles` beats `includeProfiles` on overlap, mirroring `excludeTools` / `autoRejectTools`.
+- Unset means no filter. `includeProfiles: []` means delegate to nothing — the server is still injected, it just has no candidates.
+- The two gates **AND**. A glob here can never promote a profile that never declared `profiles.harness`; it can only narrow what is already nominated.
+
+Like `enabled`, this bounds **discovery, not capability**: it decides what the auto-injected sidecar exposes. An agent that can run commands can start `hyprpilot mcp harness` itself, or skip it and run `hyprpilot <profile>` directly. It is a real boundary for an MCP-only client, and a guard against a work session reaching personal profiles by accident — not containment.
+
+One corollary worth stating: a scoped-out id that **is** configured refuses differently from one that isn't (the latter falls through to the resolver's "unknown profile"), so an agent can probe which ids exist even when they are absent from `list_profiles`. That is the price of leaving "unknown profile" to the resolver instead of reporting a misleading scope refusal for a typo — the scope hides profiles from view, it does not make them unguessable.
+
 ## The tools
 
 | Tool             | Purpose                                                                                   |
@@ -338,8 +366,19 @@ profiles:
 
 Setting only the first gives an agent the tools and an **empty** `list_profiles`; setting only the second nominates profiles nothing can reach. A profile's own `mcp` block works in place of the first patch, but it wholesale-replaces the global one, so you would have to restate `skills` alongside it.
 
+`mcp.harness.includeProfiles` / `excludeProfiles` add a third, optional narrowing on top of switch 1 — see [Scoping delegation per launch](#scoping-delegation-per-launch).
+
 To run it by hand (debugging, or a gateway that manages its own MCP config), the subcommand takes no catalogue:
 
 ```sh
 hyprpilot mcp harness --max-sessions 64
 ```
+
+The launcher resolves the picked profile's scope and passes it down as repeated flags — a sidecar cannot work out which profile spawned it, so it cannot read this from config itself:
+
+```sh
+hyprpilot mcp harness --include-profile 'personal/*' --exclude-profile 'personal/codex/*'
+hyprpilot mcp harness --no-delegates   # includeProfiles: []
+```
+
+`--no-delegates` exists because zero `--include-profile` occurrences is exactly what an unset list looks like on the wire, and unset means unrestricted — the opposite of an empty list.

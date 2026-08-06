@@ -182,10 +182,14 @@ Unlike the other two, this server is also gated on having something to serve: if
 
 ### `mcp.harness`
 
-| Field              | Type | Default | What it does                                                                                                   |
-| ------------------ | ---- | ------- | -------------------------------------------------------------------------------------------------------------- |
-| `maxSessions`      | int  | `64`    | Sessions retained before the oldest **finished** ones are evicted.                                             |
-| `notifyOnComplete` | bool | `true`  | Push a completion event into the lead's context when a turn finishes. See [Agent Harness](../runtime/harness). |
+| Field              | Type             | Default | What it does                                                                                                   |
+| ------------------ | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `maxSessions`      | int              | `64`    | Sessions retained before the oldest **finished** ones are evicted.                                             |
+| `notifyOnComplete` | bool             | `true`  | Push a completion event into the lead's context when a turn finishes. See [Agent Harness](../runtime/harness). |
+| `includeProfiles`  | string[] (globs) | unset   | Profile ids **this launch** may delegate to. Unset applies no filter; `[]` means none. See below.              |
+| `excludeProfiles`  | string[] (globs) | `[]`    | Profile ids this launch may **not** delegate to. Beats `includeProfiles` on overlap.                           |
+
+`includeProfiles` / `excludeProfiles` are the **launcher's** scope, distinct from the target's own `profiles.harness` opt-in. The two AND — a glob here narrows what is already nominated and can never promote a profile that never opted in. `*` crosses `/` (same `globset` semantics as `$match.profile`), so `personal/*` reaches `personal/kilic/glm-5.2`. Full treatment in [Agent Harness → Scoping delegation per launch](../runtime/harness#scoping-delegation-per-launch).
 
 **Off by default, and that is a security property rather than a preference.** A profile's `command` is an arbitrary binary, so anything that can call `spawn` executes commands as you. Turn it on deliberately — see [Runtime → Agent Harness](../runtime/harness).
 

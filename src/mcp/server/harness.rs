@@ -126,15 +126,74 @@ impl ProgressSink {
     }
 }
 
+/// Which profiles THIS sidecar may drive, compiled once.
+///
+/// The launcher resolves the picked profile's `[mcp.harness]` scope and
+/// passes it down as `--include-profile` / `--exclude-profile`; this is
+/// that scope in matchable form. Independent of — and ANDed with — the
+/// target's own `[profiles.harness]` opt-in, which is global and says
+/// nothing about who is delegating.
+#[derive(Debug, Default)]
+pub(crate) struct DelegatePolicy {
+    /// `None` applies no allow-filter. An empty set matches nothing,
+    /// which is how `--no-delegates` is carried.
+    include: Option<globset::GlobSet>,
+    exclude: globset::GlobSet,
+}
+
+impl DelegatePolicy {
+    /// Compile the argv globs. Errors rather than skipping a malformed
+    /// pattern: dropping one from `exclude` silently WIDENS what an
+    /// agent may launch, and the launcher only ever emits patterns
+    /// `Config::validate` already accepted — so a bad one here was
+    /// hand-written and deserves to fail loudly at startup.
+    pub(crate) fn new(include: Option<&[String]>, exclude: &[String]) -> Result<Self, String> {
+        Ok(Self {
+            include: include.map(compile_globs).transpose()?,
+            exclude: compile_globs(exclude)?,
+        })
+    }
+
+    /// Whether this sidecar may drive `profile_id`. Exclude beats
+    /// include, mirroring the tool-policy convention.
+    pub(crate) fn allows(&self, profile_id: &str) -> bool {
+        if self.exclude.is_match(profile_id) {
+            return false;
+        }
+
+        match self.include.as_ref() {
+            Some(set) => set.is_match(profile_id),
+            None => true,
+        }
+    }
+
+    /// Whether any filter is in force — drives the wording of the
+    /// "nothing available" message, so a captain looking for the wrong
+    /// knob is not sent to `[profiles.harness]` when the launch scope is
+    /// what excluded everything.
+    fn is_scoped(&self) -> bool {
+        self.include.is_some() || !self.exclude.is_empty()
+    }
+}
+
+fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, String> {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(globset::Glob::new(pattern).map_err(|err| format!("`{pattern}` is not a valid glob: {err}"))?);
+    }
+    builder.build().map_err(|err| format!("glob set: {err}"))
+}
+
 pub(crate) struct Harness {
     config: ConfigSource,
     pub(crate) sessions: Arc<SessionTable>,
     depth: usize,
     max_sessions: usize,
+    delegates: DelegatePolicy,
 }
 
 impl Harness {
-    pub(crate) fn new(config: ConfigSource, max_sessions: usize) -> Self {
+    pub(crate) fn new(config: ConfigSource, max_sessions: usize, delegates: DelegatePolicy) -> Self {
         let depth = std::env::var(DEPTH_ENV)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
@@ -147,7 +206,37 @@ impl Harness {
             // A zero would evict every finished session the moment it
             // finished, making `session_read` useless on a completed run.
             max_sessions: max_sessions.max(1),
+            delegates,
         }
+    }
+
+    /// Both gates a launch must clear, in the order whose error is most
+    /// actionable: the launch-local scope first (the captain edits the
+    /// profile they are running), then the target's global opt-in.
+    ///
+    /// An id matching no configured profile clears both, so the resolver
+    /// keeps owning "unknown profile" — reporting a scope refusal for a
+    /// typo would send the caller hunting a gate that is not the problem.
+    fn check_delegable(&self, cfg: &crate::config::Config, profile_id: &str) -> Result<(), String> {
+        if !cfg.profiles.iter().any(|profile| profile.id == profile_id) {
+            return Ok(());
+        }
+        if !self.delegates.allows(profile_id) {
+            return Err(format!(
+                "profile `{profile_id}` is outside this session's delegate scope. The profile that \
+                 launched this session sets `[mcp.harness] includeProfiles` / `excludeProfiles`; \
+                 widen it there to reach `{profile_id}`. Call `list_profiles` for what is in scope."
+            ));
+        }
+        if !harness_allows(cfg, profile_id) {
+            return Err(format!(
+                "profile `{profile_id}` is not available to the harness. Declare `[profiles.harness]` on it to \
+                 opt in — the harness runs only the profiles the captain nominated. \
+                 Call `list_profiles` for the ones that are available."
+            ));
+        }
+
+        Ok(())
     }
 
     fn check_capacity(&self) -> Result<(), String> {
@@ -185,14 +274,7 @@ impl Harness {
         // fills `args.profile` from its session first — so one check
         // covers the whole surface. Gating only `list_profiles` would
         // leave a hidden profile reachable by anyone holding its id.
-        if !harness_allows(&cfg, &args.profile) {
-            return Err(format!(
-                "profile `{}` is not available to the harness. Declare `[profiles.harness]` on it to \
-                 opt in — the harness runs only the profiles the captain nominated. \
-                 Call `list_profiles` for the ones that are available.",
-                args.profile
-            ));
-        }
+        self.check_delegable(&cfg, &args.profile)?;
 
         let projection = HarnessProjection {
             structured_output: true,
@@ -469,11 +551,17 @@ impl Harness {
         // patch that opts it in is the thing that broke. Keep those rows:
         // they carry the error, and a silently-missing profile is the
         // worst way to report a broken config.
+        // The delegate scope filters FIRST and unconditionally: it
+        // matches on the id alone, which needs no resolution, so unlike
+        // `harness_enabled` it cannot be wrong about a profile whose
+        // patches failed — and a profile outside this session's scope is
+        // not its business even to report an error about.
         let profiles: Vec<_> = crate::spawn::list_profiles(&cfg, None, &[])
             .into_iter()
+            .filter(|profile| self.delegates.allows(&profile.id))
             .filter(|profile| profile.harness_enabled || profile.error.is_some())
             .collect();
-        let summary = profiles_table(&profiles);
+        let summary = profiles_table(&profiles, self.delegates.is_scoped());
 
         Ok((summary, json!({ "profiles": profiles })))
     }
@@ -1203,13 +1291,26 @@ fn status_summary(row: &Value) -> String {
     out
 }
 
-fn profiles_table(profiles: &[crate::resolve::ProfileSummary]) -> String {
+fn profiles_table(profiles: &[crate::resolve::ProfileSummary], scoped: bool) -> String {
     if profiles.is_empty() {
-        return "No profiles are available to the harness. It is opt-in per profile: add \
-                `[profiles.harness] enabled = true` to the ones an agent may drive (a `$match`ed \
-                `[[patches]]` entry opts a whole family in at once). `hyprpilot profiles` lists \
-                every configured profile, including the ones not nominated."
-            .into();
+        // Two different knobs can empty this list, and naming only the
+        // opt-in would send a captain who scoped the launch to edit the
+        // wrong file.
+        let mut out = String::from(
+            "No profiles are available to the harness. It is opt-in per profile: add \
+             `[profiles.harness] enabled = true` to the ones an agent may drive (a `$match`ed \
+             `[[patches]]` entry opts a whole family in at once). `hyprpilot profiles` lists \
+             every configured profile, including the ones not nominated.",
+        );
+        if scoped {
+            out.push_str(
+                " This session also carries a delegate scope: the profile that launched it sets \
+                 `[mcp.harness] includeProfiles` / `excludeProfiles`, and nothing nominated \
+                 matches it.",
+            );
+        }
+
+        return out;
     }
     let id_width = profiles.iter().map(|p| p.id.len()).max().unwrap_or(2).max(2);
     let provider_width = profiles.iter().map(|p| p.provider.len()).max().unwrap_or(8).max(8);
@@ -1276,12 +1377,114 @@ mod tests {
         );
     }
 
+    fn policy(include: Option<&[&str]>, exclude: &[&str]) -> DelegatePolicy {
+        let to_vec = |globs: &[&str]| globs.iter().map(|g| (*g).to_string()).collect::<Vec<_>>();
+        DelegatePolicy::new(include.map(to_vec).as_deref(), &to_vec(exclude)).expect("test globs compile")
+    }
+
+    /// `personal/*` has to reach `personal/kilic/glm-5.2`. globset's `*`
+    /// crosses `/` by default — the same semantics `$match.profile`
+    /// already gives captains — so a scope written the obvious way works.
+    #[test]
+    fn an_include_glob_crosses_path_separators_like_match_profile_does() {
+        let scope = policy(Some(&["personal/*"]), &[]);
+
+        assert!(scope.allows("personal/kilic/glm-5.2:cloud"));
+        assert!(scope.allows("personal/claude/opus"));
+        assert!(!scope.allows("work/claude/opus"));
+    }
+
+    #[test]
+    fn exclude_beats_include_and_an_unset_policy_allows_everything() {
+        let scoped = policy(Some(&["personal/*"]), &["personal/codex/*"]);
+        assert!(scoped.allows("personal/claude/opus"));
+        assert!(!scoped.allows("personal/codex/gpt-5.5"), "exclude must win on overlap");
+
+        let open = DelegatePolicy::default();
+        assert!(open.allows("anything/at/all"));
+        assert!(!open.is_scoped());
+
+        // Exclude alone is a filter too — the "nothing available"
+        // message keys off this.
+        assert!(policy(None, &["work/*"]).is_scoped());
+    }
+
+    /// `--no-delegates` is `includeProfiles = []`. Zero
+    /// `--include-profile` occurrences is what UNSET looks like on the
+    /// wire, so the empty list needs its own flag or it decays into its
+    /// opposite: unrestricted.
+    #[test]
+    fn no_delegates_matches_nothing_rather_than_everything() {
+        let none = policy(Some(&[]), &[]);
+
+        assert!(!none.allows("personal/claude/opus"));
+        assert!(none.is_scoped());
+    }
+
+    /// A malformed pattern must not be skipped: dropping one from the
+    /// exclude list WIDENS what an agent may launch.
+    #[test]
+    fn a_malformed_glob_fails_the_sidecar_instead_of_being_skipped() {
+        let err = DelegatePolicy::new(None, &["work/[unterminated".to_string()]).expect_err("must reject");
+
+        assert!(err.contains("not a valid glob"), "got: {err}");
+    }
+
+    /// The scope narrows; it never promotes. A profile the captain never
+    /// nominated stays refused however wide the launch scope is.
+    #[test]
+    fn the_launch_scope_cannot_promote_a_profile_that_never_opted_in() {
+        let mut cfg = crate::config::Config::default();
+        let mut nominated: crate::config::ProfileConfig =
+            serde_json::from_value(json!({ "id": "personal/on", "agent": "a" })).unwrap();
+        nominated.harness = Some(crate::config::ProfileHarnessConfig { enabled: Some(true) });
+        let never: crate::config::ProfileConfig =
+            serde_json::from_value(json!({ "id": "personal/off", "agent": "a" })).unwrap();
+        let elsewhere: crate::config::ProfileConfig =
+            serde_json::from_value(json!({ "id": "work/on", "agent": "a" })).unwrap();
+        cfg.profiles = vec![nominated, never, elsewhere];
+
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            policy(Some(&["personal/*"]), &[]),
+        );
+
+        harness
+            .check_delegable(&cfg, "personal/on")
+            .expect("in scope and nominated");
+
+        let err = harness
+            .check_delegable(&cfg, "personal/off")
+            .expect_err("in scope but never nominated");
+        assert!(err.contains("not available to the harness"), "got: {err}");
+
+        let err = harness
+            .check_delegable(&cfg, "work/on")
+            .expect_err("out of the launch scope");
+        assert!(err.contains("outside this session's delegate scope"), "got: {err}");
+        assert!(
+            err.contains("includeProfiles"),
+            "the refusal must name the knob that fixes it: {err}"
+        );
+
+        // Same escape the nomination gate makes: a typo is the
+        // resolver's error to report, not a misleading scope refusal.
+        harness
+            .check_delegable(&cfg, "personal/typo")
+            .expect("an unknown id clears both gates");
+    }
+
     /// A delegate does not delegate. The stamp is what carries this
     /// across the process boundary — the sidecar a spawned agent talks
     /// to is a fresh process that only learns its depth from the env.
     #[test]
     fn a_spawned_session_cannot_spawn_its_own() {
-        let mut harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let mut harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         // Not whatever `new` read: these tests can themselves run inside
         // a spawned session, where the stamp is already set.
         harness.depth = 0;
@@ -1379,7 +1582,11 @@ mod tests {
     /// that writes in bursts with gaps — the shape a real agent has.
     #[tokio::test]
     async fn follow_collects_every_chunk_until_the_session_exits() {
-        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("burst.sh");
         std::fs::write(
@@ -1448,7 +1655,11 @@ mod tests {
     /// while `session_send` can still resume.
     #[tokio::test]
     async fn the_vendor_id_stays_internal_to_resume() {
-        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("emit.sh");
         std::fs::write(
@@ -1772,7 +1983,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let out = profiles_table(&profiles);
+        let out = profiles_table(&profiles, false);
 
         assert!(out.contains("* engineer"), "{out}");
         assert!(out.contains("! broken"), "{out}");
@@ -1782,7 +1993,19 @@ mod tests {
 
     #[test]
     fn empty_profile_list_says_so_rather_than_rendering_an_empty_table() {
-        assert!(profiles_table(&[]).contains("opt-in per profile"));
+        assert!(profiles_table(&[], false).contains("opt-in per profile"));
+    }
+
+    /// Two knobs can empty the listing. A scoped session that names only
+    /// the opt-in sends the captain to edit the wrong file.
+    #[test]
+    fn an_empty_scoped_listing_names_the_scope_as_well_as_the_opt_in() {
+        let unscoped = profiles_table(&[], false);
+        let scoped = profiles_table(&[], true);
+
+        assert!(!unscoped.contains("includeProfiles"), "{unscoped}");
+        assert!(scoped.contains("opt-in per profile"), "{scoped}");
+        assert!(scoped.contains("includeProfiles"), "{scoped}");
     }
 }
 
@@ -2030,7 +2253,11 @@ mod task_tests {
     /// handle whose other fields are identical.
     #[tokio::test]
     async fn session_status_reports_the_turn() {
-        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         let handle = harness
             .sessions
             .spawn(
@@ -2069,7 +2296,11 @@ mod task_tests {
     /// no-op, not a licence to destroy data.
     #[tokio::test]
     async fn cancelling_a_finished_turn_leaves_the_session_intact() {
-        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         let handle = harness
             .sessions
             .spawn(
@@ -2131,7 +2362,11 @@ mod task_tests {
     /// is not a guarantee that survives a refactor.
     #[tokio::test]
     async fn minting_a_task_records_it_on_the_turn() {
-        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         let command = crate::spawn::providers::SpawnCommand {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), "exit 0".into()],
@@ -2182,7 +2417,11 @@ mod task_tests {
     /// `failed` would be a status we cannot substantiate.
     #[test]
     fn an_unresolvable_task_errors_rather_than_inventing_a_status() {
-        let harness = Harness::new(super::super::ConfigSource::default(), DEFAULT_MAX_SESSIONS);
+        let harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DelegatePolicy::default(),
+        );
         let err = harness
             .task_view("3b5ce010-1f61-4a8a-8fa7-086d4b5d43c0:1")
             .expect_err("an unknown session cannot resolve");
