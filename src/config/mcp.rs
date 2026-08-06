@@ -143,6 +143,27 @@ pub struct HarnessServerConfig {
     pub auto_accept_tools: Option<Vec<String>>,
     #[garde(custom(validate_globs))]
     pub auto_reject_tools: Option<Vec<String>>,
+
+    /// Which profiles THIS launch's harness may drive, as globs over
+    /// profile ids. `None` (default) applies no filter; `Some([])` is
+    /// the explicit "delegate to nothing" — the server is still
+    /// injected, it just has no candidates.
+    ///
+    /// Distinct from `[profiles.harness]`, which is the TARGET's own
+    /// opt-in and is global. This is the LAUNCHER's scope, so a
+    /// `$match`ed patch can give `personal/*` a harness that reaches
+    /// only `personal/*`. The two AND: a glob here can never promote a
+    /// profile the captain never nominated.
+    ///
+    /// `globset`, so `*` crosses `/` exactly as `$match.profile` does —
+    /// `personal/*` matches `personal/kilic/glm-5.2`.
+    #[garde(custom(validate_globs))]
+    pub include_profiles: Option<Vec<String>>,
+
+    /// Glob deny-list over profile ids. Beats `include_profiles` on
+    /// overlap, mirroring `excludeTools` / `autoRejectTools`.
+    #[garde(custom(validate_globs))]
+    pub exclude_profiles: Option<Vec<String>>,
 }
 
 impl SkillsServerConfig {
@@ -391,6 +412,37 @@ mod tests {
         };
         let err = cfg.validate().expect_err("malformed accept glob must reject");
         assert!(err.to_string().contains("not a valid glob"), "got: {err}");
+    }
+
+    /// The delegate scope decides what an agent may execute, so a
+    /// malformed pattern must not reach match time — where an
+    /// uncompilable exclude would silently stop excluding.
+    #[test]
+    fn malformed_delegate_scope_globs_reject_at_load() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                exclude_profiles: Some(vec!["work/[unterminated".into()]),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let err = cfg.validate().expect_err("malformed exclude glob must reject");
+        assert!(err.to_string().contains("not a valid glob"), "got: {err}");
+    }
+
+    #[test]
+    fn well_formed_delegate_scope_globs_validate() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                include_profiles: Some(vec!["personal/*".into()]),
+                exclude_profiles: Some(vec!["personal/codex/*".into()]),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        cfg.validate().expect("well-formed delegate globs must validate");
     }
 
     #[test]

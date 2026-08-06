@@ -23,7 +23,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 
-use super::harness::Harness;
+use super::harness::{DelegatePolicy, Harness};
 use super::rpc::{
     empty_object_schema, object_schema, optional_bool, optional_string, optional_string_array, optional_u64,
     optional_usize, require_string, structured_with_text, tool_error, wait_for_shutdown,
@@ -36,9 +36,9 @@ pub struct HarnessServer {
 }
 
 impl HarnessServer {
-    fn new(config: super::ConfigSource, max_sessions: usize) -> Self {
+    fn new(config: super::ConfigSource, max_sessions: usize, delegates: DelegatePolicy) -> Self {
         Self {
-            harness: Arc::new(Harness::new(config, max_sessions)),
+            harness: Arc::new(Harness::new(config, max_sessions, delegates)),
         }
     }
 }
@@ -303,6 +303,28 @@ pub struct HarnessArgs {
     /// work out which profile spawned it.
     #[arg(long = "no-notify-on-complete")]
     pub no_notify_on_complete: bool,
+
+    /// Glob over profile ids this session may delegate to. Repeatable;
+    /// omitted entirely means no allow-filter.
+    ///
+    /// The launcher resolves the PICKED profile's `[mcp.harness]
+    /// includeProfiles` and emits one occurrence per pattern, the same
+    /// way `--skill-dir` carries the skill roots.
+    #[arg(long = "include-profile", value_name = "GLOB", conflicts_with = "no_delegates")]
+    pub include_profiles: Vec<String>,
+
+    /// Glob over profile ids this session may NOT delegate to. Beats
+    /// `--include-profile` on overlap. Repeatable.
+    #[arg(long = "exclude-profile", value_name = "GLOB")]
+    pub exclude_profiles: Vec<String>,
+
+    /// Delegate to nothing — `includeProfiles = []`.
+    ///
+    /// Its own flag because zero `--include-profile` occurrences is
+    /// exactly what "unset" looks like on the wire, and unset means
+    /// unrestricted. An empty list must not decay into its opposite.
+    #[arg(long = "no-delegates")]
+    pub no_delegates: bool,
 }
 
 /// Shared `spawn` / `session_send` parameters. Every one mirrors a CLI flag
@@ -740,12 +762,23 @@ pub(super) fn launch_summary(payload: &serde_json::Value) -> String {
 
 /// Run the harness server over stdio.
 pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyhow::Result<()> {
-    tracing::info!(max_sessions = args.max_sessions, "mcp: starting the harness server");
+    // `--no-delegates` is `includeProfiles = []`: an allow-filter that
+    // matches nothing, which an empty glob set already is.
+    let include = (args.no_delegates || !args.include_profiles.is_empty()).then_some(&args.include_profiles[..]);
+    let delegates = DelegatePolicy::new(include, &args.exclude_profiles)
+        .map_err(|err| anyhow::anyhow!("mcp harness: delegate scope: {err}"))?;
+    tracing::info!(
+        max_sessions = args.max_sessions,
+        include_profiles = ?args.include_profiles,
+        exclude_profiles = ?args.exclude_profiles,
+        no_delegates = args.no_delegates,
+        "mcp: starting the harness server"
+    );
     // Reclaim anything a crashed predecessor left behind before starting
     // our own. A non-empty sweep logs at `warn`.
     super::sessions::sweep_stale_sessions();
 
-    let handler = HarnessServer::new(config, args.max_sessions);
+    let handler = HarnessServer::new(config, args.max_sessions, delegates);
     // Clone the table BEFORE `serve()` — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
     // chance to keep a handle for the shutdown reap.

@@ -404,7 +404,9 @@ Skills reach the agent **only** through the skills server.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
   `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore }>`, default
-  seed `~/.config/hyprpilot/skills`) and `[mcp.harness].maxSessions`.
+  seed `~/.config/hyprpilot/skills`) and `[mcp.harness]`'s
+  `maxSessions` / `notifyOnComplete` / `includeProfiles` /
+  `excludeProfiles`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
   rather than merging. `[mcp.harness].enabled` defaults to **false**
   and that is a security property, not a preference — a profile's
@@ -524,6 +526,25 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   matter — `launch` is the shared body of both tools, so one check
   covers them; gating only the listing would leave it reachable by id.
   An unknown id stays "allowed" so the resolver keeps owning that error.
+- **`[mcp.harness].includeProfiles` / `excludeProfiles` scope delegation
+  PER LAUNCH.** `[profiles.harness]` is the target's own opt-in and is
+  global — it says a profile may be driven, not by whom. These two globs
+  are the LAUNCHER's scope, so a `$match`ed patch gives `personal/*` a
+  harness reaching only `personal/*`. `globset`, so `*` crosses `/` like
+  `$match.profile`. Exclude beats include. The two gates **AND**: a glob
+  can never promote a profile that never declared `[profiles.harness]`.
+  Both halves again — `list_profiles` filters, `launch` refuses — with
+  distinct messages, since the two gates have different fixes. Unknown
+  ids clear both, keeping "unknown profile" the resolver's error.
+  The filter runs on the id ALONE, before resolution, so unlike
+  `harness_enabled` it cannot be wrong about a profile whose patches
+  broke. **`--no-delegates` carries `includeProfiles: []`**: zero
+  `--include-profile` occurrences is indistinguishable from unset on the
+  wire, and unset means unrestricted — the empty list must not decay
+  into its opposite. An empty scope still INJECTS the server; it just
+  has no candidates. A malformed glob fails the sidecar at startup
+  rather than being skipped, because a dropped `exclude` silently
+  widens. Same class as `enabled`: bounds discovery, not capability.
 - **A conversation is ONE session.** `session_send` reuses its handle and
   appends to the same transcript, so an N-turn conversation costs one
   table entry, not N. Its check-and-spawn happens under the table lock —

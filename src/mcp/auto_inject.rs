@@ -93,6 +93,28 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
     if !harness.notifies_on_complete() {
         args.push("--no-notify-on-complete".to_string());
     }
+    // Same reason again: which profiles this launch may delegate to is
+    // the PICKED profile's `[mcp.harness]` scope, and the sidecar has no
+    // way to work out which profile that was.
+    //
+    // An empty include list rides its own flag rather than zero
+    // `--include-profile` occurrences, which is indistinguishable from
+    // "unset" on the wire — and would silently mean *unrestricted*, the
+    // exact opposite of what the captain wrote.
+    match harness.include_profiles.as_deref() {
+        Some([]) => args.push("--no-delegates".to_string()),
+        Some(globs) => {
+            for glob in globs {
+                args.push("--include-profile".to_string());
+                args.push(glob.clone());
+            }
+        }
+        None => {}
+    }
+    for glob in harness.exclude_profiles.as_deref().unwrap_or_default() {
+        args.push("--exclude-profile".to_string());
+        args.push(glob.clone());
+    }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),
         "args": args,
@@ -291,6 +313,87 @@ mod tests {
         let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(args.iter().any(|a| a == "--no-notify-on-complete"), "got: {args:?}");
+    }
+
+    fn harness_args(cfg: &McpConfig) -> Vec<String> {
+        let def = build_harness_definition(cfg, PathBuf::from("<test>")).expect("injects");
+        def.raw["args"]
+            .as_array()
+            .expect("args")
+            .iter()
+            .map(|a| a.as_str().expect("string arg").to_string())
+            .collect()
+    }
+
+    fn scoped(include: Option<Vec<&str>>, exclude: Option<Vec<&str>>) -> McpConfig {
+        let owned = |v: Vec<&str>| v.into_iter().map(String::from).collect::<Vec<_>>();
+        McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                include_profiles: include.map(owned),
+                exclude_profiles: exclude.map(owned),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        }
+    }
+
+    /// One occurrence per pattern, like `--skill-dir`.
+    #[test]
+    fn the_delegate_scope_rides_argv_one_flag_per_pattern() {
+        let args = harness_args(&scoped(
+            Some(vec!["personal/*", "scratch/*"]),
+            Some(vec!["personal/codex/*"]),
+        ));
+
+        assert_eq!(
+            args.iter().filter(|a| *a == "--include-profile").count(),
+            2,
+            "got: {args:?}"
+        );
+        assert!(args.windows(2).any(|w| w == ["--include-profile", "personal/*"]));
+        assert!(args.windows(2).any(|w| w == ["--include-profile", "scratch/*"]));
+        assert!(args.windows(2).any(|w| w == ["--exclude-profile", "personal/codex/*"]));
+        assert!(!args.iter().any(|a| a == "--no-delegates"), "got: {args:?}");
+    }
+
+    /// The wire cannot tell zero `--include-profile` occurrences from an
+    /// absent list, and absent means UNRESTRICTED — so an empty
+    /// `includeProfiles` must ride its own flag rather than decaying
+    /// into the opposite of what the captain wrote.
+    #[test]
+    fn an_empty_include_list_becomes_no_delegates_not_silence() {
+        let args = harness_args(&scoped(Some(vec![]), None));
+
+        assert!(args.iter().any(|a| a == "--no-delegates"), "got: {args:?}");
+        assert!(!args.iter().any(|a| a == "--include-profile"), "got: {args:?}");
+    }
+
+    /// An empty scope still injects the server — it simply has no
+    /// candidates. Keeps one shape for "the harness is on", with the
+    /// candidate list a separate question.
+    #[test]
+    fn an_empty_scope_still_injects_the_server() {
+        assert!(build_harness_definition(&scoped(Some(vec![]), None), PathBuf::from("<test>")).is_some());
+    }
+
+    #[test]
+    fn an_unscoped_harness_passes_no_delegate_flags() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let args = harness_args(&cfg);
+
+        assert!(
+            !args.iter().any(|a| a.starts_with("--include-profile")
+                || a.starts_with("--exclude-profile")
+                || a == "--no-delegates"),
+            "an unset scope must stay unrestricted: {args:?}"
+        );
     }
 
     #[test]

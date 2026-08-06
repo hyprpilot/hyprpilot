@@ -31,12 +31,16 @@ TASKS_EXT = "io.modelcontextprotocol/tasks"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def stub_config():
+def stub_config(profile_ids=("smoke",)):
     """Write a config whose 'vendor CLI' is the stub script.
 
     Generated rather than checked in because `command` is resolved
     against the SESSION's cwd, not the repo — a relative path here fails
     with a bare "No such file or directory" that looks like a spawn bug.
+
+    Every profile is harness-enabled, so anything the delegate-scope
+    section filters out was filtered by the SCOPE and not by the
+    target-side opt-in.
     """
     path = os.path.join(tempfile.mkdtemp(prefix="hyprpilot-smoke-"), "config.toml")
     with open(path, "w") as fh:
@@ -45,13 +49,16 @@ def stub_config():
             'id = "stub"\n'
             'provider = "claude-code"\n'
             f'command = "{os.path.join(HERE, "stub-agent.sh")}"\n'
-            "args = []\n\n"
-            "[[profiles]]\n"
-            'id = "smoke"\n'
-            'agent = "stub"\n'
-            "harness = { enabled = true }\n"
-            "mcp = { enabled = false }\n"
+            "args = []\n"
         )
+        for pid in profile_ids:
+            fh.write(
+                "\n[[profiles]]\n"
+                f'id = "{pid}"\n'
+                'agent = "stub"\n'
+                "harness = { enabled = true }\n"
+                "mcp = { enabled = false }\n"
+            )
     return path
 
 failures = []
@@ -233,6 +240,66 @@ check("cancelling a finished task does not destroy the session",
 check("the session is still addressable by its own tools",
       "error" not in s.call("tools/call",
                             {"name": "session_status", "arguments": {"session": handle}}))
+s.stop()
+
+# ── 5. mcp harness — the per-launch delegate scope ────────────────────
+#
+# Both halves have to hold. Filtering only `list_profiles` would leave a
+# scoped-out profile reachable by anyone holding its id — the same
+# gate-only-the-listing bug the server split exists to prevent — so each
+# case below checks the listing AND a launch.
+print("=== hyprpilot mcp harness — delegate scope ===")
+SCOPE_CFG = stub_config(("personal/one", "personal/two", "work/one"))
+
+
+def listed(server):
+    got = tool_result(server.call("tools/call", {"name": "list_profiles", "arguments": {}}))
+    rows = (got.get("structuredContent") or {}).get("profiles") or []
+    return sorted(row.get("id") for row in rows), got
+
+
+def refusal(server, profile):
+    got = tool_result(server.call("tools/call", {
+        "name": "spawn", "arguments": {"profile": profile, "prompt": "go", "cwd": "/tmp"}}))
+    text = " ".join(c.get("text", "") for c in (got.get("content") or []))
+    return got.get("isError") is True, text
+
+
+s = Server(["mcp", "harness", "--include-profile", "personal/*",
+            "--exclude-profile", "personal/two"], config=SCOPE_CFG)
+s.initialize()
+ids, _ = listed(s)
+check("scope narrows the listing", ids == ["personal/one"], str(ids))
+
+refused, text = refusal(s, "work/one")
+check("a launch outside the scope is refused, not just hidden", refused, text[:80])
+check("the refusal names the knob that widens it", "includeProfiles" in text, text[:120])
+
+refused, _ = refusal(s, "personal/two")
+check("exclude beats include on a launch too", refused)
+s.stop()
+
+# `--no-delegates` is the empty include list. The server is still there —
+# it just has no candidates.
+s = Server(["mcp", "harness", "--no-delegates"], config=SCOPE_CFG)
+info = s.initialize()
+check("an empty scope still serves the harness",
+      info.get("serverInfo", {}).get("name") == "hyprpilot_harness")
+ids, got = listed(s)
+check("no-delegates lists nothing", ids == [], str(ids))
+summary = " ".join(c.get("text", "") for c in (got.get("content") or []))
+check("the empty listing names the scope, not only the opt-in",
+      "includeProfiles" in summary, summary[:120])
+refused, _ = refusal(s, "personal/one")
+check("no-delegates refuses every launch", refused)
+s.stop()
+
+# The unscoped default has to stay exactly as it was.
+s = Server(["mcp", "harness"], config=SCOPE_CFG)
+s.initialize()
+ids, _ = listed(s)
+check("no flags means unrestricted",
+      ids == ["personal/one", "personal/two", "work/one"], str(ids))
 s.stop()
 
 # ── verdict ───────────────────────────────────────────────────────────
