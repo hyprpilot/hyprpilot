@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.9.0](https://github.com/hyprpilot/hyprpilot/compare/v3.8.0...v3.9.0) (2026-08-10)
+
+
+### Features
+
+* **skills:** bundle declared references into read_skill ([#233](https://github.com/hyprpilot/hyprpilot/issues/233)) ([df6adc1](https://github.com/hyprpilot/hyprpilot/commit/df6adc1a2c6d2fc1056fa2fe756ffff8e3c15050))
+
 ## [3.8.0](https://github.com/hyprpilot/hyprpilot/compare/v3.7.0...v3.8.0) (2026-08-06)
 
 
