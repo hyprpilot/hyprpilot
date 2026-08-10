@@ -428,12 +428,27 @@ Skills reach the agent **only** through the skills server.
   server. Resources: `hyprpilot://skills` (the catalogue index —
   markdown, leads with how to chain the two schemes below; the bare
   form cannot collide with a slug because every slug URI carries a
-  `skills/` prefix), `hyprpilot://skills/<slug>` (body) and
-  `hyprpilot://references/<slug>` (bundled frontmatter references — a
-  parallel top-level scheme, NOT a `/references` segment nested under
-  the slug; the nested form broke client URI autocomplete). Tools:
-  `list_skills`, `read_skill`, `load_skill_references`, `reload`
-  (rescan dirs). Skills are discovered by directory scan — the same
+  `skills/` prefix), `hyprpilot://skills/<slug>` (body **plus its
+  declared references**) and `hyprpilot://references/<slug>` (those
+  references alone — a parallel top-level scheme, NOT a `/references`
+  segment nested under the slug; the nested form broke client URI
+  autocomplete). Tools: `list_skills`, `read_skill`,
+  `load_skill_references`, `reload` (rescan dirs).
+  **`read_skill` appends the declared references by default**
+  (`references: false` opts out, for reading a skill in order to edit
+  it): a declared reference that silently never loads is the failure the
+  default exists to prevent, and an agent cannot be relied on to
+  remember a second call. The resource path always bundles — it takes no
+  arguments, and an attached skill missing its references is the same
+  gap. Bundles delimit each file with a `reference:` YAML block carrying
+  its name and declared path, under a `skill_references:` banner naming
+  the skill and count, so an appended bundle can never be mistaken for
+  more skill body; a file that fails to read yields a
+  `status: not-found` block **in its declared position**. Reference
+  bodies are read per call, not cached with the skill — a reference
+  changes far more often than its declaring skill, and caching would
+  serve a stale convention until an unrelated `reload`.
+  Skills are discovered by directory scan — the same
   `SkillsRegistry` discovery the launcher uses — so editing a skill
   and calling `reload` refreshes without restarting the session.
   **Every tool result carries BOTH a `content` text block AND
