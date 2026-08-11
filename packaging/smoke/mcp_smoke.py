@@ -149,6 +149,125 @@ check("list_skills has structuredContent",
       isinstance(listed.get("structuredContent"), dict))
 s.stop()
 
+# ── 2b. mcp skills — granular references ──────────────────────────────
+# Against a PURPOSE-BUILT root rather than the live one: the assertions
+# below pin exact names, counts and shadowing, and the live catalogue is
+# edited constantly.
+print("=== hyprpilot mcp skills — granular references ===")
+
+
+def reference_fixture():
+    """A skill declaring: a plain reference, one with its own
+    frontmatter, a name collision, and a declared-but-missing file."""
+    root = tempfile.mkdtemp(prefix="hyprpilot-refs-")
+    shared = os.path.join(root, "references")
+    os.makedirs(shared)
+    with open(os.path.join(shared, "output-diff.md"), "w") as fh:
+        fh.write("SHARED-OUTPUT-DIFF-BODY\n")
+    with open(os.path.join(shared, "titled.md"), "w") as fh:
+        fh.write("---\nname: renamed\ndisableModelInvocation: false\n---\nTITLED-BODY\n")
+    with open(os.path.join(shared, "dup.md"), "w") as fh:
+        fh.write("SHARED-DUP-BODY\n")
+
+    skill = os.path.join(root, "refskill")
+    os.makedirs(os.path.join(skill, "references"))
+    with open(os.path.join(skill, "references", "dup.md"), "w") as fh:
+        fh.write("LOCAL-DUP-BODY\n")
+    with open(os.path.join(skill, "SKILL.md"), "w") as fh:
+        fh.write(
+            "---\ntitle: Ref Skill\ndescription: fixture\nreferences:\n"
+            "  - ../references/output-diff.md\n"
+            "  - ../references/titled.md\n"
+            "  - ../references/dup.md\n"
+            "  - ./references/dup.md\n"
+            "  - ../references/gone.md\n"
+            "---\nSKILL-BODY-MARKER\n"
+        )
+    return root
+
+
+refroot = reference_fixture()
+s = Server(["mcp", "skills", "--skill-dir",
+            json.dumps({"dir": refroot, "ignore": []})])
+s.initialize()
+
+read = tool_result(s.call("tools/call", {
+    "name": "read_skill", "arguments": {"slug": "refskill"}}))
+sc = read.get("structuredContent", {})
+manifest = sc.get("references", [])
+text = read.get("content", [{}])[0].get("text", "")
+
+check("read_skill does NOT bundle by default",
+      "SHARED-OUTPUT-DIFF-BODY" not in text)
+check("read_skill text carries the manifest footer",
+      "skill_references:" in text and "uri: hyprpilot://references/refskill/output-diff" in text)
+check("manifest names every declaration",
+      [e.get("name") for e in manifest] == ["output-diff", "renamed", "dup", "dup", "gone"],
+      str([e.get("name") for e in manifest]))
+check("a reference's own frontmatter renames it and survives",
+      manifest[1].get("metadata", {}).get("disableModelInvocation") is False)
+check("a reference defaults to disableModelInvocation",
+      manifest[0].get("metadata", {}).get("disableModelInvocation") is True)
+check("the shadowed duplicate has no uri of its own",
+      manifest[3].get("shadowed") is True and "uri" not in manifest[3])
+check("a declared-but-missing file is marked, not dropped",
+      manifest[4].get("status") == "not-found")
+check("timestamps are RFC 3339 UTC",
+      manifest[0].get("modified", "").endswith("Z") and len(manifest[0].get("modified", "")) == 20,
+      manifest[0].get("modified"))
+check("no declared path reaches the wire",
+      "../references/" not in json.dumps(sc))
+check("metadata drops the raw references array",
+      "references" not in sc.get("metadata", {}))
+
+bundled = tool_result(s.call("tools/call", {
+    "name": "read_skill", "arguments": {"slug": "refskill", "bundle": True}}))
+btext = bundled.get("content", [{}])[0].get("text", "")
+check("bundle:true carries the bodies", "SHARED-OUTPUT-DIFF-BODY" in btext)
+
+one = tool_result(s.call("resources/read", {
+    "uri": "hyprpilot://references/refskill/output-diff"}))
+otext = one.get("contents", [{}])[0].get("text", "")
+check("single-reference URI returns just that reference",
+      "SHARED-OUTPUT-DIFF-BODY" in otext and "TITLED-BODY" not in otext)
+
+missing = s.call("resources/read", {"uri": "hyprpilot://references/refskill/nope"})
+check("an unknown reference name errors and lists what exists",
+      "nope" in json.dumps(missing.get("error", {}))
+      and "output-diff" in json.dumps(missing.get("error", {})))
+
+picked = tool_result(s.call("tools/call", {
+    "name": "load_skill_references",
+    "arguments": {"slug": "refskill", "references": ["output-diff", "renamed"]}}))
+ptext = picked.get("structuredContent", {}).get("body", "")
+check("an array fetches exactly the named references",
+      "SHARED-OUTPUT-DIFF-BODY" in ptext and "TITLED-BODY" in ptext
+      and "SHARED-DUP-BODY" not in ptext)
+
+empty = tool_result(s.call("tools/call", {
+    "name": "load_skill_references",
+    "arguments": {"slug": "refskill", "references": []}}))
+check("an EMPTY array fetches nothing, not everything",
+      empty.get("structuredContent", {}).get("body") == "")
+
+every = tool_result(s.call("tools/call", {
+    "name": "load_skill_references", "arguments": {"slug": "refskill"}}))
+etext = every.get("structuredContent", {}).get("body", "")
+check("an omitted array fetches everything",
+      all(m in etext for m in
+          ("SHARED-OUTPUT-DIFF-BODY", "TITLED-BODY", "SHARED-DUP-BODY", "LOCAL-DUP-BODY")))
+
+res = tool_result(s.call("resources/read", {"uri": "hyprpilot://skills/refskill"}))
+rtext = res.get("contents", [{}])[0].get("text", "")
+check("the skill RESOURCE stops bundling but keeps the footer",
+      "SHARED-OUTPUT-DIFF-BODY" not in rtext and "skill_references:" in rtext)
+
+templates = [t["uriTemplate"] for t in
+             tool_result(s.call("resources/templates/list")).get("resourceTemplates", [])]
+check("the per-reference template is advertised",
+      "hyprpilot://references/{slug}/{reference}" in templates, str(templates))
+s.stop()
+
 # ── 3. mcp harness — the NON-declaring client (fallback path) ─────────
 print("=== hyprpilot mcp harness — client WITHOUT tasks ===")
 s = Server(["mcp", "harness"])

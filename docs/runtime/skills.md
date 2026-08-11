@@ -49,17 +49,82 @@ Skills are exposed as MCP resources:
 
   Attach it (`@`-mention it, or whatever your client calls that) and it costs **no** tool call — the client injects it directly. A model _can_ also pull it where the client exposes generic resource reading (Claude Code has `ReadMcpResourceTool`), but that is still a tool call, so for the model `list_skills` remains the better route: same cost, and it is a named tool with a description to route on rather than a URI it must already know. The resource's win is the attachment path.
 
-- `hyprpilot://skills/<slug>` — the skill body.
-- `hyprpilot://references/<slug>` — the bundle's declared reference files, resolved relative to the skill directory. This is a parallel top-level scheme, not a `/references` segment nested under the slug — the nested form broke client URI autocomplete.
+- `hyprpilot://skills/<slug>` — the skill body, followed by a manifest of the references it declares (names and addresses, not bodies).
+- `hyprpilot://references/<slug>/<name>` — **one** reference, addressed by name.
+- `hyprpilot://references/<slug>` — every reference that skill declares, bundled. Both reference forms are a parallel top-level scheme, not a `/references` segment nested under the slug — the nested form broke client URI autocomplete.
 
 And as tools:
 
-| Tool                    | Purpose                                                |
-| ----------------------- | ------------------------------------------------------ |
-| `list_skills`           | Enumerate discovered skills with their metadata.       |
-| `read_skill`            | Fetch a skill body by slug.                            |
-| `load_skill_references` | Bundle the reference files a skill declares.           |
-| `reload`                | Rescan the skill roots (picks up edits / new bundles). |
+| Tool                    | Purpose                                                   |
+| ----------------------- | --------------------------------------------------------- |
+| `list_skills`           | Enumerate discovered skills with their metadata.          |
+| `read_skill`            | Fetch a skill body by slug, plus its reference manifest.  |
+| `load_skill_references` | Fetch one, several, or all of a skill's reference bodies. |
+| `reload`                | Rescan the skill roots (picks up edits / new bundles).    |
+
+## References
+
+A skill declares its references in frontmatter, as paths relative to the skill's own directory:
+
+```markdown
+---
+title: git-commit
+description: Stage and commit changes
+references:
+  - ../references/commit-style.md
+  - ../references/output-diff.md
+---
+```
+
+**Each one is addressed by name — the file name without its extension.** `../references/output-diff.md` becomes `output-diff`, which is the same word the skill body uses when it cites the convention ("present it per `output-diff`"), so the address and the prose agree. A reference may override that with a `name:` in its own frontmatter.
+
+### Bodies are opt-in
+
+`read_skill` returns the skill body plus a **manifest** — every declared reference with its name, address, size, and when it last changed — but not their bodies:
+
+```jsonc
+{
+  "uri": "hyprpilot://skills/git-commit",
+  "body": "…",
+  "references": [
+    {
+      "name": "output-diff",
+      "uri": "hyprpilot://references/git-commit/output-diff",
+      "size": 2481,
+      "modified": "2026-08-04T09:12:33Z",
+      "created": "2026-05-02T11:04:07Z",
+      "metadata": { "disableModelInvocation": true }
+    }
+  ]
+}
+```
+
+Fetch what the body actually directs you to:
+
+```jsonc
+// one, several
+load_skill_references { "slug": "git-commit", "references": ["output-diff"] }
+// all of them
+load_skill_references { "slug": "git-commit" }
+// body plus everything, in one call
+read_skill { "slug": "git-commit", "bundle": true }
+```
+
+Omitting `references` fetches every reference; an **explicitly empty array fetches none** — an empty list must never decay into its opposite. An unknown name is an error listing what does exist, rather than a partial bundle the caller would mistake for a complete one.
+
+The reason for opt-in is duplication, not size in the abstract: references are shared, so the same file is declared by many skills. Reading two related skills used to re-send conventions already in context. Loading one skill's body plus every reference costs several times what the body alone costs, and most steps need one reference, not all of them.
+
+Because the manifest always rides along — including as a text footer on the resource path, for clients that never surface `_meta` — declining a body is never a silent gap. The reader can always see what exists and what it has not loaded.
+
+### Names, collisions, and missing files
+
+- **Collision:** if two declared references resolve to the same name, the first wins. The loser keeps its manifest row marked `shadowed: true` with no address of its own, is still served by the full bundle, and is warned in the log. It is never silently dropped.
+- **Missing file:** a reference that is declared but cannot be read appears in the bundle as a `status: not-found` block **in its declared position**, so the gap is visible where it belongs. Addressing it individually by URI errors instead, since a resource read has no in-band marker convention.
+- **Reference frontmatter:** a reference may carry its own YAML frontmatter, parsed exactly as a skill's is. It is served with the fence stripped and its keys projected into the manifest entry's `metadata`. A reference defaults to `disableModelInvocation: true` — it is not independently invocable, it exists to be pulled in by the skill that declares it — unless it sets the key itself.
+
+### Timestamps
+
+Skills and references both carry `size`, `modified`, and `created` as RFC 3339 UTC strings, so an agent can tell a convention it read last week from one that changed an hour ago. `created` is the filesystem birth time and is **omitted** where the platform or filesystem does not record one, rather than being back-filled from `modified` — that would answer a different question than the key names. Access time is deliberately absent: it records reads rather than writes, and lazily on the `relatime` mounts that are the Linux default.
 
 Skills are discovered by directory scan — the same discovery the launcher uses — so editing a skill and calling `reload` refreshes the catalogue without restarting the agent session. Because each skill is exposed as a resource, `reload` also emits a **resource list-changed notification** so a connected client re-fetches the skill list instead of trusting a stale one. (The tool list is static, so no tool-list-changed fires.)
 
@@ -74,7 +139,9 @@ A `SKILL.md` is markdown with an optional YAML frontmatter block. The loader kee
 Metadata is carried in **one** block — never duplicated across surfaces. Per the MCP spec, `_meta` is a single field keyed by reverse-DNS names; hyprpilot emits exactly one such key and never repeats anything the spec-compliant `Resource` fields already carry:
 
 - **Spec `Resource` fields** are canonical: `uri`, `name` (the slug), `title`, `description`, `mimeType`, `size`.
-- **`io.hyprpilot/skill`** (resource `_meta`) / **`metadata`** (tool output) — the same single block: the entire frontmatter map **verbatim** (keys pass through unchanged — no camelCasing; nested maps, arrays, numbers, and booleans all convert), **minus** `title` and `description` (those equal the canonical `Resource.title` / `Resource.description` byte-for-byte), **plus** the runtime-derived `path` and `bundleDir` (which are not in the frontmatter).
+- **`io.hyprpilot/skill`** (resource `_meta`) / **`metadata`** (tool output) — the same single block: the entire frontmatter map **verbatim** (keys pass through unchanged — no camelCasing; nested maps, arrays, numbers, and booleans all convert), **minus** the keys another field already carries, **plus** the runtime-derived `path`, `bundleDir`, `size`, `modified`, and `created` (which are not in the frontmatter).
+
+Two frontmatter keys are dropped as duplicates. `title` and `description` equal the canonical `Resource.title` / `Resource.description` byte-for-byte. `references` is superseded by the resolved [reference manifest](#references), which addresses each one by name — passing the raw array through as well would publish the declared filesystem paths, and a consumer that has those will read the files directly instead of going through the server.
 
 Frontmatter `name` is **kept** in the block — `Resource.name` is the slug, while a frontmatter `name` is an author-supplied value that may differ, so it is not a spec duplicate. Frontmatter that isn't map-shaped, or a `SKILL.md` with no frontmatter fence at all, is treated as an empty map — a malformed block never fails the request.
 

@@ -19,6 +19,7 @@ mod loader;
 /// the launcher-facing registry.
 pub mod wire_metadata;
 pub mod wire_references;
+pub mod wire_time;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

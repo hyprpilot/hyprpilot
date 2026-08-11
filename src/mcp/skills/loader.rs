@@ -103,7 +103,11 @@ fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
 
 /// Split `---\n…\n---\n<body>`. Missing / malformed frontmatter →
 /// `(YamlValue::Null, original)`.
-fn split_frontmatter(text: &str) -> (YamlValue, &str) {
+///
+/// Shared with `wire_references`: a reference file may carry its own
+/// frontmatter, and parsing that with a second implementation is how the
+/// two drift.
+pub(crate) fn split_frontmatter(text: &str) -> (YamlValue, &str) {
     let stripped = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n"));
     let Some(rest) = stripped else {
         return (YamlValue::Null, text);

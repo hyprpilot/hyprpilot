@@ -13,19 +13,29 @@
 //!   - `hyprpilot://skills` — the catalogue index (markdown), which
 //!     also documents the two schemes below
 //!   - `hyprpilot://skills/<slug>` — full SKILL.md body
-//!   - `hyprpilot://references/<slug>` — bundled references
-//!     (parallel top-level scheme, NOT a `/references` segment
+//!   - `hyprpilot://references/<slug>` — every declared reference,
+//!     bundled (parallel top-level scheme, NOT a `/references` segment
 //!     nested under the slug — the nested form broke client URI
 //!     autocomplete)
-//!   - Both carry ONE namespaced `_meta` key, `io.hyprpilot/skill`:
+//!   - `hyprpilot://references/<slug>/<name>` — ONE reference, named by
+//!     its file stem (or its own frontmatter `name`)
+//!   - All carry ONE namespaced `_meta` key, `io.hyprpilot/skill`:
 //!     the verbatim frontmatter MINUS `title`/`description` (already
-//!     carried by the spec `Resource` fields) PLUS the runtime-derived
-//!     `path` + `bundleDir`. Nothing in that block repeats a
-//!     spec-compliant `Resource` field. See `skills/wire_metadata.rs`.
+//!     carried by the spec `Resource` fields) and MINUS `references`
+//!     (superseded by the resolved manifest, which addresses each one
+//!     by name instead of publishing its path) PLUS the runtime-derived
+//!     `path`, `bundleDir`, `size`, `modified`, `created`. Nothing in
+//!     that block repeats a spec-compliant `Resource` field. See
+//!     `skills/wire_metadata.rs`.
 //! - Tools
-//!   - `list_skills` — `{ skills: [{ slug, title, description, uri, metadata }] }`
-//!   - `read_skill { slug }` — `{ uri, body, metadata }`
-//!   - `load_skill_references { slug }` — `{ uri, body, metadata }`
+//!   - `list_skills` — `{ skills: [{ slug, title, description, uri,
+//!     references: [name], metadata }] }`
+//!   - `read_skill { slug, bundle? }` — `{ uri, body, references: [manifest],
+//!     bundle, metadata }`. Reference BODIES are opt-in (`bundle: true`);
+//!     the manifest naming and addressing each one always rides along,
+//!     so declining a body is never a silent gap.
+//!   - `load_skill_references { slug, references? }` — one or more
+//!     reference bodies by name; omitted fetches all, `[]` fetches none
 //!   - `reload` — rescan dirs, push a resource list-changed
 //!     notification (skills back the resource list; the tool list is
 //!     fixed for a given process, so no tool-list-changed fires)
@@ -44,13 +54,15 @@
 //!
 //! Metadata is de-duplicated to a SINGLE block (`metadata` in tool
 //! output, `io.hyprpilot/skill` in resource `_meta`): the WHOLE parsed
-//! YAML frontmatter projected losslessly to JSON, minus the two keys
-//! (`title`/`description`) the spec fields already carry byte-for-byte,
-//! plus the runtime-derived `path` + `bundleDir`. An author can add any
-//! new frontmatter key and it reaches the agent verbatim with zero
-//! server changes. `skills/wire_metadata.rs` owns the conversion + the
-//! merge + the `_meta` namespacing; this module wires it into the cache
-//! + the wire shapes.
+//! YAML frontmatter projected losslessly to JSON, minus the keys another
+//! field already carries — `title`/`description` (the spec fields, byte
+//! for byte) and `references` (the resolved manifest) — plus the
+//! runtime-derived `path`, `bundleDir`, `size`, `modified` and
+//! `created`. An author can add any new frontmatter key and it reaches
+//! the agent verbatim with zero server changes.
+//! `skills/wire_metadata.rs` owns the conversion + the merge + the
+//! `_meta` namespacing; this module wires it into the cache + the wire
+//! shapes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,7 +86,7 @@ use crate::mcp::skills::SkillsRegistry;
 use super::rpc::{empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
 use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
 use crate::mcp::skills::wire_references::{
-    append_references, bundle_references, frontmatter_references, FrontmatterRefs,
+    self, append_references, frontmatter_references, FrontmatterRefs, ReferenceEntry,
 };
 
 /// Args for `hyprpilot mcp skills`. Skills are discovered by directory
@@ -172,20 +184,21 @@ impl LoadedSkill {
         self.path.parent()
     }
 
-    /// The declared references, concatenated, or an empty string when
-    /// `want` is false or the skill declares none.
+    /// Resolve every declared reference: name, URI, timestamps, and its
+    /// own frontmatter.
     ///
-    /// Read from disk per call rather than cached alongside the body:
-    /// `reload` is the body's invalidation point, but a reference is
-    /// edited far more often than the skill that declares it, and
-    /// caching here would serve a stale convention until an unrelated
-    /// reload happened to clear it.
-    fn reference_bundle(&self, want: bool) -> String {
-        if !want || self.refs.references.is_empty() {
-            return String::new();
+    /// Resolved from disk per call rather than cached alongside the
+    /// body: `reload` is the body's invalidation point, but a reference
+    /// is edited far more often than the skill that declares it, and
+    /// caching here would serve a stale convention — and a stale mtime,
+    /// which is the one thing these fields exist to report — until an
+    /// unrelated reload happened to clear it.
+    fn references(&self) -> Vec<ReferenceEntry> {
+        if self.refs.references.is_empty() {
+            return Vec::new();
         }
         self.bundle_dir()
-            .map(|dir| bundle_references(dir, &self.refs))
+            .map(|dir| wire_references::resolve(dir, &self.slug, &self.refs))
             .unwrap_or_default()
     }
 }
@@ -251,18 +264,23 @@ impl SkillsServer {
         String::from(
             "Hyprpilot skills MCP server. Skills are exposed as \
              `hyprpilot://skills/<slug>` resources. Call `list_skills` to \
-             enumerate; `read_skill` to fetch a body — its declared \
-             references come appended by default, so no second call is \
-             needed (pass `references: false` when reading a skill in order \
-             to edit it). `load_skill_references` bundles those references \
-             on their own. Bundled references are delimited by a \
-             `reference:` YAML block naming each one and its declared path, \
-             under a `skill_references:` banner. Every \
-             resource and tool result carries the skill's frontmatter \
-             verbatim in ONE block (as `metadata` in tool output, and as the \
-             `io.hyprpilot/skill` key in resource `_meta`) — minus `title` / \
-             `description` (already in the spec Resource fields) and plus the \
-             runtime `path` + `bundleDir`.",
+             enumerate; `read_skill` to fetch a body. \
+             A skill may declare REFERENCES — shared convention files it \
+             cites by name. Their bodies are NOT included by default: \
+             `read_skill` lists what the skill declares (name, address, size, \
+             when it last changed), and you fetch only what the body directs \
+             you to, with `load_skill_references { slug, references: [...] }` \
+             or by reading `hyprpilot://references/<slug>/<name>`. Omit \
+             `references` to get them all, or pass `bundle: true` to \
+             `read_skill` for body-plus-everything in one call. A reference \
+             is named by its file name without the extension. Bundled \
+             references are delimited by a `reference:` YAML block naming \
+             each one. Every resource and tool result carries the skill's \
+             frontmatter verbatim in ONE block (as `metadata` in tool output, \
+             and as the `io.hyprpilot/skill` key in resource `_meta`) — minus \
+             `title` / `description` (already in the spec Resource fields) \
+             and `references` (superseded by the manifest), plus the runtime \
+             `path`, `bundleDir`, `size`, `modified` and `created`.",
         )
     }
 
@@ -343,17 +361,37 @@ fn skill_references_uri(slug: &str) -> String {
     format!("hyprpilot://references/{slug}")
 }
 
+/// Comma-separated addressable names, for an error message that tells
+/// the caller what it *could* have asked for.
+fn available_names(entries: &[ReferenceEntry]) -> String {
+    let names: Vec<String> = entries
+        .iter()
+        .filter(|e| !e.shadowed)
+        .map(|e| format!("`{}`", e.name))
+        .collect();
+    if names.is_empty() {
+        "(none - this skill declares no references)".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
 fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = cache
         .order
         .iter()
         .filter_map(|slug| cache.skills.get(slug))
         .map(|s| {
+            // Names only, not the full manifest: `list_skills` is the
+            // routing view ("which skill?"), and full manifests across a
+            // large catalogue would add tens of kilobytes to every call.
+            // `read_skill` carries the addressable detail.
             serde_json::json!({
                 "slug": s.slug,
                 "title": s.title,
                 "description": s.description,
                 "uri": skill_uri(&s.slug),
+                "references": wire_references::names(&s.references()),
                 "metadata": s.meta_block,
             })
         })
@@ -368,79 +406,95 @@ enum ParsedUri<'a> {
     /// requires the separator.
     Catalogue,
     Skill(&'a str),
+    /// Every reference a skill declares, bundled.
     SkillReferences(&'a str),
+    /// One reference, addressed by name.
+    SkillReference(&'a str, &'a str),
 }
 
 fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
     let rest = uri.strip_prefix("hyprpilot://")?;
-    // Two parallel top-level forms — the slug is a single trailing
-    // segment in both, so the references scheme no longer nests a
-    // `/references` suffix under the slug (that nesting broke client
-    // URI autocomplete).
+    // Two parallel top-level forms — the references scheme is NOT a
+    // `/references` segment nested under the slug (that nesting broke
+    // client URI autocomplete).
     if rest == "skills" {
-        Some(ParsedUri::Catalogue)
-    } else if let Some(slug) = rest.strip_prefix("skills/") {
-        Some(ParsedUri::Skill(slug))
-    } else {
-        rest.strip_prefix("references/").map(ParsedUri::SkillReferences)
+        return Some(ParsedUri::Catalogue);
+    }
+    if let Some(slug) = rest.strip_prefix("skills/") {
+        return Some(ParsedUri::Skill(slug));
+    }
+    let rest = rest.strip_prefix("references/")?;
+    // Split at the FIRST separator: a slug can never contain one
+    // (`SkillSlug::parse` rejects `/` and `\`) and a resolved reference
+    // name is rejected back to its stem if it does, so one segment is
+    // unambiguously the bundle and two are unambiguously one reference.
+    // A trailing slash with no name (`references/<slug>/`) is neither —
+    // it addresses nothing and must not silently become the bundle.
+    match rest.split_once('/') {
+        None => Some(ParsedUri::SkillReferences(rest)),
+        Some((_, "")) => None,
+        Some((slug, name)) => Some(ParsedUri::SkillReference(slug, name)),
     }
 }
 
-fn slug_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
-    let mut map = serde_json::Map::new();
-    map.insert("type".into(), serde_json::Value::String("object".into()));
-    let mut props = serde_json::Map::new();
-    let mut slug_prop = serde_json::Map::new();
-    slug_prop.insert("type".into(), serde_json::Value::String("string".into()));
-    slug_prop.insert(
-        "description".into(),
-        serde_json::Value::String("The skill slug.".into()),
-    );
-    props.insert("slug".into(), serde_json::Value::Object(slug_prop));
-    map.insert("properties".into(), serde_json::Value::Object(props));
-    map.insert(
-        "required".into(),
-        serde_json::Value::Array(vec![serde_json::Value::String("slug".into())]),
-    );
-    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
+fn slug_prop() -> serde_json::Value {
+    serde_json::json!({ "type": "string", "description": "The skill slug." })
+}
+
+fn object_schema(props: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
+    let serde_json::Value::Object(map) = serde_json::json!({
+        "type": "object",
+        "properties": props,
+        "required": ["slug"],
+        "additionalProperties": false,
+    }) else {
+        unreachable!("json! object literal")
+    };
     Arc::new(map)
 }
 
-/// `read_skill`'s schema — `slug`, plus the opt-out for the reference
-/// bundle. Bundling defaults ON: a declared reference that never loads
-/// is the failure this tool exists to prevent, and an agent cannot be
-/// relied on to remember a second call. `references: false` covers the
-/// meta-read — fetching a skill in order to *edit* it, where the bundle
-/// is pure weight.
+/// `load_skill_references`'s schema — `slug`, plus an optional ARRAY of
+/// reference names.
+///
+/// An array rather than a single name because a skill body routinely
+/// cites two or three references for one step, and a singular-only tool
+/// turns that into N round trips. Omitted means every reference; an
+/// explicitly EMPTY array means none, because an empty list must never
+/// decay into its opposite.
+fn load_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+    object_schema(serde_json::json!({
+        "slug": slug_prop(),
+        "references": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description":
+                "Names of the references to fetch, as listed in the skill's `references` \
+                 manifest (the file name without its extension, e.g. `output-diff`). \
+                 Omit to fetch every reference the skill declares. An empty array fetches \
+                 none. An unknown name is an error rather than a partial result.",
+        },
+    }))
+}
+
+/// `read_skill`'s schema — `slug`, plus an opt-IN for the full bundle.
+///
+/// Bundling defaults OFF. The body always carries a manifest of what the
+/// skill declares — name, URI, size, mtime — so the agent can see what
+/// it has not loaded and fetch precisely what the body tells it to.
+/// `bundle: true` is the one-call shortcut for when everything is wanted
+/// anyway.
 fn read_skill_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
-    let mut map = serde_json::Map::new();
-    map.insert("type".into(), serde_json::Value::String("object".into()));
-    let mut props = serde_json::Map::new();
-    let mut slug_prop = serde_json::Map::new();
-    slug_prop.insert("type".into(), serde_json::Value::String("string".into()));
-    slug_prop.insert(
-        "description".into(),
-        serde_json::Value::String("The skill slug.".into()),
-    );
-    props.insert("slug".into(), serde_json::Value::Object(slug_prop));
-    let mut refs_prop = serde_json::Map::new();
-    refs_prop.insert("type".into(), serde_json::Value::String("boolean".into()));
-    refs_prop.insert(
-        "description".into(),
-        serde_json::Value::String(
-            "Append the skill's declared references to the body. Defaults to true - \
-             omit it unless you are reading the skill to edit it rather than to follow it."
-                .into(),
-        ),
-    );
-    props.insert("references".into(), serde_json::Value::Object(refs_prop));
-    map.insert("properties".into(), serde_json::Value::Object(props));
-    map.insert(
-        "required".into(),
-        serde_json::Value::Array(vec![serde_json::Value::String("slug".into())]),
-    );
-    map.insert("additionalProperties".into(), serde_json::Value::Bool(false));
-    Arc::new(map)
+    object_schema(serde_json::json!({
+        "slug": slug_prop(),
+        "bundle": {
+            "type": "boolean",
+            "description":
+                "Append the full body of every declared reference. Defaults to false - the \
+                 result always lists what the skill declares and how to address each one, \
+                 so fetch only what the skill body actually directs you to. Pass true only \
+                 when you want every reference in one call.",
+        },
+    }))
 }
 
 /// The `hyprpilot://skills` index — the whole catalogue as one
@@ -458,12 +512,15 @@ fn catalogue_markdown(cache: &SkillsCache) -> String {
         "# hyprpilot skills\n\n\
          Each entry below is loadable by URI — no tool call required:\n\n\
          - `hyprpilot://skills/<slug>` — the skill's full `SKILL.md` body. Read this first; it is the \
-         instruction set.\n\
-         - `hyprpilot://references/<slug>` — the reference files that skill declares in its frontmatter, \
-         bundled into one response. Only some skills have them, and only read them when the body tells \
-         you to.\n\n\
-         So the chain is: pick a slug here → read `skills/<slug>` → follow its reference directives into \
-         `references/<slug>`. The `reload` tool rescans the roots if this index looks stale.\n\n",
+         instruction set. It ends with a list of the references that skill declares, but not their \
+         bodies.\n\
+         - `hyprpilot://references/<slug>/<name>` — ONE of those references. `<name>` is its file name \
+         without the extension, exactly as the skill body cites it.\n\
+         - `hyprpilot://references/<slug>` — all of them at once, when the body genuinely needs them all.\n\n\
+         So the chain is: pick a slug here → read `skills/<slug>` → follow the reference directives in \
+         its body into `references/<slug>/<name>`, one at a time. Shared references repeat heavily \
+         across skills, so fetching only what a step names keeps what you already hold from being \
+         re-sent. The `reload` tool rescans the roots if this index looks stale.\n\n",
     );
     if cache.order.is_empty() {
         out.push_str("_No skills available._\n");
@@ -560,10 +617,11 @@ impl ServerHandler for SkillsServer {
             Tool::new_with_raw(
                 "read_skill",
                 Some(
-                    "Read a skill's full SKILL.md body and frontmatter metadata, with its \
-                     declared references appended by default. Equivalent to reading the \
-                     `hyprpilot://skills/<slug>` resource. Pass `references: false` for the \
-                     body alone."
+                    "Read a skill's full SKILL.md body and frontmatter metadata. The result \
+                     also lists every reference the skill declares - name, address, size and \
+                     when it last changed - but NOT their bodies. Fetch those with \
+                     `load_skill_references`, or pass `bundle: true` to get them all in one \
+                     call. Equivalent to reading the `hyprpilot://skills/<slug>` resource."
                         .into(),
                 ),
                 read_skill_object_schema(),
@@ -571,13 +629,14 @@ impl ServerHandler for SkillsServer {
             Tool::new_with_raw(
                 "load_skill_references",
                 Some(
-                    "Bundle every reference declared in a skill's frontmatter, \
-                     resolved relative to the skill's bundle dir, and include the \
-                     skill metadata. Equivalent to reading \
-                     `hyprpilot://references/<slug>`."
+                    "Fetch the body of one or more references a skill declares, by name. \
+                     Pass `references: [\"output-diff\", \"scm-detect\"]` for specific ones, \
+                     or omit it for all of them. Equivalent to reading \
+                     `hyprpilot://references/<slug>/<name>` (one) or \
+                     `hyprpilot://references/<slug>` (all)."
                         .into(),
                 ),
-                slug_object_schema(),
+                load_references_object_schema(),
             ),
             Tool::new_with_raw(
                 "reload",
@@ -608,43 +667,77 @@ impl ServerHandler for SkillsServer {
             }
             "read_skill" => {
                 let slug = require_string(&args, "slug")?;
-                let want_refs = args
-                    .get("references")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true);
+                let want_bundle = args.get("bundle").and_then(serde_json::Value::as_bool).unwrap_or(false);
                 let cache = self.skills_cache.read().await;
                 let Some(skill) = cache.skills.get(slug) else {
                     return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
-                let bundle = skill.reference_bundle(want_refs);
+                let entries = skill.references();
+                // Opting into the bundle replaces the footer with the
+                // real thing; otherwise the footer is what tells the
+                // reader those bodies exist and how to reach them.
+                let text = if want_bundle {
+                    let bundle = wire_references::bundle(&entries, None).unwrap_or_default();
+                    append_references(&skill.body, slug, entries.len(), &bundle)
+                } else {
+                    format!("{}{}", skill.body, wire_references::manifest_footer(&entries, slug))
+                };
                 // `body` stays the body — appending into it would change
                 // the field's meaning for anything reading the structured
                 // result. The concatenation is the text projection only.
                 Ok(structured_with_text(
-                    append_references(&skill.body, slug, skill.refs.references.len(), &bundle),
+                    text,
                     serde_json::json!({
                         "uri": skill_uri(slug),
                         "body": skill.body,
-                        "references": (!bundle.is_empty()).then_some(bundle),
+                        "references": wire_references::manifest(&entries),
+                        "bundle": want_bundle
+                            .then(|| wire_references::bundle(&entries, None).unwrap_or_default()),
                         "metadata": skill.meta_block,
                     }),
                 ))
             }
             "load_skill_references" => {
                 let slug = require_string(&args, "slug")?;
+                // Absent means every reference; an explicitly empty
+                // array means none. The two must not collapse — an empty
+                // list decaying into "everything" is exactly the footgun
+                // `--no-delegates` exists to avoid on the harness side.
+                let select = match args.get("references") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::Array(items)) => {
+                        let mut names = Vec::with_capacity(items.len());
+                        for item in items {
+                            let Some(name) = item.as_str() else {
+                                return Ok(tool_error("`references` must be an array of strings"));
+                            };
+                            names.push(name.to_string());
+                        }
+                        Some(names)
+                    }
+                    Some(_) => return Ok(tool_error("`references` must be an array of strings")),
+                };
                 let cache = self.skills_cache.read().await;
                 let Some(skill) = cache.skills.get(slug) else {
                     return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
-                let Some(bundle_dir) = skill.bundle_dir() else {
-                    return Ok(tool_error("skill path has no parent directory"));
+                let entries = skill.references();
+                let body = match wire_references::bundle(&entries, select.as_deref()) {
+                    Ok(body) => body,
+                    Err(unknown) => {
+                        return Ok(tool_error(format!(
+                            "skill `{slug}` declares no reference named {}. Available: {}",
+                            unknown.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", "),
+                            available_names(&entries)
+                        )))
+                    }
                 };
-                let body = bundle_references(bundle_dir, &skill.refs);
                 Ok(structured_with_text(
                     body.clone(),
                     serde_json::json!({
                         "uri": skill_references_uri(slug),
                         "body": body,
+                        "references": wire_references::manifest(&entries),
                         "metadata": skill.meta_block,
                     }),
                 ))
@@ -738,8 +831,14 @@ impl ServerHandler for SkillsServer {
                 .with_mime_type("text/markdown"),
             rmcp::model::ResourceTemplate::new("hyprpilot://references/{slug}", "skill-references")
                 .with_description(
-                    "Bundle of every reference declared in the skill's frontmatter, \
-                     concatenated with `--- <basename> ---` delimiters.",
+                    "Every reference the skill declares, bundled into one document, each \
+                     delimited by a `reference:` block naming it.",
+                )
+                .with_mime_type("text/markdown"),
+            rmcp::model::ResourceTemplate::new("hyprpilot://references/{slug}/{reference}", "skill-reference")
+                .with_description(
+                    "One reference, addressed by name - the file name without its \
+                     extension, as listed in the skill's `references` manifest.",
                 )
                 .with_mime_type("text/markdown"),
         ];
@@ -769,14 +868,18 @@ impl ServerHandler for SkillsServer {
                     return Err(rmcp::ErrorData::invalid_params(format!("unknown skill: {slug}"), None));
                 };
                 // The attachment path — palette picks and `#{...}` land
-                // here. It carries no arguments, so it always bundles:
-                // a skill attached without its references is the same
-                // silent gap the tool default closes.
-                let bundle = skill.reference_bundle(true);
+                // here — and the one place a manifest FOOTER is
+                // load-bearing rather than a nicety: a resource read
+                // returns text plus `_meta`, and many clients never
+                // surface `_meta` to the model. Without the footer an
+                // attached skill would lose its references with no
+                // in-context signal at all, which is the silent gap
+                // bundling-by-default used to prevent.
+                let entries = skill.references();
                 Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
-                    text: append_references(&skill.body, slug, skill.refs.references.len(), &bundle),
+                    text: format!("{}{}", skill.body, wire_references::manifest_footer(&entries, slug)),
                     meta: Some(skill_meta(&skill.meta_block)),
                 }])
                 .into())
@@ -786,13 +889,35 @@ impl ServerHandler for SkillsServer {
                 let Some(skill) = cache.skills.get(slug) else {
                     return Err(rmcp::ErrorData::invalid_params(format!("unknown skill: {slug}"), None));
                 };
-                let Some(bundle_dir) = skill.bundle_dir() else {
-                    return Err(rmcp::ErrorData::internal_error(
-                        "skill path has no parent directory",
-                        None,
-                    ));
+                let body = wire_references::bundle(&skill.references(), None).unwrap_or_default();
+                Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("text/markdown".into()),
+                    text: body,
+                    meta: Some(skill_meta(&skill.meta_block)),
+                }])
+                .into())
+            }
+            Some(ParsedUri::SkillReference(slug, name)) => {
+                let cache = self.skills_cache.read().await;
+                let Some(skill) = cache.skills.get(slug) else {
+                    return Err(rmcp::ErrorData::invalid_params(format!("unknown skill: {slug}"), None));
                 };
-                let body = bundle_references(bundle_dir, &skill.refs);
+                let entries = skill.references();
+                // A resource read has no in-band marker convention — a
+                // client asking for one reference gets content or an
+                // error, so an unknown name errors here rather than
+                // returning the soft `status: not-found` block the
+                // bundle uses for a declared-but-unreadable file.
+                let body = wire_references::bundle(&entries, Some(&[name.to_string()])).map_err(|_| {
+                    rmcp::ErrorData::invalid_params(
+                        format!(
+                            "skill `{slug}` declares no reference named `{name}`. Available: {}",
+                            available_names(&entries)
+                        ),
+                        None,
+                    )
+                })?;
                 Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
@@ -843,6 +968,30 @@ mod tests {
             "must name the references scheme"
         );
         assert!(out.contains("No skills available"), "an empty catalogue still renders");
+    }
+
+    /// The single-reference form splits at the FIRST separator, so a
+    /// slug and a name are never confused. A trailing slash addresses
+    /// nothing and must NOT silently degrade into the bundle.
+    #[test]
+    fn a_single_reference_uri_splits_slug_from_name() {
+        assert!(matches!(
+            parse_uri("hyprpilot://references/git-commit/output-diff"),
+            Some(ParsedUri::SkillReference("git-commit", "output-diff"))
+        ));
+        // `file_stem` strips only the LAST extension, so a dotted name
+        // is legal and must survive intact.
+        assert!(matches!(
+            parse_uri("hyprpilot://references/git-commit/plan.v2"),
+            Some(ParsedUri::SkillReference("git-commit", "plan.v2"))
+        ));
+        // One segment is still the whole bundle.
+        assert!(matches!(
+            parse_uri("hyprpilot://references/git-commit"),
+            Some(ParsedUri::SkillReferences("git-commit"))
+        ));
+        // A trailing slash is neither.
+        assert!(parse_uri("hyprpilot://references/git-commit/").is_none());
     }
 
     #[test]
@@ -903,12 +1052,12 @@ mod tests {
         assert_eq!(loaded.description, "desc");
     }
 
-    /// `build_cache` builds the single merged block once: verbatim
-    /// The bundle is opt-out, not opt-in — the whole point of the
-    /// default. A skill declaring nothing yields an empty bundle either
-    /// way, so `append_references` leaves such a body untouched.
+    /// References are resolved but their BODIES are not served by
+    /// default — the skill body carries a manifest footer naming each
+    /// one and how to address it, so the reader can see what it has not
+    /// loaded. Opting in swaps the footer for the real bundle.
     #[test]
-    fn reference_bundle_defaults_on_and_honours_the_opt_out() {
+    fn references_resolve_to_addresses_and_the_bodies_are_opt_in() {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("myskill");
         std::fs::create_dir_all(skill_dir.join("references")).unwrap();
@@ -927,13 +1076,25 @@ mod tests {
 
         let cache = build_cache(vec![skill]);
         let loaded = cache.skills.get("myskill").unwrap();
+        let entries = loaded.references();
 
-        let bundled = loaded.reference_bundle(true);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "local");
+        assert_eq!(entries[0].uri.as_deref(), Some("hyprpilot://references/myskill/local"));
+
+        // Default: the address, not the body.
+        let footer = wire_references::manifest_footer(&entries, "myskill");
+        assert!(footer.contains("uri: hyprpilot://references/myskill/local"));
+        assert!(
+            !footer.contains("local body"),
+            "the default must not carry reference bodies"
+        );
+
+        // Opt-in: the body.
+        let bundled = wire_references::bundle(&entries, None).unwrap();
         assert!(bundled.contains("name: local"));
         assert!(bundled.contains("local body"));
-        assert!(loaded.reference_bundle(false).is_empty());
-
-        let text = append_references(&loaded.body, "myskill", loaded.refs.references.len(), &bundled);
+        let text = append_references(&loaded.body, "myskill", entries.len(), &bundled);
         assert!(text.starts_with("body\n"));
         assert!(text.contains("skill_references:\n  skill: myskill\n  count: 1"));
     }
@@ -1012,10 +1173,12 @@ references:
                     "title": "Plan hard",
                     "description": "Deep planning",
                     "uri": "hyprpilot://skills/plan-hard",
+                    // Names only — the routing view. `read_skill`
+                    // carries the addressable manifest.
+                    "references": ["plan-mode"],
                     "metadata": {
                         "name": "plan-hard",
                         "argument-hint": "[goal]",
-                        "references": ["../references/plan-mode.md"],
                         "path": "/tmp/plan-hard/SKILL.md",
                         "bundleDir": "/tmp/plan-hard"
                     }
@@ -1027,6 +1190,11 @@ references:
         // Spec-duplicated keys are NOT inside the block.
         assert!(payload["skills"][0]["metadata"].get("title").is_none());
         assert!(payload["skills"][0]["metadata"].get("description").is_none());
+        // The raw declared paths are superseded by the manifest and must
+        // not ride along — publishing them invites reading the files
+        // directly instead of going through the server.
+        assert!(payload["skills"][0]["metadata"].get("references").is_none());
+        assert!(!payload.to_string().contains("../references/"));
     }
 
     /// Forward-compat: an arbitrary/unknown frontmatter key (nested
