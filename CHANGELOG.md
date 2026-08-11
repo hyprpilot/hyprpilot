@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.10.0](https://github.com/hyprpilot/hyprpilot/compare/v3.9.0...v3.10.0) (2026-08-11)
+
+
+### Features
+
+* **skills:** address references by path, bodies opt-in ([#235](https://github.com/hyprpilot/hyprpilot/issues/235)) ([a8eeaf8](https://github.com/hyprpilot/hyprpilot/commit/a8eeaf8d3c5cc40141428fe1b459b3ff83f7a604))
+
 ## [3.9.0](https://github.com/hyprpilot/hyprpilot/compare/v3.8.0...v3.9.0) (2026-08-10)
 
 
