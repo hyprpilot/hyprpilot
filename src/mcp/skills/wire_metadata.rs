@@ -228,9 +228,9 @@ x-vendor-extension:
     }
 
     /// The raw `references` array is dropped: the resolved manifest
-    /// carries every declared reference by name + URI, and passing the
-    /// array through as well would publish the declared filesystem
-    /// paths that the URI scheme exists to replace.
+    /// carries every declared reference by its CANONICAL path, while the
+    /// raw array holds the declared spelling — which is not an address
+    /// and cannot be passed to `load_skill_references`.
     #[test]
     fn skill_block_drops_the_raw_references_array() {
         let value: serde_yaml::Value = serde_yaml::from_str(

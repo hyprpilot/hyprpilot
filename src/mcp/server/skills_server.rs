@@ -199,8 +199,8 @@ impl LoadedSkill {
         self.path.parent()
     }
 
-    /// Resolve every declared reference: name, URI, timestamps, and its
-    /// own frontmatter.
+    /// Resolve every declared reference: its canonical path, display
+    /// name, timestamps, and its own frontmatter.
     ///
     /// Resolved from disk per call rather than cached alongside the
     /// body: `reload` is the body's invalidation point, but a reference
@@ -488,7 +488,7 @@ fn load_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Va
 /// `read_skill`'s schema — `slug`, plus an opt-IN for the full bundle.
 ///
 /// Bundling defaults OFF. The body always carries a manifest of what the
-/// skill declares — name, URI, size, mtime — so the agent can see what
+/// skill declares — path, name, size, mtime — so the agent can see what
 /// it has not loaded and fetch precisely what the body tells it to.
 /// `bundle: true` is the one-call shortcut for when everything is wanted
 /// anyway.
@@ -873,13 +873,13 @@ impl ServerHandler for SkillsServer {
                     .with_size(skill.body.len() as u64)
                     .with_meta(skill_meta(&skill.meta_block)),
             );
-            // The reference URIs are deliberately NOT enumerated — not
-            // the per-skill bundle, not the per-reference form. They
-            // stay reachable, and are advertised as resource TEMPLATES
-            // instead.
+            // References are deliberately absent from this listing —
+            // and from the resource surface entirely. There is no
+            // reference URI to enumerate: a reference is addressed by
+            // its path through `load_skill_references`.
             //
             // This listing is the single most expensive thing this
-            // server can hand a client: measured against a 124-skill
+            // server can hand a client: measured against a 127-skill
             // catalogue it was 231 resources / ~170 KB, of which 48% was
             // `_meta` — and the bundle resource's `_meta` was its own
             // skill's block repeated verbatim, paying twice for one

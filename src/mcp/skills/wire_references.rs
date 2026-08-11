@@ -494,6 +494,37 @@ mod tests {
         assert_eq!(declared.len(), 2, "an unresolvable declaration contributes no address");
     }
 
+    /// The load gate is `canonical()` + membership in the declared set.
+    /// Canonicalizing FIRST is what lets a caller pass any spelling of a
+    /// declared file, and what stops a different file sneaking in under
+    /// a spelling that merely looks like one.
+    #[test]
+    fn canonical_normalises_into_the_declared_set_without_widening_it() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("references")).unwrap();
+        fs::write(dir.path().join("references/a.md"), "alpha").unwrap();
+        fs::write(dir.path().join("undeclared.md"), "nope").unwrap();
+        let declared: std::collections::HashSet<String> = declared_paths(dir.path(), &refs(&["./references/a.md"]))
+            .into_iter()
+            .collect();
+
+        let direct = canonical(&dir.path().join("references/a.md").display().to_string()).unwrap();
+        assert!(declared.contains(&direct));
+
+        // A different spelling of the SAME file resolves in.
+        let roundabout = canonical(&dir.path().join("references/../references/a.md").display().to_string()).unwrap();
+        assert!(declared.contains(&roundabout));
+        assert_eq!(direct, roundabout);
+
+        // A real file that no skill declares stays out, even though it
+        // sits inside the same bundle dir.
+        let sibling = canonical(&dir.path().join("undeclared.md").display().to_string()).unwrap();
+        assert!(!declared.contains(&sibling));
+
+        // A path that does not resolve at all yields nothing to check.
+        assert!(canonical("/nonexistent-hyprpilot-probe-xyz").is_none());
+    }
+
     #[test]
     fn resolve_paths_reads_exactly_what_it_is_given() {
         let dir = tempdir().unwrap();

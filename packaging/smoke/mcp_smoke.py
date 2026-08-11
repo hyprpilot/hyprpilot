@@ -294,6 +294,22 @@ check("a path no skill declares is refused",
       undeclared.get("isError") is True
       or "no skill declares" in json.dumps(undeclared))
 
+# An UNDECLARED file inside the skill root is refused too — the gate is
+# the declared set, not "somewhere under a skills directory".
+sibling = os.path.join(refroot, "refskill", "SKILL.md")
+check("an undeclared file inside the skill root is refused",
+      tool_result(s.call("tools/call", {
+          "name": "load_skill_references", "arguments": {"references": [sibling]}}
+      )).get("isError") is True)
+
+# ...while any SPELLING of a declared file is accepted, because the
+# caller's path is canonicalized before the membership check.
+roundabout = os.path.join(refroot, "references", "..", "references", "output-diff.md")
+check("an alternate spelling of a declared path is accepted",
+      "SHARED-OUTPUT-DIFF-BODY" in tool_result(s.call("tools/call", {
+          "name": "load_skill_references", "arguments": {"references": [roundabout]}}
+      )).get("structuredContent", {}).get("body", ""))
+
 check("a missing `references` argument is refused",
       tool_result(s.call("tools/call", {
           "name": "load_skill_references", "arguments": {}})).get("isError") is True)
