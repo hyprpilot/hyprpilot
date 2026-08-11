@@ -165,7 +165,7 @@ def reference_fixture():
     with open(os.path.join(shared, "output-diff.md"), "w") as fh:
         fh.write("SHARED-OUTPUT-DIFF-BODY\n")
     with open(os.path.join(shared, "titled.md"), "w") as fh:
-        fh.write("---\nname: renamed\ndisableModelInvocation: false\n---\nTITLED-BODY\n")
+        fh.write("---\nname: renamed\nowner: captain\n---\nTITLED-BODY\n")
     with open(os.path.join(shared, "dup.md"), "w") as fh:
         fh.write("SHARED-DUP-BODY\n")
 
@@ -182,6 +182,17 @@ def reference_fixture():
             "  - ./references/dup.md\n"
             "  - ../references/gone.md\n"
             "---\nSKILL-BODY-MARKER\n"
+        )
+
+    # A second skill citing the SAME shared file, so duplicate detection
+    # has something real to detect.
+    other = os.path.join(root, "otherskill")
+    os.makedirs(other)
+    with open(os.path.join(other, "SKILL.md"), "w") as fh:
+        fh.write(
+            "---\ntitle: Other\ndescription: fixture\nreferences:\n"
+            "  - ../references/output-diff.md\n"
+            "---\nOTHER-BODY\n"
         )
     return root
 
@@ -204,10 +215,13 @@ check("read_skill text carries the manifest footer",
 check("manifest names every declaration",
       [e.get("name") for e in manifest] == ["output-diff", "renamed", "dup", "dup", "gone"],
       str([e.get("name") for e in manifest]))
-check("a reference's own frontmatter renames it and survives",
-      manifest[1].get("metadata", {}).get("disableModelInvocation") is False)
-check("a reference defaults to disableModelInvocation",
-      manifest[0].get("metadata", {}).get("disableModelInvocation") is True)
+check("a reference's own frontmatter renames it and rides through",
+      manifest[1].get("metadata", {}).get("owner") == "captain")
+check("nothing is invented into a reference with no frontmatter",
+      manifest[0].get("metadata") in (None, {}), str(manifest[0].get("metadata")))
+check("the manifest carries the canonical path as identity",
+      os.path.isabs(manifest[0].get("path", "")) and ".." not in manifest[0]["path"],
+      manifest[0].get("path"))
 check("the shadowed duplicate has no uri of its own",
       manifest[3].get("shadowed") is True and "uri" not in manifest[3])
 check("a declared-but-missing file is marked, not dropped",
@@ -266,6 +280,44 @@ templates = [t["uriTemplate"] for t in
              tool_result(s.call("resources/templates/list")).get("resourceTemplates", [])]
 check("the per-reference template is advertised",
       "hyprpilot://references/{slug}/{reference}" in templates, str(templates))
+
+# A declared-but-unreadable file is a marker inside a bundle, but an
+# ERROR when addressed on its own — a resource read has no in-band
+# marker convention, so returning the header alone would hand back
+# something the caller would mistake for the file.
+gone_uri = s.call("resources/read", {"uri": "hyprpilot://references/refskill/gone"})
+check("a missing file errors when addressed individually",
+      "error" in gone_uri, json.dumps(gone_uri.get("result", {}))[:120])
+gone_bundle = tool_result(s.call("tools/call", {
+    "name": "load_skill_references", "arguments": {"slug": "refskill"}}))
+check("but stays a positional marker inside the bundle",
+      "status: not-found" in gone_bundle.get("structuredContent", {}).get("body", ""))
+
+dupe = tool_result(s.call("tools/call", {
+    "name": "load_skill_references",
+    "arguments": {"slug": "refskill", "references": ["output-diff", "output-diff"]}}))
+check("a repeated name is served once, not amplified",
+      dupe.get("structuredContent", {}).get("body", "").count("SHARED-OUTPUT-DIFF-BODY") == 1)
+
+one_skill = tool_result(s.call("tools/call", {
+    "name": "list_skill_references", "arguments": {"slug": "refskill"}}))
+osc = one_skill.get("structuredContent", {})
+check("list_skill_references scopes to one skill",
+      [e["slug"] for e in osc.get("skills", [])] == ["refskill"])
+check("list_skill_references carries no bodies",
+      "SHARED-OUTPUT-DIFF-BODY" not in json.dumps(osc)
+      and "SHARED-OUTPUT-DIFF-BODY" not in one_skill.get("content", [{}])[0].get("text", ""))
+
+every_skill = tool_result(s.call("tools/call", {
+    "name": "list_skill_references", "arguments": {}}))
+etext2 = every_skill.get("content", [{}])[0].get("text", "")
+check("omitting the slug scans every skill",
+      {e["slug"] for e in every_skill.get("structuredContent", {}).get("skills", [])}
+      == {"refskill", "otherskill"})
+check("two skills citing one file are reported as SHARED",
+      "SHARED - 1 file(s)" in etext2 and "refskill/output-diff" in etext2
+      and "otherskill/output-diff" in etext2,
+      etext2.split("SHARED - ")[-1][:90] if "SHARED - " in etext2 else "no SHARED section")
 s.stop()
 
 # ── 3. mcp harness — the NON-declaring client (fallback path) ─────────

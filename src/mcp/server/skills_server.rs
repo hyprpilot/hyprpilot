@@ -29,11 +29,17 @@
 //!     `skills/wire_metadata.rs`.
 //! - Tools
 //!   - `list_skills` — `{ skills: [{ slug, title, description, uri,
-//!     references: [name], metadata }] }`
+//!     referenceCount, metadata }] }`. Served purely from cache; it
+//!     does NOT resolve references, which would mean reading every
+//!     declared file of every skill on every call.
 //!   - `read_skill { slug, bundle? }` — `{ uri, body, references: [manifest],
 //!     bundle, metadata }`. Reference BODIES are opt-in (`bundle: true`);
 //!     the manifest naming and addressing each one always rides along,
 //!     so declining a body is never a silent gap.
+//!   - `list_skill_references { slug? }` — reference metadata, no
+//!     bodies, for one skill or the whole catalogue. The dedup surface:
+//!     each row carries the canonical `path`, so two skills citing one
+//!     file are recognisable as one file.
 //!   - `load_skill_references { slug, references? }` — one or more
 //!     reference bodies by name; omitted fetches all, `[]` fetches none
 //!   - `reload` — rescan dirs, push a resource list-changed
@@ -84,7 +90,7 @@ use crate::config::ResolvedSkillEntry;
 use crate::mcp::skills::SkillsRegistry;
 
 use super::rpc::{empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
-use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
+use crate::mcp::skills::wire_metadata::{frontmatter_json, reference_meta, skill_block, skill_meta};
 use crate::mcp::skills::wire_references::{
     self, append_references, frontmatter_references, FrontmatterRefs, ReferenceEntry,
 };
@@ -382,16 +388,17 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
         .iter()
         .filter_map(|slug| cache.skills.get(slug))
         .map(|s| {
-            // Names only, not the full manifest: `list_skills` is the
-            // routing view ("which skill?"), and full manifests across a
-            // large catalogue would add tens of kilobytes to every call.
-            // `read_skill` carries the addressable detail.
+            // Reference DETAIL is deliberately absent: `list_skills` is
+            // the routing view ("which skill?"), it is served purely
+            // from cache, and resolving references here would mean
+            // reading every declared file of every skill on every call.
+            // `list_skill_references` owns that question.
             serde_json::json!({
                 "slug": s.slug,
                 "title": s.title,
                 "description": s.description,
                 "uri": skill_uri(&s.slug),
-                "references": wire_references::names(&s.references()),
+                "referenceCount": s.refs.references.len(),
                 "metadata": s.meta_block,
             })
         })
@@ -446,6 +453,31 @@ fn object_schema(props: serde_json::Value) -> Arc<serde_json::Map<String, serde_
         "type": "object",
         "properties": props,
         "required": ["slug"],
+        "additionalProperties": false,
+    }) else {
+        unreachable!("json! object literal")
+    };
+    Arc::new(map)
+}
+
+/// `list_skill_references`'s schema — an OPTIONAL `slug`.
+///
+/// Optional because the interesting question is usually cross-skill:
+/// references are shared, so "do I already hold this?" cannot be
+/// answered from one skill's list. Omitting the slug returns every
+/// skill's references, each carrying the canonical `path` that makes
+/// two citations of one file comparable.
+fn list_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+    let serde_json::Value::Object(map) = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "slug": {
+                "type": "string",
+                "description":
+                    "Limit to one skill. Omit to list the references of every skill, \
+                     which is what lets you spot the same file cited by several.",
+            },
+        },
         "additionalProperties": false,
     }) else {
         unreachable!("json! object literal")
@@ -552,6 +584,59 @@ fn catalogue_markdown(cache: &SkillsCache) -> String {
     out
 }
 
+/// Text projection for `list_skill_references`.
+///
+/// Leads with the files cited by MORE THAN ONE skill, because that is
+/// the question the tool exists to answer: a caller that already holds
+/// `output-diff` from one skill should be able to see, in one glance,
+/// that another skill's citation is the same file rather than a second
+/// one to fetch.
+fn list_references_summary(skills: &[serde_json::Value], total: usize) -> String {
+    if skills.is_empty() {
+        return "No skill declares any references.".into();
+    }
+    // path -> the "<slug>/<name>" citations that resolve to it.
+    let mut by_path: std::collections::BTreeMap<&str, Vec<String>> = std::collections::BTreeMap::new();
+    let mut out = String::new();
+    for skill in skills {
+        let slug = skill["slug"].as_str().unwrap_or_default();
+        out.push_str(&format!("{slug}:\n"));
+        for row in skill["references"].as_array().into_iter().flatten() {
+            let name = row["name"].as_str().unwrap_or_default();
+            let size = row["size"].as_u64().unwrap_or_default();
+            let modified = row["modified"].as_str().unwrap_or("unknown");
+            out.push_str(&format!("  - {name} ({size} bytes, modified {modified})"));
+            if row.get("shadowed").is_some() {
+                out.push_str(" [shadowed - not individually addressable]");
+            }
+            if row.get("status").is_some() {
+                out.push_str(" [NOT FOUND]");
+            }
+            out.push('\n');
+            if let Some(path) = row["path"].as_str() {
+                by_path.entry(path).or_default().push(format!("{slug}/{name}"));
+            }
+        }
+    }
+    let shared: Vec<_> = by_path.iter().filter(|(_, cites)| cites.len() > 1).collect();
+    if !shared.is_empty() {
+        out.push_str(&format!(
+            "\nSHARED - {} file(s) cited by more than one skill. Each group below is ONE \
+             file: fetching a second citation re-sends what you already hold.\n",
+            shared.len()
+        ));
+        for (path, cites) in shared {
+            out.push_str(&format!("  {path}\n    {}\n", cites.join(", ")));
+        }
+    }
+    out.push_str(&format!(
+        "\n{total} reference(s) across {} skill(s). Bodies are NOT included - fetch with \
+         `load_skill_references` or read a uri.",
+        skills.len()
+    ));
+    out
+}
+
 fn list_skills_summary(cache: &SkillsCache) -> String {
     if cache.order.is_empty() {
         return "No skills available.".into();
@@ -627,6 +712,19 @@ impl ServerHandler for SkillsServer {
                 read_skill_object_schema(),
             ),
             Tool::new_with_raw(
+                "list_skill_references",
+                Some(
+                    "List reference METADATA without any bodies - name, address, canonical \
+                     path, size and when each last changed. Use it to see what a skill cites \
+                     before spending tokens on it, and to spot that two skills cite the SAME \
+                     file (identical `path`) so you do not load it twice. Pass a `slug` for \
+                     one skill; omitting it scans the WHOLE catalogue, which is worth doing \
+                     once to learn what is shared but is far larger than a single skill."
+                        .into(),
+                ),
+                list_references_object_schema(),
+            ),
+            Tool::new_with_raw(
                 "load_skill_references",
                 Some(
                     "Fetch the body of one or more references a skill declares, by name. \
@@ -695,6 +793,36 @@ impl ServerHandler for SkillsServer {
                             .then(|| wire_references::bundle(&entries, None).unwrap_or_default()),
                         "metadata": skill.meta_block,
                     }),
+                ))
+            }
+            "list_skill_references" => {
+                let cache = self.skills_cache.read().await;
+                let wanted = args.get("slug").and_then(serde_json::Value::as_str);
+                if let Some(slug) = wanted {
+                    if !cache.skills.contains_key(slug) {
+                        return Ok(tool_error(format!("unknown skill: {slug}")));
+                    }
+                }
+                let mut skills = Vec::new();
+                let mut total = 0usize;
+                for slug in &cache.order {
+                    if wanted.is_some_and(|w| w != slug) {
+                        continue;
+                    }
+                    let Some(skill) = cache.skills.get(slug) else { continue };
+                    let entries = skill.references();
+                    if entries.is_empty() {
+                        continue;
+                    }
+                    total += entries.len();
+                    skills.push(serde_json::json!({
+                        "slug": slug,
+                        "references": wire_references::manifest(&entries),
+                    }));
+                }
+                Ok(structured_with_text(
+                    list_references_summary(&skills, total),
+                    serde_json::json!({ "skills": skills }),
                 ))
             }
             "load_skill_references" => {
@@ -801,21 +929,22 @@ impl ServerHandler for SkillsServer {
                     .with_size(skill.body.len() as u64)
                     .with_meta(skill_meta(&skill.meta_block)),
             );
-            // References resource — only listed when the skill actually
-            // declares references, so the list never advertises an empty
-            // bundle. Same standard-field population as the body.
-            if !skill.refs.references.is_empty() {
-                resources.push(
-                    rmcp::model::Resource::new(skill_references_uri(slug), format!("{} references", skill.slug))
-                        .with_title(format!("{} — references", skill.title))
-                        .with_description(format!(
-                            "Bundled reference files for the `{slug}` skill ({} declared).",
-                            skill.refs.references.len()
-                        ))
-                        .with_mime_type("text/markdown")
-                        .with_meta(skill_meta(&skill.meta_block)),
-                );
-            }
+            // The reference URIs are deliberately NOT enumerated — not
+            // the per-skill bundle, not the per-reference form. They
+            // stay reachable, and are advertised as resource TEMPLATES
+            // instead.
+            //
+            // This listing is the single most expensive thing this
+            // server can hand a client: measured against a 124-skill
+            // catalogue it was 231 resources / ~170 KB, of which 48% was
+            // `_meta` — and the bundle resource's `_meta` was its own
+            // skill's block repeated verbatim, paying twice for one
+            // skill's metadata. Enumerating every individual reference
+            // on top would have reached ~710 entries and ~520 KB, which
+            // is most of a context window spent before a single skill is
+            // read. A template costs one entry regardless of catalogue
+            // size, and `list_skill_references` answers "what does this
+            // skill cite" far more cheaply than a listing can.
         }
         Ok(ListResourcesResult::with_all_items(resources))
     }
@@ -904,25 +1033,38 @@ impl ServerHandler for SkillsServer {
                     return Err(rmcp::ErrorData::invalid_params(format!("unknown skill: {slug}"), None));
                 };
                 let entries = skill.references();
-                // A resource read has no in-band marker convention — a
-                // client asking for one reference gets content or an
-                // error, so an unknown name errors here rather than
-                // returning the soft `status: not-found` block the
-                // bundle uses for a declared-but-unreadable file.
-                let body = wire_references::bundle(&entries, Some(&[name.to_string()])).map_err(|_| {
-                    rmcp::ErrorData::invalid_params(
+                // A resource read has no in-band marker convention: a
+                // client asking for ONE reference gets content or an
+                // error. So both failures error here, where the bundle
+                // would instead emit a `status: not-found` block in
+                // declared position — returning that alone as a
+                // successful read would hand back a header the caller
+                // would mistake for the file.
+                let Some(entry) = wire_references::find(&entries, name) else {
+                    return Err(rmcp::ErrorData::invalid_params(
                         format!(
                             "skill `{slug}` declares no reference named `{name}`. Available: {}",
                             available_names(&entries)
                         ),
                         None,
-                    )
-                })?;
+                    ));
+                };
+                if entry.missing {
+                    return Err(rmcp::ErrorData::internal_error(
+                        format!("reference `{name}` of skill `{slug}` is declared but could not be read"),
+                        None,
+                    ));
+                }
+                let body = wire_references::bundle(&entries, Some(&[name.to_string()])).unwrap_or_default();
                 Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
                     text: body,
-                    meta: Some(skill_meta(&skill.meta_block)),
+                    // The REFERENCE's own metadata, not its declaring
+                    // skill's: the caller asked for this file, and its
+                    // `path` is what tells them whether they already
+                    // hold it under some other skill's name.
+                    meta: Some(reference_meta(entry.manifest_row())),
                 }])
                 .into())
             }
@@ -1173,9 +1315,10 @@ references:
                     "title": "Plan hard",
                     "description": "Deep planning",
                     "uri": "hyprpilot://skills/plan-hard",
-                    // Names only — the routing view. `read_skill`
-                    // carries the addressable manifest.
-                    "references": ["plan-mode"],
+                    // A count, not the names: this view is served
+                    // purely from cache, and resolving names would mean
+                    // reading every reference of every skill per call.
+                    "referenceCount": 1,
                     "metadata": {
                         "name": "plan-hard",
                         "argument-hint": "[goal]",

@@ -10,12 +10,17 @@
 //! frontmatter. No caller-supplied string reaches `Path::join`, so the
 //! reference surface adds no traversal reachable from a request.
 //!
-//! **No declared path reaches the wire.** Publishing `../references/
-//! output-diff.md` invites a consumer to read the file directly and
-//! bypass the server, which defeats the point of addressing references
-//! by URI. `name` + `uri` are the whole addressing surface. (The skill's
-//! own `path`/`bundleDir` do stay on its metadata block — editing a
-//! skill is a real workflow and needs its location.)
+//! **The DECLARED path never reaches the wire; the RESOLVED one does.**
+//! `../references/output-diff.md` is meaningless outside its bundle dir
+//! and is not published. The canonicalized absolute path is, as
+//! `path` — because a name is an address, not an IDENTITY, and
+//! de-duplication needs identity. The same shared file is declared by
+//! dozens of skills, so `git-commit/output-diff` and
+//! `git-push/output-diff` are one file that must not be loaded twice;
+//! meanwhile two skills' own `./references/output-diff.md` share a name
+//! and are different files. Only the resolved path separates those
+//! cases, and canonicalizing collapses `..` so two spellings of one file
+//! compare equal.
 //!
 //! A reference may carry its own frontmatter, parsed with the loader's
 //! `split_frontmatter` rather than a second implementation, and served
@@ -31,12 +36,6 @@ use tracing::warn;
 
 use super::wire_metadata::frontmatter_json;
 use super::wire_time::FileStat;
-
-/// Frontmatter key gating whether a model may invoke something on its
-/// own. A reference defaults to `true` — it is not independently
-/// invocable, it exists to be pulled in by the skill that declares it —
-/// but a reference that declares the key keeps its own value.
-const DISABLE_MODEL_INVOCATION: &str = "disableModelInvocation";
 
 /// Parsed frontmatter — only the slice we care about. The full skill
 /// loader keeps richer data; the sidecar only needs the references
@@ -79,9 +78,12 @@ pub struct ReferenceEntry {
     /// address of its own, and pointing it at the winner's URI would be
     /// a confidently wrong answer.
     pub uri: Option<String>,
+    /// Canonical absolute path — the reference's IDENTITY, and the only
+    /// thing that tells a caller two skills cite the same file. `None`
+    /// when it cannot be resolved (the file is missing).
+    pub path: Option<String>,
     pub stat: FileStat,
-    /// The reference's own frontmatter, plus the defaulted
-    /// `disableModelInvocation`.
+    /// The reference's own frontmatter, verbatim.
     pub metadata: Map<String, Value>,
     /// A later declaration whose name was already taken. Kept in the
     /// manifest (never silently dropped) and still served by the full
@@ -131,7 +133,10 @@ pub fn resolve(bundle_dir: &Path, slug: &str, refs: &FrontmatterRefs) -> Vec<Ref
 
         out.push(ReferenceEntry {
             uri: (!shadowed).then(|| reference_uri(slug, &name)),
-            metadata: reference_metadata(&frontmatter),
+            // Canonicalized so `../references/x.md` from two different
+            // skills collapses to one identity a caller can compare.
+            path: std::fs::canonicalize(&path).ok().map(|p| p.display().to_string()),
+            metadata: frontmatter_json(&frontmatter),
             name,
             stat,
             shadowed,
@@ -177,26 +182,30 @@ fn reference_uri(slug: &str, name: &str) -> String {
     format!("hyprpilot://references/{slug}/{name}")
 }
 
-/// A reference's frontmatter, verbatim, minus its own `name` (already
-/// the wire `name`) and with `disableModelInvocation` defaulted on.
-fn reference_metadata(frontmatter: &serde_yaml::Value) -> Map<String, Value> {
-    let mut block = frontmatter_json(frontmatter);
-    block.remove("name");
-    block
-        .entry(DISABLE_MODEL_INVOCATION.to_string())
-        .or_insert(Value::Bool(true));
-    block
+/// Render a JSON scalar as a bare YAML value. Strings lose their quotes
+/// — these are paths, names and timestamps, and the header is read, not
+/// parsed back. Anything non-scalar is JSON-encoded rather than dropped.
+fn scalar(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
 }
 
 impl ReferenceEntry {
     /// This entry's manifest row: what it is called, how to fetch it,
-    /// when it changed. Never its path.
+    /// which file it actually is, and when it changed.
     #[must_use]
     pub fn manifest_row(&self) -> Value {
         let mut row = Map::new();
         row.insert("name".into(), Value::String(self.name.clone()));
         if let Some(uri) = &self.uri {
             row.insert("uri".into(), Value::String(uri.clone()));
+        }
+        // Identity, so a caller holding this file under another skill's
+        // name can tell it already has it.
+        if let Some(path) = &self.path {
+            row.insert("path".into(), Value::String(path.clone()));
         }
         self.stat.extend(&mut row);
         if self.shadowed {
@@ -218,19 +227,29 @@ impl ReferenceEntry {
     /// horizontal rule mid-document, so a reader cannot tell where the
     /// skill stops and a reference starts. This block can only be a
     /// delimiter.
+    /// Built from [`Self::manifest_row`] so the two can never disagree:
+    /// a reference you actually fetched carries the SAME full metadata
+    /// the manifest advertised — including `path`, so a reader can tell
+    /// this is the file it already holds under another skill's name.
+    ///
+    /// Full detail is affordable here and not in a listing: this is
+    /// emitted once per reference you deliberately asked for, whereas
+    /// `resources/list` pays for every skill in the catalogue.
     fn header(&self) -> String {
-        let mut out = format!("---\nreference:\n  name: {}\n", self.name);
-        if let Some(uri) = &self.uri {
-            out.push_str(&format!("  uri: {uri}\n"));
-        }
-        if let Some(modified) = &self.stat.modified {
-            out.push_str(&format!("  modified: {modified}\n"));
-        }
-        if self.shadowed {
-            out.push_str("  shadowed: true\n");
-        }
-        if self.missing {
-            out.push_str("  status: not-found\n");
+        let mut out = String::from("---\nreference:\n");
+        let Value::Object(row) = self.manifest_row() else {
+            unreachable!("manifest_row builds an object")
+        };
+        for (key, value) in &row {
+            match value {
+                Value::Object(nested) => {
+                    out.push_str(&format!("  {key}:\n"));
+                    for (k, v) in nested {
+                        out.push_str(&format!("    {k}: {}\n", scalar(v)));
+                    }
+                }
+                other => out.push_str(&format!("  {key}: {}\n", scalar(other))),
+            }
         }
         out.push_str("---\n");
         out
@@ -251,13 +270,22 @@ impl ReferenceEntry {
 /// — that is skill-data rot, and it surfaces as a `status: not-found`
 /// header in its declared position so the gap is visible where it
 /// belongs.
+///
+/// A repeated name is served ONCE. Without that, `["x", "x", "x"]`
+/// returns three copies of one body — a caller assembling a selection
+/// from several steps of a skill would amplify its own response for no
+/// gain.
 pub fn bundle(entries: &[ReferenceEntry], select: Option<&[String]>) -> Result<String, Vec<String>> {
     let chosen: Vec<&ReferenceEntry> = match select {
         None => entries.iter().collect(),
         Some(names) => {
-            let mut chosen = Vec::with_capacity(names.len());
+            let mut chosen: Vec<&ReferenceEntry> = Vec::with_capacity(names.len());
             let mut unknown = Vec::new();
+            let mut seen = BTreeSet::new();
             for name in names {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
                 // A shadowed entry is not individually addressable — it
                 // has no URI, so accepting it by name here would make
                 // the name resolve to two different things depending on
@@ -297,14 +325,14 @@ pub fn manifest(entries: &[ReferenceEntry]) -> Value {
     Value::Array(entries.iter().map(ReferenceEntry::manifest_row).collect())
 }
 
-/// The compact view for `list_skills`: names only.
+/// The individually addressable entry for `name`, if any.
 ///
-/// `list_skills` is the routing view — which skill? — and full manifests
-/// for a large catalogue would add tens of kilobytes to every call.
-/// `read_skill` carries the addressable detail.
+/// Shadowed entries are excluded for the same reason `bundle` excludes
+/// them: a name must resolve to one thing regardless of which door the
+/// caller used.
 #[must_use]
-pub fn names(entries: &[ReferenceEntry]) -> Value {
-    Value::Array(entries.iter().map(|e| Value::String(e.name.clone())).collect())
+pub fn find<'a>(entries: &'a [ReferenceEntry], name: &str) -> Option<&'a ReferenceEntry> {
+    entries.iter().find(|e| e.name == name && !e.shadowed)
 }
 
 /// A text manifest naming every reference and its URI.
@@ -428,11 +456,14 @@ mod tests {
         assert_eq!(entries[0].name, "renamed");
         assert_eq!(entries[0].uri.as_deref(), Some("hyprpilot://references/s/renamed"));
         let bundled = bundle(&entries, None).unwrap();
-        assert!(bundled.contains("the actual body"));
-        assert!(
-            !bundled.contains("title: A"),
-            "the reference's own fence must not be served as body: {bundled}"
-        );
+        // Our header, then the body — the reference's own fence is
+        // consumed into `metadata`, never replayed as a second `---`
+        // block that a reader would take for a delimiter.
+        assert!(bundled.ends_with("---\nthe actual body\n"), "{bundled}");
+        assert_eq!(bundled.matches("\n---\n").count(), 1, "exactly one fence: {bundled}");
+        // Its keys survive, inside our header rather than loose above
+        // the body.
+        assert!(bundled.contains("    title: A"));
     }
 
     /// A declared name that cannot ride a URI segment falls back to the
@@ -449,30 +480,54 @@ mod tests {
         assert_eq!(entries[1].name, "b");
     }
 
-    /// A reference is not independently invocable, so the key defaults
-    /// on — but a reference that declares it keeps its own value.
+    /// A reference's frontmatter rides through verbatim, and NOTHING is
+    /// defaulted into it. hyprpilot enforces no invocation gate — a
+    /// stamped `disableModelInvocation` would imply a restriction that
+    /// does not exist, on every entry.
     #[test]
-    fn model_invocation_defaults_off_and_an_explicit_value_survives() {
+    fn reference_frontmatter_rides_through_without_invented_keys() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.md"), "body\n").unwrap();
-        fs::write(
-            dir.path().join("b.md"),
-            "---\ndisableModelInvocation: false\n---\nbody\n",
-        )
-        .unwrap();
+        fs::write(dir.path().join("b.md"), "---\nowner: captain\n---\nbody\n").unwrap();
 
         let entries = resolve(dir.path(), "s", &refs(&["a.md", "b.md"]));
 
-        assert_eq!(
-            entries[0].metadata.get(DISABLE_MODEL_INVOCATION),
-            Some(&Value::Bool(true)),
-            "a reference with no frontmatter still defaults to not-invocable"
+        assert!(
+            entries[0].metadata.is_empty(),
+            "no frontmatter means no metadata, not a fabricated default: {:?}",
+            entries[0].metadata
         );
         assert_eq!(
-            entries[1].metadata.get(DISABLE_MODEL_INVOCATION),
-            Some(&Value::Bool(false)),
-            "an explicit opt-in must survive the default"
+            entries[1].metadata.get("owner").and_then(Value::as_str),
+            Some("captain")
         );
+    }
+
+    /// The canonical path is the reference's IDENTITY: two skills citing
+    /// one shared file must produce the SAME path, or a caller cannot
+    /// tell it already holds the body.
+    #[test]
+    fn two_skills_citing_one_file_report_the_same_path() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("references")).unwrap();
+        fs::write(root.path().join("references/shared.md"), "shared body").unwrap();
+        fs::create_dir_all(root.path().join("skill-a")).unwrap();
+        fs::create_dir_all(root.path().join("skill-b")).unwrap();
+
+        let a = resolve(
+            &root.path().join("skill-a"),
+            "skill-a",
+            &refs(&["../references/shared.md"]),
+        );
+        let b = resolve(
+            &root.path().join("skill-b"),
+            "skill-b",
+            &refs(&["../references/shared.md"]),
+        );
+
+        assert!(a[0].path.is_some());
+        assert_eq!(a[0].path, b[0].path, "one file must have one identity");
+        assert_ne!(a[0].uri, b[0].uri, "but each skill addresses it under its own slug");
     }
 
     /// First-wins on a name collision: the loser keeps its manifest row
@@ -557,29 +612,43 @@ mod tests {
         assert!(bundled.contains("status: not-found"));
     }
 
-    /// The declared path is internal. Nothing that reaches the wire —
-    /// manifest, bundle header, or footer — may carry it, or a consumer
-    /// will read the file directly and bypass the server.
+    /// The DECLARED path stays internal — it is meaningless outside its
+    /// bundle dir. The RESOLVED one is published as identity, but only
+    /// on the manifest: the bundle header and footer are for reading,
+    /// not for locating.
     #[test]
-    fn no_declared_path_reaches_any_wire_surface() {
+    fn the_declared_path_stays_internal_and_only_the_manifest_carries_identity() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("references")).unwrap();
         fs::write(dir.path().join("references/output-diff.md"), "body").unwrap();
 
         let entries = resolve(dir.path(), "git-commit", &refs(&["./references/output-diff.md"]));
 
-        let surfaces = [
+        for surface in [
             manifest(&entries).to_string(),
-            names(&entries).to_string(),
             bundle(&entries, None).unwrap(),
             manifest_footer(&entries, "git-commit"),
-        ];
-        for surface in surfaces {
+        ] {
             assert!(
-                !surface.contains("references/output-diff.md"),
-                "declared path leaked to the wire: {surface}"
+                !surface.contains("./references/output-diff.md"),
+                "the declared spelling leaked: {surface}"
             );
         }
+        assert!(manifest(&entries).to_string().contains("\"path\":"));
+        assert!(!manifest_footer(&entries, "git-commit").contains("path:"));
+    }
+
+    /// A repeated name is served once — a caller assembling a selection
+    /// across several steps must not amplify its own response.
+    #[test]
+    fn a_repeated_selection_is_served_once() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "ALPHA-BODY").unwrap();
+        let entries = resolve(dir.path(), "s", &refs(&["a.md"]));
+
+        let out = bundle(&entries, Some(&["a".into(), "a".into(), "a".into()])).unwrap();
+
+        assert_eq!(out.matches("ALPHA-BODY").count(), 1);
     }
 
     #[test]

@@ -104,6 +104,21 @@ pub fn skill_meta(block: &Map<String, Value>) -> MetaObject {
     MetaObject(meta)
 }
 
+/// The `_meta` key for a REFERENCE resource. Distinct from
+/// [`META_KEY_SKILL`] because it describes a different thing: reading
+/// one reference and getting its declaring skill's metadata answers a
+/// question the caller did not ask, and hides the `path` that tells it
+/// whether it already holds this file.
+pub const META_KEY_REFERENCE: &str = "io.hyprpilot/reference";
+
+/// Wrap a reference's manifest row under [`META_KEY_REFERENCE`].
+#[must_use]
+pub fn reference_meta(row: Value) -> MetaObject {
+    let mut meta = Map::new();
+    meta.insert(META_KEY_REFERENCE.to_string(), row);
+    MetaObject(meta)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
