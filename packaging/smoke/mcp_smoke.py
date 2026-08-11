@@ -149,6 +149,190 @@ check("list_skills has structuredContent",
       isinstance(listed.get("structuredContent"), dict))
 s.stop()
 
+# ── 2b. mcp skills — granular references ──────────────────────────────
+# Against a PURPOSE-BUILT root rather than the live one: the assertions
+# below pin exact names, counts and shadowing, and the live catalogue is
+# edited constantly.
+print("=== hyprpilot mcp skills — granular references ===")
+
+
+def reference_fixture():
+    """A skill declaring: a plain reference, one with its own
+    frontmatter, a name collision, and a declared-but-missing file."""
+    root = tempfile.mkdtemp(prefix="hyprpilot-refs-")
+    shared = os.path.join(root, "references")
+    os.makedirs(shared)
+    with open(os.path.join(shared, "output-diff.md"), "w") as fh:
+        fh.write("SHARED-OUTPUT-DIFF-BODY\n")
+    with open(os.path.join(shared, "titled.md"), "w") as fh:
+        fh.write("---\nname: renamed\nowner: captain\n---\nTITLED-BODY\n")
+    with open(os.path.join(shared, "dup.md"), "w") as fh:
+        fh.write("SHARED-DUP-BODY\n")
+
+    skill = os.path.join(root, "refskill")
+    os.makedirs(os.path.join(skill, "references"))
+    with open(os.path.join(skill, "references", "dup.md"), "w") as fh:
+        fh.write("LOCAL-DUP-BODY\n")
+    with open(os.path.join(skill, "SKILL.md"), "w") as fh:
+        fh.write(
+            "---\ntitle: Ref Skill\ndescription: fixture\nreferences:\n"
+            "  - ../references/output-diff.md\n"
+            "  - ../references/titled.md\n"
+            "  - ../references/dup.md\n"
+            "  - ./references/dup.md\n"
+            "  - ../references/gone.md\n"
+            "---\nSKILL-BODY-MARKER\n"
+        )
+
+    # A second skill citing the SAME shared file, so duplicate detection
+    # has something real to detect.
+    other = os.path.join(root, "otherskill")
+    os.makedirs(other)
+    with open(os.path.join(other, "SKILL.md"), "w") as fh:
+        fh.write(
+            "---\ntitle: Other\ndescription: fixture\nreferences:\n"
+            "  - ../references/output-diff.md\n"
+            "---\nOTHER-BODY\n"
+        )
+    return root
+
+
+refroot = reference_fixture()
+s = Server(["mcp", "skills", "--skill-dir",
+            json.dumps({"dir": refroot, "ignore": []})])
+s.initialize()
+
+read = tool_result(s.call("tools/call", {
+    "name": "read_skill", "arguments": {"slug": "refskill"}}))
+sc = read.get("structuredContent", {})
+manifest = sc.get("references", [])
+text = read.get("content", [{}])[0].get("text", "")
+
+check("read_skill does NOT bundle by default",
+      "SHARED-OUTPUT-DIFF-BODY" not in text)
+check("read_skill text carries the manifest footer with paths",
+      "skill_references:" in text and text.count("      path: /") == 4)
+check("manifest names every declaration in order",
+      [e.get("name") for e in manifest] == ["output-diff", "renamed", "dup", "dup", "gone"],
+      str([e.get("name") for e in manifest]))
+check("a reference's own frontmatter renames it and rides through",
+      manifest[1].get("metadata", {}).get("owner") == "captain")
+check("nothing is invented into a reference with no frontmatter",
+      manifest[0].get("metadata") in (None, {}), str(manifest[0].get("metadata")))
+check("every readable reference has a canonical absolute path",
+      all(os.path.isabs(e["path"]) and ".." not in e["path"] for e in manifest[:4]))
+check("a repeated LABEL shadows nothing - both are addressable",
+      manifest[2]["name"] == manifest[3]["name"]
+      and manifest[2]["path"] != manifest[3]["path"])
+check("a declared-but-missing file is marked and has no address",
+      manifest[4].get("status") == "not-found" and "path" not in manifest[4])
+check("timestamps are RFC 3339 UTC",
+      manifest[0].get("modified", "").endswith("Z") and len(manifest[0].get("modified", "")) == 20,
+      manifest[0].get("modified"))
+check("the declared spelling never reaches the wire",
+      "../references/" not in json.dumps(sc) and "./references/" not in json.dumps(sc))
+check("metadata drops the raw references array",
+      "references" not in sc.get("metadata", {}))
+
+bundled = tool_result(s.call("tools/call", {
+    "name": "read_skill", "arguments": {"slug": "refskill", "bundle": True}}))
+check("bundle:true carries the bodies",
+      "SHARED-OUTPUT-DIFF-BODY" in bundled.get("content", [{}])[0].get("text", ""))
+
+listed_refs = tool_result(s.call("tools/call", {
+    "name": "list_skill_references", "arguments": {"slug": "refskill"}}))
+lsc = listed_refs.get("structuredContent", {})
+check("list_skill_references scopes to the requested skill",
+      lsc.get("slug") == "refskill" and len(lsc.get("references", [])) == 5)
+check("list_skill_references carries no bodies",
+      "SHARED-OUTPUT-DIFF-BODY" not in json.dumps(listed_refs))
+check("an unknown slug is refused",
+      "error" in json.dumps(tool_result(s.call("tools/call", {
+          "name": "list_skill_references", "arguments": {"slug": "nope"}})).get("content", [])).lower()
+      or tool_result(s.call("tools/call", {
+          "name": "list_skill_references", "arguments": {"slug": "nope"}})).get("isError") is True)
+
+shared_path = manifest[0]["path"]
+local_dup = manifest[3]["path"]
+
+one = tool_result(s.call("tools/call", {
+    "name": "read_skill_references", "arguments": {"references": [shared_path]}}))
+otext = one.get("structuredContent", {}).get("body", "")
+check("a path fetches exactly that reference",
+      "SHARED-OUTPUT-DIFF-BODY" in otext and "TITLED-BODY" not in otext)
+
+several = tool_result(s.call("tools/call", {
+    "name": "read_skill_references",
+    "arguments": {"references": [shared_path, manifest[1]["path"]]}}))
+stext = several.get("structuredContent", {}).get("body", "")
+check("an array fetches exactly the named paths",
+      "SHARED-OUTPUT-DIFF-BODY" in stext and "TITLED-BODY" in stext
+      and "SHARED-DUP-BODY" not in stext)
+
+dupe = tool_result(s.call("tools/call", {
+    "name": "read_skill_references",
+    "arguments": {"references": [shared_path, shared_path, shared_path]}}))
+check("a repeated path is served once, not amplified",
+      dupe.get("structuredContent", {}).get("body", "").count("SHARED-OUTPUT-DIFF-BODY") == 1)
+
+# The same file is cited by two skills; ONE path fetches it for both,
+# which is the whole point of addressing by identity.
+other = tool_result(s.call("tools/call", {
+    "name": "list_skill_references", "arguments": {"slug": "otherskill"}}))
+other_path = other["structuredContent"]["references"][0]["path"]
+check("two skills citing one file report the SAME path",
+      other_path == shared_path, f"{other_path} vs {shared_path}")
+
+check("a shadow-free duplicate label is still individually fetchable",
+      "LOCAL-DUP-BODY" in tool_result(s.call("tools/call", {
+          "name": "read_skill_references", "arguments": {"references": [local_dup]}}
+      )).get("structuredContent", {}).get("body", ""))
+
+undeclared = tool_result(s.call("tools/call", {
+    "name": "read_skill_references", "arguments": {"references": ["/etc/passwd"]}}))
+check("a path no skill declares is refused",
+      undeclared.get("isError") is True
+      or "no skill declares" in json.dumps(undeclared))
+
+# An UNDECLARED file inside the skill root is refused too — the gate is
+# the declared set, not "somewhere under a skills directory".
+sibling = os.path.join(refroot, "refskill", "SKILL.md")
+check("an undeclared file inside the skill root is refused",
+      tool_result(s.call("tools/call", {
+          "name": "read_skill_references", "arguments": {"references": [sibling]}}
+      )).get("isError") is True)
+
+# ...while any SPELLING of a declared file is accepted, because the
+# caller's path is canonicalized before the membership check.
+roundabout = os.path.join(refroot, "references", "..", "references", "output-diff.md")
+check("an alternate spelling of a declared path is accepted",
+      "SHARED-OUTPUT-DIFF-BODY" in tool_result(s.call("tools/call", {
+          "name": "read_skill_references", "arguments": {"references": [roundabout]}}
+      )).get("structuredContent", {}).get("body", ""))
+
+check("a missing `references` argument is refused",
+      tool_result(s.call("tools/call", {
+          "name": "read_skill_references", "arguments": {}})).get("isError") is True)
+
+res = tool_result(s.call("resources/read", {"uri": "hyprpilot://skills/refskill"}))
+rtext = res.get("contents", [{}])[0].get("text", "")
+check("the skill RESOURCE stops bundling but keeps the footer",
+      "SHARED-OUTPUT-DIFF-BODY" not in rtext and "skill_references:" in rtext)
+
+templates = [t["uriTemplate"] for t in
+             tool_result(s.call("resources/templates/list")).get("resourceTemplates", [])]
+check("only the skill template is advertised",
+      templates == ["hyprpilot://skills/{slug}"], str(templates))
+
+listed_res = tool_result(s.call("resources/list")).get("resources", [])
+check("no reference URI is enumerated as a resource",
+      not [r for r in listed_res if r["uri"].startswith("hyprpilot://references/")],
+      str([r["uri"] for r in listed_res]))
+check("a former reference URI now resolves to nothing",
+      "error" in s.call("resources/read",
+                        {"uri": f"hyprpilot://references/refskill/output-diff"}))
+s.stop()
+
 # ── 3. mcp harness — the NON-declaring client (fallback path) ─────────
 print("=== hyprpilot mcp harness — client WITHOUT tasks ===")
 s = Server(["mcp", "harness"])

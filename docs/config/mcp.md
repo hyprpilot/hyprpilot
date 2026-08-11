@@ -117,11 +117,11 @@ Each server entry takes an optional `hyprpilot` block for tool visibility and ap
 
 hyprpilot ships **three** in-tree MCP servers. Each is its own subcommand, its own process, and its own catalogue entry, so each can be enabled, renamed, and given a tool policy independently:
 
-| Server        | Subcommand              | Default name        | Serves                                                            | Default    |
-| ------------- | ----------------------- | ------------------- | ----------------------------------------------------------------- | ---------- |
-| General tools | `hyprpilot mcp serve`   | `hyprpilot`         | `open`                                                            | enabled    |
-| Skills        | `hyprpilot mcp skills`  | `hyprpilot_skills`  | `list_skills` / `read_skill` / `load_skill_references` / `reload` | enabled    |
-| Agent harness | `hyprpilot mcp harness` | `hyprpilot_harness` | `list_profiles` / `spawn` / `session_*`                           | _disabled_ |
+| Server        | Subcommand              | Default name        | Serves                                                                                      | Default    |
+| ------------- | ----------------------- | ------------------- | ------------------------------------------------------------------------------------------- | ---------- |
+| General tools | `hyprpilot mcp serve`   | `hyprpilot`         | `open`                                                                                      | enabled    |
+| Skills        | `hyprpilot mcp skills`  | `hyprpilot_skills`  | `list_skills` / `read_skill` / `list_skill_references` / `read_skill_references` / `reload` | enabled    |
+| Agent harness | `hyprpilot mcp harness` | `hyprpilot_harness` | `list_profiles` / `spawn` / `session_*`                                                     | _disabled_ |
 
 The `mcp` block gates and configures all three:
 

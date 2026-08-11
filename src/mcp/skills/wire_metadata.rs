@@ -77,11 +77,20 @@ pub fn skill_block(frontmatter: &Map<String, Value>, path: &Path) -> Map<String,
     // canonical `Resource.title` / `Resource.description`.
     block.remove("title");
     block.remove("description");
+    // Dropped for the same reason, one layer out: the resolved
+    // reference MANIFEST carries every declared reference with the
+    // canonical path that actually addresses it. The raw array holds
+    // the DECLARED spelling (`../references/output-diff.md`), which is
+    // meaningless outside its bundle dir and cannot be passed to
+    // `read_skill_references` — publishing both would offer a caller
+    // two addresses, only one of which works.
+    block.remove("references");
     // Runtime-derived, not present in frontmatter.
     block.insert("path".to_string(), Value::String(path.display().to_string()));
     if let Some(parent) = path.parent() {
         block.insert("bundleDir".to_string(), Value::String(parent.display().to_string()));
     }
+    super::wire_time::FileStat::read(path).extend(&mut block);
     block
 }
 
@@ -216,6 +225,48 @@ x-vendor-extension:
                 .and_then(Value::as_str),
             Some("plan-hard")
         );
+    }
+
+    /// The raw `references` array is dropped: the resolved manifest
+    /// carries every declared reference by its CANONICAL path, while the
+    /// raw array holds the declared spelling — which is not an address
+    /// and cannot be passed to `read_skill_references`.
+    #[test]
+    fn skill_block_drops_the_raw_references_array() {
+        let value: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+name: git-commit
+references:
+  - ../references/output-diff.md
+"#,
+        )
+        .unwrap();
+
+        let block = skill_block(&frontmatter_json(&value), Path::new("/tmp/git-commit/SKILL.md"));
+
+        assert!(!block.contains_key("references"));
+        let rendered = serde_json::to_string(&block).unwrap();
+        assert!(
+            !rendered.contains("output-diff.md"),
+            "no declared reference path may reach the wire: {rendered}"
+        );
+    }
+
+    /// A real file contributes its timestamps; a path that does not
+    /// resolve simply omits them rather than failing or faking a value.
+    #[test]
+    fn skill_block_carries_timestamps_for_a_real_file_and_omits_them_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        std::fs::write(&path, "body").unwrap();
+
+        let block = skill_block(&Map::new(), &path);
+        assert_eq!(block.get("size").and_then(Value::as_u64), Some(4));
+        assert!(block.get("modified").and_then(Value::as_str).unwrap().ends_with('Z'));
+
+        let absent = skill_block(&Map::new(), Path::new("/nonexistent-hyprpilot-xyz/SKILL.md"));
+        assert!(!absent.contains_key("modified"));
+        assert!(!absent.contains_key("size"));
     }
 
     #[test]
