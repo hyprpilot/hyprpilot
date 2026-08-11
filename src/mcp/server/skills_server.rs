@@ -38,7 +38,7 @@
 //!   - `list_skill_references { slug }` — one skill's reference metadata,
 //!     no bodies. Each row carries the canonical `path`: the address to
 //!     load it, and the identity that says whether you already hold it.
-//!   - `load_skill_references { references: [path] }` — bodies by PATH,
+//!   - `read_skill_references { references: [path] }` — bodies by PATH,
 //!     validated against the set some skill actually declares. Paths
 //!     address files rather than skills, so one call spans skills, a
 //!     shared file is fetched once, and repeats collapse.
@@ -284,7 +284,7 @@ impl SkillsServer {
              cites. Their bodies are NOT included by default: `read_skill` \
              lists what the skill declares (path, name, size, when it last \
              changed), and you fetch only what the body directs you to with \
-             `load_skill_references { references: [\"<path>\", ...] }`, \
+             `read_skill_references { references: [\"<path>\", ...] }`, \
              passing the `path` values from that list. Or pass \
              `bundle: true` to `read_skill` for body-plus-everything in one \
              call. References have no URI of their own — a path addresses a \
@@ -407,7 +407,7 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
 /// skill.
 ///
 /// There is deliberately NO reference URI. Reference bodies are reached
-/// only through `load_skill_references`, addressed by path — a resource
+/// only through `read_skill_references`, addressed by path — a resource
 /// scheme would need a slug-and-name address for something whose real
 /// identity is its path, and would duplicate a tool that already does
 /// the job with de-duplication built in.
@@ -457,14 +457,14 @@ fn list_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Va
     object_schema(serde_json::json!({ "slug": slug_prop() }))
 }
 
-/// `load_skill_references`'s schema — an ARRAY of canonical paths.
+/// `read_skill_references`'s schema — an ARRAY of canonical paths.
 ///
 /// Paths rather than slug-plus-name because a path is what a reference
 /// IS, while a slug and a name are one of several addresses for it.
 /// Addressing by path means a file cited by many skills is one entry
 /// rather than many, a caller can fetch across skills in one call, and
 /// there is no collision or shadowing rule to explain.
-fn load_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+fn read_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     let serde_json::Value::Object(map) = serde_json::json!({
         "type": "object",
         "properties": {
@@ -524,7 +524,7 @@ fn catalogue_markdown(cache: &SkillsCache) -> String {
          instruction set. It ends with a list of the references that skill declares: each one's \
          PATH and name, but not its body.\n\n\
          Reference bodies have no URI of their own. Pass the paths from that list to \
-         `load_skill_references` — one call takes as many as you need, and a path is a file, so \
+         `read_skill_references` — one call takes as many as you need, and a path is a file, so \
          references from several skills come back together. A path is also an IDENTITY: the same \
          shared file is cited by many skills under different names, so a path you already loaded \
          needs no second fetch. `list_skill_references { slug }` shows a skill's paths without \
@@ -586,7 +586,7 @@ fn list_references_summary(slug: &str, entries: &[ReferenceEntry]) -> String {
         }
     }
     out.push_str(
-        "\nBodies are NOT included. Pass the paths above to `load_skill_references`. \
+        "\nBodies are NOT included. Pass the paths above to `read_skill_references`. \
          The path is also the identity: the same shared file is cited by many skills \
          under different names, so a path you already loaded needs no second fetch.",
     );
@@ -661,7 +661,7 @@ impl ServerHandler for SkillsServer {
                     "Read a skill's full SKILL.md body and frontmatter metadata. The result \
                      also lists every reference the skill declares - name, address, size and \
                      when it last changed - but NOT their bodies. Fetch those with \
-                     `load_skill_references`, or pass `bundle: true` to get them all in one \
+                     `read_skill_references`, or pass `bundle: true` to get them all in one \
                      call. Equivalent to reading the `hyprpilot://skills/<slug>` resource."
                         .into(),
                 ),
@@ -673,7 +673,7 @@ impl ServerHandler for SkillsServer {
                     "List one skill's reference METADATA without any bodies - canonical \
                      path, name, size and when each last changed. Use it to see what a \
                      skill cites before spending tokens on it. The `path` is both the \
-                     identity and the address: pass it to `load_skill_references` to get \
+                     identity and the address: pass it to `read_skill_references` to get \
                      the body, and compare it against paths you already loaded, since the \
                      same shared file is cited by many skills under different names."
                         .into(),
@@ -681,7 +681,7 @@ impl ServerHandler for SkillsServer {
                 list_references_object_schema(),
             ),
             Tool::new_with_raw(
-                "load_skill_references",
+                "read_skill_references",
                 Some(
                     "Fetch reference bodies by PATH. Pass the `path` values from a skill's \
                      reference manifest - `read_skill` and `list_skill_references` both \
@@ -691,7 +691,7 @@ impl ServerHandler for SkillsServer {
                      some skill actually declares are served."
                         .into(),
                 ),
-                load_references_object_schema(),
+                read_references_object_schema(),
             ),
             Tool::new_with_raw(
                 "reload",
@@ -767,7 +767,7 @@ impl ServerHandler for SkillsServer {
                     }),
                 ))
             }
-            "load_skill_references" => {
+            "read_skill_references" => {
                 let Some(serde_json::Value::Array(items)) = args.get("references") else {
                     return Ok(tool_error(
                         "`references` is required and must be an array of canonical paths, \
@@ -854,7 +854,7 @@ impl ServerHandler for SkillsServer {
                 .with_description(format!(
                     "Every available skill with its description, and how to load one: read \
                      `hyprpilot://skills/<slug>` for the body, then pass the paths it lists to \
-                     `load_skill_references` for the files it declares. {} skill(s).",
+                     `read_skill_references` for the files it declares. {} skill(s).",
                     cache.order.len()
                 ))
                 .with_mime_type("text/markdown")
@@ -876,7 +876,7 @@ impl ServerHandler for SkillsServer {
             // References are deliberately absent from this listing —
             // and from the resource surface entirely. There is no
             // reference URI to enumerate: a reference is addressed by
-            // its path through `load_skill_references`.
+            // its path through `read_skill_references`.
             //
             // This listing is the single most expensive thing this
             // server can hand a client: measured against a 127-skill
@@ -977,7 +977,7 @@ mod tests {
         let out = catalogue_markdown(&empty);
         assert!(out.contains("hyprpilot://skills/<slug>"), "must name the body scheme");
         assert!(
-            out.contains("load_skill_references"),
+            out.contains("read_skill_references"),
             "must name how reference bodies are reached"
         );
         assert!(

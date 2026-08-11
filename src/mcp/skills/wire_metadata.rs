@@ -82,7 +82,7 @@ pub fn skill_block(frontmatter: &Map<String, Value>, path: &Path) -> Map<String,
     // canonical path that actually addresses it. The raw array holds
     // the DECLARED spelling (`../references/output-diff.md`), which is
     // meaningless outside its bundle dir and cannot be passed to
-    // `load_skill_references` — publishing both would offer a caller
+    // `read_skill_references` — publishing both would offer a caller
     // two addresses, only one of which works.
     block.remove("references");
     // Runtime-derived, not present in frontmatter.
@@ -230,7 +230,7 @@ x-vendor-extension:
     /// The raw `references` array is dropped: the resolved manifest
     /// carries every declared reference by its CANONICAL path, while the
     /// raw array holds the declared spelling — which is not an address
-    /// and cannot be passed to `load_skill_references`.
+    /// and cannot be passed to `read_skill_references`.
     #[test]
     fn skill_block_drops_the_raw_references_array() {
         let value: serde_yaml::Value = serde_yaml::from_str(

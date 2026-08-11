@@ -53,7 +53,7 @@ Skills are exposed as MCP resources:
 
 ::: warning References have no URI, and that is a context-budget decision
 
-The resource surface is the catalogue index and one entry per skill. Nothing else. Reference bodies are reached only through `load_skill_references`.
+The resource surface is the catalogue index and one entry per skill. Nothing else. Reference bodies are reached only through `read_skill_references`.
 
 Measured against a real 127-skill catalogue: listing one entry per skill costs 128 resources and ~105 KB. Adding one bundle entry per skill took it to 231 and ~170 KB, of which 48% was `_meta` — each bundle entry repeating its own skill's block verbatim, paying twice for one skill's metadata. Enumerating all 479 individual references on top would reach **~607 entries and ~500 KB, over 120k tokens spent before a single skill is read**.
 
@@ -68,7 +68,7 @@ And as tools:
 | `list_skills`           | Enumerate discovered skills with their metadata and reference count. |
 | `read_skill`            | Fetch a skill body by slug, plus its reference manifest.             |
 | `list_skill_references` | One skill's reference metadata, without bodies.                      |
-| `load_skill_references` | Fetch reference bodies by path.                                      |
+| `read_skill_references` | Fetch reference bodies by path.                                      |
 | `reload`                | Rescan the skill roots (picks up edits / new bundles).               |
 
 ## References
@@ -108,7 +108,7 @@ references:
 Pass those paths back to fetch bodies:
 
 ```jsonc
-load_skill_references { "references": ["/…/references/output-diff.md"] }
+read_skill_references { "references": ["/…/references/output-diff.md"] }
 // body plus everything, in one call
 read_skill { "slug": "git-commit", "bundle": true }
 ```
@@ -162,7 +162,7 @@ Metadata is carried in **one** block — never duplicated across surfaces. Per t
 - **Spec `Resource` fields** are canonical: `uri`, `name` (the slug), `title`, `description`, `mimeType`, `size`.
 - **`io.hyprpilot/skill`** (resource `_meta`) / **`metadata`** (tool output) — the same single block: the entire frontmatter map **verbatim** (keys pass through unchanged — no camelCasing; nested maps, arrays, numbers, and booleans all convert), **minus** the keys another field already carries, **plus** the runtime-derived `path`, `bundleDir`, `size`, `modified`, and `created` (which are not in the frontmatter).
 
-Two frontmatter keys are dropped as duplicates. `title` and `description` equal the canonical `Resource.title` / `Resource.description` byte-for-byte. `references` is superseded by the resolved [reference manifest](#references), which addresses each one by its canonical path. The raw array holds the _declared_ spelling (`../references/output-diff.md`), which is meaningless outside its bundle directory and cannot be passed to `load_skill_references` — publishing both would offer a caller two addresses of which only one works.
+Two frontmatter keys are dropped as duplicates. `title` and `description` equal the canonical `Resource.title` / `Resource.description` byte-for-byte. `references` is superseded by the resolved [reference manifest](#references), which addresses each one by its canonical path. The raw array holds the _declared_ spelling (`../references/output-diff.md`), which is meaningless outside its bundle directory and cannot be passed to `read_skill_references` — publishing both would offer a caller two addresses of which only one works.
 
 Frontmatter `name` is **kept** in the block — `Resource.name` is the slug, while a frontmatter `name` is an author-supplied value that may differ, so it is not a spec duplicate. Frontmatter that isn't map-shaped, or a `SKILL.md` with no frontmatter fence at all, is treated as an empty map — a malformed block never fails the request.
 

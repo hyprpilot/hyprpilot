@@ -433,7 +433,7 @@ Skills reach the agent **only** through the skills server.
   **plus a manifest footer**). That is the WHOLE resource surface —
   there is no reference URI; see the `resources/list` bullet below.
   Tools: `list_skills`, `read_skill`, `list_skill_references`,
-  `load_skill_references`, `reload` (rescan dirs).
+  `read_skill_references`, `reload` (rescan dirs).
 - **A reference is addressed by its canonical PATH**, not a slug or a
   name. A path is what the citation IS; a slug-and-name is one of many
   addresses for one shared file, which is exactly what makes double
@@ -455,7 +455,7 @@ Skills reach the agent **only** through the skills server.
 - **Reference BODIES are opt-in; the MANIFEST is not.** `read_skill`
   defaults to body + manifest (`path` / `name` / `size` / `modified` /
   `created` / `metadata` per row); `bundle: true` adds every body.
-  `load_skill_references { references: [path] }` fetches by path.
+  `read_skill_references { references: [path] }` fetches by path.
   The reason is duplication, not size: references are shared (479
   citations across 103 skills resolve to 60 shared files), so the old
   always-bundle default re-sent conventions already in context —
@@ -741,7 +741,7 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   field keyed by reverse-DNS names, so every skill surface carries
   exactly ONE namespaced key — **`io.hyprpilot/skill`** in resource
   `_meta`, **`metadata`** in tool output (`list_skills` / `read_skill` /
-  `load_skill_references`) — and nothing in it repeats a spec-compliant
+  `read_skill_references`) — and nothing in it repeats a spec-compliant
   `Resource` field. The block = the WHOLE frontmatter map **verbatim**
   (`skill_block`) **minus** the keys another field already carries
   — `title` + `description` (byte-for-byte equal to `Resource.title` /

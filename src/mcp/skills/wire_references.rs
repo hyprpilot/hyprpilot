@@ -184,7 +184,7 @@ fn scalar(value: &Value) -> String {
 impl ReferenceEntry {
     /// This entry's manifest row: which file it is, what to call it,
     /// and when it changed. `path` is both the identity and the address
-    /// to pass back to `load_skill_references`.
+    /// to pass back to `read_skill_references`.
     #[must_use]
     pub fn manifest_row(&self) -> Value {
         let mut row = Map::new();
@@ -280,7 +280,7 @@ pub fn manifest_footer(entries: &[ReferenceEntry], slug: &str) -> String {
     let mut out = format!(
         "\n---\nskill_references:\n  skill: {slug}\n  count: {}\n  \
          note: bodies are NOT included above - pass the paths below to \
-         `load_skill_references`\n  available:\n",
+         `read_skill_references`\n  available:\n",
         entries.len()
     );
     for entry in entries {

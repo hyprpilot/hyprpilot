@@ -256,13 +256,13 @@ shared_path = manifest[0]["path"]
 local_dup = manifest[3]["path"]
 
 one = tool_result(s.call("tools/call", {
-    "name": "load_skill_references", "arguments": {"references": [shared_path]}}))
+    "name": "read_skill_references", "arguments": {"references": [shared_path]}}))
 otext = one.get("structuredContent", {}).get("body", "")
 check("a path fetches exactly that reference",
       "SHARED-OUTPUT-DIFF-BODY" in otext and "TITLED-BODY" not in otext)
 
 several = tool_result(s.call("tools/call", {
-    "name": "load_skill_references",
+    "name": "read_skill_references",
     "arguments": {"references": [shared_path, manifest[1]["path"]]}}))
 stext = several.get("structuredContent", {}).get("body", "")
 check("an array fetches exactly the named paths",
@@ -270,7 +270,7 @@ check("an array fetches exactly the named paths",
       and "SHARED-DUP-BODY" not in stext)
 
 dupe = tool_result(s.call("tools/call", {
-    "name": "load_skill_references",
+    "name": "read_skill_references",
     "arguments": {"references": [shared_path, shared_path, shared_path]}}))
 check("a repeated path is served once, not amplified",
       dupe.get("structuredContent", {}).get("body", "").count("SHARED-OUTPUT-DIFF-BODY") == 1)
@@ -285,11 +285,11 @@ check("two skills citing one file report the SAME path",
 
 check("a shadow-free duplicate label is still individually fetchable",
       "LOCAL-DUP-BODY" in tool_result(s.call("tools/call", {
-          "name": "load_skill_references", "arguments": {"references": [local_dup]}}
+          "name": "read_skill_references", "arguments": {"references": [local_dup]}}
       )).get("structuredContent", {}).get("body", ""))
 
 undeclared = tool_result(s.call("tools/call", {
-    "name": "load_skill_references", "arguments": {"references": ["/etc/passwd"]}}))
+    "name": "read_skill_references", "arguments": {"references": ["/etc/passwd"]}}))
 check("a path no skill declares is refused",
       undeclared.get("isError") is True
       or "no skill declares" in json.dumps(undeclared))
@@ -299,7 +299,7 @@ check("a path no skill declares is refused",
 sibling = os.path.join(refroot, "refskill", "SKILL.md")
 check("an undeclared file inside the skill root is refused",
       tool_result(s.call("tools/call", {
-          "name": "load_skill_references", "arguments": {"references": [sibling]}}
+          "name": "read_skill_references", "arguments": {"references": [sibling]}}
       )).get("isError") is True)
 
 # ...while any SPELLING of a declared file is accepted, because the
@@ -307,12 +307,12 @@ check("an undeclared file inside the skill root is refused",
 roundabout = os.path.join(refroot, "references", "..", "references", "output-diff.md")
 check("an alternate spelling of a declared path is accepted",
       "SHARED-OUTPUT-DIFF-BODY" in tool_result(s.call("tools/call", {
-          "name": "load_skill_references", "arguments": {"references": [roundabout]}}
+          "name": "read_skill_references", "arguments": {"references": [roundabout]}}
       )).get("structuredContent", {}).get("body", ""))
 
 check("a missing `references` argument is refused",
       tool_result(s.call("tools/call", {
-          "name": "load_skill_references", "arguments": {}})).get("isError") is True)
+          "name": "read_skill_references", "arguments": {}})).get("isError") is True)
 
 res = tool_result(s.call("resources/read", {"uri": "hyprpilot://skills/refskill"}))
 rtext = res.get("contents", [{}])[0].get("text", "")
